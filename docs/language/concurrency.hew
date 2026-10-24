@@ -30,7 +30,18 @@
 //!
 //! `race` chooses the first completion, including an ordinary Err, and cleans up
 //! losers. `select` uses `value from source => ...` and `after duration => ...`.
-//! Ordinary calls, tasks, timers, channel receives, actor calls, and
-//! `Stream<T>.recv()` are supported selection sources. Adapted file and socket
+//! Ordinary calls, tasks, timers, actor calls, and `Stream<T>.recv()` are
+//! supported selection sources. Adapted file and socket
 //! stream readiness is not a selectable source. Actor streams use ordinary
 //! `for`, without await.
+//!
+//! ## Streams and sinks
+//!
+//! Hew uses `Stream<T>` and `Sink<T>` for in-memory pipes, files, split
+//! sockets, process pipes, and actor `receive gen fn` streams; there is no
+//! separate channel type. `std.stream.pipe(capacity)` creates an in-memory
+//! pair. A sink waits in `send`, reports a closed reader as a typed error, and
+//! publishes clean end-of-data with `finish` or `close`. A stream's `recv`
+//! returns `Option<T>`, where `None` means clean end-of-data, and a `for` loop
+//! drains it. Closing a stream discards queued values and performs their normal
+//! ownership cleanup.

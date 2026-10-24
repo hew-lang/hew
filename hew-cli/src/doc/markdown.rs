@@ -3,8 +3,8 @@
 use std::fmt::Write;
 
 use super::extract::{
-    DocActor, DocConst, DocField, DocFunction, DocImpl, DocMethod, DocModule, DocTrait, DocType,
-    DocTypeAlias,
+    DocActor, DocConst, DocField, DocFunction, DocImpl, DocMachine, DocMachineMember, DocMethod,
+    DocModule, DocTrait, DocType, DocTypeAlias,
 };
 
 fn render_fields_md(fields: &[DocField]) -> String {
@@ -87,6 +87,29 @@ fn render_actor(a: &DocActor) -> String {
     out
 }
 
+fn render_machine_members_md(heading: &str, members: &[DocMachineMember]) -> String {
+    if members.is_empty() {
+        return String::new();
+    }
+    let mut out = format!("**{heading}:**\n\n");
+    for member in members {
+        let _ = writeln!(out, "- `{}{}`", member.name, member.shape);
+    }
+    out.push('\n');
+    out
+}
+
+fn render_machine(machine: &DocMachine) -> String {
+    let mut out = format!(
+        "### Machine `{}`\n\n`{}`\n\n",
+        machine.name, machine.signature
+    );
+    out.push_str(&render_machine_members_md("States", &machine.states));
+    out.push_str(&render_machine_members_md("Events", &machine.events));
+    out.push_str(&render_machine_members_md("Outputs", &machine.outputs));
+    out
+}
+
 /// Render a trait item as Markdown.
 fn render_trait(t: &DocTrait) -> String {
     let mut out = format!("### Trait `{}`\n\n", t.name);
@@ -99,7 +122,7 @@ fn render_trait(t: &DocTrait) -> String {
 }
 
 fn render_impl(i: &DocImpl) -> String {
-    let mut out = format!("### Methods on `{}`\n\n", i.target);
+    let mut out = format!("### `{}`\n\n", i.signature);
     if let Some(doc) = &i.doc {
         out.push_str(doc);
         out.push_str("\n\n");
@@ -162,6 +185,13 @@ pub fn render_module(module: &DocModule) -> String {
         }
     }
 
+    if !module.machines.is_empty() {
+        out.push_str("## Machines\n\n");
+        for machine in &module.machines {
+            out.push_str(&render_machine(machine));
+        }
+    }
+
     if module.traits.iter().any(|t| t.is_public) {
         out.push_str("## Traits\n\n");
         for t in module.traits.iter().filter(|t| t.is_public) {
@@ -196,13 +226,18 @@ pub fn render_module(module: &DocModule) -> String {
 /// Render an index page listing all documented modules as Markdown, grouped by section.
 #[must_use]
 pub fn render_index(modules: &[DocModule]) -> String {
-    let mut out = String::from("# Hew Standard Library\n\n");
+    let mut out = String::from("# Hew documentation\n\n");
 
+    let mut language_mods: Vec<&DocModule> = Vec::new();
     let mut root_mods: Vec<&DocModule> = Vec::new();
     let mut groups: std::collections::BTreeMap<String, Vec<&DocModule>> =
         std::collections::BTreeMap::new();
 
     for m in modules {
+        if m.name.starts_with("language::") {
+            language_mods.push(m);
+            continue;
+        }
         let after_root = m.name.find("::").map_or("", |i| &m.name[i + 2..]);
         if after_root.contains("::") {
             let category = after_root.split("::").next().unwrap_or(after_root);
@@ -212,32 +247,54 @@ pub fn render_index(modules: &[DocModule]) -> String {
         }
     }
 
-    for m in &root_mods {
-        let filename = super::module_to_filename(&m.name, "md");
-        let _ = write!(out, "- [`{}`]({})", m.name.replace("::", "."), filename);
-        if let Some(doc) = &m.doc {
-            if let Some(first_line) = doc.lines().next() {
-                let _ = write!(out, " — {first_line}");
-            }
+    if !language_mods.is_empty() {
+        out.push_str("## Language guide\n\n");
+        for m in &language_mods {
+            render_index_entry_md(&mut out, m);
         }
         out.push('\n');
     }
 
+    out.push_str("## Standard library\n\n");
+    for m in &root_mods {
+        render_index_entry_md(&mut out, m);
+    }
+
     for (category, mods) in &groups {
-        let _ = writeln!(out, "\n## {category}\n");
+        let _ = writeln!(out, "\n### {category}\n");
         for m in mods {
-            let filename = super::module_to_filename(&m.name, "md");
-            let _ = write!(out, "- [`{}`]({})", m.name.replace("::", "."), filename);
-            if let Some(doc) = &m.doc {
-                if let Some(first_line) = doc.lines().next() {
-                    let _ = write!(out, " — {first_line}");
-                }
-            }
-            out.push('\n');
+            render_index_entry_md(&mut out, m);
         }
     }
 
     out
+}
+
+fn render_index_entry_md(out: &mut String, module: &DocModule) {
+    let filename = super::module_to_filename(&module.name, "md");
+    let _ = write!(out, "- [`{}`]({filename})", module.name.replace("::", "."));
+    let summary = module_summary(module.doc.as_deref());
+    if !summary.is_empty() {
+        let _ = write!(out, " — {summary}");
+    }
+    out.push('\n');
+}
+
+fn module_summary(doc: Option<&str>) -> String {
+    let Some(doc) = doc else {
+        return String::new();
+    };
+    let mut lines = doc.lines().map(str::trim).peekable();
+    while lines
+        .peek()
+        .is_some_and(|line| line.is_empty() || line.starts_with('#'))
+    {
+        lines.next();
+    }
+    lines
+        .take_while(|line| !line.is_empty())
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 #[cfg(test)]
@@ -265,6 +322,7 @@ mod tests {
             functions: vec![],
             types: vec![],
             actors: vec![],
+            machines: vec![],
             traits: vec![],
             impls: vec![],
             consts: vec![],

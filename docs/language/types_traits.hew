@@ -1,0 +1,64 @@
+//! # Types, traits, and patterns
+//!
+//! `type` declares a record and `enum` declares a closed choice of variants.
+//! Both can have generic parameters. There is no `struct` keyword. Fields and
+//! variants end with semicolons; commas separate literal values and pattern
+//! elements.
+//!
+//! ```hew
+//! type Pair<A, B> {
+//!     first: A;
+//!     second: B;
+//! }
+//!
+//! trait Label {
+//!     fn label(self) -> string;
+//! }
+//!
+//! type Point {
+//!     x: i64;
+//!     y: i64;
+//! }
+//!
+//! impl Label for Point {
+//!     fn label(self) -> string { f"({self.x}, {self.y})" }
+//! }
+//!
+//! enum Shape {
+//!     Dot(Point);
+//!     Rectangle { width: i64; height: i64; }
+//! }
+//!
+//! fn main() {
+//!     let pair = Pair { first: 3, second: "east" };
+//!     let shape = Shape.Dot(Point { x: pair.first, y: 4 });
+//!     match shape {
+//!         .Dot(point) => println(point.label()),
+//!         .Rectangle { width, height } => println(width * height),
+//!     }
+//! }
+//! ```
+//!
+//! Record construction is keyed: `Point { y: 2, x: 1 }` is valid, and
+//! `Point { ..base, x: 3 }` copies the fields not named explicitly. A binding
+//! must be `var` to assign through one of its fields.
+//!
+//! Variant constructors can use the type name (`Shape.Dot(point)`) or a leading
+//! dot when the expected enum type is known (`.Dot(point)`). Match patterns use
+//! the same tuple or record shape as their variant.
+//!
+//! ## Traits and implementations
+//!
+//! A trait lists required methods and associated types. `impl Trait for Type`
+//! supplies that contract; `impl Type` declares inherent methods. Method calls
+//! use dot syntax, while associated functions use the type name. Generic bounds
+//! use `T: Trait + Other`; associated-type constraints use
+//! `Iterator<Item = T>`. Longer constraints can follow the signature in a
+//! `where` clause.
+//!
+//! `dyn Trait` is a runtime trait object. It preserves the methods and ownership
+//! capabilities declared by the trait; it is not implicitly cloneable or
+//! sendable unless the trait contract establishes those properties.
+//!
+//! Type aliases use `type Name = ExistingType;`. They give another spelling to
+//! the same type rather than creating a new nominal type.

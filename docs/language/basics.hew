@@ -2,7 +2,10 @@
 //!
 //! A Hew program starts in `fn main()`. Bind immutable values with `let` and
 //! mutable values with `var`; Hew has no `let mut` form. Primitive types use
-//! lowercase names such as `i64`, `f64`, `bool`, `char`, and `string`.
+//! lowercase names: signed and unsigned fixed-width integers, `usize`, `f32`,
+//! `f64`, `bool`, `char`, `string`, and `bytes`. Tuples, fixed arrays,
+//! `Vec<T>`, maps, and sets compose those values with user-defined records and
+//! enums.
 //!
 //! ```hew
 //! type Reading {
@@ -63,7 +66,15 @@
 //! `json.parse(text)`. Use `hew check file.hew` to type-check a standalone
 //! program before building or running it.
 //!
-//! Continue with [actors](language.actors.html),
+//! Continue with [expressions and control flow](language.control_flow.html),
+//! [functions and errors](language.functions.html),
+//! [types and traits](language.types_traits.html),
+//! [modules and packages](language.modules.html),
+//! [compile-time inputs and source generation](language.metaprogramming.html),
+//! [wire data](language.wire.html),
+//! [testing](language.testing.html),
+//! [target capabilities](language.targets.html),
+//! [actors](language.actors.html),
 //! [structured concurrency](language.concurrency.html),
 //! [resources](language.resources.html),
 //! [state machines](language.machines.html), and

@@ -69,6 +69,15 @@ fn collect_hew_files(dir: &std::path::Path, files: &mut Vec<std::path::PathBuf>)
     }
 }
 
+/// Modules that are compiler implementation details or test fixtures rather
+/// than importable user-facing APIs.
+fn is_reference_module(module_name: &str) -> bool {
+    !matches!(
+        module_name,
+        "std::mem" | "std::prelude" | "std::machines::toggle"
+    )
+}
+
 #[expect(
     clippy::too_many_lines,
     reason = "CLI entry point with straightforward sequential logic"
@@ -98,7 +107,9 @@ pub fn cmd_doc(args: &crate::args::DocArgs) {
             collect_hew_files(path, &mut files);
             for file in files {
                 let name = derive_module_name(&file, path);
-                entries.push((file, name));
+                if is_reference_module(&name) {
+                    entries.push((file, name));
+                }
             }
         } else if path.exists() {
             let name = path
@@ -315,5 +326,14 @@ mod tests {
             std::path::Path::new("std"),
         );
         assert_eq!(name, "std::log");
+    }
+
+    #[test]
+    fn internal_and_fixture_modules_are_hidden_from_reference() {
+        assert!(!is_reference_module("std::mem"));
+        assert!(!is_reference_module("std::prelude"));
+        assert!(!is_reference_module("std::machines::toggle"));
+        assert!(is_reference_module("std::math"));
+        assert!(is_reference_module("language::machines"));
     }
 }

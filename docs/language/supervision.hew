@@ -28,6 +28,15 @@
 //! to five restarts in ten seconds; exhausting the budget leaves it unavailable.
 //! Access a named child through its supervisor handle, as `workers.primary`
 //! above. Pools add a `count` clause and expose indexed child access.
+//! `one_for_all` restarts every child after one fails, while `rest_for_one`
+//! restarts the failed child and children declared after it.
+//! `simple_one_for_one` is for a homogeneous dynamic pool.
+//!
+//! Child restart policies are `permanent`, `transient`, and `temporary`.
+//! Permanent children restart after any exit; transient children restart only
+//! after a fault; temporary children do not restart. Nested supervisors apply
+//! their own strategy first and escalate when their local restart budget is
+//! exhausted.
 //!
 //! A child role resolves the current incarnation on a call. A direct incarnation
 //! handle remains tied to that actor; restarting a role does not revive a stale

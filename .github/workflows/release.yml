@@ -1271,7 +1271,12 @@ jobs:
 
       - name: Validate generated docs
         run: |
-          source_modules="$(find std -type f -name '*.hew' | wc -l | tr -d ' ')"
+          # Keep these implementation-only modules in sync with
+          # hew-cli/src/doc/mod.rs:is_reference_module.
+          source_modules="$(find std -type f -name '*.hew' \
+            ! -path 'std/mem/mem.hew' \
+            ! -path 'std/prelude.hew' \
+            ! -path 'std/machines/toggle.hew' | wc -l | tr -d ' ')"
           generated_modules="$(find dist/docs -maxdepth 1 -type f -name 'std.*.html' | wc -l | tr -d ' ')"
           if [ "$source_modules" -eq 0 ] || [ "$generated_modules" -ne "$source_modules" ]; then
             echo "::error::Expected $source_modules generated module pages, found $generated_modules"
@@ -1281,12 +1286,13 @@ jobs:
             echo "::error::Generated documentation index is missing or empty"
             exit 1
           fi
-          for page in language.basics.html language.actors.html language.supervision.html language.machines.html language.concurrency.html language.resources.html 404.html; do
-            if [ ! -s "dist/docs/$page" ]; then
-              echo "::error::Generated documentation page is missing: $page"
-              exit 1
-            fi
-          done
+          language_sources="$(find docs/language -type f -name '*.hew' | wc -l | tr -d ' ')"
+          language_pages="$(find dist/docs -maxdepth 1 -type f -name 'language.*.html' | wc -l | tr -d ' ')"
+          if [ "$language_sources" -eq 0 ] || [ "$language_pages" -ne "$language_sources" ]; then
+            echo "::error::Expected $language_sources generated language pages, found $language_pages"
+            exit 1
+          fi
+          test -s dist/docs/404.html
           empty_file="$(find dist/docs -type f -empty -print -quit)"
           if [ -n "$empty_file" ]; then
             echo "::error::Generated documentation contains an empty file: $empty_file"
@@ -1294,18 +1300,48 @@ jobs:
           fi
           grep -q "Hew ${VERSION}" dist/docs/index.html
           python3 - <<'PY'
+          from html.parser import HTMLParser
           import pathlib
-          import re
+          from urllib.parse import urldefrag
 
           root = pathlib.Path("dist/docs")
+          pages = {page.name: page for page in root.glob("*.html")}
+          ids = set()
+          links = []
+          duplicates = []
+
+          class PageParser(HTMLParser):
+              def __init__(self, page):
+                  super().__init__()
+                  self.page = page
+
+              def handle_starttag(self, _tag, attrs):
+                  attrs = dict(attrs)
+                  if "id" in attrs:
+                      key = (self.page, attrs["id"])
+                      if key in ids:
+                          duplicates.append(f"{self.page}#{attrs['id']}")
+                      ids.add(key)
+                  if "href" in attrs:
+                      links.append((self.page, attrs["href"]))
+
+          for name, page in pages.items():
+              PageParser(name).feed(page.read_text())
+
           missing = []
-          for page in root.glob("*.html"):
-              html = page.read_text()
-              for href in re.findall(r'href="([^"#]+)', html):
-                  if "://" in href or href.startswith("/") or not href.endswith(".html"):
-                      continue
-                  if not (root / href).is_file():
-                      missing.append(f"{page.name}: {href}")
+          for source, href in links:
+              if "://" in href or href.startswith(("mailto:", "/")):
+                  continue
+              target, fragment = urldefrag(href)
+              target = target or source
+              if not target.endswith(".html"):
+                  continue
+              if target not in pages:
+                  missing.append(f"{source}: {target}")
+              elif fragment and (target, fragment) not in ids:
+                  missing.append(f"{source}: {target}#{fragment}")
+          if duplicates:
+              raise SystemExit("Duplicate HTML ids:\n" + "\n".join(duplicates))
           if missing:
               raise SystemExit("Missing internal links:\n" + "\n".join(missing))
           PY

@@ -6,8 +6,8 @@ use std::collections::HashMap;
 use crate::util::html_escape;
 
 use super::extract::{
-    DocActor, DocConst, DocField, DocFunction, DocImpl, DocMethod, DocModule, DocTrait, DocType,
-    DocTypeAlias,
+    DocActor, DocConst, DocField, DocFunction, DocImpl, DocMachine, DocMachineMember, DocMethod,
+    DocModule, DocTrait, DocType, DocTypeAlias,
 };
 use super::highlight;
 use super::template::highlight_signature;
@@ -174,6 +174,9 @@ fn build_type_index(module: &DocModule) -> TypeIndex {
     }
     for a in &module.actors {
         index.insert(a.name.clone(), format!("#actor.{}", a.name));
+    }
+    for machine in &module.machines {
+        index.insert(machine.name.clone(), format!("#machine.{}", machine.name));
     }
     for t in module.traits.iter().filter(|t| t.is_public) {
         index.insert(t.name.clone(), format!("#trait.{}", t.name));
@@ -412,6 +415,42 @@ fn render_actor(a: &DocActor, index: &TypeIndex) -> String {
     out
 }
 
+fn render_machine_members(heading: &str, members: &[DocMachineMember]) -> String {
+    if members.is_empty() {
+        return String::new();
+    }
+    let mut out = format!(
+        "<h4>{}</h4>\n<dl class=\"variants\">\n",
+        html_escape(heading)
+    );
+    for member in members {
+        out.push_str("<dt><code>");
+        out.push_str(&html_escape(&member.name));
+        out.push_str(&html_escape(&member.shape));
+        out.push_str("</code></dt>\n");
+    }
+    out.push_str("</dl>\n");
+    out
+}
+
+fn render_machine(machine: &DocMachine) -> String {
+    let mut out = String::from("<div class=\"item\" id=\"machine.");
+    out.push_str(&html_escape(&machine.name));
+    out.push_str("\">\n<h3>Machine <code>");
+    out.push_str(&html_escape(&machine.name));
+    out.push_str("</code></h3>\n<span class=\"sig\">");
+    out.push_str(&highlight_signature(&machine.signature));
+    out.push_str("</span>\n");
+    out.push_str(&render_machine_members("States", &machine.states));
+    out.push_str(&render_machine_members("Events", &machine.events));
+    out.push_str(&render_machine_members("Outputs", &machine.outputs));
+    out.push_str(
+        "<p>See the <a href=\"language.machines.html\">machine reference</a> for generated step, report, output, and state-name APIs.</p>\n",
+    );
+    out.push_str("</div>\n");
+    out
+}
+
 /// Render a trait item.
 fn render_trait(t: &DocTrait, index: &TypeIndex) -> String {
     let mut out = String::from("<div class=\"item\" id=\"trait.");
@@ -428,8 +467,8 @@ fn render_trait(t: &DocTrait, index: &TypeIndex) -> String {
 
 /// Render documented methods from an inherent implementation block.
 fn render_impl(i: &DocImpl, index: &TypeIndex) -> String {
-    let mut out = String::from("<div class=\"item impl\">\n<h3>Methods on <code>");
-    out.push_str(&html_escape(&i.target));
+    let mut out = String::from("<div class=\"item impl\">\n<h3><code>");
+    out.push_str(&html_escape(&i.signature));
     out.push_str("</code></h3>\n");
     push_doc(&mut out, i.doc.as_ref());
     for method in &i.methods {
@@ -509,6 +548,7 @@ pub fn render_module(module: &DocModule) -> String {
     let has_items = !module.functions.is_empty()
         || !module.types.is_empty()
         || !module.actors.is_empty()
+        || !module.machines.is_empty()
         || module.traits.iter().any(|t| t.is_public)
         || !module.impls.is_empty()
         || !module.consts.is_empty()
@@ -536,6 +576,13 @@ pub fn render_module(module: &DocModule) -> String {
             body.push_str(&html_escape(&a.name));
             body.push_str("\">actor ");
             body.push_str(&html_escape(&a.name));
+            body.push_str("</a></li>\n");
+        }
+        for machine in &module.machines {
+            body.push_str("<li><a href=\"#machine.");
+            body.push_str(&html_escape(&machine.name));
+            body.push_str("\">machine ");
+            body.push_str(&html_escape(&machine.name));
             body.push_str("</a></li>\n");
         }
         for t in module.traits.iter().filter(|t| t.is_public) {
@@ -583,6 +630,13 @@ pub fn render_module(module: &DocModule) -> String {
         body.push_str("<h2>Actors</h2>\n");
         for a in &module.actors {
             body.push_str(&render_actor(a, &index));
+        }
+    }
+
+    if !module.machines.is_empty() {
+        body.push_str("<h2>Machines</h2>\n");
+        for machine in &module.machines {
+            body.push_str(&render_machine(machine));
         }
     }
 
@@ -740,6 +794,7 @@ pub fn add(a: i32, b: i32) -> i32 {
             functions: vec![],
             types: vec![],
             actors: vec![],
+            machines: vec![],
             traits: vec![],
             impls: vec![],
             consts: vec![],
@@ -783,6 +838,26 @@ pub fn add(a: i32, b: i32) -> i32 {
         assert!(html.contains("Do the thing."));
         assert!(html.contains("do_it"));
         assert!(html.contains("method.T.do_it"));
+    }
+
+    #[test]
+    fn render_machine_surface_and_generated_api_link() {
+        let source = r"pub machine Door {
+    events { Open; }
+    emits { Notice { text: string; } }
+    state Shut;
+    on Open: Shut => Shut reenter;
+}
+";
+        let result = hew_parser::parse(source);
+        let module = extract_docs(&result.program, "test");
+        let html = render_module(&module);
+        assert!(html.contains("<h2>Machines</h2>"));
+        assert!(html.contains("id=\"machine.Door\""));
+        assert!(html.contains("<h4>States</h4>"));
+        assert!(html.contains("<h4>Events</h4>"));
+        assert!(html.contains("<h4>Outputs</h4>"));
+        assert!(html.contains("language.machines.html"));
     }
 
     #[test]

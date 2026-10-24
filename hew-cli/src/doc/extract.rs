@@ -17,6 +17,8 @@ pub struct DocModule {
     pub types: Vec<DocType>,
     /// Documented `pub` actors.
     pub actors: Vec<DocActor>,
+    /// Documented `pub` state machines.
+    pub machines: Vec<DocMachine>,
     /// Documented traits. Emitted regardless of visibility because the
     /// stdlib declares method-syntax traits without `pub` even when they
     /// describe methods on a `pub` opaque type (e.g. `ValueMethods` on
@@ -86,6 +88,23 @@ pub struct DocActor {
     pub doc: Option<String>,
 }
 
+/// A named state, input event, or output variant in a machine declaration.
+#[derive(Debug, Clone)]
+pub struct DocMachineMember {
+    pub name: String,
+    pub shape: String,
+}
+
+/// A documented state machine declaration.
+#[derive(Debug, Clone)]
+pub struct DocMachine {
+    pub name: String,
+    pub signature: String,
+    pub states: Vec<DocMachineMember>,
+    pub events: Vec<DocMachineMember>,
+    pub outputs: Vec<DocMachineMember>,
+}
+
 /// A documented trait.
 #[derive(Debug, Clone)]
 pub struct DocTrait {
@@ -100,7 +119,7 @@ pub struct DocTrait {
 /// A documented inherent implementation block.
 #[derive(Debug, Clone)]
 pub struct DocImpl {
-    pub target: String,
+    pub signature: String,
     pub methods: Vec<DocMethod>,
     pub doc: Option<String>,
 }
@@ -489,6 +508,81 @@ fn build_trait_method_signature(m: &hew_parser::ast::TraitMethod) -> String {
     sig
 }
 
+fn build_impl_signature(i: &hew_parser::ast::ImplDecl) -> String {
+    format!(
+        "impl{} {}{}",
+        format_type_params(i.type_params.as_deref()),
+        format_type(&i.target_type.0),
+        format_where_clause(i.where_clause.as_ref())
+    )
+}
+
+fn build_machine_signature(machine: &hew_parser::ast::MachineDecl) -> String {
+    let mut params = machine
+        .type_params
+        .iter()
+        .map(|param| {
+            if param.bounds.is_empty() {
+                param.name.to_string()
+            } else {
+                format!(
+                    "{}: {}",
+                    param.name,
+                    param
+                        .bounds
+                        .iter()
+                        .map(format_trait_bound)
+                        .collect::<Vec<_>>()
+                        .join(" + ")
+                )
+            }
+        })
+        .collect::<Vec<_>>();
+    params.extend(machine.const_params.iter().map(|param| {
+        param.default.map_or_else(
+            || format!("const {}: usize", param.name),
+            |default| format!("const {}: usize = {default}", param.name),
+        )
+    }));
+    let generics = if params.is_empty() {
+        String::new()
+    } else {
+        format!("<{}>", params.join(", "))
+    };
+    format!(
+        "{}machine {}{}{}",
+        visibility_prefix(machine.visibility),
+        machine.name,
+        generics,
+        format_where_clause(machine.where_clause.as_ref())
+    )
+}
+
+fn machine_member(
+    name: hew_parser::ast::Ident,
+    fields: &[(
+        hew_parser::ast::Ident,
+        hew_parser::ast::Spanned<hew_parser::ast::TypeExpr>,
+    )],
+) -> DocMachineMember {
+    let shape = if fields.is_empty() {
+        String::new()
+    } else {
+        format!(
+            " {{ {} }}",
+            fields
+                .iter()
+                .map(|(field, ty)| format!("{field}: {}", format_type(&ty.0)))
+                .collect::<Vec<_>>()
+                .join(", ")
+        )
+    };
+    DocMachineMember {
+        name: name.to_string(),
+        shape,
+    }
+}
+
 /// Render the payload shape of an enum variant as a string suffix.
 fn format_variant_shape(kind: &VariantKind) -> String {
     match kind {
@@ -561,6 +655,7 @@ pub fn extract_docs(program: &Program, module_name: &str) -> DocModule {
     let mut functions = Vec::new();
     let mut types = Vec::new();
     let mut actors = Vec::new();
+    let mut machines = Vec::new();
     let mut traits = Vec::new();
     let mut impls = Vec::new();
     let mut consts = Vec::new();
@@ -614,6 +709,27 @@ pub fn extract_docs(program: &Program, module_name: &str) -> DocModule {
                     doc: a.doc_comment.clone(),
                 });
             }
+            Item::Machine(machine) if machine.visibility.is_pub() => {
+                machines.push(DocMachine {
+                    name: machine.name.to_string(),
+                    signature: build_machine_signature(machine),
+                    states: machine
+                        .states
+                        .iter()
+                        .map(|state| machine_member(state.name, &state.fields))
+                        .collect(),
+                    events: machine
+                        .events
+                        .iter()
+                        .map(|event| machine_member(event.name, &event.fields))
+                        .collect(),
+                    outputs: machine
+                        .emits
+                        .iter()
+                        .map(|output| machine_member(output.name, &output.fields))
+                        .collect(),
+                });
+            }
             // Traits are emitted regardless of visibility: the stdlib pattern
             // declares method-syntax traits without `pub` even when they
             // describe methods on a `pub` opaque type (e.g. `ValueMethods`
@@ -655,7 +771,7 @@ pub fn extract_docs(program: &Program, module_name: &str) -> DocModule {
                     .collect::<Vec<_>>();
                 if !methods.is_empty() {
                     impls.push(DocImpl {
-                        target: format_type(&i.target_type.0),
+                        signature: build_impl_signature(i),
                         methods,
                         doc: i.doc_comment.clone(),
                     });
@@ -701,6 +817,7 @@ pub fn extract_docs(program: &Program, module_name: &str) -> DocModule {
         functions,
         types,
         actors,
+        machines,
         traits,
         impls,
         consts,
@@ -985,10 +1102,36 @@ package const PKG_C: i32 = 1;
         assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
         let module = extract_docs(&result.program, "test");
         assert_eq!(module.impls.len(), 1);
-        assert_eq!(module.impls[0].target, "Option<T>");
+        assert_eq!(module.impls[0].signature, "impl<T> Option<T>");
         assert_eq!(module.impls[0].methods.len(), 1);
         assert!(module.impls[0].methods[0]
             .signature
             .contains("expect(consume self, reason: string)"));
+    }
+
+    #[test]
+    fn extracts_public_machine_surface() {
+        let source = r"pub machine Door<const LIMIT: usize = 3> {
+    events { Open { by: string; } Close; }
+    emits { Notice { text: string; } }
+    state Shut;
+    state Ajar { by: string; }
+    on Open: Shut => Ajar { by: event.by }
+    on Close: Ajar => Shut;
+    default { state }
+}
+";
+        let result = hew_parser::parse(source);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        let module = extract_docs(&result.program, "test");
+        assert_eq!(module.machines.len(), 1);
+        let machine = &module.machines[0];
+        assert_eq!(
+            machine.signature,
+            "pub machine Door<const LIMIT: usize = 3>"
+        );
+        assert_eq!(machine.states[1].shape, " { by: string }");
+        assert_eq!(machine.events[0].shape, " { by: string }");
+        assert_eq!(machine.outputs[0].name, "Notice");
     }
 }

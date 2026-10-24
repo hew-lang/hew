@@ -193,8 +193,16 @@ are retained even if another packaging lane failed. Existing per-platform SDK
 acceptance receipts remain in the producer run. GHCR is skipped when its
 producer failed. After a GitHub Release is published, `publish-docs` fails
 explicitly when `build-docs` did not succeed, so a stale docs site is visible
-in the release run and **Re-run failed jobs** can recover it. Homebrew waits for
-all three formula archives and is skipped when the macOS archive is unavailable.
+in the release run and **Re-run failed jobs** can recover it. That failure is a
+visible incomplete release channel, not proof that the site was updated; the
+release is fully propagated only after `publish-docs` succeeds.
+
+`build-docs` consumes the x86_64 archive produced by the required Linux build,
+so it cannot run when that packaged compiler was not produced. The GitHub
+Release requires the Linux products too. In that case no new GitHub Release
+exists for the site to describe, `publish-docs` remains skipped, and the site
+correctly stays on the preceding published release. Homebrew waits for all
+three formula archives and is skipped when the macOS archive is unavailable.
 npm and the GitHub Release can proceed with the required Linux and browser products.
 
 ## Prerequisites

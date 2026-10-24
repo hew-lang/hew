@@ -11,7 +11,6 @@ const HEW_VERSION: &str = env!("CARGO_PKG_VERSION");
 /// Hew website (`hew.sh`), with the same design-system overrides applied in the
 /// website's `CodeBlock.astro` component.
 const CSS: &str = r#"
-@import url('https://fonts.googleapis.com/css2?family=Gentium+Plus:wght@700&family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;700&display=swap');
 :root {
     --bg: #0d1117;
     --fg: #e2e8f0;
@@ -30,7 +29,7 @@ const CSS: &str = r#"
 }
 * { margin: 0; padding: 0; box-sizing: border-box; }
 body {
-    font-family: Inter, 'Inter Fallback', system-ui, sans-serif;
+    font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
     line-height: 1.6;
     color: var(--fg);
     background: var(--bg);
@@ -59,7 +58,7 @@ body {
 .site-brand:hover { text-decoration: none; }
 .logo-icon { width: 1.75rem; height: 1.75rem; }
 .site-brand-name {
-    font-family: 'Gentium Plus', Georgia, serif;
+    font-family: Georgia, "Times New Roman", serif;
     font-weight: 700;
     font-size: 1.25rem;
     letter-spacing: -0.01em;
@@ -95,7 +94,7 @@ p, .doc ul, .doc ol, .doc blockquote, .doc table { margin: 0.75rem 0; }
 a { color: var(--accent); text-decoration: none; }
 a:hover { text-decoration: underline; }
 code, pre {
-    font-family: "JetBrains Mono", "Fira Code", "Cascadia Code", monospace;
+    font-family: ui-monospace, "Cascadia Code", "Fira Code", monospace;
     font-size: 0.9em;
 }
 code { background: var(--code-bg); padding: 0.1em 0.35em; border-radius: 3px; }
@@ -246,6 +245,7 @@ mod tests {
         assert!(html.contains("<title>TestMod — Hew Documentation</title>"));
         assert!(html.contains("<main id=\"main-content\">"));
         assert!(html.contains("<p>hello</p>"));
+        assert!(!html.contains("fonts.googleapis.com"));
     }
 
     #[test]

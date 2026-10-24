@@ -24,6 +24,51 @@
 //! }
 //! ```
 //!
+//! ## Events, outputs, guards, and hooks
+//!
+//! `events` declares typed inputs. An optional `emits` block declares typed
+//! output values collected by each step. A `when` guard refines a transition;
+//! guarded rules need an unconditional fallback because a guard alone does not
+//! establish exhaustiveness. State `entry` and `exit` hooks run synchronously
+//! and may emit outputs.
+//!
+//! ```hew
+//! machine Meter {
+//!     events { Reading { value: i64; } }
+//!     emits { Alarm { value: i64; } }
+//!
+//!     state Watching {
+//!         peak: i64;
+//!         entry { emit Alarm { value: state.peak }; }
+//!     }
+//!
+//!     on Reading: Watching => Watching reenter
+//!         when event.value > state.peak {
+//!         emit Alarm { value: event.value };
+//!         Watching { peak: event.value }
+//!     }
+//!     on Reading: Watching => Watching { state }
+//! }
+//!
+//! fn main() {
+//!     var meter: Meter = .Watching { peak: 0 };
+//!     let report = meter.step(.Reading { value: 7 })
+//!         .expect("machine step failed");
+//!     for output in report.outputs {
+//!         match output {
+//!             .Alarm { value } => println(value),
+//!         }
+//!     }
+//! }
+//! ```
+//!
+//! Evaluation order for a changing fixed target is exit hook, transition body,
+//! then entry hook. A same-state target runs only its body unless marked
+//! `reenter`. A computed `_` target runs exit and entry because its resulting
+//! state is known only after the body evaluates. Hooks and rules are pure:
+//! they cannot perform I/O, spawn, suspend, or call an unproved indirect
+//! function.
+//!
 //! A rule head names the state the transition produces, so the body carries
 //! only what the head cannot: nothing for a unit target, the field list for a
 //! fielded one, and an expression when the value is computed. `state.field`
@@ -40,3 +85,102 @@
 //! win over wildcard-state rules. Omitting a cell without a matching default
 //! is a compile error, so state and event exhaustiveness is enforced rather
 //! than inferred at runtime.
+//!
+//! ## Generated API
+//!
+//! | Generated item | Meaning |
+//! | --- | --- |
+//! | `Name` | State enum, including each leaf configuration |
+//! | `Name.Event` | Input variants declared in `events` |
+//! | `NameOutput` | Output variants declared in `emits` |
+//! | `NameStepDisposition` | `Taken` for an explicit rule or `Ignored` for `default` |
+//! | `NameStep` | Must-use report with `outputs`, `disposition`, input tag, and executed rule ordinals |
+//! | `value.step(event, limit: 1024)` | Mutates the value on success and returns `Result<NameStep, MachineStepError>` |
+//! | `value.state_name()` | Returns the active state tag as a string |
+//! | `NameScope` and `NameSubtree` | Compound-state selectors and typed departure snapshots |
+//! | `value.step_observed_with_limit(...)` | Steps while capturing requested compound departures |
+//!
+//! A failed step leaves the original value unchanged. `emit` only appends to
+//! the report; it does not feed another event into the machine or perform the
+//! action represented by the output. The report's `input` is the external
+//! event tag, and `rules` lists zero-based source rule ordinals in execution
+//! order. Every machine implements `Machine`; its associated `Event`, `Step`,
+//! `Scope`, and `Subtree` types let generic code use the same evaluator.
+//!
+//! ## Const parameters and composite states
+//!
+//! A machine can declare `usize` const parameters with defaults. Their values
+//! are visible in guards, bodies, and hooks. Nested `state` blocks form
+//! composite states; exactly one direct child is `initial`, and targeting the
+//! composite descends through initial children to a leaf.
+//!
+//! ```hew
+//! machine Session {
+//!     events { Open; Authenticate; Close; }
+//!     state Closed;
+//!     state Live {
+//!         initial state Authenticating;
+//!         state Active;
+//!         on Authenticate: Authenticating => Active;
+//!         on Close: _ => Closed;
+//!     }
+//!     on Open: Closed => Live;
+//!     default { state }
+//! }
+//! ```
+//!
+//! ```hew
+//! machine Retry<const MAX: usize = 3> {
+//!     events { Fail; }
+//!     state Trying { attempts: usize; }
+//!     state Exhausted;
+//!     on Fail: Trying => Trying when state.attempts + 1 < MAX {
+//!         attempts: state.attempts + 1
+//!     }
+//!     on Fail: Trying => Exhausted;
+//!     on Fail: Exhausted => Exhausted reenter;
+//! }
+//! ```
+//!
+//! Leaf rules have priority over rules on their nearest composite ancestor,
+//! then broader ancestors, machine-wide wildcard rules, and finally `default`.
+//! Named sibling transitions keep their nearest common ancestor active; a
+//! computed `_` target exits and re-enters the full active branch.
+//!
+//! ## Parallel states and stabilization
+//!
+//! `parallel state` contains named `region` blocks and stores one active child
+//! per region. One external input can take compatible transitions in several
+//! regions; their rule ordinals appear together in the step report. A
+//! conflicting deeper transition wins over an ancestor transition.
+//!
+//! `final state` completes its enclosing compound. Use
+//! `on completion: Compound => Target` to react to completion and
+//! `always: Source => Target` for an eventless rule. After handling the input,
+//! `step` repeatedly selects completion rules and then `always` rules until the
+//! machine is stable. Each nonempty transition set consumes one unit of the
+//! step limit; invalid or exhausted limits return `MachineStepError` without
+//! committing partial state, outputs, or history.
+//!
+//! ## History, observation, and wire values
+//!
+//! `Target history` restores the last immediate child configuration of a
+//! compound, falling back to its initial child when nothing has been saved.
+//! History belongs to the machine value, so copies evolve independently.
+//! [std.machine.history](std.machine.history.html) retains complete requested
+//! subtrees and restores them explicitly; the generated `NameScope`,
+//! `NameSubtree`, and observation step API are its low-level surface.
+//!
+//! [std.machine.watch](std.machine.watch.html) gives one owner exclusive step
+//! access and lets bounded subscribers observe committed state revisions. A
+//! lagging subscriber gets a typed lag error instead of silently skipping
+//! revisions. Outputs remain with the caller of `step`.
+//!
+//! `#[wire] machine Name` applies the normal wire schema rules to generated
+//! states, events, outputs, reports, regions, history, scopes, and snapshots.
+//! Use `hew wire check` before publishing a schema change; see
+//! [wire data](language.wire.html).
+//!
+//! `hew machine diagram file.hew` validates a machine and renders Mermaid.
+//! Add `--format graphviz` or `--format json`, and use `--machine Name` when a
+//! file contains several declarations.

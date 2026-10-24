@@ -37,6 +37,20 @@
 //! return a request to retry. Remote mailbox success acknowledges destination
 //! admission, not handler completion.
 //!
+//! ## Isolation and backpressure
+//!
+//! Messages must satisfy `Send`. Ordinary value data is snapshotted at the
+//! actor boundary, while affine owners such as resources and stream halves
+//! move. Actor state is accessed only by that actor's handlers, and each actor
+//! runs one handler at a time.
+//!
+//! An actor without a `mailbox` declaration has unbounded capacity.
+//! `mailbox 1024;` sets a bound and defaults to waiting for space. Declaration
+//! policies include `drop_new`, `drop_old`, `fail`, and
+//! `coalesce(key) fallback ...`. Coalescing applies only to submissions for a
+//! unit-returning handler and replaces older queued work with the same handler
+//! and key. Completion calls are never discarded or superseded.
+//!
 //! A `fails` handler returns `Failed(E)` to a completion caller. When submitted
 //! through a mailbox view, its error faults the actor with its Display text.
 //!
@@ -44,6 +58,59 @@
 //! cleanup. `terminate(actor)` requests cancellation. Inside an
 //! actor, `self` is its handle and `self.field` accesses state. An actor's
 //! handle has that actor's type `T`.
+//!
+//! ## Periodic handlers
+//!
+//! `#[every(duration)]` schedules a zero-argument handler through the actor's
+//! normal mailbox. It starts with the actor and stops when the actor stops, so
+//! periodic work never runs concurrently with another handler on that actor.
+//!
+//! ```hew
+//! actor Heartbeat {
+//!     var ticks: i64 = 0;
+//!     #[every(1s)]
+//!     receive fn tick() { ticks += 1; }
+//!     receive fn count() -> i64 { ticks }
+//! }
+//! ```
+//!
+//! A periodic handler has no parameters and unit success. On WASI its timer is
+//! cooperative; see [target capabilities](language.targets.html).
+//!
+//! ## Lambda actors
+//!
+//! A lambda actor handles one message type. Its call waits for completion like
+//! a named actor call, and its handle type is `actor(Message) -> Reply`.
+//!
+//! ```hew
+//! fn main() {
+//!     let double: actor(i64) -> i64 = actor |value: i64| -> i64 {
+//!         value * 2
+//!     };
+//!     match double(21) {
+//!         .Ok(value) => println(value),
+//!         .Err(error) => println(f"worker failed: {error}"),
+//!     }
+//!     stop(double);
+//!     stopped(double);
+//! }
+//! ```
+//!
+//! `actor move |value| { ... }` requests transfer of captured owners. Ordinary
+//! value captures already become independent actor state. Use a named actor for
+//! several handlers, recursive protocols, trait implementation, or a named
+//! supervisor child.
+//!
+//! ## Interceptors
+//!
+//! One `#[intercept]` method can inspect each receive delivery around the
+//! handler. It consumes its `Call<Self>` exactly once with `proceed()` or
+//! `refuse(reason)` and returns the resulting `Outcome<Self>`. Supervisor
+//! interceptors wrap child interceptors from the outside in. Refusal is an
+//! actor error for completion calls and does not crash the actor.
+//!
+//! Interceptors cover receive handlers, stream starts, and periodic ticks.
+//! Lifecycle hooks, system messages, replies, and stream items bypass them.
 //!
 //! Supervised children and admitted remote actors also have the actor's own type.
 //! A supervised reference follows its stable role through restarts. `is` compares

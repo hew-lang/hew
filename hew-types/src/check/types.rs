@@ -2011,11 +2011,11 @@ pub enum MethodCallRewrite {
         yield_ty: crate::resolved_ty::ResolvedTy,
     },
     /// Builtin `Vec<T>` higher-order pipeline call (`map` / `filter` /
-    /// `reduce`, spec §3.8.6). HIR expands the call site into a counted
+    /// `reduce` / `fold`, spec §3.8.6). HIR expands the call site into a counted
     /// loop over the receiver — bind the receiver and the closure argument
     /// once, then per element call the closure and collect (`map`),
     /// conditionally push the element (`filter`), or fold into a mutable
-    /// accumulator (`reduce`). No runtime symbol exists for these; the
+    /// accumulator (`reduce` / `fold`). No runtime symbol exists for these; the
     /// loop reuses the established Vec substrate (`hew_vec_len`, the
     /// element getter family, and the `hew_vec_push_*` family), so every
     /// element-type ABI rule and drop discipline is inherited rather than
@@ -2025,7 +2025,7 @@ pub enum MethodCallRewrite {
         /// Receiver element type.
         elem_ty: crate::resolved_ty::ResolvedTy,
         /// `Map`: the mapped element type; `Filter`: equals `elem_ty`;
-        /// `Reduce`: the accumulator type.
+        /// `Reduce` / `Fold`: the accumulator type.
         out_ty: crate::resolved_ty::ResolvedTy,
     },
     /// `Vec::from(array_or_vec)` reuses the one canonical array/Vec HIR
@@ -2189,6 +2189,8 @@ pub enum VecHigherOrderOp {
     /// `v.reduce(f, init)` — `Vec<T> → A` via `f: fn(A, T) -> A` seeded
     /// with `init: A`.
     Reduce,
+    /// `v.fold(init, f)` — the same accumulation with seed-first arguments.
+    Fold,
 }
 
 /// Discriminator for width-conversion method lowering.

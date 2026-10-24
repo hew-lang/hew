@@ -822,14 +822,14 @@ impl Checker {
                     args,
                 } => {
                     let callee = match self.method_call_rewrites.get(&key) {
-                        Some(MethodCallRewrite::BuiltinVecHigherOrder { .. }) => {
-                            args.first().and_then(|arg| {
+                        Some(MethodCallRewrite::BuiltinVecHigherOrder { op, .. }) => args
+                            .get(usize::from(*op == super::VecHigherOrderOp::Fold))
+                            .and_then(|arg| {
                                 let (_, span) = arg.expr();
                                 self.expr_types
                                     .get(&SpanKey::in_module(span, self.current_module_idx))
                                     .cloned()
-                            })
-                        }
+                            }),
                         Some(MethodCallRewrite::RecordFnFieldCall { .. }) => {
                             self.record_fn_field_type(receiver, method.0.name.as_str())
                         }

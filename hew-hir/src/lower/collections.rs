@@ -995,8 +995,8 @@ impl LowerCtx {
     ///     __hew_pipe_out
     /// }
     /// ```
-    /// `filter` wraps the push in an `if`; `reduce` folds into a mutable
-    /// accumulator seeded from the second argument and yields it.
+    /// `filter` wraps the push in an `if`; `reduce` and `fold` accumulate
+    /// from a seed supplied second and first, respectively.
     ///
     /// Receiver and closure are bound exactly once (chained receivers
     /// evaluate once; the closure value is reused across iterations as a
@@ -1008,7 +1008,7 @@ impl LowerCtx {
     /// (single-owner environment contract).
     #[expect(
         clippy::too_many_lines,
-        reason = "the three pipeline expansions share the src/fn/loop scaffolding; \
+        reason = "the pipeline expansions share the src/fn/loop scaffolding; \
                   splitting per-op helpers would triple the binding plumbing"
     )]
     pub(super) fn lower_builtin_vec_higher_order(
@@ -1025,6 +1025,7 @@ impl LowerCtx {
             HofOp::Map => ("Vec.map", 1),
             HofOp::Filter => ("Vec.filter", 1),
             HofOp::Reduce => ("Vec.reduce", 2),
+            HofOp::Fold => ("Vec.fold", 2),
         };
         if args.len() != expected_args {
             self.diagnostics.push(HirDiagnostic::new(
@@ -1049,7 +1050,7 @@ impl LowerCtx {
         // `Vec<out_ty>` for both collecting ops.
         let result_ty = match op {
             HofOp::Map | HofOp::Filter => Self::resolved_vec_ty(out_ty.clone()),
-            HofOp::Reduce => out_ty.clone(),
+            HofOp::Reduce | HofOp::Fold => out_ty.clone(),
         };
 
         let block_scope = self.ids.scope();
@@ -1084,35 +1085,55 @@ impl LowerCtx {
             span: span.clone(),
         });
 
-        // Bind the closure argument once. The synthetic binding carries the
-        // lowered argument's own type (a named-fn pair or a closure type).
-        let lowered_fn = self.lower_expr(args[0].expr(), IntentKind::Read);
+        // Lower arguments in source order. `fold` supplies the seed before
+        // the closure; `reduce` supplies the closure before the seed.
+        let (lowered_fn, acc_init) = match op {
+            HofOp::Map | HofOp::Filter => {
+                let function = self.lower_expr(args[0].expr(), IntentKind::Read);
+                let initial = self.make_vec_new_expr(result_ty.clone(), span.clone());
+                (function, initial)
+            }
+            HofOp::Reduce => {
+                let function = self.lower_expr(args[0].expr(), IntentKind::Read);
+                let initial = self.lower_expr(args[1].expr(), IntentKind::Read);
+                (function, initial)
+            }
+            HofOp::Fold => {
+                let initial = self.lower_expr(args[0].expr(), IntentKind::Read);
+                let function = self.lower_expr(args[1].expr(), IntentKind::Read);
+                (function, initial)
+            }
+        };
+        // Each synthetic binding carries the lowered argument's own type.
         let fn_ty = lowered_fn.ty.clone();
         let fn_name = format!("__hew_pipe_fn_{}", self.ids.binding().0);
         let fn_binding = self.bind(fn_name.clone(), fn_ty.clone(), false, span.clone());
         let fn_id = fn_binding.id;
-        statements.push(HirStmt {
+        let fn_stmt = HirStmt {
             node: self.ids.node(),
             kind: HirStmtKind::Let(fn_binding, Some(lowered_fn)),
             span: span.clone(),
-        });
+        };
 
-        // The collected vec (map/filter) or the folded accumulator (reduce).
+        // The collected vec (map/filter) or the folded accumulator (reduce/fold).
         // Every op mutates this binding in the loop body - map and filter push
-        // into it, reduce reassigns it - so it is declared mutable and the
+        // into it, reduce and fold reassign it - so it is declared mutable and the
         // place root the push resolves is a mutable one.
         let acc_name = format!("__hew_pipe_out_{}", self.ids.binding().0);
-        let acc_init = match op {
-            HofOp::Map | HofOp::Filter => self.make_vec_new_expr(result_ty.clone(), span.clone()),
-            HofOp::Reduce => self.lower_expr(args[1].expr(), IntentKind::Read),
-        };
         let acc_binding = self.bind(acc_name.clone(), result_ty.clone(), true, span.clone());
         let acc_id = acc_binding.id;
-        statements.push(HirStmt {
+        let acc_stmt = HirStmt {
             node: self.ids.node(),
             kind: HirStmtKind::Let(acc_binding, Some(acc_init)),
             span: span.clone(),
-        });
+        };
+        if op == HofOp::Fold {
+            statements.push(acc_stmt);
+            statements.push(fn_stmt);
+        } else {
+            statements.push(fn_stmt);
+            statements.push(acc_stmt);
+        }
 
         // for __hew_pipe_i in 0..src.len() { <per-op body> }
         let i_name = format!("__hew_pipe_i_{}", self.ids.binding().0);
@@ -1249,7 +1270,7 @@ impl LowerCtx {
                 };
                 self.make_unit_block(vec![if_stmt], None, ResolvedTy::Unit, span.clone())
             }
-            HofOp::Reduce => {
+            HofOp::Reduce | HofOp::Fold => {
                 let acc_read = self.make_binding_ref(
                     acc_name.clone(),
                     acc_id,

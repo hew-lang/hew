@@ -1259,6 +1259,14 @@ fn collection_callbacks_follow_a_written_parameter_type() {
         "values.map(f)",
         SuspensionEffect::MaySuspend,
     );
+
+    let fold = "fn accumulate(f: fn(i64, i64) -> i64, values: Vec<i64>) -> i64 { values.fold(0, f) } fn main() {}";
+    assert_call_effect(fold, "values.fold(0, f)", SuspensionEffect::Never);
+    assert_call_effect(
+        &fold.replace("f: fn(i64, i64)", "f: fn[suspends](i64, i64)"),
+        "values.fold(0, f)",
+        SuspensionEffect::MaySuspend,
+    );
 }
 
 #[test]

@@ -945,13 +945,16 @@ mod session_completion_tests {
             .find(|(callable, _)| *callable == entry)
             .unwrap();
         *status = hew_sir::SirLoweringStatus::Failed {
-            reason: hew_sir::SirLoweringError::Unavailable("deliberate incomplete lowering".into()),
+            reason: hew_sir::SirLoweringError::Ownership {
+                kind: hew_sir::SirOwnershipError::ConsumeBorrowed,
+                message: "deliberate ownership refusal".into(),
+            },
             span: None,
         };
         assert!(matches!(
             require_complete_semantics(&sir, true),
             Err(SessionError::Lowering { callable: Some(id), error, .. })
-                if id == entry && matches!(error, hew_sir::SirLoweringError::Unavailable(_)) && error.message().contains("deliberate incomplete lowering")
+                if id == entry && matches!(error, hew_sir::SirLoweringError::Ownership { kind: hew_sir::SirOwnershipError::ConsumeBorrowed, .. }) && error.message().contains("deliberate ownership refusal")
         ));
     }
 

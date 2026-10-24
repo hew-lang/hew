@@ -306,6 +306,22 @@ impl LowerCtx {
         {
             self.indexed_place_operations.insert(site, *operations);
         }
+        if matches!(
+            expr.0,
+            Expr::Ident(_) | Expr::FieldAccess { .. } | Expr::GenericApplySuffix { .. }
+        ) && self.actor_delivery_calls.contains_key(&self.mk_key(&span))
+        {
+            if let Some((kind, ty)) = self.lower_intrinsic_function_value(&span) {
+                return HirExpr {
+                    node: self.ids.node(),
+                    site,
+                    ty,
+                    intent,
+                    kind,
+                    span,
+                };
+            }
+        }
         if let Some(operation) = self.actor_delivery_calls.get(&self.mk_key(&span)).cloned() {
             use hew_types::actor_delivery::ActorDeliveryCall;
             let (receiver, args) = match (&operation, &expr.0) {
@@ -1786,6 +1802,25 @@ impl LowerCtx {
                 HirExprKind::Literal(HirLiteral::Bytes(elems.clone())),
                 ResolvedTy::Bytes,
             ),
+            Expr::Range {
+                start: Some(start),
+                end: Some(end),
+                inclusive,
+            } => {
+                let bounded = (
+                    Expr::Binary {
+                        left: start.clone(),
+                        right: end.clone(),
+                        op: if *inclusive {
+                            BinaryOp::RangeInclusive
+                        } else {
+                            BinaryOp::Range
+                        },
+                    },
+                    span,
+                );
+                return self.lower_expr(&bounded, intent);
+            }
             Expr::Range { .. } => {
                 self.unsupported(span.clone(), "expression", "slice-2");
                 (

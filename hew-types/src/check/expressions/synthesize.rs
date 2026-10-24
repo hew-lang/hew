@@ -721,7 +721,14 @@ impl Checker {
                 start,
                 end,
                 inclusive: _,
-            } => self.synthesize_range(start.as_deref(), end.as_deref()),
+            } => {
+                if start.is_none() || end.is_none() {
+                    self.report_error_with_suggestions(TypeErrorKind::InvalidOperation, span,
+                        "an open range requires an indexed receiver; standalone unbounded iteration is unavailable".to_string(),
+                        vec!["use `values[..end]` for slicing, provide both bounds for a range value, or write an explicit `loop`".to_string()]);
+                }
+                self.synthesize_range(start.as_deref(), end.as_deref())
+            }
 
             // Cast expression: `expr as Type`
             Expr::Cast {

@@ -1085,6 +1085,18 @@ fn frontend_completion_forms_match_native() {
     ensure_parity_runner_built();
     for case in [
         ParityCase {
+            test_name: "whole-owner-index",
+            source_rel: "tests/core-acceptance/cases/whole-owner-index.hew",
+        },
+        ParityCase {
+            test_name: "lifecycle-function-values",
+            source_rel: "tests/core-acceptance/cases/lifecycle-function-values.hew",
+        },
+        ParityCase {
+            test_name: "scalar-constant-composition",
+            source_rel: "tests/core-acceptance/cases/scalar-constant-composition.hew",
+        },
+        ParityCase {
             test_name: "intrinsic-function-values",
             source_rel: "tests/core-acceptance/cases/intrinsic-function-values.hew",
         },

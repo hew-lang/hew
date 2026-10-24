@@ -1555,6 +1555,9 @@ fn intrinsic_function_values_preserve_bounds_parameter_modes_and_effects() {
         "type Secret { value: i64; } fn main() { let emit: fn(Secret) -> () = println; }",
         "fn main() { let emit: fn(consume string) -> () = println; }",
         "fn main() { let pause: fn(duration) -> () = sleep; }",
+        "fn main() { let finish: fn(i64) -> () = stop; }",
+        "actor Worker {} fn main() { let wait: fn(Worker) -> () = stopped; }",
+        "actor Worker {} fn main() { let observe: fn[suspends](Worker) -> Result<(), LinkError> = link; }",
     ] {
         let output = check_source(source);
         assert!(

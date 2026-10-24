@@ -1389,6 +1389,46 @@ impl Checker {
     pub(super) fn check_source_call_target(&mut self, span: &Span, target: &CallTarget) {
         use crate::stdlib_authority::Intrinsic;
 
+        let retired = match target {
+            CallTarget::Runtime(crate::RuntimeCallFamily::SupervisorStop) => Some((
+                "supervisor_stop",
+                "use `stop(supervisor)`; call `stopped(supervisor)` when release must be awaited",
+            )),
+            CallTarget::Builtin { endpoint } => match endpoint.as_str() {
+                "close" => Some((
+                    "close",
+                    "use `stop(actor)` for actor shutdown, or `value.close()` for a resource",
+                )),
+                "closed" => Some(("closed", "use `stopped(actor)` to await actor release")),
+                "supervisor_child" => Some((
+                    "supervisor_child",
+                    "access the declared child role, such as `supervisor.worker`",
+                )),
+                _ => None,
+            },
+            _ => None,
+        };
+        if let Some((name, replacement)) = retired {
+            self.report_error_with_suggestions(
+                TypeErrorKind::InvalidOperation,
+                span,
+                format!("`{name}` was replaced by declared actor lifecycle and child operations"),
+                vec![replacement.to_string()],
+            );
+            return;
+        }
+        if matches!(
+            target,
+            CallTarget::Runtime(
+                crate::RuntimeCallFamily::ActorLink | crate::RuntimeCallFamily::ActorMonitor
+            )
+        ) && self.checking_declaration.is_some()
+            && self.checking_declaration == self.entry_function()
+        {
+            self.report_error(TypeErrorKind::InvalidOperation, span,
+                "E_ACTOR_CONTEXT_REQUIRED: actor observation requires an actor context; main cannot receive actor notifications".to_string());
+            return;
+        }
         if let CallTarget::User(declaration) | CallTarget::ImplMethod(declaration) = target {
             self.note_impl_import_use(*declaration);
         }
@@ -2244,13 +2284,9 @@ impl Checker {
                 }
                 let valid = resolved.addresses_local_actor();
                 if valid {
-                    let operation = match func_name.as_str() {
-                        "stop" => crate::actor_delivery::ActorDeliveryCall::Stop,
-                        "terminate" => crate::actor_delivery::ActorDeliveryCall::Terminate,
-                        "stopped" => crate::actor_delivery::ActorDeliveryCall::AwaitStopped,
-                        "restarted" => crate::actor_delivery::ActorDeliveryCall::AwaitRestarted,
-                        _ => unreachable!("lifecycle spelling matched above"),
-                    };
+                    let operation =
+                        crate::actor_delivery::ActorDeliveryCall::lifecycle_builtin(&func_name)
+                            .expect("lifecycle spelling matched above");
                     self.actor_delivery_calls
                         .insert(SpanKey::in_module(span, self.current_module_idx), operation);
                     if matches!(func_name.as_str(), "stopped" | "restarted") {
@@ -2311,52 +2347,14 @@ impl Checker {
                 self.record_method_call_rewrite(span, MethodCallRewrite::VecFrom);
                 return self.make_vec_type(elem, span);
             }
-            "supervisor_child" if args.len() == 2 => {
-                // supervisor_child(sup, index) → the child's actor type
-                let (sup_expr, sup_sp) = args[0].expr();
-                let sup_ty = self.synthesize(sup_expr, sup_sp);
-                let sup_ty_resolved = self.subst.resolve(&sup_ty);
-                let (idx_expr, idx_sp) = args[1].expr();
-                self.check_against(idx_expr, idx_sp, &Ty::I64);
-
-                // Accept local actor handles as supervisor handles.
-                if let Some(Ty::Named {
-                    head: sup_head,
-                    args: sup_args,
-                }) = sup_ty_resolved.as_local_actor_ref()
-                {
-                    let sup_name = sup_head.registry_key();
-                    if let Some(sup_children) = self.supervisor_children.get(sup_name) {
-                        // `supervisor_child` builtin indexes into the static slot space.
-                        let statics = &sup_children.statics;
-                        if let Expr::Literal(hew_parser::ast::Literal::Integer {
-                            value: idx, ..
-                        }) = idx_expr
-                        {
-                            // A negative or oversized index simply names no
-                            // static slot; the non-constant path below then
-                            // supplies a fresh type var.
-                            if let Some(i) =
-                                usize::try_from(*idx).ok().filter(|i| *i < statics.len())
-                            {
-                                let child_type = &statics[i].1;
-                                let parameters = self
-                                    .type_def_at(sup_name)
-                                    .map_or_else(Vec::new, |definition| {
-                                        definition.type_params.clone()
-                                    });
-                                let substitution = parameters
-                                    .into_iter()
-                                    .zip(sup_args.iter().cloned())
-                                    .collect();
-                                return child_type.substitute_type_params_parallel(&substitution);
-                            }
-                        }
-                        // Non-constant index: fresh type var
-                        return Ty::Var(TypeVar::fresh());
-                    }
+            "supervisor_child" if !self.declares_function(&func_name) => {
+                let target = self.call_target_for_signature(&func_name);
+                self.check_source_call_target(span, &target);
+                for argument in args {
+                    let (expr, span) = argument.expr();
+                    self.synthesize(expr, span);
                 }
-                return Ty::Var(TypeVar::fresh());
+                return Ty::Error;
             }
             _ => {}
         }
@@ -2779,18 +2777,8 @@ impl Checker {
     /// Validate the actor operand after signature application has checked its
     /// expression once. Re-synthesizing a constructor repeats affine transfers.
     fn check_actor_call_operand(&mut self, target: CallTarget, args: &[CallArg]) -> CallTarget {
-        use crate::runtime_call::RuntimeCallFamily as F;
-        let family = match &target {
-            CallTarget::Runtime(family) => Some(*family),
-            CallTarget::Builtin { endpoint } => F::from_c_symbol(endpoint),
-            _ => None,
-        };
-        let (slot, callee) = match family {
-            Some(F::ActorLink) => (0, "link"),
-            Some(F::ActorUnlink) => (0, "unlink"),
-            Some(F::ActorMonitor) => (0, "monitor"),
-            Some(F::NodeRegister) => (1, "Node.register"),
-            _ => return target,
+        let Some((slot, callee)) = Self::actor_call_operand(&target) else {
+            return target;
         };
         let Some(arg) = args.get(slot) else {
             return target;
@@ -2801,11 +2789,32 @@ impl Checker {
             return target;
         };
         let resolved = self.subst.resolve(ty).materialize_literal_defaults();
-        if matches!(family, Some(F::ActorLink | F::ActorMonitor)) {
+        if matches!(
+            target,
+            CallTarget::Runtime(
+                crate::RuntimeCallFamily::ActorLink | crate::RuntimeCallFamily::ActorMonitor
+            )
+        ) {
             self.record_submission_suspension(span, true);
         }
         self.require_actor_handle_argument(&resolved, callee, span);
         target
+    }
+
+    pub(super) fn actor_call_operand(target: &CallTarget) -> Option<(usize, &'static str)> {
+        use crate::runtime_call::RuntimeCallFamily as F;
+        let family = match &target {
+            CallTarget::Runtime(family) => Some(*family),
+            CallTarget::Builtin { endpoint } => F::from_c_symbol(endpoint),
+            _ => None,
+        };
+        match family {
+            Some(F::ActorLink) => Some((0, "link")),
+            Some(F::ActorUnlink) => Some((0, "unlink")),
+            Some(F::ActorMonitor) => Some((0, "monitor")),
+            Some(F::NodeRegister) => Some((1, "Node.register")),
+            _ => None,
+        }
     }
 
     /// Require a local actor handle as a builtin's operand.

@@ -1,42 +1,15 @@
-//! Constexpr sub-engine for integer module constants and machine const-generic
-//! arguments (W3.039 Stage 2.5).
+//! Compile-time scalar evaluation and integer machine-argument evaluation.
 //!
-//! Per R268=B (USER OVERRIDE), const-arguments at machine instantiation
-//! sites may be constexpr-evaluable expressions, not just bare integer
-//! literals — `M<FOO * 4>` is legal when `FOO` resolves to a
-//! module-level integer `const`.
-//!
-//! This module is intentionally narrow. The supported expression shapes
-//! are:
-//!
-//! - `Expr::Literal(Literal::Integer { value, .. })` — signed parser integer
-//!   literals.
-//! - `Expr::Unary { op: UnaryOp::Negate, .. }` — target-typed integer
-//!   negation.
-//! - `Expr::Ident(name)` — resolved against the supplied
-//!   [`ConstEnv`] (module-level `const` bindings of integer type).
-//! - `Expr::Binary { op, lhs, rhs }` for the seven arithmetic and
-//!   shift operators `+`, `-`, `*`, `/`, `%`, `<<`, `>>`. Every operation
-//!   is evaluated in the declared integer target's range. Arithmetic overflow,
-//!   division by zero, and an out-of-range final value are distinct errors.
-//!
-//! Out of scope for Phase 0 (these all map to
-//! [`ConstEvalError::NotConstant`]):
-//!
-//! - Floating-point literals or operands of any kind.
-//! - Function calls (`size_of::<T>()`, user functions).
-//! - Casts, method calls, field accesses, struct literals.
-//! - Cross-const-param arithmetic (`M<N + 1>` where `N` is another
-//!   const-param of the same machine) — that requires a substitution
-//!   pass which Phase 0 does not provide.
-//! - Anything not in the explicit allow-list above. The check is
-//!   deliberately exhaustive (no `_` wildcard) so any future `Expr`
-//!   variant will force a planner decision here rather than being
-//!   silently treated as `NotConstant`.
+//! Scalar operators consume checked types and declaration-resolved values.
+//! Integer operations share one target-width range and overflow authority;
+//! ordinary source functions are never executed by this evaluator.
 
 use std::collections::HashMap;
 
 use hew_parser::ast::{BinaryOp, Expr, Literal, Spanned, UnaryOp};
+
+mod scalar;
+pub use scalar::eval_scalar_const_expr;
 
 /// Module-level constexpr environment threaded into the integer evaluators.
 ///
@@ -146,6 +119,16 @@ impl ConstIntegerTarget {
 
     const fn contains(self, value: i128) -> bool {
         value >= self.min && value <= self.max
+    }
+
+    const fn wrap(self, value: i128) -> i128 {
+        let mask = self.max - self.min;
+        let bits = value & mask;
+        if bits > self.max {
+            bits - (mask + 1)
+        } else {
+            bits
+        }
     }
 }
 
@@ -341,6 +324,12 @@ fn eval_binary(
             l.checked_shr(shift)
                 .ok_or(ConstEvalError::ArithmeticOverflow)?
         }
+        BinaryOp::BitAnd => l & r,
+        BinaryOp::BitOr => l | r,
+        BinaryOp::BitXor => l ^ r,
+        BinaryOp::WrappingAdd => target.wrap(l.wrapping_add(r)),
+        BinaryOp::WrappingSub => target.wrap(l.wrapping_sub(r)),
+        BinaryOp::WrappingMul => target.wrap(l.wrapping_mul(r)),
         // All other binary operators (comparison, boolean, bitwise,
         // wrapping arithmetic, ranges) are NotConstant for Phase 0:
         // the constexpr surface is intentionally arithmetic-only.
@@ -352,14 +341,8 @@ fn eval_binary(
         | BinaryOp::GreaterEqual
         | BinaryOp::And
         | BinaryOp::Or
-        | BinaryOp::BitAnd
-        | BinaryOp::BitOr
-        | BinaryOp::BitXor
         | BinaryOp::Range
-        | BinaryOp::RangeInclusive
-        | BinaryOp::WrappingAdd
-        | BinaryOp::WrappingSub
-        | BinaryOp::WrappingMul => return Err(ConstEvalError::NotConstant),
+        | BinaryOp::RangeInclusive => return Err(ConstEvalError::NotConstant),
     };
     if target.contains(value) {
         Ok(value)

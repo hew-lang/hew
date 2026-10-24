@@ -1726,8 +1726,8 @@ fn lower_initial_value_transfer(
                 .service
                 .require_variant_shape(&ty)
                 .map_err(|reason| {
-                    SirLoweringError::from(format!(
-                        "{context}: `{}` has no exact variant transfer contract: {reason}",
+                    reason.with_context(&format!(
+                        "{context}: `{}` has no exact variant transfer contract",
                         ty.user_facing()
                     ))
                 })?;
@@ -1736,8 +1736,8 @@ fn lower_initial_value_transfer(
                 .service
                 .require_aggregate_shape(&ty)
                 .map_err(|reason| {
-                    SirLoweringError::from(format!(
-                        "{context}: `{}` has no aggregate transfer contract: {reason}",
+                    reason.with_context(&format!(
+                        "{context}: `{}` has no aggregate transfer contract",
                         ty.user_facing()
                     ))
                 })?;

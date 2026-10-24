@@ -12,6 +12,46 @@ use crate::{
 use hew_parser::ast::Ident;
 
 impl Checker {
+    /// Check structural actor operands after destination and later-call
+    /// inference have settled a function value's concrete signature.
+    pub(super) fn validate_intrinsic_function_values(
+        &mut self,
+        types: &HashMap<super::SpanKey, Ty>,
+    ) {
+        for (key, target) in &self.direct_call_targets {
+            let Some((_, parameters, _)) = types.get(key).and_then(Ty::callable_signature) else {
+                continue;
+            };
+            let requirement = match target {
+                super::CallTarget::Builtin { endpoint }
+                    if crate::actor_delivery::ActorDeliveryCall::lifecycle_builtin(endpoint)
+                        .is_some() =>
+                {
+                    Some((0, endpoint.as_str(), true))
+                }
+                _ => Self::actor_call_operand(target).map(|(slot, name)| (slot, name, false)),
+            };
+            let Some((slot, name, allows_view)) = requirement else {
+                continue;
+            };
+            let valid = parameters.get(slot).is_some_and(|parameter| {
+                if allows_view {
+                    parameter.ty.addresses_local_actor()
+                } else {
+                    parameter.ty.as_local_actor_ref().is_some()
+                }
+            });
+            if !valid {
+                let mut error = TypeError::new(TypeErrorKind::InvalidOperation, key.start..key.end,
+                    format!("`{name}` as a function value requires a concrete actor operand; select an actor parameter type or wrap a direct call in a closure"));
+                if let Some(module) = self.expr_type_source_modules.get(key).cloned().flatten() {
+                    error = error.with_source_module(module);
+                }
+                self.errors.push(error);
+            }
+        }
+    }
+
     /// Instantiate a declaration used as a value through the same signature,
     /// bound and identity authorities as a direct call. Inference can settle
     /// from the destination type or a later invocation of the local binding.
@@ -36,10 +76,27 @@ impl Checker {
         // as invoking it. An unsafe block may wrap that checked operation in
         // an ordinary callable, as an authored closure can.
         self.require_unsafe(signature_key, span);
-        let sig = self
+        let target = self.call_target_for_signature(signature_key);
+        let lifecycle = match &target {
+            super::CallTarget::Builtin { endpoint } => {
+                crate::actor_delivery::ActorDeliveryCall::lifecycle_builtin(endpoint)
+            }
+            _ => None,
+        };
+        let mut sig = self
             .fn_sig(signature_key)
             .cloned()
             .unwrap_or_else(|| panic!("function value `{signature_key}` has a signature"));
+        // Structural actor builtins prove their operand after contextual
+        // inference. Each value needs its own inference variable, as each
+        // direct lifecycle or observation call already has.
+        if lifecycle.is_some() || Self::actor_call_operand(&target).is_some() {
+            for parameter in &mut sig.params {
+                if matches!(parameter.ty, Ty::Var(_)) {
+                    parameter.ty = Ty::Var(crate::ty::TypeVar::fresh());
+                }
+            }
+        }
         if sig.consumes_receiver {
             self.report_error_with_suggestions(
                 TypeErrorKind::InvalidOperation,
@@ -66,7 +123,12 @@ impl Checker {
             span,
         );
         self.record_concrete_call_type_args(span, &arguments);
-        let target = self.call_target_for_signature(signature_key);
+        if let Some(operation) = &lifecycle {
+            self.actor_delivery_calls.insert(
+                super::SpanKey::in_module(span, self.current_module_idx),
+                operation.clone(),
+            );
+        }
         self.record_direct_call_target(span, target.clone());
         // A declaration with a checked body keeps its identity so calls through
         // the value inherit the body's effect; every other target has a static
@@ -82,6 +144,14 @@ impl Checker {
             target => Ty::Function {
                 capabilities: CallableCapabilities {
                     suspends: self.effect_graph.builtin_suspensions.contains(&target)
+                        || lifecycle.is_some_and(|operation| operation.lifecycle_suspends())
+                        || matches!(
+                            target,
+                            super::CallTarget::Runtime(
+                                crate::RuntimeCallFamily::ActorLink
+                                    | crate::RuntimeCallFamily::ActorMonitor
+                            )
+                        )
                         || matches!(&target, super::CallTarget::Runtime(family)
                             if family.is_async_suspending().is_some()),
                     ..CallableCapabilities::FUNCTION_ITEM

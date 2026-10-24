@@ -1,0 +1,25 @@
+actor Worker { receive fn ping() -> i64 { 1 } }
+actor Other { receive fn ping() -> i64 { 2 } }
+
+fn finish(request: fn(Worker) -> (), wait: fn[suspends](Worker) -> (), worker: Worker) {
+    request(worker);
+    wait(worker);
+}
+
+fn accept_restart(wait: fn[suspends](Worker) -> ()) { }
+
+fn main() {
+    finish(stop, stopped, spawn Worker);
+    println("stopped");
+    let kill: fn(Worker) -> () = terminate;
+    let wait = stopped;
+    let worker = spawn Worker;
+    kill(worker); wait(worker);
+    println("terminated");
+    let stop_other: fn(Other) -> () = stop;
+    let wait_other: fn[suspends](Other) -> () = stopped;
+    let other = spawn Other;
+    stop_other(other); wait_other(other);
+    println("other");
+    accept_restart(restarted);
+}

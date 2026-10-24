@@ -1,4 +1,37 @@
 [[case]]
+id = "whole-owner-index"
+intent = "Projected affine collection replacement opens and restores its resource owner, releasing the replaced element and final actor state exactly once."
+source = "cases/whole-owner-index.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 30
+
+[case.expected]
+stdout = "1\n2\n2\n"
+exit = 0
+
+[[case]]
+id = "lifecycle-function-values"
+intent = "Actor lifecycle callbacks retain concrete actor operands, independent inference and wait suspension effects through ordinary callable normalization."
+source = "cases/lifecycle-function-values.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.expected]
+stdout = "stopped\nterminated\nother\n"
+exit = 0
+
+[[case]]
+id = "scalar-constant-composition"
+intent = "Scalar constants preserve integer width and wrapping, floating-point rounding, boolean and duration operators, forward references and owned aggregate fields."
+source = "cases/scalar-constant-composition.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.expected]
+stdout = "131\n124\n1\n1\n6.5\n0\ntrue\ntrue\n42\nconstant\n"
+exit = 0
+
+[[case]]
 id = "intrinsic-function-values"
 intent = "Checked builtin signatures support passing, storing and invoking callbacks through ordinary callable lowering, including owned Display inputs and suspension."
 source = "cases/intrinsic-function-values.hew"
@@ -50,7 +83,7 @@ suites = ["acceptance", "safety"]
 timeout_seconds = 30
 
 [case.expected]
-stdout = "equal kept\nother fallback 2 4\nlarge selected 8\nempty\n"
+stdout = "equal kept\nother fallback 2 4\nlarge selected 8\nempty\nunpacked 7\nempty unpack\n"
 exit = 0
 
 [[case]]

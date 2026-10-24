@@ -219,7 +219,6 @@ pub(crate) fn render_lowering_error(
     let (channel, code) = match error {
         SirLoweringError::Internal(_) => (DiagChannel::Internal, "E_SIR_ICE"),
         SirLoweringError::Ownership { kind, .. } => (DiagChannel::User, kind.code()),
-        SirLoweringError::Unavailable(_) => (DiagChannel::Limitation, "E_SIR_UNSUPPORTED"),
         SirLoweringError::Limit(_) => (DiagChannel::Limitation, "E_LIMIT_SPECIALIZATION"),
     };
     let message = error.message();

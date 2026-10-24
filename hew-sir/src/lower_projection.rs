@@ -212,17 +212,22 @@ impl Builder<'_, '_> {
         provenance: &Provenance,
         why: &str,
     ) -> Result<ValueId, SirLoweringError> {
-        if self
+        let facts = self
             .service
             .checked_facts
             .rows()
             .get(&hew_types::TypeInstanceKey(place.leaf_ty.clone()))
-            .is_none_or(|facts| facts.clone == hew_types::CloneKind::None)
-        {
+            .ok_or_else(|| {
+                SirLoweringError::Internal(format!(
+                    "{why} has no checked copy classification for `{}`",
+                    place.leaf_ty.user_facing()
+                ))
+            })?;
+        if facts.clone == hew_types::CloneKind::None {
             let leaf = place.leaf_ty.user_facing();
-            return Err(SirLoweringError::Unavailable(format!(
-                "mutating a `{leaf}` held by an actor state field, a capture or a resource is \
-                 not implemented for {why}: the mutation works on a copy, and `{leaf}` has none"
+            return Err(SirLoweringError::Internal(format!(
+                "{why} crossed the checked copy boundary for `{leaf}`: indexed writeback must \
+                 reject affine element loans, and staged machine receivers must have an independent value copy"
             )));
         }
         let mut loans = vec![self.emit_typed(

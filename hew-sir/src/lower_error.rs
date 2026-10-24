@@ -30,8 +30,6 @@ pub enum SirLoweringError {
         kind: SirOwnershipError,
         message: String,
     },
-    /// An admitted operation still needs an implementation.
-    Unavailable(String),
     /// A finite compiler resource budget was exhausted.
     Limit(String),
 }
@@ -43,7 +41,6 @@ impl SirLoweringError {
         match self {
             Self::Internal(_) => Self::Internal(message),
             Self::Ownership { kind, .. } => Self::Ownership { kind, message },
-            Self::Unavailable(_) => Self::Unavailable(message),
             Self::Limit(_) => Self::Limit(message),
         }
     }
@@ -51,10 +48,9 @@ impl SirLoweringError {
     #[must_use]
     pub fn message(&self) -> &str {
         match self {
-            Self::Internal(message)
-            | Self::Unavailable(message)
-            | Self::Limit(message)
-            | Self::Ownership { message, .. } => message,
+            Self::Internal(message) | Self::Limit(message) | Self::Ownership { message, .. } => {
+                message
+            }
         }
     }
 }

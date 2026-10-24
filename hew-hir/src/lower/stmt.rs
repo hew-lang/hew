@@ -958,16 +958,12 @@ impl LowerCtx {
         // Every or-pattern leaf binds the same names (the checker requires
         // it for the shared body to type-check), so any arm's expanded
         // binding list names the escaping shape; sort by name to match
-        // `pack_arm_bindings`. The arm's aggregate-destructure prelude (if
-        // any) rode along as the leading statements of its wrapped body.
-        let arm0_prelude: &[HirStmt] = match &hir_arms[0].body.kind {
-            HirExprKind::Block(block) => &block.statements,
-            _ => &[],
-        };
+        // `pack_arm_bindings`. The arm owns aggregate projections separately
+        // from its body so guards and escaping bindings consume the same facts.
         let mut escapees: Vec<(String, ResolvedTy, Span)> = expand_arm_bindings(
             &hir_arms[0].bindings,
             &hir_arms[0].payload_variant_predicates,
-            arm0_prelude,
+            &hir_arms[0].pattern_bindings,
         )
         .into_iter()
         .map(|(name, _, ty, span)| (name, ty, span))

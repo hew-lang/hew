@@ -1773,6 +1773,11 @@ impl Checker {
         } else if let Some((enum_name, variant_fields, enum_type_params)) =
             self.lookup_struct_variant_init(name)
         {
+            if let Some(base) = base {
+                self.report_error_with_suggestions(TypeErrorKind::InvalidOperation, &base.1,
+                    "enum variant constructors do not support record update syntax".to_string(),
+                    vec!["match the enum to name its payload, then construct the required variant with explicit fields".to_string()]);
+            }
             // Infer generic type args from field values, mirroring the plain-struct path.
             let mut type_arg_map: HashMap<crate::ParamHead, Ty> = HashMap::new();
             // If the caller supplied explicit type args (e.g. `Keeper::Holding<int> { … }`),

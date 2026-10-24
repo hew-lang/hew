@@ -106,6 +106,25 @@ pub enum ActorDeliveryCall {
     },
 }
 
+impl ActorDeliveryCall {
+    /// Select source lifecycle builtins once, in the checker.
+    #[must_use]
+    pub fn lifecycle_builtin(name: &str) -> Option<Self> {
+        Some(match name {
+            "stop" => Self::Stop,
+            "terminate" => Self::Terminate,
+            "stopped" => Self::AwaitStopped,
+            "restarted" => Self::AwaitRestarted,
+            _ => return None,
+        })
+    }
+
+    #[must_use]
+    pub const fn lifecycle_suspends(&self) -> bool {
+        matches!(self, Self::AwaitStopped | Self::AwaitRestarted)
+    }
+}
+
 /// Operations on the compiler-owned, linear interceptor protocol.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum InterceptorOperation {

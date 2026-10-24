@@ -1249,42 +1249,16 @@ fn top_level_negative_float_const_folds_literal() {
 }
 
 #[test]
-fn top_level_const_bitwise_initializer_fails_closed() {
-    // Bitwise/wrapping ops are deliberately rejected by the shared
-    // `const_eval` engine (NotConstant). The HIR fold must surface a
-    // fail-closed `NotYetImplemented` diagnostic rather than admitting a
-    // folded value — this locks in the scope-narrowing after consolidating
-    // onto the sanctioned evaluator (A620).
-    let output = lower("const Z: i64 = 1 & 2; fn main() -> i64 { return Z; }");
-    let is_unsupported = output.diagnostics.iter().any(|d| match &d.kind {
-        HirDiagnosticKind::NotYetImplemented {
-            construct,
-            owning_pass,
-        } => construct.contains("unsupported const initializer") && owning_pass == "const-fold",
-        _ => false,
-    });
-    assert!(
-        is_unsupported,
-        "bitwise const initializer must emit a fail-closed NotYetImplemented, got: {:?}",
-        output.diagnostics
-    );
-}
-
-#[test]
-fn top_level_float_const_non_literal_initializer_fails_closed() {
-    let output = lower("const Z: f64 = 1.0 + 2.0; fn main() -> f64 { return Z; }");
-    let is_unsupported = output.diagnostics.iter().any(|d| match &d.kind {
-        HirDiagnosticKind::NotYetImplemented {
-            construct,
-            owning_pass,
-        } => construct.contains("unsupported const initializer") && owning_pass == "const-fold",
-        _ => false,
-    });
-    assert!(
-        is_unsupported,
-        "non-literal float const initializer must emit a fail-closed NotYetImplemented, got: {:?}",
-        output.diagnostics
-    );
+fn top_level_scalar_constant_operators_fold_to_typed_values() {
+    for source in [
+        "const Z: i64 = 1 | 2; fn main() { println(Z); }",
+        "const Z: f64 = 1.0 + 2.0; fn main() { println(Z); }",
+        "const Z: u8 = 255 &+ 2; fn main() { println(Z); }",
+    ] {
+        let output = lower(source);
+        assert!(output.diagnostics.is_empty(), "{:?}", output.diagnostics);
+        assert!(verify_hir(&output.module).is_empty());
+    }
 }
 
 #[test]

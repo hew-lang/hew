@@ -42,7 +42,73 @@ impl LowerCtx {
             ));
             params.push(binding);
         }
-        let body = match &target {
+        let body = self.lower_intrinsic_adapter_body(target, args, &ty, &ret_ty, span);
+        self.pop_scope();
+        let mut closure_ty = ty;
+        let mut callable = &mut closure_ty;
+        while let ResolvedTy::GenericCallable {
+            callable: inner, ..
+        } = callable
+        {
+            callable = inner;
+        }
+        if let ResolvedTy::Function {
+            capabilities,
+            params,
+            ret,
+        } = callable
+        {
+            *callable = ResolvedTy::Closure {
+                capabilities: *capabilities,
+                params: params.clone(),
+                ret: ret.clone(),
+                captures: Vec::new(),
+            };
+        }
+        Some((
+            HirExprKind::Closure {
+                params,
+                ret_ty,
+                body: Box::new(body),
+                captures: Vec::new(),
+                escape_kind: hew_types::ClosureEscapeKind::Escapes,
+            },
+            closure_ty,
+        ))
+    }
+
+    fn lower_intrinsic_adapter_body(
+        &mut self,
+        target: CallTarget,
+        args: Vec<HirExpr>,
+        ty: &ResolvedTy,
+        ret_ty: &ResolvedTy,
+        span: &Span,
+    ) -> HirExpr {
+        if let Some(operation) = self.actor_delivery_calls.get(&self.mk_key(span)).cloned() {
+            let Ok([receiver]) = <Vec<HirExpr> as TryInto<[HirExpr; 1]>>::try_into(args) else {
+                self.diagnostics.push(HirDiagnostic::new(
+                    HirDiagnosticKind::CheckerBoundaryViolation {
+                        name: "actor lifecycle function value".to_string(),
+                        reason: "checked signature must take one actor operand".to_string(),
+                    },
+                    span.clone(),
+                    "lifecycle adapter requires its checked actor parameter",
+                ));
+                return self.unsupported_expr(span.clone(), "invalid lifecycle signature");
+            };
+            return self.make_expr(
+                HirExprKind::ActorDelivery {
+                    receiver: Box::new(receiver),
+                    args: Vec::new(),
+                    operation,
+                },
+                ret_ty.clone(),
+                IntentKind::Read,
+                span.clone(),
+            );
+        }
+        match &target {
             CallTarget::Builtin { endpoint } if stdlib_catalog::is_overloaded_builtin(endpoint) => {
                 let (kind, result) = self.lower_builtin_overload(endpoint, endpoint, args, span);
                 self.make_expr(kind, result, IntentKind::Read, span.clone())
@@ -50,27 +116,19 @@ impl LowerCtx {
             CallTarget::Builtin { endpoint }
                 if endpoint == hew_types::stdlib_catalog_identity::ASSERT =>
             {
-                match <Vec<HirExpr> as TryInto<[HirExpr; 1]>>::try_into(args) {
-                    Ok([condition]) => {
-                        self.assertion_guard(condition, "condition", None, None, span)
-                    }
-                    Err(_) => {
-                        self.diagnostics.push(HirDiagnostic::new(
-                            HirDiagnosticKind::CheckerBoundaryViolation {
-                                name: "assert function value".to_string(),
-                                reason: "checked signature must take one condition".to_string(),
-                            },
-                            span.clone(),
-                            "assert adapter requires its checked condition parameter",
-                        ));
-                        self.make_expr(
-                            HirExprKind::Unsupported("invalid assert signature".to_string()),
-                            ResolvedTy::Unit,
-                            IntentKind::Read,
-                            span.clone(),
-                        )
-                    }
-                }
+                let Ok([condition]) = <Vec<HirExpr> as TryInto<[HirExpr; 1]>>::try_into(args)
+                else {
+                    self.diagnostics.push(HirDiagnostic::new(
+                        HirDiagnosticKind::CheckerBoundaryViolation {
+                            name: "assert function value".to_string(),
+                            reason: "checked signature must take one condition".to_string(),
+                        },
+                        span.clone(),
+                        "assert adapter requires its checked condition parameter",
+                    ));
+                    return self.unsupported_expr(span.clone(), "invalid assert signature");
+                };
+                self.assertion_guard(condition, "condition", None, None, span)
             }
             _ => {
                 let (name, resolved) = match &target {
@@ -115,39 +173,7 @@ impl LowerCtx {
                     span.clone(),
                 )
             }
-        };
-        self.pop_scope();
-        let mut closure_ty = ty;
-        let mut callable = &mut closure_ty;
-        while let ResolvedTy::GenericCallable {
-            callable: inner, ..
-        } = callable
-        {
-            callable = inner;
         }
-        if let ResolvedTy::Function {
-            capabilities,
-            params,
-            ret,
-        } = callable
-        {
-            *callable = ResolvedTy::Closure {
-                capabilities: *capabilities,
-                params: params.clone(),
-                ret: ret.clone(),
-                captures: Vec::new(),
-            };
-        }
-        Some((
-            HirExprKind::Closure {
-                params,
-                ret_ty,
-                body: Box::new(body),
-                captures: Vec::new(),
-                escape_kind: hew_types::ClosureEscapeKind::Escapes,
-            },
-            closure_ty,
-        ))
     }
 
     /// Preserve the selected record field as the indirect-call callee.

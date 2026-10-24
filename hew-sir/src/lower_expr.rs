@@ -834,15 +834,15 @@ impl Builder<'_, '_> {
             HirExprKind::BindingRef {
                 resolved: ResolvedRef::Builtin(_),
                 ..
-            } => Err(SirLoweringError::Unavailable(
-                "a runtime builtin used as a function value requires a callable adapter".into(),
+            } => Err(SirLoweringError::Internal(
+                "a runtime builtin function value crossed HIR without its checked callable adapter".into(),
             )),
             HirExprKind::BindingRef {
                 resolved: ResolvedRef::Unresolved,
                 ..
             } => Err("unresolved binding reference crossed checked HIR".into()),
-            HirExprKind::Index { .. } => Err(SirLoweringError::Unavailable(
-                "indexed receiver has no executable collection contract".into(),
+            HirExprKind::Index { .. } => Err(SirLoweringError::Internal(
+                "indexed receiver crossed HIR without an executable collection or selected Index method contract".into(),
             )),
             HirExprKind::ResolvedImplCall { .. } => {
                 Err("collection normalization left a non-clone resolved impl call".into())

@@ -1,0 +1,25 @@
+type Settings { count: i64; name: string; }
+
+const MASK: u8 = (1 << 7) | 3;
+const INVERTED: u8 = ~MASK;
+const WRAPPED: u8 = 255 &+ 2;
+const WIDE: u64 = 18446744073709551615 &* 18446744073709551615;
+const FLOAT: f64 = 1.5 + 2.5 * 2.0;
+const BASE: f32 = 16777216.0;
+const ONE: f32 = 1.0;
+const ROUNDED: f32 = (BASE + ONE) - BASE;
+const BOOLEAN_BITS: bool = (true & false) | (true ^ false);
+const BYTE_ORDER: bool = b"ab" < b"ac";
+const READY: bool = (WRAPPED == 1) && !(FLOAT < 6.0) && BOOLEAN_BITS && BYTE_ORDER;
+const NAME: string = "con" + "stant";
+const INTERVAL: duration = 5ms + 2ms * 3;
+const NEXT: i64 = LATER + 1;
+const LATER: i64 = 41;
+const SETTINGS: Settings = Settings { count: NEXT, name: NAME };
+
+fn main() {
+    println(MASK); println(INVERTED); println(WRAPPED); println(WIDE);
+    println(FLOAT); println(ROUNDED); println(READY);
+    println(INTERVAL == 11ms);
+    println(SETTINGS.count); println(SETTINGS.name);
+}

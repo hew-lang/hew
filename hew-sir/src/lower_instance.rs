@@ -115,8 +115,8 @@ impl<'a> InstanceService<'a> {
                             .into());
                     }
                     let id = self.admit_monomorphic(*method).map_err(|reason| {
-                        SirLoweringError::from(format!(
-                            "selected capability `{}` has no admitted HIR callable: {reason}",
+                        reason.with_context(&format!(
+                            "selected capability `{}` has no admitted HIR callable",
                             self.module.defs.path(*method)
                         ))
                     })?;
@@ -786,8 +786,8 @@ impl<'a> InstanceService<'a> {
         let id = match instance {
             hew_types::EntryCallableInstance::Declared => {
                 let id = self.admit_monomorphic(declaration).map_err(|reason| {
-                    SirLoweringError::from(format!(
-                        "entry Display target `{}` has no SIR callable: {reason}",
+                    reason.with_context(&format!(
+                        "entry Display target `{}` has no SIR callable",
                         self.module.defs.path(declaration)
                     ))
                 })?;
@@ -1334,8 +1334,8 @@ impl<'a> InstanceService<'a> {
             });
         }
         let id = self.admit_monomorphic(declaration).map_err(|reason| {
-            SirLoweringError::from(format!(
-                "direct callee `{}` has no scalar default-call SIR callable: {reason}",
+            reason.with_context(&format!(
+                "direct callee `{}` has no scalar default-call SIR callable",
                 self.module.defs.path(declaration)
             ))
         })?;
@@ -1393,8 +1393,8 @@ impl<'a> InstanceService<'a> {
         })?;
         if !self.table.templates.contains_key(&entry.method) {
             let id = self.admit_monomorphic(entry.method).map_err(|reason| {
-                SirLoweringError::from(format!(
-                    "static trait callee `{}` has no scalar default-call SIR callable: {reason}",
+                reason.with_context(&format!(
+                    "static trait callee `{}` has no scalar default-call SIR callable",
                     self.module.defs.path(entry.method)
                 ))
             })?;
@@ -1452,8 +1452,8 @@ impl<'a> InstanceService<'a> {
                 &self.module.structural_witnesses,
             )
             .map_err(|reason| {
-                SirLoweringError::from(format!(
-                    "static trait call to `{}` at SIR site {}: {reason}",
+                SirLoweringError::from(reason).with_context(&format!(
+                    "static trait call to `{}` at SIR site {}",
                     self.module.defs.path(entry.method),
                     site.0,
                 ))

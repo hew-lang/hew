@@ -9,6 +9,12 @@ fn completed_source_forms_execute_at_both_optimization_levels() {
     support::require_codegen();
     let dir = support::tempdir();
     for (name, expected) in [
+        ("whole-owner-index", "1\n2\n2\n"),
+        ("lifecycle-function-values", "stopped\nterminated\nother\n"),
+        (
+            "scalar-constant-composition",
+            "131\n124\n1\n1\n6.5\n0\ntrue\ntrue\n42\nconstant\n",
+        ),
         ("associated-record-constructor", "ready 42\n"),
         ("execution-context-readers", "true\n"),
         (
@@ -25,7 +31,7 @@ fn completed_source_forms_execute_at_both_optimization_levels() {
         ),
         (
             "guarded-aggregate-match",
-            "equal kept\nother fallback 2 4\nlarge selected 8\nempty\n",
+            "equal kept\nother fallback 2 4\nlarge selected 8\nempty\nunpacked 7\nempty unpack\n",
         ),
         (
             "range-adapter-composition",
@@ -134,5 +140,32 @@ fn checked_extern_function_values_execute_through_ordinary_callables() {
         );
         assert!(output.status.success(), "{}", describe_output(&output));
         assert_eq!(String::from_utf8_lossy(&output.stdout), "7\n");
+    }
+}
+
+#[test]
+fn unavailable_constant_and_structural_forms_fail_before_artifact_emission() {
+    let dir = support::tempdir();
+    for (name, source, detail) in [
+        ("open-range", "fn main() { let values = ..4; }", "an open range requires an indexed receiver"),
+        ("enum-update", "enum Choice { Data { value: i64; } Empty; } fn main() { let base: Choice = .Data { value: 1 }; let value: Choice = .Data { value: 2, ..base }; }", "enum variant constructors do not support record update syntax"),
+        ("runtime-constant", "fn number() -> i64 { 3 } const VALUE: i64 = number(); fn main() {}", "constant initializer contains an ordinary function call"),
+        ("legacy-supervisor", "fn main() { supervisor_stop(0); }", "supervisor_stop` was replaced"),
+        ("legacy-child", "fn main() { let get: fn(i64, i64) -> i64 = supervisor_child; }", "supervisor_child` was replaced"),
+        ("legacy-close", "fn main() { let release: fn(i64) -> () = close; }", "close` was replaced"),
+        ("affine-index-writeback", "#[resource] type Token { id: i64; } impl Token { fn close(consume self) {} } #[resource] type Bag { rows: Vec<Vec<Token>>; } impl Bag { fn close(consume self) {} } fn replace(var bag: Bag) { bag.rows[0][0] = Token { id: 2 }; } fn main() {}", "cannot update through a borrowed affine collection element"),
+    ] {
+        let input = dir.path().join(format!("{name}.hew"));
+        std::fs::write(&input, source).expect("write source boundary fixture");
+        let artifact = hew_testutil::compiled_binary_path(dir.path(), name);
+        let mut build = Command::new(hew_binary());
+        build.arg("build").arg(input).arg("-o").arg(&artifact).args(["--format", "json"]);
+        let output = run_bounded_command(build, format!("reject {name}"));
+        assert!(!output.status.success(), "{}", describe_output(&output));
+        assert!(!artifact.exists(), "rejected source emitted an artifact: {name}");
+        let diagnostics = String::from_utf8_lossy(&output.stdout);
+        assert!(diagnostics.contains(detail), "{diagnostics}");
+        let structured: Vec<serde_json::Value> = serde_json::from_slice(&output.stdout).expect("valid JSON diagnostics");
+        assert!(structured.iter().all(|diagnostic| diagnostic["channel"] == "user"), "{diagnostics}");
     }
 }

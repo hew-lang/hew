@@ -3859,6 +3859,7 @@ impl Checker {
                 .collect();
         self.builtin_fn_sigs.clone_from(&resolved_builtin_fn_sigs);
 
+        self.validate_intrinsic_function_values(&resolved_expr_types);
         self.validate_checker_output_contract(
             &mut resolved_expr_types,
             &mut resolved_type_defs,

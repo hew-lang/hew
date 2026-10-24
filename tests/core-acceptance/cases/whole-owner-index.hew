@@ -1,0 +1,21 @@
+#[resource]
+type Token { id: i64; }
+impl Token { fn close(consume self) { println(self.id); } }
+
+#[resource]
+type Bag { items: Vec<Token>; }
+impl Bag { fn close(consume self) {} }
+
+actor Holder {
+    var bag: Bag = Bag { items: [Token { id: 1 }] };
+    receive fn replace() -> i64 {
+        bag.items[0] = Token { id: 2 };
+        bag.items[0].id
+    }
+}
+
+fn main() {
+    let holder = spawn Holder;
+    println(holder.replace().expect("replace failed"));
+    stop(holder); stopped(holder);
+}

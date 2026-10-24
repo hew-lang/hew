@@ -1140,7 +1140,20 @@ impl Checker {
                     acquisition: *acquisition,
                 },
             );
-            if !proven(*required) {
+            // An uninstantiated generic declaration has no callback value to
+            // inspect yet. Keep its transfer fact unproved; checking a caller
+            // supplies the actual origins and must discharge the requirement.
+            let deferred = *context == "fork"
+                && matches!(ty.callable_body(), Ty::Function { .. })
+                && !candidates.may_be_unknown
+                && matches!(candidates.known.as_slice(), [super::CallableCandidate::Formal(formal)]
+                if !flows.values().flatten().any(|flow| flow.formal == *formal)
+                    && self.callable_formals.iter().any(|(owner, formals)| {
+                        formals.contains(formal)
+                            && matches!(owner, EffectBody::Declaration(declaration)
+                                if self.fn_sigs.get(declaration).is_some_and(|signature| !signature.type_params.is_empty()))
+                    }));
+            if !proven(*required) && !deferred {
                 let mut error = crate::error::TypeError::new(
                     crate::error::TypeErrorKind::InvalidSend,
                     key.start..key.end,

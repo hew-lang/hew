@@ -62,11 +62,17 @@ impl LowerCtx {
         };
         let mut captures = Vec::with_capacity(facts.len());
         for fact in facts {
-            let binding = self.lookup_checked(fact.binding_id).and_then(|(id, ty)| {
-                outer_bindings
-                    .get(&id)
-                    .map(|(_, _, _, mutable)| (id, ty, *mutable))
-            });
+            let binding = self
+                .lookup_checked(fact.binding_id)
+                .or_else(|| {
+                    let (owner, index) = self.checked_actor_fields.get(&fact.binding_id)?;
+                    self.lookup_checked_field(*owner, *index)
+                })
+                .and_then(|(id, ty)| {
+                    outer_bindings
+                        .get(&id)
+                        .map(|(_, _, _, mutable)| (id, ty, *mutable))
+                });
             if let Some((binding, ty, mutable)) = binding {
                 captures.push(HirGenCapture {
                     binding,

@@ -514,20 +514,14 @@ impl Checker {
     /// remedy is `consume`, or - for a callable - the cloneable `fn[clone]`
     /// spelling, both of which already lower.
     ///
-    /// An unresolved generic type does not prove absence of a copy operation,
-    /// so `parameter_clone_kind` answers `None` and this rule stands aside.
-    /// A generic generator instantiated with a non-copyable argument still
-    /// reaches the SIR verifier; that instance-level refusal is #3377's
-    /// remaining half and needs the `T: Clone` decision (spec §3.8.1).
+    /// Generic captures need a declaration-level `Clone` promise so every
+    /// instantiation can acquire the frame's owner (spec §3.8.1).
     pub(super) fn reject_borrowed_generator_capture(
         &mut self,
         root: impl crate::env::LexicalName,
         span: &Span,
     ) {
         let root = root.lexical_key();
-        if self.is_current_closure_capture(root) {
-            return;
-        }
         let Some(binding) = self.env.lookup_ref(root) else {
             return;
         };
@@ -541,9 +535,8 @@ impl Checker {
         }
         // A type parameter has no clone kind until it is substituted. One
         // carrying `Clone` promises every instantiation a copy the frame can
-        // take; one without it promises nothing, and the instance reaches the
-        // SIR verifier instead. Spec §3.8.1 puts that on the declaration, so
-        // refuse here and name the bound alongside `consume`.
+        // take; one without it promises nothing. Spec §3.8.1 puts that on the
+        // declaration, so refuse here and name the bound alongside `consume`.
         if let Some(param) = Self::bare_param(&ty) {
             if !self.param_carries_marker(param.id, MarkerTrait::Clone) {
                 let param = param.spelling;

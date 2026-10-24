@@ -770,6 +770,7 @@ struct LowerCtx {
     checked_scopes: Vec<HashMap<TypeBindingId, ScopeBinding>>,
     /// Stable actor field identities mapped to this handler's physical state seats.
     checked_field_scopes: Vec<HashMap<(hew_types::NominalId, u32), ScopeBinding>>,
+    checked_actor_fields: HashMap<TypeBindingId, (hew_types::NominalId, u32)>,
     /// Exact source-site resolutions; synthetic expressions have no row.
     resolutions: HashMap<SpanKey, Resolution>,
     current_actor_nominal: Option<hew_types::NominalId>,

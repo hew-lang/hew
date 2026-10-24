@@ -19,6 +19,7 @@ impl LowerCtx {
             binding_scopes: Vec::new(),
             checked_scopes: Vec::new(),
             checked_field_scopes: Vec::new(),
+            checked_actor_fields: tc_output.suspension_effects.actor_fields.clone(),
             resolutions: tc_output.resolutions.clone(),
             current_actor_nominal: None,
             fn_registry: HashMap::new(),

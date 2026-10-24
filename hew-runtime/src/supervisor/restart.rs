@@ -465,23 +465,19 @@ pub(crate) unsafe fn restart_child_supervisor_after_failure(
     let delayed = {
         // SAFETY: dispatch retains the parent; policy evaluation is scalar only.
         let mut roster = unsafe { &(*sup).roster }.lock_or_recover();
-        let Some(spec) = roster
+        roster
             .child_supervisor_specs
             .get_mut(failed_index)
             .and_then(Option::as_mut)
-        else {
-            return FaultRuling::Unrecovered;
-        };
-        if spec.backoff.selected && spec.restart_policy != RESTART_TEMPORARY {
-            // SAFETY: restart window is immutable throughout the parent lifetime.
-            let window = u64::try_from(unsafe { (*sup).window_secs })
-                .unwrap_or(0)
-                .saturating_mul(1_000_000_000);
-            spec.backoff.advance(monotonic_time_ns(), window);
-            Some((spec.identity, spec.backoff.delay_ns))
-        } else {
-            None
-        }
+            .filter(|spec| spec.backoff.selected && spec.restart_policy != RESTART_TEMPORARY)
+            .map(|spec| {
+                // SAFETY: restart window is immutable throughout the parent lifetime.
+                let window = u64::try_from(unsafe { (*sup).window_secs })
+                    .unwrap_or(0)
+                    .saturating_mul(1_000_000_000);
+                spec.backoff.advance(monotonic_time_ns(), window);
+                (spec.identity, spec.backoff.delay_ns)
+            })
     };
     if let Some((identity, delay)) = delayed {
         // SAFETY: this dispatch retains the parent through timer admission.

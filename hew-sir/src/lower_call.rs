@@ -1269,6 +1269,7 @@ impl Builder<'_, '_> {
                 )
             {
                 let source = self.ty(&arg.ty);
+                self.service.require_type_facts(&source)?;
                 self.service.require_type_facts(&expected.ty)?;
                 crate::verify_callable_coercion(
                     &source,

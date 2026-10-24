@@ -1,5 +1,7 @@
 //! Control flow, short-circuit operators and low-level block helpers.
 
+use crate::SirLoweringError;
+
 use super::{
     require_type_facts, BlockArg, BlockId, Builder, CheckedFailure, Edge, HirExpr, MatchExit, OpId,
     Operand, OwnKind, PendingBlock, Provenance, ResolvedTy, SemOp, SemOpKind, SemTerminator,
@@ -12,7 +14,7 @@ impl Builder<'_, '_> {
         condition: &HirExpr,
         then_expr: &HirExpr,
         else_expr: Option<&HirExpr>,
-    ) -> Result<(), String> {
+    ) -> Result<(), SirLoweringError> {
         let condition = self.lower_read_operand(condition, "if condition")?;
         let then_block = self.new_block(Vec::new());
         let else_block = self.new_block(Vec::new());
@@ -64,7 +66,7 @@ impl Builder<'_, '_> {
         condition: &HirExpr,
         then_expr: &HirExpr,
         else_expr: &HirExpr,
-    ) -> Result<ValueId, String> {
+    ) -> Result<ValueId, SirLoweringError> {
         let condition = self.lower_read_operand(condition, "if condition")?;
         let then_block = self.new_block(Vec::new());
         let else_block = self.new_block(Vec::new());
@@ -91,7 +93,9 @@ impl Builder<'_, '_> {
                 continue;
             }
             let value = result
-                .ok_or("non-divergent if branch does not produce its result")?
+                .ok_or(SirLoweringError::from(
+                    "non-divergent if branch does not produce its result",
+                ))?
                 .value;
             self.owned_live.remove(&value);
             exits.push(MatchExit {
@@ -100,8 +104,11 @@ impl Builder<'_, '_> {
             });
         }
         self.branch_depth -= 1;
-        self.merge_match_exits(exits, &join_ty)?
-            .ok_or_else(|| "divergent if expression cannot produce an SSA value".to_string())
+        self.merge_match_exits(exits, &join_ty)?.ok_or_else(|| {
+            SirLoweringError::from(
+                "divergent if expression cannot produce an SSA value".to_string(),
+            )
+        })
     }
 
     /// Lower short-circuit `&&` as CFG rather than an eager binary operation.
@@ -114,7 +121,7 @@ impl Builder<'_, '_> {
         whole: &HirExpr,
         left: &HirExpr,
         right: &HirExpr,
-    ) -> Result<ValueId, String> {
+    ) -> Result<ValueId, SirLoweringError> {
         self.lower_short_circuit(whole, left, right, false)
     }
 
@@ -124,7 +131,7 @@ impl Builder<'_, '_> {
         whole: &HirExpr,
         left: &HirExpr,
         right: &HirExpr,
-    ) -> Result<ValueId, String> {
+    ) -> Result<ValueId, SirLoweringError> {
         self.lower_short_circuit(whole, left, right, true)
     }
 
@@ -134,10 +141,14 @@ impl Builder<'_, '_> {
         left: &HirExpr,
         right: &HirExpr,
         short_circuit_value: bool,
-    ) -> Result<ValueId, String> {
+    ) -> Result<ValueId, SirLoweringError> {
         let result_ty = self.ty(&whole.ty);
         if result_ty != ResolvedTy::Bool {
-            return Err("short-circuit logical expressions must have bool type in SIR".to_string());
+            return Err(
+                "short-circuit logical expressions must have bool type in SIR"
+                    .to_string()
+                    .into(),
+            );
         }
         let condition = self.lower_read_operand(left, "logical condition")?;
         let evaluate_right = self.new_block(Vec::new());
@@ -191,11 +202,18 @@ impl Builder<'_, '_> {
         });
 
         self.branch_depth -= 1;
-        self.merge_match_exits(exits, &result_ty)?
-            .ok_or_else(|| "short-circuit logical expression produced no SSA value".to_string())
+        self.merge_match_exits(exits, &result_ty)?.ok_or_else(|| {
+            SirLoweringError::from(
+                "short-circuit logical expression produced no SSA value".to_string(),
+            )
+        })
     }
 
-    pub(super) fn emit(&mut self, expr: &HirExpr, kind: SemOpKind) -> Result<ValueId, String> {
+    pub(super) fn emit(
+        &mut self,
+        expr: &HirExpr,
+        kind: SemOpKind,
+    ) -> Result<ValueId, SirLoweringError> {
         self.emit_typed(Provenance::Site(expr.site), &self.ty(&expr.ty), kind)
     }
 
@@ -204,7 +222,7 @@ impl Builder<'_, '_> {
         provenance: Provenance,
         result_ty: &ResolvedTy,
         kind: SemOpKind,
-    ) -> Result<ValueId, String> {
+    ) -> Result<ValueId, SirLoweringError> {
         if let SemOpKind::LoadTake { place } = &kind {
             // Only a local or projected owner can carry a binding's loan; a
             // capture or state place has no path here and none to end.
@@ -249,13 +267,13 @@ impl Builder<'_, '_> {
         op: hew_parser::ast::BinaryOp,
         lhs: Operand,
         rhs: Operand,
-    ) -> Result<ValueId, String> {
+    ) -> Result<ValueId, SirLoweringError> {
         let result_ty = self.ty(&expr.ty);
         let required = crate::checked_binary_failure_kinds(op, &result_ty).ok_or_else(|| {
-            format!(
+            SirLoweringError::from(format!(
                 "`{op}` over `{}` is not a checked integer operation",
                 result_ty.user_facing()
-            )
+            ))
         })?;
         self.service.require_type_facts(&result_ty)?;
         let own = OwnKind::of_ty(&result_ty, self.service.checked_facts.rows())?;
@@ -336,7 +354,7 @@ impl Builder<'_, '_> {
     pub(super) fn is_open(&self) -> bool {
         self.current_block().is_open()
     }
-    pub(super) fn set_terminator(&mut self, term: SemTerminator) -> Result<(), String> {
+    pub(super) fn set_terminator(&mut self, term: SemTerminator) -> Result<(), SirLoweringError> {
         // The last expression visited is the source point this terminator
         // belongs to: a `Return` is sealed after its operand is lowered, and a
         // call terminator after its arguments, so the most recent leaf is the
@@ -350,7 +368,8 @@ impl Builder<'_, '_> {
             return Err(format!(
                 "SIR builder attempted to overwrite completed block bb{}",
                 block.id.0
-            ));
+            )
+            .into());
         }
         block.terminator = Some(term);
         Ok(())

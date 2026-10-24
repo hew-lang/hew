@@ -1,19 +1,25 @@
 //! Lexical binding acquisition and scope exits. The declaration stack records
 //! source lifetime boundaries, never payload initialization or drop decisions.
 
+use crate::SirLoweringError;
+
 use super::{BindingId, BindingTarget, Builder, OwnKind, PlaceId, PlaceOrigin, Provenance};
 use crate::{Operand, PlaceDecl, SemOp, SemOpKind, ValueId};
 use hew_types::ResolvedTy;
 
 impl Builder<'_, '_> {
-    pub(super) fn binding_target(&self, binding: BindingId) -> Result<BindingTarget, String> {
-        self.bindings
-            .get(&binding)
-            .copied()
-            .ok_or_else(|| format!("binding `{binding}` is not available in the SIR environment"))
+    pub(super) fn binding_target(
+        &self,
+        binding: BindingId,
+    ) -> Result<BindingTarget, SirLoweringError> {
+        self.bindings.get(&binding).copied().ok_or_else(|| {
+            SirLoweringError::from(format!(
+                "binding `{binding}` is not available in the SIR environment"
+            ))
+        })
     }
 
-    pub(super) fn target_ty(&self, target: BindingTarget) -> Result<ResolvedTy, String> {
+    pub(super) fn target_ty(&self, target: BindingTarget) -> Result<ResolvedTy, SirLoweringError> {
         match target {
             BindingTarget::Value(value) => self.value_ty(value),
             BindingTarget::Place(place) => self
@@ -21,15 +27,15 @@ impl Builder<'_, '_> {
                 .get(place.0 as usize)
                 .map(|place| place.ty.clone()),
         }
-        .ok_or_else(|| "binding target has no concrete type".to_string())
+        .ok_or_else(|| SirLoweringError::from("binding target has no concrete type".to_string()))
     }
 
-    pub(super) fn scalar_binding(&self, binding: BindingId) -> Result<ValueId, String> {
+    pub(super) fn scalar_binding(&self, binding: BindingId) -> Result<ValueId, SirLoweringError> {
         match self.binding_target(binding)? {
             BindingTarget::Value(value) if self.value_own_kind(value) != Some(OwnKind::Owned) => {
                 Ok(value)
             }
-            _ => Err(format!("binding `{binding}` is not a non-owning SSA value")),
+            _ => Err(format!("binding `{binding}` is not a non-owning SSA value").into()),
         }
     }
 
@@ -37,7 +43,7 @@ impl Builder<'_, '_> {
         &mut self,
         kind: SemOpKind,
         provenance: Provenance,
-    ) -> Result<(), String> {
+    ) -> Result<(), SirLoweringError> {
         let operation = SemOp {
             id: crate::OpId(self.ops),
             results: Vec::new(),
@@ -49,9 +55,11 @@ impl Builder<'_, '_> {
         Ok(())
     }
 
-    pub(super) fn allocate_local(&mut self, ty: ResolvedTy) -> Result<PlaceId, String> {
-        let place =
-            PlaceId(u32::try_from(self.places.len()).map_err(|_| "place count exceeds u32")?);
+    pub(super) fn allocate_local(&mut self, ty: ResolvedTy) -> Result<PlaceId, SirLoweringError> {
+        let place = PlaceId(
+            u32::try_from(self.places.len())
+                .map_err(|_| SirLoweringError::from("place count exceeds u32"))?,
+        );
         self.places.push(PlaceDecl {
             id: place,
             ty,
@@ -64,7 +72,7 @@ impl Builder<'_, '_> {
     pub(super) fn acquire_binding_target(
         &mut self,
         value: ValueId,
-    ) -> Result<BindingTarget, String> {
+    ) -> Result<BindingTarget, SirLoweringError> {
         if self.value_own_kind(value) != Some(OwnKind::Owned) {
             return Ok(BindingTarget::Value(value));
         }
@@ -72,10 +80,13 @@ impl Builder<'_, '_> {
     }
 
     /// Mutable bindings have stable storage across calls, cleanup and suspension.
-    pub(super) fn acquire_local_target(&mut self, value: ValueId) -> Result<BindingTarget, String> {
+    pub(super) fn acquire_local_target(
+        &mut self,
+        value: ValueId,
+    ) -> Result<BindingTarget, SirLoweringError> {
         let ty = self
             .value_ty(value)
-            .ok_or_else(|| "binding initializer has no type".to_string())?;
+            .ok_or_else(|| SirLoweringError::from("binding initializer has no type".to_string()))?;
         let place = self.allocate_local(ty)?;
         self.emit_place_operation(
             SemOpKind::StoreInit {
@@ -95,7 +106,7 @@ impl Builder<'_, '_> {
             .push(binding);
     }
 
-    pub(super) fn end_binding_scope(&mut self, binding: BindingId) -> Result<(), String> {
+    pub(super) fn end_binding_scope(&mut self, binding: BindingId) -> Result<(), SirLoweringError> {
         let declaration = self.binding_declarations[&binding];
         if let BindingTarget::Place(place) = self.source_bindings[declaration].target {
             if self.places[place.0 as usize].origin == PlaceOrigin::Local {
@@ -133,7 +144,10 @@ impl Builder<'_, '_> {
         }
     }
 
-    pub(super) fn value_borrow_root(&self, mut value: ValueId) -> Result<crate::OwnerRoot, String> {
+    pub(super) fn value_borrow_root(
+        &self,
+        mut value: ValueId,
+    ) -> Result<crate::OwnerRoot, SirLoweringError> {
         loop {
             match self.borrow_parents.get(&value).copied() {
                 Some(crate::PlaceBase::Value(parent)) => value = parent,
@@ -148,13 +162,15 @@ impl Builder<'_, '_> {
     pub(super) fn place_borrow_root(
         &self,
         place: crate::PlaceId,
-    ) -> Result<crate::OwnerRoot, String> {
+    ) -> Result<crate::OwnerRoot, SirLoweringError> {
         match self.places[place.0 as usize].origin {
             PlaceOrigin::Capture { environment, .. }
             | PlaceOrigin::ActorState {
                 state: environment, ..
             } => Ok(crate::OwnerRoot::Value(environment)),
-            _ => crate::projection::place_path(&self.places, place).map(|(root, _)| root),
+            _ => crate::projection::place_path(&self.places, place)
+                .map(|(root, _)| root)
+                .map_err(SirLoweringError::from),
         }
     }
 }

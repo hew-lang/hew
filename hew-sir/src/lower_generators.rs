@@ -1,6 +1,8 @@
 //! Generator construction and suspension use ordinary callable environments,
 //! value transfers, loans and lexical cleanup.
 
+use crate::SirLoweringError;
+
 use super::{
     lower_initial_value_transfer, BlockArg, BlockId, Builder, CallResult, CallableInstance, Edge,
     HirExpr, HirExprKind, IntentKind, Operand, OwnKind, OwnedBindingUse, Provenance, ResolvedTy,
@@ -18,7 +20,10 @@ fn edge(target: BlockId) -> Edge {
 }
 
 impl Builder<'_, '_> {
-    pub(super) fn lower_generator(&mut self, expression: &HirExpr) -> Result<ValueId, String> {
+    pub(super) fn lower_generator(
+        &mut self,
+        expression: &HirExpr,
+    ) -> Result<ValueId, SirLoweringError> {
         let HirExprKind::GenBlock {
             body,
             yield_ty,
@@ -41,7 +46,7 @@ impl Builder<'_, '_> {
                     .service
                     .checked_facts
                     .require(&ty)
-                    .map_err(|error| error.to_string())?;
+                    .map_err(|error| SirLoweringError::from(error.to_string()))?;
                 Ok(hew_hir::HirClosureCapture {
                     binding: capture.binding,
                     name: capture.name.clone(),
@@ -62,7 +67,7 @@ impl Builder<'_, '_> {
                     is_sync: false,
                 })
             })
-            .collect::<Result<Vec<_>, String>>()?;
+            .collect::<Result<Vec<_>, SirLoweringError>>()?;
         let mut closure = expression.clone();
         closure.ty = ResolvedTy::Closure {
             capabilities: hew_types::CallableCapabilities {
@@ -104,7 +109,7 @@ impl Builder<'_, '_> {
         expression: &HirExpr,
         value: Option<&HirExpr>,
         ty: &ResolvedTy,
-    ) -> Result<(), String> {
+    ) -> Result<(), SirLoweringError> {
         let ty = self.ty(ty);
         if let Some((sink, element)) = self.stream_sink.clone() {
             if ty != element {
@@ -152,7 +157,7 @@ impl Builder<'_, '_> {
         &mut self,
         expression: &HirExpr,
         value: Option<&HirExpr>,
-    ) -> Result<ValueId, String> {
+    ) -> Result<ValueId, SirLoweringError> {
         let value = if let Some(value) = value {
             let mut transferred = value.clone();
             transferred.intent = IntentKind::Consume;
@@ -180,7 +185,7 @@ impl Builder<'_, '_> {
         sink: &HirExpr,
         value: &HirExpr,
         park: bool,
-    ) -> Result<ValueId, String> {
+    ) -> Result<ValueId, SirLoweringError> {
         let result_ty = self.ty(&expression.ty);
         let mut loans = Vec::new();
         let sink = self.lower_borrowed_read(sink, &mut loans)?;
@@ -199,7 +204,7 @@ impl Builder<'_, '_> {
             return Ok(self.fresh_value());
         }
         self.lower_stream_send(sink.value, value, &loans, park, Some(&result_ty))?
-            .ok_or_else(|| "a pipe send answers with its Result".into())
+            .ok_or_else(|| SirLoweringError::from("a pipe send answers with its Result"))
     }
 
     /// Emit one stream send suspension. A parking send resumes on accepted,
@@ -215,7 +220,7 @@ impl Builder<'_, '_> {
         loans: &[ValueId],
         park: bool,
         result: Option<&ResolvedTy>,
-    ) -> Result<Option<ValueId>, String> {
+    ) -> Result<Option<ValueId>, SirLoweringError> {
         self.owned_live.remove(&value);
         let live = self.owned_live.clone();
         let normal = self.new_block(Vec::new());
@@ -320,7 +325,7 @@ impl Builder<'_, '_> {
     fn send_result_shapes(
         &mut self,
         result_ty: &ResolvedTy,
-    ) -> Result<(VariantShapeId, VariantShapeId, ResolvedTy), String> {
+    ) -> Result<(VariantShapeId, VariantShapeId, ResolvedTy), SirLoweringError> {
         let ResolvedTy::Named { args, .. } = result_ty else {
             return Err("a pipe send answers with Result<(), SendError>".into());
         };
@@ -340,11 +345,13 @@ impl Builder<'_, '_> {
         result_ty: &ResolvedTy,
         role: Option<RuntimeVariantRole>,
         fields: Vec<Operand>,
-    ) -> Result<ValueId, String> {
+    ) -> Result<ValueId, SirLoweringError> {
         let tag = |this: &Self, shape: VariantShapeId, role| {
             this.service.variant_shapes[shape.0 as usize]
                 .runtime_tag(role)
-                .ok_or_else(|| format!("send result shape lacks its {role:?} variant"))
+                .ok_or_else(|| {
+                    SirLoweringError::from(format!("send result shape lacks its {role:?} variant"))
+                })
         };
         let (variant, payload) = match role {
             None => {
@@ -387,7 +394,7 @@ impl Builder<'_, '_> {
         expression: &HirExpr,
         receiver: &HirExpr,
         park: bool,
-    ) -> Result<ValueId, String> {
+    ) -> Result<ValueId, SirLoweringError> {
         let mut loans = Vec::new();
         let stream = self.lower_borrowed_read(receiver, &mut loans)?;
         let output = self.ty(&expression.ty);
@@ -403,7 +410,7 @@ impl Builder<'_, '_> {
         output: ResolvedTy,
         park: bool,
         loans: &[ValueId],
-    ) -> Result<ValueId, String> {
+    ) -> Result<ValueId, SirLoweringError> {
         self.service.require_type_facts(&output)?;
         self.service.require_variant_shape(&output)?;
         let own = OwnKind::of_ty(&output, self.service.checked_facts.rows())?;
@@ -454,7 +461,7 @@ impl Builder<'_, '_> {
         &mut self,
         expression: &HirExpr,
         receiver: &HirExpr,
-    ) -> Result<ValueId, String> {
+    ) -> Result<ValueId, SirLoweringError> {
         let mut loans = Vec::new();
         let generator = self.lower_borrowed_read(receiver, &mut loans)?;
         let output = self.ty(&expression.ty);

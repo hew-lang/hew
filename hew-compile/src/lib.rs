@@ -505,9 +505,9 @@ impl Session {
                 &mut lowered.module,
                 &tco.test_entry_plans,
             )
-            .map_err(|message| SessionError::Unsupported {
+            .map_err(|message| SessionError::Lowering {
                 callable: None,
-                message,
+                error: hew_sir::SirLoweringError::Internal(message),
                 span: None,
             })?;
         }
@@ -563,11 +563,11 @@ impl Session {
                 Some(
                     tco.defs
                         .declaration(occurrence)
-                        .ok_or_else(|| SessionError::Unsupported {
+                        .ok_or_else(|| SessionError::Lowering {
                             callable: None,
-                            message: format!(
+                            error: hew_sir::SirLoweringError::Internal(format!(
                                 "exported source declaration at {span:?} has no checked identity"
-                            ),
+                            )),
                             span: Some(span.clone()),
                         }),
                 )
@@ -594,13 +594,21 @@ impl Session {
             return Err(SessionError::Hir(diagnostics));
         }
         let mut sir = hew_sir::lower_module_with_roots(module, tco, roots).map_err(|errors| {
-            SessionError::Unsupported {
+            let Some(error) = errors.into_iter().next() else {
+                return SessionError::Lowering {
+                    callable: None,
+                    error: hew_sir::SirLoweringError::Internal(
+                        "root selection failed without reporting a cause".into(),
+                    ),
+                    span: None,
+                };
+            };
+            SessionError::Lowering {
                 callable: None,
-                message: errors
-                    .iter()
-                    .map(|error| error.render(&module.defs))
-                    .collect::<Vec<_>>()
-                    .join("; "),
+                error: error.reason.with_context(&format!(
+                    "SIR root `{}`",
+                    module.defs.path(error.declaration)
+                )),
                 span: None,
             }
         })?;
@@ -626,9 +634,11 @@ impl Session {
                 .zip(&module.test_entry_plans)
                 .any(|(entry, plan)| entry.declaration != plan.entry)
         {
-            return Err(SessionError::Unsupported {
+            return Err(SessionError::Lowering {
                 callable: None,
-                message: "semantic test dispatcher does not match checked entry plans".into(),
+                error: hew_sir::SirLoweringError::Internal(
+                    "semantic test dispatcher does not match checked entry plans".into(),
+                ),
                 span: None,
             });
         }
@@ -639,11 +649,11 @@ impl Session {
                 let callable = sir
                     .module
                     .callable_for_declaration(declaration)
-                    .ok_or_else(|| SessionError::Unsupported {
+                    .ok_or_else(|| SessionError::Lowering {
                         callable: None,
-                        message: format!(
+                        error: hew_sir::SirLoweringError::Internal(format!(
                             "selected declaration {declaration:?} has no semantic callable"
-                        ),
+                        )),
                         span: None,
                     })?
                     .id;
@@ -733,9 +743,10 @@ pub enum SessionError {
     Semantic(Vec<hew_sir::SirDiagnostic>),
     /// Source ownership obligations diagnosed by the semantic lifetime flow.
     Ownership(Vec<hew_sir::SirDiagnostic>),
-    Unsupported {
+    Selection(String),
+    Lowering {
         callable: Option<hew_sir::CallableId>,
-        message: String,
+        error: hew_sir::SirLoweringError,
         /// The provoking construct's span, when SIR could attribute one
         /// (#3384). `None` for a session-level refusal with no declaration
         /// of its own (a missing entry, an unresolved root).
@@ -753,7 +764,8 @@ impl std::fmt::Display for SessionError {
             Self::Semantic(diagnostics) => {
                 write!(formatter, "SIR verification failed: {diagnostics:?}")
             }
-            Self::Unsupported { message, .. } => formatter.write_str(message),
+            Self::Lowering { error, .. } => error.fmt(formatter),
+            Self::Selection(message) => formatter.write_str(message),
         }
     }
 }
@@ -767,21 +779,25 @@ fn require_complete_semantics(
     entry_required: bool,
 ) -> Result<(), SessionError> {
     if entry_required && sir.module.entry_callable.is_none() {
-        return Err(SessionError::Unsupported {
+        return Err(SessionError::Lowering {
             callable: None,
-            message: "the selected process entry has no semantic callable".to_string(),
+            error: hew_sir::SirLoweringError::Internal(
+                "the selected process entry has no semantic callable".into(),
+            ),
             span: None,
         });
     }
     for (callable, status) in &sir.callable_statuses {
-        if let hew_sir::SirLoweringStatus::Unsupported { reason, span } = status {
+        if let hew_sir::SirLoweringStatus::Failed { reason, span } = status {
             let name = sir
                 .module
                 .callable(*callable)
                 .map_or("<unknown>", |item| item.symbol.as_str());
-            return Err(SessionError::Unsupported {
+            return Err(SessionError::Lowering {
                 callable: Some(*callable),
-                message: format!("semantic lowering of `{name}` is not implemented: {reason}"),
+                error: reason
+                    .clone()
+                    .with_context(&format!("semantic lowering of `{name}`")),
                 span: span.clone(),
             });
         }
@@ -822,9 +838,11 @@ fn require_semantic_body(
         let name = module
             .callable(callable)
             .map_or("<unknown>", |item| item.symbol.as_str());
-        return Err(SessionError::Unsupported {
+        return Err(SessionError::Lowering {
             callable: Some(callable),
-            message: format!("required semantic callable `{name}` has no body"),
+            error: hew_sir::SirLoweringError::Internal(format!(
+                "required semantic callable `{name}` has no body"
+            )),
             span: None,
         });
     }
@@ -878,12 +896,16 @@ mod session_completion_tests {
             .retain(|function| function.callable != entry);
         assert!(matches!(
             require_complete_semantics(&sir, true),
-            Err(SessionError::Unsupported { callable: Some(id), .. }) if id == entry
+            Err(SessionError::Lowering { callable: Some(id), error: hew_sir::SirLoweringError::Internal(_), .. }) if id == entry
         ));
         sir.module.entry_callable = None;
         assert!(matches!(
             require_complete_semantics(&sir, true),
-            Err(SessionError::Unsupported { callable: None, .. })
+            Err(SessionError::Lowering {
+                callable: None,
+                error: hew_sir::SirLoweringError::Internal(_),
+                ..
+            })
         ));
     }
 
@@ -905,7 +927,7 @@ mod session_completion_tests {
             .retain(|function| function.callable != callee);
         assert!(matches!(
             require_complete_semantics(&sir, true),
-            Err(SessionError::Unsupported { callable: Some(id), .. }) if id == callee
+            Err(SessionError::Lowering { callable: Some(id), error: hew_sir::SirLoweringError::Internal(_), .. }) if id == callee
         ));
     }
 
@@ -918,14 +940,14 @@ mod session_completion_tests {
             .iter_mut()
             .find(|(callable, _)| *callable == entry)
             .unwrap();
-        *status = hew_sir::SirLoweringStatus::Unsupported {
-            reason: "deliberate incomplete lowering".to_string(),
+        *status = hew_sir::SirLoweringStatus::Failed {
+            reason: hew_sir::SirLoweringError::Unavailable("deliberate incomplete lowering".into()),
             span: None,
         };
         assert!(matches!(
             require_complete_semantics(&sir, true),
-            Err(SessionError::Unsupported { callable: Some(id), message, .. })
-                if id == entry && message.contains("deliberate incomplete lowering")
+            Err(SessionError::Lowering { callable: Some(id), error, .. })
+                if id == entry && matches!(error, hew_sir::SirLoweringError::Unavailable(_)) && error.message().contains("deliberate incomplete lowering")
         ));
     }
 

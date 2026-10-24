@@ -1,5 +1,7 @@
 //! Authenticated peer acquisition yields the actor's ordinary reference type.
 
+use crate::SirLoweringError;
+
 use super::Builder;
 use crate::ValueId;
 use hew_hir::HirExpr;
@@ -11,15 +13,15 @@ impl Builder<'_, '_> {
         expression: &HirExpr,
         operation: hew_types::runtime_call::ServiceOp,
         args: &[&HirExpr],
-    ) -> Result<Option<ValueId>, String> {
+    ) -> Result<Option<ValueId>, SirLoweringError> {
         let output = self.ty(&expression.ty);
         let ResolvedTy::Named { args: result, .. } = &output else {
             return Err("service acquisition lacks Result".into());
         };
         let export = operation == hew_types::runtime_call::ServiceOp::Export;
-        let success = result
-            .first()
-            .ok_or("service acquisition lacks its actor")?;
+        let success = result.first().ok_or(SirLoweringError::from(
+            "service acquisition lacks its actor",
+        ))?;
         let actor_ty = if export {
             let ResolvedTy::Named { args, .. } = success else {
                 return Err("service export lacks its actor".into());

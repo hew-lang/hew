@@ -1,5 +1,7 @@
 //! Core expression lowering: literals, variants and match dispatch.
 
+use crate::SirLoweringError;
+
 use super::{
     collection_type_arguments, hir_expr_kind_name, lower_initial_value_transfer,
     shared_handle_family, AggregateShapeRef, BTreeMap, Binding, BindingId, BindingTarget, BlockArg,
@@ -14,7 +16,7 @@ impl Builder<'_, '_> {
         clippy::too_many_lines,
         reason = "the closed initial HIR-to-SIR expression mapping remains intentionally local"
     )]
-    pub(super) fn lower_expr(&mut self, expr: &HirExpr) -> Result<ValueId, String> {
+    pub(super) fn lower_expr(&mut self, expr: &HirExpr) -> Result<ValueId, SirLoweringError> {
         self.lower_expr_with_binding_use(expr, OwnedBindingUse::Copy)
     }
 
@@ -25,7 +27,7 @@ impl Builder<'_, '_> {
         &mut self,
         expr: &HirExpr,
         binding_use: OwnedBindingUse,
-    ) -> Result<ValueId, String> {
+    ) -> Result<ValueId, SirLoweringError> {
         let loan_floor = self.scope_loans.len();
         let value = self.lower_expr_inner(expr, binding_use)?;
         self.current_site = Some(expr.site);
@@ -40,7 +42,7 @@ impl Builder<'_, '_> {
         Ok(value)
     }
 
-    pub(super) fn end_expression_loans(&mut self, floor: usize) -> Result<(), String> {
+    pub(super) fn end_expression_loans(&mut self, floor: usize) -> Result<(), SirLoweringError> {
         let interior = self.scope_loans.split_off(floor);
         self.end_call_loans(&interior)
     }
@@ -53,7 +55,7 @@ impl Builder<'_, '_> {
         &mut self,
         expr: &HirExpr,
         binding_use: OwnedBindingUse,
-    ) -> Result<ValueId, String> {
+    ) -> Result<ValueId, SirLoweringError> {
         self.current_site = Some(expr.site);
         // A supervisor pool accessor is decided by the checker, not by the
         // expression shape: `sup.pool[i]` and `sup.pool.get(i)` are an ordinary
@@ -84,7 +86,11 @@ impl Builder<'_, '_> {
                     return self.emit(expr, SemOpKind::ConstUnit);
                 }
                 self.lower_runtime_operation(expr, family, &operands, true)?
-                    .ok_or_else(|| format!("`{op:?}` must produce a shared-handle value"))
+                    .ok_or_else(|| {
+                        SirLoweringError::from(format!(
+                            "`{op:?}` must produce a shared-handle value"
+                        ))
+                    })
             }
             HirExprKind::Select(select) => match self.lower_task_select(expr, select)? {
                 Some(value) => Ok(value),
@@ -170,10 +176,10 @@ impl Builder<'_, '_> {
             }
             HirExprKind::Spawn { .. } => self
                 .lower_actor_boundary(expr)?
-                .ok_or_else(|| "actor spawn lacks its handle result".into()),
+                .ok_or_else(|| SirLoweringError::from("actor spawn lacks its handle result")),
             HirExprKind::ActorSelf => self
                 .lower_actor_boundary(expr)?
-                .ok_or_else(|| "`self` lacks its actor handle result".into()),
+                .ok_or_else(|| SirLoweringError::from("`self` lacks its actor handle result")),
             HirExprKind::ActorMessage { .. } => self.lower_actor_message(expr),
             HirExprKind::ActorDelivery { .. } => self.lower_actor_delivery(expr),
             HirExprKind::ActorAsk { .. } => self.lower_actor_ask(expr),
@@ -201,7 +207,7 @@ impl Builder<'_, '_> {
                 )? {
                     Some(value) => Ok(value),
                     None if !value_required => self.emit(expr, SemOpKind::ConstUnit),
-                    None => Err("dynamic dispatch produced no SIR value".to_string()),
+                    None => Err("dynamic dispatch produced no SIR value".to_string().into()),
                 }
             }
             HirExprKind::ArrayLiteral { elements } => self.lower_array_make(expr, elements),
@@ -252,7 +258,9 @@ impl Builder<'_, '_> {
                         HirItem::Const(constant) if constant.id == *item => Some(constant),
                         _ => None,
                     })
-                    .ok_or("const reference has no HIR declaration")?;
+                    .ok_or(SirLoweringError::from(
+                        "const reference has no HIR declaration",
+                    ))?;
                 let value = constant.value.clone();
                 self.lower_expr(&value)
             }
@@ -265,7 +273,11 @@ impl Builder<'_, '_> {
                     .table
                     .functions_by_item
                     .get(item)
-                    .ok_or_else(|| "function value has no checked HIR declaration".to_string())?
+                    .ok_or_else(|| {
+                        SirLoweringError::from(
+                            "function value has no checked HIR declaration".to_string(),
+                        )
+                    })?
                     .declaration;
                 let target =
                     self.service
@@ -328,7 +340,7 @@ impl Builder<'_, '_> {
                     let rhs = self.lower_read_operand(right, "actor identity right operand")?;
                     return self
                         .emit_actor_call(operation, signature, vec![lhs.value, rhs.value])?
-                        .ok_or_else(|| "actor identity has no result".into());
+                        .ok_or_else(|| SirLoweringError::from("actor identity has no result"));
                 }
                 let lhs = self.lower_read_operand(left, "identity left operand")?;
                 let rhs = self.lower_read_operand(right, "identity right operand")?;
@@ -413,7 +425,11 @@ impl Builder<'_, '_> {
                             &[left.as_ref(), right.as_ref()],
                             true,
                         )?
-                        .ok_or_else(|| "bytes concatenation must produce a value".to_string());
+                        .ok_or_else(|| {
+                            SirLoweringError::from(
+                                "bytes concatenation must produce a value".to_string(),
+                            )
+                        });
                 }
                 if self.ty(&left.ty) == ResolvedTy::String {
                     return match op {
@@ -424,7 +440,11 @@ impl Builder<'_, '_> {
                                 &[left.as_ref(), right.as_ref()],
                                 true,
                             )?
-                            .ok_or_else(|| "string concatenation must produce a value".to_string()),
+                            .ok_or_else(|| {
+                                SirLoweringError::from(
+                                    "string concatenation must produce a value".to_string(),
+                                )
+                            }),
                         hew_parser::ast::BinaryOp::Equal | hew_parser::ast::BinaryOp::NotEqual => {
                             let equals = self
                                 .lower_runtime_operation(
@@ -434,7 +454,9 @@ impl Builder<'_, '_> {
                                     true,
                                 )?
                                 .ok_or_else(|| {
-                                    "string comparison must produce a value".to_string()
+                                    SirLoweringError::from(
+                                        "string comparison must produce a value".to_string(),
+                                    )
                                 })?;
                             if *op == hew_parser::ast::BinaryOp::NotEqual {
                                 self.emit(
@@ -461,7 +483,9 @@ impl Builder<'_, '_> {
                                     &[left.as_ref(), right.as_ref()],
                                     true,
                                 )?
-                                .ok_or("string ordering must produce a value")?;
+                                .ok_or(SirLoweringError::from(
+                                    "string ordering must produce a value",
+                                ))?;
                             let zero = self.emit_typed(
                                 Provenance::Site(expr.site),
                                 &ResolvedTy::I32,
@@ -478,7 +502,8 @@ impl Builder<'_, '_> {
                         }
                         _ => Err(format!(
                             "string binary `{op}` has no ownership-SIR runtime operation"
-                        )),
+                        )
+                        .into()),
                     };
                 }
                 let lhs = self.lower_read_operand(left, "binary left operand")?;
@@ -508,9 +533,11 @@ impl Builder<'_, '_> {
                 self.lower_call(expr, false)?;
                 self.emit(expr, SemOpKind::ConstUnit)
             }
-            HirExprKind::Call { .. } | HirExprKind::CallTraitMethodStatic { .. } => self
-                .lower_call(expr, true)?
-                .ok_or_else(|| "value-producing checked call has no result".to_string()),
+            HirExprKind::Call { .. } | HirExprKind::CallTraitMethodStatic { .. } => {
+                self.lower_call(expr, true)?.ok_or_else(|| {
+                    SirLoweringError::from("value-producing checked call has no result".to_string())
+                })
+            }
             HirExprKind::CallableSpecialize { source, type_args } => {
                 let scheme = self.ty(&source.ty);
                 let arguments = type_args.iter().map(|ty| self.ty(ty)).collect();
@@ -541,7 +568,9 @@ impl Builder<'_, '_> {
                     &[container.as_ref(), index.as_ref()],
                     true,
                 )?
-                .ok_or_else(|| "array index must produce a value".to_string())
+                .ok_or_else(|| {
+                    SirLoweringError::from("array index must produce a value".to_string())
+                })
             }
             HirExprKind::BorrowedIndex { container, index }
                 if matches!(self.ty(&container.ty), ResolvedTy::Array(_, _)) =>
@@ -554,7 +583,9 @@ impl Builder<'_, '_> {
                     &[container.as_ref(), index.as_ref()],
                     true,
                 )?
-                .ok_or_else(|| "array index must produce an element loan".to_string())
+                .ok_or_else(|| {
+                    SirLoweringError::from("array index must produce an element loan".to_string())
+                })
             }
             HirExprKind::Index { container, index }
                 if matches!(
@@ -582,7 +613,11 @@ impl Builder<'_, '_> {
                     &[container.as_ref(), index.as_ref()],
                     true,
                 )?
-                .ok_or_else(|| "collection index must produce a semantic copy".to_string())
+                .ok_or_else(|| {
+                    SirLoweringError::from(
+                        "collection index must produce a semantic copy".to_string(),
+                    )
+                })
             }
             HirExprKind::ResolvedImplCall {
                 target:
@@ -610,7 +645,11 @@ impl Builder<'_, '_> {
                     &[container.as_ref(), index.as_ref()],
                     true,
                 )?
-                .ok_or_else(|| "borrowed element read must produce a SIR value".to_string()),
+                .ok_or_else(|| {
+                    SirLoweringError::from(
+                        "borrowed element read must produce a SIR value".to_string(),
+                    )
+                }),
             HirExprKind::Index { container, index }
                 if self.ty(&container.ty) == ResolvedTy::Bytes =>
             {
@@ -620,7 +659,9 @@ impl Builder<'_, '_> {
                     &[container.as_ref(), index.as_ref()],
                     true,
                 )?
-                .ok_or_else(|| "bytes index must produce a SIR value".to_string())
+                .ok_or_else(|| {
+                    SirLoweringError::from("bytes index must produce a SIR value".to_string())
+                })
             }
             HirExprKind::Index { container, index }
                 if self.ty(&container.ty) == ResolvedTy::String =>
@@ -631,7 +672,9 @@ impl Builder<'_, '_> {
                     &[container.as_ref(), index.as_ref()],
                     true,
                 )?
-                .ok_or_else(|| "string index must produce a SIR value".to_string())
+                .ok_or_else(|| {
+                    SirLoweringError::from("string index must produce a SIR value".to_string())
+                })
             }
             // `x[a..b]` / `x[a..]` / `x[..b]` / `x[..]` over `string`, `bytes`
             // and `Vec<T>`. An absent start is the literal zero; an absent end
@@ -666,7 +709,8 @@ impl Builder<'_, '_> {
                     return Err(format!(
                         "`{}` has no ownership-SIR range-slice operation",
                         container_ty.user_facing()
-                    ));
+                    )
+                    .into());
                 };
                 let mut zero = (**container).clone();
                 zero.ty = ResolvedTy::I64;
@@ -686,7 +730,9 @@ impl Builder<'_, '_> {
                         true,
                     )?,
                 }
-                .ok_or_else(|| "range slice must produce a SIR value".to_string())
+                .ok_or_else(|| {
+                    SirLoweringError::from("range slice must produce a SIR value".to_string())
+                })
             }
             // `re"..."` in value position. Native module initialization owns
             // the checked literal; this call clones its handle into a value
@@ -695,13 +741,17 @@ impl Builder<'_, '_> {
                 let pattern_ty = self.ty(&expr.ty);
                 let shape = self.service.require_aggregate_shape(&pattern_ty)?;
                 let AggregateShapeRef::Record(id) = shape else {
-                    return Err("a regex literal must produce a named pattern record".to_string());
+                    return Err("a regex literal must produce a named pattern record"
+                        .to_string()
+                        .into());
                 };
                 let [field] = self.service.aggregate_shapes[id.0 as usize]
                     .fields
                     .as_slice()
                 else {
-                    return Err("a regex pattern record holds exactly its handle".to_string());
+                    return Err("a regex pattern record holds exactly its handle"
+                        .to_string()
+                        .into());
                 };
                 let handle_ty = field.ty.clone();
                 let mut slot = expr.clone();
@@ -716,7 +766,11 @@ impl Builder<'_, '_> {
                         &[&slot],
                         true,
                     )?
-                    .ok_or_else(|| "a regex literal must produce a SIR value".to_string())?;
+                    .ok_or_else(|| {
+                        SirLoweringError::from(
+                            "a regex literal must produce a SIR value".to_string(),
+                        )
+                    })?;
                 let pattern = self.emit(
                     expr,
                     SemOpKind::AggregateMake {
@@ -730,7 +784,11 @@ impl Builder<'_, '_> {
             HirExprKind::Block(block) => self
                 .lower_scoped_block(block, binding_use)?
                 .map(|value| value.value)
-                .ok_or_else(|| "a divergent block cannot produce a SIR value".to_string()),
+                .ok_or_else(|| {
+                    SirLoweringError::from(
+                        "a divergent block cannot produce a SIR value".to_string(),
+                    )
+                }),
             HirExprKind::If {
                 condition,
                 then_expr,
@@ -739,13 +797,13 @@ impl Builder<'_, '_> {
             HirExprKind::Match { scrutinee, arms } => self.lower_match(expr, scrutinee, arms),
             HirExprKind::If {
                 else_expr: None, ..
-            } => Err(
+            } => Err(SirLoweringError::Unavailable(
                 "one-armed if expressions are deferred until unit values are modeled".to_string(),
-            ),
-            _ => Err(format!(
+            )),
+            _ => Err(SirLoweringError::Unavailable(format!(
                 "unsupported HIR expression kind `{}` in the initial SIR subset",
                 hir_expr_kind_name(&expr.kind)
-            )),
+            ))),
         }
     }
 
@@ -753,7 +811,7 @@ impl Builder<'_, '_> {
         &mut self,
         expr: &HirExpr,
         literal: &HirLiteral,
-    ) -> Result<ValueId, String> {
+    ) -> Result<ValueId, SirLoweringError> {
         match literal {
             HirLiteral::Unit if self.ty(&expr.ty) == ResolvedTy::Unit => {
                 self.emit(expr, SemOpKind::ConstUnit)
@@ -774,7 +832,7 @@ impl Builder<'_, '_> {
                     return Err(format!(
                         "integer literal resolved as `{}` needs a dedicated SIR literal representation",
                         self.ty(&expr.ty).user_facing()
-                    ));
+                    ).into());
                 }
                 self.emit(expr, SemOpKind::ConstInteger(*value))
             }
@@ -783,7 +841,8 @@ impl Builder<'_, '_> {
                     return Err(format!(
                         "boolean literal resolved as `{}` violates the SIR bool literal invariant",
                         self.ty(&expr.ty).user_facing()
-                    ));
+                    )
+                    .into());
                 }
                 self.emit(expr, SemOpKind::ConstBool(*value))
             }
@@ -792,7 +851,7 @@ impl Builder<'_, '_> {
                     return Err(format!(
                         "floating literal resolved as `{}` needs a dedicated SIR literal representation",
                         self.ty(&expr.ty).user_facing()
-                    ));
+                    ).into());
                 }
                 self.emit(expr, SemOpKind::ConstFloat(*value))
             }
@@ -801,7 +860,7 @@ impl Builder<'_, '_> {
                     return Err(format!(
                         "character literal resolved as `{}` violates the SIR char literal invariant",
                         self.ty(&expr.ty).user_facing()
-                    ));
+                    ).into());
                 }
                 self.emit(expr, SemOpKind::ConstChar(*value))
             }
@@ -816,7 +875,9 @@ impl Builder<'_, '_> {
             HirLiteral::Duration(value) if self.ty(&expr.ty) == ResolvedTy::Duration => {
                 self.emit(expr, SemOpKind::ConstDuration(*value))
             }
-            _ => Err("unsupported HIR literal kind in the initial SIR subset".to_string()),
+            _ => Err("unsupported HIR literal kind in the initial SIR subset"
+                .to_string()
+                .into()),
         }
     }
 
@@ -825,20 +886,28 @@ impl Builder<'_, '_> {
         expr: &HirExpr,
         variant: usize,
         payload: Option<&[(String, HirExpr)]>,
-    ) -> Result<ValueId, String> {
+    ) -> Result<ValueId, SirLoweringError> {
         let enum_ty = self.ty(&expr.ty);
         let shape = self.service.require_variant_shape(&enum_ty)?;
         let descriptor = self
             .service
             .variant_shapes
-            .get(usize::try_from(shape.0).map_err(|_| "variant shape id exceeds usize")?)
+            .get(
+                usize::try_from(shape.0)
+                    .map_err(|_| SirLoweringError::from("variant shape id exceeds usize"))?,
+            )
             .filter(|descriptor| descriptor.id == shape)
-            .ok_or_else(|| format!("variant shape {} disappeared during lowering", shape.0))?;
+            .ok_or_else(|| {
+                SirLoweringError::from(format!(
+                    "variant shape {} disappeared during lowering",
+                    shape.0
+                ))
+            })?;
         let declared = descriptor.variants.get(variant).cloned().ok_or_else(|| {
-            format!(
+            SirLoweringError::from(format!(
                 "variant constructor tag {variant} is absent from exact shape `{}`",
                 enum_ty.user_facing()
-            )
+            ))
         })?;
         let supplied = payload.unwrap_or_default();
         if supplied.len() != declared.fields.len() {
@@ -848,7 +917,8 @@ impl Builder<'_, '_> {
                 enum_ty.user_facing(),
                 supplied.len(),
                 declared.fields.len()
-            ));
+            )
+            .into());
         }
         let mut ordered = vec![None; declared.fields.len()];
         for (name, field) in supplied {
@@ -856,17 +926,16 @@ impl Builder<'_, '_> {
                 .fields
                 .iter()
                 .position(|candidate| candidate.name == *name)
-                .ok_or_else(|| {
-                    format!(
+                .ok_or_else(|| SirLoweringError::from(format!(
                         "variant constructor field `{name}` is absent from exact shape `{}` tag {variant}",
                         enum_ty.user_facing()
-                    )
-                })?;
+                    )))?;
             if ordered[index].is_some() {
                 return Err(format!(
                     "variant constructor repeats field `{name}` for `{}` tag {variant}",
                     enum_ty.user_facing()
-                ));
+                )
+                .into());
             }
             let value = lower_initial_value_transfer(
                 self,
@@ -887,21 +956,22 @@ impl Builder<'_, '_> {
             .zip(&declared.fields)
             .map(|(operand, field)| {
                 operand.ok_or_else(|| {
-                    format!(
+                    SirLoweringError::from(format!(
                         "variant constructor omits field `{}` from exact shape `{}` tag {variant}",
                         field.name,
                         enum_ty.user_facing()
-                    )
+                    ))
                 })
             })
-            .collect::<Result<Vec<_>, _>>()?;
+            .collect::<Result<Vec<_>, SirLoweringError>>()?;
         let consumed = fields.iter().map(|field| field.value).collect::<Vec<_>>();
         let value = self.emit(
             expr,
             SemOpKind::VariantMake {
                 shape,
-                variant: u32::try_from(variant)
-                    .map_err(|_| "variant constructor tag exceeds u32".to_string())?,
+                variant: u32::try_from(variant).map_err(|_| {
+                    SirLoweringError::from("variant constructor tag exceeds u32".to_string())
+                })?,
                 fields,
             },
         )?;
@@ -917,14 +987,15 @@ impl Builder<'_, '_> {
         name: &str,
         value: ValueId,
         span: Range<usize>,
-    ) -> Result<(), String> {
+    ) -> Result<(), SirLoweringError> {
         // Candidate names refer to the projected owner until every predicate
         // and guard has passed. A failed candidate must leave it available.
         let target = BindingTarget::Value(value);
         let declaration = self.source_bindings.len();
         self.source_bindings.push(Binding {
             id: crate::BindingId(
-                u32::try_from(declaration).map_err(|_| "binding count exceeds u32")?,
+                u32::try_from(declaration)
+                    .map_err(|_| SirLoweringError::from("binding count exceeds u32"))?,
             ),
             name: name.to_string(),
             span,
@@ -944,7 +1015,7 @@ impl Builder<'_, '_> {
         variant: u32,
         ty: &ResolvedTy,
         fields: &[BlockArg],
-    ) -> Result<ValueId, String> {
+    ) -> Result<ValueId, SirLoweringError> {
         let operands = fields
             .iter()
             .map(|field| Operand { value: field.value })
@@ -971,11 +1042,16 @@ impl Builder<'_, '_> {
         variant: u32,
         descriptor: &SemVariantShape,
         source: ValueId,
-    ) -> Result<Vec<BlockArg>, String> {
+    ) -> Result<Vec<BlockArg>, SirLoweringError> {
         let declared = &descriptor
             .variants
-            .get(usize::try_from(variant).map_err(|_| "variant tag exceeds usize".to_string())?)
-            .ok_or_else(|| format!("variant tag {variant} is absent from its shape"))?
+            .get(
+                usize::try_from(variant)
+                    .map_err(|_| SirLoweringError::from("variant tag exceeds usize".to_string()))?,
+            )
+            .ok_or_else(|| {
+                SirLoweringError::from(format!("variant tag {variant} is absent from its shape"))
+            })?
             .fields;
         let mut results = Vec::with_capacity(declared.len());
         for field in declared {
@@ -1016,7 +1092,7 @@ impl Builder<'_, '_> {
     pub(super) fn destroy_live_since(
         &mut self,
         baseline: &BTreeMap<ValueId, ResolvedTy>,
-    ) -> Result<(), String> {
+    ) -> Result<(), SirLoweringError> {
         let values = self
             .owned_live
             .keys()
@@ -1034,7 +1110,7 @@ impl Builder<'_, '_> {
         shape: VariantShapeId,
         descriptor: &SemVariantShape,
         scrutinee: ValueId,
-    ) -> Result<Vec<VariantBranch>, String> {
+    ) -> Result<Vec<VariantBranch>, SirLoweringError> {
         let mut semantic_arms = Vec::with_capacity(descriptor.variants.len());
         let mut branches = Vec::with_capacity(descriptor.variants.len());
         let mut inherited_live = self.owned_live.clone();
@@ -1074,7 +1150,7 @@ impl Builder<'_, '_> {
             }
             let block = self.new_block(block_args.clone());
             let variant = u32::try_from(variant_index)
-                .map_err(|_| "variant arm index exceeds u32".to_string())?;
+                .map_err(|_| SirLoweringError::from("variant arm index exceeds u32".to_string()))?;
             semantic_arms.push(SemVariantArm {
                 variant,
                 fields,
@@ -1106,7 +1182,7 @@ impl Builder<'_, '_> {
         &mut self,
         lhs: ValueId,
         rhs: ValueId,
-    ) -> Result<ValueId, String> {
+    ) -> Result<ValueId, SirLoweringError> {
         let raw = self.fresh_value();
         let continuation = self.fresh_value();
         let normal = self.new_block(vec![BlockArg {
@@ -1147,7 +1223,7 @@ impl Builder<'_, '_> {
     pub(super) fn branch_candidate_test(
         &mut self,
         condition: ValueId,
-    ) -> Result<ControlState, String> {
+    ) -> Result<ControlState, SirLoweringError> {
         let pass = self.new_block(Vec::new());
         let fail = self.new_block(Vec::new());
         self.set_terminator(SemTerminator::Branch {
@@ -1174,11 +1250,13 @@ impl Builder<'_, '_> {
         &mut self,
         binding: BindingId,
         target: BindingTarget,
-    ) -> Result<(), String> {
+    ) -> Result<(), SirLoweringError> {
         let mut selected = self.source_bindings[self.binding_declarations[&binding]].clone();
         let declaration = self.source_bindings.len();
-        selected.id =
-            crate::BindingId(u32::try_from(declaration).map_err(|_| "binding count exceeds u32")?);
+        selected.id = crate::BindingId(
+            u32::try_from(declaration)
+                .map_err(|_| SirLoweringError::from("binding count exceeds u32"))?,
+        );
         selected.target = target;
         self.source_bindings.push(selected);
         self.binding_declarations.insert(binding, declaration);
@@ -1190,7 +1268,7 @@ impl Builder<'_, '_> {
         &mut self,
         body: &HirExpr,
         result_ty: &ResolvedTy,
-    ) -> Result<Option<Operand>, String> {
+    ) -> Result<Option<Operand>, SirLoweringError> {
         if *result_ty == ResolvedTy::Unit {
             self.lower_discarded_expr(body)?;
             return Ok(None);
@@ -1199,7 +1277,9 @@ impl Builder<'_, '_> {
             self.lower_discarded_expr(body)?;
             if self.is_open() {
                 return Err(
-                    "non-divergent variant arm does not produce the match result".to_string(),
+                    "non-divergent variant arm does not produce the match result"
+                        .to_string()
+                        .into(),
                 );
             }
             return Ok(None);
@@ -1213,7 +1293,9 @@ impl Builder<'_, '_> {
                 return Ok(None);
             }
             result
-                .ok_or("non-divergent selected block does not produce its result")?
+                .ok_or(SirLoweringError::from(
+                    "non-divergent selected block does not produce its result",
+                ))?
                 .value
         } else {
             lower_initial_value_transfer(self, body, "selected arm result", OwnedBindingUse::Copy)?
@@ -1226,7 +1308,7 @@ impl Builder<'_, '_> {
         &mut self,
         exits: Vec<MatchExit>,
         result_ty: &ResolvedTy,
-    ) -> Result<Option<ValueId>, String> {
+    ) -> Result<Option<ValueId>, SirLoweringError> {
         if exits.is_empty() {
             return Ok(None);
         }
@@ -1243,15 +1325,18 @@ impl Builder<'_, '_> {
                 own,
             });
             for (index, exit) in exits.iter().enumerate() {
-                let result = exit
-                    .result
-                    .as_ref()
-                    .ok_or_else(|| "non-divergent match arm has no result operand".to_string())?;
+                let result = exit.result.as_ref().ok_or_else(|| {
+                    SirLoweringError::from(
+                        "non-divergent match arm has no result operand".to_string(),
+                    )
+                })?;
                 edge_prefixes[index].push(result.clone());
             }
             result_arg = Some((joined, own));
         } else if exits.iter().any(|exit| exit.result.is_some()) {
-            return Err("unit match arm unexpectedly carries a result".to_string());
+            return Err("unit match arm unexpectedly carries a result"
+                .to_string()
+                .into());
         }
 
         let states = exits.into_iter().map(|exit| exit.state).collect::<Vec<_>>();

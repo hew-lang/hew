@@ -31,7 +31,7 @@ fn runtime_variant_roles_follow_exact_enum_identity_and_declaration_order() {
         .is_empty());
 
     let missing = super::runtime_variant_tags(&builtin, &variants[..1]);
-    assert!(missing.is_err_and(|reason| reason.contains("required `Some` variant")));
+    assert!(missing.is_err_and(|reason| reason.message().contains("required `Some` variant")));
 }
 
 #[test]
@@ -49,9 +49,9 @@ fn only_a_read_intent_reaches_an_initial_scalar_operand() {
         let reason = require_initial_scalar_read(intent)
             .expect_err("a non-read HIR intent must not become a scalar SIR operand");
         assert!(
-                reason.contains("ownership operation")
-                    || reason.contains("requires")
-                    || reason.contains("not a legal"),
+                reason.message().contains("ownership operation")
+                    || reason.message().contains("requires")
+                    || reason.message().contains("not a legal"),
                 "the failure must explain why {intent:?} is outside the current SIR ownership domain: {reason}"
             );
     }
@@ -72,8 +72,10 @@ fn scalar_and_tuple_binding_transfers_admit_only_bitcopy_values() {
             "an ownership-bearing transfer must stay outside the SIR value-only subset",
         );
         assert!(
-            error.contains("ownership-bearing")
-                && error.contains("only aliases BitCopy scalar/tuple"),
+            error.message().contains("ownership-bearing")
+                && error
+                    .message()
+                    .contains("only aliases BitCopy scalar/tuple"),
             "the transfer diagnostic must explain that this would erase ownership: {error}",
         );
     }
@@ -201,6 +203,7 @@ fn pending_blocks_do_not_conflate_open_with_semantic_unreachable() {
     assert!(open
         .into_sem_block()
         .expect_err("an unfilled builder block must fail finalization")
+        .message()
         .contains("without a semantic terminator"));
 
     let mut completed = PendingBlock::new(BlockId(1), Vec::new());
@@ -214,7 +217,7 @@ fn pending_blocks_do_not_conflate_open_with_semantic_unreachable() {
             provenance: Provenance::Synthesized,
         })
         .expect_err("semantic unreachable must close the builder block");
-    assert!(error.contains("after completed block bb1"));
+    assert!(error.message().contains("after completed block bb1"));
     assert!(matches!(
         completed
             .into_sem_block()
@@ -236,6 +239,6 @@ fn pending_blocks_reject_operations_after_a_semantic_terminator() {
             provenance: Provenance::Synthesized,
         })
         .expect_err("completed blocks must reject late operations");
-    assert!(error.contains("after completed block bb0"));
+    assert!(error.message().contains("after completed block bb0"));
     assert!(completed.ops.is_empty());
 }

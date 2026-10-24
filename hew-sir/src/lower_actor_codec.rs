@@ -1,12 +1,14 @@
 //! Resolve the checker-selected remote member's payloads to wire schemas.
 
+use crate::SirLoweringError;
+
 use super::InstanceService;
 use hew_types::ResolvedTy;
 
 impl InstanceService<'_> {
     /// Demand every actor with a remote member so its codecs register at
     /// startup even when this program never addresses it by handle.
-    pub(super) fn request_actor_codec_roots(&mut self) -> Result<(), String> {
+    pub(super) fn request_actor_codec_roots(&mut self) -> Result<(), SirLoweringError> {
         let roots = self
             .module
             .items
@@ -57,7 +59,7 @@ impl InstanceService<'_> {
         &self,
         declaration: &str,
         arguments: &[ResolvedTy],
-    ) -> Result<String, String> {
+    ) -> Result<String, SirLoweringError> {
         // Only rendering changes: nominal identities stay intact, while root
         // source paths and import aliases never become portable type names.
         fn portable(defs: &hew_types::DefTable, ty: &hew_types::Ty) -> hew_types::Ty {
@@ -82,9 +84,9 @@ impl InstanceService<'_> {
             .map(|ty| {
                 ResolvedTy::from_ty(&portable(&self.module.defs, &ty.to_ty()))
                     .map(|ty| ty.canonical_string())
-                    .map_err(|error| error.to_string())
+                    .map_err(|error| SirLoweringError::from(error.to_string()))
             })
-            .collect::<Result<Vec<_>, _>>()?;
+            .collect::<Result<Vec<_>, SirLoweringError>>()?;
         Ok(format!("{declaration}<{}>", arguments.join(",")))
     }
 
@@ -92,7 +94,7 @@ impl InstanceService<'_> {
         &mut self,
         params: &[ResolvedTy],
         reply: &ResolvedTy,
-    ) -> Result<crate::actor::SemActorCodec, String> {
+    ) -> Result<crate::actor::SemActorCodec, SirLoweringError> {
         Ok(crate::actor::SemActorCodec {
             params: params
                 .iter()

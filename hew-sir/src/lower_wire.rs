@@ -5,6 +5,8 @@ use std::sync::Arc;
 
 use hew_types::{Codec, ResolvedTy};
 
+use crate::SirLoweringError;
+
 use super::{Builder, InstanceService};
 use crate::{
     AggregateShapeRef, BlockArg, BoundaryDecision, BoundaryOperand, CallResult, CallUnwind, Edge,
@@ -16,7 +18,10 @@ impl InstanceService<'_> {
     /// The plans of every type a codec of `root` walks. The checker admitted
     /// the type (`TypeFactService::data_error`); a shape this cannot plan is a
     /// broken stage contract.
-    pub(super) fn wire_plans(&mut self, root: &ResolvedTy) -> Result<Arc<SemWirePlans>, String> {
+    pub(super) fn wire_plans(
+        &mut self,
+        root: &ResolvedTy,
+    ) -> Result<Arc<SemWirePlans>, SirLoweringError> {
         if let Some(plans) = self.wire_plans.get(root) {
             return Ok(Arc::clone(plans));
         }
@@ -29,7 +34,7 @@ impl InstanceService<'_> {
         &mut self,
         root: &ResolvedTy,
         property: bool,
-    ) -> Result<SemWirePlans, String> {
+    ) -> Result<SemWirePlans, SirLoweringError> {
         let data = self.checked_facts.data_plans(root, property)?;
         let mut plans = BTreeMap::new();
         for (ty, plan) in data.plans {
@@ -48,7 +53,7 @@ impl InstanceService<'_> {
     pub(super) fn property_plans(
         &mut self,
         root: &ResolvedTy,
-    ) -> Result<Arc<SemWirePlans>, String> {
+    ) -> Result<Arc<SemWirePlans>, SirLoweringError> {
         let mut plans = self.data_storage_plans(root, true)?;
         plans.property_input = true;
         let preserve_fields = |table: &mut SemWireTable| {
@@ -114,7 +119,7 @@ impl InstanceService<'_> {
         &mut self,
         ty: &ResolvedTy,
         kind: hew_types::data_plan::DataKind<(), ()>,
-    ) -> Result<SemWireKind, String> {
+    ) -> Result<SemWireKind, SirLoweringError> {
         use hew_types::data_plan::DataKind;
         Ok(match kind {
             DataKind::Scalar => SemWireKind::Scalar,
@@ -177,13 +182,17 @@ impl InstanceService<'_> {
 }
 
 impl Builder<'_, '_> {
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one codec invocation keeps its result and failure continuations together"
+    )]
     pub(super) fn lower_wire_codec(
         &mut self,
         expr: &hew_hir::HirExpr,
         codec: Codec,
         input: &hew_hir::HirExpr,
         value_ty: &ResolvedTy,
-    ) -> Result<ValueId, String> {
+    ) -> Result<ValueId, SirLoweringError> {
         let value_ty = self.ty(value_ty);
         let mut plan = self.service.wire_plans(&value_ty)?;
         let result_ty = self.ty(&expr.ty);
@@ -194,12 +203,11 @@ impl Builder<'_, '_> {
             // A failure decodes the reader's error through the plan of the
             // checked `Err` type, `wire.DecodeError`.
             let ResolvedTy::Named { args, .. } = &result_ty else {
-                return Err("codec decode result is not a Result".to_string());
+                return Err("codec decode result is not a Result".to_string().into());
             };
-            let error_ty = args
-                .get(1)
-                .cloned()
-                .ok_or_else(|| "codec decode result lacks its error type".to_string())?;
+            let error_ty = args.get(1).cloned().ok_or_else(|| {
+                SirLoweringError::from("codec decode result lacks its error type".to_string())
+            })?;
             let error_plans = self.service.wire_plans(&error_ty)?;
             let mut merged = (*plan).clone();
             merged.plans.extend(
@@ -211,11 +219,15 @@ impl Builder<'_, '_> {
             plan = Arc::new(merged);
             let shape = self.service.require_variant_shape(&result_ty)?;
             let tags = &self.service.variant_shapes[shape.0 as usize].runtime_tags;
-            let case = |role: crate::RuntimeVariantRole| -> Result<u32, String> {
+            let case = |role: crate::RuntimeVariantRole| -> Result<u32, SirLoweringError> {
                 tags.iter()
                     .find(|(found, _)| *found == role)
                     .map(|(_, tag)| *tag)
-                    .ok_or_else(|| "codec text result is not an exact Result".to_string())
+                    .ok_or_else(|| {
+                        SirLoweringError::from(
+                            "codec text result is not an exact Result".to_string(),
+                        )
+                    })
             };
             Some(crate::SemWireDecodeResult {
                 shape,

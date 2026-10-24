@@ -1,5 +1,7 @@
 //! Task selection borrows readiness and transfers only the winning task.
 
+use crate::SirLoweringError;
+
 use super::{BindingTarget, Builder, MatchExit, OwnedBindingUse};
 use crate::{
     BlockArg, BoundaryDecision, BoundaryOperand, CallResult, Edge, Operand, OwnKind, Provenance,
@@ -38,7 +40,7 @@ impl Builder<'_, '_> {
         &mut self,
         expression: &HirExpr,
         select: &HirSelect,
-    ) -> Result<Option<ValueId>, String> {
+    ) -> Result<Option<ValueId>, SirLoweringError> {
         let outer_live = self.owned_live.clone();
         let has_calls = select.arms.iter().any(|arm| matches!(&arm.kind, HirSelectArmKind::Call { call } if matches!(call.kind, hew_hir::HirExprKind::Call { .. } | hew_hir::HirExprKind::CallTraitMethodStatic { .. } | hew_hir::HirExprKind::VarSelfMethodCall { .. } | hew_hir::HirExprKind::CallDynMethod { .. })));
         let call_scope = if has_calls {
@@ -112,7 +114,9 @@ impl Builder<'_, '_> {
                     // performs the ordinary receive on its own borrow.
                     let ty = self.ty(&stream.ty);
                     let element = crate::stream_element(&ty)
-                        .ok_or("stream selection operand lacks its element type")?
+                        .ok_or(SirLoweringError::from(
+                            "stream selection operand lacks its element type",
+                        ))?
                         .clone();
                     let source_loan_depth = loans.len();
                     let operand = self.lower_borrowed_read(stream, &mut loans)?;
@@ -143,8 +147,9 @@ impl Builder<'_, '_> {
                             | hew_hir::HirExprKind::VarSelfMethodCall { .. }
                             | hew_hir::HirExprKind::CallDynMethod { .. }
                     ) {
-                        let scope =
-                            call_scope.ok_or("prepared call has no private select scope")?;
+                        let scope = call_scope.ok_or(SirLoweringError::from(
+                            "prepared call has no private select scope",
+                        ))?;
                         let floor = loans.len();
                         let task = self.lower_select_call(call, scope, &mut loans)?;
                         self.argument_receiver_loans
@@ -253,7 +258,7 @@ impl Builder<'_, '_> {
                     &ResolvedTy::I64,
                     SemOpKind::ConstInteger(
                         i64::try_from(selected_index)
-                            .map_err(|_| "selection index exceeds i64")?
+                            .map_err(|_| SirLoweringError::from("selection index exceeds i64"))?
                             .into(),
                     ),
                 )?;

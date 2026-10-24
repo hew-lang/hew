@@ -2,6 +2,8 @@
 //! exit plan as ordinary ownership operations, so physical lowering only ever
 //! sees an integer exit status.
 
+use crate::SirLoweringError;
+
 use super::{Builder, EntryAdapter, PreparedCallee};
 use crate::{
     BoundaryDecision, BoundaryOperand, CallResult, Edge, Operand, OwnKind, Provenance, SemOpKind,
@@ -11,18 +13,23 @@ use hew_types::{EntryExitAction, ResolvedTy, RuntimeCallFamily};
 
 impl Builder<'_, '_> {
     /// Call the selected entry, then map its `Result` to the process status:
-    /// `Ok(())` exits 0; `Err(error)` renders the error through the selected
+    /// `Ok(())` exits 0; `Err(error.into())` renders the error through the selected
     /// `Display::fmt`, writes `error: <text>` to stderr and exits 1.
     #[expect(
         clippy::too_many_lines,
         reason = "entry adaptation keeps success and error ownership together"
     )]
-    pub(super) fn lower_entry_adapter(&mut self, adapter: &EntryAdapter) -> Result<(), String> {
+    pub(super) fn lower_entry_adapter(
+        &mut self,
+        adapter: &EntryAdapter,
+    ) -> Result<(), SirLoweringError> {
         let entry = self
             .service
             .callable(adapter.entry)
             .cloned()
-            .ok_or("entry adapter has no entry callable")?;
+            .ok_or(SirLoweringError::from(
+                "entry adapter has no entry callable",
+            ))?;
         self.service.request_body(entry.id);
         let mut arguments = Vec::with_capacity(entry.signature.params.len());
         for (index, parameter) in entry.signature.params.iter().enumerate() {
@@ -68,15 +75,23 @@ impl Builder<'_, '_> {
                 decision: BoundaryDecision::Move,
             }));
         };
-        let result = result.ok_or("entry callable produced no result")?;
+        let result = result.ok_or(SirLoweringError::from("entry callable produced no result"))?;
         let result_ty = entry.signature.return_ty.clone();
         let shape = self.service.require_variant_shape(&result_ty)?;
         let descriptor = self
             .service
             .variant_shapes
-            .get(usize::try_from(shape.0).map_err(|_| "variant shape id exceeds usize")?)
+            .get(
+                usize::try_from(shape.0)
+                    .map_err(|_| SirLoweringError::from("variant shape id exceeds usize"))?,
+            )
             .cloned()
-            .ok_or_else(|| format!("variant shape {} disappeared during lowering", shape.0))?;
+            .ok_or_else(|| {
+                SirLoweringError::from(format!(
+                    "variant shape {} disappeared during lowering",
+                    shape.0
+                ))
+            })?;
         let names = descriptor
             .variants
             .iter()
@@ -85,7 +100,8 @@ impl Builder<'_, '_> {
             return Err(format!(
                 "entry result `{}` is not the `Ok`/`Err` Result shape",
                 result_ty.user_facing()
-            ));
+            )
+            .into());
         }
         let branches = self.emit_variant_switch(shape, &descriptor, result)?;
         let inherited = self.control_state();
@@ -99,7 +115,9 @@ impl Builder<'_, '_> {
                 let error = branch
                     .fields
                     .first()
-                    .ok_or("entry Err variant carries no payload")?
+                    .ok_or(SirLoweringError::from(
+                        "entry Err variant carries no payload",
+                    ))?
                     .value;
                 let rendered = self.render_entry_error(display, error)?;
                 self.emit_stderr_literal("error: ")?;
@@ -125,13 +143,14 @@ impl Builder<'_, '_> {
         &mut self,
         index: usize,
         ty: &ResolvedTy,
-    ) -> Result<crate::ValueId, String> {
+    ) -> Result<crate::ValueId, SirLoweringError> {
         let plan = self.service.property_plans(ty)?;
         let input = self.emit_typed(
             Provenance::Synthesized,
             &ResolvedTy::I64,
             SemOpKind::ConstInteger(i128::from(
-                i64::try_from(index).map_err(|_| "property argument index exceeds i64")?,
+                i64::try_from(index)
+                    .map_err(|_| SirLoweringError::from("property argument index exceeds i64"))?,
             )),
         )?;
         let own = OwnKind::of_ty(ty, self.service.checked_facts.rows())?;
@@ -187,7 +206,7 @@ impl Builder<'_, '_> {
         &mut self,
         display: &hew_types::EntryDisplayTarget,
         error: crate::ValueId,
-    ) -> Result<crate::ValueId, String> {
+    ) -> Result<crate::ValueId, SirLoweringError> {
         let (callee, signature, decision) = match display {
             hew_types::EntryDisplayTarget::Declared {
                 declaration,
@@ -242,14 +261,16 @@ impl Builder<'_, '_> {
         };
         let rendered = self
             .finish_user_call(callee, signature, arguments, &[], &live_before, true, None)?
-            .ok_or("entry Display target produced no string")?;
+            .ok_or(SirLoweringError::from(
+                "entry Display target produced no string",
+            ))?;
         if self.owned_live.contains_key(&error) {
             self.emit_destroy(error)?;
         }
         Ok(rendered)
     }
 
-    fn emit_stderr_literal(&mut self, text: &str) -> Result<(), String> {
+    fn emit_stderr_literal(&mut self, text: &str) -> Result<(), SirLoweringError> {
         let literal = self.service.intern_string(text);
         let value = self.emit_typed(
             Provenance::Synthesized,
@@ -261,7 +282,7 @@ impl Builder<'_, '_> {
     }
 
     /// Write one live string to stderr and continue.
-    fn emit_stderr_write(&mut self, value: crate::ValueId) -> Result<(), String> {
+    fn emit_stderr_write(&mut self, value: crate::ValueId) -> Result<(), SirLoweringError> {
         if self.value_own_kind(value) != Some(OwnKind::Owned) {
             return Err("stderr write requires an owned string".into());
         }

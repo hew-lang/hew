@@ -6,6 +6,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
 use std::ops::Range;
 
 use crate::model::dyn_passing_admits;
+use crate::SirLoweringError;
 
 use hew_parser::ast::Span;
 
@@ -99,8 +100,8 @@ pub enum SirLoweringStatus {
         instances: usize,
         failed_instances: usize,
     },
-    Unsupported {
-        reason: String,
+    Failed {
+        reason: SirLoweringError,
         /// The declaring function's extent, when one is known. A diagnostic
         /// renders this as its provoking construct's span (#3384); it is the
         /// enclosing declaration, not the exact expression that refused,
@@ -111,7 +112,7 @@ pub enum SirLoweringStatus {
     /// The declaration has an admitted SIR callable header but the entry
     /// closure never reached it, so no body was attempted.
     ///
-    /// This is distinct from [`Self::Unsupported`]: nothing is known about
+    /// This is distinct from [`Self::Failed`]: nothing is known about
     /// whether the body would lower, and nothing needed to be. Reporting it as
     /// its own outcome keeps "outside the current semantic surface" from
     /// absorbing "irrelevant to this program".
@@ -131,7 +132,7 @@ pub enum SirLoweringDemand {
     Entry,
     /// Demand every monomorphic declaration, entry or not: the coverage
     /// inventory. A refused header is reported
-    /// [`SirLoweringStatus::Unsupported`] with the refusal reason, because the
+    /// [`SirLoweringStatus::Failed`] with the refusal reason, because the
     /// question asked is "would SIR take this body", not "does this program
     /// need it".
     EveryCallable,
@@ -143,7 +144,7 @@ pub struct SirRootSelectionError {
     /// The exact declaration requested by the caller.
     pub declaration: DefId,
     /// A stable, human-readable explanation suitable for driver diagnostics.
-    pub reason: String,
+    pub reason: SirLoweringError,
 }
 
 impl SirRootSelectionError {
@@ -330,14 +331,15 @@ impl TypeSubstitution {
         defs: &hew_types::DefTable,
         function: &HirFn,
         args: &[ResolvedTy],
-    ) -> Result<Self, String> {
+    ) -> Result<Self, SirLoweringError> {
         if function.type_params.len() != args.len() {
             return Err(format!(
                 "generic template `{}` expects {} type argument(s), SIR received {}",
                 defs.path(function.declaration),
                 function.type_params.len(),
                 args.len()
-            ));
+            )
+            .into());
         }
         Ok(Self {
             params: function.type_params.clone(),
@@ -380,7 +382,7 @@ struct CallableTable<'a> {
     /// and no body is ever demanded of it. The reason is therefore reported at
     /// the call site that needed it — where it is actionable — rather than as
     /// a standing complaint about every unused declaration in the module.
-    ineligible: HashMap<DefId, String>,
+    ineligible: HashMap<DefId, SirLoweringError>,
 }
 
 /// One monomorphic HIR function a resolved call may name, before SIR mints a
@@ -416,7 +418,8 @@ impl<'a> CallableTable<'a> {
                     format!(
                         "HIR direct-call symbol index has no exact symbol for declaration `{}`",
                         module.defs.path(function.declaration)
-                    ),
+                    )
+                    .into(),
                 );
                 continue;
             };
@@ -443,7 +446,7 @@ impl<'a> CallableTable<'a> {
                         format!(
                             "duplicate generic HIR template declaration `{}` has no unambiguous SIR template authority",
                             module.defs.path(function.declaration)
-                        ),
+                        ).into(),
                     );
                     continue;
                 }
@@ -632,7 +635,7 @@ fn concrete_record_fields(
     module: &HirModule,
     facts: &TypeFactService,
     aggregate_ty: &ResolvedTy,
-) -> Result<(hew_types::NominalInstance, Vec<SemAggregateField>), String> {
+) -> Result<(hew_types::NominalInstance, Vec<SemAggregateField>), SirLoweringError> {
     if matches!(
         facts.declaration_marker(aggregate_ty)?,
         hew_types::DeclarationMarker::Resource
@@ -641,7 +644,8 @@ fn concrete_record_fields(
         return Err(format!(
             "`{}` declares a resource cleanup boundary without an admitted release recipe",
             aggregate_ty.user_facing()
-        ));
+        )
+        .into());
     }
     let (instance, fields) = facts.record_fields(aggregate_ty)?;
     Ok((
@@ -653,11 +657,16 @@ fn concrete_record_fields(
     ))
 }
 
-fn require_type_facts(facts: &mut TypeFactService, ty: &ResolvedTy) -> Result<(), String> {
-    facts
-        .require(ty)
-        .map(|_| ())
-        .map_err(|error| format!("type facts refused `{}`: {error}", ty.user_facing()))
+fn require_type_facts(
+    facts: &mut TypeFactService,
+    ty: &ResolvedTy,
+) -> Result<(), SirLoweringError> {
+    facts.require(ty).map(|_| ()).map_err(|error| {
+        SirLoweringError::from(format!(
+            "type facts refused `{}`: {error}",
+            ty.user_facing()
+        ))
+    })
 }
 
 fn require_aggregate_shape(
@@ -666,7 +675,7 @@ fn require_aggregate_shape(
     shapes: &mut Vec<SemAggregateShape>,
     shapes_by_type: &mut HashMap<ResolvedTy, AggregateShapeId>,
     aggregate_ty: &ResolvedTy,
-) -> Result<AggregateShapeRef, String> {
+) -> Result<AggregateShapeRef, SirLoweringError> {
     require_type_facts(facts, aggregate_ty)?;
     if let ResolvedTy::Tuple(fields) = aggregate_ty {
         for field in fields {
@@ -681,10 +690,9 @@ fn require_aggregate_shape(
     for field in &fields {
         require_type_facts(facts, &field.ty)?;
     }
-    let id = AggregateShapeId(
-        u32::try_from(shapes.len())
-            .map_err(|_| "SIR aggregate shape count exceeds u32".to_string())?,
-    );
+    let id = AggregateShapeId(u32::try_from(shapes.len()).map_err(|_| {
+        SirLoweringError::from("SIR aggregate shape count exceeds u32".to_string())
+    })?);
     shapes.push(SemAggregateShape {
         id,
         aggregate_ty: aggregate_ty.clone(),
@@ -699,12 +707,13 @@ fn require_aggregate_shape(
 fn concrete_variant_shape(
     module: &HirModule,
     enum_ty: &ResolvedTy,
-) -> Result<(bool, Vec<SemVariant>), String> {
+) -> Result<(bool, Vec<SemVariant>), SirLoweringError> {
     let ResolvedTy::Named { args, head, .. } = enum_ty else {
         return Err(format!(
             "`{}` is not a checker-resolved named enum",
             enum_ty.user_facing()
-        ));
+        )
+        .into());
     };
     if enum_ty
         .nominal_instance(&module.defs)
@@ -728,7 +737,7 @@ fn concrete_builtin_variant_shape(
     enum_ty: &ResolvedTy,
     args: &[ResolvedTy],
     builtin: hew_types::BuiltinType,
-) -> Result<(bool, Vec<SemVariant>), String> {
+) -> Result<(bool, Vec<SemVariant>), SirLoweringError> {
     if let ResolvedTy::Named { head, .. } = enum_ty {
         let name = head.registry_key();
         if args.is_empty()
@@ -737,8 +746,9 @@ fn concrete_builtin_variant_shape(
                 Some(builtin),
             )
         {
-            let declaration = hew_types::builtin_enums::monomorphic_builtin_enum(name)
-                .ok_or("canonical builtin enum lost its source declaration")?;
+            let declaration = hew_types::builtin_enums::monomorphic_builtin_enum(name).ok_or(
+                SirLoweringError::from("canonical builtin enum lost its source declaration"),
+            )?;
             return Ok((
                 false,
                 declaration
@@ -766,16 +776,17 @@ fn concrete_builtin_variant_shape(
         }
     }
     let declaration = builtin.generic_enum().ok_or_else(|| {
-        format!(
+        SirLoweringError::from(format!(
             "builtin `{}` has no payload-variant SIR declaration",
             enum_ty.user_facing()
-        )
+        ))
     })?;
     if args.len() != declaration.type_params.len() {
         return Err(format!(
             "builtin enum `{}` has incorrect type argument arity",
             enum_ty.user_facing()
-        ));
+        )
+        .into());
     }
     let variants = declaration
         .variants
@@ -830,12 +841,12 @@ fn is_uninhabited(module: &HirModule, ty: &ResolvedTy) -> bool {
 fn concrete_user_variant_shape(
     module: &HirModule,
     enum_ty: &ResolvedTy,
-) -> Result<(bool, Vec<SemVariant>), String> {
+) -> Result<(bool, Vec<SemVariant>), SirLoweringError> {
     let instance = enum_ty.nominal_instance(&module.defs).ok_or_else(|| {
-        format!(
+        SirLoweringError::from(format!(
             "`{}` has no checker-minted nominal enum identity",
             enum_ty.user_facing()
-        )
+        ))
     })?;
     let declaration = instance.nominal.declaration();
     let decl = module
@@ -851,10 +862,10 @@ fn concrete_user_variant_shape(
             _ => None,
         })
         .ok_or_else(|| {
-            format!(
+            SirLoweringError::from(format!(
                 "enum `{}` has no exact HIR declaration",
                 enum_ty.user_facing()
-            )
+            ))
         })?;
     if decl.type_params.len() != instance.args.len() {
         return Err(format!(
@@ -862,7 +873,8 @@ fn concrete_user_variant_shape(
             enum_ty.user_facing(),
             instance.args.len(),
             decl.type_params.len()
-        ));
+        )
+        .into());
     }
 
     let variants = sem_variants_from_decl(decl, &instance.args, enum_ty)?;
@@ -873,7 +885,7 @@ fn sem_variants_from_decl(
     decl: &hew_hir::HirTypeDecl,
     args: &[ResolvedTy],
     enum_ty: &ResolvedTy,
-) -> Result<Vec<SemVariant>, String> {
+) -> Result<Vec<SemVariant>, SirLoweringError> {
     decl.variants
         .iter()
         .map(|variant| {
@@ -888,7 +900,8 @@ fn sem_variants_from_decl(
                     "enum `{}` variant `{}` has inconsistent HIR field names and types",
                     enum_ty.user_facing(),
                     variant.name
-                ));
+                )
+                .into());
             }
             Ok(SemVariant {
                 name: variant.name.clone(),
@@ -913,7 +926,7 @@ fn require_variant_shape(
     shapes: &mut Vec<SemVariantShape>,
     shapes_by_type: &mut HashMap<ResolvedTy, VariantShapeId>,
     enum_ty: &ResolvedTy,
-) -> Result<VariantShapeId, String> {
+) -> Result<VariantShapeId, SirLoweringError> {
     if let Some(id) = shapes_by_type.get(enum_ty).copied() {
         return Ok(id);
     }
@@ -925,10 +938,10 @@ fn require_variant_shape(
             require_type_facts(facts, &field.ty)?;
         }
     }
-    let id = VariantShapeId(
-        u32::try_from(shapes.len())
-            .map_err(|_| "SIR variant shape count exceeds u32".to_string())?,
-    );
+    let id =
+        VariantShapeId(u32::try_from(shapes.len()).map_err(|_| {
+            SirLoweringError::from("SIR variant shape count exceeds u32".to_string())
+        })?);
     shapes.push(SemVariantShape {
         id,
         enum_ty: enum_ty.clone(),
@@ -946,7 +959,7 @@ fn require_variant_shape(
 pub(crate) fn runtime_variant_tags(
     enum_ty: &ResolvedTy,
     variants: &[SemVariant],
-) -> Result<Vec<(RuntimeVariantRole, u32)>, String> {
+) -> Result<Vec<(RuntimeVariantRole, u32)>, SirLoweringError> {
     use hew_types::{BuiltinType, KnownDecl, TypeHead};
     use RuntimeVariantRole as Role;
 
@@ -1017,15 +1030,15 @@ pub(crate) fn runtime_variant_tags(
                 .iter()
                 .position(|variant| variant.name == *name)
                 .ok_or_else(|| {
-                    format!(
+                    SirLoweringError::from(format!(
                         "runtime enum `{}` has no required `{name}` variant",
                         enum_ty.user_facing()
-                    )
+                    ))
                 })
                 .and_then(|index| {
-                    u32::try_from(index)
-                        .map(|tag| (*role, tag))
-                        .map_err(|_| "runtime variant tag exceeds u32".to_string())
+                    u32::try_from(index).map(|tag| (*role, tag)).map_err(|_| {
+                        SirLoweringError::from("runtime variant tag exceeds u32".to_string())
+                    })
                 })
         })
         .collect()
@@ -1039,7 +1052,7 @@ fn require_signature_shapes(
     variant_shapes: &mut Vec<SemVariantShape>,
     variant_shapes_by_type: &mut HashMap<ResolvedTy, VariantShapeId>,
     signature: &SemSignature,
-) -> Result<(), String> {
+) -> Result<(), SirLoweringError> {
     for ty in signature
         .params
         .iter()
@@ -1070,7 +1083,7 @@ fn require_type_shapes(
     variant_shapes: &mut Vec<SemVariantShape>,
     variant_shapes_by_type: &mut HashMap<ResolvedTy, VariantShapeId>,
     ty: &ResolvedTy,
-) -> Result<(), String> {
+) -> Result<(), SirLoweringError> {
     let mut pending = vec![ty.clone()];
     let mut seen = BTreeSet::new();
     while let Some(ty) = pending.pop() {
@@ -1084,7 +1097,8 @@ fn require_type_shapes(
             return Err(format!(
                 "nested type `{}` has no semantic value contract",
                 ty.user_facing()
-            ));
+            )
+            .into());
         }
         if let ResolvedTy::Array(element, _) = &ty {
             pending.push((**element).clone());
@@ -1103,7 +1117,8 @@ fn require_type_shapes(
                     return Err(format!(
                         "{component} `{}` has no semantic value contract",
                         argument.user_facing(),
-                    ));
+                    )
+                    .into());
                 }
             }
             // Execution-domain admission is distinct from copyability.
@@ -1313,13 +1328,15 @@ struct EntryAdapter {
 }
 
 impl BodySource {
-    fn parameters<'a>(&'a self, function: &'a HirFn) -> Result<&'a [HirBinding], String> {
+    fn parameters<'a>(&'a self, function: &'a HirFn) -> Result<&'a [HirBinding], SirLoweringError> {
         match self {
             Self::Function | Self::Actor { .. } => Ok(&function.params),
             Self::EntryAdapter(_) => Ok(&[]),
             Self::Closure(expression) => match &expression.kind {
                 HirExprKind::Closure { params, .. } => Ok(params),
-                _ => Err("closure body source is not a checked literal".to_string()),
+                _ => Err("closure body source is not a checked literal"
+                    .to_string()
+                    .into()),
             },
         }
     }
@@ -1335,16 +1352,18 @@ fn function_source_origin(module: &HirModule, function: &HirFn) -> FunctionSourc
     }
 }
 
-fn generic_template_admission(function: &HirFn) -> Result<(), String> {
+fn generic_template_admission(function: &HirFn) -> Result<(), SirLoweringError> {
     if function.intrinsic_id.is_some() {
         return Err(
-            "floor intrinsics remain outside SIR's ordinary direct-call domain".to_string(),
+            "floor intrinsics remain outside SIR's ordinary direct-call domain"
+                .to_string()
+                .into(),
         );
     }
     Ok(())
 }
 
-fn generic_template_signature(function: &HirFn) -> Result<SemSignature, String> {
+fn generic_template_signature(function: &HirFn) -> Result<SemSignature, SirLoweringError> {
     generic_template_admission(function)?;
     Ok(SemSignature {
         failure_domain: function.failure_domain,
@@ -1370,12 +1389,11 @@ fn callable_signature(
     module: &HirModule,
     function: &HirFn,
     facts: &mut TypeFactService,
-) -> Result<SemSignature, String> {
+) -> Result<SemSignature, SirLoweringError> {
     if !function.type_params.is_empty() {
         return Err(
             "generic origin functions are instantiated by the SIR instance service, not admitted as abstract callable bodies"
-                .to_string(),
-        );
+                .to_string().into(),);
     }
     callable_signature_with_substitution(module, function, &TypeSubstitution::empty(), facts)
 }
@@ -1385,7 +1403,7 @@ fn callable_signature_with_substitution(
     function: &HirFn,
     substitution: &TypeSubstitution,
     facts: &mut TypeFactService,
-) -> Result<SemSignature, String> {
+) -> Result<SemSignature, SirLoweringError> {
     generic_template_admission(function)?;
     let mut params = Vec::with_capacity(function.params.len());
     for (index, parameter) in function.params.iter().enumerate() {
@@ -1395,11 +1413,14 @@ fn callable_signature_with_substitution(
                 "`{}` parameter {index} has unsupported type `{}` after semantic substitution; SIR calls require an exact scalar, string, bytes, aggregate, or variant contract",
                 function.name,
                 ty.user_facing()
-            ));
+            ).into());
         }
-        let row = facts
-            .require(&ty)
-            .map_err(|error| format!("type facts refused `{}`: {error}", ty.user_facing()))?;
+        let row = facts.require(&ty).map_err(|error| {
+            SirLoweringError::from(format!(
+                "type facts refused `{}`: {error}",
+                ty.user_facing()
+            ))
+        })?;
         params.push(SemAbiParam {
             ty,
             passing: if OwnKind::of_class(row.class) == OwnKind::Owned {
@@ -1421,7 +1442,7 @@ fn callable_signature_with_substitution(
         return Err(format!(
             "return type `{}` is outside SIR's exact call-result domain after semantic substitution",
             return_ty.user_facing()
-        ));
+        ).into());
     }
     Ok(SemSignature {
         failure_domain: function.failure_domain,
@@ -1601,7 +1622,7 @@ fn hir_expr_kind_name(kind: &HirExprKind) -> String {
         .to_string()
 }
 
-fn require_initial_scalar_read(intent: IntentKind) -> Result<(), String> {
+fn require_initial_scalar_read(intent: IntentKind) -> Result<(), SirLoweringError> {
     match intent {
         IntentKind::Read => Ok(()),
         // HIR's `Modify`, `Consume` and `Discharge` each need a SIR ownership
@@ -1610,18 +1631,15 @@ fn require_initial_scalar_read(intent: IntentKind) -> Result<(), String> {
         // mode keeps the refusal precise without reviving the deleted mode set.
         IntentKind::Borrow | IntentKind::Modify | IntentKind::Consume | IntentKind::Discharge => Err(format!(
             "HIR {intent:?} intent needs a SIR ownership operation; initial scalar SIR admits only read operands"
-        )),
+        ).into()),
         IntentKind::Capture => Err(
             "HIR Capture intent requires closure/COW capture semantics that the initial scalar SIR slice does not model"
-                .to_string(),
-        ),
+                .to_string().into(),),
         IntentKind::Yield => Err(
             "HIR Yield intent requires explicit SIR suspension semantics that the initial scalar slice does not model"
-                .to_string(),
-        ),
+                .to_string().into(),),
         IntentKind::Unknown => Err(
-            "HIR Unknown intent is not a legal input to semantic SIR lowering".to_string(),
-        ),
+            "HIR Unknown intent is not a legal input to semantic SIR lowering".to_string().into(),),
     }
 }
 
@@ -1640,16 +1658,16 @@ fn require_initial_value_transfer(
     intent: IntentKind,
     ty: &hew_types::ResolvedTy,
     context: &str,
-) -> Result<(), String> {
+) -> Result<(), SirLoweringError> {
     match intent {
         IntentKind::Read | IntentKind::Consume if is_initial_value_type(ty) => Ok(()),
         IntentKind::Read | IntentKind::Consume => Err(format!(
             "{context}: HIR {intent:?} intent transfers ownership-bearing `{}`; initial SIR only aliases BitCopy scalar/tuple binding/return flow",
             ty.user_facing()
-        )),
+        ).into()),
         other => Err(format!(
             "{context}: HIR {other:?} intent; initial scalar/tuple binding/return flow admits only a read or a BitCopy transfer"
-        )),
+        ).into()),
     }
 }
 
@@ -1658,7 +1676,7 @@ fn lower_initial_value_transfer(
     expr: &HirExpr,
     context: &str,
     binding_use: OwnedBindingUse,
-) -> Result<ValueId, String> {
+) -> Result<ValueId, SirLoweringError> {
     let ty = builder.ty(&expr.ty);
     if expr.intent == IntentKind::Borrow && binding_use == OwnedBindingUse::Probe {
         if let Some(place) = builder.expression_projection(expr)? {
@@ -1695,7 +1713,8 @@ fn lower_initial_value_transfer(
             "{context}: HIR {:?} intent cannot transfer `{}` in the owned SIR slice",
             expr.intent,
             ty.user_facing()
-        ));
+        )
+        .into());
     }
     builder.service.require_type_facts(&ty)?;
     if !is_initial_call_value(&ty)
@@ -1707,20 +1726,20 @@ fn lower_initial_value_transfer(
                 .service
                 .require_variant_shape(&ty)
                 .map_err(|reason| {
-                    format!(
+                    SirLoweringError::from(format!(
                         "{context}: `{}` has no exact variant transfer contract: {reason}",
                         ty.user_facing()
-                    )
+                    ))
                 })?;
         } else {
             builder
                 .service
                 .require_aggregate_shape(&ty)
                 .map_err(|reason| {
-                    format!(
+                    SirLoweringError::from(format!(
                         "{context}: `{}` has no aggregate transfer contract: {reason}",
                         ty.user_facing()
-                    )
+                    ))
                 })?;
         }
     }
@@ -1879,14 +1898,17 @@ struct VariantBranch {
 /// read-only in the initial slice. A unit expression in `return` instead
 /// transfers control to the caller; HIR marks that transfer `Consume`, which
 /// is harmless for `Unit` but must not be rechecked as an ordinary operand use.
-fn lower_initial_unit_return(builder: &mut Builder<'_, '_>, expr: &HirExpr) -> Result<(), String> {
+fn lower_initial_unit_return(
+    builder: &mut Builder<'_, '_>,
+    expr: &HirExpr,
+) -> Result<(), SirLoweringError> {
     let ty = builder.ty(&expr.ty);
     if !matches!(expr.intent, IntentKind::Read | IntentKind::Consume) || ty != ResolvedTy::Unit {
         return Err(format!(
             "unit return value: HIR {:?} intent for `{}`; initial SIR admits only a read or a Unit transfer return",
             expr.intent,
             ty.user_facing()
-        ));
+        ).into());
     }
     if matches!(expr.kind, HirExprKind::VarSelfMethodCall { .. }) {
         return builder.lower_var_self_call(expr).map(|_| ());
@@ -1897,7 +1919,8 @@ fn lower_initial_unit_return(builder: &mut Builder<'_, '_>, expr: &HirExpr) -> R
     ) {
         return Err(
             "unit return values are initially supported only for a resolved direct call"
-                .to_string(),
+                .to_string()
+                .into(),
         );
     }
     builder.lower_call(expr, false).map(|_| ())
@@ -1931,23 +1954,24 @@ impl PendingBlock {
         self.terminator.is_none()
     }
 
-    fn append_op(&mut self, op: SemOp) -> Result<(), String> {
+    fn append_op(&mut self, op: SemOp) -> Result<(), SirLoweringError> {
         if self.terminator.is_some() {
             return Err(format!(
                 "SIR builder attempted to append an operation after completed block bb{}",
                 self.id.0
-            ));
+            )
+            .into());
         }
         self.ops.push(op);
         Ok(())
     }
 
-    fn into_sem_block(self) -> Result<SemBlock, String> {
+    fn into_sem_block(self) -> Result<SemBlock, SirLoweringError> {
         let terminator = self.terminator.ok_or_else(|| {
-            format!(
+            SirLoweringError::from(format!(
                 "SIR builder left block bb{} without a semantic terminator",
                 self.id.0
-            )
+            ))
         })?;
         Ok(SemBlock {
             id: self.id,

@@ -1,5 +1,7 @@
 //! Array, tuple and aggregate construction/projection lowering.
 
+use crate::{SirLoweringError, SirOwnershipError};
+
 use super::{
     is_initial_value_type, lower_initial_value_transfer, require_initial_value_transfer,
     AggregateFieldRecipe, AggregateShapeRef, BindingTarget, Builder, HirDestructureField,
@@ -13,7 +15,7 @@ impl Builder<'_, '_> {
         &mut self,
         expr: &HirExpr,
         elements: &[HirExpr],
-    ) -> Result<ValueId, String> {
+    ) -> Result<ValueId, SirLoweringError> {
         let ResolvedTy::Array(element_ty, length) = self.ty(&expr.ty) else {
             return Err("fixed array literal has no exact array type".into());
         };
@@ -50,7 +52,7 @@ impl Builder<'_, '_> {
         &mut self,
         expr: &HirExpr,
         seed: &HirExpr,
-    ) -> Result<ValueId, String> {
+    ) -> Result<ValueId, SirLoweringError> {
         let ResolvedTy::Array(element_ty, length) = self.ty(&expr.ty) else {
             return Err("fixed array repeat has no exact array type".into());
         };
@@ -93,7 +95,7 @@ impl Builder<'_, '_> {
         &mut self,
         expr: &HirExpr,
         elements: &[HirExpr],
-    ) -> Result<ValueId, String> {
+    ) -> Result<ValueId, SirLoweringError> {
         let tuple_ty = self.ty(&expr.ty);
         if tuple_ty == ResolvedTy::Unit && elements.is_empty() {
             return self.emit(expr, SemOpKind::ConstUnit);
@@ -102,7 +104,8 @@ impl Builder<'_, '_> {
             return Err(format!(
                 "tuple literal has non-tuple resolved type `{}` in SIR lowering",
                 tuple_ty.user_facing()
-            ));
+            )
+            .into());
         };
         if expected_elements.len() != elements.len() {
             return Err(format!(
@@ -110,7 +113,7 @@ impl Builder<'_, '_> {
                 elements.len(),
                 tuple_ty.user_facing(),
                 expected_elements.len()
-            ));
+            ).into());
         }
         // The marked receiver occupies the writeback field of the established
         // dual return. The method result may itself mention Self; it keeps the
@@ -131,7 +134,8 @@ impl Builder<'_, '_> {
                     "tuple literal element {index} has resolved type `{}`, expected `{}`",
                     actual_ty.user_facing(),
                     expected_ty.user_facing()
-                ));
+                )
+                .into());
             }
             let value = if is_initial_value_type(&tuple_ty) && !receiver_return {
                 self.lower_read_operand(element, &format!("tuple literal element {index}"))?
@@ -183,20 +187,21 @@ impl Builder<'_, '_> {
         expr: &HirExpr,
         tuple_expr: &HirExpr,
         index: usize,
-    ) -> Result<u32, String> {
+    ) -> Result<u32, SirLoweringError> {
         let tuple_ty = self.ty(&tuple_expr.ty);
         let ResolvedTy::Tuple(elements) = &tuple_ty else {
             return Err(format!(
                 "tuple projection has non-tuple operand type `{}` in SIR lowering",
                 tuple_ty.user_facing()
-            ));
+            )
+            .into());
         };
         let expected_ty = elements.get(index).ok_or_else(|| {
-            format!(
+            SirLoweringError::from(format!(
                 "tuple projection index {index} is out of bounds for `{}` with {} element(s)",
                 tuple_ty.user_facing(),
                 elements.len()
-            )
+            ))
         })?;
         let result_ty = self.ty(&expr.ty);
         if &result_ty != expected_ty {
@@ -205,10 +210,14 @@ impl Builder<'_, '_> {
                 tuple_ty.user_facing(),
                 result_ty.user_facing(),
                 expected_ty.user_facing()
-            ));
+            )
+            .into());
         }
         let index = u32::try_from(index).map_err(|_| {
-            "tuple projection index exceeds SIR's target-independent u32 field range".to_string()
+            SirLoweringError::from(
+                "tuple projection index exceeds SIR's target-independent u32 field range"
+                    .to_string(),
+            )
         })?;
         Ok(index)
     }
@@ -219,7 +228,7 @@ impl Builder<'_, '_> {
         expr: &HirExpr,
         tuple_expr: &HirExpr,
         index: usize,
-    ) -> Result<ValueId, String> {
+    ) -> Result<ValueId, SirLoweringError> {
         if let Some(place) = self.expression_projection(expr)? {
             return self.emit(expr, SemOpKind::LoadCopy { place });
         }
@@ -245,13 +254,14 @@ impl Builder<'_, '_> {
         &mut self,
         value: &HirExpr,
         fields: &[HirDestructureField],
-    ) -> Result<(), String> {
+    ) -> Result<(), SirLoweringError> {
         let aggregate_ty = self.ty(&value.ty);
         let ResolvedTy::Tuple(field_tys) = &aggregate_ty else {
             return Err(format!(
                 "irrefutable destructure has non-aggregate type `{}`",
                 aggregate_ty.user_facing()
-            ));
+            )
+            .into());
         };
         if fields.len() != field_tys.len() {
             return Err(format!(
@@ -259,20 +269,22 @@ impl Builder<'_, '_> {
                 aggregate_ty.user_facing(),
                 fields.len(),
                 field_tys.len()
-            ));
+            )
+            .into());
         }
         require_initial_value_transfer(value.intent, &aggregate_ty, "tuple destructure source")?;
         let tuple = self.lower_expr(value)?;
         for (index, (field, expected_ty)) in fields.iter().zip(field_tys).enumerate() {
-            let index = u32::try_from(index)
-                .map_err(|_| "tuple destructure index exceeds u32".to_string())?;
+            let index = u32::try_from(index).map_err(|_| {
+                SirLoweringError::from("tuple destructure index exceeds u32".to_string())
+            })?;
             let expected_selector = HirDestructureSelector::Tuple(index);
             let Some(binding) = &field.binding else {
                 if field.selector != expected_selector {
                     return Err(format!(
                         "tuple destructure field {index} has selector {:?}, expected {expected_selector:?}",
                         field.selector,
-                    ));
+                    ).into());
                 }
                 continue;
             };
@@ -284,7 +296,7 @@ impl Builder<'_, '_> {
                     binding_ty.user_facing(),
                     expected_selector,
                     expected_ty.user_facing()
-                ));
+                ).into());
             }
             let result = self.emit_typed(
                 Provenance::Site(value.site),
@@ -309,11 +321,15 @@ impl Builder<'_, '_> {
     /// capture, an actor state seat) is transferred whole and taken apart,
     /// with every ordered field becoming a distinct SSA result so cleanup
     /// stays explicit on every path.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one aggregate destructure transfers all selected field owners"
+    )]
     pub(super) fn lower_destructure(
         &mut self,
         value: &HirExpr,
         fields: &[HirDestructureField],
-    ) -> Result<(), String> {
+    ) -> Result<(), SirLoweringError> {
         let aggregate_ty = self.ty(&value.ty);
         if is_initial_value_type(&aggregate_ty) {
             return self.lower_initial_tuple_destructure(value, fields);
@@ -331,14 +347,26 @@ impl Builder<'_, '_> {
                 .map(|index| {
                     u32::try_from(index)
                         .map(HirDestructureSelector::Tuple)
-                        .map_err(|_| "tuple destructure index exceeds u32".to_string())
+                        .map_err(|_| {
+                            SirLoweringError::from(
+                                "tuple destructure index exceeds u32".to_string(),
+                            )
+                        })
                 })
-                .collect::<Result<Vec<_>, _>>()?,
+                .collect::<Result<Vec<_>, SirLoweringError>>()?,
             AggregateShapeRef::Record(id) => self
                 .service
                 .aggregate_shapes
-                .get(usize::try_from(id.0).map_err(|_| "aggregate shape id exceeds usize")?)
-                .ok_or_else(|| format!("aggregate shape {} disappeared during lowering", id.0))?
+                .get(
+                    usize::try_from(id.0)
+                        .map_err(|_| SirLoweringError::from("aggregate shape id exceeds usize"))?,
+                )
+                .ok_or_else(|| {
+                    SirLoweringError::from(format!(
+                        "aggregate shape {} disappeared during lowering",
+                        id.0
+                    ))
+                })?
                 .fields
                 .iter()
                 .map(|field| HirDestructureSelector::Record(field.name.clone()))
@@ -350,7 +378,8 @@ impl Builder<'_, '_> {
                 aggregate_ty.user_facing(),
                 fields.len(),
                 recipes.len()
-            ));
+            )
+            .into());
         }
         for (index, ((field, recipe), expected_selector)) in fields
             .iter()
@@ -362,7 +391,7 @@ impl Builder<'_, '_> {
                 return Err(format!(
                     "aggregate destructure field {index} has selector {:?}, expected {expected_selector:?}",
                     field.selector,
-                ));
+                ).into());
             }
             let Some(binding) = &field.binding else {
                 continue;
@@ -373,7 +402,8 @@ impl Builder<'_, '_> {
                     "aggregate destructure field {index} has type `{}`, expected `{}`",
                     binding_ty.user_facing(),
                     recipe.ty.user_facing()
-                ));
+                )
+                .into());
             }
         }
 
@@ -391,7 +421,8 @@ impl Builder<'_, '_> {
             return Err(format!(
                 "aggregate destructure source `{}` has no exact ownership facts",
                 aggregate_ty.user_facing()
-            ));
+            )
+            .into());
         }
         let results = self.emit_destructure_value(
             aggregate,
@@ -418,7 +449,7 @@ impl Builder<'_, '_> {
         shape: AggregateShapeRef,
         recipes: &[AggregateFieldRecipe],
         fields: &[HirDestructureField],
-    ) -> Result<bool, String> {
+    ) -> Result<bool, SirLoweringError> {
         let Some(places) = self.aggregate_field_places(value, shape, recipes)? else {
             return Ok(false);
         };
@@ -449,7 +480,7 @@ impl Builder<'_, '_> {
         source: &HirExpr,
         shape: AggregateShapeRef,
         recipes: &[AggregateFieldRecipe],
-    ) -> Result<Option<Vec<PlaceId>>, String> {
+    ) -> Result<Option<Vec<PlaceId>>, SirLoweringError> {
         let Some(root) = self.resolve_binding_place(source)? else {
             return Ok(None);
         };
@@ -472,7 +503,7 @@ impl Builder<'_, '_> {
         ty: &ResolvedTy,
         shape: AggregateShapeRef,
         provenance: Provenance,
-    ) -> Result<Vec<ValueDef>, String> {
+    ) -> Result<Vec<ValueDef>, SirLoweringError> {
         let recipes = crate::aggregate_field_recipes(
             shape,
             ty,
@@ -522,17 +553,29 @@ impl Builder<'_, '_> {
         expr: &HirExpr,
         fields: &[(String, HirExpr)],
         base: Option<&HirExpr>,
-    ) -> Result<ValueId, String> {
+    ) -> Result<ValueId, SirLoweringError> {
         let aggregate_ty = self.ty(&expr.ty);
         let shape = self.service.require_aggregate_shape(&aggregate_ty)?;
         let AggregateShapeRef::Record(id) = shape else {
-            return Err("struct initializer resolved to a non-record aggregate shape".to_string());
+            return Err(
+                "struct initializer resolved to a non-record aggregate shape"
+                    .to_string()
+                    .into(),
+            );
         };
         let declared_fields = self
             .service
             .aggregate_shapes
-            .get(usize::try_from(id.0).map_err(|_| "aggregate shape id exceeds usize")?)
-            .ok_or_else(|| format!("aggregate shape {} disappeared during lowering", id.0))?
+            .get(
+                usize::try_from(id.0)
+                    .map_err(|_| SirLoweringError::from("aggregate shape id exceeds usize"))?,
+            )
+            .ok_or_else(|| {
+                SirLoweringError::from(format!(
+                    "aggregate shape {} disappeared during lowering",
+                    id.0
+                ))
+            })?
             .fields
             .clone();
         let mut ordered = vec![None; declared_fields.len()];
@@ -541,13 +584,13 @@ impl Builder<'_, '_> {
                 .iter()
                 .position(|declared| declared.name == *name)
                 .ok_or_else(|| {
-                    format!(
+                    SirLoweringError::from(format!(
                         "record initializer field `{name}` is absent from exact shape `{}`",
                         aggregate_ty.user_facing()
-                    )
+                    ))
                 })?;
             if ordered[index].is_some() {
-                return Err(format!("record initializer repeats field `{name}`"));
+                return Err(format!("record initializer repeats field `{name}`").into());
             }
             let value = lower_initial_value_transfer(
                 self,
@@ -571,14 +614,14 @@ impl Builder<'_, '_> {
             .zip(&declared_fields)
             .map(|(operand, declared)| {
                 operand.ok_or_else(|| {
-                    format!(
+                    SirLoweringError::from(format!(
                         "record initializer omits field `{}` from exact shape `{}`",
                         declared.name,
                         aggregate_ty.user_facing()
-                    )
+                    ))
                 })
             })
-            .collect::<Result<Vec<_>, _>>()?;
+            .collect::<Result<Vec<_>, SirLoweringError>>()?;
         let consumed = fields.iter().map(|field| field.value).collect::<Vec<_>>();
         let aggregate = self.emit(expr, SemOpKind::AggregateMake { shape, fields })?;
         for field in consumed {
@@ -594,13 +637,14 @@ impl Builder<'_, '_> {
         aggregate_ty: &ResolvedTy,
         shape: AggregateShapeRef,
         ordered: &mut [Option<Operand>],
-    ) -> Result<(), String> {
+    ) -> Result<(), SirLoweringError> {
         if self.ty(&base.ty) != *aggregate_ty {
             return Err(format!(
                 "functional update base `{}` differs from the constructed `{}`",
                 self.ty(&base.ty).user_facing(),
                 aggregate_ty.user_facing()
-            ));
+            )
+            .into());
         }
         let recipes = crate::aggregate_field_recipes(
             shape,
@@ -633,10 +677,8 @@ impl Builder<'_, '_> {
                 OwnedBindingUse::Move,
             )?;
             if self.value_own_kind(value) != Some(OwnKind::Owned) {
-                return Err(
-                    "E_OWN_CONSUME_BORROWED: functional update of a borrowed base cannot transfer its non-copyable fields"
-                        .into(),
-                );
+                return Err(SirLoweringError::Ownership { kind: SirOwnershipError::ConsumeBorrowed, message: "functional update of a borrowed base cannot transfer its non-copyable fields"
+                        .into() });
             }
             value
         } else {
@@ -657,7 +699,8 @@ impl Builder<'_, '_> {
                 if !carried[index] {
                     continue;
                 }
-                let field = u32::try_from(index).map_err(|_| "aggregate field exceeds u32")?;
+                let field = u32::try_from(index)
+                    .map_err(|_| SirLoweringError::from("aggregate field exceeds u32"))?;
                 let value = self.emit_typed(
                     provenance.clone(),
                     &recipe.ty,
@@ -679,26 +722,38 @@ impl Builder<'_, '_> {
         expr: &HirExpr,
         object: &HirExpr,
         field: &str,
-    ) -> Result<(AggregateShapeRef, u32), String> {
+    ) -> Result<(AggregateShapeRef, u32), SirLoweringError> {
         let aggregate_ty = self.ty(&object.ty);
         let shape = self.service.require_aggregate_shape(&aggregate_ty)?;
         let AggregateShapeRef::Record(id) = shape else {
-            return Err("named field access resolved to a non-record aggregate shape".to_string());
+            return Err(
+                "named field access resolved to a non-record aggregate shape"
+                    .to_string()
+                    .into(),
+            );
         };
         let descriptor = self
             .service
             .aggregate_shapes
-            .get(usize::try_from(id.0).map_err(|_| "aggregate shape id exceeds usize")?)
-            .ok_or_else(|| format!("aggregate shape {} disappeared during lowering", id.0))?;
+            .get(
+                usize::try_from(id.0)
+                    .map_err(|_| SirLoweringError::from("aggregate shape id exceeds usize"))?,
+            )
+            .ok_or_else(|| {
+                SirLoweringError::from(format!(
+                    "aggregate shape {} disappeared during lowering",
+                    id.0
+                ))
+            })?;
         let index = descriptor
             .fields
             .iter()
             .position(|candidate| candidate.name == field)
             .ok_or_else(|| {
-                format!(
+                SirLoweringError::from(format!(
                     "field `{field}` is absent from exact aggregate shape `{}`",
                     aggregate_ty.user_facing()
-                )
+                ))
             })?;
         let expected_ty = descriptor.fields[index].ty.clone();
         let result_ty = self.ty(&expr.ty);
@@ -708,11 +763,13 @@ impl Builder<'_, '_> {
                 aggregate_ty.user_facing(),
                 result_ty.user_facing(),
                 expected_ty.user_facing()
-            ));
+            )
+            .into());
         }
         Ok((
             shape,
-            u32::try_from(index).map_err(|_| "aggregate field index exceeds u32")?,
+            u32::try_from(index)
+                .map_err(|_| SirLoweringError::from("aggregate field index exceeds u32"))?,
         ))
     }
 
@@ -722,7 +779,7 @@ impl Builder<'_, '_> {
         expr: &HirExpr,
         object: &HirExpr,
         field: &str,
-    ) -> Result<ValueId, String> {
+    ) -> Result<ValueId, SirLoweringError> {
         if let Some(place) = self.expression_projection(expr)? {
             return self.emit(expr, SemOpKind::LoadCopy { place });
         }

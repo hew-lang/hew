@@ -4,13 +4,19 @@
 use hew_parser::ast::BinaryOp;
 use hew_types::TryConversionKind;
 
+use crate::SirLoweringError;
+
 use super::{
     Builder, ControlState, HirExpr, HirExprKind, MatchExit, Operand, Provenance, ResolvedTy,
     SemOpKind, ValueId,
 };
 
 impl Builder<'_, '_> {
-    fn numeric_cast(&mut self, value: ValueId, target: &ResolvedTy) -> Result<ValueId, String> {
+    fn numeric_cast(
+        &mut self,
+        value: ValueId,
+        target: &ResolvedTy,
+    ) -> Result<ValueId, SirLoweringError> {
         self.emit_typed(
             Provenance::Synthesized,
             target,
@@ -26,7 +32,7 @@ impl Builder<'_, '_> {
         op: BinaryOp,
         lhs: ValueId,
         rhs: ValueId,
-    ) -> Result<ValueId, String> {
+    ) -> Result<ValueId, SirLoweringError> {
         self.emit_typed(
             Provenance::Synthesized,
             &ResolvedTy::Bool,
@@ -38,7 +44,11 @@ impl Builder<'_, '_> {
         )
     }
 
-    fn numeric_integer(&mut self, ty: &ResolvedTy, value: i128) -> Result<ValueId, String> {
+    fn numeric_integer(
+        &mut self,
+        ty: &ResolvedTy,
+        value: i128,
+    ) -> Result<ValueId, SirLoweringError> {
         self.emit_typed(Provenance::Synthesized, ty, SemOpKind::ConstInteger(value))
     }
 
@@ -58,7 +68,7 @@ impl Builder<'_, '_> {
         ty: &ResolvedTy,
         from: (i128, i128),
         to: (i128, i128),
-    ) -> Result<Vec<ControlState>, String> {
+    ) -> Result<Vec<ControlState>, SirLoweringError> {
         let mut failures = Vec::new();
         for (needed, bound, op) in [
             (from.0 < to.0, to.0, BinaryOp::GreaterEqual),
@@ -84,7 +94,7 @@ impl Builder<'_, '_> {
         value: ValueId,
         ty: &ResolvedTy,
         range: (i128, i128),
-    ) -> Result<Vec<ControlState>, String> {
+    ) -> Result<Vec<ControlState>, SirLoweringError> {
         let mut failures = Vec::new();
         for (bound, op) in [
             (range.0 as f64, BinaryOp::GreaterEqual),
@@ -98,7 +108,10 @@ impl Builder<'_, '_> {
         Ok(failures)
     }
 
-    pub(super) fn lower_saturating_cast(&mut self, expr: &HirExpr) -> Result<ValueId, String> {
+    pub(super) fn lower_saturating_cast(
+        &mut self,
+        expr: &HirExpr,
+    ) -> Result<ValueId, SirLoweringError> {
         let HirExprKind::SaturatingWidthCast {
             value,
             from_ty,
@@ -109,8 +122,12 @@ impl Builder<'_, '_> {
         else {
             unreachable!()
         };
-        let from = from_range.ok_or("saturating cast has no checked source bounds")?;
-        let to = to_range.ok_or("saturating cast has no checked target bounds")?;
+        let from = from_range.ok_or(SirLoweringError::from(
+            "saturating cast has no checked source bounds",
+        ))?;
+        let to = to_range.ok_or(SirLoweringError::from(
+            "saturating cast has no checked target bounds",
+        ))?;
         let source_ty = self.ty(from_ty);
         let target_ty = self.ty(to_ty);
         let value = self
@@ -135,10 +152,10 @@ impl Builder<'_, '_> {
         let converted = self.numeric_cast(value, &target_ty)?;
         exits.push(self.numeric_exit(converted));
         self.merge_match_exits(exits, &target_ty)?
-            .ok_or_else(|| "saturating cast has no result".into())
+            .ok_or_else(|| SirLoweringError::from("saturating cast has no result"))
     }
 
-    pub(super) fn lower_try_cast(&mut self, expr: &HirExpr) -> Result<ValueId, String> {
+    pub(super) fn lower_try_cast(&mut self, expr: &HirExpr) -> Result<ValueId, SirLoweringError> {
         let HirExprKind::TryWidthCast {
             value,
             from_ty,
@@ -159,13 +176,19 @@ impl Builder<'_, '_> {
             TryConversionKind::IntToInt => self.integer_conversion_guards(
                 value,
                 &source_ty,
-                from_range.ok_or("checked integer conversion has no source bounds")?,
-                to_range.ok_or("checked integer conversion has no target bounds")?,
+                from_range.ok_or(SirLoweringError::from(
+                    "checked integer conversion has no source bounds",
+                ))?,
+                to_range.ok_or(SirLoweringError::from(
+                    "checked integer conversion has no target bounds",
+                ))?,
             )?,
             TryConversionKind::FloatToInt => self.float_integer_guards(
                 value,
                 &source_ty,
-                to_range.ok_or("checked float conversion has no target bounds")?,
+                to_range.ok_or(SirLoweringError::from(
+                    "checked float conversion has no target bounds",
+                ))?,
             )?,
             TryConversionKind::IntToFloat | TryConversionKind::FloatToFloat => Vec::new(),
         };
@@ -176,7 +199,9 @@ impl Builder<'_, '_> {
             TryConversionKind::IntToFloat => failures.extend(self.float_integer_guards(
                 converted,
                 &target_ty,
-                from_range.ok_or("checked float conversion has no source bounds")?,
+                from_range.ok_or(SirLoweringError::from(
+                    "checked float conversion has no source bounds",
+                ))?,
             )?),
             TryConversionKind::FloatToFloat => {
                 // Infinity round-trips but is deliberately not an exact
@@ -213,7 +238,7 @@ impl Builder<'_, '_> {
         expr: &HirExpr,
         converted: ValueId,
         failures: Vec<ControlState>,
-    ) -> Result<ValueId, String> {
+    ) -> Result<ValueId, SirLoweringError> {
         let result_ty = self.ty(&expr.ty);
         let shape = self.service.require_variant_shape(&result_ty)?;
         let descriptor = &self.service.variant_shapes[shape.0 as usize];
@@ -223,7 +248,11 @@ impl Builder<'_, '_> {
                 .iter()
                 .position(|v| v.name == name)
                 .and_then(|index| u32::try_from(index).ok())
-                .ok_or_else(|| format!("checked conversion Option shape has no {name} variant"))
+                .ok_or_else(|| {
+                    SirLoweringError::from(format!(
+                        "checked conversion Option shape has no {name} variant"
+                    ))
+                })
         };
         let some = variant("Some")?;
         let none = variant("None")?;
@@ -250,6 +279,6 @@ impl Builder<'_, '_> {
         )?;
         let failure = self.numeric_exit(absent);
         self.merge_match_exits(vec![success, failure], &result_ty)?
-            .ok_or_else(|| "checked conversion has no result".into())
+            .ok_or_else(|| SirLoweringError::from("checked conversion has no result"))
     }
 }

@@ -1,6 +1,8 @@
 //! Statement loops, labelled exits and integer ranges share lexical cleanup.
 //! Source loops produce Unit or Never; the parser rejects break operands.
 
+use crate::SirLoweringError;
+
 use super::{
     BindingId, BindingTarget, BlockArg, BlockId, Builder, ControlState, Edge, HirBinding, HirBlock,
     HirExpr, HirExprKind, HirLiteral, LoopScope, Operand, OwnedBindingUse, Provenance, ResolvedTy,
@@ -8,7 +10,7 @@ use super::{
 };
 
 impl Builder<'_, '_> {
-    fn loop_edge(&mut self, scope: &LoopScope, target: BlockId) -> Result<Edge, String> {
+    fn loop_edge(&mut self, scope: &LoopScope, target: BlockId) -> Result<Edge, SirLoweringError> {
         let saved = self.control_state();
         let recovery = self.recovery_bodies.clone();
         let preserved = self
@@ -23,7 +25,7 @@ impl Builder<'_, '_> {
             .carried
             .iter()
             .map(|&binding| self.scalar_binding(binding).map(|value| Operand { value }))
-            .collect::<Result<Vec<_>, _>>()?;
+            .collect::<Result<Vec<_>, SirLoweringError>>()?;
         let dead = self
             .owned_live
             .keys()
@@ -46,7 +48,7 @@ impl Builder<'_, '_> {
         continuing: bool,
         label: Option<&str>,
         value: Option<&HirExpr>,
-    ) -> Result<(), String> {
+    ) -> Result<(), SirLoweringError> {
         let index = self
             .loops
             .iter()
@@ -55,7 +57,9 @@ impl Builder<'_, '_> {
             .take_while(|(_, scope)| scope.is_some())
             .find(|(_, scope)| label.is_none() || scope.as_ref().unwrap().label.as_deref() == label)
             .map(|(index, _)| index)
-            .ok_or_else(|| "break/continue has no enclosing loop target".to_string())?;
+            .ok_or_else(|| {
+                SirLoweringError::from("break/continue has no enclosing loop target".to_string())
+            })?;
         self.check_deferred_loop_exit(index)?;
         // HIR can still contain an operand from a non-parser producer. Preserve
         // its effects and ordinary temporary cleanup without returning a value.
@@ -72,17 +76,17 @@ impl Builder<'_, '_> {
     }
 
     /// Give each loop-carried binding a fresh SSA argument at a CFG join.
-    fn loop_join(&mut self, carried: &[BindingId]) -> Result<ControlState, String> {
+    fn loop_join(&mut self, carried: &[BindingId]) -> Result<ControlState, SirLoweringError> {
         let mut state = self.control_state();
         let mut args = Vec::new();
         for &binding in carried {
             let source = self.scalar_binding(binding)?;
-            let ty = self
-                .value_ty(source)
-                .ok_or_else(|| "scalar loop binding has no type".to_string())?;
-            let own = self
-                .value_own_kind(source)
-                .ok_or_else(|| "scalar loop binding has no ownership facts".to_string())?;
+            let ty = self.value_ty(source).ok_or_else(|| {
+                SirLoweringError::from("scalar loop binding has no type".to_string())
+            })?;
+            let own = self.value_own_kind(source).ok_or_else(|| {
+                SirLoweringError::from("scalar loop binding has no ownership facts".to_string())
+            })?;
             let value = self.fresh_value();
             args.push(BlockArg { value, ty, own });
             state.bindings.insert(binding, BindingTarget::Value(value));
@@ -97,7 +101,7 @@ impl Builder<'_, '_> {
         label: Option<&str>,
         condition: Option<&HirExpr>,
         body: &HirBlock,
-    ) -> Result<(), String> {
+    ) -> Result<(), SirLoweringError> {
         let carried = self.mutable_bindings();
         let header = self.loop_join(&carried)?;
         let exit = self.loop_join(&carried)?;
@@ -171,7 +175,7 @@ impl Builder<'_, '_> {
         inclusive: bool,
         adapters: &[hew_hir::HirRangeAdapter],
         body: &HirBlock,
-    ) -> Result<(), String> {
+    ) -> Result<(), SirLoweringError> {
         use hew_parser::ast::BinaryOp;
         let ty = self.ty(&loop_binding.ty);
         if !ty.is_integer() {
@@ -357,7 +361,7 @@ impl Builder<'_, '_> {
         step: &HirExpr,
         ty: &ResolvedTy,
         stride: Operand,
-    ) -> Result<(), String> {
+    ) -> Result<(), SirLoweringError> {
         let zero = Operand {
             value: self.emit_typed(Provenance::Synthesized, ty, SemOpKind::ConstInteger(0))?,
         };
@@ -390,7 +394,7 @@ impl Builder<'_, '_> {
         Ok(())
     }
 
-    fn range_cast(&mut self, value: Operand, ty: &ResolvedTy) -> Result<Operand, String> {
+    fn range_cast(&mut self, value: Operand, ty: &ResolvedTy) -> Result<Operand, SirLoweringError> {
         Ok(Operand {
             value: self.emit_typed(
                 Provenance::Synthesized,
@@ -409,7 +413,7 @@ impl Builder<'_, '_> {
         op: hew_parser::ast::BinaryOp,
         lhs: Operand,
         rhs: Operand,
-    ) -> Result<Operand, String> {
+    ) -> Result<Operand, SirLoweringError> {
         if op == hew_parser::ast::BinaryOp::Divide {
             let mut expression = source.clone();
             expression.ty = ResolvedTy::U64;
@@ -426,7 +430,7 @@ impl Builder<'_, '_> {
         })
     }
 
-    fn nonzero_range_stride(&mut self, stride: Operand) -> Result<Operand, String> {
+    fn nonzero_range_stride(&mut self, stride: Operand) -> Result<Operand, SirLoweringError> {
         let zero = Operand {
             value: self.emit_typed(
                 Provenance::Synthesized,
@@ -470,7 +474,11 @@ impl Builder<'_, '_> {
         Ok(Operand { value })
     }
 
-    fn lower_range_operand(&mut self, expr: &HirExpr, ty: &ResolvedTy) -> Result<Operand, String> {
+    fn lower_range_operand(
+        &mut self,
+        expr: &HirExpr,
+        ty: &ResolvedTy,
+    ) -> Result<Operand, SirLoweringError> {
         let value = self.lower_read_operand(expr, "range operand")?;
         Ok(Operand {
             value: self.coerce_value(value.value, ty, Provenance::Site(expr.site))?,
@@ -482,7 +490,7 @@ impl Builder<'_, '_> {
         op: hew_parser::ast::BinaryOp,
         lhs: Operand,
         rhs: Operand,
-    ) -> Result<Operand, String> {
+    ) -> Result<Operand, SirLoweringError> {
         Ok(Operand {
             value: self.emit_typed(
                 Provenance::Synthesized,
@@ -501,7 +509,7 @@ impl Builder<'_, '_> {
         lhs: Operand,
         rhs: Operand,
         scope: &LoopScope,
-    ) -> Result<ValueId, String> {
+    ) -> Result<ValueId, SirLoweringError> {
         use hew_parser::ast::BinaryOp;
         let ascending = op == BinaryOp::Add;
         let next = self.emit_typed(

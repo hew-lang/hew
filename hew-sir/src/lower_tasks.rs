@@ -1,5 +1,7 @@
 //! Source task lifetimes and result transfer through explicit suspension edges.
 
+use crate::SirLoweringError;
+
 use super::{
     BlockArg, Builder, Edge, HirBlock, HirExpr, HirExprKind, Operand, OwnKind, OwnedBindingUse,
     Provenance, ResolvedTy, SemFunction, SemOpKind, SemTerminator, ValueDef, ValueId,
@@ -84,14 +86,14 @@ pub(super) struct TaskScopeFrame {
 }
 
 impl Builder<'_, '_> {
-    pub(super) fn enter_task_scope(&mut self) -> Result<TaskScopeId, String> {
+    pub(super) fn enter_task_scope(&mut self) -> Result<TaskScopeId, SirLoweringError> {
         self.enter_task_scope_with_deadline(None)
     }
 
     fn enter_task_scope_with_deadline(
         &mut self,
         duration: Option<Operand>,
-    ) -> Result<TaskScopeId, String> {
+    ) -> Result<TaskScopeId, SirLoweringError> {
         let scope = TaskScopeId(self.ops);
         self.emit_place_operation(
             SemOpKind::TaskScopeEnter {
@@ -110,7 +112,7 @@ impl Builder<'_, '_> {
     }
 
     /// Join the task scopes opened at or above `floor` on an ordinary exit.
-    pub(super) fn finish_task_scopes(&mut self, floor: usize) -> Result<(), String> {
+    pub(super) fn finish_task_scopes(&mut self, floor: usize) -> Result<(), SirLoweringError> {
         for step in self.plan_task_joins(floor, false) {
             let super::cleanup::ExitStep::JoinScope { scope, mode } = step else {
                 unreachable!()
@@ -124,11 +126,11 @@ impl Builder<'_, '_> {
         &mut self,
         scope: TaskScopeId,
         mode: crate::TaskScopeJoinMode,
-    ) -> Result<(), String> {
+    ) -> Result<(), SirLoweringError> {
         let frame = self
             .task_scopes
             .pop()
-            .ok_or("task drain has no active scope")?;
+            .ok_or(SirLoweringError::from("task drain has no active scope"))?;
         if frame.scope != scope {
             return Err("task drain differs from its active scope".into());
         }
@@ -157,7 +159,7 @@ impl Builder<'_, '_> {
         body: &HirBlock,
         result_lifetime: hew_hir::HirTaskScopeResult,
         value_required: bool,
-    ) -> Result<Option<ValueId>, String> {
+    ) -> Result<Option<ValueId>, SirLoweringError> {
         self.lower_task_scope_with_deadline(body, None, result_lifetime, value_required)
     }
 
@@ -167,7 +169,7 @@ impl Builder<'_, '_> {
         duration: Option<&HirExpr>,
         result_lifetime: hew_hir::HirTaskScopeResult,
         value_required: bool,
-    ) -> Result<Option<ValueId>, String> {
+    ) -> Result<Option<ValueId>, SirLoweringError> {
         self.lower_task_scope_body(body, duration, result_lifetime, value_required)
     }
 
@@ -176,7 +178,7 @@ impl Builder<'_, '_> {
         expression: &HirExpr,
         members: &[HirExpr],
         _result_lifetime: hew_hir::HirTaskScopeResult,
-    ) -> Result<ValueId, String> {
+    ) -> Result<ValueId, SirLoweringError> {
         let ResolvedTy::Task(_) = self.ty(&expression.ty) else {
             return Err("race result must be a Task".into());
         };
@@ -185,7 +187,7 @@ impl Builder<'_, '_> {
             .iter()
             .rev()
             .find(|frame| !frame.calls_only)
-            .ok_or("race has no lexical task scope")?
+            .ok_or(SirLoweringError::from("race has no lexical task scope"))?
             .scope;
         let mut inputs = Vec::new();
         for member in members {
@@ -208,7 +210,7 @@ impl Builder<'_, '_> {
         duration: Option<&HirExpr>,
         _result_lifetime: hew_hir::HirTaskScopeResult,
         value_required: bool,
-    ) -> Result<Option<ValueId>, String> {
+    ) -> Result<Option<ValueId>, SirLoweringError> {
         // Deferred bodies cannot create children or suspend. A plain scope
         // there only supplies lexical cleanup; it needs no asynchronous drain.
         if duration.is_none() && self.in_deferred_body() {
@@ -245,7 +247,7 @@ impl Builder<'_, '_> {
         body: &HirBlock,
         captures: &[hew_hir::HirClosureCapture],
         _result_lifetime: hew_hir::HirTaskScopeResult,
-    ) -> Result<ValueId, String> {
+    ) -> Result<ValueId, SirLoweringError> {
         let ResolvedTy::Task(output) = self.ty(&expression.ty) else {
             return Err("fork body must produce a checked Task".into());
         };
@@ -254,7 +256,7 @@ impl Builder<'_, '_> {
             .iter()
             .rev()
             .find(|frame| !frame.calls_only)
-            .ok_or("fork has no lexical task scope")?
+            .ok_or(SirLoweringError::from("fork has no lexical task scope"))?
             .scope;
         let mut closure = expression.clone();
         closure.ty = ResolvedTy::Closure {
@@ -295,7 +297,7 @@ impl Builder<'_, '_> {
         &mut self,
         expression: &HirExpr,
         operand: &HirExpr,
-    ) -> Result<Option<ValueId>, String> {
+    ) -> Result<Option<ValueId>, SirLoweringError> {
         let output = self.ty(&expression.ty);
         if self.ty(&operand.ty) != ResolvedTy::Task(Box::new(output.clone())) {
             return Err("await result differs from its checked task output".into());
@@ -308,7 +310,7 @@ impl Builder<'_, '_> {
         &mut self,
         task: ValueId,
         output: &ResolvedTy,
-    ) -> Result<Option<ValueId>, String> {
+    ) -> Result<Option<ValueId>, SirLoweringError> {
         self.owned_live.remove(&task);
         let live = self.owned_live.clone();
         let (result, normal, continuation) = if *output == ResolvedTy::Never {

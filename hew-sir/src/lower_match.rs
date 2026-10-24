@@ -18,6 +18,8 @@
 
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 
+use crate::SirLoweringError;
+
 use super::{
     is_concrete_variant_type, is_initial_value_type, is_unconstructable_variant,
     lower_initial_value_transfer, Builder, ControlState, MatchExit, OwnedBindingUse,
@@ -134,9 +136,10 @@ fn observed_fields(arm: &HirMatchArm) -> BTreeSet<usize> {
 impl MatchPlan {
     /// The whole scrutinee value. Every shape that asks for it is one the
     /// match read whole; asking for it in place is malformed lowering.
-    fn scrutinee(&self) -> Result<ValueId, String> {
-        self.scrutinee
-            .ok_or_else(|| "match shape has no whole scrutinee value".to_string())
+    fn scrutinee(&self) -> Result<ValueId, SirLoweringError> {
+        self.scrutinee.ok_or_else(|| {
+            SirLoweringError::from("match shape has no whole scrutinee value".to_string())
+        })
     }
 }
 
@@ -160,9 +163,13 @@ impl Builder<'_, '_> {
         whole: &HirExpr,
         scrutinee_expr: &HirExpr,
         source_arms: &[HirMatchArm],
-    ) -> Result<ValueId, String> {
+    ) -> Result<ValueId, SirLoweringError> {
         self.lower_match_control(whole, scrutinee_expr, source_arms)?
-            .ok_or_else(|| "divergent or unit match cannot produce an SSA value".to_string())
+            .ok_or_else(|| {
+                SirLoweringError::from(
+                    "divergent or unit match cannot produce an SSA value".to_string(),
+                )
+            })
     }
 
     pub(super) fn lower_match_control(
@@ -170,7 +177,7 @@ impl Builder<'_, '_> {
         whole: &HirExpr,
         scrutinee_expr: &HirExpr,
         source_arms: &[HirMatchArm],
-    ) -> Result<Option<ValueId>, String> {
+    ) -> Result<Option<ValueId>, SirLoweringError> {
         let scrutinee_ty = self.ty(&scrutinee_expr.ty);
         let shape = self.resolve_match_shape(scrutinee_expr, &scrutinee_ty, source_arms)?;
         // A predicate-only match over a borrowed aggregate never transfers a
@@ -282,7 +289,7 @@ impl Builder<'_, '_> {
         &mut self,
         plan: &MatchPlan,
         source_arms: &[HirMatchArm],
-    ) -> Result<Vec<CandidateGroup>, String> {
+    ) -> Result<Vec<CandidateGroup>, SirLoweringError> {
         let MatchShape::Variant {
             shape,
             descriptor,
@@ -303,7 +310,7 @@ impl Builder<'_, '_> {
             .into_iter()
             .map(|branch| {
                 let variant = usize::try_from(branch.variant)
-                    .map_err(|_| "variant tag exceeds usize".to_string())?;
+                    .map_err(|_| SirLoweringError::from("variant tag exceeds usize".to_string()))?;
                 let mut entry = inherited.clone();
                 entry.block = branch.block;
                 Ok(CandidateGroup {
@@ -321,13 +328,17 @@ impl Builder<'_, '_> {
     /// runs its guard and takes the scrutinee apart only once nothing can
     /// still reject it; a rejected candidate restores the group's entry
     /// ownership and hands the scrutinee to the next one.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one candidate group keeps probing, selection and cleanup in order"
+    )]
     fn lower_candidate_group(
         &mut self,
         plan: &MatchPlan,
         source_arms: &[HirMatchArm],
         group: CandidateGroup,
         exits: &mut Vec<MatchExit>,
-    ) -> Result<(), String> {
+    ) -> Result<(), SirLoweringError> {
         self.restore_control_state(&group.entry);
         self.owned_live = group.owned_live;
         // A variant with an uninhabited payload has no values, so its branch is
@@ -418,7 +429,8 @@ impl Builder<'_, '_> {
                         if !self.owned_live.contains_key(value) {
                             return Err(format!(
                                 "match arm {arm_index} consumes an outer non-binding owner"
-                            ));
+                            )
+                            .into());
                         }
                     }
                     // The selected result survives candidate cleanup, but must
@@ -484,7 +496,7 @@ impl Builder<'_, '_> {
         fields: &mut Vec<Option<BlockArg>>,
         rebuilt: &mut Option<ValueId>,
         failures: &mut Vec<ControlState>,
-    ) -> Result<(), String> {
+    ) -> Result<(), SirLoweringError> {
         match &plan.shape {
             MatchShape::Scalar => match &arm.predicate {
                 HirMatchArmPredicate::Literal { lit, .. } => {
@@ -543,24 +555,25 @@ impl Builder<'_, '_> {
         variant: Option<u32>,
         fields: &[Option<BlockArg>],
         rebuilt: &mut Option<ValueId>,
-    ) -> Result<ValueId, String> {
+    ) -> Result<ValueId, SirLoweringError> {
         let MatchShape::Variant { shape, .. } = &plan.shape else {
             return plan.scrutinee();
         };
         if plan.borrowed {
             return plan.scrutinee();
         }
-        let variant = variant.ok_or("variant candidate has no switch branch")?;
-        let value = self.emit_variant_make(
-            *shape,
-            variant,
-            &plan.scrutinee_ty,
-            &fields
-                .iter()
-                .cloned()
-                .collect::<Option<Vec<_>>>()
-                .ok_or("variant reconstruction has missing fields")?,
-        )?;
+        let variant = variant.ok_or(SirLoweringError::from(
+            "variant candidate has no switch branch",
+        ))?;
+        let value =
+            self.emit_variant_make(
+                *shape,
+                variant,
+                &plan.scrutinee_ty,
+                &fields.iter().cloned().collect::<Option<Vec<_>>>().ok_or(
+                    SirLoweringError::from("variant reconstruction has missing fields"),
+                )?,
+            )?;
         *rebuilt = Some(value);
         Ok(value)
     }
@@ -571,14 +584,18 @@ impl Builder<'_, '_> {
         plan: &MatchPlan,
         variant: Option<u32>,
         value: ValueId,
-    ) -> Result<Vec<Option<BlockArg>>, String> {
+    ) -> Result<Vec<Option<BlockArg>>, SirLoweringError> {
         let MatchShape::Variant {
             shape, descriptor, ..
         } = &plan.shape
         else {
-            return Err("only a variant candidate rebuilds its scrutinee".to_string());
+            return Err("only a variant candidate rebuilds its scrutinee"
+                .to_string()
+                .into());
         };
-        let variant = variant.ok_or("variant candidate has no switch branch")?;
+        let variant = variant.ok_or(SirLoweringError::from(
+            "variant candidate has no switch branch",
+        ))?;
         self.emit_variant_destructure(*shape, variant, descriptor, value)
             .map(|fields| fields.into_iter().map(Some).collect())
     }
@@ -590,7 +607,7 @@ impl Builder<'_, '_> {
         plan: &MatchPlan,
         arm: &HirMatchArm,
         fields: &[Option<BlockArg>],
-    ) -> Result<(), String> {
+    ) -> Result<(), SirLoweringError> {
         match &plan.shape {
             MatchShape::Scalar => Ok(()),
             MatchShape::Aggregate {
@@ -626,10 +643,12 @@ impl Builder<'_, '_> {
                         .ok()
                         .and_then(|index| transferred.get(index))
                         .ok_or_else(|| {
-                            format!(
-                                "match binding `{}` selects missing field {}",
-                                binding.name, binding.field_idx
-                            )
+                            SirLoweringError::from({
+                                format!(
+                                    "match binding `{}` selects missing field {}",
+                                    binding.name, binding.field_idx
+                                )
+                            })
                         })?;
                     self.redeclare_binding(binding.binding, BindingTarget::Value(field.id))?;
                 }
@@ -675,7 +694,7 @@ impl Builder<'_, '_> {
         arm: &HirMatchArm,
         places: &[PlaceId],
         recipes: &[AggregateFieldRecipe],
-    ) -> Result<(), String> {
+    ) -> Result<(), SirLoweringError> {
         let mut selected: BTreeSet<usize> = arm
             .bindings
             .iter()
@@ -689,7 +708,7 @@ impl Builder<'_, '_> {
         let mut owned: Vec<Option<BlockArg>> = vec![None; recipes.len()];
         for index in selected {
             let (Some(place), Some(recipe)) = (places.get(index), recipes.get(index)) else {
-                return Err(format!("match arm selects missing aggregate field {index}"));
+                return Err(format!("match arm selects missing aggregate field {index}").into());
             };
             let value = if let Some(snapshot) = &plan.field_snapshots[index] {
                 if snapshot.own == OwnKind::None {
@@ -724,10 +743,12 @@ impl Builder<'_, '_> {
                 .and_then(|index| owned.get(index))
                 .and_then(Option::as_ref)
                 .ok_or_else(|| {
-                    format!(
-                        "match binding `{}` selects missing field {}",
-                        binding.name, binding.field_idx
-                    )
+                    SirLoweringError::from({
+                        format!(
+                            "match binding `{}` selects missing field {}",
+                            binding.name, binding.field_idx
+                        )
+                    })
                 })?;
             self.redeclare_binding(binding.binding, BindingTarget::Value(field.value))?;
         }
@@ -740,7 +761,7 @@ impl Builder<'_, '_> {
         scrutinee_expr: &HirExpr,
         scrutinee_ty: &ResolvedTy,
         arms: &[HirMatchArm],
-    ) -> Result<MatchShape, String> {
+    ) -> Result<MatchShape, SirLoweringError> {
         if scrutinee_ty.is_integer()
             || scrutinee_ty.is_float()
             || matches!(
@@ -789,20 +810,23 @@ impl Builder<'_, '_> {
         arm: &HirMatchArm,
         binding_ty: &ResolvedTy,
         scrutinee_ty: &ResolvedTy,
-    ) -> Result<(), String> {
+    ) -> Result<(), SirLoweringError> {
         if self.ty(binding_ty) != *scrutinee_ty {
             return Err(format!(
                 "whole-scrutinee binding has `{}`, its scrutinee is `{}`",
                 self.ty(binding_ty).user_facing(),
                 scrutinee_ty.user_facing()
-            ));
+            )
+            .into());
         }
         if !arm.bindings.is_empty()
             || !arm.payload_predicates.is_empty()
             || !arm.payload_variant_predicates.is_empty()
         {
             return Err(
-                "whole-scrutinee binding arm carries impossible payload metadata".to_string(),
+                "whole-scrutinee binding arm carries impossible payload metadata"
+                    .to_string()
+                    .into(),
             );
         }
         Ok(())
@@ -812,18 +836,20 @@ impl Builder<'_, '_> {
         &mut self,
         scrutinee_ty: &ResolvedTy,
         arms: &[HirMatchArm],
-    ) -> Result<(), String> {
+    ) -> Result<(), SirLoweringError> {
         // Only an uninhabited scrutinee can have no arms, and only the variant
         // shape has one: a scalar always has values to select over.
         if arms.is_empty() {
-            return Err("scalar match has no source arms".to_string());
+            return Err("scalar match has no source arms".to_string().into());
         }
         for arm in arms {
             if !arm.bindings.is_empty()
                 || !arm.payload_predicates.is_empty()
                 || !arm.payload_variant_predicates.is_empty()
             {
-                return Err("scalar arm carries aggregate payload metadata".to_string());
+                return Err("scalar arm carries aggregate payload metadata"
+                    .to_string()
+                    .into());
             }
             match &arm.predicate {
                 HirMatchArmPredicate::Wildcard => {}
@@ -841,15 +867,13 @@ impl Builder<'_, '_> {
                     if !captures.is_empty() {
                         return Err(
                             "regex match-arm capture bindings are outside the SIR contract"
-                                .to_string(),
-                        );
+                                .to_string().into(),);
                     }
                 }
                 _ => {
                     return Err(
                         "scalar match requires a matching scalar literal, binding or wildcard predicate"
-                            .to_string(),
-                    )
+                            .to_string().into(),)
                 }
             }
         }
@@ -861,10 +885,10 @@ impl Builder<'_, '_> {
         scrutinee_ty: &ResolvedTy,
         recipes: &[AggregateFieldRecipe],
         arms: &[HirMatchArm],
-    ) -> Result<(), String> {
+    ) -> Result<(), SirLoweringError> {
         // A record or tuple always has values, so it always has arms.
         if arms.is_empty() {
-            return Err("aggregate match has no source arms".to_string());
+            return Err("aggregate match has no source arms".to_string().into());
         }
         for arm in arms {
             match &arm.predicate {
@@ -874,7 +898,8 @@ impl Builder<'_, '_> {
                             "record pattern arm has `{}`, scrutinee has `{}`",
                             self.ty(ty).user_facing(),
                             scrutinee_ty.user_facing()
-                        ));
+                        )
+                        .into());
                     }
                 }
                 HirMatchArmPredicate::TupleProject { arity } => {
@@ -883,7 +908,8 @@ impl Builder<'_, '_> {
                             "tuple pattern arm has arity {arity}, scrutinee `{}` has {}",
                             scrutinee_ty.user_facing(),
                             recipes.len()
-                        ));
+                        )
+                        .into());
                     }
                 }
                 HirMatchArmPredicate::Binding { ty, .. } => {
@@ -891,14 +917,15 @@ impl Builder<'_, '_> {
                 }
                 HirMatchArmPredicate::Wildcard => {
                     if !arm.bindings.is_empty() || !arm.payload_predicates.is_empty() {
-                        return Err(
-                            "wildcard aggregate arm carries impossible field metadata".to_string()
-                        );
+                        return Err("wildcard aggregate arm carries impossible field metadata"
+                            .to_string()
+                            .into());
                     }
                 }
                 _ => return Err(
                     "aggregate match requires record, tuple, binding or wildcard arm predicates"
-                        .to_string(),
+                        .to_string()
+                        .into(),
                 ),
             }
         }
@@ -909,15 +936,23 @@ impl Builder<'_, '_> {
         &mut self,
         scrutinee_ty: &ResolvedTy,
         arms: &[HirMatchArm],
-    ) -> Result<MatchShape, String> {
+    ) -> Result<MatchShape, SirLoweringError> {
         let shape = self.service.require_variant_shape(scrutinee_ty)?;
         let descriptor = self
             .service
             .variant_shapes
-            .get(usize::try_from(shape.0).map_err(|_| "variant shape id exceeds usize")?)
+            .get(
+                usize::try_from(shape.0)
+                    .map_err(|_| SirLoweringError::from("variant shape id exceeds usize"))?,
+            )
             .filter(|descriptor| descriptor.id == shape)
             .cloned()
-            .ok_or_else(|| format!("variant shape {} disappeared during lowering", shape.0))?;
+            .ok_or_else(|| {
+                SirLoweringError::from(format!(
+                    "variant shape {} disappeared during lowering",
+                    shape.0
+                ))
+            })?;
         for arm in arms {
             match &arm.predicate {
                 HirMatchArmPredicate::EnumVariant {
@@ -926,21 +961,23 @@ impl Builder<'_, '_> {
                 } => {
                     let variant = descriptor
                         .variants
-                        .get(
-                            usize::try_from(*variant_idx)
-                                .map_err(|_| "match variant index exceeds usize".to_string())?,
-                        )
+                        .get(usize::try_from(*variant_idx).map_err(|_| {
+                            SirLoweringError::from("match variant index exceeds usize".to_string())
+                        })?)
                         .ok_or_else(|| {
-                            format!(
-                                "match arm tag {variant_idx} is absent from `{}`",
-                                scrutinee_ty.user_facing()
-                            )
+                            SirLoweringError::from({
+                                format!(
+                                    "match arm tag {variant_idx} is absent from `{}`",
+                                    scrutinee_ty.user_facing()
+                                )
+                            })
                         })?;
                     if variant.name != variant_match.variant_name {
                         return Err(format!(
                             "match tag {variant_idx} names `{}`, exact descriptor names `{}`",
                             variant_match.variant_name, variant.name
-                        ));
+                        )
+                        .into());
                     }
                 }
                 HirMatchArmPredicate::Wildcard => {
@@ -948,9 +985,9 @@ impl Builder<'_, '_> {
                         || !arm.payload_predicates.is_empty()
                         || !arm.payload_variant_predicates.is_empty()
                     {
-                        return Err(
-                            "wildcard variant arm carries impossible payload metadata".to_string()
-                        );
+                        return Err("wildcard variant arm carries impossible payload metadata"
+                            .to_string()
+                            .into());
                     }
                 }
                 HirMatchArmPredicate::Binding { ty, .. } => {
@@ -959,7 +996,8 @@ impl Builder<'_, '_> {
                 _ => {
                     return Err(
                         "non-variant match predicates are outside the variant-switch SIR contract"
-                            .to_string(),
+                            .to_string()
+                            .into(),
                     );
                 }
             }
@@ -987,7 +1025,7 @@ impl Builder<'_, '_> {
             if candidates.is_empty()
                 && !is_unconstructable_variant(self.service.module, &descriptor.variants[variant])
             {
-                return Err(format!("match is missing exhaustive variant tag {variant}"));
+                return Err(format!("match is missing exhaustive variant tag {variant}").into());
             }
         }
         Ok(MatchShape::Variant {
@@ -1006,11 +1044,12 @@ impl Builder<'_, '_> {
         shape: AggregateShapeRef,
         recipes: &[AggregateFieldRecipe],
         initial_value: bool,
-    ) -> Result<Vec<Option<BlockArg>>, String> {
+    ) -> Result<Vec<Option<BlockArg>>, SirLoweringError> {
         let source = Operand { value: scrutinee };
         let mut fields = Vec::with_capacity(recipes.len());
         for (index, recipe) in recipes.iter().enumerate() {
-            let field = u32::try_from(index).map_err(|_| "aggregate field exceeds u32")?;
+            let field = u32::try_from(index)
+                .map_err(|_| SirLoweringError::from("aggregate field exceeds u32"))?;
             let owning = recipe.own == OwnKind::Owned;
             let kind = if initial_value {
                 SemOpKind::TupleGet {
@@ -1056,7 +1095,7 @@ impl Builder<'_, '_> {
         arm: &HirMatchArm,
         places: &[PlaceId],
         recipes: &[AggregateFieldRecipe],
-    ) -> Result<Vec<Option<BlockArg>>, String> {
+    ) -> Result<Vec<Option<BlockArg>>, SirLoweringError> {
         let mut fields = Vec::with_capacity(recipes.len());
         let observed = observed_fields(arm);
         for (index, (place, recipe)) in places.iter().zip(recipes).enumerate() {
@@ -1107,7 +1146,11 @@ impl Builder<'_, '_> {
     /// The literal's index selects its module-owned handle, so each pattern is
     /// compiled once at module load rather than per arm
     /// evaluation. The scrutinee is borrowed; the call produces only a bool.
-    fn regex_match_test(&mut self, plan: &MatchPlan, literal_id: u32) -> Result<ValueId, String> {
+    fn regex_match_test(
+        &mut self,
+        plan: &MatchPlan,
+        literal_id: u32,
+    ) -> Result<ValueId, SirLoweringError> {
         let index = self.emit_typed(
             plan.provenance.clone(),
             &ResolvedTy::I64,
@@ -1156,7 +1199,7 @@ impl Builder<'_, '_> {
         &mut self,
         plan: &MatchPlan,
         literal: &HirLiteral,
-    ) -> Result<ValueId, String> {
+    ) -> Result<ValueId, SirLoweringError> {
         let ty = &plan.scrutinee_ty;
         let constant =
             match literal {
@@ -1196,17 +1239,19 @@ impl Builder<'_, '_> {
         bindings: &[HirMatchArmBinding],
         fields: &[Option<BlockArg>],
         span: &std::ops::Range<usize>,
-    ) -> Result<(), String> {
+    ) -> Result<(), SirLoweringError> {
         for binding in bindings {
             let field = usize::try_from(binding.field_idx)
                 .ok()
                 .and_then(|index| fields.get(index))
                 .and_then(Option::as_ref)
                 .ok_or_else(|| {
-                    format!(
-                        "match binding `{}` selects missing field {}",
-                        binding.name, binding.field_idx
-                    )
+                    SirLoweringError::from({
+                        format!(
+                            "match binding `{}` selects missing field {}",
+                            binding.name, binding.field_idx
+                        )
+                    })
                 })?;
             let binding_ty = self.ty(&binding.ty);
             if binding_ty != field.ty {
@@ -1215,7 +1260,8 @@ impl Builder<'_, '_> {
                     binding.name,
                     binding_ty.user_facing(),
                     field.ty.user_facing()
-                ));
+                )
+                .into());
             }
             let value = field.value;
             self.bind_selected_value(binding.binding, &binding.name, value, span.clone())?;
@@ -1228,7 +1274,7 @@ impl Builder<'_, '_> {
     fn probe_match_pattern_bindings(
         &mut self,
         statements: &[hew_hir::HirStmt],
-    ) -> Result<(), String> {
+    ) -> Result<(), SirLoweringError> {
         for statement in statements {
             let hew_hir::HirStmtKind::Destructure { value, fields } = &statement.kind else {
                 return Err("match pattern binding is not an aggregate destructure".into());
@@ -1260,9 +1306,11 @@ impl Builder<'_, '_> {
             }
             for (index, field) in fields.iter().enumerate() {
                 let expected = match shape {
-                    AggregateShapeRef::Tuple => hew_hir::HirDestructureSelector::Tuple(
-                        u32::try_from(index).map_err(|_| "pattern field index exceeds u32")?,
-                    ),
+                    AggregateShapeRef::Tuple => {
+                        hew_hir::HirDestructureSelector::Tuple(u32::try_from(index).map_err(
+                            |_| SirLoweringError::from("pattern field index exceeds u32"),
+                        )?)
+                    }
                     AggregateShapeRef::Record(id) => hew_hir::HirDestructureSelector::Record(
                         self.service.aggregate_shapes[id.0 as usize].fields[index]
                             .name
@@ -1279,8 +1327,9 @@ impl Builder<'_, '_> {
                         &[HirMatchArmBinding {
                             span: binding.span.clone(),
                             binding: binding.id,
-                            field_idx: u32::try_from(index)
-                                .map_err(|_| "pattern field index exceeds u32")?,
+                            field_idx: u32::try_from(index).map_err(|_| {
+                                SirLoweringError::from("pattern field index exceeds u32")
+                            })?,
                             name: binding.name.clone(),
                             ty: binding.ty.clone(),
                         }],
@@ -1297,7 +1346,7 @@ impl Builder<'_, '_> {
     fn acquire_selected_match_bindings(
         &mut self,
         outer_bindings: &HashSet<BindingId>,
-    ) -> Result<(), String> {
+    ) -> Result<(), SirLoweringError> {
         let mut selected = self
             .binding_declarations
             .iter()
@@ -1322,16 +1371,16 @@ impl Builder<'_, '_> {
         &mut self,
         fields: &[Option<BlockArg>],
         predicate: &HirPayloadPredicate,
-    ) -> Result<ValueId, String> {
+    ) -> Result<ValueId, SirLoweringError> {
         let field = usize::try_from(predicate.field_idx)
             .ok()
             .and_then(|index| fields.get(index))
             .and_then(Option::as_ref)
             .ok_or_else(|| {
-                format!(
+                SirLoweringError::from(format!(
                     "payload literal selects missing field {}",
                     predicate.field_idx
-                )
+                ))
             })?;
         let ty = self.ty(&predicate.ty);
         if field.ty != ty {
@@ -1339,44 +1388,46 @@ impl Builder<'_, '_> {
                 "payload literal field has `{}`, predicate expects `{}`",
                 field.ty.user_facing(),
                 ty.user_facing()
-            ));
+            )
+            .into());
         }
-        let literal = match &predicate.literal {
-            HirLiteral::Integer(value) if ty.is_integer() => self.emit_typed(
-                Provenance::Synthesized,
-                &ty,
-                SemOpKind::ConstInteger(*value),
-            )?,
-            HirLiteral::Bool(value) if ty == ResolvedTy::Bool => {
-                self.emit_typed(Provenance::Synthesized, &ty, SemOpKind::ConstBool(*value))?
-            }
-            HirLiteral::Float(value) if ty.is_float() => {
-                self.emit_typed(Provenance::Synthesized, &ty, SemOpKind::ConstFloat(*value))?
-            }
-            HirLiteral::Char(value) if ty == ResolvedTy::Char => {
-                self.emit_typed(Provenance::Synthesized, &ty, SemOpKind::ConstChar(*value))?
-            }
-            HirLiteral::String(value) if ty == ResolvedTy::String => {
-                let literal = self.service.intern_string(value);
-                self.emit_typed(
+        let literal =
+            match &predicate.literal {
+                HirLiteral::Integer(value) if ty.is_integer() => self.emit_typed(
                     Provenance::Synthesized,
-                    &ResolvedTy::String,
-                    SemOpKind::ConstStr(literal),
-                )?
-            }
-            HirLiteral::Bytes(_) => {
-                return Err(
+                    &ty,
+                    SemOpKind::ConstInteger(*value),
+                )?,
+                HirLiteral::Bool(value) if ty == ResolvedTy::Bool => {
+                    self.emit_typed(Provenance::Synthesized, &ty, SemOpKind::ConstBool(*value))?
+                }
+                HirLiteral::Float(value) if ty.is_float() => {
+                    self.emit_typed(Provenance::Synthesized, &ty, SemOpKind::ConstFloat(*value))?
+                }
+                HirLiteral::Char(value) if ty == ResolvedTy::Char => {
+                    self.emit_typed(Provenance::Synthesized, &ty, SemOpKind::ConstChar(*value))?
+                }
+                HirLiteral::String(value) if ty == ResolvedTy::String => {
+                    let literal = self.service.intern_string(value);
+                    self.emit_typed(
+                        Provenance::Synthesized,
+                        &ResolvedTy::String,
+                        SemOpKind::ConstStr(literal),
+                    )?
+                }
+                HirLiteral::Bytes(_) => {
+                    return Err(
                     "bytes payload literal matching awaits an audited BytesEquals runtime contract"
-                        .to_string(),
-                );
-            }
-            _ => {
-                return Err(format!(
-                    "payload literal has no verified equality operation for `{}`",
-                    ty.user_facing()
-                ));
-            }
-        };
+                        .to_string().into(),);
+                }
+                _ => {
+                    return Err(format!(
+                        "payload literal has no verified equality operation for `{}`",
+                        ty.user_facing()
+                    )
+                    .into());
+                }
+            };
         if ty == ResolvedTy::String {
             let equals = self.lower_string_equals_values(field.value, literal)?;
             self.emit_destroy(literal)?;
@@ -1403,16 +1454,16 @@ impl Builder<'_, '_> {
         parent_fields: &[Option<BlockArg>],
         predicate: &HirPayloadVariantPredicate,
         span: &std::ops::Range<usize>,
-    ) -> Result<Vec<ControlState>, String> {
+    ) -> Result<Vec<ControlState>, SirLoweringError> {
         let field = usize::try_from(predicate.field_idx)
             .ok()
             .and_then(|index| parent_fields.get(index))
             .and_then(Option::as_ref)
             .ok_or_else(|| {
-                format!(
+                SirLoweringError::from(format!(
                     "nested variant predicate selects missing field {}",
                     predicate.field_idx
-                )
+                ))
             })?;
         let payload_ty = self.ty(&predicate.payload_ty);
         if field.ty != payload_ty {
@@ -1420,7 +1471,8 @@ impl Builder<'_, '_> {
                 "nested variant field has `{}`, predicate expects `{}`",
                 field.ty.user_facing(),
                 payload_ty.user_facing()
-            ));
+            )
+            .into());
         }
         let (shape, desired) = self.nested_variant(&payload_ty, predicate)?;
         let source = Operand { value: field.value };
@@ -1453,11 +1505,12 @@ impl Builder<'_, '_> {
         variant: u32,
         source: &Operand,
         desired: &crate::SemVariant,
-    ) -> Result<Vec<Option<BlockArg>>, String> {
+    ) -> Result<Vec<Option<BlockArg>>, SirLoweringError> {
         let mut fields = Vec::with_capacity(desired.fields.len());
         for (index, field) in desired.fields.iter().enumerate() {
             self.service.require_type_facts(&field.ty)?;
-            let field_index = u32::try_from(index).map_err(|_| "variant field exceeds u32")?;
+            let field_index = u32::try_from(index)
+                .map_err(|_| SirLoweringError::from("variant field exceeds u32"))?;
             let owning =
                 OwnKind::of_ty(&field.ty, self.service.checked_facts.rows())? == OwnKind::Owned;
             let kind = if owning {
@@ -1496,32 +1549,40 @@ impl Builder<'_, '_> {
         &mut self,
         payload_ty: &ResolvedTy,
         predicate: &HirPayloadVariantPredicate,
-    ) -> Result<(VariantShapeId, crate::SemVariant), String> {
+    ) -> Result<(VariantShapeId, crate::SemVariant), SirLoweringError> {
         let shape = self.service.require_variant_shape(payload_ty)?;
         let descriptor = self
             .service
             .variant_shapes
-            .get(usize::try_from(shape.0).map_err(|_| "variant shape id exceeds usize")?)
+            .get(
+                usize::try_from(shape.0)
+                    .map_err(|_| SirLoweringError::from("variant shape id exceeds usize"))?,
+            )
             .filter(|descriptor| descriptor.id == shape)
-            .ok_or_else(|| format!("variant shape {} disappeared during lowering", shape.0))?;
+            .ok_or_else(|| {
+                SirLoweringError::from(format!(
+                    "variant shape {} disappeared during lowering",
+                    shape.0
+                ))
+            })?;
         let desired = descriptor
             .variants
-            .get(
-                usize::try_from(predicate.variant_idx)
-                    .map_err(|_| "nested variant index exceeds usize".to_string())?,
-            )
+            .get(usize::try_from(predicate.variant_idx).map_err(|_| {
+                SirLoweringError::from("nested variant index exceeds usize".to_string())
+            })?)
             .ok_or_else(|| {
-                format!(
+                SirLoweringError::from(format!(
                     "nested variant tag {} is absent from `{}`",
                     predicate.variant_idx,
                     payload_ty.user_facing()
-                )
+                ))
             })?;
         if desired.name != predicate.variant_match.variant_name {
             return Err(format!(
                 "nested variant tag {} names `{}`, exact descriptor names `{}`",
                 predicate.variant_idx, predicate.variant_match.variant_name, desired.name
-            ));
+            )
+            .into());
         }
         Ok((shape, desired.clone()))
     }
@@ -1534,16 +1595,16 @@ impl Builder<'_, '_> {
         &mut self,
         parent_fields: &[Option<BlockArg>],
         predicates: &[HirPayloadVariantPredicate],
-    ) -> Result<(), String> {
+    ) -> Result<(), SirLoweringError> {
         for predicate in predicates {
             let source = parent_fields
                 .get(predicate.field_idx as usize)
                 .and_then(Option::as_ref)
                 .ok_or_else(|| {
-                    format!(
+                    SirLoweringError::from(format!(
                         "nested payload predicate selects field {} the arm does not own",
                         predicate.field_idx
-                    )
+                    ))
                 })?
                 .value;
             let payload_ty = self.ty(&predicate.payload_ty);
@@ -1596,10 +1657,10 @@ impl Builder<'_, '_> {
                     .get(binding.field_idx as usize)
                     .and_then(Option::as_ref)
                     .ok_or_else(|| {
-                        format!(
+                        SirLoweringError::from(format!(
                             "nested payload binding `{}` selects missing slot {}",
                             binding.name, binding.field_idx
-                        )
+                        ))
                     })?;
                 self.redeclare_binding(binding.binding, BindingTarget::Value(slot.value))?;
             }

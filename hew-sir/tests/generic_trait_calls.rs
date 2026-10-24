@@ -24,7 +24,7 @@ fn generic_trait_method_instances_preserve_owned_values() {
         lowered
             .callable_statuses
             .iter()
-            .all(|(_, status)| !matches!(status, SirLoweringStatus::Unsupported { .. })),
+            .all(|(_, status)| !matches!(status, SirLoweringStatus::Failed { .. })),
         "{:?}",
         lowered.callable_statuses
     );
@@ -78,7 +78,7 @@ fn main() {
         lowered
             .callable_statuses
             .iter()
-            .all(|(_, status)| !matches!(status, SirLoweringStatus::Unsupported { .. })),
+            .all(|(_, status)| !matches!(status, SirLoweringStatus::Failed { .. })),
         "{:?}",
         lowered.callable_statuses
     );
@@ -112,7 +112,7 @@ fn main() {
         lowered
             .callable_statuses
             .iter()
-            .all(|(_, status)| !matches!(status, SirLoweringStatus::Unsupported { .. })),
+            .all(|(_, status)| !matches!(status, SirLoweringStatus::Failed { .. })),
         "{:?}",
         lowered.callable_statuses
     );
@@ -138,7 +138,7 @@ fn main() { assert(echo(Fixed {}) == "BOUND"); }
         lowered
             .callable_statuses
             .iter()
-            .all(|(_, status)| !matches!(status, SirLoweringStatus::Unsupported { .. })),
+            .all(|(_, status)| !matches!(status, SirLoweringStatus::Failed { .. })),
         "{:?}",
         lowered.callable_statuses
     );
@@ -161,7 +161,7 @@ fn main() -> i64 { ready(Wrap { value: 7 }) }
         lowered
             .callable_statuses
             .iter()
-            .all(|(_, status)| !matches!(status, SirLoweringStatus::Unsupported { .. })),
+            .all(|(_, status)| !matches!(status, SirLoweringStatus::Failed { .. })),
         "{:?}",
         lowered.callable_statuses
     );
@@ -198,7 +198,7 @@ fn main() -> i64 {
         valid
             .callable_statuses
             .iter()
-            .all(|(_, status)| !matches!(status, SirLoweringStatus::Unsupported { .. })),
+            .all(|(_, status)| !matches!(status, SirLoweringStatus::Failed { .. })),
         "{:?}",
         valid.callable_statuses
     );
@@ -228,8 +228,8 @@ fn main() -> i64 {
         assert!(
             lowered.callable_statuses.iter().any(|(_, status)| matches!(
                 status,
-                SirLoweringStatus::Unsupported { reason, .. }
-                    if reason.contains("requires 1 checker-resolved method type argument(s)")
+                SirLoweringStatus::Failed { reason, .. }
+                    if reason.to_string().contains("requires 1 checker-resolved method type argument(s)")
             )),
             "{:?}",
             lowered.callable_statuses

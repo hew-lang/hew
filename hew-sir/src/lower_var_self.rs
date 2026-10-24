@@ -1,5 +1,7 @@
 //! Mutable method calls use ordinary callable boundaries and canonical places.
 
+use crate::SirLoweringError;
+
 use super::projection::OpenOwner;
 use super::{BindingPlace, Builder, PreparedCallee, ScalarAggregateParent};
 use crate::{
@@ -37,7 +39,7 @@ impl Builder<'_, '_> {
         expr: &HirExpr,
         scope: crate::TaskScopeId,
         loans: &mut Vec<ValueId>,
-    ) -> Result<ValueId, String> {
+    ) -> Result<ValueId, SirLoweringError> {
         let HirExprKind::VarSelfMethodCall {
             receiver,
             receiver_update,
@@ -88,7 +90,10 @@ impl Builder<'_, '_> {
         clippy::too_many_lines,
         reason = "receiver acquisition and normal writeback share one exact source place"
     )]
-    pub(super) fn lower_var_self_call(&mut self, expr: &HirExpr) -> Result<ValueId, String> {
+    pub(super) fn lower_var_self_call(
+        &mut self,
+        expr: &HirExpr,
+    ) -> Result<ValueId, SirLoweringError> {
         let HirExprKind::VarSelfMethodCall {
             receiver,
             receiver_update,
@@ -118,7 +123,9 @@ impl Builder<'_, '_> {
             .table
             .functions_by_item
             .get(&callee.function)
-            .ok_or_else(|| "mutable method has no HIR source declaration".to_string())?;
+            .ok_or_else(|| {
+                SirLoweringError::from("mutable method has no HIR source declaration".to_string())
+            })?;
         if source
             .params
             .first()
@@ -139,7 +146,7 @@ impl Builder<'_, '_> {
             return Err(format!(
                 "mutable method `{}` differs from its checked receiver and dual-return signature: receiver {receiver_ty:?}, result {return_ty:?}, signature {signature:?}",
                 self.service.module.defs.path(callee.declaration)
-            ));
+            ).into());
         }
         self.service.require_type_facts(&receiver_ty)?;
         if *receiver_update == hew_types::ReceiverUpdate::Staged
@@ -256,7 +263,11 @@ impl Builder<'_, '_> {
                 true,
                 handback,
             )?
-            .ok_or_else(|| "mutable method did not return its result and receiver".to_string())?;
+            .ok_or_else(|| {
+                SirLoweringError::from(
+                    "mutable method did not return its result and receiver".to_string(),
+                )
+            })?;
         let shape = self.service.require_aggregate_shape(&dual_return_ty)?;
         let fields =
             self.emit_destructure_value(result, &dual_return_ty, shape, provenance.clone())?;
@@ -273,7 +284,7 @@ impl Builder<'_, '_> {
         call_target: &CallTarget,
         target: &hew_hir::HirVarSelfMethodTarget,
         receiver_ty: &ResolvedTy,
-    ) -> Result<crate::SemCallable, String> {
+    ) -> Result<crate::SemCallable, SirLoweringError> {
         Ok(match call_target {
             CallTarget::User(declaration) | CallTarget::ImplMethod(declaration) => self
                 .service
@@ -321,7 +332,7 @@ impl Builder<'_, '_> {
         arguments: &mut [BoundaryOperand],
         loans: &mut Vec<ValueId>,
         provenance: &Provenance,
-    ) -> Result<(ValueId, ReceiverSeat), String> {
+    ) -> Result<(ValueId, ReceiverSeat), SirLoweringError> {
         if let Some(selected) = self.owned_projection(place)? {
             let root = self.place_borrow_root(selected)?;
             self.snapshot_arguments_rooted_at(root, arguments, loans, provenance)?;
@@ -382,7 +393,7 @@ impl Builder<'_, '_> {
         seat: ReceiverSeat,
         value: ValueId,
         provenance: Provenance,
-    ) -> Result<(), String> {
+    ) -> Result<(), SirLoweringError> {
         match seat {
             ReceiverSeat::Taken(place) => self.restore_taken_place(place, value, provenance),
             ReceiverSeat::Copied(place) => self.store_projected(place, value, provenance),

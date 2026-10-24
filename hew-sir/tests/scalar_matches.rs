@@ -26,7 +26,7 @@ fn scalar_patterns_preserve_enum_results_guards_and_owned_values() {
         lowered
             .callable_statuses
             .iter()
-            .all(|(_, status)| !matches!(status, SirLoweringStatus::Unsupported { .. })),
+            .all(|(_, status)| !matches!(status, SirLoweringStatus::Failed { .. })),
         "{:?}",
         lowered.callable_statuses
     );
@@ -70,8 +70,8 @@ fn scalar_literal_predicates_cannot_change_the_checked_width_or_kind() {
         assert!(
             lowered.callable_statuses.iter().any(|(_, status)| matches!(
                 status,
-                SirLoweringStatus::Unsupported { reason, .. }
-                    if reason.contains("scalar match") || reason.contains("literal match")
+                SirLoweringStatus::Failed { reason, .. }
+                    if reason.to_string().contains("scalar match") || reason.to_string().contains("literal match")
             )),
             "{:?}",
             lowered.callable_statuses

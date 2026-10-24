@@ -16,7 +16,7 @@ fn lower_verified_source(source: &str) -> hew_sir::LoweredModule {
         lowered
             .callable_statuses
             .iter()
-            .all(|(_, status)| !matches!(status, SirLoweringStatus::Unsupported { .. })),
+            .all(|(_, status)| !matches!(status, SirLoweringStatus::Failed { .. })),
         "{:?}",
         lowered.callable_statuses
     );

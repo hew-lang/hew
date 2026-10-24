@@ -1,5 +1,7 @@
 //! Compile each interceptor chain into the actor's ordinary callable graph.
 
+use crate::SirLoweringError;
+
 use super::{
     ActorWeave, BindingTarget, BlockArg, Builder, CallResult, CallUnwind, CallableId,
     CallableInstance, Edge, HirExpr, InstanceService, InterceptorNext, OpId, Operand, OwnKind,
@@ -18,7 +20,7 @@ impl InstanceService<'_> {
         actor: crate::ActorId,
         source: &hew_hir::HirActorDecl,
         substitution: &TypeSubstitution,
-    ) -> Result<(), String> {
+    ) -> Result<(), SirLoweringError> {
         let originals = self.actors[actor.0 as usize].handlers.clone();
         let mut next = InterceptorNext::Handlers(originals.clone());
         let mut outermost = None;
@@ -31,10 +33,12 @@ impl InstanceService<'_> {
                     self.callable(*callable)
                         .is_some_and(|body| body.declaration == declaration)
                 })
-                .ok_or("actor interceptor has no registered body")?;
+                .ok_or(SirLoweringError::from(
+                    "actor interceptor has no registered body",
+                ))?;
             self.actor_sources
                 .get_mut(&interceptor)
-                .ok_or("interceptor source is absent")?
+                .ok_or(SirLoweringError::from("interceptor source is absent"))?
                 .weave = Some(ActorWeave::Interceptor { next });
             next = InterceptorNext::Layer(interceptor);
             outermost = Some(interceptor);
@@ -42,14 +46,19 @@ impl InstanceService<'_> {
         let chain = self.actors[actor.0 as usize].interceptor_chain.clone();
         for (index, supervisor_ty) in chain.iter().enumerate().rev() {
             let supervisor = super::supervisor::declaration(self.module, supervisor_ty)
-                .ok_or("interceptor chain has no supervisor declaration")?
+                .ok_or(SirLoweringError::from(
+                    "interceptor chain has no supervisor declaration",
+                ))?
                 .clone();
             let method = supervisor
                 .interceptor
                 .as_ref()
-                .ok_or("interceptor chain names a supervisor without an interceptor")?;
-            let instance = crate::actor::local_actor_instance(supervisor_ty)
-                .ok_or("interceptor supervisor lacks its type arguments")?;
+                .ok_or(SirLoweringError::from(
+                    "interceptor chain names a supervisor without an interceptor",
+                ))?;
+            let instance = crate::actor::local_actor_instance(supervisor_ty).ok_or(
+                SirLoweringError::from("interceptor supervisor lacks its type arguments"),
+            )?;
             let mut arguments = instance.args;
             arguments.push(self.actors[actor.0 as usize].handle_ty.clone());
             if arguments.len() != method.type_params.len() {
@@ -76,12 +85,15 @@ impl InstanceService<'_> {
             )?;
             self.table.callables[interceptor.0 as usize].instance =
                 CallableInstance::ActorSupervisorIntercept {
-                    layer: u32::try_from(index).map_err(|_| "interceptor layer exceeds u32")?,
+                    layer: u32::try_from(index)
+                        .map_err(|_| SirLoweringError::from("interceptor layer exceeds u32"))?,
                 };
             self.actors[actor.0 as usize].methods.push(interceptor);
             self.actor_sources
                 .get_mut(&interceptor)
-                .ok_or("supervisor interceptor source is absent")?
+                .ok_or(SirLoweringError::from(
+                    "supervisor interceptor source is absent",
+                ))?
                 .weave = Some(ActorWeave::Interceptor { next });
             next = InterceptorNext::Layer(interceptor);
             outermost = Some(interceptor);
@@ -111,14 +123,17 @@ impl InstanceService<'_> {
             )?;
             self.actor_sources
                 .get_mut(&wrapper)
-                .ok_or("interceptor wrapper source is absent")?
+                .ok_or(SirLoweringError::from(
+                    "interceptor wrapper source is absent",
+                ))?
                 .weave = Some(ActorWeave::Entry {
                 handler: index,
                 interceptor,
             });
             self.table.callables[wrapper.0 as usize].instance =
                 CallableInstance::ActorInterceptEntry {
-                    handler: u32::try_from(index).map_err(|_| "handler index exceeds u32")?,
+                    handler: u32::try_from(index)
+                        .map_err(|_| SirLoweringError::from("handler index exceeds u32"))?,
                 };
             self.actors[actor.0 as usize]
                 .methods
@@ -138,13 +153,16 @@ impl Builder<'_, '_> {
         }
     }
 
-    fn intercept_fields(&self, ty: &ResolvedTy) -> Result<Vec<(String, ResolvedTy)>, String> {
+    fn intercept_fields(
+        &self,
+        ty: &ResolvedTy,
+    ) -> Result<Vec<(String, ResolvedTy)>, SirLoweringError> {
         hew_types::actor_protocol::interceptor_fields(&self.service.module.defs, ty).ok_or_else(
             || {
-                format!(
+                SirLoweringError::from(format!(
                     "interceptor token `{}` has no concrete actor",
                     ty.user_facing()
-                )
+                ))
             },
         )
     }
@@ -153,7 +171,7 @@ impl Builder<'_, '_> {
         &mut self,
         ty: &ResolvedTy,
         fields: Vec<ValueId>,
-    ) -> Result<ValueId, String> {
+    ) -> Result<ValueId, SirLoweringError> {
         let shape = self.service.require_aggregate_shape(ty)?;
         let value = self.emit_typed(
             Provenance::Synthesized,
@@ -177,7 +195,7 @@ impl Builder<'_, '_> {
         ty: &ResolvedTy,
         variant: u32,
         fields: Vec<ValueId>,
-    ) -> Result<ValueId, String> {
+    ) -> Result<ValueId, SirLoweringError> {
         let shape = self.service.require_variant_shape(ty)?;
         let value = self.emit_typed(
             Provenance::Synthesized,
@@ -197,7 +215,7 @@ impl Builder<'_, '_> {
         Ok(value)
     }
 
-    fn intercept_bool(&mut self, value: bool) -> Result<ValueId, String> {
+    fn intercept_bool(&mut self, value: bool) -> Result<ValueId, SirLoweringError> {
         self.emit_typed(
             Provenance::Synthesized,
             &ResolvedTy::Bool,
@@ -205,14 +223,18 @@ impl Builder<'_, '_> {
         )
     }
 
-    fn intercept_drop(&mut self, value: ValueId) -> Result<(), String> {
+    fn intercept_drop(&mut self, value: ValueId) -> Result<(), SirLoweringError> {
         if self.owned_live.contains_key(&value) {
             self.emit_destroy(value)?;
         }
         Ok(())
     }
 
-    fn intercept_parts(&mut self, value: ValueId, ty: &ResolvedTy) -> Result<Vec<ValueId>, String> {
+    fn intercept_parts(
+        &mut self,
+        value: ValueId,
+        ty: &ResolvedTy,
+    ) -> Result<Vec<ValueId>, SirLoweringError> {
         let shape = self.service.require_aggregate_shape(ty)?;
         Ok(self
             .emit_destructure_value(value, ty, shape, Provenance::Synthesized)?
@@ -225,16 +247,18 @@ impl Builder<'_, '_> {
         &mut self,
         callee: CallableId,
         values: Vec<ValueId>,
-    ) -> Result<Option<ValueId>, String> {
+    ) -> Result<Option<ValueId>, SirLoweringError> {
         let callable = self
             .service
             .callable(callee)
             .cloned()
-            .ok_or("interceptor next body is absent")?;
+            .ok_or(SirLoweringError::from("interceptor next body is absent"))?;
         let state = self
             .params
             .first()
-            .ok_or("interceptor has no actor state seat")?
+            .ok_or(SirLoweringError::from(
+                "interceptor has no actor state seat",
+            ))?
             .value;
         let mut values = vec![state].into_iter().chain(values);
         let arguments = callable
@@ -242,9 +266,9 @@ impl Builder<'_, '_> {
             .params
             .iter()
             .map(|parameter| {
-                let value = values
-                    .next()
-                    .ok_or("interceptor call has too few arguments")?;
+                let value = values.next().ok_or(SirLoweringError::from(
+                    "interceptor call has too few arguments",
+                ))?;
                 Ok(crate::BoundaryOperand {
                     operand: Operand { value },
                     decision: match parameter.passing {
@@ -255,7 +279,7 @@ impl Builder<'_, '_> {
                     },
                 })
             })
-            .collect::<Result<Vec<_>, String>>()?;
+            .collect::<Result<Vec<_>, SirLoweringError>>()?;
         if values.next().is_some() {
             return Err("interceptor call has too many arguments".into());
         }
@@ -280,20 +304,21 @@ impl Builder<'_, '_> {
         family: hew_types::RuntimeCallFamily,
         values: Vec<ValueId>,
         ty: &ResolvedTy,
-    ) -> Result<Option<ValueId>, String> {
-        let contract = family
-            .semantic_contract()
-            .ok_or("interceptor runtime contract is absent")?;
+    ) -> Result<Option<ValueId>, SirLoweringError> {
+        let contract = family.semantic_contract().ok_or(SirLoweringError::from(
+            "interceptor runtime contract is absent",
+        ))?;
         if !contract.failures.is_empty() {
             return Err("interceptor runtime query unexpectedly fails".into());
         }
         let types = values
             .iter()
             .map(|value| {
-                self.value_ty(*value)
-                    .ok_or("interceptor runtime value lacks its type")
+                self.value_ty(*value).ok_or(SirLoweringError::from(
+                    "interceptor runtime value lacks its type",
+                ))
             })
-            .collect::<Result<Vec<_>, _>>()?;
+            .collect::<Result<Vec<_>, SirLoweringError>>()?;
         contract.resolve_types(&self.service.module.defs, &types, ty)?;
         self.service.require_type_facts(ty)?;
         let arguments = values
@@ -365,7 +390,7 @@ impl Builder<'_, '_> {
         actor: crate::ActorId,
         handler: usize,
         interceptor: CallableId,
-    ) -> Result<(), String> {
+    ) -> Result<(), SirLoweringError> {
         let descriptor = self.service.actors[actor.0 as usize].handlers[handler].clone();
         let call_ty = self.intercept_type(hew_types::KnownDecl::Call, actor);
         let fields = self.intercept_fields(&call_ty)?;
@@ -388,7 +413,8 @@ impl Builder<'_, '_> {
         }
         let request = self.intercept_variant(
             &fields[0].1,
-            u32::try_from(handler).map_err(|_| "handler index exceeds u32")?,
+            u32::try_from(handler)
+                .map_err(|_| SirLoweringError::from("handler index exceeds u32"))?,
             arguments,
         )?;
         self.service.require_variant_shape(&fields[1].1)?;
@@ -398,7 +424,7 @@ impl Builder<'_, '_> {
                 Vec::new(),
                 &fields[1].1,
             )?
-            .ok_or("caller query returned no value")?;
+            .ok_or(SirLoweringError::from("caller query returned no value"))?;
         let literal = self.service.intern_string(&descriptor.name);
         let name = self.emit_typed(
             Provenance::Synthesized,
@@ -412,13 +438,14 @@ impl Builder<'_, '_> {
         )?;
         let stream = self.intercept_variant(
             &fields[4].1,
-            u32::try_from(handler).map_err(|_| "handler index exceeds u32")?,
+            u32::try_from(handler)
+                .map_err(|_| SirLoweringError::from("handler index exceeds u32"))?,
             self.stream_sink.iter().map(|(sink, _)| *sink).collect(),
         )?;
         let call = self.intercept_record(&call_ty, vec![request, caller, name, message, stream])?;
         let outcome = self
             .intercept_invoke(interceptor, vec![call])?
-            .ok_or("interceptor returned no outcome")?;
+            .ok_or(SirLoweringError::from("interceptor returned no outcome"))?;
         let outcome_ty = self.intercept_type(hew_types::KnownDecl::Outcome, actor);
         let response_ty = self.intercept_fields(&outcome_ty)?[0].1.clone();
         let parts = self.intercept_parts(outcome, &outcome_ty)?;
@@ -439,7 +466,8 @@ impl Builder<'_, '_> {
             let shape_info = self.service.variant_shapes[shape.0 as usize].clone();
             let fields = self.emit_variant_destructure(
                 shape,
-                u32::try_from(handler).map_err(|_| "handler index exceeds u32")?,
+                u32::try_from(handler)
+                    .map_err(|_| SirLoweringError::from("handler index exceeds u32"))?,
                 &shape_info,
                 response.value,
             )?;
@@ -457,7 +485,7 @@ impl Builder<'_, '_> {
         receiver: &HirExpr,
         args: &[HirExpr],
         operation: InterceptorOperation,
-    ) -> Result<ValueId, String> {
+    ) -> Result<ValueId, SirLoweringError> {
         use InterceptorOperation as Op;
         let ty = self.ty(&receiver.ty);
         if !operation.consumes() {
@@ -486,14 +514,14 @@ impl Builder<'_, '_> {
                 .service
                 .actor_sources
                 .get(&self.callable.id)
-                .ok_or("proceed outside an interceptor")?;
+                .ok_or(SirLoweringError::from("proceed outside an interceptor"))?;
             let Some(ActorWeave::Interceptor { next }) = source.weave.clone() else {
                 return Err("proceed has no next interceptor layer".into());
             };
             return match next {
                 InterceptorNext::Layer(next) => self
                     .intercept_invoke(next, vec![call])?
-                    .ok_or("next layer returned no outcome".into()),
+                    .ok_or(SirLoweringError::from("next layer returned no outcome")),
                 InterceptorNext::Handlers(handlers) => {
                     self.lower_intercept_handlers(call, &ty, &self.ty(&expression.ty), &handlers)
                 }
@@ -521,7 +549,7 @@ impl Builder<'_, '_> {
         failed: Option<ValueId>,
         refused: bool,
         stream: ValueId,
-    ) -> Result<ValueId, String> {
+    ) -> Result<ValueId, SirLoweringError> {
         let response_ty = self.intercept_fields(ty)?[0].1.clone();
         let shape = self.service.require_variant_shape(&response_ty)?;
         let role = if response.is_some() {
@@ -533,7 +561,9 @@ impl Builder<'_, '_> {
             .runtime_tags
             .iter()
             .find_map(|(candidate, tag)| (*candidate == role).then_some(*tag))
-            .ok_or("outcome response lacks its Option role")?;
+            .ok_or(SirLoweringError::from(
+                "outcome response lacks its Option role",
+            ))?;
         let response =
             self.intercept_variant(&response_ty, variant, response.into_iter().collect())?;
         let failed = match failed {
@@ -550,7 +580,7 @@ impl Builder<'_, '_> {
         call_ty: &ResolvedTy,
         outcome_ty: &ResolvedTy,
         handlers: &[crate::SemActorHandler],
-    ) -> Result<ValueId, String> {
+    ) -> Result<ValueId, SirLoweringError> {
         let request_ty = self.intercept_fields(call_ty)?[0].1.clone();
         let response_option = self.intercept_fields(outcome_ty)?[0].1.clone();
         let ResolvedTy::Named { args, .. } = response_option else {
@@ -577,7 +607,9 @@ impl Builder<'_, '_> {
             self.owned_live = branch.owned_live;
             let handler = handlers
                 .get(branch.variant as usize)
-                .ok_or("request variant has no original handler")?;
+                .ok_or(SirLoweringError::from(
+                    "request variant has no original handler",
+                ))?;
             let stream_ty = self.intercept_fields(call_ty)?[4].1.clone();
             let stream_shape = self.service.require_variant_shape(&stream_ty)?;
             let stream_descriptor = self.service.variant_shapes[stream_shape.0 as usize].clone();
@@ -596,7 +628,9 @@ impl Builder<'_, '_> {
                         vec![sink.value],
                         &sink.ty,
                     )?
-                    .ok_or("stream sink clone returned no value")?,
+                    .ok_or(SirLoweringError::from(
+                        "stream sink clone returned no value",
+                    ))?,
                 );
                 arguments.push(sink.value);
             }
@@ -612,7 +646,9 @@ impl Builder<'_, '_> {
                     .find_map(|(role, tag)| {
                         (*role == crate::RuntimeVariantRole::ResultErr).then_some(*tag)
                     })
-                    .ok_or("failed handler lacks its Err variant")?;
+                    .ok_or(SirLoweringError::from(
+                        "failed handler lacks its Err variant",
+                    ))?;
                 Some(self.emit_typed(
                     Provenance::Synthesized,
                     &ResolvedTy::Bool,

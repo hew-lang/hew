@@ -206,33 +206,30 @@ pub(crate) fn render_codegen_emit_error(
     emit_plain_diagnostic_line(&format!("{prefix}{code}: {error}"));
 }
 
-/// Render a `hew_compile::SessionError::Unsupported` diagnostic
-/// (`E_SIR_UNSUPPORTED`, #3384).
-///
-/// Same fail-closed render rule as [`render_codegen_emit_error`]: a caret
-/// renders only when the error carries a span, `source` is non-empty, and the
-/// span's start byte indexes it. Anything else degrades to a bare
-/// `E_SIR_UNSUPPORTED:` plain line — a limitation whose producer could not
-/// attribute a declaration is still reported, just without a location.
-pub(crate) fn render_unsupported_error(
-    message: &str,
+/// Render the category selected by semantic lowering. Root-only spans follow
+/// the same source identity rule as code generation errors.
+pub(crate) fn render_lowering_error(
+    error: &hew_sir::SirLoweringError,
     span: Option<&Range<usize>>,
     source: &str,
     filename: &str,
 ) -> hew_types::error::DiagChannel {
-    let channel = hew_types::error::DiagChannel::Limitation;
+    use hew_sir::SirLoweringError;
+    use hew_types::error::DiagChannel;
+    let (channel, code) = match error {
+        SirLoweringError::Internal(_) => (DiagChannel::Internal, "E_SIR_ICE"),
+        SirLoweringError::Ownership { kind, .. } => (DiagChannel::User, kind.code()),
+        SirLoweringError::Unavailable(_) => (DiagChannel::Limitation, "E_SIR_UNSUPPORTED"),
+        SirLoweringError::Limit(_) => (DiagChannel::Limitation, "E_LIMIT_SPECIALIZATION"),
+    };
+    let message = error.message();
     let prefix = channel.prefix();
     if let Some(span) = span {
         if span.start < source.len() {
             if crate::diagnostic_json::json_output_active() {
                 crate::diagnostic_json::push_json_diagnostic(
                     crate::diagnostic_json::coded_span_diagnostic(
-                        "E_SIR_UNSUPPORTED",
-                        message,
-                        channel,
-                        source,
-                        filename,
-                        span,
+                        code, message, channel, source, filename, span,
                     ),
                 );
             } else {
@@ -241,7 +238,7 @@ pub(crate) fn render_unsupported_error(
                     source,
                     filename,
                     &(span.start..end),
-                    &format!("{prefix}E_SIR_UNSUPPORTED: {message}"),
+                    &format!("{prefix}{code}: {message}"),
                     &[],
                     &[],
                 );
@@ -251,10 +248,10 @@ pub(crate) fn render_unsupported_error(
     }
     if crate::diagnostic_json::json_output_active() {
         crate::diagnostic_json::push_json_diagnostic(
-            crate::diagnostic_json::coded_message_diagnostic("E_SIR_UNSUPPORTED", message, channel),
+            crate::diagnostic_json::coded_message_diagnostic(code, message, channel),
         );
     } else {
-        emit_plain_diagnostic_line(&format!("{prefix}E_SIR_UNSUPPORTED: {message}"));
+        emit_plain_diagnostic_line(&format!("{prefix}{code}: {message}"));
     }
     channel
 }

@@ -1099,8 +1099,8 @@ fn main() {
     );
     assert!(
         lowered.statuses.iter().any(|status| status.name == "drive"
-            && matches!(&status.status, SirLoweringStatus::Unsupported { reason, .. }
-                if reason.contains("E_OWN_GUARD_CONSUME") && reason.contains("`values`"))),
+            && matches!(&status.status, SirLoweringStatus::Failed { reason, .. }
+                if reason.to_string().contains("E_OWN_GUARD_CONSUME") && reason.to_string().contains("`values`"))),
         "{:#?}",
         lowered.statuses
     );
@@ -1216,7 +1216,7 @@ fn user_enum_shape_requires_its_exact_declaration_and_argument_arity() {
             refused
                 .statuses
                 .iter()
-                .any(|status| matches!(&status.status, SirLoweringStatus::Unsupported { .. })),
+                .any(|status| matches!(&status.status, SirLoweringStatus::Failed { .. })),
             "malformed enum contract must refuse: {:?}",
             refused.statuses
         );

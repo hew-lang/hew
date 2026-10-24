@@ -1132,6 +1132,22 @@ impl HewNotificationTarget {
         }
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fn remote_location(self) -> Option<Location> {
+        let node = crate::node_identity::HewNodeId {
+            hi: self.node_hi,
+            lo: self.node_lo,
+        }
+        .into();
+        match self.kind {
+            DOWN_TARGET_REMOTE => Location::direct(node, self.slot, self.session_incarnation).ok(),
+            DOWN_TARGET_REMOTE_ROLE => {
+                Location::role(node, self.slot, self.session_incarnation).ok()
+            }
+            _ => None,
+        }
+    }
+
     pub(crate) fn role(token: HewLocalPidId) -> Self {
         Self {
             kind: DOWN_TARGET_ROLE,
@@ -3199,6 +3215,15 @@ mod tests {
         assert_eq!(target.kind, DOWN_TARGET_REMOTE_ROLE);
         assert_eq!(target.slot, (1_u64 << 60) + 7);
         assert_eq!(target.session_incarnation, role.incarnation());
+        assert_eq!(target.remote_location(), Some(role));
+        assert_eq!(
+            HewNotificationTarget::remote(direct).remote_location(),
+            Some(direct)
+        );
+        assert_eq!(
+            HewNotificationTarget::local(selected.actor_id()).remote_location(),
+            None
+        );
         // SAFETY: both selected registrations have retired and no messages were sent.
         unsafe { crate::actor::hew_actor_free(actor) };
     }

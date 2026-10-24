@@ -3,47 +3,14 @@
 use super::*;
 use hew_parser::ast::Ident;
 
-/// Identify, by PROVENANCE (file-set subsumption), the package-import graph
-/// modules whose `impl` blocks must NOT be re-lowered by the fourth pass
-/// because a *superset* package module already lowers the identical impl
-/// items under the same unqualified `<SelfType>::<method>` symbols.
+/// Compute the source-set relationships used to choose one origin for
+/// duplicate imported items. Module spelling alone cannot establish that
+/// two declarations came from the same file.
 ///
-/// WHY this exists: a directory module (`import std::net::http` resolves to
-/// `std/net/http/http.hew`, whose stem matches its directory, so it is a
-/// *directory module* that peer-absorbs every sibling `.hew`) and an explicit
-/// sub-file import of one of those peers (`import std::net::http::http_client`)
-/// register as two distinct graph modules whose `source_paths` sets are
-/// `{http_client.hew} ⊂ {http.hew, http_client.hew, …}`, so `lower_impl_block` runs on `http_client.hew`'s
-/// `impl ResponseMethods for Response` TWICE — once per module — emitting
-/// `Response::status` … `Response::free` under identical bare symbols. Two
-/// `RawMirFunction`s with one name make codegen declare the LLVM function
-/// twice; the first stays a bodiless internal-linkage declaration and
-/// `Module::verify()` rejects it ("Global is external, but doesn't have
-/// external or weak linkage!"). See #2391.
-///
-/// SEMANTICS: over imported modules (the root is excluded), treat each module's `source_paths` as a
-/// canonical path set. Module M is *preferred for its own duplicate impls* iff
-/// some N ≠ M has `files(M) ⊆ files(N)` and EITHER `files(M) ⊊ files(N)` (the
-/// source-specific module owns impls duplicated in the directory superset) OR
-/// the sets are equal and N precedes M in `topo_order` (a deterministic
-/// tiebreak that keeps exactly one of two identical modules). Today's loader
-/// only ever yields disjoint, equal, or single-file ⊂ directory sets (peer
-/// absorption is a non-recursive `read_dir`), so partial overlap cannot arise;
-/// if it ever did, both copies lower and the codegen duplicate-raw-symbol guard
-/// catches the collision fail-closed rather than silently.
-///
-/// WHY only impl methods: pub free fns lower under module-qualified
-/// `{module_short}$fn` names (both copies are needed — `http_client.get(...)`
-/// binds `http_client$get`), consts under `{module_short}.NAME`, actors under
-/// per-module layouts; only impl methods use the bare `<SelfType>::<method>`
-/// family, so the subsumed skip is applied ONLY in the `Item::Impl` arm.
-///
-/// WHEN OBSOLETE / WHAT REPLACES IT: this provenance dedup disappears once
-/// impl-method symbols become module-qualified (the foundational fix that also
-/// unblocks two DISTINCT same-named types in one unit, e.g. http + websocket
-/// each defining `Server`); tracked as the #2391 follow-up. Until then this
-/// keeps the #2391 flagship shape (one program importing both `std::net::http`
-/// and `std::net::http::http_client`) linking.
+/// A strict subset is recorded; for equal source sets, the later module in
+/// topological order is recorded. Consumers combine these relationships with
+/// item identity when deciding which copy to lower. The root and modules
+/// without source provenance do not participate.
 pub(super) fn preferred_package_module_ids(
     program: &Program,
 ) -> HashSet<hew_parser::module::ModulePath> {
@@ -120,8 +87,8 @@ pub(super) fn item_is_duplicated_in_preferred_module(
 
 /// Whether a directory module absorbed an item from a distinct child module.
 ///
-/// A directory import may contain both its same-leaf root file (`http.hew` for
-/// `std.net.http`) and child files such as `http_client.hew`. The root-file
+/// A directory import may contain both its same-leaf root file (`codec.hew` for
+/// `std.net.http.codec`) and child files such as `request.hew`. The root-file
 /// declarations retain the directory module's identity; only declarations
 /// duplicated by a preferred module with a different leaf belong to a child
 /// owner and must be skipped during directory-module function emission.

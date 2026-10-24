@@ -85,7 +85,7 @@ fn file_resources_refuse_copy_and_borrowed_or_repeated_consumption() {
             "type `Reader` cannot be cloned because member `input` of type `Stream<string>` has no Clone capability"),
         ("capture", "let input = open(); let cb = move || input.collect(); let _copy = clone cb;", 1,
             "type `fn[once]() -> string` cannot be cloned"),
-        ("borrowed", "read_borrowed(open());", 3,
+        ("borrowed", "read_borrowed(open());", 1,
             "E_OWN_CONSUME_BORROWED"),
     ] {
         let extra_declaration = match name {

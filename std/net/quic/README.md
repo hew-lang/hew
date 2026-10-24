@@ -26,14 +26,14 @@ and the last observed error without consuming anything.
 import std.net.quic;
 
 fn main() {
-    let ep = quic.new_server(":4433");
-    let conn = ep.accept();
-    let stream = conn.accept_stream();
-    let data = stream.recv();
+    let ep = quic.new_server(":4433").expect("bind server");
+    let conn = ep.accept().expect("accept connection");
+    let stream = conn.accept_stream().expect("accept stream");
+    let data = stream.recv().expect("receive request");
     stream.send(data).expect("send succeeds");
     stream.finish().expect("stream finishes");
     stream.close();
-    conn.disconnect().expect("disconnect succeeds");
+    conn.close();
     ep.close();
 }
 ```
@@ -44,14 +44,15 @@ fn main() {
 import std.net.quic;
 
 fn main() {
-    let ep = quic.new_client();
-    let conn = ep.connect("127.0.0.1:4433", "localhost");
-    let stream = conn.open_stream();
+    let ep = quic.new_client().expect("create client");
+    let conn = ep.connect("127.0.0.1:4433", "localhost").expect("connect to server");
+    let stream = conn.open_stream().expect("open stream");
     stream.send(b"hello quic").expect("send succeeds");
-    let reply = stream.recv();
+    let reply = stream.recv().expect("receive reply");
+    println(f"Received {reply.len()} bytes");
     stream.finish().expect("stream finishes");
     stream.close();
-    conn.disconnect().expect("disconnect succeeds");
+    conn.close();
     ep.close();
 }
 ```
@@ -98,7 +99,7 @@ prefer the explicit TLS constructors shown in the API table below.
 | ---------------------- | ---------------------------------------------- |
 | `conn.open_stream()`   | Open a new bidirectional stream                |
 | `conn.accept_stream()` | Accept next incoming stream from remote peer   |
-| `conn.disconnect()`    | Gracefully close connection                    |
+| `conn.close()`         | Gracefully close connection                    |
 | `conn.on_event()`      | Block until the next queued connection event   |
 | `conn.observe()`       | Read connection state, counters, and telemetry |
 

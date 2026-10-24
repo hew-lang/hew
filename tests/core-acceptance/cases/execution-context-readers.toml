@@ -1,0 +1,10 @@
+[[case]]
+id = "execution-context-readers"
+intent = "An actor handler reads its installed actor, supervisor and trace context through checked semantic operations."
+source = "cases/execution-context-readers.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.expected]
+stdout = "true\n"
+exit = 0

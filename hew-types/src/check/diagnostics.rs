@@ -395,8 +395,8 @@ impl Checker {
     /// Resolve a lexical module spelling through the current import binding and
     /// return the selected member's manifest-defined native-only capability,
     /// when it belongs to an exact shipped stdlib module. Exact member policy
-    /// takes precedence over module policy: one directory module can assemble
-    /// several capabilities, such as HTTP client and server declarations.
+    /// takes precedence over module policy when individual operations need
+    /// more specific capability boundaries.
     ///
     /// Native-only module checks must not use a source spelling directly:
     /// `import std::net::websocket as ws` is the same module as `websocket`,
@@ -418,10 +418,9 @@ impl Checker {
         {
             return Some(rejection.feature);
         }
-        let module_leaf = source_module.rsplit('.').next()?;
         crate::NATIVE_ONLY_WASM_MODULE_REJECTIONS
             .iter()
-            .find(|rejection| rejection.module == module_leaf)
+            .find(|rejection| rejection.module == source_module)
             .map(|rejection| rejection.feature)
     }
 
@@ -431,7 +430,7 @@ impl Checker {
     /// provenance admission boundary explicitly.
     pub(super) fn is_shipped_crypto_module(&self, surface_module: &str) -> bool {
         let source_module = self.canonical_module_import_owner(surface_module);
-        source_module == "std.crypto.crypto"
+        source_module == "std.crypto.hash"
             && self.canonical_std_module_sources.contains(&source_module)
     }
 

@@ -1,7 +1,7 @@
 import std.string;
 
 fn label(n: i64) -> string {
-    let parsed = string.to_int(f"{n}").expect("parse label");
+    let parsed = (f"{n}").to_int().expect("parse label");
     f"{parsed}"
 }
 

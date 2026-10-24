@@ -1,0 +1,7 @@
+// Reversal acts on the sequence selected by the preceding step.
+fn main() -> i64 {
+    for i in (0..10).step_by(2).rev() {
+        println(i);
+    }
+    0
+}

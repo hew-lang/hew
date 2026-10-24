@@ -1,0 +1,10 @@
+[[case]]
+id = "bounded-range-values"
+source = "cases/bounded-range-values.hew"
+intent = "Saved, passed and adapted range values preserve endpoint width, order and single evaluation."
+suites = ["acceptance", "safety"]
+timeout_seconds = 30
+
+[case.expected]
+stdout = "initialize range\n3\n9\n2\nbounded ranges\n"
+exit = 0

@@ -43,6 +43,12 @@ impl PhysicalTarget {
         &self,
         result: &ResolvedTy,
     ) -> Result<PhysicalExternResultAbi, PhysicalError> {
+        // C `_Bool` uses an i1 register carrier; Hew value storage is a byte.
+        if *result == ResolvedTy::Bool {
+            return Ok(PhysicalExternResultAbi::Coerce(PhysicalRepr::Integer {
+                bits: 1,
+            }));
+        }
         if *result == ResolvedTy::Never {
             return Ok(PhysicalExternResultAbi::Direct);
         }

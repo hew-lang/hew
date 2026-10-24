@@ -113,6 +113,7 @@ impl Checker {
     }
 
     pub(super) fn check_embed(&mut self, args: &[Spanned<Expr>], span: &Span, expected: &Ty) -> Ty {
+        let errors_before = self.errors.len();
         let result = (|| {
             let ty = ResolvedTy::from_ty(expected).map_err(|_| {
                 (
@@ -191,7 +192,11 @@ impl Checker {
             );
             return Ty::Error;
         }
-        expected.clone()
+        if self.errors.len() == errors_before {
+            expected.clone()
+        } else {
+            Ty::Error
+        }
     }
 
     fn source_location_constant(

@@ -194,7 +194,7 @@ fn number(text: string) -> i64 fails CronError {
             return error invalid(f"invalid cron number: {text}");
         }
     }
-    match string.to_int(text) {
+    match text.to_int() {
         .Ok(value) => value,
         .Err(_) => {
             return error invalid(f"cron number is too large: {text}");
@@ -317,7 +317,7 @@ fn parse_field(text: string, field: i64, lower: i64, upper: i64) -> Field fails 
 }
 
 /// Parse a schedule without panicking on malformed input.
-pub fn try_parse(text: string) -> Expr fails CronError {
+pub fn parse(text: string) -> Expr fails CronError {
     let trimmed = text.trim();
     let expanded = match trimmed {
         "@yearly" => "0 0 0 1 1 * *",
@@ -346,11 +346,6 @@ pub fn try_parse(text: string) -> Expr fails CronError {
         return error invalid("cron requires five, six or seven fields");
     }
     Expr { source: source, seconds: parse_field(columns[0], 0, 0, 59)?, minutes: parse_field(columns[1], 1, 0, 59)?, hours: parse_field(columns[2], 2, 0, 23)?, days: parse_field(columns[3], 3, 1, 31)?, months: parse_field(columns[4], 4, 1, 12)?, weekdays: parse_field(columns[5], 5, 1, 7)?, years: parse_field(columns[6], 6, 0, MAX_INTEGER)? }
-}
-
-/// Parse a schedule, panicking on malformed input. Use try_parse for checked input.
-pub fn parse(text: string) -> Expr {
-    try_parse(text).expect(f"cron.parse: invalid expression `{text}`")
 }
 
 fn remainder(value: i64, modulus: i64) -> i64 {
@@ -591,18 +586,14 @@ fn find_next(expr: Expr, after_value: timestamp) -> timestamp fails CronError {
 }
 
 trait ExprMethods {
-    fn next(self, after: timestamp) -> timestamp;
-    fn try_next(self, after: timestamp) -> Result<timestamp, CronError>;
+    fn next(self, after: timestamp) -> Result<timestamp, CronError>;
     fn to_string(self) -> string;
 }
 
 impl ExprMethods for Expr {
     /// Find the next whole-second occurrence strictly after the given timestamp.
-    fn next(self, after: timestamp) -> timestamp {
-        self.try_next(after).expect("cron.next failed")
-    }
     /// Distinguish exhausted finite schedules from a calendar range failure.
-    fn try_next(self, after: timestamp) -> Result<timestamp, CronError> {
+    fn next(self, after: timestamp) -> Result<timestamp, CronError> {
         find_next(self, after)
     }
     fn to_string(self) -> string {

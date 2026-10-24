@@ -1,0 +1,9 @@
+fn add<T: Num>(a: T, b: T) -> T { a + b }
+
+fn main() {
+    let owner = "owned before generic overflow".repeat(3);
+    let a: i8 = 127;
+    let b: i8 = 1;
+    println(add(a, b));
+    println(owner);
+}

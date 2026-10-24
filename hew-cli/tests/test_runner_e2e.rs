@@ -139,6 +139,39 @@ fn doc_no_run_still_rejects_a_type_error() {
 }
 
 #[test]
+fn doc_main_preserves_the_entry_exit_contract() {
+    require_codegen();
+    for (source, succeeds, error) in [
+        ("fn main() fails string { println(\"ready\"); }", true, None),
+        (
+            "fn main() fails string { return error \"documented failure\"; }",
+            false,
+            Some("documented failure"),
+        ),
+        (
+            "fn main() -> Result<(), string> { .Err(\"explicit failure\") }",
+            false,
+            Some("explicit failure"),
+        ),
+        ("fn main() -> i64 { 7 }", false, None),
+    ] {
+        let dir = support::tempdir();
+        write_file(dir.path(), "guide.md", &format!("```hew\n{source}\n```\n"));
+        let output = run_hew_in(
+            dir.path(),
+            &["test", "--doc", "guide.md", "--format", "json"],
+        );
+        assert_eq!(output.status.success(), succeeds, "{source}: {output:?}");
+        if let Some(error) = error {
+            assert!(
+                String::from_utf8_lossy(&output.stdout).contains(error),
+                "{output:?}"
+            );
+        }
+    }
+}
+
+#[test]
 fn doc_no_run_compiles_host_operations_without_running_them() {
     require_codegen();
     let dir = support::tempdir();
@@ -221,6 +254,32 @@ fn doc_imports_keep_source_items_in_scope() {
 }
 
 #[test]
+fn doc_directory_peer_uses_its_canonical_module() {
+    require_codegen();
+    let root = repo_root();
+    let source = root.join("std/net/http/codec/request.hew");
+    let output = run_hew_in(
+        root,
+        &[
+            "test",
+            "--doc",
+            source.to_str().unwrap(),
+            "--format",
+            "json",
+        ],
+    );
+    assert!(
+        output.status.success(),
+        "stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let events = String::from_utf8_lossy(&output.stdout);
+    assert!(events.contains("request.hew::doc(module)#1"), "{events}");
+    assert!(events.contains("\"passed\":1"), "{events}");
+}
+
+#[test]
 fn doc_declarations_compile_and_can_be_called_in_the_same_fence() {
     require_codegen();
     let dir = support::tempdir();
@@ -275,7 +334,7 @@ fn doc_output_compares_stdout_without_log_stderr() {
     write_file(
         dir.path(),
         "guide.md",
-        "```hew\nimport std.misc.log;\nprintln(\"wanted\");\nlog.error(\"stderr only\");\n// Output:\n// wanted\n```\n",
+        "```hew\nimport std.log;\nprintln(\"wanted\");\nlog.error(\"stderr only\");\n// Output:\n// wanted\n```\n",
     );
     let output = run_hew_in(
         dir.path(),
@@ -1281,6 +1340,24 @@ fn junit_failing_suite_emits_failure_element_and_exits_one() {
         "stdout: {stdout}"
     );
     assert!(stdout.contains("boom"), "stdout: {stdout}");
+
+    let dir = support::tempdir();
+    let report = dir.path().join("failure.xml");
+    std::fs::write(&report, &output.stdout).unwrap();
+    let parsed = Command::new(std::env::var_os("PYTHON").unwrap_or_else(|| "python3".into()))
+        .arg(repo_root().join("scripts/lib/hew_junit.py"))
+        .args(["--runner-exit", "1"])
+        .arg(&report)
+        .output()
+        .expect("run the compiled-test JUnit consumer");
+    assert!(
+        parsed.status.success(),
+        "{}",
+        String::from_utf8_lossy(&parsed.stderr)
+    );
+    let outcomes = String::from_utf8_lossy(&parsed.stdout);
+    assert!(outcomes.contains("::bad\tpanic"), "{outcomes}");
+    assert!(outcomes.contains("__SUMMARY__\t1\t1\t0"), "{outcomes}");
 }
 
 #[test]

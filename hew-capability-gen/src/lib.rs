@@ -136,6 +136,7 @@ pub struct Feature {
     pub tracking: Option<String>,
     pub tracking_label: Option<String>,
     pub note: Option<String>,
+    /// Exact canonical standard-library module identities.
     #[serde(default)]
     pub native_only_modules: Vec<String>,
     /// Exact `module.function` entries whose runtime substrate is absent on
@@ -395,11 +396,7 @@ impl Manifest {
                 ));
             }
             for module in &feature.native_only_modules {
-                if module.is_empty()
-                    || !module
-                        .chars()
-                        .all(|ch| ch == '_' || ch.is_ascii_alphanumeric())
-                {
+                if !module.starts_with("std.") || !module.split('.').all(valid_source_segment) {
                     return Err(format!(
                         "feature `{}` has invalid native-only module `{module}`",
                         feature.id
@@ -775,7 +772,7 @@ pub const NATIVE_ONLY_WASM_FUNCTION_REJECTIONS: &[WasmFunctionRejection] = &[
         out.push_str(
             "];
 
-/// Generated native-only module short-names for sandbox and checker consumers.
+/// Generated canonical native-only module identities for sandbox and checker consumers.
 pub const NATIVE_ONLY_WASM_MODULES: &[&str] = &[
 ",
         );

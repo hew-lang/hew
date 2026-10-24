@@ -1,5 +1,7 @@
 //! Statement, block and assignment lowering.
 
+use crate::SirLoweringError;
+
 use super::{
     lower_initial_unit_return, lower_initial_value_transfer, require_initial_scalar_read, tasks,
     AggregateSelection, BindingId, BindingLoans, BindingPlace, BindingTarget, Builder, CallTarget,
@@ -15,12 +17,14 @@ impl Builder<'_, '_> {
         &mut self,
         binding: &hew_hir::HirBinding,
         value: Option<&HirExpr>,
-    ) -> Result<(), String> {
+    ) -> Result<(), SirLoweringError> {
         if let Some(expr) = value.filter(|expr| self.ty(&expr.ty) == ResolvedTy::Never) {
             self.lower_discarded_expr(expr)?;
             if self.is_open() {
                 return Err(
-                    "Never-typed binding initializer did not terminate its SIR block".to_string(),
+                    "Never-typed binding initializer did not terminate its SIR block"
+                        .to_string()
+                        .into(),
                 );
             }
             return Ok(());
@@ -92,7 +96,7 @@ impl Builder<'_, '_> {
         &mut self,
         block: &HirBlock,
         tail_binding_use: OwnedBindingUse,
-    ) -> Result<Option<Operand>, String> {
+    ) -> Result<Option<Operand>, SirLoweringError> {
         for statement in &block.statements {
             if !self.is_open() {
                 break;
@@ -140,9 +144,9 @@ impl Builder<'_, '_> {
                     let divergent = self.ty(&expr.ty) == ResolvedTy::Never;
                     self.lower_discarded_expr(expr)?;
                     if divergent && self.is_open() {
-                        return Err(
-                            "Never-typed block tail did not terminate its SIR block".to_string()
-                        );
+                        return Err("Never-typed block tail did not terminate its SIR block"
+                            .to_string()
+                            .into());
                     }
                     Ok(None)
                 }
@@ -165,7 +169,7 @@ impl Builder<'_, '_> {
         &mut self,
         block: &HirBlock,
         tail_binding_use: OwnedBindingUse,
-    ) -> Result<Option<Operand>, String> {
+    ) -> Result<Option<Operand>, SirLoweringError> {
         let floor = self.scopes.len();
         let live_before = self.owned_live.clone();
         self.open_scope();
@@ -193,7 +197,7 @@ impl Builder<'_, '_> {
         target: &HirExpr,
         value: &HirExpr,
         first_store: bool,
-    ) -> Result<(), String> {
+    ) -> Result<(), SirLoweringError> {
         if let HirExprKind::Index { container, index } = &target.kind {
             let family = match self.ty(&container.ty) {
                 ResolvedTy::Array(_, _) => Some(hew_types::RuntimeCallFamily::Array(
@@ -235,10 +239,9 @@ impl Builder<'_, '_> {
         else {
             return Err("assignment requires a resolved local binding target".into());
         };
-        let declaration = *self
-            .binding_declarations
-            .get(binding)
-            .ok_or_else(|| "assignment target has no declaration".to_string())?;
+        let declaration = *self.binding_declarations.get(binding).ok_or_else(|| {
+            SirLoweringError::from("assignment target has no declaration".to_string())
+        })?;
         if !self.source_bindings[declaration].mutable && !first_store {
             return Err("assignment target is not mutable".into());
         }
@@ -294,7 +297,7 @@ impl Builder<'_, '_> {
         &mut self,
         target: &HirExpr,
         value: &HirExpr,
-    ) -> Result<(), String> {
+    ) -> Result<(), SirLoweringError> {
         let path = self.resolve_writable_path(target)?;
         if Self::path_is_indexed(&path) {
             let replacement = lower_initial_value_transfer(
@@ -340,24 +343,21 @@ impl Builder<'_, '_> {
     pub(super) fn resolve_mutable_place(
         &mut self,
         target: &HirExpr,
-    ) -> Result<BindingPlace, String> {
-        let place = self
-            .resolve_binding_place(target)?
-            .ok_or_else(|| "mutable place requires a local binding root".to_string())?;
+    ) -> Result<BindingPlace, SirLoweringError> {
+        let place = self.resolve_binding_place(target)?.ok_or_else(|| {
+            SirLoweringError::from("mutable place requires a local binding root".to_string())
+        })?;
         let declaration = *self
             .binding_declarations
             .get(&place.binding)
             .ok_or_else(|| {
-                format!(
+                SirLoweringError::from(format!(
                     "mutable place root `{}` has no source declaration",
                     place.binding
-                )
+                ))
             })?;
         if !self.source_bindings[declaration].mutable {
-            return Err(format!(
-                "mutable place root `{}` is not mutable",
-                place.binding
-            ));
+            return Err(format!("mutable place root `{}` is not mutable", place.binding).into());
         }
         Ok(place)
     }
@@ -368,7 +368,7 @@ impl Builder<'_, '_> {
     pub(super) fn projection_chain<'expr>(
         &mut self,
         target: &'expr HirExpr,
-    ) -> Result<(&'expr HirExpr, Vec<AggregateSelection>), String> {
+    ) -> Result<(&'expr HirExpr, Vec<AggregateSelection>), SirLoweringError> {
         let mut root = target;
         let mut projections = Vec::new();
         loop {
@@ -391,7 +391,8 @@ impl Builder<'_, '_> {
             projections.push((
                 self.ty(&object.ty),
                 shape,
-                usize::try_from(index).map_err(|_| "mutable place field exceeds usize")?,
+                usize::try_from(index)
+                    .map_err(|_| SirLoweringError::from("mutable place field exceeds usize"))?,
             ));
             root = object;
         }
@@ -402,7 +403,7 @@ impl Builder<'_, '_> {
     pub(super) fn resolve_binding_place(
         &mut self,
         target: &HirExpr,
-    ) -> Result<Option<BindingPlace>, String> {
+    ) -> Result<Option<BindingPlace>, SirLoweringError> {
         let (root, projections) = self.projection_chain(target)?;
         let HirExprKind::BindingRef {
             resolved: ResolvedRef::Binding(binding),
@@ -424,7 +425,7 @@ impl Builder<'_, '_> {
         &mut self,
         place: &BindingPlace,
         provenance: &Provenance,
-    ) -> Result<(ValueId, Vec<ScalarAggregateParent>), String> {
+    ) -> Result<(ValueId, Vec<ScalarAggregateParent>), SirLoweringError> {
         let mut current = self.scalar_binding(place.binding)?;
         if self.value_own_kind(current) != Some(OwnKind::None)
             || self.value_ty(current).as_ref() != Some(&place.root_ty)
@@ -455,7 +456,7 @@ impl Builder<'_, '_> {
         replacement: ValueId,
         parents: Vec<ScalarAggregateParent>,
         provenance: &Provenance,
-    ) -> Result<(), String> {
+    ) -> Result<(), SirLoweringError> {
         if self.value_own_kind(replacement) != Some(OwnKind::None) {
             return Err("scalar aggregate replacement cannot carry ownership".into());
         }
@@ -494,7 +495,7 @@ impl Builder<'_, '_> {
         clippy::too_many_lines,
         reason = "effect-position dispatch keeps control flow and cleanup together"
     )]
-    pub(super) fn lower_discarded_expr(&mut self, expr: &HirExpr) -> Result<(), String> {
+    pub(super) fn lower_discarded_expr(&mut self, expr: &HirExpr) -> Result<(), SirLoweringError> {
         // A statement whose value is discarded reaches several lowerings that
         // do not go through `lower_expr_inner`, so stamp its source point here
         // as well: a call statement's terminator must name its own line.
@@ -584,8 +585,9 @@ impl Builder<'_, '_> {
             _ => {}
         }
         if expr.intent != IntentKind::Consume {
-            require_initial_scalar_read(expr.intent)
-                .map_err(|reason| format!("discarded expression: {reason}"))?;
+            require_initial_scalar_read(expr.intent).map_err(|reason| {
+                SirLoweringError::from(format!("discarded expression: {reason}"))
+            })?;
         }
         let live_before_expression: std::collections::HashSet<_> =
             self.owned_live.keys().copied().collect();
@@ -653,23 +655,10 @@ impl Builder<'_, '_> {
             HirExprKind::ForRange {
                 label,
                 binding,
-                start,
-                end,
-                inclusive,
-                step,
-                descending,
+                range,
                 body,
             } => {
-                return self.lower_for_range(
-                    label.as_deref(),
-                    binding,
-                    start,
-                    end,
-                    step,
-                    *inclusive,
-                    *descending,
-                    body,
-                );
+                return self.lower_for_range(label.as_deref(), binding, range, body);
             }
             _ => {}
         }
@@ -694,7 +683,11 @@ impl Builder<'_, '_> {
 
     /// Preserve the panic message before releasing its owner and propagating
     /// the active fault through the ordinary function cleanup boundary.
-    pub(super) fn lower_panic(&mut self, expr: &HirExpr, args: &[HirExpr]) -> Result<(), String> {
+    pub(super) fn lower_panic(
+        &mut self,
+        expr: &HirExpr,
+        args: &[HirExpr],
+    ) -> Result<(), SirLoweringError> {
         let (message, assertion) = match args {
             [message] => (message, None),
             [message, operator, left, right] => (message, Some([operator, left, right])),
@@ -729,7 +722,7 @@ impl Builder<'_, '_> {
         operand: Operand,
         assertion: Option<[Operand; 3]>,
         loans: &[ValueId],
-    ) -> Result<(), String> {
+    ) -> Result<(), SirLoweringError> {
         let cleanup = self.new_block(Vec::new());
         self.set_terminator(SemTerminator::Panic {
             message: crate::BoundaryOperand {
@@ -760,7 +753,7 @@ impl Builder<'_, '_> {
         &mut self,
         value: Option<&HirExpr>,
         failure: bool,
-    ) -> Result<(), String> {
+    ) -> Result<(), SirLoweringError> {
         if self.in_deferred_body() {
             return Err("return and error propagation cannot escape a deferred body".into());
         }

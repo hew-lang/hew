@@ -1291,10 +1291,10 @@ fn run_imports_std_io_and_round_trips_stdin_to_stdout() {
         "import std.io;\n\
          \n\
          fn main() {\n\
-         \x20   let line = io.read_line() ?? \"\";\n\
-         \x20   io.write(\"echo: \");\n\
-         \x20   io.write(line);\n\
-         \x20   io.write(\"\\n\");\n\
+         \x20   let line = io.read_line().expect(\"standard I/O\") ?? \"\";\n\
+         \x20   io.write(\"echo: \").expect(\"standard I/O\");\n\
+         \x20   io.write(line).expect(\"standard I/O\");\n\
+         \x20   io.write(\"\\n\").expect(\"standard I/O\");\n\
          }\n",
     )
     .unwrap();
@@ -1461,46 +1461,18 @@ fn run_fstring_dispatches_user_defined_display() {
     assert_eq!(String::from_utf8_lossy(&output.stdout), "got Point(7)\n",);
 }
 
-/// `.step_by(k)` before `.rev()` does not commute with the supported
-/// `.rev()`-then-`.step_by(k)` order and is rejected fail-closed at check time
-/// rather than silently miscompiled.
-///
-/// `.rev()` and `.step_by(k)` fold into an order-insensitive
-/// `{descending, step}` pair on the `ForRange` primitive.  That fold is correct
-/// only for `.rev()` first (descend from the high bound, then stride); a
-/// `.step_by(k)` *before* a `.rev()` would have to start the descending
-/// sequence at the last strided element (`8` for `(0..10).step_by(2)`), not the
-/// raw high bound (`9`).  Before the fail-closed guard, `(0..10).step_by(2).rev()`
-/// silently printed `9 7 5 3 1` instead of the correct `8 6 4 2 0`.  The
-/// compiler now rejects the unsupported order with an actionable diagnostic.
+/// A reversed stepped range starts at its last selected element.
 #[test]
-fn for_range_step_by_before_rev_is_rejected() {
-    let fixture = repo_root().join("tests/vertical-slice/reject/for_range_step_by_before_rev.hew");
-    assert!(fixture.exists(), "fixture missing: {}", fixture.display());
-
-    let output = Command::new(hew_binary())
-        .arg("check")
-        .arg(&fixture)
-        .current_dir(repo_root())
-        .output()
-        .expect("invoke hew check");
-
+fn for_range_step_by_before_rev_executes_in_source_order() {
+    require_codegen();
+    let fixture = repo_root().join("tests/vertical-slice/accept/for_range_step_by_before_rev.hew");
+    let output = run_bounded_hew_run(&fixture, repo_root());
     assert!(
-        !output.status.success(),
-        "expected `hew check` to reject `step_by().rev()`; stdout: {}\nstderr: {}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr),
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
     );
-
-    let combined = format!(
-        "{}{}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr),
-    );
-    assert!(
-        combined.contains("`step_by` before `rev` is unsupported"),
-        "expected the actionable diagnostic; got: {combined}",
-    );
+    assert_eq!(String::from_utf8_lossy(&output.stdout), "8\n6\n4\n2\n0\n");
 }
 
 /// A Vec element type containing a function value fails closed at the

@@ -2,10 +2,8 @@
 //!
 //! Producer: `hew_runtime::tracing` (the trace ring buffer drained as JSON
 //! via [`drain_events_json`]).
-//! Consumer: `hew-observe`'s known event metadata names (mirrored here as
-//! [`KNOWN_EVENT_NAMES`] — same pattern as the
-//! `divide_by_zero_trap_surfaces_trap_kind_on_observe_event_surface`
-//! test mirrors observe's `CrashEntry`).
+//! Consumer metadata parity is checked against this producer's actual
+//! [`EVENT_TYPE_NAMES`] in `hew-observe`'s tests.
 //!
 //! Scenario:
 //! 1. Spawn a supervised actor that always crashes on `MSG_CRASH`.
@@ -16,17 +14,9 @@
 //! Then drain the trace events as JSON and assert:
 //! - The drain is non-empty.
 //! - Every `event_type` string in the JSON resolves to a name in the
-//!   known metadata names ([`KNOWN_EVENT_NAMES`]). Zero fall-throughs to `"unknown"`.
+//!   producer taxonomy ([`EVENT_TYPE_NAMES`]). Zero fall-throughs to `"unknown"`.
 //! - The expected canonical events for the exercised scenario are present
 //!   (`spawn`, `send`, `crash`, `sink_closed`, `stream_closed`).
-//!
-//! Per R58 Q138 Option B, this probe stays scoped to producer-emitted v0.5
-//! concurrency events. Supervisor lifecycle / channel partition / machine
-//! transition events are intentionally absent — those producer-side
-//! emission sites do not exist yet (deferred to native-M3 alongside QUIC
-//! event taxonomy). Supervisor restart is observable in this probe as the
-//! `crash` → new `spawn` sequence on the existing actor lifecycle
-//! taxonomy.
 
 #![cfg(all(not(target_arch = "wasm32"), feature = "profiler"))]
 #![allow(
@@ -55,36 +45,6 @@ use hew_runtime::tracing::{
     drain_events_json, hew_trace_enable, hew_trace_is_enabled, hew_trace_reset, EVENT_TYPE_NAMES,
 };
 use hew_runtime_testkit::{ensure_scheduler, TestSupervisor};
-
-/// Mirror of `hew_observe::events` known producer-emitted metadata names.
-/// `hew-observe` is a bin-only crate today and cannot be a dev-dependency
-/// of `hew-runtime`; the canonical name set is mirrored here so a producer
-/// rename would fail the assertion in
-/// [`canonical_names_mirror_producer_and_consumer`].
-const KNOWN_EVENT_NAMES: &[&str] = &[
-    "begin",
-    "end",
-    "spawn",
-    "crash",
-    "stop",
-    "send",
-    "actor.delivery_refused",
-    "actor.rc_sweep",
-    "io_accept",
-    "io_recv",
-    "duplex_created",
-    "duplex_half_split",
-    "duplex_closed",
-    "sink_closed",
-    "stream_closed",
-    "supervisor_restart",
-    "supervisor_escalate",
-    "supervisor_circuit_open",
-    "supervisor_circuit_half_open",
-    "supervisor_circuit_close",
-    "supervisor_max_restarts",
-    "supervisor_backoff",
-];
 
 /// Process-global lock — `RECENT_CRASHES`, fault-injection table, the
 /// scheduler, and the trace ring buffer are shared with other integration
@@ -144,27 +104,6 @@ fn parse_event_types(json: &str) -> Vec<DrainedEvent> {
         }
     }
     out
-}
-
-/// Gate test: the closed taxonomy in `hew-observe` (mirrored here as
-/// `KNOWN_EVENT_NAMES`) must be exactly the producer-side set in
-/// `hew_runtime::tracing::EVENT_TYPE_NAMES`. If a `SPAN_*` constant is
-/// added or renamed, this test fails first.
-#[test]
-fn canonical_names_mirror_producer_and_consumer() {
-    let producer: HashSet<&str> = EVENT_TYPE_NAMES.iter().map(|(_, n)| *n).collect();
-    let consumer: HashSet<&str> = KNOWN_EVENT_NAMES.iter().copied().collect();
-    assert_eq!(
-        producer,
-        consumer,
-        "trace-event taxonomy diverged between producer (hew-runtime) and \
-         consumer mirror (KNOWN_EVENT_NAMES). Missing on consumer mirror: \
-         {missing_consumer:?}; missing on producer: {missing_producer:?}. \
-         Update hew-observe::events metadata names to match.",
-        missing_consumer = producer.difference(&consumer).collect::<Vec<_>>(),
-        missing_producer = consumer.difference(&producer).collect::<Vec<_>>(),
-    );
-    assert!(!KNOWN_EVENT_NAMES.contains(&"unknown"));
 }
 
 /// E2E probe: drive a multi-actor supervised program with a crash → restart
@@ -260,7 +199,7 @@ fn v05_concurrency_program_has_no_unknown_trace_events() {
          scenario (got empty JSON: {json})"
     );
 
-    let known: HashSet<&str> = KNOWN_EVENT_NAMES.iter().copied().collect();
+    let known: HashSet<&str> = EVENT_TYPE_NAMES.iter().map(|(_, name)| *name).collect();
 
     let mut unknown = Vec::new();
     let mut seen: HashSet<String> = HashSet::new();

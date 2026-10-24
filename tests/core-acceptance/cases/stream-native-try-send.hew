@@ -151,7 +151,7 @@ fn main() {
     if arguments.len() > 1 {
         println("ready");
         sleep(1s);
-        let received = io.read_all();
+        let received = io.read_all().expect("standard I/O");
         assert(received.len() == 8 * 1024 * 1024 + 4);
         assert(received.ends_with("last"));
         println("retained item then last");

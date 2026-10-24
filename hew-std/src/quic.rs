@@ -667,6 +667,24 @@ pub extern "C" fn hew_quic_last_error() -> *mut HewString {
     string_from_str(&get_constructor_last_error())
 }
 
+/// Whether an endpoint constructor returned a live handle.
+#[no_mangle]
+pub extern "C" fn hew_quic_endpoint_is_valid(endpoint: *const HewQuicEndpoint) -> bool {
+    !endpoint.is_null()
+}
+
+/// Whether a connection operation returned a live handle.
+#[no_mangle]
+pub extern "C" fn hew_quic_conn_is_valid(connection: *const HewQuicConn) -> bool {
+    !connection.is_null()
+}
+
+/// Whether a stream operation returned a live handle.
+#[no_mangle]
+pub extern "C" fn hew_quic_stream_is_valid(stream: *const HewQuicStream) -> bool {
+    !stream.is_null()
+}
+
 // ── Endpoint methods ──────────────────────────────────────────────────────────
 
 #[no_mangle]

@@ -17,6 +17,7 @@ mod generator_send;
 mod lifetime;
 mod linear;
 mod lower;
+mod lower_error;
 mod model;
 mod optimize;
 mod ownership;
@@ -53,6 +54,7 @@ pub use lower::{
     lower_module, lower_module_with_demand, lower_module_with_roots, LoweredModule,
     SirLoweringDemand, SirLoweringStatus, SirRootSelectionError, SirSourceStatus,
 };
+pub use lower_error::{SirLoweringError, SirOwnershipError};
 pub use model::{
     runtime_variant_shape_refs, AggregateShapeId, AggregateShapeRef, BlockArg, BlockId,
     BoundaryOperand, CallResult, CallUnwind, CallableId, CallableInstance, CheckedFailure, DeferId,

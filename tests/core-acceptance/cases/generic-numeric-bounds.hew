@@ -1,0 +1,36 @@
+type RankedLabel { rank: i64; label: string; }
+
+fn sum<T: Num>(values: Vec<T>) -> T {
+    var total: T = 0;
+    for value in values { total += value; }
+    total
+}
+
+fn product<T: Num>(values: Vec<T>) -> T {
+    var total: T = 1;
+    for value in values { total *= value; }
+    total
+}
+
+fn combine<T: Num>(a: T, b: T) -> T { a * b + 1 }
+
+fn smaller<T: PartialOrd + Clone>(a: T, b: T) -> T {
+    if a < b { a.clone() } else { b.clone() }
+}
+
+fn main() {
+    let signed: Vec<i8> = [2, 3, 4];
+    let unsigned: Vec<u64> = [2, 3, 4];
+    let floating: Vec<f64> = [2.0, 3.0, 4.0];
+    println(f"{sum(signed)} {product(signed)}");
+    println(f"{sum(unsigned)} {product(unsigned)}");
+    println(f"{sum(floating)} {product(floating)}");
+    let empty: Vec<i32> = [];
+    println(f"{sum(empty)} {product(empty)}");
+    let answer: u8 = combine(6, 7);
+    println(answer);
+    let a = RankedLabel { rank: 2, label: "second" };
+    let b = RankedLabel { rank: 1, label: "first" };
+    println(smaller(a, b).label);
+    println(a.label);
+}

@@ -982,7 +982,7 @@ fn main() {
     assert!(
         matches!(
             &status.status,
-            SirLoweringStatus::Unsupported { reason, .. } if reason.contains("E_OWN_CONSUME_BORROWED")
+            SirLoweringStatus::Failed { reason, .. } if reason.to_string().contains("E_OWN_CONSUME_BORROWED")
         ),
         "a borrowed base cannot give up its closure field: {:#?}",
         status.status

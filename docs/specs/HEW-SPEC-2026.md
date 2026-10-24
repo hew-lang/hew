@@ -1911,7 +1911,7 @@ imported side by side and reached as `huffman.encode` and `rle.encode`.
 When importing a standard library module, the **last segment** of the module path becomes the local alias for the module. All access uses this short name, not the full path:
 
 ```hew,no_run
-import std.net.http; // Available as "http", not "std.net.http"
+import std.net.http.server as http; // Available as "http", not "std.net.http"
 import std.fs; // Available as "fs"
 import std.io; // Available as "io"
 import std.text.regex; // Available as "regex"
@@ -1920,7 +1920,7 @@ fn main() {
     // Call module functions with dot-syntax: module.function(args)
     match http.listen("127.0.0.1:0") { // Returns Result<Server, NetError>
         .Ok(server) => {
-            println(f"HTTP server listening on port {http.server_port(server)}");
+            println(f"HTTP server listening on port {server.port()}");
             server.close(); // Explicitly release the listener on every success path.
         }
         .Err(error) => println(error),
@@ -1928,7 +1928,7 @@ fn main() {
     let content = fs.read("config.toml").expect("config.toml must be readable");
     let exists = fs.exists("output.txt"); // Returns bool
     let line = io.read_line(); // Preferred stdin surface
-    let re = regex.new("[a-z]+");
+    let re = regex.new("[a-z]+").expect("valid pattern");
     let matched = re.is_match("example"); // Returns bool
     re.close();
 }
@@ -1938,7 +1938,7 @@ This provides clean, namespaced access to stdlib functionality. The module name 
 
 | Module             | Example functions                                                                                                                                            |
 | ------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `std.net.http.server` | `http.listen`, `http.accept`, `http.path`, `http.method`, `http.body`, `http.header`, `http.respond`, `http.respond_text`, `http.respond_json`, `http.close` |
+| `std.net.http.server` | `http.listen`, listener `.accept()`/`.port()`, request accessors and consuming `.respond*()` methods |
 | `std.fs`           | `fs.read`, `fs.write`, `fs.append`, `fs.exists`, `fs.delete`, `fs.size`                                                                                     |
 | `std.io`           | `io.read_line`, `io.write`, `io.write_err`, `io.read_all`                                                                                                   |
 | `std.os`           | `os.args_count`, `os.args`, `os.env`, `os.set_env`, `os.has_env`, `os.cwd`, `os.home_dir`, `os.hostname`, `os.pid`                                          |
@@ -2043,7 +2043,7 @@ statements.
   (`import greeting.greeting;`) is refused as `E_ENTRY_FILE_IMPORT`; a user
   package's peer file imported directly is refused as `E_PEER_IMPORT`. Both
   name `greeting` as the fix. A standard-library peer stays importable by file
-  (`std.net.http.http_client`) and loads the whole directory module.
+  (`std.net.http.codec.request`) and loads the whole directory module.
 - Sub-directories are not automatically included; they must be imported
   explicitly.
 - Peer files are merged in sorted filename order (deterministic across
@@ -4493,17 +4493,17 @@ Signatures the rules fix:
 | `observe.read(key)` | `-> Option<i64>` |
 | `observe.barrier()` | `-> Result<(), ObserveError>` |
 | `http.Server.accept()` | `-> Result<Request, NetError>` |
-| `Request.respond*(…)` | `-> Result<(), NetError>` |
+| `Request.respond(…)`, `.respond_text(…)`, `.respond_json(…)` | consume the request; `-> Result<(), NetError>` |
+| `Request.respond_stream(…)` | consumes the request; `-> Result<Sink<string>, NetError>` |
 | `json.decode<T>(text)` | `-> Result<T, wire.DecodeError>` |
 
 **No error is reported by a side channel.** A module does not expose a
 `*_message(e) -> string` function beside its error type — `Display` is the one
 rendering authority (§3.10.2). A module does not expose a `last_error()` poll
 backed by a thread-local slot: an error that is returned cannot be missed,
-while an error that must be fetched can. The `*_message` family is gone at
-edition 2026; the remaining `last_error()` polls and the slots behind them are
-implementation debt rather than an alternative error-return contract. Runtime
-FFI may use internal status channels, but they are not the public recovery API.
+while an error that must be fetched can. Runtime FFI may use internal status
+channels, but wrappers capture their detail in the returned error before another
+operation can replace it. These channels are not the public recovery API.
 
 **`string` and Vec** are built-in generic/runtime-backed types with dot-syntax
 methods. Available `Vec<T>` methods:
@@ -4653,7 +4653,7 @@ fn main() {
     println(fmt.to_hex(255));
     println(iter.sum(ints.into_iter()));
     assert(set.len() == 0);
-    println(io.read_all());
+    println(io.read_all().expect("standard input"));
 }
 ```
 
@@ -4669,7 +4669,7 @@ Important current details:
   `Hash`, and `Eq` requirements
 - `std.iter` exposes lazy adapters (`map`, `filter`, `take`, `skip`) over
   any `Iterator`, driven by terminal helpers (`fold`, `count`, `collect`,
-  `any`, `all`, `sum`, `sum_f64`, `product`, `product_f64`); drive a
+  `any`, `all`, `sum`, `product`); drive a
   `Vec<T>` through it via `.iter()` or `.into_iter()`. These adapters and
   terminal helpers consume the iterator: constructors store it, and terminal
   operations finish or release it. Ordinary iterator values copy when reused;
@@ -4695,7 +4695,10 @@ Important current details:
 monomorphic twins beside it do not exist: `std.vec`, `std.option`,
 `std.result`, and `std.sort` expose the generic function and
 nothing per element type. A module exposes an operation once — a method or a
-free function, never both — and a `#[resource]` type's release is its `close`
+free function, never both. Iterator adapters and terminals are the explicit
+exception: free generic functions support every `Iterator`, and receiver
+methods provide chaining through the same implementation. A `#[resource]`
+type's release is its `close`
 method, so there is no `Closable` trait and no per-type `free` function
 (`csv.Table.free`, `semver.Version.free`, `json.Value.free` are all deleted;
 scope-exit drop glue and an early `close()` are the two ways a resource ends,
@@ -4825,7 +4828,8 @@ Every acquisition and every operation that can fail reports it as a `Result`
 | Type             | Created by                                 | Methods                                                                                                                              |
 | ---------------- | ------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------- |
 | `http.Server`    | `http.listen(addr) -> Result<Server, NetError>` | `.accept()` → `Result<http.Request, NetError>`, `.close()`                                                                       |
-| `http.Request`   | `server.accept()` or `http.accept(server)` | `.path`, `.method`, `.body`, `.header(name)`, `.respond(status, content_type, body)` → `Result<(), NetError>`, `.respond_text(status, body)` → `Result<(), NetError>`, `.respond_json(status, body)` → `Result<(), NetError>`, `.close()` |
+| `http.Request` | `server.accept()` | `.path()`/`.method()` → `string`, `.body(encoding)` → `Result<string, NetError>`, `.header(name)` → `Result<Option<string>, NetError>`; `.respond*()` consumes the request; `.close()` abandons it |
+| `client.Response` | `client.request/get/post` → `Result<Response, HttpError>` | `.status()`, `.body()` → `Result<string, HttpError>`, `.header(name)`/`.content_type()` → `Result<Option<string>, HttpError>`, `.headers()`, `.close()` |
 | `net.Listener`   | `net.listen(addr) -> Result<Listener, NetError>` | `.accept()` → `Result<net.Connection, NetError>`, `.close()` |
 | `net.Connection` | `listener.accept()` or `net.connect(addr)` | `.recv()` → `Option<bytes>`, `.send(data)` → `Result<(), SendError>`, `.finish()`, `.split()` → `(Stream<bytes>, Sink<bytes>)`, `.set_read_timeout(timeout)`, `.set_write_timeout(timeout)`, `.close()` |
 | `process.Child`  | `process.start(command) -> Result<Child, ProcessError>` | `.id()`, `.stdin()` → `Result<Sink<bytes>, ProcessError>`, `.stdout()`/`.stderr()` → `Result<Stream<bytes>, ProcessError>`, `.wait()` → `Result<ExitStatus, ProcessError>`, `.try_wait()` → `Result<Option<ExitStatus>, ProcessError>`, `.terminate()`, `.kill()` → `Result<(), ProcessError>`, `.close()` (§6.4.7) |
@@ -4849,8 +4853,10 @@ there is no expression timeout combinator.
 replacement, indexed and named captures, and multi-match capture tables.
 `regex.Pattern` is a `#[resource]`-annotated type with RAII handles (§3.7.8):
 `close()` releases early, and the implicit scope-exit drop covers the rest.
-Pattern construction is currently fail-fast: `regex.new()` panics for invalid
-syntax rather than returning a structured compile error.
+`regex.new(pattern)` returns a checked `Result<Pattern, RegexError>`. Invalid
+patterns return `RegexError.InvalidPattern`; `expect` is an explicit caller
+choice. `Pattern.find(input)` returns `Option<string>`, distinguishing no
+match from a matched empty string.
 
 **A `re"..."` literal is also a match-arm pattern (normative, D469).** Each
 literal in a module compiles once, in that module's entry prologue, into a
@@ -5973,6 +5979,23 @@ consumes that classification:
 - `<call-expr>` — an ordinary checked call, including a callable value.
   The call starts during source preparation and produces its ordinary result.
 - `after <duration-expr>` — the timer arm; carries no binding.
+
+A selected arm binds the completed result with an **irrefutable pattern**:
+an identifier, `_`, or a tuple or record destructure whose fields are also
+irrefutable. Selection waits for source completion; a pattern never filters
+completed results. Bind the complete result and use `if let` or `match` in
+the body when a variant or value determines what to do:
+
+```hew
+fn answer() -> Option<i64> { .Some(42) }
+fn main() {
+    select {
+        result from answer() => {
+            if let .Some(value) = result { println(value); }
+        }
+    };
+}
+```
 
 An arm source never writes `await`: the `select` is what waits (§4.0). The
 spelling is refused at check time with a fix-it that deletes it, and a
@@ -8360,7 +8383,7 @@ The methods `.try_to_i8()`, `.try_to_i16()`, `.try_to_i32()`, `.try_to_i64()`, `
 10. Equality: `==`, `!=`, `is` (`is` is **handle identity only** — it admits the pid, counted, opaque, and resource handle categories of §3.4.3 and answers whether two names denote the same actor, count, or resource. Every value-category and callable-category operand is rejected with `E_IS_VALUE_TYPE`, including scalars, `string`, `bytes`, tuples, records, enums, `Vec`, `HashMap`, and `HashSet`: these are copy-on-write values with no identity to compare, so `==` is their comparison. On an actor reference `==` and `!=` compare that same handle identity, so `a == b` agrees with `a is b`, and a record, option, tuple or result that carries actor references compares them by identity; an actor's state is never compared. There is no `expr is TypeName` form; regex matching is via `Pattern.is_match`)
 11. Logical AND: `&&`
 12. Logical OR: `||`
-13. Range: `..`, `..=` (lowered in `for` loop iterables, range indexing and the string `get(range)` form; standalone range values are not lowered). Open endpoints are admitted for range selectors. At the start of a literal item, `..expr` is the spread of §3.1
+13. Range: `..`, `..=`. Bounded integer ranges are ordinary `Range<T>` values that can be stored, passed to functions and iterated. `.rev()` and `.step_by(positive_step)` transform their selected sequence in source order. The `.start` and `.end` properties expose the original bounds and are read-only; construct a new range to change its bounds. Open endpoints are admitted for range selectors, including indexing and string `get(range)`. At the start of a literal item, `..expr` is the spread of §3.1
 14. Coalescing: `??`
 15. Assignment: `=`, `+=`, `-=`, `*=`, `/=`, `%=`, `&=`, `|=`, `^=`, `<<=`, `>>=`. A compound assignment `x op= v` updates `x` with `op` and `v`. It applies to these targets: every operator to an integer; `+=`, `-=`, `*=`, `/=` and `%=` to a float, `duration` or `instant`; `&=`, `|=` and `^=` to a `bool`; and `+=` alone to a `string` or `bytes`. Any other target is refused at compile time
 
@@ -8532,6 +8555,22 @@ fn main() {
 
 Labels are scoped to the loop they annotate.
 
+A `for` binding must be irrefutable for the iterator's item type. Identifiers,
+`_`, tuples and record destructures compose recursively; literal and enum
+variant tests require an explicit `if let` or `match` inside the body. A loop
+never silently skips an item because its binding pattern failed:
+
+```hew
+fn main() {
+    let values: Vec<Option<i64>> = [.Some(1), .None, .Some(3)];
+    for item in values {
+        if let .Some(value) = item { println(value); }
+    }
+}
+```
+
+
+
 **Loops are statements, not expressions.**
 
 `loop`, `while`, and `for` are statements — they do not produce a value. To carry a result out of a loop, declare a `var` binding before the loop and assign to it inside the body:
@@ -8656,7 +8695,7 @@ fn port(config: HashMap<string, string>) -> Result<i64, string> {
     let .Some(raw) = config.get("port") else {
         return .Err("port missing");
     };
-    let .Ok(port) = string.to_int(raw) else {
+    let .Ok(port) = (raw).to_int() else {
         return .Err(f"port is not a number: {raw}");
     };
     .Ok(port)

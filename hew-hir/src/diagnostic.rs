@@ -64,8 +64,7 @@ impl HirDiagnostic {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum HirDiagnosticKind {
     /// A target-typed integer module-constant initializer is semantically
-    /// invalid. This is deliberately distinct from `NotYetImplemented`: the
-    /// arithmetic form is supported and must stop before artifact emission.
+    /// invalid. Stop before artifact emission.
     ConstIntegerEvaluation {
         /// Stable semantic class: `arithmetic-overflow`, `division-by-zero`,
         /// `out-of-range`, or `unresolved-reference`.
@@ -73,14 +72,6 @@ pub enum HirDiagnosticKind {
     },
     ConstDependencyCycle {
         name: String,
-    },
-    /// A syntactic construct that is outside the current vertical slice.
-    /// The `construct` names the unsupported form; `owning_pass` says which
-    /// slice is planned to add support.  Fail-closed: the driver must stop on
-    /// the first `NotYetImplemented` diagnostic.
-    NotYetImplemented {
-        construct: String,
-        owning_pass: String,
     },
     UnresolvedSymbol {
         name: String,
@@ -444,16 +435,6 @@ pub enum HirDiagnosticKind {
         /// Inner supervisor type name (e.g. `"SubSupervisor"`).
         nested_supervisor: String,
     },
-    /// A binary operator was used in value position but the MIR backend has
-    /// no lowering for it. Currently covers `..` and `..=` range operators
-    /// outside of `for` loops or slice indexing. Closed at HIR pre-pass per
-    /// FC-P1-D so users see a
-    /// compile-time diagnostic instead of MIR's `NotYetImplemented`
-    /// late-stage surprise. LESSONS `boundary-fail-closed`.
-    BinaryOperatorUnsupportedInMir {
-        /// Source-form operator (e.g. `".."`, `"..="`).
-        op: String,
-    },
     /// A unary operator reached HIR with checker-authoritative types that the
     /// MIR/codegen substrate does not support. This is a fail-closed boundary
     /// diagnostic rather than a fallback to `Unit` or a downstream panic.
@@ -549,9 +530,7 @@ impl HirDiagnosticKind {
     ///
     /// Internal: the checker/HIR boundary contract was violated — two
     /// compiler facts disagree, never a fault in the user's program.
-    /// Limitation: legal Hew this lowering does not support yet, including
-    /// every registry cap (a cap is a limit of this compiler, not a
-    /// contradiction). Every other variant is a genuine user-authored
+    /// Every other variant is a user-authored
     /// contract violation (`#[resource]`/`#[linear]`/`await` misuse, an
     /// arity mismatch, an unresolved symbol, ...) and stays User.
     ///
@@ -564,14 +543,13 @@ impl HirDiagnosticKind {
         match self {
             Self::CheckerBoundaryViolation { .. }
             | Self::MonomorphisationCallTypeArgsViolation { .. } => DiagChannel::Internal,
-            Self::NotYetImplemented { .. } => DiagChannel::Limitation,
             _ => DiagChannel::User,
         }
     }
 
     /// Stable, user-facing string identifier for this diagnostic kind.
     ///
-    /// Returns the variant name (e.g. `NotYetImplemented`, `UnresolvedSymbol`)
+    /// Returns the variant name (e.g. `ConstIntegerEvaluation`, `UnresolvedSymbol`)
     /// without any of the Rust `{:?}` struct payload. Used as the `code`
     /// field in JSON diagnostics and by the LSP's diagnostic rendering — the
     /// one authority both `hew-cli` and `hew-lsp` call.

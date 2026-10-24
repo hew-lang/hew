@@ -31,7 +31,7 @@ fn lower_source(source: &str) -> SemModule {
         lowered
             .callable_statuses
             .iter()
-            .all(|(_, status)| !matches!(status, SirLoweringStatus::Unsupported { .. })),
+            .all(|(_, status)| !matches!(status, SirLoweringStatus::Failed { .. })),
         "callables: {:?}",
         lowered.callable_statuses
     );
@@ -611,7 +611,7 @@ fn main() -> i64 {
             .unwrap()
             .status;
         assert!(
-            matches!(status, SirLoweringStatus::Unsupported { reason, .. } if reason.contains(expected)),
+            matches!(status, SirLoweringStatus::Failed { reason, .. } if reason.to_string().contains(expected)),
             "{expected}: {status:?}"
         );
     }

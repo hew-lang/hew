@@ -80,6 +80,13 @@ impl LowerCtx {
                 // Lower the tuple value once as the group's sole source.
                 let tuple_val = self.lower_expr(value_expr, IntentKind::Consume);
                 let tuple_ty = tuple_val.ty.clone();
+                if element_patterns.is_empty() && tuple_ty == ResolvedTy::Unit {
+                    return vec![HirStmt {
+                        node: self.ids.node(),
+                        kind: HirStmtKind::Expr(tuple_val),
+                        span,
+                    }];
+                }
 
                 // Validate the pattern element count against the inferred tuple type.
                 let element_tys: Vec<ResolvedTy> = if let ResolvedTy::Tuple(elems) = &tuple_ty {
@@ -140,12 +147,11 @@ impl LowerCtx {
             // already bound the field names in the checker's env; HIR mirrors
             // those bindings via `self.bind(...)` below.
             let source_fields_opt = match &pattern.0 {
-                Pattern::RecordShorthand { fields, .. } => Some(fields),
-                // TRANSITION(P1): deleted by A1 commit 2
-                Pattern::NominalPath {
-                    path,
+                Pattern::RecordShorthand { fields, .. }
+                | Pattern::NominalPath {
                     payload: Some(hew_parser::ast::NominalPatternPayload::Record { fields, .. }),
-                } if path.segments.len() == 1 => Some(fields),
+                    ..
+                } => Some(fields),
                 _ => None,
             };
             if let Some(source_fields) = source_fields_opt {
@@ -625,197 +631,13 @@ impl LowerCtx {
                 iterable,
                 body,
             } => {
-                // Lower `for pat in iterable { body }`.
-                // Only `Range`-typed iterables are supported in this slice:
-                // `Expr::Range { start, end, inclusive }` where the iterable
-                // expression is syntactically a range literal.  For all other
-                // iterable shapes (Vec, Stream, HashMap, trait-Iterator, etc.)
-                // a `NotYetImplemented` diagnostic is emitted and the statement
-                // is replaced with an `Unsupported` placeholder so the pipeline
-                // fails closed without fabricating a value.
-                //
-                // Only simple identifier patterns (`for i in …`) are supported;
-                // tuple or struct patterns over a range are rejected the same
-                // way.
-                // Peel any `(a..b).rev()` / `.step_by(k)` adapter chain off the
-                // iterable down to its base range literal.  A plain `a..b`
-                // iterable peels to itself with no adapters.  The checker has
-                // already validated that `rev`/`step_by` are `Range<T>` methods
-                // (returning `Range<T>`), so an adapter chain that survives here
-                // is a real strided/descending range — gated below on the
-                // checker-recorded `Range<T>` type at the iterable span so a
-                // user-defined `rev`/`step_by` on a non-range type does not get
-                // misread as a range adapter.
-                let peeled = Self::peel_range_adapter_chain(&iterable.0);
-                let kind = match (peeled, &pattern.0) {
-                    (Some(spec), Pattern::Identifier(_) | Pattern::Wildcard)
-                        if spec.step_before_rev =>
-                    {
-                        let binding_name = match &pattern.0 {
-                            Pattern::Identifier(var_name) => var_name.to_string(),
-                            Pattern::Wildcard => {
-                                format!("__hew_for_wildcard_{}", self.ids.binding().0)
-                            }
-                            _ => unreachable!("range-for arm only matches identifiers or wildcard"),
-                        };
-                        // `.step_by(k)` before `.rev()` does not commute with the
-                        // supported `.rev()`-then-`.step_by(k)` order and cannot
-                        // be expressed by the order-insensitive ForRange fold
-                        // (the descending counter would start at the raw high
-                        // bound instead of the last strided element, silently
-                        // emitting a wrong sequence).  Reject fail-closed rather
-                        // than miscompile; the user can write the supported
-                        // order `(a..b).rev().step_by(k)`.
-                        self.unsupported(
-                            iterable.1.clone(),
-                            "`step_by` before `rev` is unsupported; \
-                             write `(a..b).rev().step_by(k)`",
-                            "for-range-adapter-lowering",
-                        );
-                        // Bind the loop variable (the range element is an
-                        // integer; the checker already typed it `Range<T>`) and
-                        // lower the body so its diagnostics still flow and the
-                        // body does not cascade into spurious unresolved-symbol
-                        // errors for the loop variable.  The primary diagnostic
-                        // above is the actionable one.
-                        self.push_scope();
-                        let _ = if matches!(pattern.0, Pattern::Identifier(_)) {
-                            self.bind_checked(
-                                binding_name,
-                                ResolvedTy::I64,
-                                false,
-                                pattern.1.clone(),
-                            )
-                        } else {
-                            self.bind(binding_name, ResolvedTy::I64, false, pattern.1.clone())
-                        };
-                        let _ = self.lower_block(body, &ResolvedTy::Unit);
-                        self.pop_scope();
-                        HirExprKind::Unsupported(
-                            "for-in over `(a..b).step_by(k).rev()` (unsupported adapter order)"
-                                .into(),
-                        )
-                    }
-                    (Some(spec), Pattern::Identifier(_) | Pattern::Wildcard) => {
-                        let binding_name = match &pattern.0 {
-                            Pattern::Identifier(var_name) => var_name.to_string(),
-                            Pattern::Wildcard => {
-                                format!("__hew_for_wildcard_{}", self.ids.binding().0)
-                            }
-                            _ => unreachable!("range-for arm only matches identifiers or wildcard"),
-                        };
-                        let RangeAdapterChain {
-                            range_start,
-                            range_end,
-                            inclusive,
-                            descending,
-                            step_expr,
-                            step_before_rev: _,
-                        } = spec;
-
-                        // Lower start and end expressions first so their
-                        // checker-resolved types are available for the loop
-                        // variable binding below.
-                        let start_hir = self.lower_expr(range_start, IntentKind::Read);
-                        let end_hir = self.lower_expr(range_end, IntentKind::Read);
-
-                        // Derive the loop-variable element type from the
-                        // checker-authoritative Range<T> type recorded on the
-                        // iterable expression.  This is the single source of
-                        // truth: the checker already chose the common integer
-                        // width (e.g. `i64` for a `i32..i64` range) and stored
-                        // `Range<i64>` at the iterable span.  For an adapter
-                        // chain the outer iterable span is the outermost
-                        // `MethodCall`, which the checker also typed `Range<T>`
-                        // (the adapters return `Range<T>`), so the same lookup
-                        // recovers the element width.  Reading it here avoids the
-                        // "prefer-start-bound" heuristic that picked the wrong
-                        // width when the two bounds had different signed widths.
-                        //
-                        // WHY: the old heuristic (start_hir.ty then end_hir.ty)
-                        //   gave the wrong answer for mixed-width bounds such as
-                        //   `a: i32 .. b: i64` — it chose `i32` but the checker
-                        //   resolved `Range<i64>`.  The LLVM verifier then
-                        //   rejected `call i64 @fn(i32 %arg)`.
-                        // WHEN-OBSOLETE: this IS the real solution — no further
-                        //   phase is needed unless Range semantics change.
-                        // WHAT (real solution): read the checker-recorded
-                        //   `Range<T>` at the iterable span and extract `T`.
-                        let elem_ty = {
-                            let range_key = self.mk_key(&iterable.1);
-                            self.expr_types
-                                .get(&range_key)
-                                .and_then(|ty| ty.as_range().cloned())
-                                .and_then(|inner| ResolvedTy::from_ty(&inner).ok())
-                                .filter(Self::resolved_is_integer)
-                                // Fallback: derive from the lowered bound types.
-                                // Covers cases where the iterable span is absent
-                                // (e.g. an expression that produces a Range but
-                                // is not a syntactic range literal).
-                                .or_else(|| {
-                                    if Self::resolved_is_integer(&start_hir.ty) {
-                                        Some(start_hir.ty.clone())
-                                    } else if Self::resolved_is_integer(&end_hir.ty) {
-                                        Some(end_hir.ty.clone())
-                                    } else {
-                                        None
-                                    }
-                                })
-                                .unwrap_or(ResolvedTy::I64)
-                        };
-
-                        // Lower the stride expression (or synthesise a literal
-                        // `1` at the element type for a non-strided range) before
-                        // binding the loop variable, so a captured `step_by(n)`
-                        // resolves against the enclosing scope.
-                        let step_hir = match step_expr {
-                            Some(step) => self.lower_expr(step, IntentKind::Read),
-                            None => self.make_int_literal(1, elem_ty.clone(), iterable.1.clone()),
-                        };
-
-                        // Bind the loop variable inside a fresh scope so it is
-                        // scoped to the body but visible during body lowering.
-                        self.push_scope();
-                        let binding = if matches!(pattern.0, Pattern::Identifier(_)) {
-                            self.bind_checked(binding_name, elem_ty, false, pattern.1.clone())
-                        } else {
-                            self.bind(binding_name, elem_ty, false, pattern.1.clone())
-                        };
-                        let body_block = self.lower_block(body, &ResolvedTy::Unit);
-                        self.pop_scope();
-
-                        HirExprKind::ForRange {
-                            label: label.map(|ident| ident.to_string()),
-                            binding,
-                            start: Box::new(start_hir),
-                            end: Box::new(end_hir),
-                            inclusive,
-                            step: Box::new(step_hir),
-                            descending,
-                            body: body_block,
-                        }
-                    }
-                    (None, _) => self.lower_for_iter_desugar(
-                        pattern,
-                        iterable,
-                        body,
-                        label.map(|label| label.to_string()).as_ref(),
-                        span.clone(),
-                    ),
-                    _ => {
-                        // Non-identifier range pattern: not supported in this slice.
-                        self.unsupported(
-                            pattern.1.clone(),
-                            "for-range with non-identifier binding pattern",
-                            "for-while-lowering",
-                        );
-                        self.push_scope();
-                        let _ = self.lower_block(body, &ResolvedTy::Unit);
-                        self.pop_scope();
-                        HirExprKind::Unsupported("for-range with non-identifier pattern".into())
-                    }
-                };
-
+                let kind = self.lower_for_iter_desugar(
+                    pattern,
+                    iterable,
+                    body,
+                    label.map(|label| label.to_string()).as_ref(),
+                    span.clone(),
+                );
                 let for_expr = HirExpr {
                     node: self.ids.node(),
                     site: self.ids.site(),
@@ -1008,16 +830,12 @@ impl LowerCtx {
         // Every or-pattern leaf binds the same names (the checker requires
         // it for the shared body to type-check), so any arm's expanded
         // binding list names the escaping shape; sort by name to match
-        // `pack_arm_bindings`. The arm's aggregate-destructure prelude (if
-        // any) rode along as the leading statements of its wrapped body.
-        let arm0_prelude: &[HirStmt] = match &hir_arms[0].body.kind {
-            HirExprKind::Block(block) => &block.statements,
-            _ => &[],
-        };
+        // `pack_arm_bindings`. The arm owns aggregate projections separately
+        // from its body so guards and escaping bindings consume the same facts.
         let mut escapees: Vec<(String, ResolvedTy, Span)> = expand_arm_bindings(
             &hir_arms[0].bindings,
             &hir_arms[0].payload_variant_predicates,
-            arm0_prelude,
+            &hir_arms[0].pattern_bindings,
         )
         .into_iter()
         .map(|(name, _, ty, span)| (name, ty, span))

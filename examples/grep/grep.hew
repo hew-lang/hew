@@ -177,7 +177,7 @@ fn grep_file(file_path: string, pat: regex.Pattern, cfg: Config, show_label: boo
     match result {
         .Err(e) => {
             let msg = to_string(e);
-            io.write_err(f"grep: {file_path}: {msg}\n");
+            io.write_err(f"grep: {file_path}: {msg}\n").expect("standard I/O");
             MatchState { found_any: state.found_any, had_error: true }
         }
         .Ok(content) => {
@@ -204,7 +204,7 @@ fn grep_dir(dir_path: string, pat: regex.Pattern, cfg: Config, state: MatchState
     match entries_result {
         .Err(e) => {
             let msg = to_string(e);
-            io.write_err(f"grep: {dir_path}: {msg}\n");
+            io.write_err(f"grep: {dir_path}: {msg}\n").expect("standard I/O");
             MatchState { found_any: state.found_any, had_error: true }
         }
         .Ok(entries) => {
@@ -231,7 +231,7 @@ fn grep_dir(dir_path: string, pat: regex.Pattern, cfg: Config, state: MatchState
 fn grep_stdin(pat: regex.Pattern, cfg: Config, state: MatchState) -> MatchState {
     // io.read_all reads until EOF — suitable for piped/redirected stdin.
     // GAP: no line-by-line stdin iterator; we fall back to read_all + string.lines.
-    let content = io.read_all();
+    let content = io.read_all().expect("standard I/O");
     let count = grep_content(content, pat, cfg, "", false);
     if cfg.flag_c {
         println(f"{count}");
@@ -243,7 +243,7 @@ fn grep_stdin(pat: regex.Pattern, cfg: Config, state: MatchState) -> MatchState 
 fn main() -> i64 {
     match parse_args() {
         .Err(msg) => {
-            io.write_err(f"{msg}\n");
+            io.write_err(f"{msg}\n").expect("standard I/O");
             2
         }
         .Ok(cfg) => {
@@ -255,8 +255,8 @@ fn main() -> i64 {
             };
             // GAP[1]: re"..." is a compile-time literal; it cannot interpolate a runtime
             // string.  Until the compiler supports runtime-pattern re-literals or a
-            // re!(expr) macro, callers must use regex.new(expr) for dynamic patterns.
-            let pat = regex.new(compiled_pattern);
+            // re!(expr) macro, callers must use regex.new(expr).expect("valid pattern") for dynamic patterns.
+            let pat = regex.new(compiled_pattern).expect("valid pattern");
             var state = MatchState { found_any: false, had_error: false };
             let nfiles = cfg.files.len();
             if nfiles == 0 {

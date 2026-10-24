@@ -149,10 +149,13 @@ fn test_try_write_read_size_and_delete_roundtrip() {
         .Ok(data) => assert(data == "hello"),
         .Err(_) => panic("expected try_read to succeed"),
     }
-    assert(fs.size(file_path) == 5);
-    match fs.delete(file_path) {
-        .Ok(_) => {}
-        .Err(_) => panic("expected try_delete to succeed"),
+    assert(fs.size(file_path).expect("file size") == 5);
+    fs.write(file_path, "").expect("empty file");
+    assert(fs.size(file_path).expect("empty file size") == 0);
+    fs.delete(file_path).expect("delete fixture");
+    match fs.size(file_path) {
+        .Err(.NotFound(_)) => {}
+        _ => panic("missing file size must be an error"),
     }
 }
 

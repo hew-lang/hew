@@ -16,7 +16,7 @@ const TICKER: &str = r#"
 import std.io;
 
 fn reader() -> string {
-    io.read_line() ?? "eof"
+    io.read_line().expect("standard I/O") ?? "eof"
 }
 
 fn ticks() -> i64 {
@@ -47,13 +47,13 @@ import std.io;
 fn main() {
     let start = instant.now();
     let first = scope within 200ms {
-        io.read_line()
+        io.read_line().expect("standard I/O")
     } handle failure {
         .Some("deadline")
     };
     println(f"elapsed {start.elapsed().millis()}");
     println(first ?? "eof");
-    println(io.read_line() ?? "eof");
+    println(io.read_line().expect("standard I/O") ?? "eof");
 }
 "#;
 
@@ -63,7 +63,7 @@ import std.io;
 fn main() {
     var reading = true;
     while reading {
-        match io.read_line() {
+        match io.read_line().expect("standard I/O") {
             .Some(line) => println(f"[{line}]"),
             .None => {
                 reading = false;
@@ -71,7 +71,7 @@ fn main() {
         }
     }
     println("end");
-    println(io.read_line() ?? "eof again");
+    println(io.read_line().expect("standard I/O") ?? "eof again");
 }
 "#;
 
@@ -79,7 +79,7 @@ const QUEUED: &str = r#"
 import std.io;
 
 fn reader() -> string {
-    io.read_line() ?? "eof"
+    io.read_line().expect("standard I/O") ?? "eof"
 }
 
 fn main() {
@@ -97,7 +97,7 @@ fn main() {
     } else {
         println(f"{first} {second}");
     }
-    println(f"rest [{io.read_all()}]");
+    println(f"rest [{io.read_all().expect("standard I/O")}]");
 }
 "#;
 
@@ -106,7 +106,7 @@ import std.io;
 
 fn impatient() -> string {
     scope within 100ms {
-        io.read_line() ?? "eof"
+        io.read_line().expect("standard I/O") ?? "eof"
     } handle failure {
         "deadline"
     }
@@ -114,7 +114,7 @@ fn impatient() -> string {
 
 fn patient() -> string {
     sleep(20ms);
-    io.read_line() ?? "eof"
+    io.read_line().expect("standard I/O") ?? "eof"
 }
 
 fn main() {
@@ -128,7 +128,7 @@ fn main() {
     };
     println(f"x {first}");
     println(f"y {second}");
-    println(f"after {io.read_line() ?? "eof"}");
+    println(f"after {io.read_line().expect("standard I/O") ?? "eof"}");
 }
 "#;
 
@@ -137,7 +137,7 @@ const FAILING: &str = r#"
 import std.io;
 
 fn main() {
-    match io.read_line() {
+    match io.read_line().expect("standard I/O") {
         .Some(line) => println(f"line {line}"),
         .None => println("end of input"),
     }
@@ -299,11 +299,11 @@ fn a_cancelled_front_reader_passes_its_turn_to_the_next() {
     }
 }
 
-/// A failed read is a fault, never end of input: reading a directory as
+/// Explicitly expecting a failed read faults instead of reporting EOF: reading a directory as
 /// standard input fails with `EISDIR`.
 #[cfg(unix)]
 #[test]
-fn a_read_error_traps_instead_of_ending_input() {
+fn expecting_a_read_error_traps_instead_of_ending_input() {
     require_codegen();
     let dir = tempfile::tempdir().expect("tempdir");
     for opt in ["O0", "O2"] {

@@ -1,5 +1,7 @@
 //! Indexed writable paths materialize semantic values and publish them from
 //! the leaf outwards. Runtime calls retain ownership of COW and failure rules.
+use crate::{SirLoweringError, SirOwnershipError};
+
 use super::projection::OpenOwner;
 use super::{AggregateSelection, BindingPlace, Builder};
 use crate::{Operand, OwnKind, PlaceId, Provenance, SemOpKind, ValueId};
@@ -41,10 +43,10 @@ impl Builder<'_, '_> {
     pub(super) fn resolve_writable_path(
         &mut self,
         target: &HirExpr,
-    ) -> Result<WritablePath, String> {
+    ) -> Result<WritablePath, SirLoweringError> {
         let (root, projections) = self.projection_chain(target)?;
         if matches!(root.kind, HirExprKind::BorrowedIndex { .. }) {
-            return Err("E_OWN_CONSUME_BORROWED: an affine collection element is borrowed; a writable path requires a semantic copy".into());
+            return Err(SirLoweringError::Ownership { kind: SirOwnershipError::ConsumeBorrowed, message: "an affine collection element is borrowed; a writable path requires a semantic copy".into() });
         }
         let HirExprKind::Index { container, index } = &root.kind else {
             return Ok(WritablePath {
@@ -59,7 +61,9 @@ impl Builder<'_, '_> {
             .indexed_place_operations
             .get(&root.site)
             .copied()
-            .ok_or("indexed writable path has no checker-selected replacement contract")?;
+            .ok_or(SirLoweringError::from(
+                "indexed writable path has no checker-selected replacement contract",
+            ))?;
         let index = self.lower_expr(index)?;
         path.steps.push(IndexedStep {
             expression: root.clone(),
@@ -88,7 +92,7 @@ impl Builder<'_, '_> {
         &mut self,
         base: &BindingPlace,
         provenance: &Provenance,
-    ) -> Result<(ValueId, WritableRoot), String> {
+    ) -> Result<(ValueId, WritableRoot), SirLoweringError> {
         if let Some(root) = self.whole_owner_root(base)? {
             let container =
                 self.copy_through_whole_owner(root, base, provenance, "an indexed update")?;
@@ -100,9 +104,9 @@ impl Builder<'_, '_> {
                 },
             ));
         }
-        let leaf = self
-            .owned_projection(base)?
-            .ok_or("indexed writable root has no owning seat")?;
+        let leaf = self.owned_projection(base)?.ok_or(SirLoweringError::from(
+            "indexed writable root has no owning seat",
+        ))?;
         let container = self.take_indexed_container(leaf, &base.leaf_ty, provenance)?;
         Ok((container, WritableRoot::Place { leaf, taken: true }))
     }
@@ -116,7 +120,7 @@ impl Builder<'_, '_> {
         leaf: PlaceId,
         ty: &ResolvedTy,
         provenance: &Provenance,
-    ) -> Result<ValueId, String> {
+    ) -> Result<ValueId, SirLoweringError> {
         let container =
             self.emit_typed(provenance.clone(), ty, SemOpKind::LoadTake { place: leaf })?;
         if matches!(
@@ -132,7 +136,7 @@ impl Builder<'_, '_> {
 
     /// Put every collection an unpublished indexed path took back into its
     /// seat on a fault edge.
-    pub(super) fn restore_indexed_containers(&mut self) -> Result<(), String> {
+    pub(super) fn restore_indexed_containers(&mut self) -> Result<(), SirLoweringError> {
         for (container, leaf) in self.fault_restores.clone() {
             if self.owned_live.contains_key(&container) {
                 self.restore_taken_place(leaf, container, Provenance::Synthesized)?;
@@ -146,7 +150,7 @@ impl Builder<'_, '_> {
         root: WritableRoot,
         replacement: ValueId,
         provenance: &Provenance,
-    ) -> Result<(), String> {
+    ) -> Result<(), SirLoweringError> {
         match root {
             WritableRoot::Place { leaf, taken: true } => {
                 self.fault_restores.retain(|(_, taken)| *taken != leaf);
@@ -169,7 +173,7 @@ impl Builder<'_, '_> {
         root: WritableRoot,
         take: bool,
         provenance: &Provenance,
-    ) -> Result<(ValueId, Writeback), String> {
+    ) -> Result<(ValueId, Writeback), SirLoweringError> {
         let count = path.steps.len();
         let mut frames = Vec::with_capacity(count);
         for (at, step) in path.steps.into_iter().enumerate() {
@@ -188,7 +192,9 @@ impl Builder<'_, '_> {
                     true,
                     &[(0, container), (1, step.index)],
                 )?
-                .ok_or("indexed writable path read has no value")?;
+                .ok_or(SirLoweringError::from(
+                    "indexed writable path read has no value",
+                ))?;
             let leaf =
                 self.read_writable_element(element, &step, take && at + 1 == count, provenance)?;
             frames.push((step, container, element));
@@ -203,7 +209,7 @@ impl Builder<'_, '_> {
         step: &IndexedStep,
         take: bool,
         provenance: &Provenance,
-    ) -> Result<ValueId, String> {
+    ) -> Result<ValueId, SirLoweringError> {
         if step.projections.is_empty() {
             return Ok(element);
         }
@@ -234,7 +240,7 @@ impl Builder<'_, '_> {
         writeback: Writeback,
         mut replacement: ValueId,
         provenance: &Provenance,
-    ) -> Result<(), String> {
+    ) -> Result<(), SirLoweringError> {
         for (step, container, element) in writeback.frames.into_iter().rev() {
             let ty = self.ty(&step.expression.ty);
             let updated = if step.projections.is_empty() {
@@ -271,7 +277,9 @@ impl Builder<'_, '_> {
                     false,
                     &[(0, container), (1, step.index), (2, updated)],
                 )?
-                .ok_or("indexed replacement did not return its updated receiver")?;
+                .ok_or(SirLoweringError::from(
+                    "indexed replacement did not return its updated receiver",
+                ))?;
         }
         self.publish_writable(writeback.root, replacement, provenance)
     }
@@ -282,7 +290,7 @@ impl Builder<'_, '_> {
         projections: &[AggregateSelection],
         mut replacement: ValueId,
         provenance: &Provenance,
-    ) -> Result<ValueId, String> {
+    ) -> Result<ValueId, SirLoweringError> {
         let mut parents = Vec::new();
         for (ty, shape, index) in projections {
             let fields = self.emit_destructure_value(value, ty, *shape, provenance.clone())?;

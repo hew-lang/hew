@@ -608,48 +608,15 @@ fn freshen_inner_recurses_into_trait_object_bound_args() {
 }
 
 #[test]
-fn cancellation_token_local_and_is_cancelled_typecheck() {
-    let output = check_source(
-        r"
-        fn observe(consume token: CancellationToken) -> bool {
-            let t: CancellationToken = token;
-            return t.is_cancelled();
-        }
-        ",
-    );
-
-    assert!(
-        output.errors.is_empty(),
-        "CancellationToken local and is_cancelled() should type-check: {:#?}",
-        output.errors
-    );
+fn public_cancellation_tokens_direct_programmers_to_structured_cancellation() {
+    let output = check_source("fn observe(consume token: CancellationToken) {} ");
     assert!(
         output
-            .method_call_rewrites
-            .values()
-            .any(|rewrite| { matches!(rewrite, MethodCallRewrite::CancellationTokenIsCancelled) }),
-        "is_cancelled() must record the checker-owned cancellation-token intrinsic"
-    );
-}
-
-#[test]
-fn cancellation_token_has_no_cancel_method() {
-    let output = check_source(
-        r"
-        fn observe(consume token: CancellationToken) {
-            token.cancel();
-        }
-        ",
-    );
-
-    assert!(
-        output.errors.iter().any(|err| {
-            matches!(err.kind, TypeErrorKind::UndefinedMethod)
-                && err
-                    .message
-                    .contains("no method `cancel` on `CancellationToken`")
-        }),
-        "CancellationToken.cancel() must remain out of scope: {:#?}",
+            .errors
+            .iter()
+            .any(|error| error.kind == TypeErrorKind::InvalidOperation
+                && error.message.contains("scope, fork and race")),
+        "{:#?}",
         output.errors
     );
 }

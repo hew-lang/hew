@@ -426,7 +426,7 @@ fn verify_variant_shapes(module: &SemModule, diagnostics: &mut Vec<SirDiagnostic
             Ok(expected_tags) if shape.runtime_tags != expected_tags => {
                 refuse("runtime role tags differ from the exact enum descriptor".to_string());
             }
-            Err(reason) => refuse(reason),
+            Err(reason) => refuse(reason.to_string()),
             Ok(_) => {}
         }
         let mut variant_names = HashSet::new();
@@ -3236,7 +3236,7 @@ fn is_initial_call_value(ty: &ResolvedTy) -> bool {
         || ty.is_builtin(hew_types::BuiltinType::Location)
         || matches!(
             ty,
-            ResolvedTy::Borrow { .. } | ResolvedTy::String | ResolvedTy::Bytes | ResolvedTy::Task(_) | ResolvedTy::Array(_, _)
+            ResolvedTy::Pointer { .. } | ResolvedTy::Borrow { .. } | ResolvedTy::String | ResolvedTy::Bytes | ResolvedTy::Task(_) | ResolvedTy::Array(_, _)
         )
 }
 

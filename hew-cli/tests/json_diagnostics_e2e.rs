@@ -44,6 +44,59 @@ fn parse_json_array(output: &std::process::Output) -> Vec<Value> {
         .clone()
 }
 
+#[test]
+fn json_help_preserves_the_type_checkers_guidance() {
+    let (_dir, path) = write_fixture("fn main() { let food = 42; println(foob); }");
+    let json = run(&["check", "--format=json", path.to_str().unwrap()]);
+    let text = run(&["check", path.to_str().unwrap()]);
+    assert_eq!(json.status.code(), Some(1));
+    assert_eq!(text.status.code(), Some(1));
+    let diagnostics = parse_json_array(&json);
+    let undefined = diagnostics
+        .iter()
+        .find(|diagnostic| diagnostic["code"] == "UndefinedVariable")
+        .expect("undefined variable diagnostic");
+    let help = undefined["help"].as_array().expect("structured help");
+    assert!(!help.is_empty(), "the typo should offer guidance");
+    let rendered = strip_ansi(&String::from_utf8_lossy(&text.stderr));
+    for suggestion in help {
+        assert!(rendered.contains(suggestion.as_str().unwrap()));
+    }
+}
+
+#[test]
+fn json_import_cycle_notes_locate_their_own_source_files() {
+    let dir = support::tempdir();
+    let first = dir.path().join("a.hew");
+    let second = dir.path().join("b.hew");
+    let second_source = "// 🦉\n\nimport \"a.hew\";\npub fn noop_b() {}\n";
+    fs::write(&first, "import \"b.hew\";\npub fn noop_a() {}\n").unwrap();
+    fs::write(&second, second_source).unwrap();
+    let json = run(&["check", "--format=json", first.to_str().unwrap()]);
+    assert_eq!(json.status.code(), Some(1));
+    let diagnostics = parse_json_array(&json);
+    let cycle = diagnostics
+        .iter()
+        .find(|diagnostic| diagnostic["code"] == "E_IMPORT_CYCLE")
+        .expect("import cycle diagnostic");
+    let note = cycle["notes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|note| {
+            note["file"]
+                .as_str()
+                .is_some_and(|file| file.ends_with("b.hew"))
+        })
+        .expect("the other import edge has its own file");
+    let span = &note["span"];
+    assert_eq!(span["start_line"], 3);
+    let start = usize::try_from(span["start_byte"].as_u64().unwrap()).unwrap();
+    let end = usize::try_from(span["end_byte"].as_u64().unwrap()).unwrap();
+    assert!(second_source[start..end].contains("\"a.hew\""));
+    assert!(!cycle["help"].as_array().unwrap().is_empty());
+}
+
 /// A type error emits a parseable JSON array carrying at least
 /// `{code, severity, file, span, message}` and exits 1.
 #[test]
@@ -183,7 +236,7 @@ fn check_default_text_format_is_unchanged() {
 /// span) and, for a std-module typo close to a real module, names the fix.
 #[test]
 fn module_not_found_has_span_and_suggestion() {
-    let (_dir, path) = write_fixture("import std.htp;\nfn main() { }\n");
+    let (_dir, path) = write_fixture("import std.servr;\nfn main() { }\n");
     let output = run(&["check", "--format", "json", path.to_str().unwrap()]);
 
     assert_eq!(
@@ -212,8 +265,8 @@ fn module_not_found_has_span_and_suggestion() {
         not_found["message"]
             .as_str()
             .unwrap()
-            .contains("std.net.http"),
-        "a std-module typo close to `std.net.http` must suggest it: {not_found}",
+            .contains("std.net.http.server"),
+        "a std-module typo close to `std.net.http.server` must suggest it: {not_found}",
     );
     assert!(
         not_found["file"].as_str().unwrap().ends_with("main.hew"),
@@ -221,13 +274,13 @@ fn module_not_found_has_span_and_suggestion() {
     );
 }
 
-/// The right module name at the wrong nesting (`std.http` for `std.net.http`)
+/// The right module name at the wrong nesting (`std.server` for `std.net.http.server`)
 /// is the single likeliest real mistake — not a typo `find_similar` would
 /// catch (the leaf spelling is exactly right), so it needs its own exact-leaf
 /// match ahead of the fuzzy fallback.
 #[test]
 fn module_not_found_suggests_an_exact_leaf_match_at_the_wrong_nesting() {
-    let (_dir, path) = write_fixture("import std.http;\nfn main() { }\n");
+    let (_dir, path) = write_fixture("import std.server;\nfn main() { }\n");
     let output = run(&["check", "--format", "json", path.to_str().unwrap()]);
 
     let diagnostics = parse_json_array(&output);
@@ -239,8 +292,8 @@ fn module_not_found_suggests_an_exact_leaf_match_at_the_wrong_nesting() {
         not_found["message"]
             .as_str()
             .unwrap()
-            .contains("std.net.http"),
-        "the right leaf name at the wrong nesting must still suggest `std.net.http`: {not_found}",
+            .contains("std.net.http.server"),
+        "the right leaf name at the wrong nesting must still suggest `std.net.http.server`: {not_found}",
     );
 }
 

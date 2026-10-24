@@ -1,45 +1,38 @@
-//! Regression tests: Vec<(string, string)> from resp.headers() / req.headers()
-//! must drop cleanly without a for-in consume.
-//!
-//! Before the fix: `hew_http_response_headers` / `hew_http_request_headers`
-//! built the returned Vec with `hew_vec_new_generic` (Plain kind, null
-//! `elem_layout`).  When the Hew drop spine called `hew_vec_free_owned`, it
-//! read the null descriptor and aborted with:
-//!   PANIC: Vec owned operation requires an element layout descriptor
-//!
-//! After the fix: both functions use `hew_vec_new_with_elem_layout` carrying
-//! `string_pair_drop_thunk`, so the drop spine frees both C-string fields of
-//! every element correctly — no abort, no leak, no double-free.
+//! Request and response header vectors own their strings after handle release.
 
-import std.net.http.http_client;
+import std.net.http.server as http;
+import std.net.http.client;
 
-/// P0 regression: binding resp.headers() to a local and letting it go out of
-/// scope (without a for-in consume) must not abort.
-#[test]
-#[real_time]
-fn test_headers_drop_without_consume_does_not_abort() {
-    assert(http_client.set_timeout(100ms).is_ok());
-    // A failed request (nothing listening on 19999) returns an empty headers vec.
-    let resp = http_client.get("http://127.0.0.1:19999");
-    // Bind to a local — this is the P0 path.
-    // Pre-fix: drops here via hew_vec_free_owned → null elem_layout → abort.
-    // Post-fix: string_pair_drop_thunk is called on each (zero) element, no abort.
-    let _h = resp.headers();
-    // _h drops here.
-    resp.close();
-    assert(true);
+actor Client {
+    let url: string;
+
+    receive fn fetch() {
+        let response = client.request("GET", url, "", [("X-Owned", "request value"), ("X-Empty", "")]).expect("request");
+        assert(response.status() == 200);
+        assert(response.body().expect("body") == "reply");
+        assert(response.content_type().expect("content type") == .Some("text/plain; charset=utf-8"));
+        assert(response.header("CONTENT-TYPE").expect("header") == .Some("text/plain; charset=utf-8"));
+        let headers = response.headers();
+        response.close();
+        assert(!headers.is_empty());
+        assert(headers.iter().any(|header| header.0 == "content-type" && header.1 == "text/plain; charset=utf-8"));
+        // The vector leaves scope without consuming its elements in a loop.
+    }
 }
 
-/// Complementary: bind headers and read its length, then let it drop.
-/// If the drop aborts (pre-fix), this test never reaches assert_true.
 #[test]
 #[real_time]
-fn test_headers_len_bind_does_not_abort() {
-    assert(http_client.set_timeout(100ms).is_ok());
-    let resp = http_client.get("http://127.0.0.1:19999");
-    let h = resp.headers();
-    let _n = h.len();
-    // h drops here.
-    resp.close();
-    assert(true);
+fn test_owned_headers_survive_request_and_response_handles() {
+    let server = http.listen("127.0.0.1:0").expect("listen");
+    let client = spawn Client { url: f"http://127.0.0.1:{server.port()}/headers" };
+    let fetching = fork client.fetch();
+    let request = server.accept().expect("accept");
+    assert(request.header("x-empty").expect("empty header") == .Some(""));
+    assert(request.header("x-absent").expect("absent header") == .None);
+    let headers = request.headers();
+    request.respond_text(200, "reply").expect("respond");
+    assert(headers.iter().any(|header| header.0.to_lower() == "x-owned" && header.1 == "request value"));
+    assert((await fetching).is_ok());
+    stop(client);
+    stopped(client);
 }

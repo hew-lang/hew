@@ -111,14 +111,16 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             if slot.carrier == ParamCarrier::Indirect {
                 values.push(field.into());
             } else {
+                let value = builder
+                    .build_load(
+                        llvm_type(self.ctx, &slot.layout.repr)?,
+                        field,
+                        "offload.value",
+                    )
+                    .llvm_ctx("load offload argument")?;
                 values.push(
-                    builder
-                        .build_load(
-                            llvm_type(self.ctx, &slot.layout.repr)?,
-                            field,
-                            "offload.value",
-                        )
-                        .llvm_ctx("load offload argument")?,
+                    self.thunk_emitter(&builder, function)
+                        .c_scalar_argument(value, &slot.recipe.ty)?,
                 );
             }
         }

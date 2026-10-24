@@ -415,8 +415,11 @@ impl TraceStore {
 }
 
 /// Recorded trace events (bounded, non-destructive sequence ring).
-static TRACE_EVENTS: LazyLock<PoisonSafe<TraceStore>> =
-    LazyLock::new(|| PoisonSafe::new(TraceStore::new()));
+static TRACE_EVENTS: PoisonSafe<Option<TraceStore>> = PoisonSafe::new(None);
+
+fn with_trace_store<R>(f: impl FnOnce(&mut TraceStore) -> R) -> R {
+    TRACE_EVENTS.access(|store| f(store.get_or_insert_with(TraceStore::new)))
+}
 
 /// Stable identity of this producer process. It is deliberately distinct from
 /// stream identity: clear/reset and disable→enable start new streams without
@@ -681,7 +684,7 @@ pub fn trace_snapshot(
 
 #[cfg(all(feature = "profiler", not(target_arch = "wasm32")))]
 pub(crate) fn trace_stream_is_current(stream_id: TraceStreamId) -> bool {
-    TRACE_EVENTS.access(|store| store.stream_id == stream_id)
+    with_trace_store(|store| store.stream_id == stream_id)
 }
 
 fn trace_snapshot_inner(
@@ -689,7 +692,7 @@ fn trace_snapshot_inner(
     after: Option<u64>,
     limit: usize,
 ) -> Result<TraceSnapshot, TraceSnapshotError> {
-    TRACE_EVENTS.access(|store| {
+    with_trace_store(|store| {
         if let Some(requested) = expected_stream_id {
             if requested != store.stream_id {
                 return Err(TraceSnapshotError::StreamMismatch {
@@ -868,7 +871,7 @@ fn record_event_with_attribution(
         barrier.arrived.wait();
         barrier.release.wait();
     }
-    TRACE_EVENTS.access(|store| {
+    with_trace_store(|store| {
         // Serialize the second enabled check with every stream transition. An
         // emitter that observed the old epoch cannot append after reset/clear.
         if !TRACING_ENABLED.load(Ordering::Acquire) || store.generation != generation {
@@ -1581,7 +1584,7 @@ pub(crate) fn io_recv_span_end(saved_ctx: HewTraceContext) {
 #[no_mangle]
 pub extern "C" fn hew_trace_enable(enable: c_int) {
     let enable = enable != 0;
-    TRACE_EVENTS.access(|store| {
+    with_trace_store(|store| {
         let was_enabled = TRACING_ENABLED.load(Ordering::Acquire);
         if enable && !was_enabled {
             store.begin_new_stream();
@@ -1600,7 +1603,7 @@ pub extern "C" fn hew_trace_is_enabled() -> c_int {
 #[no_mangle]
 pub extern "C" fn hew_trace_event_count() -> u64 {
     C_DRAIN_CURSOR.access(|cursor| {
-        TRACE_EVENTS.access(|store| {
+        with_trace_store(|store| {
             let after = cursor
                 .filter(|cursor| cursor.stream_id == store.stream_id)
                 .map_or(0, |cursor| cursor.after);
@@ -1641,7 +1644,7 @@ pub unsafe extern "C" fn hew_trace_drain(out: *mut HewTraceEvent, max_count: u32
 /// Clear all recorded trace events.
 #[no_mangle]
 pub extern "C" fn hew_trace_clear() {
-    TRACE_EVENTS.access(TraceStore::begin_new_stream);
+    with_trace_store(TraceStore::begin_new_stream);
 }
 
 /// Register `hew_trace_reset` as a session reset hook.
@@ -1668,7 +1671,13 @@ pub(crate) fn register_trace_reset_hook() {
 pub extern "C" fn hew_trace_reset() {
     TRACE_EVENTS.access(|store| {
         TRACING_ENABLED.store(false, Ordering::Release);
-        store.begin_new_stream();
+        if let Some(store) = store {
+            store.begin_new_stream();
+        } else {
+            // Initialization and reset share this lock. A reset must invalidate
+            // the old recording generation without reserving a dormant ring.
+            STREAM_GENERATION.fetch_add(1, Ordering::AcqRel);
+        }
     });
     let ctx = crate::execution_context::current_context();
     if !ctx.is_null() {
@@ -1880,6 +1889,32 @@ pub(crate) fn tracing_test_guard() -> std::sync::MutexGuard<'static, ()> {
 mod tests {
     use super::*;
     use crate::execution_context::{HewExecutionContext, TestExecutionContext};
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn dormant_session_reset_does_not_initialize_trace_storage() {
+        const CHILD: &str = "HEW_TEST_DORMANT_TRACE_RESET";
+        if std::env::var_os(CHILD).is_some() {
+            register_trace_reset_hook();
+            crate::session::session_reset();
+            assert_eq!(hew_trace_is_enabled(), 0);
+            assert!(TRACE_EVENTS.access(|store| store.is_none()));
+            return;
+        }
+        let status = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "tracing::tests::dormant_session_reset_does_not_initialize_trace_storage",
+                "--nocapture",
+            ])
+            .env(CHILD, "1")
+            .status()
+            .expect("fresh runtime test process");
+        assert!(
+            status.success(),
+            "dormant reset must not construct trace storage"
+        );
+    }
 
     struct TraceTestSetup {
         _guard: std::sync::MutexGuard<'static, ()>,
@@ -2813,7 +2848,7 @@ mod tests {
     fn sequence_exhaustion_rotates_before_cursor_overflow() {
         let _guard = setup();
         let before = trace_snapshot(None, None, 1).expect("initial stream");
-        TRACE_EVENTS.access(|store| {
+        with_trace_store(|store| {
             store.next_sequence = u64::MAX;
             store.events_recorded_total = u64::MAX - 1;
         });

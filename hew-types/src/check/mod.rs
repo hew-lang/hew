@@ -2872,7 +2872,36 @@ impl Checker {
             .as_ref()
             .map_or(program, |normalized| &normalized.program);
         self.prepare_program(checked, false);
-        let normalized_program = match self.synthesize_error_displays(checked) {
+        let normalized_program =
+            self.prepare_implied_error_displays(checked, normalized_program.clone());
+        let program = normalized_program
+            .as_ref()
+            .map_or(program, |normalized| &normalized.program);
+        self.next_default_span = normalized_program.as_ref().map_or_else(
+            || machine_normalize::next_free_span(program),
+            |normalized| normalized.next_free_span(),
+        );
+        self.validate_macro_templates(program);
+        self.check_dependency_bodies(program);
+        self.check_embedded_builtin_impl_bodies(program);
+        self.check_root_bodies(program);
+        self.finish_program(source_program, normalized_program)
+    }
+
+    /// Register generated Error rendering providers and publish the exact
+    /// augmented source and origins consumed by body checking and lowering.
+    fn prepare_implied_error_displays(
+        &mut self,
+        checked: &Program,
+        normalized_program: Option<std::sync::Arc<machine_normalize::NormalizedProgram>>,
+    ) -> Option<std::sync::Arc<machine_normalize::NormalizedProgram>> {
+        self.next_default_span =
+            self.next_default_span
+                .max(normalized_program.as_ref().map_or_else(
+                    || machine_normalize::next_free_span(checked),
+                    |normalized| normalized.next_free_span(),
+                ));
+        match self.synthesize_error_displays(checked) {
             Some(displays) => {
                 let normalized =
                     std::sync::Arc::new(machine_normalize::NormalizedProgram::with_error_displays(
@@ -2891,19 +2920,7 @@ impl Checker {
                 Some(normalized)
             }
             None => normalized_program,
-        };
-        let program = normalized_program
-            .as_ref()
-            .map_or(program, |normalized| &normalized.program);
-        self.next_default_span = normalized_program.as_ref().map_or_else(
-            || machine_normalize::next_free_span(program),
-            |normalized| normalized.next_free_span(),
-        );
-        self.validate_macro_templates(program);
-        self.check_dependency_bodies(program);
-        self.check_embedded_builtin_impl_bodies(program);
-        self.check_root_bodies(program);
-        self.finish_program(source_program, normalized_program)
+        }
     }
 
     fn owns_embedded_builtin_bodies(&self, program: &Program) -> bool {
@@ -3085,6 +3102,7 @@ impl Checker {
             file_import_const_exports: self.file_import_const_exports.clone(),
             recovery_kinds: self.recovery_kinds.clone(),
             chain_values: self.chain_values.clone(),
+            call_result_expectations: self.call_result_expectations.clone(),
             call_argument_slots: self.call_argument_slots.clone(),
             call_default_arguments: self.call_default_arguments.clone(),
             next_default_span: self.next_default_span,
@@ -3427,6 +3445,7 @@ impl Checker {
             program,
             &self.defs,
             FnSigView::new(&self.fn_sigs, &self.fn_sig_keys, &self.builtin_fn_sigs),
+            |ty| self.normalize_for_use(ty),
         );
         self.register_actor_intercept_types(program);
     }
@@ -3857,6 +3876,7 @@ impl Checker {
                 .collect();
         self.builtin_fn_sigs.clone_from(&resolved_builtin_fn_sigs);
 
+        self.validate_intrinsic_function_values(&resolved_expr_types);
         self.validate_checker_output_contract(
             &mut resolved_expr_types,
             &mut resolved_type_defs,
@@ -5878,6 +5898,7 @@ fn actor_handler_specs(
     fn_sigs: crate::check::types::FnSigView<'_>,
     actor: crate::DefId,
     ad: &ActorDecl,
+    normalize: &impl Fn(&Ty) -> Ty,
 ) -> Option<Vec<crate::actor_protocol::ActorHandlerSpec>> {
     let mut specs: Vec<crate::actor_protocol::ActorHandlerSpec> =
         Vec::with_capacity(ad.receive_fns.len());
@@ -5889,10 +5910,10 @@ fn actor_handler_specs(
         let param_tys = sig
             .params
             .iter()
-            .map(|parameter| crate::ResolvedTy::from_ty(&parameter.ty))
+            .map(|parameter| crate::ResolvedTy::from_ty(&normalize(&parameter.ty)))
             .collect::<Result<Vec<_>, _>>()
             .ok()?;
-        let return_ty = crate::ResolvedTy::from_ty(&sig.return_type).ok()?;
+        let return_ty = crate::ResolvedTy::from_ty(&normalize(&sig.return_type)).ok()?;
         // Symbol mangling is owned by MIR/codegen; for slice 1 we record
         // a stable surface-derived symbol string so the descriptor row
         // is self-describing. Downstream consumers may continue to
@@ -5924,6 +5945,7 @@ fn build_actor_protocol_descriptors(
     program: &Program,
     defs: &crate::DefTable,
     fn_sigs: crate::check::types::FnSigView<'_>,
+    normalize: impl Fn(&Ty) -> Ty,
 ) -> HashMap<String, crate::actor_protocol::ActorProtocolDescriptor> {
     use crate::actor_protocol::{CoalesceFallback, MailboxContract, OverflowContract};
     use hew_parser::ast::{OverflowFallback, OverflowPolicy};
@@ -5934,7 +5956,7 @@ fn build_actor_protocol_descriptors(
         let actor_identity = defs.path(actor).to_string();
         // A handler signature that failed to resolve already reported its
         // type error; a partial descriptor is never published.
-        let Some(specs) = actor_handler_specs(defs, fn_sigs, actor, ad) else {
+        let Some(specs) = actor_handler_specs(defs, fn_sigs, actor, ad, &normalize) else {
             continue;
         };
 

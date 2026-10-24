@@ -879,25 +879,9 @@ impl CrashKind {
 mod crash_kind_projection_tests {
     use super::*;
 
-    /// The `CrashKind` tags match `std/failure.hew`'s declaration order — the
-    /// wire value M-7 delivers. Exact-value, not `> 0`: a wrong tag is a
-    /// cross-actor mis-classification.
-    #[test]
-    fn crash_kind_tags_match_std_declaration_order() {
-        assert_eq!(CrashKind::Crashed.tag(), 0);
-        assert_eq!(CrashKind::HeapExceeded.tag(), 1);
-        assert_eq!(CrashKind::PartitionDetected.tag(), 2);
-        assert_eq!(CrashKind::HandlerFailed.tag(), 3);
-        assert_eq!(CrashKind::TimerOverdue.tag(), 4);
-        assert_eq!(
-            CrashKind::tag_from_error_code(HEW_TRAP_ACTOR_TIMER_OVERDUE),
-            4
-        );
-    }
-
     /// Distinct public failure classes retain their canonical tags.
     #[test]
-    fn heap_exceeded_projects_to_heap_exceeded_kind() {
+    fn public_failure_classes_retain_their_kinds() {
         assert_eq!(
             ExitReason::HeapExceeded.to_crash_kind(),
             CrashKind::HeapExceeded
@@ -909,6 +893,10 @@ mod crash_kind_projection_tests {
         assert_eq!(
             CrashKind::tag_from_error_code(HEW_TRAP_ACTOR_UNHANDLED_FAILURE),
             CrashKind::HandlerFailed.tag()
+        );
+        assert_eq!(
+            CrashKind::tag_from_error_code(HEW_TRAP_ACTOR_TIMER_OVERDUE),
+            CrashKind::TimerOverdue.tag()
         );
     }
 

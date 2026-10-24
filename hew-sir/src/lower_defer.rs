@@ -3,6 +3,8 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use crate::SirLoweringError;
+
 use super::{
     BlockId, Builder, Edge, HirExpr, PlaceOrigin, Provenance, ResolvedTy, SemOpKind, SemTerminator,
     ValueId,
@@ -40,7 +42,7 @@ impl Builder<'_, '_> {
     pub(super) fn finish_return_value(
         &mut self,
         value: Option<crate::BoundaryOperand>,
-    ) -> Result<(), String> {
+    ) -> Result<(), SirLoweringError> {
         let saved = self.control_state();
         let recovery = self.recovery_bodies.clone();
         let preserved = value
@@ -82,7 +84,7 @@ impl Builder<'_, '_> {
         &mut self,
         floor: usize,
         preserved: &BTreeMap<ValueId, ResolvedTy>,
-    ) -> Result<(), String> {
+    ) -> Result<(), SirLoweringError> {
         while let Some(boundary) = self
             .recovery_bodies
             .last()
@@ -107,7 +109,7 @@ impl Builder<'_, '_> {
         body: &HirExpr,
         scope: u32,
         failure_only: bool,
-    ) -> Result<(), String> {
+    ) -> Result<(), SirLoweringError> {
         let run_flags = if failure_only {
             Some((
                 self.emit_typed(
@@ -151,7 +153,10 @@ impl Builder<'_, '_> {
         !self.defer_bodies.is_empty()
     }
 
-    pub(super) fn check_deferred_loop_exit(&self, target_depth: usize) -> Result<(), String> {
+    pub(super) fn check_deferred_loop_exit(
+        &self,
+        target_depth: usize,
+    ) -> Result<(), SirLoweringError> {
         if self
             .defer_bodies
             .last()
@@ -164,7 +169,7 @@ impl Builder<'_, '_> {
 
     /// A temporary's asynchronous cleanup can fail between source expressions.
     /// Propagate that fault before evaluating the next ordinary expression.
-    pub(super) fn dispatch_value_cleanup(&mut self) -> Result<(), String> {
+    pub(super) fn dispatch_value_cleanup(&mut self) -> Result<(), SirLoweringError> {
         self.cleanup_may_fail = false;
         let normal = self.new_block(Vec::new());
         let fault = self.new_block(Vec::new());
@@ -181,7 +186,7 @@ impl Builder<'_, '_> {
     }
 
     /// Generate a fault successor without changing its sibling's lexical state.
-    pub(super) fn finish_fault_exit(&mut self) -> Result<(), String> {
+    pub(super) fn finish_fault_exit(&mut self) -> Result<(), SirLoweringError> {
         let saved = self.control_state();
         self.restore_indexed_containers()?;
         self.cleanup_draining = true;
@@ -241,7 +246,7 @@ impl Builder<'_, '_> {
     /// A `var self` method mutates its caller's place rather than consuming
     /// it. When it fails, it hands the receiver, as last written, back to the
     /// caller instead of releasing it, so the caller's place is never empty.
-    fn take_fault_handback(&mut self) -> Result<Option<crate::BoundaryOperand>, String> {
+    fn take_fault_handback(&mut self) -> Result<Option<crate::BoundaryOperand>, SirLoweringError> {
         let Some(binding) = self.function.var_self_receiver else {
             return Ok(None);
         };
@@ -314,7 +319,10 @@ impl Builder<'_, '_> {
         }))
     }
 
-    pub(super) fn finish_checked_fault(&mut self, kind: crate::TrapKind) -> Result<(), String> {
+    pub(super) fn finish_checked_fault(
+        &mut self,
+        kind: crate::TrapKind,
+    ) -> Result<(), SirLoweringError> {
         let cleanup = self.new_block(Vec::new());
         self.set_terminator(SemTerminator::CheckedRaiseFault {
             kind,
@@ -332,7 +340,7 @@ impl Builder<'_, '_> {
         &mut self,
         action: &PendingDefer,
         failure: bool,
-    ) -> Result<(), String> {
+    ) -> Result<(), SirLoweringError> {
         let saved = self.control_state();
         let run = if let Some((skip, run)) = action.run_flags.filter(|_| !failure) {
             let argument = crate::BlockArg {
@@ -462,13 +470,17 @@ impl Builder<'_, '_> {
 }
 
 impl Builder<'_, '_> {
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one recovery boundary owns its scope and cleanup state"
+    )]
     pub(super) fn lower_scope_recovery(
         &mut self,
         whole: &HirExpr,
         scope: &HirExpr,
         error: &hew_hir::HirBinding,
         handler: &HirExpr,
-    ) -> Result<Option<ValueId>, String> {
+    ) -> Result<Option<ValueId>, SirLoweringError> {
         let inherited = self.control_state();
         let catch = self.new_block(Vec::new());
         self.recovery_bodies.push(BodyBoundary {
@@ -511,12 +523,14 @@ impl Builder<'_, '_> {
         let failure_ty = self.ty(&error.ty);
         let shape = self.service.require_variant_shape(&failure_ty)?;
         let variants = &self.service.variant_shapes[shape.0 as usize].variants;
-        let tag = |name: &str| -> Result<u32, String> {
+        let tag = |name: &str| -> Result<u32, SirLoweringError> {
             variants
                 .iter()
                 .position(|variant| variant.name == name)
                 .and_then(|index| u32::try_from(index).ok())
-                .ok_or_else(|| format!("scope failure has no {name} variant"))
+                .ok_or_else(|| {
+                    SirLoweringError::from(format!("scope failure has no {name} variant"))
+                })
         };
         let (deadline_variant, fault_variant) = (tag("Deadline")?, tag("Fault")?);
         let produced_failure = self.fresh_value();

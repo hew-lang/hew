@@ -17,6 +17,6 @@ fn main() {
         .Ok(child) => println(child.wait().expect("wait")),
         .Err(_) => (),
     }
-    let parsed = cron.parse("* * * * *");
-    assert(parsed.next(timestamp.from_unix_secs(0)) == timestamp.from_unix_secs(60));
+    let parsed = cron.parse("* * * * *").expect("valid schedule");
+    assert(parsed.next(timestamp.from_unix_secs(0)).expect("future occurrence") == timestamp.from_unix_secs(60));
 }

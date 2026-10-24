@@ -1,0 +1,10 @@
+[[case]]
+id = "intrinsic-function-values"
+intent = "Checked builtin signatures support passing, storing and invoking callbacks through ordinary callable lowering, including owned Display inputs and suspension."
+source = "cases/intrinsic-function-values.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.expected]
+stdout = "stored\npassed\n42\nowned\ninferred\nresumed\n"
+exit = 0

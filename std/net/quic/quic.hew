@@ -31,10 +31,10 @@
 //! import std.net.quic;
 //!
 //! fn main() {
-//!     let ep = quic.new_server(":4433");
-//!     let conn = ep.accept();
-//!     let stream = conn.accept_stream();
-//!     let data = stream.recv();
+//!     let ep = quic.new_server(":4433").expect("QUIC operation succeeds");
+//!     let conn = ep.accept().expect("QUIC operation succeeds");
+//!     let stream = conn.accept_stream().expect("QUIC operation succeeds");
+//!     let data = stream.recv().expect("QUIC operation succeeds");
 //!     match stream.send(data) {
 //!         .Ok(_) => {}
 //!         .Err(err) => panic(to_string(err)),
@@ -45,16 +45,13 @@
 //!     }
 //!     stream.close();
 //!     // Drain connection events so the peer has received all in-flight data
-//!     // before the connection is torn down. Calling conn.disconnect() before
+//!     // before the connection is torn down. Calling conn.close() before
 //!     // both the stream-closed (kind=3) and peer-disconnected (kind=1)
 //!     // events arrive can race delivery on the wire. Across separate
 //!     // processes the exact order is not guaranteed.
 //!     let ev1 = conn.on_event(); ev1.close();
 //!     let ev2 = conn.on_event(); ev2.close();
-//!     match conn.disconnect() {
-//!         .Ok(_) => {}
-//!         .Err(err) => panic(to_string(err)),
-//!     }
+//!     conn.close();
 //!     ep.close();
 //! }
 //! ```
@@ -66,14 +63,14 @@
 //! import std.net.quic;
 //!
 //! fn main() {
-//!     let ep = quic.new_client();
-//!     let conn = ep.connect("127.0.0.1:4433", "localhost");
-//!     let stream = conn.open_stream();
+//!     let ep = quic.new_client().expect("QUIC operation succeeds");
+//!     let conn = ep.connect("127.0.0.1:4433", "localhost").expect("QUIC connection");
+//!     let stream = conn.open_stream().expect("QUIC operation succeeds");
 //!     match stream.send(b"hello quic") {
 //!         .Ok(_) => {}
 //!         .Err(err) => panic(to_string(err)),
 //!     }
-//!     let reply = stream.recv();
+//!     let reply = stream.recv().expect("QUIC operation succeeds");
 //!     match stream.finish() {
 //!         .Ok(_) => {}
 //!         .Err(err) => panic(to_string(err)),
@@ -81,12 +78,9 @@
 //!     // Drain to EOF before closing.  Without this recv() the local close
 //!     // can race the server's final STREAM_FIN frame and the reply may be
 //!     // lost in transit.
-//!     let eof = stream.recv();
+//!     let eof = stream.recv().expect("QUIC operation succeeds");
 //!     stream.close();
-//!     match conn.disconnect() {
-//!         .Ok(_) => {}
-//!         .Err(err) => panic(to_string(err)),
-//!     }
+//!     conn.close();
 //!     ep.close();
 //! }
 //! ```
@@ -172,6 +166,14 @@ pub type QUICStreamObservation {
     last_error: string;
 }
 
+/// A receive failure or malformed UTF-8 in a received buffer.
+pub enum ReadError {
+    Network(net.NetError);
+    Decode(utf8.Utf8Error);
+}
+
+impl Error for ReadError {}
+
 // ── QUICEndpoint methods ──────────────────────────────────────────────
 /// Methods available on a `QUICEndpoint`.
 trait QUICEndpointMethods {
@@ -180,13 +182,13 @@ trait QUICEndpointMethods {
     /// `addr` is a `"host:port"` address; `server_name` is the TLS SNI name
     /// used to verify the server's certificate.
     ///
-    /// Returns an established `QUICConnection` or a zero-value on failure.
-    fn connect(self, addr: string, server_name: string) -> QUICConnection;
+    /// Return an established connection or the protocol failure.
+    fn connect(self, addr: string, server_name: string) -> QUICConnection fails net.NetError;
 
     /// Block until a remote peer opens an incoming connection (server side).
     ///
-    /// Returns an established `QUICConnection` or a zero-value on failure.
-    fn accept(self) -> QUICConnection;
+    /// Return an established connection or the protocol failure.
+    fn accept(self) -> QUICConnection fails net.NetError;
 
     /// Block until the next queued QUIC event on this endpoint.
     ///
@@ -199,14 +201,32 @@ trait QUICEndpointMethods {
 }
 
 impl QUICEndpointMethods for QUICEndpoint {
-    fn connect(self, addr: string, server_name: string) -> QUICConnection {
-        unsafe {
+    fn connect(self, addr: string, server_name: string) -> QUICConnection fails net.NetError {
+        let value = unsafe {
             hew_quic_endpoint_connect(self, addr, server_name)
+        };
+        if unsafe {
+            hew_quic_conn_is_valid(value)
+        } {
+            value
+        } else {
+            return error net.NetError.Protocol(unsafe {
+                hew_quic_endpoint_last_error(self)
+            });
         }
     }
-    fn accept(self) -> QUICConnection {
-        unsafe {
+    fn accept(self) -> QUICConnection fails net.NetError {
+        let value = unsafe {
             hew_quic_endpoint_accept(self)
+        };
+        if unsafe {
+            hew_quic_conn_is_valid(value)
+        } {
+            value
+        } else {
+            return error net.NetError.Protocol(unsafe {
+                hew_quic_endpoint_last_error(self)
+            });
         }
     }
     fn on_event(self) -> QUICEvent {
@@ -215,7 +235,13 @@ impl QUICEndpointMethods for QUICEndpoint {
         }
     }
     fn observe(self) -> QUICEndpointObservation {
-        endpoint_observe(self)
+        QUICEndpointObservation { local_addr: unsafe {
+            hew_quic_endpoint_local_addr(self)
+        }, accepted_connections: unsafe {
+            hew_quic_endpoint_accepted_connections(self)
+        }, last_error: unsafe {
+            hew_quic_endpoint_last_error(self)
+        } }
     }
 }
 
@@ -233,18 +259,13 @@ impl QUICEndpoint {
 trait QUICConnectionMethods {
     /// Open a new bidirectional stream on this connection.
     ///
-    /// Returns a `QUICStream` or a zero-value on failure.
-    fn open_stream(self) -> QUICStream;
+    /// Return an open stream or the protocol failure.
+    fn open_stream(self) -> QUICStream fails net.NetError;
 
     /// Block until the remote peer opens an incoming stream.
     ///
-    /// Returns a `QUICStream` or a zero-value on failure.
-    fn accept_stream(self) -> QUICStream;
-
-    /// Gracefully close this connection and release its resources.
-    ///
-    /// Returns `Ok(())` on success or `Err(net.NetError)` on failure.
-    fn disconnect(consume self) -> Result<(), net.NetError>;
+    /// Return an open stream or the protocol failure.
+    fn accept_stream(self) -> QUICStream fails net.NetError;
 
     /// Block until the next queued QUIC event on this connection.
     ///
@@ -257,18 +278,33 @@ trait QUICConnectionMethods {
 }
 
 impl QUICConnectionMethods for QUICConnection {
-    fn open_stream(self) -> QUICStream {
-        unsafe {
+    fn open_stream(self) -> QUICStream fails net.NetError {
+        let value = unsafe {
             hew_quic_conn_open_stream(self)
+        };
+        if unsafe {
+            hew_quic_stream_is_valid(value)
+        } {
+            value
+        } else {
+            return error net.NetError.Protocol(unsafe {
+                hew_quic_conn_last_error(self)
+            });
         }
     }
-    fn accept_stream(self) -> QUICStream {
-        unsafe {
+    fn accept_stream(self) -> QUICStream fails net.NetError {
+        let value = unsafe {
             hew_quic_conn_accept_stream(self)
+        };
+        if unsafe {
+            hew_quic_stream_is_valid(value)
+        } {
+            value
+        } else {
+            return error net.NetError.Protocol(unsafe {
+                hew_quic_conn_last_error(self)
+            });
         }
-    }
-    fn disconnect(consume self) -> Result<(), net.NetError> {
-        connection_disconnect(self)
     }
     fn on_event(self) -> QUICEvent {
         unsafe {
@@ -276,14 +312,30 @@ impl QUICConnectionMethods for QUICConnection {
         }
     }
     fn observe(self) -> QUICConnectionObservation {
-        connection_observe(self)
+        QUICConnectionObservation { local_addr: unsafe {
+            hew_quic_conn_local_addr(self)
+        }, peer_addr: unsafe {
+            hew_quic_conn_peer_addr(self)
+        }, opened_streams: unsafe {
+            hew_quic_conn_opened_streams(self)
+        }, accepted_streams: unsafe {
+            hew_quic_conn_accepted_streams(self)
+        }, rtt_ms: unsafe {
+            hew_quic_conn_rtt_ms(self) as i64
+        }, bytes_sent: unsafe {
+            hew_quic_conn_bytes_sent(self)
+        }, bytes_received: unsafe {
+            hew_quic_conn_bytes_received(self)
+        }, closed: unsafe {
+            hew_quic_conn_is_closed(self)
+        }, last_error: unsafe {
+            hew_quic_conn_last_error(self)
+        } }
     }
 }
 
 impl QUICConnection {
-    /// Release this connection without reporting shutdown status.
-    /// `disconnect()` remains the consuming compatibility API when callers
-    /// need the result.
+    /// Gracefully close this connection and release its resources.
     fn close(consume self) {
         unsafe {
             hew_quic_conn_disconnect(self)
@@ -301,20 +353,20 @@ trait QUICStreamMethods {
 
     /// Block until data arrives and return the received bytes.
     ///
-    /// Returns an empty buffer on stream close or error.
-    fn recv(self) -> bytes;
+    /// Returns an empty buffer on stream EOF and an error on transport failure.
+    fn recv(self) -> bytes fails net.NetError;
 
     /// Receive bytes with a per-call deadline.
     ///
     /// `timeout <= 0ns` disables the deadline. On deadline expiry returns
-    /// `Err(NetError.TimedOut(0))`. On stream EOF returns `Ok(empty)`.
-    fn recv_timeout(self, timeout: duration) -> Result<bytes, net.NetError>;
+    /// `Err(net.NetError.TimedOut(0))`. On stream EOF returns `Ok(empty)`.
+    fn recv_timeout(self, timeout: duration) -> bytes fails net.NetError;
 
     /// Send bytes with a per-call deadline.
     ///
     /// `timeout <= 0ns` disables the deadline. On deadline expiry returns
-    /// `Err(NetError.TimedOut(0))`.
-    fn send_timeout(self, data: bytes, timeout: duration) -> Result<(), net.NetError>;
+    /// `Err(net.NetError.TimedOut(0))`.
+    fn send_timeout(self, data: bytes, timeout: duration) fails net.NetError;
 
     /// Signal that no more data will be sent on this stream.
     ///
@@ -340,9 +392,9 @@ trait QUICStreamMethods {
     /// Block until data arrives and return it as a UTF-8 string.
     ///
     /// Validates one received buffer; malformed or incomplete UTF-8 is an
-    /// error. An empty buffer follows `recv`'s stream-close/error convention.
+    /// error. An empty buffer represents stream EOF.
     /// Retain raw bytes across reads when decoding streaming text.
-    fn recv_string(self) -> Result<string, utf8.Utf8Error>;
+    fn recv_string(self) -> string fails ReadError;
 
     /// Return a non-destructive snapshot of stream state.
     fn observe(self) -> QUICStreamObservation;
@@ -350,33 +402,110 @@ trait QUICStreamMethods {
 
 impl QUICStreamMethods for QUICStream {
     fn send(self, data: bytes) -> Result<(), net.NetError> {
-        stream_send(self, data)
-    }
-    fn recv(self) -> bytes {
+        // Capture the stream failure before another operation changes its observation.
         unsafe {
-            hew_quic_stream_recv(self)
+            let status = hew_quic_stream_send(self, data);
+            if status == QUIC_ABSENT_HANDLE {
+                .Err(net.NetError.InvalidArgument("this QUIC stream was never opened"))
+            } else if status < 0 {
+                .Err(net.NetError.Protocol(hew_quic_stream_last_error(self)))
+            } else {
+                .Ok(())
+            }
         }
     }
-    fn recv_timeout(self, timeout: duration) -> Result<bytes, net.NetError> {
-        stream_recv_timeout(self, timeout)
+    fn recv(self) -> bytes fails net.NetError {
+        self.recv_timeout(0ms)?
     }
-    fn send_timeout(self, data: bytes, timeout: duration) -> Result<(), net.NetError> {
-        stream_send_timeout(self, data, timeout)
+    fn recv_timeout(self, timeout: duration) -> bytes fails net.NetError {
+        let deadline = quic_deadline_ms("quic.stream_recv_timeout", timeout)?;
+        let payload: bytes = unsafe { // INTERNAL-ABI: deadline range-checked above
+            hew_quic_stream_recv_timeout_hew(self, deadline as i32)
+        };
+        let status: i32 = unsafe { // INTERNAL-ABI: 0=ok-or-EOF, -1=transport error, -2=timeout, -3=absent handle
+            hew_quic_stream_last_recv_status()
+        };
+        if status == QUIC_ABSENT_HANDLE {
+            return error net.NetError.InvalidArgument("this QUIC stream was never opened");
+        } else if status == -2 {
+            return error net.net_error_timed_out();
+        } else if status < 0 {
+            return error net.NetError.Protocol(unsafe {
+                hew_quic_stream_last_error(self)
+            });
+        } else {
+            payload
+        }
+    }
+    fn send_timeout(self, data: bytes, timeout: duration) fails net.NetError {
+        let deadline = quic_deadline_ms("quic.stream_send_timeout", timeout)?;
+        let status: i32 = unsafe { // INTERNAL-ABI: 0=ok, -1=error, -2=timeout, -3=absent handle; deadline range-checked above
+            hew_quic_stream_send_timeout_hew(self, data, deadline as i32)
+        };
+        if status == QUIC_ABSENT_HANDLE {
+            return error net.NetError.InvalidArgument("this QUIC stream was never opened");
+        } else if status == -2 {
+            return error net.net_error_timed_out();
+        } else if status < 0 {
+            return error net.NetError.Protocol(unsafe {
+                hew_quic_stream_last_error(self)
+            });
+        }
     }
     fn finish(self) -> Result<(), net.NetError> {
-        stream_finish(self)
+        // Capture the stream failure before another operation changes its observation.
+        unsafe {
+            let status = hew_quic_stream_finish(self);
+            if status == QUIC_ABSENT_HANDLE {
+                .Err(net.NetError.InvalidArgument("this QUIC stream was never opened"))
+            } else if status < 0 {
+                .Err(net.NetError.Protocol(hew_quic_stream_last_error(self)))
+            } else {
+                .Ok(())
+            }
+        }
     }
-    fn stop(self, error_code: i64) -> Result<(), net.NetError> {
-        stream_stop(self, error_code)
+    fn stop(self, error_code: i64) -> Result<(), net.NetError> { // INTERNAL-ABI: QUIC protocol mandates 62-bit error codes; i64 is 64-bit i64 so no narrowing needed
+        // Capture the stream failure before another operation changes its observation.
+        unsafe {
+            let status = hew_quic_stream_stop(self, error_code);
+            if status == QUIC_ABSENT_HANDLE {
+                .Err(net.NetError.InvalidArgument("this QUIC stream was never opened"))
+            } else if status < 0 {
+                .Err(net.NetError.Protocol(hew_quic_stream_last_error(self)))
+            } else {
+                .Ok(())
+            }
+        }
     }
     fn send_string(self, msg: string) -> Result<(), net.NetError> {
-        stream_send_string(self, msg)
+        unsafe {
+            let payload = hew_string_to_bytes(msg);
+            self.send(payload)
+        }
     }
-    fn recv_string(self) -> Result<string, utf8.Utf8Error> {
-        stream_recv_string(self)
+    fn recv_string(self) -> string fails ReadError {
+        let payload = match self.recv() {
+            .Ok(payload) => payload,
+            .Err(error) => return error ReadError.Network(error),
+        };
+        match utf8.decode(payload) {
+            .Ok(text) => text,
+            .Err(error) => return error ReadError.Decode(error),
+        }
     }
     fn observe(self) -> QUICStreamObservation {
-        stream_observe(self)
+        QUICStreamObservation { bytes_sent: unsafe {
+            hew_quic_stream_bytes_sent(self)
+        }, bytes_received: unsafe {
+            hew_quic_stream_bytes_received(self)
+        }, send_closed: unsafe {
+            hew_quic_stream_send_closed(self)
+        }, recv_closed: unsafe {
+            hew_quic_stream_recv_closed(self)
+        }, last_error: unsafe {
+            hew_quic_stream_last_error(self)
+        } }
     }
 }
 
@@ -428,22 +557,40 @@ impl QUICEvent {
 /// import std.net.quic;
 ///
 /// fn main() {
-///     let ep = quic.new_client();
-///     let conn = ep.connect("node2.example.com:4433", "node2.example.com");
+///     let ep = quic.new_client().expect("QUIC operation succeeds");
+///     let conn = ep.connect("node2.example.com:4433", "node2.example.com").expect("QUIC operation succeeds");
 /// }
 /// ```
-pub fn new_client() -> QUICEndpoint {
-    unsafe {
+pub fn new_client() -> QUICEndpoint fails net.NetError {
+    let endpoint = unsafe {
         hew_quic_new_client()
+    };
+    if unsafe {
+        hew_quic_endpoint_is_valid(endpoint)
+    } {
+        endpoint
+    } else {
+        return error net.NetError.Protocol(unsafe {
+            hew_quic_last_error()
+        });
     }
 }
 
 /// Create a QUIC client endpoint that trusts the given CA bundle.
 ///
 /// `ca_pem` must contain one or more PEM-encoded certificates.
-pub fn new_client_with_ca(ca_pem: string) -> QUICEndpoint {
-    unsafe {
+pub fn new_client_with_ca(ca_pem: string) -> QUICEndpoint fails net.NetError {
+    let endpoint = unsafe {
         hew_quic_new_client_with_ca(ca_pem)
+    };
+    if unsafe {
+        hew_quic_endpoint_is_valid(endpoint)
+    } {
+        endpoint
+    } else {
+        return error net.NetError.Protocol(unsafe {
+            hew_quic_last_error()
+        });
     }
 }
 
@@ -458,13 +605,22 @@ pub fn new_client_with_ca(ca_pem: string) -> QUICEndpoint {
 /// import std.net.quic;
 ///
 /// fn main() {
-///     let ep = quic.new_server(":4433");
-///     let conn = ep.accept();
+///     let ep = quic.new_server(":4433").expect("QUIC operation succeeds");
+///     let conn = ep.accept().expect("QUIC operation succeeds");
 /// }
 /// ```
-pub fn new_server(addr: string) -> QUICEndpoint {
-    unsafe {
+pub fn new_server(addr: string) -> QUICEndpoint fails net.NetError {
+    let endpoint = unsafe {
         hew_quic_new_server(addr)
+    };
+    if unsafe {
+        hew_quic_endpoint_is_valid(endpoint)
+    } {
+        endpoint
+    } else {
+        return error net.NetError.Protocol(unsafe {
+            hew_quic_last_error()
+        });
     }
 }
 
@@ -472,260 +628,41 @@ pub fn new_server(addr: string) -> QUICEndpoint {
 ///
 /// `cert_pem` may contain a PEM-encoded certificate chain; `key_pem` must
 /// contain the matching PEM-encoded private key.
-pub fn new_server_with_tls(addr: string, cert_pem: string, key_pem: string) -> QUICEndpoint {
-    unsafe {
+pub fn new_server_with_tls(addr: string, cert_pem: string, key_pem: string) -> QUICEndpoint fails net.NetError {
+    let endpoint = unsafe {
         hew_quic_new_server_with_tls(addr, cert_pem, key_pem)
+    };
+    if unsafe {
+        hew_quic_endpoint_is_valid(endpoint)
+    } {
+        endpoint
+    } else {
+        return error net.NetError.Protocol(unsafe {
+            hew_quic_last_error()
+        });
     }
-}
-
-/// Return the last constructor/setup error observed on this thread.
-///
-/// Failed calls to `new_client*()` and `new_server*()` update this string.
-/// Successful constructors clear it.
-pub fn last_error() -> string {
-    unsafe {
-        hew_quic_last_error()
-    }
-}
-
-// Keep observation assembly in module-level wrappers so imported
-// `handle.observe()` calls rewrite during AST enrichment.
-/// Return a non-destructive snapshot of endpoint state.
-///
-/// Reads the local address, cumulative accepted-connection count, and last
-/// error string from the endpoint without closing or mutating it. The
-/// returned `QUICEndpointObservation` is a plain value record and does not
-/// need to be freed. Call this at any time to poll endpoint health or
-/// inspect which address the runtime bound.
-pub fn endpoint_observe(ep: QUICEndpoint) -> QUICEndpointObservation {
-    QUICEndpointObservation { local_addr: unsafe {
-        hew_quic_endpoint_local_addr(ep)
-    }, accepted_connections: unsafe {
-        hew_quic_endpoint_accepted_connections(ep)
-    }, last_error: unsafe {
-        hew_quic_endpoint_last_error(ep)
-    } }
-}
-
-/// Return a non-destructive snapshot of connection state.
-///
-/// Reads both endpoint addresses, stream counts, round-trip time,
-/// byte counters, closed flag, and last error string in a single call.
-/// The returned `QUICConnectionObservation` is a plain value record.
-/// `rtt_ms` is the smoothed RTT in milliseconds as reported by the
-/// QUIC stack; it is 0 until the handshake completes. `last_error` is
-/// empty when the connection is healthy.
-pub fn connection_observe(conn: QUICConnection) -> QUICConnectionObservation {
-    QUICConnectionObservation { local_addr: unsafe {
-        hew_quic_conn_local_addr(conn)
-    }, peer_addr: unsafe {
-        hew_quic_conn_peer_addr(conn)
-    }, opened_streams: unsafe {
-        hew_quic_conn_opened_streams(conn)
-    }, accepted_streams: unsafe {
-        hew_quic_conn_accepted_streams(conn)
-    }, rtt_ms: unsafe {
-        hew_quic_conn_rtt_ms(conn) as i64
-    }, bytes_sent: unsafe {
-        hew_quic_conn_bytes_sent(conn)
-    }, bytes_received: unsafe {
-        hew_quic_conn_bytes_received(conn)
-    }, closed: unsafe {
-        hew_quic_conn_is_closed(conn)
-    }, last_error: unsafe {
-        hew_quic_conn_last_error(conn)
-    } }
 }
 
 // Distinct from the transport failure (-1) and per-call timeout (-2).
 const QUIC_ABSENT_HANDLE: i64 = 0 - 3;
-
-/// Initiate a graceful QUIC connection shutdown.
-///
-/// Sends a `CONNECTION_CLOSE` frame to the peer and releases the
-/// connection handle. Returns `Ok(())` on success. On failure, returns
-/// `Err(NetError.Other(0))`; inspect `conn.observe().last_error` for the
-/// QUIC-level error string because QUIC errors carry no OS errno.
-/// After calling `connection_disconnect`, the connection handle must
-/// not be used again.
-/// Returns `InvalidArgument` if the connection was never established.
-pub fn connection_disconnect(consume conn: QUICConnection) -> Result<(), net.NetError> {
-    // QUIC errors carry no OS errno; error string available via conn.observe().last_error
-    unsafe {
-        let status = hew_quic_conn_disconnect(conn);
-        if status == QUIC_ABSENT_HANDLE {
-            .Err(NetError.InvalidArgument("this QUIC connection was never established"))
-        } else if status < 0 {
-            .Err(net.net_error_from_errno(0))
-        } else {
-            .Ok(())
-        }
-    }
-}
-
-/// Return a non-destructive snapshot of stream state.
-///
-/// Reads cumulative byte counts, send/receive close flags, and the
-/// last error string. The returned `QUICStreamObservation` is a plain
-/// value record. `send_closed` is true after `stream_finish` or
-/// `stream_stop` completes; `recv_closed` is true when the peer has
-/// finished sending. `last_error` is empty while the stream is healthy.
-pub fn stream_observe(stream: QUICStream) -> QUICStreamObservation {
-    QUICStreamObservation { bytes_sent: unsafe {
-        hew_quic_stream_bytes_sent(stream)
-    }, bytes_received: unsafe {
-        hew_quic_stream_bytes_received(stream)
-    }, send_closed: unsafe {
-        hew_quic_stream_send_closed(stream)
-    }, recv_closed: unsafe {
-        hew_quic_stream_recv_closed(stream)
-    }, last_error: unsafe {
-        hew_quic_stream_last_error(stream)
-    } }
-}
-
-/// Write a byte slice to a QUIC stream.
-///
-/// Sends `data` as a single STREAM frame sequence. Blocks until the
-/// data is accepted by the QUIC stack (not until it is acknowledged
-/// by the peer). Returns `Ok(())` on success. On failure, returns
-/// `Err(NetError.Other(0))`; inspect `strm.observe().last_error` for
-/// the QUIC-level error string. Does not close the send side — call
-/// `stream_finish` when all data has been written.
-/// Returns `InvalidArgument` if the stream was never opened.
-pub fn stream_send(strm: QUICStream, data: bytes) -> Result<(), net.NetError> {
-    // QUIC errors carry no OS errno; error string available via stream.observe().last_error
-    unsafe {
-        let status = hew_quic_stream_send(strm, data);
-        if status == QUIC_ABSENT_HANDLE {
-            .Err(NetError.InvalidArgument("this QUIC stream was never opened"))
-        } else if status < 0 {
-            .Err(net.net_error_from_errno(0))
-        } else {
-            .Ok(())
-        }
-    }
-}
 
 /// Validate a QUIC per-call deadline before the C ABI narrows it to `i32`.
 ///
 /// A non-positive deadline disables the deadline and is normalized to zero;
 /// a positive one must be representable, so `2^32 + 500` is rejected rather
 /// than narrowed into a 500 ms deadline.
-fn try_quic_deadline_ms(context: string, timeout: duration) -> Result<i64, net.NetError> {
+fn quic_deadline_ms(context: string, timeout: duration) -> Result<i64, net.NetError> {
     if timeout <= 0ns {
         return .Ok(0);
     }
     net.duration_ms(context, timeout)
 }
 
-/// Send bytes on a QUIC stream with a per-call deadline.
-///
-/// `timeout <= 0ns` disables the deadline. Returns `Err(NetError.TimedOut(0))`
-/// on deadline expiry, `Err(NetError.Other(0))` on transport error.
-pub fn stream_send_timeout(strm: QUICStream, data: bytes, timeout: duration) fails net.NetError {
-    let deadline = try_quic_deadline_ms("quic.stream_send_timeout", timeout)?;
-    let status: i32 = unsafe { // INTERNAL-ABI: 0=ok, -1=error, -2=timeout, -3=absent handle; deadline range-checked above
-        hew_quic_stream_send_timeout_hew(strm, data, deadline as i32)
-    };
-    if status == QUIC_ABSENT_HANDLE {
-        return error NetError.InvalidArgument("this QUIC stream was never opened");
-    } else if status == -2 {
-        return error net.net_error_timed_out();
-    } else if status < 0 {
-        return error net.net_error_from_errno(0);
-    }
-}
-
-/// Receive bytes from a QUIC stream with a per-call deadline.
-///
-/// `timeout <= 0ns` disables the deadline. Returns `Err(NetError.TimedOut(0))`
-/// on deadline expiry. On success returns the bytes (may be empty for EOF).
-pub fn stream_recv_timeout(strm: QUICStream, timeout: duration) -> bytes fails net.NetError {
-    let deadline = try_quic_deadline_ms("quic.stream_recv_timeout", timeout)?;
-    let payload: bytes = unsafe { // INTERNAL-ABI: deadline range-checked above
-        hew_quic_stream_recv_timeout_hew(strm, deadline as i32)
-    };
-    let status: i32 = unsafe { // INTERNAL-ABI: 0=ok-or-EOF, -1=transport error, -2=timeout, -3=absent handle
-        hew_quic_stream_last_recv_status()
-    };
-    if status == QUIC_ABSENT_HANDLE {
-        return error NetError.InvalidArgument("this QUIC stream was never opened");
-    } else if status == -2 {
-        return error net.net_error_timed_out();
-    } else if status < 0 {
-        return error net.net_error_from_errno(0);
-    } else {
-        payload
-    }
-}
-
-/// Signal the end of the send side of a QUIC stream.
-///
-/// Sends a FIN to the peer, indicating no more data will be written.
-/// The stream remains open for receiving until the peer also closes
-/// their send side (or until `stream_stop` is called). Returns
-/// `Ok(())` on success. On failure, returns `Err(NetError.Other(0))`;
-/// inspect `strm.observe().last_error` for the QUIC-level error string.
-pub fn stream_finish(strm: QUICStream) -> Result<(), net.NetError> {
-    // QUIC errors carry no OS errno; error string available via stream.observe().last_error
-    unsafe {
-        let status = hew_quic_stream_finish(strm);
-        if status == QUIC_ABSENT_HANDLE {
-            .Err(NetError.InvalidArgument("this QUIC stream was never opened"))
-        } else if status < 0 {
-            .Err(net.net_error_from_errno(0))
-        } else {
-            .Ok(())
-        }
-    }
-}
-
-/// Abruptly cancel a QUIC stream with an application error code.
-///
-/// Sends a `RESET_STREAM` frame to the peer, discarding any unsent
-/// data. `error_code` is a QUIC application-layer error code (0–2^62-1;
-/// the QUIC protocol mandates 62-bit codes and `i64` is a 64-bit i64
-/// so no narrowing occurs). Use this when the stream must be abandoned
-/// rather than gracefully finished. Returns `Ok(())` on success. On
-/// failure, returns `Err(NetError.Other(0))`; inspect
-/// `strm.observe().last_error` for the QUIC-level error string.
-pub fn stream_stop(strm: QUICStream, error_code: i64) -> Result<(), net.NetError> { // INTERNAL-ABI: QUIC protocol mandates 62-bit error codes; i64 is 64-bit i64 so no narrowing needed
-    // QUIC errors carry no OS errno; error string available via stream.observe().last_error
-    unsafe {
-        let status = hew_quic_stream_stop(strm, error_code);
-        if status == QUIC_ABSENT_HANDLE {
-            .Err(NetError.InvalidArgument("this QUIC stream was never opened"))
-        } else if status < 0 {
-            .Err(net.net_error_from_errno(0))
-        } else {
-            .Ok(())
-        }
-    }
-}
-
-/// Send a UTF-8 string on a QUIC stream.
-///
-/// Converts `msg` to bytes using the runtime string helper, then delegates
-/// to the underlying `hew_quic_stream_send` FFI.
-pub fn stream_send_string(strm: QUICStream, msg: string) -> Result<(), net.NetError> {
-    unsafe {
-        let payload = hew_string_to_bytes(msg);
-        stream_send(strm, payload)
-    }
-}
-
-/// Receive a UTF-8 string from a QUIC stream.
-///
-/// Validates the returned byte buffer, reporting malformed or incomplete
-/// UTF-8. Empty input follows `recv`'s stream-close/error convention.
-pub fn stream_recv_string(strm: QUICStream) -> Result<string, utf8.Utf8Error> {
-    let payload = strm.recv();
-    utf8.decode(payload)
-}
-
 // ── FFI bindings ──────────────────────────────────────────────────────
 extern "C" {
+    fn hew_quic_endpoint_is_valid(endpoint: QUICEndpoint) -> bool;
+    fn hew_quic_conn_is_valid(connection: QUICConnection) -> bool;
+    fn hew_quic_stream_is_valid(stream: QUICStream) -> bool;
     // Endpoint constructors
     fn hew_quic_new_client() -> QUICEndpoint;
     fn hew_quic_new_client_with_ca(ca_pem: string) -> QUICEndpoint;

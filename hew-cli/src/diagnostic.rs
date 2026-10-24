@@ -72,7 +72,6 @@ const ROOT_SOURCE_CONTEXT_UNAVAILABLE: &str =
 /// Map an HIR diagnostic kind to a user-visible prefix string.
 pub(crate) fn hir_diagnostic_prefix(kind: &hew_hir::HirDiagnosticKind) -> &'static str {
     match kind {
-        hew_hir::HirDiagnosticKind::NotYetImplemented { .. } => "E_NOT_YET_IMPLEMENTED",
         hew_hir::HirDiagnosticKind::ConstIntegerEvaluation { .. }
         | hew_hir::HirDiagnosticKind::ConstDependencyCycle { .. } => "E_CONST_INITIALIZER",
         hew_hir::HirDiagnosticKind::TuplePatternArityMismatch { .. }
@@ -90,19 +89,7 @@ pub(crate) fn hir_diagnostic_prefix(kind: &hew_hir::HirDiagnosticKind) -> &'stat
 
 /// Build the user-facing message for an HIR diagnostic.
 ///
-/// For a `NotYetImplemented` gap, the message names the unsupported construct
-/// without leaking the Rust `{:?}` field names (`construct`, `owning_pass`).
-/// Other kinds fall back to the stable prefix plus any attached note.
 pub(crate) fn hir_diagnostic_user_message(diagnostic: &hew_hir::HirDiagnostic) -> String {
-    if let hew_hir::HirDiagnosticKind::NotYetImplemented { construct, .. } = &diagnostic.kind {
-        let mut message = format!("unsupported compiler construct: {construct}");
-        if !diagnostic.note.is_empty() {
-            message.push_str(": ");
-            message.push_str(&diagnostic.note);
-        }
-        return message;
-    }
-
     if let hew_hir::HirDiagnosticKind::RecursiveLambdaActorHandle { name } = &diagnostic.kind {
         return format!(
             "{}: this lambda actor names `{name}`, its own handle, so its state would own the \
@@ -206,33 +193,29 @@ pub(crate) fn render_codegen_emit_error(
     emit_plain_diagnostic_line(&format!("{prefix}{code}: {error}"));
 }
 
-/// Render a `hew_compile::SessionError::Unsupported` diagnostic
-/// (`E_SIR_UNSUPPORTED`, #3384).
-///
-/// Same fail-closed render rule as [`render_codegen_emit_error`]: a caret
-/// renders only when the error carries a span, `source` is non-empty, and the
-/// span's start byte indexes it. Anything else degrades to a bare
-/// `E_SIR_UNSUPPORTED:` plain line — a limitation whose producer could not
-/// attribute a declaration is still reported, just without a location.
-pub(crate) fn render_unsupported_error(
-    message: &str,
+/// Render the category selected by semantic lowering. Root-only spans follow
+/// the same source identity rule as code generation errors.
+pub(crate) fn render_lowering_error(
+    error: &hew_sir::SirLoweringError,
     span: Option<&Range<usize>>,
     source: &str,
     filename: &str,
 ) -> hew_types::error::DiagChannel {
-    let channel = hew_types::error::DiagChannel::Limitation;
+    use hew_sir::SirLoweringError;
+    use hew_types::error::DiagChannel;
+    let (channel, code) = match error {
+        SirLoweringError::Internal(_) => (DiagChannel::Internal, "E_SIR_ICE"),
+        SirLoweringError::Ownership { kind, .. } => (DiagChannel::User, kind.code()),
+        SirLoweringError::Limit(_) => (DiagChannel::Limitation, "E_LIMIT_SPECIALIZATION"),
+    };
+    let message = error.message();
     let prefix = channel.prefix();
     if let Some(span) = span {
         if span.start < source.len() {
             if crate::diagnostic_json::json_output_active() {
                 crate::diagnostic_json::push_json_diagnostic(
                     crate::diagnostic_json::coded_span_diagnostic(
-                        "E_SIR_UNSUPPORTED",
-                        message,
-                        channel,
-                        source,
-                        filename,
-                        span,
+                        code, message, channel, source, filename, span,
                     ),
                 );
             } else {
@@ -241,7 +224,7 @@ pub(crate) fn render_unsupported_error(
                     source,
                     filename,
                     &(span.start..end),
-                    &format!("{prefix}E_SIR_UNSUPPORTED: {message}"),
+                    &format!("{prefix}{code}: {message}"),
                     &[],
                     &[],
                 );
@@ -251,10 +234,10 @@ pub(crate) fn render_unsupported_error(
     }
     if crate::diagnostic_json::json_output_active() {
         crate::diagnostic_json::push_json_diagnostic(
-            crate::diagnostic_json::coded_message_diagnostic("E_SIR_UNSUPPORTED", message, channel),
+            crate::diagnostic_json::coded_message_diagnostic(code, message, channel),
         );
     } else {
-        emit_plain_diagnostic_line(&format!("{prefix}E_SIR_UNSUPPORTED: {message}"));
+        emit_plain_diagnostic_line(&format!("{prefix}{code}: {message}"));
     }
     channel
 }
@@ -689,20 +672,6 @@ fn hir_source_context_unavailable_note(diagnostic: &hew_hir::HirDiagnostic) -> S
 }
 
 fn hir_diagnostic_message(diagnostic: &hew_hir::HirDiagnostic) -> String {
-    // For a `NotYetImplemented` gap, keep the stable `E_NOT_YET_IMPLEMENTED`
-    // family code (grep-able by tooling) but use the limitation-framed body and
-    // never leak the Rust `{:?}` field names. Other kinds fall back to the
-    // stable prefix plus any attached note.
-    if matches!(
-        diagnostic.kind,
-        hew_hir::HirDiagnosticKind::NotYetImplemented { .. }
-    ) {
-        return format!(
-            "{}: {}",
-            hir_diagnostic_prefix(&diagnostic.kind),
-            hir_diagnostic_user_message(diagnostic)
-        );
-    }
     if let hew_hir::HirDiagnosticKind::RecursiveLambdaActorHandle { name } = &diagnostic.kind {
         return format!(
             "{}: this lambda actor names `{name}`, its own handle, so its state would own the \

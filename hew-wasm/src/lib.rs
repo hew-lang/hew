@@ -782,7 +782,6 @@ fn parse_error_to_wasm(err: hew_parser::ParseError) -> WasmDiagnostic {
 fn hir_kind_str(kind: &hew_hir::HirDiagnosticKind) -> &'static str {
     use hew_hir::HirDiagnosticKind as K;
     match kind {
-        K::NotYetImplemented { .. } => "NotYetImplemented",
         K::ConstIntegerEvaluation { .. } => "ConstIntegerEvaluation",
         K::ConstDependencyCycle { .. } => "ConstDependencyCycle",
         K::UnresolvedSymbol { .. } => "UnresolvedSymbol",
@@ -834,7 +833,6 @@ fn hir_kind_str(kind: &hew_hir::HirDiagnosticKind) -> &'static str {
         K::TaskSpawnCalleeUnsupported { .. } => "TaskSpawnCalleeUnsupported",
         K::DeadlineBodyUnsupported { .. } => "DeadlineBodyUnsupported",
         K::NestedSupervisorAccessorUnsupported { .. } => "NestedSupervisorAccessorUnsupported",
-        K::BinaryOperatorUnsupportedInMir { .. } => "BinaryOperatorUnsupportedInMir",
         K::UnaryOperatorUnsupportedInMir { .. } => "UnaryOperatorUnsupportedInMir",
         K::CallableUnsupportedInMir { .. } => "CallableUnsupportedInMir",
         K::IndirectCallUnsupported { .. } => "IndirectCallUnsupported",

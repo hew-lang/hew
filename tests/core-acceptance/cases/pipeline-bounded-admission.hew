@@ -25,8 +25,8 @@ impl Iterator for Counting {
 }
 
 fn main() {
-    let produced = semaphore.new(0);
-    let closed = semaphore.new(0);
+    let produced = semaphore.new(0).expect("valid permit count");
+    let closed = semaphore.new(0).expect("valid permit count");
     {
         let buffered = pipeline.prefetch(Counting { produced: produced.clone(), closed: closed.clone(), next_value: 0 }, capacity: 1);
         assert(buffered.next() == .Some(0));
@@ -37,8 +37,8 @@ fn main() {
     };
     assert(produced.count() == 0);
     assert(closed.count() == 1);
-    let mapped_produced = semaphore.new(0);
-    let mapped_closed = semaphore.new(0);
+    let mapped_produced = semaphore.new(0).expect("valid permit count");
+    let mapped_closed = semaphore.new(0).expect("valid permit count");
     {
         let mapped = pipeline.map(Counting { produced: mapped_produced.clone(), closed: mapped_closed.clone(), next_value: 0 }, |value: i64| value, concurrency: 2);
         assert(mapped.next() == .Some(0));
@@ -50,7 +50,7 @@ fn main() {
     };
     assert(mapped_produced.count() == 0);
     assert(mapped_closed.count() == 1);
-    let rejected_closed = semaphore.new(0);
+    let rejected_closed = semaphore.new(0).expect("valid permit count");
     var rejected = false;
     scope {
         let invalid = pipeline.prefetch(Counting { produced: produced.clone(), closed: rejected_closed.clone(), next_value: 0 }, capacity: 0);
@@ -61,7 +61,7 @@ fn main() {
     assert(rejected);
     assert(produced.count() == 0);
     assert(rejected_closed.count() == 1);
-    let rejected_map_closed = semaphore.new(0);
+    let rejected_map_closed = semaphore.new(0).expect("valid permit count");
     var rejected_map = false;
     scope {
         let invalid = pipeline.map(Counting { produced: produced.clone(), closed: rejected_map_closed.clone(), next_value: 0 }, |value: i64| value, concurrency: 0);

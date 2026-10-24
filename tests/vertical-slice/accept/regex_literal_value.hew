@@ -1,7 +1,5 @@
-// End-to-end fixture: a `re"..."` literal bound in value position is a
-// first-class `regex.Pattern` handle — usable through the stdlib regex API
-// and passable to a function. The compiled handle is loaded from the
-// module-owned regex-handle array into the binding's local.
+// A regex literal is an ordinary Pattern value usable directly or through
+// a function parameter.
 import std.text.regex;
 
 fn count_digit_runs(re: regex.Pattern, text: string) -> i64 {
@@ -16,7 +14,7 @@ fn main() {
     } else {
         println("no match");
     }
-    println(digits.find("xx42yy"));
+    println(digits.find("xx42yy").expect("digit run"));
     // Pass the literal handle to a function taking `regex.Pattern`.
     println(count_digit_runs(digits, "a1b22c333"));
 }

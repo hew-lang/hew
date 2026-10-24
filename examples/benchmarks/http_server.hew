@@ -1,10 +1,8 @@
-import std.net.http.{Server};
+import std.net.http.server as http;
 
-import std.net;
-
-fn serve_forever(server: Server) {
+fn serve_forever(server: http.Server) {
     loop {
-        let req = server.accept();
+        let req = server.accept().expect("accept request");
         let path = req.path();
         match path {
             "/" => {
@@ -28,8 +26,7 @@ fn main() {
         }
         .Err(err) => {
             let reason = to_string(err);
-            let detail = http.listen_error();
-            println(f"cannot listen on 0.0.0.0:18080: {reason} - {detail}");
+            println(f"cannot listen on 0.0.0.0:18080: {reason}");
         }
     }
 }

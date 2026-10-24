@@ -9,7 +9,7 @@ import std.text.regex;
 import std.time.cron;
 
 fn main() -> i64 {
-    let re = regex.new("[a-z]+");
+    let re = regex.new("[a-z]+").expect("valid pattern");
     if !re.is_match("abc") {
         return 1;
     }
@@ -25,13 +25,13 @@ fn main() -> i64 {
     if arg0.len() == 0 {
         return 3;
     }
-    let parsed = url.parse("https://x.com");
+    let parsed = url.parse("https://x.com").expect("valid URL");
     let host = parsed.host();
     parsed.close();
     if host != "x.com" {
         return 4;
     }
-    let expr = cron.parse("* * * * *");
-    assert(expr.next(timestamp.from_unix_secs(0)) == timestamp.from_unix_secs(60));
+    let expr = cron.parse("* * * * *").expect("valid schedule");
+    assert(expr.next(timestamp.from_unix_secs(0)).expect("future occurrence") == timestamp.from_unix_secs(60));
     0
 }

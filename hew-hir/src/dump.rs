@@ -746,30 +746,6 @@ fn dump_expr(defs: &hew_types::DefTable, out: &mut String, expr: &HirExpr, inden
                     .expect("write to string");
             }
         }
-        HirExprKind::SpawnLambdaActor {
-            params,
-            reply_ty,
-            body,
-            captures,
-        } => {
-            writeln!(
-                out,
-                "{pad}  spawn-lambda-actor params={} reply_ty={} captures={}",
-                params.len(),
-                reply_ty.user_facing(),
-                captures.len()
-            )
-            .expect("write to string");
-            for capture in captures {
-                writeln!(
-                    out,
-                    "{pad}    capture {} ({}) {:?}",
-                    capture.name, capture.binding, capture.kind
-                )
-                .expect("write to string");
-            }
-            dump_expr(defs, out, body, indent + 4);
-        }
         HirExprKind::Closure {
             params,
             ret_ty,
@@ -997,10 +973,6 @@ fn dump_expr(defs: &hew_types::DefTable, out: &mut String, expr: &HirExpr, inden
                 dump_expr(defs, out, arg, indent + 4);
             }
         }
-        HirExprKind::CancellationTokenIsCancelled { receiver } => {
-            writeln!(out, "{pad}  cancellation-token-is-cancelled").expect("write to string");
-            dump_expr(defs, out, receiver, indent + 4);
-        }
         HirExprKind::GeneratorNext { receiver, yield_ty } => {
             writeln!(out, "{pad}  generator-next yield_ty={yield_ty:?}").expect("write to string");
             dump_expr(defs, out, receiver, indent + 4);
@@ -1057,25 +1029,31 @@ fn dump_expr(defs: &hew_types::DefTable, out: &mut String, expr: &HirExpr, inden
             dump_expr(defs, out, condition, indent + 4);
             dump_block(defs, out, body, indent + 4);
         }
-        HirExprKind::ForRange {
-            label,
-            binding,
+        HirExprKind::RangeValue {
             start,
             end,
             inclusive,
-            step,
-            descending,
-            body,
         } => {
-            writeln!(
-                out,
-                "{pad}  for-range {} (inclusive={inclusive}, descending={descending}, label={label:?})",
-                binding.name
-            )
-            .expect("write to string");
+            writeln!(out, "{pad}  range inclusive={inclusive}").expect("write to string");
             dump_expr(defs, out, start, indent + 4);
             dump_expr(defs, out, end, indent + 4);
-            dump_expr(defs, out, step, indent + 4);
+        }
+        HirExprKind::RangeAdapt { range, adapter } => {
+            writeln!(out, "{pad}  range-adapter").expect("write to string");
+            dump_expr(defs, out, range, indent + 4);
+            if let crate::HirRangeAdapter::Step(step) = adapter {
+                dump_expr(defs, out, step, indent + 4);
+            }
+        }
+        HirExprKind::ForRange {
+            label,
+            binding,
+            range,
+            body,
+        } => {
+            writeln!(out, "{pad}  for-range {} label={label:?}", binding.name)
+                .expect("write to string");
+            dump_expr(defs, out, range, indent + 4);
             dump_block(defs, out, body, indent + 4);
         }
         HirExprKind::Match { scrutinee, arms } => {
@@ -1122,6 +1100,16 @@ fn dump_expr(defs: &hew_types::DefTable, out: &mut String, expr: &HirExpr, inden
                 }
                 for pvp in &arm.payload_variant_predicates {
                     dump_payload_variant_predicate(out, pvp, indent + 6);
+                }
+                for statement in &arm.pattern_bindings {
+                    if let HirStmtKind::Destructure { value, fields } = &statement.kind {
+                        writeln!(out, "{pad}      pattern-destructure {fields:?}")
+                            .expect("write to string");
+                        dump_expr(defs, out, value, indent + 6);
+                    }
+                }
+                if let Some(guard) = &arm.guard {
+                    dump_expr(defs, out, guard, indent + 6);
                 }
                 dump_expr(defs, out, &arm.body, indent + 6);
             }

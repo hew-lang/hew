@@ -9,7 +9,7 @@
 //! import std.semaphore;
 //!
 //! fn main() {
-//!     let sem = semaphore.new(3);
+//!     let sem = semaphore.new(3).expect("valid permit count");
 //!     let lease = sem.lease();
 //!     // critical section
 //!     lease.close();
@@ -25,7 +25,7 @@
 
 /// An opaque counting semaphore handle.
 ///
-/// Created by `semaphore.new(count)`. Semaphores close automatically at scope
+/// Created by `semaphore.new(count).expect("valid permit count")`. Semaphores close automatically at scope
 /// exit; call `close()` to release one early.
 #[opaque]
 type SemaphoreHandle {
@@ -145,6 +145,13 @@ impl Semaphore {
     }
 }
 
+/// A semaphore configuration that cannot be represented by the runtime.
+pub enum SemaphoreError {
+    InvalidPermitCount(i64);
+}
+
+impl Error for SemaphoreError {}
+
 // ── Module-level functions ────────────────────────────────────────────
 /// Create a new counting semaphore with the given number of permits.
 ///
@@ -154,12 +161,12 @@ impl Semaphore {
 /// import std.semaphore;
 ///
 /// fn main() {
-///     let sem = semaphore.new(5);
+///     let sem = semaphore.new(5).expect("valid permit count");
 /// }
 /// ```
-pub fn new(count: i64) -> Semaphore {
+pub fn new(count: i64) -> Semaphore fails SemaphoreError {
     if count < 0 || count > 2147483647 {
-        panic(f"semaphore.new: permit count {count} is outside the supported range");
+        return error SemaphoreError.InvalidPermitCount(count);
     }
     unsafe {
         Semaphore { handle: hew_semaphore_new(count as i32) }

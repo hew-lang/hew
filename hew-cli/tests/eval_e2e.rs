@@ -870,7 +870,7 @@ fn eval_large_stderr_completes_before_timeout() {
     let path = dir.path().join("large_stderr_eval.hew");
     std::fs::write(
         &path,
-        "import std.io;\n\nfn spam_err() {\n    var i = 0;\n    while i < 20000 {\n        io.write_err(\"line\\n\");\n        i = i + 1;\n    }\n}\n\nspam_err()\n42\n",
+        "import std.io;\n\nfn spam_err() {\n    var i = 0;\n    while i < 20000 {\n        io.write_err(\"line\\n\").expect(\"standard I/O\");\n        i = i + 1;\n    }\n}\n\nspam_err()\n42\n",
     )
     .unwrap();
 
@@ -3202,7 +3202,7 @@ fn repl_fragment_no_unused_lints_for_stdlib_chunk() {
         "import std.string;\n",
         "import std.iter;\n",
         "fn stdlib_demo() -> string {\n",
-        "    let s = string.pad_left(f\"{42}\", 2, \"0\");\n",
+        "    let s = f\"{42}\".pad_left(2, '0');\n",
         "    let opt = Option.Some(20).map(|v: i64| v + 22);\n",
         "    let v: Vec<string> = [\"a\", \"bb\"];\n",
         "    let mapped = iter.map(v.into_iter(), |x: string| f\"{x.len()}\");\n",

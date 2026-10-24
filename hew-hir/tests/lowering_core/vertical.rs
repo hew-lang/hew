@@ -70,25 +70,6 @@ fn inferred_type_annotation_consumes_checker_inference() {
 }
 
 #[test]
-fn unsupported_construct_emits_not_yet_implemented_diagnostic() {
-    // A type expression outside slice 1 emits NotYetImplemented.
-    // Pointer types are a slice-2 construct that exercises the _ arm in lower_type.
-    // (If this fixture stops triggering NotYetImplemented, the test will
-    //  produce `diagnostics.is_empty()` and the assert will catch it.)
-    let output = lower("fn f(x: i64) -> i64 { return x; }");
-    // No unsupported diagnostics — this is a clean hir-lowering program.
-    let nyi_count = output
-        .diagnostics
-        .iter()
-        .filter(|d| matches!(d.kind, HirDiagnosticKind::NotYetImplemented { .. }))
-        .count();
-    assert_eq!(
-        nyi_count, 0,
-        "clean program should have no not-yet-implemented diagnostics"
-    );
-}
-
-#[test]
 fn call_return_type_resolved_from_registry() {
     // Calling a known function must yield the callee's declared return type.
     // Before the function registry, all calls returned Unit and produced
@@ -395,11 +376,14 @@ fn array_repeat_runtime_count_lowers() {
         );
     };
     let HirStmtKind::Expr(hew_hir::HirExpr {
-        kind: HirExprKind::ForRange { end, .. },
+        kind: HirExprKind::ForRange { range, .. },
         ..
     }) = &block.statements[3].kind
     else {
         panic!("array repeat should emit a for-range loop");
+    };
+    let HirExprKind::RangeValue { end, .. } = &range.kind else {
+        panic!("array repeat should use the ordinary range value");
     };
     assert!(matches!(
         &end.kind,
@@ -409,19 +393,17 @@ fn array_repeat_runtime_count_lowers() {
 
 #[test]
 fn verifier_flags_unsupported_hir_node_as_defense_in_depth() {
-    // Defense-in-depth: verify_hir emits NotYetImplemented for any Unsupported
-    // HIR node it finds, even when the lowerer already emitted the diagnostic.
-    // Applying `?` to a non-Result/non-Option value in a function that does not
-    // return Result/Option is still unsupported at the HIR level; the lowerer
-    // emits NotYetImplemented and leaves an Unsupported node for the verifier.
+    // Invalid checker output must be refused independently at both HIR
+    // boundaries. The source checker rejects `?` on an integer; this harness
+    // deliberately lowers that invalid program to test the internal contract.
     let output = lower("fn f() -> i64 { let x: i64 = 5; x? }");
-    // The lowerer already emits NotYetImplemented for the unsupported expression.
+    // The lowerer records the broken checker contract.
     assert!(
         output
             .diagnostics
             .iter()
-            .any(|d| matches!(d.kind, HirDiagnosticKind::NotYetImplemented { .. })),
-        "lowerer must emit NotYetImplemented for unsupported expression: {:?}",
+            .any(|d| matches!(d.kind, HirDiagnosticKind::CheckerBoundaryViolation { .. })),
+        "lowerer must report the broken checker contract: {:?}",
         output.diagnostics
     );
     // The verifier independently flags the surviving Unsupported node.
@@ -429,7 +411,7 @@ fn verifier_flags_unsupported_hir_node_as_defense_in_depth() {
     assert!(
         verify
             .iter()
-            .any(|d| matches!(d.kind, HirDiagnosticKind::NotYetImplemented { .. })),
+            .any(|d| matches!(d.kind, HirDiagnosticKind::CheckerBoundaryViolation { .. })),
         "verifier must flag Unsupported HIR node as defense-in-depth: {verify:?}"
     );
 }
@@ -457,7 +439,7 @@ fn verifier_diagnostic_retains_item_source_module() {
     let verify = verify_hir(&output.module);
     let diagnostic = verify
         .iter()
-        .find(|d| matches!(d.kind, HirDiagnosticKind::NotYetImplemented { .. }))
+        .find(|d| matches!(d.kind, HirDiagnosticKind::CheckerBoundaryViolation { .. }))
         .expect("verifier should flag unsupported postfix-try HIR node");
     assert_eq!(diagnostic.source_module.as_deref(), Some("dep"));
 }
@@ -1134,7 +1116,7 @@ fn top_level_const_folds_signed_binary_subtraction() {
 }
 
 #[test]
-fn top_level_const_integer_failures_are_semantic_not_nyi() {
+fn top_level_const_integer_failures_keep_precise_source_classes() {
     for (source, class) in [
         ("const BAD: u8 = 0 - 1; fn main() {}", "arithmetic-overflow"),
         (
@@ -1147,20 +1129,12 @@ fn top_level_const_integer_failures_are_semantic_not_nyi() {
         let output = lower(source);
         assert!(
             output.diagnostics.iter().any(|diagnostic| {
-                matches!(
+                diagnostic.kind.channel() == hew_types::error::DiagChannel::User && matches!(
                     &diagnostic.kind,
                     HirDiagnosticKind::ConstIntegerEvaluation { class: actual } if actual == class
                 )
             }),
             "expected {class} for {source}, got {:?}",
-            output.diagnostics
-        );
-        assert!(
-            !output.diagnostics.iter().any(|diagnostic| matches!(
-                diagnostic.kind,
-                HirDiagnosticKind::NotYetImplemented { .. }
-            )),
-            "integer const failure must not surface as NYI: {:?}",
             output.diagnostics
         );
     }
@@ -1249,42 +1223,16 @@ fn top_level_negative_float_const_folds_literal() {
 }
 
 #[test]
-fn top_level_const_bitwise_initializer_fails_closed() {
-    // Bitwise/wrapping ops are deliberately rejected by the shared
-    // `const_eval` engine (NotConstant). The HIR fold must surface a
-    // fail-closed `NotYetImplemented` diagnostic rather than admitting a
-    // folded value — this locks in the scope-narrowing after consolidating
-    // onto the sanctioned evaluator (A620).
-    let output = lower("const Z: i64 = 1 & 2; fn main() -> i64 { return Z; }");
-    let is_unsupported = output.diagnostics.iter().any(|d| match &d.kind {
-        HirDiagnosticKind::NotYetImplemented {
-            construct,
-            owning_pass,
-        } => construct.contains("unsupported const initializer") && owning_pass == "const-fold",
-        _ => false,
-    });
-    assert!(
-        is_unsupported,
-        "bitwise const initializer must emit a fail-closed NotYetImplemented, got: {:?}",
-        output.diagnostics
-    );
-}
-
-#[test]
-fn top_level_float_const_non_literal_initializer_fails_closed() {
-    let output = lower("const Z: f64 = 1.0 + 2.0; fn main() -> f64 { return Z; }");
-    let is_unsupported = output.diagnostics.iter().any(|d| match &d.kind {
-        HirDiagnosticKind::NotYetImplemented {
-            construct,
-            owning_pass,
-        } => construct.contains("unsupported const initializer") && owning_pass == "const-fold",
-        _ => false,
-    });
-    assert!(
-        is_unsupported,
-        "non-literal float const initializer must emit a fail-closed NotYetImplemented, got: {:?}",
-        output.diagnostics
-    );
+fn top_level_scalar_constant_operators_fold_to_typed_values() {
+    for source in [
+        "const Z: i64 = 1 | 2; fn main() { println(Z); }",
+        "const Z: f64 = 1.0 + 2.0; fn main() { println(Z); }",
+        "const Z: u8 = 255 &+ 2; fn main() { println(Z); }",
+    ] {
+        let output = lower(source);
+        assert!(output.diagnostics.is_empty(), "{:?}", output.diagnostics);
+        assert!(verify_hir(&output.module).is_empty());
+    }
 }
 
 #[test]

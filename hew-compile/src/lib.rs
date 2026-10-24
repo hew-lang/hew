@@ -505,9 +505,9 @@ impl Session {
                 &mut lowered.module,
                 &tco.test_entry_plans,
             )
-            .map_err(|message| SessionError::Unsupported {
+            .map_err(|message| SessionError::Lowering {
                 callable: None,
-                message,
+                error: hew_sir::SirLoweringError::Internal(message),
                 span: None,
             })?;
         }
@@ -563,11 +563,11 @@ impl Session {
                 Some(
                     tco.defs
                         .declaration(occurrence)
-                        .ok_or_else(|| SessionError::Unsupported {
+                        .ok_or_else(|| SessionError::Lowering {
                             callable: None,
-                            message: format!(
+                            error: hew_sir::SirLoweringError::Internal(format!(
                                 "exported source declaration at {span:?} has no checked identity"
-                            ),
+                            )),
                             span: Some(span.clone()),
                         }),
                 )
@@ -583,6 +583,10 @@ impl Session {
     /// # Errors
     ///
     /// Returns the first failing semantic boundary with its diagnostics.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one semantic session owns verification, completion and selected roots"
+    )]
     pub fn lower_hir_module(
         &self,
         module: &hew_hir::HirModule,
@@ -594,13 +598,21 @@ impl Session {
             return Err(SessionError::Hir(diagnostics));
         }
         let mut sir = hew_sir::lower_module_with_roots(module, tco, roots).map_err(|errors| {
-            SessionError::Unsupported {
+            let Some(error) = errors.into_iter().next() else {
+                return SessionError::Lowering {
+                    callable: None,
+                    error: hew_sir::SirLoweringError::Internal(
+                        "root selection failed without reporting a cause".into(),
+                    ),
+                    span: None,
+                };
+            };
+            SessionError::Lowering {
                 callable: None,
-                message: errors
-                    .iter()
-                    .map(|error| error.render(&module.defs))
-                    .collect::<Vec<_>>()
-                    .join("; "),
+                error: error.reason.with_context(&format!(
+                    "SIR root `{}`",
+                    module.defs.path(error.declaration)
+                )),
                 span: None,
             }
         })?;
@@ -626,9 +638,11 @@ impl Session {
                 .zip(&module.test_entry_plans)
                 .any(|(entry, plan)| entry.declaration != plan.entry)
         {
-            return Err(SessionError::Unsupported {
+            return Err(SessionError::Lowering {
                 callable: None,
-                message: "semantic test dispatcher does not match checked entry plans".into(),
+                error: hew_sir::SirLoweringError::Internal(
+                    "semantic test dispatcher does not match checked entry plans".into(),
+                ),
                 span: None,
             });
         }
@@ -639,11 +653,11 @@ impl Session {
                 let callable = sir
                     .module
                     .callable_for_declaration(declaration)
-                    .ok_or_else(|| SessionError::Unsupported {
+                    .ok_or_else(|| SessionError::Lowering {
                         callable: None,
-                        message: format!(
+                        error: hew_sir::SirLoweringError::Internal(format!(
                             "selected declaration {declaration:?} has no semantic callable"
-                        ),
+                        )),
                         span: None,
                     })?
                     .id;
@@ -733,9 +747,10 @@ pub enum SessionError {
     Semantic(Vec<hew_sir::SirDiagnostic>),
     /// Source ownership obligations diagnosed by the semantic lifetime flow.
     Ownership(Vec<hew_sir::SirDiagnostic>),
-    Unsupported {
+    Selection(String),
+    Lowering {
         callable: Option<hew_sir::CallableId>,
-        message: String,
+        error: hew_sir::SirLoweringError,
         /// The provoking construct's span, when SIR could attribute one
         /// (#3384). `None` for a session-level refusal with no declaration
         /// of its own (a missing entry, an unresolved root).
@@ -753,7 +768,8 @@ impl std::fmt::Display for SessionError {
             Self::Semantic(diagnostics) => {
                 write!(formatter, "SIR verification failed: {diagnostics:?}")
             }
-            Self::Unsupported { message, .. } => formatter.write_str(message),
+            Self::Lowering { error, .. } => error.fmt(formatter),
+            Self::Selection(message) => formatter.write_str(message),
         }
     }
 }
@@ -767,21 +783,25 @@ fn require_complete_semantics(
     entry_required: bool,
 ) -> Result<(), SessionError> {
     if entry_required && sir.module.entry_callable.is_none() {
-        return Err(SessionError::Unsupported {
+        return Err(SessionError::Lowering {
             callable: None,
-            message: "the selected process entry has no semantic callable".to_string(),
+            error: hew_sir::SirLoweringError::Internal(
+                "the selected process entry has no semantic callable".into(),
+            ),
             span: None,
         });
     }
     for (callable, status) in &sir.callable_statuses {
-        if let hew_sir::SirLoweringStatus::Unsupported { reason, span } = status {
+        if let hew_sir::SirLoweringStatus::Failed { reason, span } = status {
             let name = sir
                 .module
                 .callable(*callable)
                 .map_or("<unknown>", |item| item.symbol.as_str());
-            return Err(SessionError::Unsupported {
+            return Err(SessionError::Lowering {
                 callable: Some(*callable),
-                message: format!("semantic lowering of `{name}` is not implemented: {reason}"),
+                error: reason
+                    .clone()
+                    .with_context(&format!("semantic lowering of `{name}`")),
                 span: span.clone(),
             });
         }
@@ -822,9 +842,11 @@ fn require_semantic_body(
         let name = module
             .callable(callable)
             .map_or("<unknown>", |item| item.symbol.as_str());
-        return Err(SessionError::Unsupported {
+        return Err(SessionError::Lowering {
             callable: Some(callable),
-            message: format!("required semantic callable `{name}` has no body"),
+            error: hew_sir::SirLoweringError::Internal(format!(
+                "required semantic callable `{name}` has no body"
+            )),
             span: None,
         });
     }
@@ -878,12 +900,16 @@ mod session_completion_tests {
             .retain(|function| function.callable != entry);
         assert!(matches!(
             require_complete_semantics(&sir, true),
-            Err(SessionError::Unsupported { callable: Some(id), .. }) if id == entry
+            Err(SessionError::Lowering { callable: Some(id), error: hew_sir::SirLoweringError::Internal(_), .. }) if id == entry
         ));
         sir.module.entry_callable = None;
         assert!(matches!(
             require_complete_semantics(&sir, true),
-            Err(SessionError::Unsupported { callable: None, .. })
+            Err(SessionError::Lowering {
+                callable: None,
+                error: hew_sir::SirLoweringError::Internal(_),
+                ..
+            })
         ));
     }
 
@@ -905,7 +931,7 @@ mod session_completion_tests {
             .retain(|function| function.callable != callee);
         assert!(matches!(
             require_complete_semantics(&sir, true),
-            Err(SessionError::Unsupported { callable: Some(id), .. }) if id == callee
+            Err(SessionError::Lowering { callable: Some(id), error: hew_sir::SirLoweringError::Internal(_), .. }) if id == callee
         ));
     }
 
@@ -918,14 +944,17 @@ mod session_completion_tests {
             .iter_mut()
             .find(|(callable, _)| *callable == entry)
             .unwrap();
-        *status = hew_sir::SirLoweringStatus::Unsupported {
-            reason: "deliberate incomplete lowering".to_string(),
+        *status = hew_sir::SirLoweringStatus::Failed {
+            reason: hew_sir::SirLoweringError::Ownership {
+                kind: hew_sir::SirOwnershipError::ConsumeBorrowed,
+                message: "deliberate ownership refusal".into(),
+            },
             span: None,
         };
         assert!(matches!(
             require_complete_semantics(&sir, true),
-            Err(SessionError::Unsupported { callable: Some(id), message, .. })
-                if id == entry && message.contains("deliberate incomplete lowering")
+            Err(SessionError::Lowering { callable: Some(id), error, .. })
+                if id == entry && matches!(error, hew_sir::SirLoweringError::Ownership { kind: hew_sir::SirOwnershipError::ConsumeBorrowed, .. }) && error.message().contains("deliberate ownership refusal")
         ));
     }
 
@@ -1464,12 +1493,12 @@ fn is_builtin_module(module_path: &str) -> bool {
 }
 
 /// The closest existing `std` module to a mistyped import's last path
-/// segment: an exact leaf match (`std.http` -> `std.net.http`, a missed or
+/// segment: an exact leaf match (`std.server` -> `std.net.http.server`, a missed or
 /// mis-nested path segment) when one exists, else a near-miss typo
-/// (`std.htp` -> `std.net.http`).
+/// (`std.servr` -> `std.net.http.server`).
 ///
 /// Near-miss matching compares leaf names (the last dotted segment), not
-/// full dotted paths: `std.htp` and `std.net.http` differ by far more than
+/// full dotted paths: `std.servr` and `std.net.http.server` differ by far more than
 /// [`hew_types::error::find_similar`]'s length-scaled Levenshtein threshold
 /// allows, but `htp` and `http` — the part the user actually mistyped — are
 /// one edit apart. An exact leaf match is checked first because
@@ -1772,7 +1801,7 @@ fn build_module_source_map(program: &Program, documents: &SourceSet) -> ModuleSo
             // A prelude module attached without a search path carries its
             // compiled-in source instead.
             if let [std, leaf] = mod_id.segments.as_slice() {
-                if let Some((_, text)) = COMPILED_PRELUDE_STD_SOURCES
+                if let Some((_, text)) = hew_types::stdlib_authority::IMPLICIT_PRELUDE_STD_SOURCES
                     .iter()
                     .find(|(name, _)| std.as_str() == "std" && *name == leaf.as_str())
                 {
@@ -2623,10 +2652,32 @@ fn run_directory_module_frontend(
             entry.display()
         )));
     };
-    state
-        .program
-        .items
-        .push(file_import(entry_name.to_string()));
+    if let Some(module) = canonical_direct_stdlib_module_for_source(entry) {
+        state.program.items.push((
+            Item::Import(ImportDecl {
+                path: hew_parser::ast::Path::from_spellings(
+                    &module
+                        .segments
+                        .iter()
+                        .map(|part| part.as_str())
+                        .collect::<Vec<_>>(),
+                ),
+                spec: None,
+                selection_trailing_comma: false,
+                module_alias: None,
+                file_path: None,
+                resolved_items: None,
+                resolved_item_source_paths: Vec::new(),
+                resolved_source_paths: Vec::new(),
+            }),
+            0..0,
+        ));
+    } else {
+        state
+            .program
+            .items
+            .push(file_import(entry_name.to_string()));
+    }
     run_frontend_after_parse(state, &project, &label, options, None)
 }
 
@@ -2923,7 +2974,7 @@ pub fn attach_prelude_std_modules(program: &mut Program) {
         graph
     });
     add_prelude_std_modules(graph, |name| {
-        let (_, source) = COMPILED_PRELUDE_STD_SOURCES
+        let (_, source) = hew_types::stdlib_authority::IMPLICIT_PRELUDE_STD_SOURCES
             .iter()
             .find(|(leaf, _)| *leaf == name)
             .expect("every prelude module has a compiled-in source");
@@ -2943,7 +2994,7 @@ fn add_prelude_std_modules(
     mut source_for: impl FnMut(&str) -> Result<(Option<PathBuf>, String), FrontendFailure>,
 ) -> Result<(), FrontendFailure> {
     use hew_parser::module::Module;
-    for (name, _) in COMPILED_PRELUDE_STD_SOURCES {
+    for (name, _) in hew_types::stdlib_authority::IMPLICIT_PRELUDE_STD_SOURCES {
         let id = ModulePath::new(["std", name]);
         if graph.modules.contains_key(&id) {
             continue;
@@ -2983,17 +3034,6 @@ fn add_prelude_std_modules(
     }
     Ok(())
 }
-
-/// The prelude standard-library modules by `std.<name>` leaf, with the source
-/// compiled into the host. A build resolves each through the std search path
-/// instead ([`resolve_prelude_std_source`]); only an analysis with no search
-/// path uses this text.
-const COMPILED_PRELUDE_STD_SOURCES: [(&str, &str); 4] = [
-    ("builtins", include_str!("../../std/builtins.hew")),
-    ("option", include_str!("../../std/option.hew")),
-    ("result", include_str!("../../std/result.hew")),
-    ("iter", include_str!("../../std/iter.hew")),
-];
 
 /// Resolve the prelude source `std/<name>.hew` from the standard-library
 /// root a `std` import uses: the configured search path, or
@@ -3752,7 +3792,7 @@ fn resolve_file_imports_internal(
                         MembershipRole::Peer if segments.len() >= 2 => {
                             if matches!(membership.anchor, ModuleAnchor::Std { .. }) {
                                 // The shipped std's directory peers stay
-                                // importable by file (`std.net.http.http_client`,
+                                // importable by file (`std.net.http.codec.request`,
                                 // D461); they load through the directory's
                                 // entry so the module is complete however it
                                 // was reached.
@@ -4803,7 +4843,8 @@ mod tests {
     #[test]
     fn embedded_prelude_lowers_vector_get_and_println_once() {
         let mut parsed = hew_parser::parse(
-            "fn main() { let values = [1, 2]; println(values.get(0).expect(\"missing\")); }",
+            "fn main() { let values = [1, 2]; println(values.get(0).expect(\"missing\")); \
+             let text = \"a😀b\"; println(text.len()); println(text.find_from(\"b\", 1).expect(\"missing\")); }",
         );
         assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
         super::attach_prelude_std_modules(&mut parsed.program);
@@ -5660,7 +5701,7 @@ mod tests {
         let input = write_source(
             dir.path(),
             "main.hew",
-            "import std.net.http.http_client;\n\nfn main() {}\n",
+            "import std.net.http.codec.request;\n\nfn main() {}\n",
         );
         let source = fs::read_to_string(&input).expect("read importer fixture");
         let mut program = parse_source(&source, &input).expect("parse importer fixture");
@@ -5683,7 +5724,7 @@ mod tests {
             &mut ctx,
         )
         .expect("the std peer import should build a module graph");
-        let client = root.join("std/net/http/http_client.hew");
+        let client = root.join("std/net/http/codec/request.hew");
         let owners = graph
             .modules
             .values()
@@ -5691,7 +5732,7 @@ mod tests {
                 module
                     .source_paths
                     .iter()
-                    .any(|path| path.ends_with("std/net/http/http_client.hew"))
+                    .any(|path| path.ends_with("std/net/http/codec/request.hew"))
             })
             .collect::<Vec<_>>();
         assert_eq!(owners.len(), 1, "one graph node holds {}", client.display());
@@ -5743,10 +5784,10 @@ mod tests {
 
         assert_eq!(
             native.len(),
-            4,
-            "std.net.http is its entry and three peers: {native:?}"
+            2,
+            "std.net.http.codec is its entry and request peer: {native:?}"
         );
-        assert_eq!(native[0], Path::new("std/net/http/http.hew"));
+        assert_eq!(native[0], Path::new("std/net/http/codec/codec.hew"));
         assert_eq!(in_memory, native);
     }
 
@@ -5840,9 +5881,9 @@ mod tests {
             .to_path_buf();
 
         for imports in [
-            "import std.net.http;\nimport std.net.http.http_client;\n",
-            "import std.net.http.http_client;\nimport std.net.http;\n",
-            "import std.net.http.http_client;\n",
+            "import std.net.http.codec;\nimport std.net.http.codec.request;\n",
+            "import std.net.http.codec.request;\nimport std.net.http.codec;\n",
+            "import std.net.http.codec.request;\n",
         ] {
             let dir = tempfile::tempdir().expect("create module-owner fixture");
             let input = write_source(
@@ -5872,13 +5913,13 @@ mod tests {
                 &mut ctx,
             )
             .expect("stdlib peer imports should build a module graph");
-            let http_id = hew_parser::module::ModulePath::new(["std", "net", "http"]);
+            let http_id = hew_parser::module::ModulePath::new(["std", "net", "http", "codec"]);
             let peer_id =
-                hew_parser::module::ModulePath::new(["std", "net", "http", "http_client"]);
+                hew_parser::module::ModulePath::new(["std", "net", "http", "codec", "request"]);
             let http = graph
                 .modules
                 .get(&http_id)
-                .expect("the canonical std.net.http module should be present");
+                .expect("the canonical std.net.http.codec module should be present");
             assert!(
                 !graph.modules.contains_key(&peer_id),
                 "the peer must not become a second graph owner: {:?}",
@@ -5887,14 +5928,14 @@ mod tests {
             assert!(
                 http.source_paths
                     .iter()
-                    .any(|path| path.ends_with("std/net/http/http.hew")),
+                    .any(|path| path.ends_with("std/net/http/codec/codec.hew")),
                 "the canonical module must retain its entry source: {:?}",
                 http.source_paths
             );
             assert!(
                 http.source_paths
                     .iter()
-                    .any(|path| path.ends_with("std/net/http/http_client.hew")),
+                    .any(|path| path.ends_with("std/net/http/codec/request.hew")),
                 "the canonical module must retain its peer source: {:?}",
                 http.source_paths
             );
@@ -5917,7 +5958,7 @@ mod tests {
         let input = write_source(
             dir.path(),
             "main.hew",
-            "import std.net.http.http_async_server;\nimport std.net.http.http_async_client;\nimport std.encoding.json;\nfn main() {}\n",
+            "import std.net.http.codec;\nimport std.net.http.codec.request;\nimport std.encoding.json;\nfn main() {}\n",
         );
         let state = run_file_frontend_to_typecheck(
             &input,
@@ -5941,6 +5982,63 @@ mod tests {
     }
 
     #[test]
+    fn typecheck_top_level_networking_demos() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .expect("repository root");
+        for relative in ["examples/http_server.hew", "examples/static_server.hew"] {
+            check_file(
+                &root.join(relative).display().to_string(),
+                &FrontendOptions::default(),
+            )
+            .unwrap_or_else(|failure| panic!("{relative}: {failure:#?}"));
+        }
+    }
+
+    #[test]
+    fn direct_stdlib_directory_sources_check_their_complete_owner() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .expect("repository root");
+        for relative in [
+            "std/net/http/codec/codec.hew",
+            "std/net/http/codec/request.hew",
+        ] {
+            check_file(
+                &root.join(relative).display().to_string(),
+                &FrontendOptions::default(),
+            )
+            .unwrap_or_else(|failure| panic!("{relative}: {failure:#?}"));
+        }
+    }
+
+    #[test]
+    fn direct_stdlib_directory_check_reports_invalid_peer_buffer() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .expect("repository root");
+        let peer = root.join("std/net/http/codec/request.hew");
+        let original = fs::read_to_string(&peer).expect("read peer");
+        let mut options = FrontendOptions::default();
+        options.documents.insert(
+            peer.display().to_string(),
+            format!("{original}\npub fn invalid_peer_value() -> bool {{ 1 }}\n"),
+        );
+        let failure = check_file(
+            &root
+                .join("std/net/http/codec/codec.hew")
+                .display()
+                .to_string(),
+            &options,
+        )
+        .expect_err("checking the entry must check its peer's body");
+        assert!(failure.diagnostics.iter().any(|diagnostic| {
+            matches!(&diagnostic.kind, FrontendDiagnosticKind::Type(error) if matches!(error.kind, hew_types::error::TypeErrorKind::Mismatch { .. }))
+                && diagnostic.filename.as_deref().is_some_and(|file| Path::new(file).ends_with("codec/request.hew"))
+        }), "{failure:#?}");
+    }
+
+    #[test]
     fn check_file_accepts_shipped_directory_peer_reimports() {
         let repo_root = Path::new(env!("CARGO_MANIFEST_DIR"))
             .parent()
@@ -5950,8 +6048,8 @@ mod tests {
         let input = write_source(
             dir.path(),
             "main.hew",
-            "import std.net.http;\n\
-             import std.net.http.http_client;\n\n\
+            "import std.net.http.codec;\n\
+             import std.net.http.codec.request;\n\n\
              fn main() {}\n",
         );
 
@@ -7861,7 +7959,7 @@ extern "C" { fn hew_tcp_read(foo: Foo); }
             "link_monitor.hew",
             "// prelude module marker\n",
         );
-        for prelude in ["option.hew", "result.hew", "iter.hew"] {
+        for prelude in ["option.hew", "result.hew", "iter.hew", "string.hew"] {
             write_source(&stdlib_dir, prelude, "// prelude impl marker\n");
         }
         let expected = Path::new(&write_source(
@@ -8600,9 +8698,8 @@ extern "C" { fn hew_tcp_read(foo: Foo); }
             &state.source,
             &main,
             vec![hew_hir::HirDiagnostic::new(
-                hew_hir::HirDiagnosticKind::NotYetImplemented {
-                    construct: "probe".to_string(),
-                    owning_pass: "test".to_string(),
+                hew_hir::HirDiagnosticKind::ConstIntegerEvaluation {
+                    class: "arithmetic-overflow".to_string(),
                 },
                 0..3,
                 "probe",
@@ -8655,7 +8752,7 @@ extern "C" { fn hew_tcp_read(foo: Foo); }
         }
     }
 
-    /// `std::misc::log` ships `pub const JSON: i64 = 1` and `pub const TEXT: i64 = 0`
+    /// `std::log` ships `pub const JSON: i64 = 1` and `pub const TEXT: i64 = 0`
     /// in its Hew source layer.  The stdlib registration path routes these through
     /// `register_stdlib_hew_items` registers these constants so `log.JSON` /
     /// `log.TEXT` are available to the type checker.
@@ -8675,7 +8772,7 @@ extern "C" { fn hew_tcp_read(foo: Foo); }
 
         let dir = tempfile::tempdir().expect("create temp dir");
         let source = concat!(
-            "import std.misc.log;\n",
+            "import std.log;\n",
             "fn main() {\n",
             "    log.set_format(log.JSON);\n",
             "    log.set_format(log.TEXT);\n",

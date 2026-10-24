@@ -746,6 +746,7 @@ impl Checker {
                 self.mark_expr_moved(&arm.source.0, &arm.source.1);
             }
             self.bind_pattern(&arm.binding.0, source_ty, false, &arm.binding.1);
+            self.require_irrefutable_binding(&arm.binding, source_ty, "select");
             if result_ty.is_none() && super::super::branch_join::expr_needs_context(&arm.body.0) {
                 let start = self.env.ownership_snapshot();
                 waiting.push((arm, self.env.suspend_scope(), start));
@@ -1170,6 +1171,73 @@ impl Checker {
                 callable: Box::new(callable),
             }
         }
+    }
+
+    /// A qualified associated record constructor names a type, rather than
+    /// evaluating its target as a value. Once projection selects a concrete
+    /// declaration, the ordinary record constructor owns field validation.
+    pub(super) fn check_record_init_suffix(
+        &mut self,
+        target: &Spanned<Expr>,
+        fields: &[(Ident, Spanned<Expr>)],
+        base: Option<&Spanned<Expr>>,
+        span: &Span,
+    ) -> Ty {
+        let Expr::QualifiedAssoc(associated) = &target.0 else {
+            let _ = self.synthesize(&target.0, &target.1);
+            self.report_error(
+                TypeErrorKind::PathKindMismatch,
+                &target.1,
+                "a record initializer requires a type declaration".to_string(),
+            );
+            return Ty::Error;
+        };
+        let projection =
+            TypeExpr::QualifiedAssocPath(Box::new(hew_parser::ast::QualifiedAssocPath {
+                base: associated.base.clone(),
+                trait_path: associated.trait_path.clone(),
+                members: associated.members.clone(),
+            }));
+        let written_ty = self.resolve_type_expr(&(projection, target.1.clone()));
+        let target_ty = self.normalize_for_use(&written_ty);
+        if target_ty == Ty::Error {
+            return Ty::Error;
+        }
+        let Ty::Named { head, .. } = &target_ty else {
+            self.report_error(
+                TypeErrorKind::PathKindMismatch,
+                &target.1,
+                format!(
+                    "record initializer requires a concrete record type; `{}` has no known fields",
+                    target_ty.user_facing()
+                ),
+            );
+            return Ty::Error;
+        };
+        let Some(nominal) = head.nominal() else {
+            self.report_error(
+                TypeErrorKind::PathKindMismatch,
+                &target.1,
+                "record initializer requires a concrete record declaration".to_string(),
+            );
+            return Ty::Error;
+        };
+        let name = self.defs.path(nominal.declaration()).to_string();
+        let path = hew_parser::ast::Path::single(Ident::new(&name), target.1.clone());
+        let constructed = self.check_struct_init(
+            &name,
+            Some(scope::Resolution::Nominal(nominal)),
+            fields,
+            None,
+            base,
+            StructInitSite {
+                span,
+                path: &path,
+                field_labels: &[],
+            },
+        );
+        self.expect_type(&target_ty, &constructed, span);
+        target_ty
     }
 
     #[expect(
@@ -1706,6 +1774,11 @@ impl Checker {
         } else if let Some((enum_name, variant_fields, enum_type_params)) =
             self.lookup_struct_variant_init(name)
         {
+            if let Some(base) = base {
+                self.report_error_with_suggestions(TypeErrorKind::InvalidOperation, &base.1,
+                    "enum variant constructors do not support record update syntax".to_string(),
+                    vec!["match the enum to name its payload, then construct the required variant with explicit fields".to_string()]);
+            }
             // Infer generic type args from field values, mirroring the plain-struct path.
             let mut type_arg_map: HashMap<crate::ParamHead, Ty> = HashMap::new();
             // If the caller supplied explicit type args (e.g. `Keeper::Holding<int> { … }`),

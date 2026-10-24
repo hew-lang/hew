@@ -29,6 +29,7 @@ pub mod lowering_facts;
 pub mod mangle;
 pub mod method_resolution;
 pub mod module_registry;
+pub mod range_value;
 pub mod resolved_ty;
 pub mod runtime_call;
 pub mod runtime_calling_convention;

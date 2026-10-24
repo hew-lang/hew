@@ -2,8 +2,8 @@ import std.string;
 
 fn main() -> i64 {
     var checks: i64 = 0;
-    for i in 0 .. 50 {
-        match string.to_float("1.25") {
+    for i in 0..50 {
+        match "1.25".to_float() {
             .Ok(value) => {
                 if value != 1.25 {
                     return 91;

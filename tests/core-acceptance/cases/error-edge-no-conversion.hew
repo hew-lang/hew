@@ -2,8 +2,6 @@
 // cannot carry one into a `ConfigError`; the refusal offers all three repairs.
 import std.fs;
 
-import std.string;
-
 enum ConfigError {
     Unreadable(string);
     Missing(string);
@@ -26,7 +24,7 @@ fn read_port(path: string) -> i64 fails ConfigError {
     if trimmed.is_empty() {
         return error ConfigError.Missing("port");
     }
-    string.to_int(trimmed).map_err(|_| ConfigError.Missing("port"))?
+    trimmed.to_int().map_err(|_| ConfigError.Missing("port"))?
 }
 
 fn main() fails dyn Error {

@@ -17,33 +17,31 @@ import std.text.regex;
 // ── Borrowing thin-forward methods (is_match / find / replace / find_all) ──
 #[test]
 fn test_is_match_positive_and_negative() {
-    let p = regex.new("[a-z]+[0-9]+");
+    let p = regex.new("[a-z]+[0-9]+").expect("valid pattern");
     // Positive: a lowercase run followed by digits matches anywhere in input.
     assert(p.is_match("value ab12 tail"));
     // Negative boundary: digits with no preceding lowercase run do not match.
     assert(!p.is_match("1234"));
-    // `matches` is the documented alias — same verdict.
-    assert(p.matches("ab12"));
 }
 
 #[test]
 fn test_find_returns_first_match() {
-    let p = regex.new("[0-9]+");
-    assert(p.find("abc123def456") == "123");
-    // No match returns an empty result (exact-zero length, not garbage from a
-    // by-value struct read).
-    assert(p.find("no digits here").len() == 0);
+    let p = regex.new("[0-9]+").expect("valid pattern");
+    assert(p.find("abc123def456") == .Some("123"));
+    assert(p.find("no digits here").is_none());
+    let empty = regex.new("^$").expect("valid pattern");
+    assert(empty.find("") == .Some(""));
 }
 
 #[test]
 fn test_replace_all_occurrences() {
-    let p = regex.new("[0-9]+");
+    let p = regex.new("[0-9]+").expect("valid pattern");
     assert(p.replace("a1b22c333", "N") == "aNbNcN");
 }
 
 #[test]
 fn test_find_all_exact_matches() {
-    let p = regex.new("[0-9]+");
+    let p = regex.new("[0-9]+").expect("valid pattern");
     let all = p.find_all("a1b22c333");
     assert(all.len() == 3);
     assert(all[0] == "1");
@@ -56,7 +54,7 @@ fn test_find_all_exact_matches() {
 // ── Impl-body methods that return capture data (capture / captures) ──
 #[test]
 fn test_capture_indexed_groups() {
-    let p = regex.new("([a-z]+)([0-9]+)");
+    let p = regex.new("([a-z]+)([0-9]+)").expect("valid pattern");
     match p.capture("ab12", 1) {
         .Some(g) => assert(g == "ab"),
         .None => assert(false),
@@ -74,7 +72,7 @@ fn test_capture_indexed_groups() {
 
 #[test]
 fn test_captures_flat_row() {
-    let p = regex.new("([a-z]+)([0-9]+)");
+    let p = regex.new("([a-z]+)([0-9]+)").expect("valid pattern");
     let rows = p.captures("ab12");
     // Group 0 (whole match) plus two capture groups.
     assert(rows.width() == 3);
@@ -96,11 +94,11 @@ fn test_captures_flat_row() {
 // ── Handle-returning method (clone) rebuilds the wrapper ──
 #[test]
 fn test_clone_yields_independent_pattern() {
-    let p = regex.new("[0-9]+");
+    let p = regex.new("[0-9]+").expect("valid pattern");
     let c = p.clone();
     // The clone is a fully-formed Pattern, usable through the same API.
     assert(c.is_match("year 2026"));
-    assert(c.find("x7y") == "7");
+    assert(c.find("x7y") == .Some("7"));
     // Closing one clone must not disturb the other (independent handles).
     c.close();
     assert(p.is_match("42"));
@@ -111,5 +109,5 @@ fn test_clone_yields_independent_pattern() {
 fn test_literal_pattern_dispatch() {
     let lit = re"[a-z]+";
     assert(lit.is_match("hello"));
-    assert(lit.find("__abc__") == "abc");
+    assert(lit.find("__abc__") == .Some("abc"));
 }

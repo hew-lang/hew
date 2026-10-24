@@ -1,0 +1,10 @@
+[[case]]
+id = "irrefutable-iteration-bindings"
+source = "cases/irrefutable-iteration-bindings.hew"
+intent = "Irrefutable product bindings compose with iteration; variant selection is explicit inside the body."
+suites = ["acceptance", "safety"]
+timeout_seconds = 30
+
+[case.expected]
+stdout = "tuple 7\nrecord 8\nunit\nunit\nrange\nrange\n1\n3\n"
+exit = 0

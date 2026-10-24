@@ -21,7 +21,7 @@ fn lower_source(source: &str) -> SemModule {
         lowered
             .callable_statuses
             .iter()
-            .all(|(_, status)| !matches!(status, hew_sir::SirLoweringStatus::Unsupported { .. })),
+            .all(|(_, status)| !matches!(status, hew_sir::SirLoweringStatus::Failed { .. })),
         "{:?}",
         lowered.callable_statuses
     );
@@ -556,7 +556,7 @@ fn mixed_borrowed_and_replaced_parameters_are_not_silently_joined() {
                 .unwrap()
                 .status;
             assert!(
-                matches!(status, hew_sir::SirLoweringStatus::Unsupported { reason, .. } if reason == "lexical place identity changed across a control-flow edge"),
+                matches!(status, hew_sir::SirLoweringStatus::Failed { reason, .. } if reason.message() == "lexical place identity changed across a control-flow edge"),
                 "{body}: {status:?}"
             );
         }

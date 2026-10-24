@@ -245,6 +245,9 @@ pub(super) fn collect_match_payload_predicates(
             Ok(predicates)
         }
         Pattern::Tuple(patterns) => {
+            if patterns.is_empty() && *scrutinee_ty == ResolvedTy::Unit {
+                return Ok(Vec::new());
+            }
             let ResolvedTy::Tuple(field_tys) = scrutinee_ty else {
                 return Err(format!(
                     "tuple literal predicates require a tuple scrutinee, got {scrutinee_ty:?}"
@@ -502,13 +505,11 @@ impl LowerCtx {
             Pattern::Tuple(elements) => {
                 self.lower_tuple_pattern_value_into_stmts(elements, value, &value_ty, stmts, span);
             }
-            Pattern::RecordShorthand { fields, .. } => {
-                self.lower_record_pattern_value_into_stmts(fields, value, &value_ty, stmts, span);
-            }
-            Pattern::NominalPath {
-                path,
+            Pattern::RecordShorthand { fields, .. }
+            | Pattern::NominalPath {
                 payload: Some(hew_parser::ast::NominalPatternPayload::Record { fields, .. }),
-            } if path.segments.len() == 1 => {
+                ..
+            } => {
                 self.lower_record_pattern_value_into_stmts(fields, value, &value_ty, stmts, span);
             }
             Pattern::Literal(_)
@@ -517,13 +518,12 @@ impl LowerCtx {
             | Pattern::NominalPath { .. }
             | Pattern::ContextVariant(_) => {
                 self.diagnostics.push(HirDiagnostic::new(
-                    HirDiagnosticKind::NotYetImplemented {
-                        construct: "nested let pattern".into(),
-                        owning_pass: "pattern-matching".into(),
+                    HirDiagnosticKind::CheckerBoundaryViolation {
+                        name: "plain binding".into(),
+                        reason: "checker admitted a refutable pattern".into(),
                     },
                     pattern.1.clone(),
-                    "let destructure supports nested tuple and record patterns here; \
-                     refutable patterns remain reserved for match/if-let",
+                    "for and select require checked irrefutable bindings",
                 ));
                 let name = format!("__unsupported_{}", stmts.len());
                 self.push_pattern_binding_stmt(name, value_ty, value, stmts, span, false);
@@ -565,29 +565,24 @@ impl LowerCtx {
         let (name, nested) = match &pattern.0 {
             Pattern::Identifier(name) => (name.to_string(), false),
             Pattern::Wildcard => return (None, false),
-            Pattern::Tuple(_) | Pattern::RecordShorthand { .. } => {
-                (format!("__destructure_{}", self.ids.binding().0), true)
-            }
-            // TRANSITION(P1): deleted by A1 commit 2
-            Pattern::NominalPath {
-                path,
+            Pattern::Tuple(_)
+            | Pattern::RecordShorthand { .. }
+            | Pattern::NominalPath {
                 payload: Some(hew_parser::ast::NominalPatternPayload::Record { .. }),
-            } if path.segments.len() == 1 => {
-                (format!("__destructure_{}", self.ids.binding().0), true)
-            }
+                ..
+            } => (format!("__destructure_{}", self.ids.binding().0), true),
             Pattern::Literal(_)
             | Pattern::Or(_, _)
             | Pattern::Regex { .. }
             | Pattern::NominalPath { .. }
             | Pattern::ContextVariant(_) => {
                 self.diagnostics.push(HirDiagnostic::new(
-                    HirDiagnosticKind::NotYetImplemented {
-                        construct: "nested let pattern".into(),
-                        owning_pass: "pattern-matching".into(),
+                    HirDiagnosticKind::CheckerBoundaryViolation {
+                        name: "plain binding".into(),
+                        reason: "checker admitted a refutable pattern".into(),
                     },
                     pattern.1.clone(),
-                    "let destructure supports nested tuple and record patterns here; \
-                     refutable patterns remain reserved for match/if-let",
+                    "for and select require checked irrefutable bindings",
                 ));
                 (format!("__unsupported_{}", self.ids.binding().0), false)
             }
@@ -608,6 +603,14 @@ impl LowerCtx {
         stmts: &mut Vec<HirStmt>,
         span: Span,
     ) {
+        if *value_ty == ResolvedTy::Unit && elements.is_empty() {
+            stmts.push(HirStmt {
+                node: self.ids.node(),
+                kind: HirStmtKind::Expr(value),
+                span,
+            });
+            return;
+        }
         let element_tys = match &value_ty {
             ResolvedTy::Tuple(elems) if elems.len() == elements.len() => elems.clone(),
             ResolvedTy::Tuple(elems) => {
@@ -906,7 +909,7 @@ impl LowerCtx {
                 continue;
             };
             let Ok(field_idx_u32) = u32::try_from(field_idx) else {
-                self.unsupported(
+                self.missing_checked_fact(
                     sub_span.clone(),
                     "payload aggregate field index exceeds u32::MAX",
                     owning_pass,
@@ -1020,7 +1023,7 @@ impl LowerCtx {
                 continue;
             };
             let Ok(field_idx_u32) = u32::try_from(field_idx) else {
-                self.unsupported(
+                self.missing_checked_fact(
                     sub_span.clone(),
                     "payload aggregate field index exceeds u32::MAX",
                     owning_pass,
@@ -1112,7 +1115,7 @@ impl LowerCtx {
                     ResolvedTy::Never,
                 );
             }
-            self.unsupported(
+            self.missing_checked_fact(
                 span.clone(),
                 "match expression with no arms",
                 "match-expression-substrate",
@@ -1204,7 +1207,7 @@ impl LowerCtx {
                         // Checker contract: Binding resolution must come from
                         // an Identifier pattern.
                         self.walk_pattern_arm_body(&arm.body);
-                        self.unsupported(
+                        self.missing_checked_fact(
                             pattern_span.clone(),
                             "binding resolution without an Identifier pattern — checker \
                              contract violation",
@@ -1226,7 +1229,7 @@ impl LowerCtx {
                 PatternKind::VariantCtor => {
                     let Some(mut vm) = resolution.variant_match.clone() else {
                         self.walk_pattern_arm_body(&arm.body);
-                        self.unsupported(
+                        self.missing_checked_fact(
                             pattern_span.clone(),
                             "variant pattern missing variant-match resolution",
                             "match-expression-substrate",
@@ -1243,7 +1246,7 @@ impl LowerCtx {
                         self.lookup_variant_ctor(&vm.variant_name, Some(&scrutinee_hir.ty))
                     else {
                         self.walk_pattern_arm_body(&arm.body);
-                        self.unsupported(
+                        self.missing_checked_fact(
                             pattern_span.clone(),
                             "match arm variant not registered in machine/enum ctor registry",
                             "match-expression-substrate",
@@ -1262,7 +1265,7 @@ impl LowerCtx {
                 PatternKind::Literal => {
                     let Pattern::Literal(lit) = &arm.pattern.0 else {
                         self.walk_pattern_arm_body(&arm.body);
-                        self.unsupported(
+                        self.missing_checked_fact(
                             pattern_span.clone(),
                             "literal arm resolution did not correspond to an AST literal pattern",
                             "match-expression-substrate",
@@ -1282,19 +1285,10 @@ impl LowerCtx {
                         (HirLiteral::String(_), ResolvedTy::String) => ResolvedTy::String,
                         (HirLiteral::Float(_), ResolvedTy::F32) => ResolvedTy::F32,
                         (HirLiteral::Float(_), ResolvedTy::F64) => ResolvedTy::F64,
-                        (HirLiteral::Duration(_) | HirLiteral::Unit, _) => {
-                            self.walk_pattern_arm_body(&arm.body);
-                            self.unsupported(
-                                pattern_span.clone(),
-                                format!("unsupported literal pattern in match arm ({lit:?})"),
-                                "match-literal-stage2",
-                            );
-                            rejected = true;
-                            continue;
-                        }
+                        (HirLiteral::Duration(_), ResolvedTy::Duration) => ResolvedTy::Duration,
                         _ => {
                             self.walk_pattern_arm_body(&arm.body);
-                            self.unsupported(
+                            self.missing_checked_fact(
                                 pattern_span.clone(),
                                 format!(
                                     "literal pattern type mismatch in match arm: literal {:?} \
@@ -1313,7 +1307,7 @@ impl LowerCtx {
                 PatternKind::StructPattern => {
                     let ResolvedTy::Named { .. } = &scrutinee_hir.ty else {
                         self.walk_pattern_arm_body(&arm.body);
-                        self.unsupported(
+                        self.missing_checked_fact(
                             pattern_span.clone(),
                             format!(
                                 "record project pattern on non-record scrutinee type {:?}",
@@ -1328,10 +1322,16 @@ impl LowerCtx {
                         ty: scrutinee_hir.ty.clone(),
                     }
                 }
+                PatternKind::TuplePattern if scrutinee_hir.ty == ResolvedTy::Unit => {
+                    HirMatchArmPredicate::Literal {
+                        lit: HirLiteral::Unit,
+                        ty: ResolvedTy::Unit,
+                    }
+                }
                 PatternKind::TuplePattern => {
                     let ResolvedTy::Tuple(items) = &scrutinee_hir.ty else {
                         self.walk_pattern_arm_body(&arm.body);
-                        self.unsupported(
+                        self.missing_checked_fact(
                             pattern_span.clone(),
                             format!(
                                 "tuple project pattern on non-tuple scrutinee type {:?}",
@@ -1344,7 +1344,7 @@ impl LowerCtx {
                     };
                     let Ok(arity) = u32::try_from(items.len()) else {
                         self.walk_pattern_arm_body(&arm.body);
-                        self.unsupported(
+                        self.missing_checked_fact(
                             pattern_span.clone(),
                             "tuple project arity exceeds u32::MAX",
                             "match-expression-substrate",
@@ -1364,7 +1364,7 @@ impl LowerCtx {
                     let raw_pattern = match &arm.pattern.0 {
                         Pattern::Regex { pattern, .. } => pattern.clone(),
                         other => {
-                            self.unsupported(
+                            self.missing_checked_fact(
                                 pattern_span.clone(),
                                 format!(
                                     "regex arm pattern resolved to PatternKind::Regex but AST \
@@ -1392,7 +1392,7 @@ impl LowerCtx {
                 let ty = match ResolvedTy::from_ty(&payload.ty) {
                     Ok(ty) => self.restore_type_declaration_facts(ty),
                     Err(err) => {
-                        self.unsupported(
+                        self.missing_checked_fact(
                             pattern_span.clone(),
                             format!("unresolved payload binding type in match arm ({err:?})"),
                             "match-expression-substrate",
@@ -1402,7 +1402,7 @@ impl LowerCtx {
                     }
                 };
                 let Ok(field_idx) = u32::try_from(payload.field_idx) else {
-                    self.unsupported(
+                    self.missing_checked_fact(
                         pattern_span.clone(),
                         "payload binding field index exceeds u32::MAX",
                         "match-expression-substrate",
@@ -1428,7 +1428,7 @@ impl LowerCtx {
                     Ok(predicates) => predicates,
                     Err(reason) => {
                         self.walk_pattern_arm_body(&arm.body);
-                        self.unsupported(
+                        self.missing_checked_fact(
                             pattern_span.clone(),
                             reason,
                             "match-project-literal-predicates",
@@ -1455,7 +1455,7 @@ impl LowerCtx {
                 )
             {
                 self.walk_pattern_arm_body(&arm.body);
-                self.unsupported(
+                self.missing_checked_fact(
                     pattern_span.clone(),
                     "nested constructor subpatterns on a match arm with no slots — \
                      checker contract violation",
@@ -1549,23 +1549,6 @@ impl LowerCtx {
                 rejected = true;
                 continue;
             }
-            if !body_prelude.is_empty() && arm.guard.is_some() {
-                self.walk_pattern_arm_body(&arm.body);
-                self.unsupported(
-                    pattern_span.clone(),
-                    "guarded match arm with nested aggregate payload destructure",
-                    "match-expression-substrate",
-                );
-                if let Some(previous) = previous_scope_id {
-                    self.current_scope_id = previous;
-                }
-                if needs_scope {
-                    self.pop_scope();
-                }
-                rejected = true;
-                continue;
-            }
-
             // Materialise nested constructor predicate trees. Their inner
             // bindings are registered in the same arm scope as the payload
             // bindings above, so guard/body references resolve through them.
@@ -1600,33 +1583,13 @@ impl LowerCtx {
                 .as_ref()
                 .map(|guard_spanned| self.lower_expr(guard_spanned, IntentKind::Read));
 
-            let mut body_hir = self.lower_pattern_arm_body(
+            let body_hir = self.lower_pattern_arm_body(
                 &arm.body,
                 block_result_ty,
                 &bindings,
                 &payload_variant_predicates,
                 &body_prelude,
             );
-            if !body_prelude.is_empty() {
-                let body_ty = body_hir.ty.clone();
-                let body_span = arm.pattern.1.start..arm.body_end();
-                body_hir = HirExpr {
-                    node: self.ids.node(),
-                    site: self.ids.site(),
-                    ty: body_ty.clone(),
-                    intent: IntentKind::Read,
-                    kind: HirExprKind::Block(HirBlock {
-                        node: self.ids.node(),
-                        scope: self.ids.scope(),
-                        statements: body_prelude,
-                        tail: Some(Box::new(body_hir)),
-                        ty: body_ty,
-                        span: body_span.clone(),
-                    }),
-                    span: body_span,
-                };
-            }
-
             if let Some(previous) = previous_scope_id {
                 self.current_scope_id = previous;
             }
@@ -1650,6 +1613,7 @@ impl LowerCtx {
                 bindings,
                 payload_predicates,
                 payload_variant_predicates,
+                pattern_bindings: body_prelude,
                 guard: guard_hir,
                 body: body_hir,
                 span: arm.pattern.1.start..arm.body_end(),
@@ -1888,7 +1852,7 @@ impl LowerCtx {
         let payload_ty = match ResolvedTy::from_ty(&pvp.payload_ty) {
             Ok(ty) => self.restore_type_declaration_facts(ty),
             Err(err) => {
-                self.unsupported(
+                self.missing_checked_fact(
                     pattern_span.clone(),
                     format!("unresolved nested payload type in match arm ({err:?})"),
                     "match-expression-substrate",
@@ -1903,7 +1867,7 @@ impl LowerCtx {
         let Some((registered_type, idx_usize, _)) =
             self.lookup_variant_ctor(&pvp.variant_match.variant_name, Some(&payload_ty))
         else {
-            self.unsupported(
+            self.missing_checked_fact(
                 pattern_span.clone(),
                 "nested match-arm variant not registered in machine/enum ctor registry",
                 "match-expression-substrate",
@@ -1913,7 +1877,7 @@ impl LowerCtx {
         let variant_idx =
             u32::try_from(idx_usize).expect("variant index exceeds u32::MAX — impossible in Hew");
         let Ok(field_idx) = u32::try_from(pvp.field_idx) else {
-            self.unsupported(
+            self.missing_checked_fact(
                 pattern_span.clone(),
                 "nested payload field index exceeds u32::MAX",
                 "match-expression-substrate",
@@ -1925,7 +1889,7 @@ impl LowerCtx {
             let ty = match ResolvedTy::from_ty(&payload.ty) {
                 Ok(ty) => self.restore_type_declaration_facts(ty),
                 Err(err) => {
-                    self.unsupported(
+                    self.missing_checked_fact(
                         pattern_span.clone(),
                         format!("unresolved nested payload binding type in match arm ({err:?})"),
                         "match-expression-substrate",
@@ -1934,7 +1898,7 @@ impl LowerCtx {
                 }
             };
             let Ok(inner_field_idx) = u32::try_from(payload.field_idx) else {
-                self.unsupported(
+                self.missing_checked_fact(
                     pattern_span.clone(),
                     "nested payload binding field index exceeds u32::MAX",
                     "match-expression-substrate",
@@ -1959,7 +1923,7 @@ impl LowerCtx {
         let mut literals = Vec::with_capacity(pvp.literals.len());
         for predicate in &pvp.literals {
             let Ok(field_idx) = u32::try_from(predicate.field_idx) else {
-                self.unsupported(
+                self.missing_checked_fact(
                     pattern_span.clone(),
                     "nested literal field index exceeds u32::MAX",
                     "match-expression-substrate",
@@ -1969,7 +1933,7 @@ impl LowerCtx {
             let ty = match ResolvedTy::from_ty(&predicate.ty) {
                 Ok(ty) => self.restore_type_declaration_facts(ty),
                 Err(err) => {
-                    self.unsupported(
+                    self.missing_checked_fact(
                         pattern_span.clone(),
                         format!("unresolved nested literal type ({err:?})"),
                         "match-expression-substrate",

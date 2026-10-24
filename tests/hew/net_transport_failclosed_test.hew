@@ -1,8 +1,6 @@
 import std.crypto.password;
 
-import std.net.http.http_async_client;
-
-import std.net.http.http_async_server;
+import std.net.http.codec;
 
 import std.stream;
 
@@ -33,17 +31,37 @@ fn test_malformed_password_hash_is_not_a_mismatch() {
 
 #[test]
 fn test_async_http_query_and_ipv6_authority_split() {
-    let (query_addr, query_path) = http_async_client.split_address("http://example.com?x=1");
+    let (query_addr, query_path) = codec.split_address("http://example.com?x=1");
     assert(query_addr == "example.com:80");
     assert(query_path == "/?x=1");
-    let (ipv6_addr, ipv6_path) = http_async_client.split_address("http://[::1]:8080/status");
+    let (ipv6_addr, ipv6_path) = codec.split_address("http://[::1]:8080/status");
     assert(ipv6_addr == "[::1]:8080");
     assert(ipv6_path == "/status");
-    assert(http_async_client.host_of("http://[::1]:8080/status") == "[::1]");
+    assert(codec.host_of("http://[::1]:8080/status") == "[::1]");
 }
 
 #[test]
 fn test_async_http_invalid_status_is_rejected() {
-    assert(http_async_server.response_text(-1, "body") == "");
-    assert(http_async_server.response_text(600, "body") == "");
+    assert(codec.response_text(-1, "body").is_err());
+    assert(codec.response_text(600, "body").is_err());
+}
+
+#[test]
+fn test_codec_distinguishes_incomplete_invalid_and_empty_headers() {
+    assert(codec.parse_request("GET / HTTP/1.1\r\n").expect("incomplete header").is_none());
+    assert(codec.parse_request("POST / HTTP/1.1\r\nContent-Length: 2\r\n\r\na").expect("incomplete body").is_none());
+    let request = codec.parse_request("GET / HTTP/1.1\r\nX-Empty:\r\n\r\n").expect("valid").expect("complete");
+    assert(request.header("x-empty") == .Some(""));
+    assert(request.header("missing").is_none());
+    match codec.parse_request("BAD\r\n\r\n") {
+        .Err(error) => assert(error.status() == 400),
+        _ => panic("malformed request accepted"),
+    }
+    assert(codec.parse_response("HTTP/1.1 200 OK\r\n").expect("incomplete header").is_none());
+    assert(codec.parse_response("HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\na").expect("incomplete body").is_none());
+    assert(codec.parse_response("HTTP/1.1 nope\r\n\r\n").is_err());
+    let response = codec.parse_response("HTTP/1.1 200 OK\r\nX-Empty:\r\n\r\n").expect("valid").expect("complete");
+    assert(response.header("x-empty") == .Some(""));
+    assert(response.header("missing").is_none());
+    assert(codec.build_request("GET", "host\r\nInjected: yes", "/", "", "").is_err());
 }

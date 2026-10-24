@@ -76,10 +76,10 @@ impl LowerCtx {
         let operand_expr = self.lower_expr(operand, IntentKind::Read);
 
         if op == UnaryOp::RawDeref {
-            self.unsupported(
+            self.missing_checked_fact(
                 span.clone(),
-                "raw pointer unary dereference",
-                "m5-raw-pointers",
+                "raw pointer dereference reached HIR after checker refusal",
+                "raw pointer source exclusion",
             );
             return (
                 HirExprKind::Unsupported("unsupported raw pointer unary dereference".into()),

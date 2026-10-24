@@ -1,0 +1,11 @@
+[[case]]
+id = "bounded-range-step-fault"
+source = "cases/bounded-range-step-fault.hew"
+intent = "A dynamic zero stride faults while constructing even an empty saved range, preserving ordinary owner cleanup."
+suites = ["acceptance", "safety"]
+timeout_seconds = 30
+
+[case.expected]
+stdout = "CLOSED\n"
+stderr = "hew: failure: UserPanic (212): step_by requires a positive step\n"
+exit = 1

@@ -14,8 +14,7 @@ fn main() {
         }
         .Err(err) => {
             let reason = to_string(err);
-            let detail = websocket.last_error();
-            println(f"websocket:listen-failed {reason} - {detail}");
+            panic(f"websocket:listen-failed {reason}");
         }
     }
 }

@@ -4,7 +4,7 @@
 //! the current dispatch's execution context. It is only meaningful inside an
 //! actor `receive fn` (a real dispatch), where the runtime has an execution
 //! context to record the policy in; outside a dispatch it fails closed and
-//! returns `false`.
+//! returns a checked error.
 //!
 //! This exercises the whole surface: importing the setter, calling it with
 //! every `PartitionPolicy` variant from within a dispatch, and confirming the
@@ -19,22 +19,22 @@ actor PolicyProbe {
     var all_ok: bool = true;
 
     // Runs inside a dispatch, so an execution context exists: every variant
-    // must be accepted by the mapping and recorded (returns true). A single
-    // `false` — an unmapped variant or a missing context — clears `all_ok`.
+    // must be accepted by the mapping and recorded (returns Ok). A single
+    // `Err` — a missing context — clears `all_ok`.
     receive fn probe_every_policy() {
-        if !set_partition_policy(PartitionPolicy.FailFast) {
+        if !set_partition_policy(PartitionPolicy.FailFast).is_ok() {
             all_ok = false;
         }
-        if !set_partition_policy(PartitionPolicy.Deadline) {
+        if !set_partition_policy(PartitionPolicy.Deadline).is_ok() {
             all_ok = false;
         }
-        if !set_partition_policy(PartitionPolicy.MonitorLost) {
+        if !set_partition_policy(PartitionPolicy.MonitorLost).is_ok() {
             all_ok = false;
         }
-        if !set_partition_policy(PartitionPolicy.CrashLinked) {
+        if !set_partition_policy(PartitionPolicy.CrashLinked).is_ok() {
             all_ok = false;
         }
-        if !set_partition_policy(PartitionPolicy.Quarantine) {
+        if !set_partition_policy(PartitionPolicy.Quarantine).is_ok() {
             all_ok = false;
         }
     }
@@ -53,4 +53,9 @@ fn set_partition_policy_accepts_every_variant_in_a_dispatch() {
         .Ok(ok) => assert(ok),
         .Err(_) => assert(false),
     }
+}
+
+#[test]
+fn policy_requires_an_actor_dispatch() {
+    assert(set_partition_policy(PartitionPolicy.FailFast).is_err());
 }

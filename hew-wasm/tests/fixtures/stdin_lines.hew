@@ -1,12 +1,15 @@
 import std.io;
 
 fn main() {
-    let first = io.read_line() ?? "<none>";
-    let second = io.read_line() ?? "<none>";
+    // io.read_line() inside a comment is ordinary source text.
+    io.write("literal io.read_line()\n").expect("standard output");
+    io.write_err("").expect("standard error");
+    let first = io.read_line().expect("standard I/O") ?? "<none>";
+    let second = io.read_line().expect("standard I/O") ?? "<none>";
     println(f"first=[{first}] second=[{second}]");
-    let rest = io.read_all();
+    let rest = io.read_all().expect("standard I/O");
     println(f"rest=[{rest}]");
-    match io.read_line() {
+    match io.read_line().expect("standard I/O") {
         .Some(line) => println(f"after=[{line}]"),
         .None => println("after end"),
     }

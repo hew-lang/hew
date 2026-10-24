@@ -5,6 +5,97 @@
 pub(super) use super::*;
 
 #[test]
+fn constants_reject_runtime_work_at_the_checker_boundary() {
+    for (source, detail) in [
+        (
+            "fn number() -> i64 { 3 } const VALUE: i64 = number(); fn main() {}",
+            "ordinary function call",
+        ),
+        (
+            "const VALUE: i64 = if true { 1 } else { 2 }; fn main() {}",
+            "runtime control flow",
+        ),
+        (
+            "const VALUE: fn(string) -> () = println; fn main() {}",
+            "function value",
+        ),
+        ("type Point { value: i64; } const VALUE: bool = Point { value: 1 } < Point { value: 2 }; fn main() {}", "non-scalar comparison"),
+        ("const VALUE: i8 = 42 as i8; fn main() {}", "runtime cast"),
+    ] {
+        let output = check_source(source);
+        assert!(
+            output.errors.iter().any(
+                |error| matches!(error.kind, TypeErrorKind::ConstInitializer)
+                    && error.message.contains(detail)
+            ),
+            "{:#?}",
+            output.errors
+        );
+    }
+}
+
+#[test]
+fn constants_admit_checked_variant_constructors() {
+    let output = check_source(
+        "enum Mode { Local; Tcp(string, u16); } \
+         const MAYBE: Option<u8> = .Some(7); \
+         const RESULT: Result<i64, string> = .Ok(9); \
+         const DIRECT: Option<u8> = Option.Some(8); \
+         const MODE: Mode = .Tcp(\"local\", 80); fn main() {}",
+    );
+    assert!(output.errors.is_empty(), "{:#?}", output.errors);
+}
+
+#[test]
+fn constant_scalar_arithmetic_keeps_declared_integer_failures() {
+    for source in [
+        "const VALUE: u8 = 255 + 1; fn main() {}",
+        "const VALUE: i8 = -(-128); fn main() {}",
+        "const VALUE: i64 = 4 / 0; fn main() {}",
+    ] {
+        let output = check_source(source);
+        assert!(
+            output
+                .errors
+                .iter()
+                .any(|error| matches!(error.kind, TypeErrorKind::ConstInitializer)),
+            "{:#?}",
+            output.errors
+        );
+    }
+}
+
+#[test]
+fn open_ranges_require_index_context_and_enum_updates_name_the_payload() {
+    for source in [
+        "fn main() { let values = (1..); }",
+        "fn main() { let values = ..4; }",
+        "fn main() { let values = (..); }",
+    ] {
+        let output = check_source(source);
+        assert!(
+            output.errors.iter().any(
+                |error| matches!(error.kind, TypeErrorKind::InvalidOperation)
+                    && error.message.contains("indexed receiver")
+            ),
+            "{:#?}",
+            output.errors
+        );
+    }
+    let output = check_source("enum Choice { Data { value: i64; } Empty; } fn main() { let base: Choice = .Data { value: 1 }; let updated: Choice = .Data { value: 2, ..base }; }");
+    assert!(
+        output.errors.iter().any(
+            |error| matches!(error.kind, TypeErrorKind::InvalidOperation)
+                && error.message.contains("enum variant constructors")
+        ),
+        "{:#?}",
+        output.errors
+    );
+    let output = check_source("fn main() { let values = [1, 2, 3]; let prefix = values[..2]; let suffix = values[1..]; let all = values[..]; }");
+    assert!(output.errors.is_empty(), "{:#?}", output.errors);
+}
+
+#[test]
 fn contextual_complement_rejects_invalid_operands() {
     for source in [
         "fn main() { let value: u8 = ~256; }",

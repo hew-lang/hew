@@ -86,6 +86,7 @@ impl LowerCtx {
             bindings: Vec::new(),
             payload_predicates: Vec::new(),
             payload_variant_predicates: Vec::new(),
+            pattern_bindings: Vec::new(),
             guard: None,
             body: fallthrough,
             span: span.clone(),
@@ -220,16 +221,18 @@ impl LowerCtx {
                 self.wrap_var_self_explicit_expr_returns(condition, receiver, abi_return_ty);
                 self.wrap_var_self_explicit_returns_in_block(body, receiver, abi_return_ty);
             }
-            HirExprKind::ForRange {
-                start,
-                end,
-                step,
-                body,
-                ..
-            } => {
+            HirExprKind::RangeValue { start, end, .. } => {
                 self.wrap_var_self_explicit_expr_returns(start, receiver, abi_return_ty);
                 self.wrap_var_self_explicit_expr_returns(end, receiver, abi_return_ty);
-                self.wrap_var_self_explicit_expr_returns(step, receiver, abi_return_ty);
+            }
+            HirExprKind::RangeAdapt { range, adapter } => {
+                self.wrap_var_self_explicit_expr_returns(range, receiver, abi_return_ty);
+                if let crate::HirRangeAdapter::Step(step) = adapter {
+                    self.wrap_var_self_explicit_expr_returns(step, receiver, abi_return_ty);
+                }
+            }
+            HirExprKind::ForRange { range, body, .. } => {
+                self.wrap_var_self_explicit_expr_returns(range, receiver, abi_return_ty);
                 self.wrap_var_self_explicit_returns_in_block(body, receiver, abi_return_ty);
             }
             HirExprKind::Loop { body, .. } => {
@@ -238,6 +241,9 @@ impl LowerCtx {
             HirExprKind::Match { scrutinee, arms } => {
                 self.wrap_var_self_explicit_expr_returns(scrutinee, receiver, abi_return_ty);
                 for arm in arms {
+                    for statement in &mut arm.pattern_bindings {
+                        self.wrap_var_self_stmt_returns(statement, receiver, abi_return_ty);
+                    }
                     if let Some(guard) = &mut arm.guard {
                         self.wrap_var_self_explicit_expr_returns(guard, receiver, abi_return_ty);
                     }
@@ -337,7 +343,6 @@ impl LowerCtx {
             }
             HirExprKind::FieldAccess { object, .. }
             | HirExprKind::TupleIndex { tuple: object, .. }
-            | HirExprKind::CancellationTokenIsCancelled { receiver: object }
             | HirExprKind::GeneratorNext {
                 receiver: object, ..
             }
@@ -438,8 +443,7 @@ impl LowerCtx {
                     self.wrap_var_self_explicit_expr_returns(arg, receiver, abi_return_ty);
                 }
             }
-            HirExprKind::SpawnLambdaActor { .. }
-            | HirExprKind::Closure { .. }
+            HirExprKind::Closure { .. }
             | HirExprKind::GenBlock { .. }
             | HirExprKind::Literal(_)
             | HirExprKind::RegexLiteralRef { .. }

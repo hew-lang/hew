@@ -301,15 +301,12 @@ fn assert_tuple_payload_destructure(
 }
 
 fn assert_arm_tuple_payload(arm: &hew_hir::HirMatchArm, field_idx: u32, names: &[&str]) {
-    let HirExprKind::Block(block) = &arm.body.kind else {
-        panic!("aggregate payload must have a destructure prelude");
-    };
     let payload = arm
         .bindings
         .iter()
         .find(|binding| binding.field_idx == field_idx)
         .expect("declared payload field must be bound");
-    assert_tuple_payload_destructure(&block.statements, payload, names);
+    assert_tuple_payload_destructure(&arm.pattern_bindings, payload, names);
 }
 
 #[test]
@@ -471,8 +468,8 @@ fn sum(value: Packet) -> i64 {
     };
     // A let-else with 2+ escaping names desugars to a `Destructure` fed by
     // the synthesized match, mirroring an ordinary tuple/record let; the
-    // aggregate sub-pattern's own prelude destructure lives inside the
-    // match's success arm, same as plain `match`.
+    // aggregate sub-pattern's destructure belongs to the match arm's checked
+    // pattern bindings, same as plain `match`.
     let HirStmtKind::Destructure {
         value: match_expr, ..
     } = &function.body.statements[0].kind

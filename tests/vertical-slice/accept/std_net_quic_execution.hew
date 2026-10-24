@@ -3,13 +3,13 @@ import std.net.quic;
 import std.string;
 
 fn main() {
-    let endpoint = quic.new_server("127.0.0.1:0");
+    let endpoint = quic.new_server("127.0.0.1:0").expect("QUIC listener");
     let observation = endpoint.observe();
     let address_parts = (observation.local_addr).split(":");
     if address_parts.len() != 2 {
         panic("QUIC endpoint has a malformed local address");
     }
-    let assigned_port = string.to_int(address_parts[1]) handle _ { 0 };
+    let assigned_port = (address_parts[1]).to_int() handle _ { 0 };
     if assigned_port <= 0 {
         panic("QUIC endpoint has no assigned port");
     }

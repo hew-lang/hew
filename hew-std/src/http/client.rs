@@ -591,6 +591,27 @@ pub unsafe extern "C" fn hew_http_response_header(
     unsafe { response_header(resp, name) }
 }
 
+/// Whether a response contains a header, including a header with an empty value.
+///
+/// # Safety
+/// `resp` must be a live response or null; `name` must be a live managed string or null.
+#[no_mangle]
+pub unsafe extern "C" fn hew_http_response_has_header(
+    resp: *const HewHttpResponse,
+    name: *const HewString,
+) -> bool {
+    // SAFETY: the caller lends the response and managed name for this call.
+    let (Some(response), name) = (unsafe { resp.as_ref() }, unsafe { string_as_str(name) }) else {
+        return false;
+    };
+    // SAFETY: captured headers belong to the live response.
+    unsafe { response.headers.as_ref() }.is_some_and(|headers| {
+        headers
+            .iter()
+            .any(|(key, _)| key.eq_ignore_ascii_case(name))
+    })
+}
+
 unsafe fn response_header(resp: *const HewHttpResponse, name: &str) -> *mut HewString {
     if resp.is_null() {
         return std::ptr::null_mut();

@@ -7,7 +7,7 @@ fn release_after_yield(consume sem: semaphore.Semaphore) {
 }
 
 fn queued_clone_wait() {
-    let original = semaphore.new(0);
+    let original = semaphore.new(0).expect("valid permit count");
     let waiting = original.clone();
     let releasing = original.clone();
     scope {
@@ -21,7 +21,7 @@ fn queued_clone_wait() {
 }
 
 fn cloned_wrapper_cleanup() {
-    let original = semaphore.new(1);
+    let original = semaphore.new(1).expect("valid permit count");
     scope {
         let copy = original.clone();
         copy.acquire();
@@ -35,7 +35,7 @@ fn cloned_wrapper_cleanup() {
 fn main() {
     queued_clone_wait();
     cloned_wrapper_cleanup();
-    let sem = semaphore.new(1);
+    let sem = semaphore.new(1).expect("valid permit count");
     sem.acquire();
     assert(sem.count() == 0);
     assert(!sem.acquire_timeout(0ms));

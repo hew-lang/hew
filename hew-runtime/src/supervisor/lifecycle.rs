@@ -4546,7 +4546,7 @@ mod tests {
             let _template0 = add_heap_child(sup, RESTART_PERMANENT, true);
             let _template1 = add_heap_child(sup, RESTART_PERMANENT, true);
             let failed = locked_roster!(sup).children[0];
-            let fresh_sibling = locked_roster!(sup).children[1];
+            let fresh_sibling_id = (*locked_roster!(sup).children[1]).id;
 
             // Crash escrow consumes the failed incarnation exactly once. The
             // later sibling stops normally and retains its independent final
@@ -4563,7 +4563,7 @@ mod tests {
             );
             assert!(!locked_roster!(sup).children[0].is_null());
             assert!(!locked_roster!(sup).children[1].is_null());
-            assert_ne!(locked_roster!(sup).children[1], fresh_sibling);
+            assert_ne!((*locked_roster!(sup).children[1]).id, fresh_sibling_id);
             hew_supervisor_stop(sup);
         }
     }

@@ -1,6 +1,6 @@
 [[case]]
 id = "quic-absent-handle"
-intent = "Failed connection setup leaves absent handles whose send, receive, finish, stop and disconnect operations report InvalidArgument without inventing errno zero or a timeout."
+intent = "Invalid listener addresses, trust and connection addresses return checked errors before an absent handle can escape; the valid client endpoint remains usable."
 source = "cases/quic-absent-handle.hew"
 suites = ["acceptance", "safety"]
 timeout_seconds = 30

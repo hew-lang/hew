@@ -76,5 +76,5 @@ fn main() {
     println(square.scaled(offset: 1, factor: 10));
     println(through_bound(square));
     println(through_dyn(Square { side: 2 }));
-    println(string.pad_left(pad: "*", width: 5, s: "ab"));
+    println("ab".pad_left(pad: '*', width: 5));
 }

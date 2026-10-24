@@ -3,7 +3,7 @@
 
 // HTTP + JSON pipeline demo.
 //
-// Demonstrates `std.net.http.http_client` and `std.encoding.json`
+// Demonstrates `std.net.http.client` and `std.encoding.json`
 // working together: fetch a JSON payload over HTTP, navigate a nested
 // object, extract typed fields, and count an array.
 //
@@ -24,13 +24,13 @@
 // Note: requires internet access. Not included in the automated test
 // suite because output depends on network availability.
 //
-import std.net.http.http_client;
+import std.net.http.client;
 
 import std.encoding.json.{self, Value};
 
-// Fetch a URL and return the body string, or None on transport failure.
-fn fetch(url: string) -> Option<string> {
-    http_client.get_string(url)
+// Fetch a URL and preserve transport or body-decoding errors.
+fn fetch(url: string) -> Result<string, client.HttpError> {
+    client.get_string(url)
 }
 
 // Distinguish a missing field from a value of the wrong kind.
@@ -70,7 +70,7 @@ fn main() {
     let url = "https://httpbin.org/json";
     println(f"Fetching {url}...");
     match fetch(url) {
-        .Some(body) => {
+        .Ok(body) => {
             match json.parse(body) {
                 .Ok(root) => {
                     match print_slideshow(root) {
@@ -81,6 +81,6 @@ fn main() {
                 .Err(error) => println(f"json parse failed: {error}"),
             }
         }
-        .None => println("http request failed (no network or server unreachable)"),
+        .Err(error) => println(f"http request failed: {error}"),
     }
 }

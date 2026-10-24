@@ -24,11 +24,13 @@ fn test_max_returns_the_larger_value() {
 
 #[test]
 fn test_clamp_honors_valid_interval() {
-    assert(math.clamp(8, 0, 5) == 5);
+    assert(math.clamp(8, 0, 5).expect("valid bounds") == 5);
 }
 
 #[test]
-#[should_panic]
 fn test_clamp_rejects_reversed_interval() {
-    math.clamp(5, 10, 0);
+    match math.clamp(5, 10, 0) {
+        .Err(.ReversedBounds { lower, upper }) => assert(lower == 10 && upper == 0),
+        _ => panic("expected reversed bounds"),
+    }
 }

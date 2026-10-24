@@ -174,7 +174,7 @@ fn main() {
             }
             "silent" => sleep(30s),
             "short" => print("short"),
-            "stderr" => io.write_err("error"),
+            "stderr" => io.write_err("error").expect("standard I/O"),
             "streamed" => {
                 for _ in 0..8193 {
                     print("0123456789abcdef");

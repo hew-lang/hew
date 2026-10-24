@@ -5,6 +5,31 @@
 pub(super) use super::*;
 
 #[test]
+fn module_aliases_have_their_targets_arithmetic_and_send_behaviour() {
+    let source = r"
+type Count = i64;
+type Counts<T> = Vec<T>;
+type Total = Count;
+actor Counter {
+    let value: Total;
+    receive fn add(amount: Count) -> Count { value + amount }
+}
+pub fn total(value: Count) -> Total {
+    let values: Counts<Count> = [value];
+    let counter = spawn Counter { value: value };
+    let result = match counter.add(value) { .Ok(answer) => answer, .Err(_) => 0 };
+    result + values.len() as i64
+}
+";
+    for output in [
+        check_source(source),
+        check_source_in_module(source, vec!["counts".to_string()]),
+    ] {
+        assert!(output.errors.is_empty(), "{:#?}", output.errors);
+    }
+}
+
+#[test]
 fn root_enum_shadows_generated_delivery_type_member() {
     let mut checker = Checker::new(ModuleRegistry::new(vec![]));
     checker.local_type_defs.insert("Delivery".to_string());
@@ -1594,26 +1619,41 @@ mod module_body_diagnostic_envelope {
 
     #[test]
     fn assign_target_shapes_populated_for_while_loop_with_import() {
-        // Reproduces the eval_large_stderr CI failure:
-        // synthesized source for `fn spam_err` eval step with `import std.io`
-        let source = "import std.io;\nfn spam_err() {\n    var i = 0;\n    while i < 20000 {\n        io.write_err(\"line\\n\");\n        i = i + 1;\n    }\n}\nfn main() {\n}\n";
+        let source = "import std.io;\nfn spam_err() {\n    var i = 0;\n    while i < 20000 {\n        io.write_err(\"line\\n\").expect(\"standard I/O\");\n        i = i + 1;\n    }\n}\nfn main() {\n}\n";
         let parse_result = hew_parser::parse(source);
         assert!(
             parse_result.errors.is_empty(),
             "parse errors: {:?}",
             parse_result.errors
         );
+        let function = parse_result
+            .program
+            .items
+            .iter()
+            .find_map(|(item, _)| match item {
+                Item::Function(function) if function.name == Ident::new("spam_err") => {
+                    Some(function)
+                }
+                _ => None,
+            })
+            .expect("source contains spam_err");
+        let Stmt::While { body, .. } = &function.body.stmts[1].0 else {
+            panic!("expected the while loop");
+        };
+        let Stmt::Assign { target, .. } = &body.stmts[1].0 else {
+            panic!("expected the loop assignment");
+        };
+        let target_key = SpanKey::from(&target.1);
         let mut checker = crate::Checker::new(crate::module_registry::ModuleRegistry::new(
             crate::module_registry::stdlib_search_paths(),
         ));
         let tco = checker.check_program(&parse_result.program);
-        // `i` in `i = i + 1` must appear in assign_target_shapes
-        let has_shape = tco.assign_target_shapes.iter().any(|(k, _)| k.start == 108);
-        assert!(
-            has_shape,
-            "assign_target_shapes missing entry for i at ~108; got: {:?}",
-            tco.assign_target_shapes.keys().collect::<Vec<_>>()
-        );
+        assert!(tco.errors.is_empty(), "{:#?}", tco.errors);
+        let shape = tco
+            .assign_target_shapes
+            .get(&target_key)
+            .expect("the loop assignment retains its source-owned target shape");
+        assert!(!shape.is_unsigned, "the inferred i64 target is signed");
     }
 }
 
@@ -2416,6 +2456,25 @@ mod warning_source_attribution {
              Ty::Error; got errors: {:?}",
             output.errors
         );
+    }
+
+    #[test]
+    fn failed_error_conversion_retains_success_type_and_independent_errors() {
+        let output = check_source(
+            "fn read(value: Result<i64, string>) -> bool fails i64 {\n\
+             let number = value?;\n\
+             number + 1\n\
+             }",
+        );
+        assert_eq!(output.errors.len(), 2, "{:#?}", output.errors);
+        assert!(output
+            .errors
+            .iter()
+            .any(|error| error.kind == TypeErrorKind::ErrorNoConversion));
+        assert!(output
+            .errors
+            .iter()
+            .any(|error| matches!(error.kind, TypeErrorKind::Mismatch { .. })));
     }
 
     #[test]

@@ -700,7 +700,7 @@ impl Parser<'_> {
             (
                 "f-string interpolation accepts only the `:?` format specifier".to_string(),
                 "format the value before interpolating it, for example with \
-                 `fmt.pad_left`, `fmt.pad_right` or `fmt.to_hex` from `std.fmt`",
+                 string `.pad_left` and `.pad_right`, or `fmt.to_hex` from `std.fmt`",
             )
         } else {
             (

@@ -6,7 +6,7 @@
 //! `{{.key}}` substitution, an `{{if .key}}…{{end}}` conditional, and a
 //! `{{range .key}}…{{end}}` loop, then renders with `render_try` and matches the
 //! `Result`. Templates render through the free function
-//! `template.render_try(t, ctx)`.
+//! `template.render_template(t, ctx)`.
 
 import std.text.template;
 
@@ -25,7 +25,7 @@ fn main() {
         .Ok(template) => template,
         .Err(_) => panic("template parse failed"),
     };
-    match template.render_try(tmpl, ctx) {
+    match template.render_template(tmpl, ctx) {
         .Ok(rendered) => println(rendered),
         .Err(_) => println("template render failed"),
     }

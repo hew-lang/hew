@@ -8,8 +8,8 @@ import std.io;
 fn main() -> i32 {
     let args = os.args();
     if args.len() > 1 {
-        io.write("ready\n");
-        io.write_err("warning\n");
+        io.write("ready\n").expect("standard I/O");
+        io.write_err("warning\n").expect("standard I/O");
         return 7;
     }
     // This example runs itself as the worker so it is portable and self-contained.

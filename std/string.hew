@@ -1,8 +1,8 @@
 //! string conversion and manipulation utilities.
 //!
 //! String operations (`.find()`, `.trim()`, etc.)
-//! are built-in methods available on all strings. This module provides
-//! type-conversion helpers and additional string utilities.
+//! are methods available on all strings, including checked numeric conversion,
+//! scalar padding and occurrence counting.
 //!
 //! # Examples
 //!
@@ -11,11 +11,11 @@
 //!
 //! fn main() {
 //!     let s = f"{42}";        // "42"
-//!     let n = string.to_int("42").expect("to_int succeeds");       // 42
-//!     let f = string.to_float("3.14").expect("to_float succeeds");     // 3.14
+//!     let n = "42".to_int().expect("to_int succeeds");       // 42
+//!     let f = "3.14".to_float().expect("to_float succeeds");     // 3.14
 //!     let nl = f"{(10).try_to_char().expect("valid Unicode scalar")}";      // "\n"
-//!     let stars = ("*").repeat(3);  // "***"
-//!     let padded = string.pad_left("7", 3, "0");  // "007"
+//!     let stars = "*".repeat(3);  // "***"
+//!     let padded = "7".pad_left(3, '0');  // "007"
 //! }
 //! ```
 
@@ -41,58 +41,62 @@ impl Error for NumberError {}
 /// Unlike C's `atoi`, this function does **not** stop at the first non-digit
 /// character — any non-digit anywhere in the string (after an optional leading
 /// sign) returns a structured error.
-pub fn to_int(s: string) -> i64 fails NumberError {
-    let slen = s.len();
-    if slen == 0 {
-        return error .Invalid(s);
-    }
-    var start = 0;
-    var negative = false;
-    let first = s[0..1];
-    if first == "-" {
-        negative = true;
-        start = 1;
-    } else if first == "+" {
-        start = 1;
-    }
-    if start >= slen {
-        return error .Invalid(s);
-    }
-    // i64::MIN / 10 truncated toward zero (-9223372036854775808 / 10 = -922337203685477580).
-    // If the accumulator goes below this cutoff, the next digit would overflow i64.
-    let cutoff = -922337203685477580;
-    // Last digit of i64::MIN (8, for ...5808) vs i64::MAX (7, for ...5807).
-    // Used to detect overflow when the accumulator is exactly at the cutoff.
-    let max_last_digit = if negative {
-        8
-    } else {
-        7
-    };
-    var result = 0;
-    for i in start..slen {
-        let digit = s[i .. i + 1];
-        let d = digit_value(digit);
-        if d < 0 {
-            return error .Invalid(s);
+impl string {
+    fn to_int(self) -> i64 fails NumberError {
+        let slen = self.len();
+        if slen == 0 {
+            return error .Invalid(self);
         }
-        if result < cutoff || result == cutoff && d > max_last_digit {
-            return error .OutOfRange(s);
+        var start = 0;
+        var negative = false;
+        let first = self[0..1];
+        if first == "-" {
+            negative = true;
+            start = 1;
+        } else if first == "+" {
+            start = 1;
         }
-        result = result * 10 - d;
-    }
-    if negative {
-        result
-    } else {
-        0 - result
+        if start >= slen {
+            return error .Invalid(self);
+        }
+        // i64::MIN / 10 truncated toward zero (-9223372036854775808 / 10 = -922337203685477580).
+        // If the accumulator goes below this cutoff, the next digit would overflow i64.
+        let cutoff = -922337203685477580;
+        // Last digit of i64::MIN (8, for ...5808) vs i64::MAX (7, for ...5807).
+        // Used to detect overflow when the accumulator is exactly at the cutoff.
+        let max_last_digit = if negative {
+            8
+        } else {
+            7
+        };
+        var result = 0;
+        for i in start..slen {
+            let digit = self[i .. i + 1];
+            let d = digit_value(digit);
+            if d < 0 {
+                return error .Invalid(self);
+            }
+            if result < cutoff || result == cutoff && d > max_last_digit {
+                return error .OutOfRange(self);
+            }
+            result = result * 10 - d;
+        }
+        if negative {
+            result
+        } else {
+            0 - result
+        }
     }
 }
 
 /// Parse a string as a float, failing on text that is not a float literal.
-pub fn to_float(s: string) -> f64 fails NumberError {
-    if !is_valid_float_literal(s) {
-        return error .Invalid(s);
+impl string {
+    fn to_float(self) -> f64 fails NumberError {
+        if !is_valid_float_literal(self) {
+            return error .Invalid(self);
+        }
+        parse_valid_float_literal(self)
     }
-    parse_valid_float_literal(s)
 }
 
 fn is_valid_float_literal(s: string) -> bool {
@@ -330,20 +334,18 @@ fn digit_to_float(digit: i64) -> f64 {
 /// import std.string;
 ///
 /// fn main() {
-///     println(string.pad_left("42", 5, " "));   // "   42"
-///     println(string.pad_left("42", 5, "0"));   // "00042"
+///     println("42".pad_left(5, ' '));   // "   42"
+///     println("42".pad_left(5, '0'));   // "00042"
 /// }
 /// ```
-pub fn pad_left(s: string, width: i64, pad: string) -> string {
-    let pad_len = pad.len();
-    if pad_len != 1 {
-        panic("string.pad_left: pad must contain exactly one character");
+impl string {
+    fn pad_left(self, width: i64, pad: char) -> string {
+        let slen = self.len();
+        if slen >= width {
+            return self;
+        }
+        f"{pad}".repeat(width - slen) + self
     }
-    let slen = s.len();
-    if slen >= width {
-        return s;
-    }
-    pad.repeat(width - slen) + s
 }
 
 /// Pad a string on the right to reach the given width.
@@ -356,48 +358,17 @@ pub fn pad_left(s: string, width: i64, pad: string) -> string {
 /// import std.string;
 ///
 /// fn main() {
-///     println(string.pad_right("hi", 5, " "));   // "hi   "
+///     println("hi".pad_right(5, ' '));   // "hi   "
 /// }
 /// ```
-pub fn pad_right(s: string, width: i64, pad: string) -> string {
-    let pad_len = pad.len();
-    if pad_len != 1 {
-        panic("string.pad_right: pad must contain exactly one character");
-    }
-    let slen = s.len();
-    if slen >= width {
-        return s;
-    }
-    s + pad.repeat(width - slen)
-}
-
-/// Check if a string contains only ASCII digits (0-9).
-///
-/// Returns false for empty strings.
-///
-/// # Examples
-///
-/// ```
-/// import std.string;
-///
-/// fn main() {
-///     println(string.is_numeric("123"));   // true
-///     println(string.is_numeric("12a"));   // false
-///     println(string.is_numeric(""));   // false
-/// }
-/// ```
-pub fn is_numeric(s: string) -> bool {
-    let slen = s.len();
-    if slen == 0 {
-        return false;
-    }
-    for i in 0..slen {
-        let d = digit_value(s[i .. i + 1]);
-        if d < 0 {
-            return false;
+impl string {
+    fn pad_right(self, width: i64, pad: char) -> string {
+        let slen = self.len();
+        if slen >= width {
+            return self;
         }
+        self + f"{pad}".repeat(width - slen)
     }
-    true
 }
 
 /// Count the number of non-overlapping occurrences of `needle` in `haystack`.
@@ -408,55 +379,29 @@ pub fn is_numeric(s: string) -> bool {
 /// import std.string;
 ///
 /// fn main() {
-///     println(string.count("abcabc", "abc"));   // 2
-///     println(string.count("hello", "x"));   // 0
+///     println("abcabc".count("abc"));   // 2
+///     println("hello".count("x"));   // 0
 /// }
 /// ```
-pub fn count(haystack: string, needle: string) -> i64 {
-    let nlen = needle.len();
-    if nlen == 0 {
-        return 0;
-    }
-    var n = 0;
-    var pos = 0;
-    let hlen = haystack.len();
-    while pos <= hlen - nlen {
-        let idx = match haystack.find_from(needle, pos) {
-            .Some(i) => i,
-            .None => return n,
-        };
-        n = n + 1;
-        pos = idx + nlen;
-    }
-    n
-}
-
-/// Check if a string contains only ASCII characters (code points 0–127).
-///
-/// # Examples
-///
-/// ```
-/// import std.string;
-///
-/// fn main() {
-///     println(string.is_ascii("hello"));   // true
-///     println(string.is_ascii("héllo"));   // false
-/// }
-/// ```
-pub fn is_ascii(s: string) -> bool {
-    let len = s.len();
-    for i in 0..len {
-        // In-bounds loop: get(i) is always Some; treat the unreachable
-        // None defensively as non-ASCII rather than unwrapping.
-        let ch = match s.get(i) {
-            .Some(c) => c,
-            .None => return false,
-        };
-        if ch as i64 > 127 {
-            return false;
+impl string {
+    fn count(self, needle: string) -> i64 {
+        let nlen = needle.len();
+        if nlen == 0 {
+            return 0;
         }
+        var n = 0;
+        var pos = 0;
+        let hlen = self.len();
+        while pos <= hlen - nlen {
+            let idx = match self.find_from(needle, pos) {
+                .Some(i) => i,
+                .None => return n,
+            };
+            n = n + 1;
+            pos = idx + nlen;
+        }
+        n
     }
-    true
 }
 
 /// Scalar-indexed UTF-8 string operations.

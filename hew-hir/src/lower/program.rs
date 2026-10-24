@@ -77,9 +77,9 @@ pub fn lower_program(
             }
             // A span index is allocated per (module, file), so a file that is
             // BOTH a directory module's peer and importable in its own right
-            // owns two of them — `std/net/http/http_client.hew` is one index
-            // under `std.net.http` and another under
-            // `std.net.http.http_client`. `path_index` keeps only the first,
+            // owns two of them — `std/net/http/codec/request.hew` is one index
+            // under `std.net.http.codec` and another under
+            // `std.net.http.codec.request`. `path_index` keeps only the first,
             // so map every index the item walk can actually produce, through
             // the two accessors that own the pairing.
             for item_idx in 0..module.items.len() {
@@ -312,8 +312,8 @@ pub fn lower_program(
     // Bare record/type-decl names declared by more than one module, the
     // root included. Re-exports are deduplicated through
     // `preferred_package_module_ids`, so a stdlib module reached through two
-    // paths (`std::net::http` and `std::net::http::http_client` both surfacing
-    // `http.Response`) is not counted twice. A name unique to one owner keeps
+    // paths (`std.net.http.codec` and `std.net.http.codec.request` both surfacing
+    // `codec.Request`) is not counted twice. A name unique to one owner keeps
     // its bare identity (#2208).
     ctx.cross_module_colliding_record_names = program
         .module_graph
@@ -1122,13 +1122,6 @@ pub fn lower_program(
     // any real ones when it produces the canonical HirTypeDecl/HirRecordDecl.
     ctx.diagnostics.clear();
 
-    // FC-P1-D: HIR pre-pass binary-operator gates. Dispatched HERE (after
-    // diagnostics.clear above) so the gate's diagnostics survive into the
-    // final LowerOutput. Unconditional across all targets — these gates
-    // close MIR sites that are unsupported regardless of target until MIR
-    // gains TargetSpec threading (see audit `:5336`, `:5564`, `:5696`).
-    check_binary_operator_gates(&mut ctx, program);
-
     // FC-P1-E: Vec<T> index/slice element-type gates. Dispatched HERE (after
     // the diagnostics.clear above) so the gate's VecIndex/Slice element-type
     // diagnostics survive into the final LowerOutput. Target-independent: the
@@ -1532,7 +1525,7 @@ pub fn lower_program(
         }) {
             let canonical_name = format!("std.builtins.{}", source.name);
             let Some(declaration) = ctx.defs.lookup_path(&canonical_name) else {
-                ctx.unsupported(
+                ctx.missing_checked_fact(
                     span.clone(),
                     "source prelude declaration identity",
                     "checker-boundary",
@@ -2364,7 +2357,7 @@ pub fn lower_program(
     // signature. Emit one extern declaration per dispatched method so later
     // stages read the declared parameters, their `consume` dispositions and
     // the return type from a single shape, exactly as for an `extern` block.
-    for ((declaration, _), signature) in std::mem::take(&mut ctx.extern_method_signatures) {
+    for ((declaration, _), (id, signature)) in std::mem::take(&mut ctx.extern_method_signatures) {
         let (Ok(params), Ok(return_ty)) = (
             signature
                 .params
@@ -2384,7 +2377,7 @@ pub fn lower_program(
         let runtime_capability = extern_runtime_capability(&provenance, &signature.endpoint);
         items.push(HirItem::ExternFn(crate::node::HirExternFn {
             failure_domain: hew_types::CallableFailureDomain::Abort,
-            id: ctx.ids.item(),
+            id,
             node: ctx.ids.node(),
             declaration,
             name: signature.endpoint,

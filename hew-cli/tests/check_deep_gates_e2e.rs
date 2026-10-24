@@ -317,15 +317,20 @@ fn run_check_in_fixture_dir(dir: &std::path::Path) -> std::process::Output {
 }
 
 #[test]
-fn check_http_peer_fields_match_extern_signatures_through_both_import_routes() {
-    // Import checking visits the peer's Response methods even when the entry
-    // does not call HTTP. Both routes must agree on the handle's source type.
-    for module in ["std.net.http", "std.net.http.http_client"] {
+fn check_http_resources_and_codec_peers_keep_their_source_identity() {
+    // Import checking visits every authored method without needing a live
+    // connection. Codec peer imports must retain their directory owner.
+    for module in [
+        "std.net.http.server",
+        "std.net.http.client",
+        "std.net.http.codec",
+        "std.net.http.codec.request",
+    ] {
         let (_dir, path) = write_fixture(&format!("import {module}; fn main() {{}}"));
         let output = run_check(&["check", path.to_str().unwrap()]);
         assert!(
             output.status.success(),
-            "HTTP module {module} must check its peer record fields against extern parameters\n{}",
+            "HTTP module {module} must preserve its authored method and resource types\n{}",
             describe_output(&output),
         );
     }
@@ -599,31 +604,39 @@ fn check_rejects_invalid_module_const_arithmetic_without_nyi_or_artifact() {
 /// The fixture inserts into a map while a borrowed `get` still holds a loan
 /// of it, which SIR refuses by name.
 #[test]
-fn check_sir_unsupported_renders_with_source_span() {
-    let (_dir, path) = write_fixture(
+fn check_ownership_error_renders_with_source_span() {
+    let (dir, path) = write_fixture(
         "#[resource]\ntype Tok {\n    id: i64;\n}\n\nimpl Tok {\n    fn close(consume self) {\n        println(f\"close {self.id}\");\n    }\n}\n\nfn main() {\n    var m: HashMap<string, Tok> = HashMap.new();\n    m.insert(\"a\", Tok { id: 1 });\n    match m.get(\"a\") {\n        Option.Some(t) => {\n            m.insert(\"b\", Tok { id: 2 });\n            println(t.id);\n        }\n        Option.None => println(\"none\"),\n    }\n}\n",
     );
 
     let output = run_check(&["check", path.to_str().unwrap()]);
     let stderr = strip_ansi(&String::from_utf8_lossy(&output.stderr));
 
-    assert!(!output.status.success(), "{}", describe_output(&output));
+    assert_eq!(
+        output.status.code(),
+        Some(1),
+        "{}",
+        describe_output(&output)
+    );
+    assert_only_source_artifact(dir.path());
     assert!(
-        stderr.contains("E_SIR_UNSUPPORTED"),
-        "expected the live element-loan limitation to report E_SIR_UNSUPPORTED; got:\n{stderr}"
+        stderr.contains("E_OWN_CONSUME_BORROWED"),
+        "expected the live element-loan ownership error to report E_OWN_CONSUME_BORROWED; got:\n{stderr}"
     );
     assert!(
-        stderr.contains("compiler limitation:"),
-        "E_SIR_UNSUPPORTED must render on the Limitation channel; got:\n{stderr}"
+        stderr.contains("E_OWN_CONSUME_BORROWED:"),
+        "E_OWN_CONSUME_BORROWED must render on the User channel; got:\n{stderr}"
     );
     // The header must name the fixture file and a real line:col, not a bare
     // internal line with no location.
     let file_name = path.file_name().unwrap().to_str().unwrap();
     assert!(
         stderr.lines().any(|line| {
-            line.contains(file_name) && line.contains(':') && line.contains("E_SIR_UNSUPPORTED")
+            line.contains(file_name)
+                && line.contains(':')
+                && line.contains("E_OWN_CONSUME_BORROWED")
         }),
-        "expected a `{file_name}:<line>:<col>: ... E_SIR_UNSUPPORTED` header; got:\n{stderr}"
+        "expected a `{file_name}:<line>:<col>: ... E_OWN_CONSUME_BORROWED` header; got:\n{stderr}"
     );
     // A source excerpt with a caret underline, the same shape every other
     // diagnostic renders — this is the fixture's own declaring line, not
@@ -638,9 +651,23 @@ fn check_sir_unsupported_renders_with_source_span() {
             .is_some_and(|(_, marker)| marker.trim_start().starts_with('^'))),
         "expected a caret underline against the fixture source; got:\n{stderr}"
     );
+    let output = run_check(&[
+        "build",
+        "--emit-obj",
+        "-o",
+        dir.path().join("result.o").to_str().unwrap(),
+        path.to_str().unwrap(),
+    ]);
+    assert_eq!(
+        output.status.code(),
+        Some(1),
+        "{}",
+        describe_output(&output)
+    );
+    assert_only_source_artifact(dir.path());
 }
 
-/// Same limitation as [`check_sir_unsupported_renders_with_source_span`], but
+/// Same ownership error as [`check_ownership_error_renders_with_source_span`], but
 /// raised inside a root-file actor's `receive fn` body instead of a free
 /// `fn main`.
 ///
@@ -651,25 +678,31 @@ fn check_sir_unsupported_renders_with_source_span() {
 /// every callable shape including actor members; this pins that the span
 /// path reads that stored fact rather than reconstructing it.
 #[test]
-fn check_sir_unsupported_renders_with_source_span_for_actor_handler() {
-    let (_dir, path) = write_fixture(
+fn check_ownership_error_renders_with_source_span_for_actor_handler() {
+    let (dir, path) = write_fixture(
         "#[resource]\ntype Tok {\n    id: i64;\n}\n\nimpl Tok {\n    fn close(consume self) {\n        println(f\"close {self.id}\");\n    }\n}\n\nactor Holder {\n    receive fn poke() {\n        var m: HashMap<string, Tok> = HashMap.new();\n        m.insert(\"a\", Tok { id: 1 });\n        match m.get(\"a\") {\n            Option.Some(t) => {\n                m.insert(\"b\", Tok { id: 2 });\n                println(t.id);\n            }\n            Option.None => println(\"none\"),\n        }\n    }\n}\n\nfn main() {\n    let h = spawn Holder;\n    let _ = h.poke();\n}\n",
     );
 
     let output = run_check(&["check", path.to_str().unwrap()]);
     let stderr = strip_ansi(&String::from_utf8_lossy(&output.stderr));
 
-    assert!(!output.status.success(), "{}", describe_output(&output));
+    assert_eq!(
+        output.status.code(),
+        Some(1),
+        "{}",
+        describe_output(&output)
+    );
+    assert_only_source_artifact(dir.path());
     assert!(
-        stderr.contains("E_SIR_UNSUPPORTED"),
-        "expected the actor handler's element-loan limitation to report E_SIR_UNSUPPORTED; got:\n{stderr}"
+        stderr.contains("E_OWN_CONSUME_BORROWED"),
+        "expected the actor handler's element-loan ownership error to report E_OWN_CONSUME_BORROWED; got:\n{stderr}"
     );
     let file_name = path.file_name().unwrap().to_str().unwrap();
     assert!(
         stderr.lines().any(|line| {
-            line.contains(file_name) && line.contains(':') && line.contains("E_SIR_UNSUPPORTED")
+            line.contains(file_name) && line.contains(':') && line.contains("E_OWN_CONSUME_BORROWED")
         }),
-        "expected a `{file_name}:<line>:<col>: ... E_SIR_UNSUPPORTED` header for the actor handler; got:\n{stderr}"
+        "expected a `{file_name}:<line>:<col>: ... E_OWN_CONSUME_BORROWED` header for the actor handler; got:\n{stderr}"
     );
     assert!(
         stderr.contains("var m: HashMap<string, Tok> = HashMap.new();"),
@@ -683,13 +716,13 @@ fn check_sir_unsupported_renders_with_source_span_for_actor_handler() {
     );
 }
 
-/// Same limitation as [`check_sir_unsupported_renders_with_source_span`],
+/// Same ownership error as [`check_ownership_error_renders_with_source_span`],
 /// through `--format json`: the JSON diagnostic must carry the fixture's
-/// real file and a non-zero span, not the zero span a spanless limitation
+/// real file and a non-zero span, not the zero span a spanless ownership error
 /// falls back to.
 #[test]
-fn check_sir_unsupported_renders_with_source_span_json() {
-    let (_dir, path) = write_fixture(
+fn check_ownership_error_renders_with_source_span_json() {
+    let (dir, path) = write_fixture(
         "#[resource]\ntype Tok {\n    id: i64;\n}\n\nimpl Tok {\n    fn close(consume self) {\n        println(f\"close {self.id}\");\n    }\n}\n\nfn main() {\n    var m: HashMap<string, Tok> = HashMap.new();\n    m.insert(\"a\", Tok { id: 1 });\n    match m.get(\"a\") {\n        Option.Some(t) => {\n            m.insert(\"b\", Tok { id: 2 });\n            println(t.id);\n        }\n        Option.None => println(\"none\"),\n    }\n}\n",
     );
 
@@ -697,7 +730,13 @@ fn check_sir_unsupported_renders_with_source_span_json() {
         .args(["check", "--format", "json", path.to_str().unwrap()])
         .output()
         .expect("hew binary must run");
-    assert!(!output.status.success(), "{}", describe_output(&output));
+    assert_eq!(
+        output.status.code(),
+        Some(1),
+        "{}",
+        describe_output(&output)
+    );
+    assert_only_source_artifact(dir.path());
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     let diagnostics: Vec<Value> = serde_json::from_str(&stdout).unwrap_or_else(|error| {
@@ -705,10 +744,10 @@ fn check_sir_unsupported_renders_with_source_span_json() {
     });
     let diagnostic = diagnostics
         .iter()
-        .find(|d| d["code"] == "E_SIR_UNSUPPORTED")
-        .unwrap_or_else(|| panic!("expected an E_SIR_UNSUPPORTED diagnostic; got:\n{stdout}"));
+        .find(|d| d["code"] == "E_OWN_CONSUME_BORROWED")
+        .unwrap_or_else(|| panic!("expected an E_OWN_CONSUME_BORROWED diagnostic; got:\n{stdout}"));
 
-    assert_eq!(diagnostic["channel"], "limitation");
+    assert_eq!(diagnostic["channel"], "user");
     assert_eq!(diagnostic["file"], path.to_str().unwrap());
     assert!(
         diagnostic["span"]["start_line"].as_u64().unwrap() > 0,

@@ -24,7 +24,7 @@
 //! }
 //! ```
 
-import std.crypto.crypto;
+import std.crypto.hash;
 
 /// Why key material was refused.
 pub enum KeyError {
@@ -114,7 +114,7 @@ fn checked_key(consume handle: KeyHandle, refusal: KeyError) -> Result<SigningKe
 
 /// Draw a fresh 32-byte seed from the operating system's random source.
 pub fn generate_seed() -> bytes {
-    crypto.random_bytes(32).expect("the system random source")
+    hash.random_bytes(32).expect("the system random source")
 }
 
 /// Build a signing key from a 32-byte seed (RFC 8032 private key).

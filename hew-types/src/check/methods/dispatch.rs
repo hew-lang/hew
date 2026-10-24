@@ -72,7 +72,7 @@ impl Checker {
                 "E_OPTIONAL_CHAIN_MUTATES: `?.` cannot mutate its payload; match on the Option and mutate the bound value".to_string());
             return;
         }
-        self.reject_indexed_writable_borrow(receiver);
+        self.reject_invalid_writable_projection(receiver);
         let place = self.expr_place(&receiver.0).or_else(|| {
             self.assignment_root_binding_name(&receiver.0)
                 .map(|root| (root, Vec::new()))
@@ -671,7 +671,7 @@ impl Checker {
             self.warn_if_blocking_handle_method(&name, method, span);
         }
         // Structural clone admission is member-wise for tuples and built-in
-        // value enums. Collection clones keep their existing runtime rewrites,
+        // value enums and ranges. Collection clones keep their runtime rewrites,
         // but pass through the same affine/member gate first.
         if method == "clone"
             && args.is_empty()
@@ -696,7 +696,9 @@ impl Checker {
                     | Ty::Function { .. }
                     | Ty::Closure { .. }
                     | Ty::Named {
-                        head: crate::TypeHead::Builtin(BuiltinType::Option | BuiltinType::Result),
+                        head: crate::TypeHead::Builtin(
+                            BuiltinType::Option | BuiltinType::Result | BuiltinType::Range,
+                        ),
                         ..
                     }
             );
@@ -785,28 +787,6 @@ impl Checker {
                     crate::RuntimeCallFamily::Array(crate::runtime_call::ArrayValueOp::Len),
                 );
                 Ty::I64
-            }
-            (Ty::CancellationToken, "is_cancelled") => {
-                self.check_arity(args, 0, "`CancellationToken.is_cancelled`", span);
-                self.record_method_call_rewrite(
-                    span,
-                    MethodCallRewrite::CancellationTokenIsCancelled,
-                );
-                Ty::Bool
-            }
-            (Ty::CancellationToken, _) => {
-                for arg in args {
-                    let (expr, sp) = arg.expr();
-                    self.synthesize(expr, sp);
-                }
-                self.report_error_with_suggestions_at(
-                    TypeErrorKind::UndefinedMethod,
-                    span,
-                    method_span,
-                    format!("no method `{method}` on `CancellationToken`"),
-                    self.similar_methods(&resolved, method),
-                );
-                Ty::Error
             }
             // A borrowed trait-object snapshot has no clone operation. The
             // authored consuming constructor remains available.
@@ -1778,12 +1758,18 @@ impl Checker {
                         }
                     }
                 }
-                // These adapters construct a new Range value in MIR. They
-                // have no callable target, so the effect graph must not treat
-                // their call syntax as an unresolved body dependency. In an
-                // imported impl, that false dependency otherwise suppresses
-                // the entire checked method body at HIR registration.
+                // These value transformations are not callable bodies. Carry
+                // their checked operation so HIR and effect analysis share
+                // the same selection, including through imported impls.
                 self.record_construct_call(span);
+                self.record_direct_call_target(
+                    span,
+                    crate::CallTarget::RangeAdapter(if method == "rev" {
+                        crate::range_value::RangeAdapter::Reverse
+                    } else {
+                        crate::range_value::RangeAdapter::Step
+                    }),
+                );
                 range_ty
             }
             // User-defined struct/actor methods from type_defs

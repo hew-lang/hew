@@ -1,10 +1,12 @@
 //! Source suspension boundaries and their explicit cleanup continuations.
 
+use crate::SirLoweringError;
+
 use super::{Builder, CallResult, Edge, HirExpr, Operand, ResolvedTy, SemTerminator};
 use crate::{BoundaryDecision, BoundaryOperand, SuspendKind};
 
 impl Builder<'_, '_> {
-    pub(super) fn lower_safepoint(&mut self) -> Result<(), String> {
+    pub(super) fn lower_safepoint(&mut self) -> Result<(), SirLoweringError> {
         if !self.defer_bodies.is_empty() {
             return Ok(());
         }
@@ -51,7 +53,7 @@ impl Builder<'_, '_> {
         &mut self,
         expression: &HirExpr,
         args: &[HirExpr],
-    ) -> Result<(), String> {
+    ) -> Result<(), SirLoweringError> {
         self.lower_timer_suspend(expression, args, SuspendKind::Sleep, &ResolvedTy::Duration)
     }
 
@@ -63,7 +65,7 @@ impl Builder<'_, '_> {
         &mut self,
         expression: &HirExpr,
         args: &[HirExpr],
-    ) -> Result<(), String> {
+    ) -> Result<(), SirLoweringError> {
         self.lower_timer_suspend(expression, args, SuspendKind::SleepUntil, &ResolvedTy::I64)
     }
 
@@ -73,7 +75,7 @@ impl Builder<'_, '_> {
         args: &[HirExpr],
         kind: SuspendKind,
         input_ty: &ResolvedTy,
-    ) -> Result<(), String> {
+    ) -> Result<(), SirLoweringError> {
         let [input] = args else {
             return Err("a timer suspension requires exactly one input".into());
         };

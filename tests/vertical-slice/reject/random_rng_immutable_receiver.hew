@@ -2,5 +2,5 @@ import std.random;
 
 fn main() {
     let rng = random.Rng.new(42);
-    rng.range(0, 10);
+    rng.range(0, 10).expect("valid random draw");
 }

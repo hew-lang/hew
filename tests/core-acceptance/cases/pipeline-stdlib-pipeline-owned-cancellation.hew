@@ -3,7 +3,7 @@ import std.semaphore;
 import pipeline_support.items;
 
 fn main() {
-    let closed = semaphore.new(0);
+    let closed = semaphore.new(0).expect("valid permit count");
     scope within 100ms {
         for _index in pipeline.map(items.source(closed), |item: items.Item| {
             sleep(1h);

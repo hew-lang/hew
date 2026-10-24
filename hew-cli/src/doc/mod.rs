@@ -275,8 +275,8 @@ mod tests {
     #[test]
     fn module_to_filename_deep() {
         assert_eq!(
-            module_to_filename("std::net::http::http_client", "md"),
-            "std.net.http.http_client.md"
+            module_to_filename("std::net::http::client", "md"),
+            "std.net.http.client.md"
         );
     }
 
@@ -301,18 +301,18 @@ mod tests {
     #[test]
     fn derive_name_not_collapsed() {
         let name = derive_module_name(
-            std::path::Path::new("std/net/http/http_client.hew"),
+            std::path::Path::new("std/net/http/client.hew"),
             std::path::Path::new("std"),
         );
-        assert_eq!(name, "std::net::http::http_client");
+        assert_eq!(name, "std::net::http::client");
     }
 
     #[test]
     fn derive_name_single_dir_collapsed() {
         let name = derive_module_name(
-            std::path::Path::new("std/crypto/crypto.hew"),
+            std::path::Path::new("std/log/log.hew"),
             std::path::Path::new("std"),
         );
-        assert_eq!(name, "std::crypto");
+        assert_eq!(name, "std::log");
     }
 }

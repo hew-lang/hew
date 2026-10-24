@@ -115,7 +115,7 @@ pub gen fn map<I, T, U>(consume source: I, transform: fn[clone, suspends](consum
             inboxes.push(Inbox { sink: inbox });
             workers.push(fork work(id, jobs, output.clone(), ready_sink.clone(), transform));
         }
-        let producer = fork dispatch(source, inboxes, ready, semaphore.new(concurrency), output);
+        let producer = fork dispatch(source, inboxes, ready, semaphore.new(concurrency).expect("valid permit count"), output);
         ready_sink.close();
         var next = 0;
         var waiting: HashMap<i64, Completed<U>> = HashMap.new();

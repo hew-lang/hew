@@ -30,7 +30,7 @@ fn port(key: string) -> Result<i64, string> {
     let .Raw(raw) = lookup(key) else {
         return .Err(f"{key} missing");
     };
-    let .Ok(parsed) = string.to_int(raw) else {
+    let .Ok(parsed) = raw.to_int() else {
         return .Err(f"{key} is not a number");
     };
     .Ok(parsed)
@@ -38,7 +38,7 @@ fn port(key: string) -> Result<i64, string> {
 
 fn scan(limit: i64) -> i64 {
     var total = 0;
-    for i in 0 .. limit {
+    for i in 0..limit {
         let .Raw(text) = lookup(if i == 0 {
             "port"
         } else {
@@ -53,7 +53,7 @@ fn scan(limit: i64) -> i64 {
 
 fn skip(limit: i64) -> i64 {
     var seen = 0;
-    for i in 0 .. limit {
+    for i in 0..limit {
         let .Raw(text) = lookup(if i == 1 {
             "other"
         } else {
@@ -91,7 +91,7 @@ fn read_text(kind: i64) -> string {
 }
 
 enum Config {
-    Named { key: string; value: string;  }
+    Named { key: string; value: string; }
     Anonymous;
 }
 

@@ -69,7 +69,7 @@ fn resource_module() -> hew_sir::SemModule {
         lowered
             .callable_statuses
             .iter()
-            .all(|(_, status)| !matches!(status, SirLoweringStatus::Unsupported { .. })),
+            .all(|(_, status)| !matches!(status, SirLoweringStatus::Failed { .. })),
         "{:?}",
         lowered.callable_statuses
     );

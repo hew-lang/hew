@@ -487,6 +487,10 @@ class ExecutorV1 {
         if (message !== undefined) errors[format] = message;
         return errors[format] ?? "";
       },
+      setFileError: (message) => {
+        this.current.context.fileError =
+          message === null ? null : { kind: 0, message };
+      },
       fileError: (operation) => {
         const error = this.current.context.fileError;
         switch (operation) {
@@ -1790,6 +1794,27 @@ class ExecutorV1 {
             `runtime family ${registration.capability} was refused after admission`,
           );
         switch (registration.handler) {
+          case "context_actor_id":
+            this.completeShim(act, term, {
+              kind: "i64",
+              value: act.context.actor?.identity ?? 0n,
+            });
+            return;
+          case "context_supervisor": {
+            const parent = act.context.actor?.supervisor?.owner;
+            this.completeShim(
+              act,
+              term,
+              parent
+                ? { kind: "supervisor", id: parent.id }
+                : { kind: "i64", value: 0n },
+            );
+            return;
+          }
+          case "context_trace_span":
+            // The sandbox installs no external tracing span in actor turns.
+            this.completeShim(act, term, { kind: "i64", value: 0n });
+            return;
           case "actor_caller": {
             const caller = act.context.caller ?? { kind: "Task" };
             const payload: VmValue[] = [];
@@ -2986,6 +3011,7 @@ class ExecutorV1 {
         // The record is the raw line,
         // so the records concatenate to the stdin the program consumed.
         const line = this.stdin.readLine() ?? new Uint8Array();
+        act.context.fileError = null;
         this.trace.recordReplayInput(
           { kind: "stdin", data: new TextDecoder().decode(line) },
           false,

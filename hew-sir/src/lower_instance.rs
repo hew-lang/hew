@@ -1,5 +1,7 @@
 //! Instance admission: type-fact and shape requests, monomorphization and closure/vtable requests.
 
+use crate::SirLoweringError;
+
 use super::{
     callable_signature, callable_signature_with_substitution, dyn_boundary_passing,
     dyn_passing_admits, function_source_origin, is_supported_instance_type_arg, project_type_facts,
@@ -63,7 +65,10 @@ impl<'a> InstanceService<'a> {
         self.table.callable(id)
     }
 
-    pub(super) fn require_key_capabilities(&mut self, ty: &ResolvedTy) -> Result<(), String> {
+    pub(super) fn require_key_capabilities(
+        &mut self,
+        ty: &ResolvedTy,
+    ) -> Result<(), SirLoweringError> {
         for capability in [
             hew_types::ValueCapability::Hash,
             hew_types::ValueCapability::Eq,
@@ -77,7 +82,7 @@ impl<'a> InstanceService<'a> {
         &mut self,
         ty: &ResolvedTy,
         capability: hew_types::ValueCapability,
-    ) -> Result<(), String> {
+    ) -> Result<(), SirLoweringError> {
         let key = (ty.clone(), capability);
         if self.value_capabilities.contains_key(&key) {
             return Ok(());
@@ -87,16 +92,16 @@ impl<'a> InstanceService<'a> {
             .checked_facts
             .capability_plan(ty, capability)
             .map_err(|error| {
-                format!(
+                SirLoweringError::from(format!(
                     "cannot select {capability:?} for `{}`: {error}",
                     ty.user_facing()
-                )
+                ))
             })?
             .ok_or_else(|| {
-                format!(
+                SirLoweringError::from(format!(
                     "`{}` has no selected {capability:?} implementation",
                     ty.user_facing()
-                )
+                ))
             })?;
         let callable = match selected.plan() {
             hew_types::ValueMethodPlan::Derived => None,
@@ -105,25 +110,33 @@ impl<'a> InstanceService<'a> {
                     self.request_instance(*method, type_args.clone())?
                 } else {
                     if !type_args.is_empty() {
-                        return Err("selected nongeneric capability has type arguments".to_string());
+                        return Err("selected nongeneric capability has type arguments"
+                            .to_string()
+                            .into());
                     }
                     let id = self.admit_monomorphic(*method).map_err(|reason| {
-                        format!(
-                            "selected capability `{}` has no admitted HIR callable: {reason}",
+                        reason.with_context(&format!(
+                            "selected capability `{}` has no admitted HIR callable",
                             self.module.defs.path(*method)
-                        )
+                        ))
                     })?;
                     self.request_body(id);
                     id
                 };
                 let metadata = self.callable(callable).ok_or_else(|| {
-                    "selected capability callable disappeared from its table".to_string()
+                    SirLoweringError::from(
+                        "selected capability callable disappeared from its table".to_string(),
+                    )
                 })?;
                 let facts = self
                     .checked_facts
                     .rows()
                     .get(&TypeInstanceKey(ty.clone()))
-                    .ok_or_else(|| "selected capability type facts disappeared".to_string())?;
+                    .ok_or_else(|| {
+                        SirLoweringError::from(
+                            "selected capability type facts disappeared".to_string(),
+                        )
+                    })?;
                 crate::capability::verify_capability_signature(ty, capability, metadata, *facts)?;
                 Some(callable)
             }
@@ -142,6 +155,7 @@ impl<'a> InstanceService<'a> {
                 &self.aggregate_shapes,
                 &self.variant_shapes,
             )
+            .map_err(SirLoweringError::from)
             .and_then(|components| {
                 for component in components {
                     for component_capability in capability.component_capabilities() {
@@ -161,7 +175,7 @@ impl<'a> InstanceService<'a> {
     pub(super) fn require_structural_rendering(
         &mut self,
         key: &crate::StructuralType,
-    ) -> Result<(), String> {
+    ) -> Result<(), SirLoweringError> {
         if self.structural_display.contains_key(key) {
             return Ok(());
         }
@@ -175,12 +189,20 @@ impl<'a> InstanceService<'a> {
         result
     }
 
-    fn select_structural_rendering(&mut self, key: &crate::StructuralType) -> Result<(), String> {
+    fn select_structural_rendering(
+        &mut self,
+        key: &crate::StructuralType,
+    ) -> Result<(), SirLoweringError> {
         let ty = &key.value;
         if let Some((method, type_args)) = self
             .checked_facts
             .display_method_for_type(ty, &key.source)
-            .map_err(|error| format!("cannot select Display for `{}`: {error}", ty.user_facing()))?
+            .map_err(|error| {
+                SirLoweringError::from(format!(
+                    "cannot select Display for `{}`: {error}",
+                    ty.user_facing()
+                ))
+            })?
         {
             let instance = if type_args.is_empty() && !self.table.templates.contains_key(&method) {
                 hew_types::EntryCallableInstance::Declared
@@ -226,7 +248,7 @@ impl<'a> InstanceService<'a> {
     pub(super) fn structural_rendering_members(
         &self,
         key: &crate::StructuralType,
-    ) -> Result<Vec<crate::StructuralType>, String> {
+    ) -> Result<Vec<crate::StructuralType>, SirLoweringError> {
         let ty = &key.value;
         let source = self.checked_facts.rendering_source(&key.source)?;
         let source_args = match &source {
@@ -313,7 +335,7 @@ impl<'a> InstanceService<'a> {
         })
     }
 
-    pub(super) fn require_type_facts(&mut self, ty: &ResolvedTy) -> Result<(), String> {
+    pub(super) fn require_type_facts(&mut self, ty: &ResolvedTy) -> Result<(), SirLoweringError> {
         require_type_shapes(
             self.module,
             &mut self.checked_facts,
@@ -332,7 +354,7 @@ impl<'a> InstanceService<'a> {
     pub(super) fn require_aggregate_shape(
         &mut self,
         aggregate_ty: &ResolvedTy,
-    ) -> Result<AggregateShapeRef, String> {
+    ) -> Result<AggregateShapeRef, SirLoweringError> {
         require_aggregate_shape(
             self.module,
             &mut self.checked_facts,
@@ -345,7 +367,7 @@ impl<'a> InstanceService<'a> {
     pub(super) fn require_variant_shape(
         &mut self,
         enum_ty: &ResolvedTy,
-    ) -> Result<VariantShapeId, String> {
+    ) -> Result<VariantShapeId, SirLoweringError> {
         require_variant_shape(
             self.module,
             &mut self.checked_facts,
@@ -359,28 +381,32 @@ impl<'a> InstanceService<'a> {
         &mut self,
         kind: hew_types::RuntimeVariantResultKind,
         result_ty: &ResolvedTy,
-    ) -> Result<(), String> {
+    ) -> Result<(), SirLoweringError> {
         let (_, error_ty) = kind.payload_types(result_ty).ok_or_else(|| {
-            format!(
+            SirLoweringError::from(format!(
                 "runtime variant result contract does not admit `{}`",
                 result_ty.user_facing()
-            )
+            ))
         })?;
         self.require_variant_shape(result_ty)?;
         let AggregateShapeRef::Record(error_shape) = self.require_aggregate_shape(error_ty)? else {
-            return Err("runtime variant error must be an exact named record".to_string());
+            return Err("runtime variant error must be an exact named record"
+                .to_string()
+                .into());
         };
         let error_len_ty = self
             .aggregate_shapes
             .get(usize::try_from(error_shape.0).map_err(|_| {
-                format!(
+                SirLoweringError::from(format!(
                     "runtime variant error shape {} is out of range",
                     error_shape.0
-                )
+                ))
             })?)
             .and_then(|shape| shape.fields.iter().find(|field| field.name == "error_len"))
             .map(|field| field.ty.clone())
-            .ok_or_else(|| "runtime variant error has no error_len field".to_string())?;
+            .ok_or_else(|| {
+                SirLoweringError::from("runtime variant error has no error_len field".to_string())
+            })?;
         self.require_variant_shape(&error_len_ty)?;
         crate::runtime_variant_shape_refs(
             &self.module.defs,
@@ -395,7 +421,7 @@ impl<'a> InstanceService<'a> {
     pub(super) fn require_signature_shapes(
         &mut self,
         signature: &SemSignature,
-    ) -> Result<(), String> {
+    ) -> Result<(), SirLoweringError> {
         let prior_aggregate_count = self.aggregate_shapes.len();
         let prior_variant_count = self.variant_shapes.len();
         let result = require_signature_shapes(
@@ -590,8 +616,12 @@ impl<'a> InstanceService<'a> {
                 .arguments
                 .iter()
                 .filter(|_| !plan.benchmark)
-                .map(|ty| self.property_plans(ty)?.property_shape())
-                .collect::<Result<Vec<_>, String>>();
+                .map(|ty| {
+                    self.property_plans(ty)?
+                        .property_shape()
+                        .map_err(SirLoweringError::from)
+                })
+                .collect::<Result<Vec<_>, SirLoweringError>>();
             let Ok(properties) = properties else {
                 continue;
             };
@@ -615,12 +645,13 @@ impl<'a> InstanceService<'a> {
     pub(super) fn request_offload(
         &mut self,
         signature: &crate::ExternSignature,
-    ) -> Result<crate::OffloadId, String> {
+    ) -> Result<crate::OffloadId, SirLoweringError> {
         if let Some(id) = self.offloads_by_declaration.get(&signature.declaration) {
             return Ok(*id);
         }
         let id = crate::OffloadId(
-            u32::try_from(self.offloads.len()).map_err(|_| "offload count exceeds u32")?,
+            u32::try_from(self.offloads.len())
+                .map_err(|_| SirLoweringError::from("offload count exceeds u32"))?,
         );
         self.offloads.push(signature.clone());
         self.offloads_by_declaration
@@ -628,6 +659,10 @@ impl<'a> InstanceService<'a> {
         Ok(id)
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one vtable admission resolves its complete slot table"
+    )]
     pub(super) fn request_vtable(
         &mut self,
         layout_ty: &ResolvedTy,
@@ -635,7 +670,7 @@ impl<'a> InstanceService<'a> {
         concrete_ty: &ResolvedTy,
         site: hew_hir::SiteId,
         substitution: &TypeSubstitution,
-    ) -> Result<crate::SemVtableId, String> {
+    ) -> Result<crate::SemVtableId, SirLoweringError> {
         crate::model::require_dyn_trait_ids(dyn_ty)?;
         let key = (dyn_ty.clone(), concrete_ty.clone());
         if let Some(id) = self.vtables_by_erasure.get(&key) {
@@ -645,21 +680,26 @@ impl<'a> InstanceService<'a> {
         self.require_type_facts(concrete_ty)?;
         let layout = std::sync::Arc::clone(&self.module.trait_object_layouts);
         let layout = layout.get(layout_ty).ok_or_else(|| {
-            format!(
+            SirLoweringError::from(format!(
                 "the checker published no layout for `{}`",
                 layout_ty.user_facing()
-            )
+            ))
         })?;
         let mut slots = Vec::with_capacity(layout.slots.len());
         for (index, layout_slot) in layout.slots.iter().enumerate() {
-            let slot = u32::try_from(index)
-                .map_err(|_| "trait-object method count exceeds u32".to_string())?;
+            let slot = u32::try_from(index).map_err(|_| {
+                SirLoweringError::from("trait-object method count exceeds u32".to_string())
+            })?;
             let trait_args = layout_slot
                 .trait_args
                 .iter()
                 .map(|ty| ResolvedTy::from_ty(ty).map(|ty| substitution.apply(&ty)))
                 .collect::<Result<Vec<_>, _>>()
-                .map_err(|error| format!("unresolved trait-object slot arguments: {error:?}"))?;
+                .map_err(|error| {
+                    SirLoweringError::from(format!(
+                        "unresolved trait-object slot arguments: {error:?}"
+                    ))
+                })?;
             let target = self.resolve_static_trait_call(
                 layout_slot.declaring_trait,
                 layout_slot.method,
@@ -676,7 +716,8 @@ impl<'a> InstanceService<'a> {
                 return Err(format!(
                     "slot {slot} implementation `{}` takes no receiver",
                     target.symbol
-                ));
+                )
+                .into());
             };
             let receiver_passing = match layout_slot.receiver {
                 hew_types::DynReceiver::Borrow => SemParamPassing::Borrow,
@@ -688,7 +729,8 @@ impl<'a> InstanceService<'a> {
                     "slot {slot} implementation `{}` does not receive `{}` on the erased boundary",
                     target.symbol,
                     concrete_ty.user_facing()
-                ));
+                )
+                .into());
             }
             let return_ty = target.signature.erased_return_ty(receiver_passing)?.clone();
             let mut params = Vec::with_capacity(arguments.len());
@@ -700,7 +742,8 @@ impl<'a> InstanceService<'a> {
                         "slot {slot} implementation `{}` changes the erased transfer of `{}`",
                         target.symbol,
                         argument.ty.user_facing()
-                    ));
+                    )
+                    .into());
                 }
                 params.push(SemAbiParam {
                     ty: argument.ty.clone(),
@@ -722,7 +765,7 @@ impl<'a> InstanceService<'a> {
         }
         let id = crate::SemVtableId(
             u32::try_from(self.vtables.len())
-                .map_err(|_| "SIR vtable count exceeds u32".to_string())?,
+                .map_err(|_| SirLoweringError::from("SIR vtable count exceeds u32".to_string()))?,
         );
         self.vtables.push(crate::SemVtable {
             id,
@@ -739,14 +782,14 @@ impl<'a> InstanceService<'a> {
         &mut self,
         declaration: DefId,
         instance: &hew_types::EntryCallableInstance,
-    ) -> Result<SemCallable, String> {
+    ) -> Result<SemCallable, SirLoweringError> {
         let id = match instance {
             hew_types::EntryCallableInstance::Declared => {
                 let id = self.admit_monomorphic(declaration).map_err(|reason| {
-                    format!(
-                        "entry Display target `{}` has no SIR callable: {reason}",
+                    reason.with_context(&format!(
+                        "entry Display target `{}` has no SIR callable",
                         self.module.defs.path(declaration)
-                    )
+                    ))
                 })?;
                 self.request_body(id);
                 id
@@ -755,9 +798,11 @@ impl<'a> InstanceService<'a> {
                 self.request_instance(declaration, type_args.clone())?
             }
         };
-        self.callable(id)
-            .cloned()
-            .ok_or_else(|| format!("SIR callable {id:?} is absent from its deterministic table"))
+        self.callable(id).cloned().ok_or_else(|| {
+            SirLoweringError::from(format!(
+                "SIR callable {id:?} is absent from its deterministic table"
+            ))
+        })
     }
 
     /// Seed exact caller-selected declarations after validating the complete
@@ -775,7 +820,7 @@ impl<'a> InstanceService<'a> {
                 errors.push(SirRootSelectionError {
                     declaration: (*declaration),
                     reason: "generic declarations require a concrete call-site specialization"
-                        .to_string(),
+                        .into(),
                 });
                 continue;
             }
@@ -824,7 +869,10 @@ impl<'a> InstanceService<'a> {
     ///
     /// A refusal is recorded once, keyed by the declaration a call would name,
     /// and reported at the call site that wanted it.
-    pub(super) fn admit_monomorphic(&mut self, declaration: DefId) -> Result<CallableId, String> {
+    pub(super) fn admit_monomorphic(
+        &mut self,
+        declaration: DefId,
+    ) -> Result<CallableId, SirLoweringError> {
         if let Some(id) = self.table.monomorphic_by_declaration.get(&declaration) {
             return Ok(*id);
         }
@@ -833,7 +881,9 @@ impl<'a> InstanceService<'a> {
         }
         let Some(admissible) = self.table.admissible.get(&declaration) else {
             return Err(
-                "the declaration is not present as a HIR function in this module".to_string(),
+                "the declaration is not present as a HIR function in this module"
+                    .to_string()
+                    .into(),
             );
         };
         let function = admissible.function;
@@ -927,7 +977,7 @@ impl<'a> InstanceService<'a> {
         &mut self,
         declaration: DefId,
         owner: &ResolvedTy,
-    ) -> Result<CallableId, String> {
+    ) -> Result<CallableId, SirLoweringError> {
         let Some(template) = self.table.templates.get(&declaration) else {
             return self.admit_monomorphic(declaration);
         };
@@ -938,7 +988,9 @@ impl<'a> InstanceService<'a> {
         let type_args = self
             .checked_facts
             .inherent_method_type_args(declaration, owner)
-            .map_err(|error| format!("cannot bind resource close to its owner: {error}"))?;
+            .map_err(|error| {
+                SirLoweringError::from(format!("cannot bind resource close to its owner: {error}"))
+            })?;
         let substitution = TypeSubstitution::for_instance(&self.module.defs, function, &type_args)?;
         if substitution.apply(&receiver.ty) != *owner {
             return Err("resource close receiver does not match its exact owner".into());
@@ -1050,7 +1102,10 @@ impl<'a> InstanceService<'a> {
         }
     }
 
-    pub(super) fn lower_callable(&mut self, callable: CallableId) -> Result<SemFunction, String> {
+    pub(super) fn lower_callable(
+        &mut self,
+        callable: CallableId,
+    ) -> Result<SemFunction, SirLoweringError> {
         let input = self.input_for_callable(callable)?;
         Builder::new(
             input.function,
@@ -1065,7 +1120,7 @@ impl<'a> InstanceService<'a> {
     pub(super) fn record_callable_result(
         &mut self,
         callable: CallableId,
-        result: Result<SemFunction, String>,
+        result: Result<SemFunction, SirLoweringError>,
     ) {
         let index = usize::try_from(callable.0).expect("SIR callable id exceeds usize");
         match result {
@@ -1077,7 +1132,7 @@ impl<'a> InstanceService<'a> {
             Err(reason) => {
                 self.states[index] = CallableState::Failed;
                 // Body lowering has no span of its own to report (#3384): the
-                // refusal reason is a `String` built deep inside `Builder`,
+                // typed failure is built deep inside `Builder`,
                 // with no source location threaded alongside it. The
                 // declaring function's own span is the coarsest attribution
                 // available without threading a span through every fallible
@@ -1109,7 +1164,7 @@ impl<'a> InstanceService<'a> {
                     .then(|| self.input_for_callable(callable).ok())
                     .flatten()
                     .map(|input| input.function.span.clone());
-                self.statuses[index] = Some(SirLoweringStatus::Unsupported { reason, span });
+                self.statuses[index] = Some(SirLoweringStatus::Failed { reason, span });
             }
         }
     }
@@ -1121,22 +1176,21 @@ impl<'a> InstanceService<'a> {
     pub(super) fn input_for_callable(
         &self,
         callable: CallableId,
-    ) -> Result<LoweringInput<'a>, String> {
+    ) -> Result<LoweringInput<'a>, SirLoweringError> {
         let callable_meta = self.callable(callable).cloned().ok_or_else(|| {
-            format!(
+            SirLoweringError::from(format!(
                 "SIR callable {} is absent from its deterministic table",
                 callable.0
-            )
+            ))
         })?;
         if let CallableInstance::Closure(id) = callable_meta.instance {
-            let closure = self
-                .closures
-                .get(id.0 as usize)
-                .ok_or_else(|| "closure body has no enclosing callable".to_string())?;
-            let (expression, substitution) = self
-                .closure_sources
-                .get(id.0 as usize)
-                .ok_or_else(|| "closure body has no checked literal source".to_string())?;
+            let closure = self.closures.get(id.0 as usize).ok_or_else(|| {
+                SirLoweringError::from("closure body has no enclosing callable".to_string())
+            })?;
+            let (expression, substitution) =
+                self.closure_sources.get(id.0 as usize).ok_or_else(|| {
+                    SirLoweringError::from("closure body has no checked literal source".to_string())
+                })?;
             // A closure inherits the source of its exact enclosing callable.
             // Actor handlers have synthesized HIR functions outside the
             // ordinary item table; nested closures must retain that source too.
@@ -1146,10 +1200,12 @@ impl<'a> InstanceService<'a> {
                 .entries
                 .iter()
                 .find(|entry| entry.body == callable)
-                .ok_or_else(|| "closure body has no invocation entry".to_string())?;
+                .ok_or_else(|| {
+                    SirLoweringError::from("closure body has no invocation entry".to_string())
+                })?;
             if let Some(id) = entry.specialization {
                 let ResolvedTy::GenericCallable { parameters, .. } = &closure.ty else {
-                    return Err("monomorphic closure has a generic entry".to_string());
+                    return Err("monomorphic closure has a generic entry".to_string().into());
                 };
                 substitution
                     .params
@@ -1166,10 +1222,9 @@ impl<'a> InstanceService<'a> {
             });
         }
         if let SemCallableKind::HewActor(actor) = callable_meta.kind {
-            let source = self
-                .actor_sources
-                .get(&callable)
-                .ok_or_else(|| "actor body has no checked HIR source".to_string())?;
+            let source = self.actor_sources.get(&callable).ok_or_else(|| {
+                SirLoweringError::from("actor body has no checked HIR source".to_string())
+            })?;
             return Ok(LoweringInput {
                 function: Cow::Owned(source.function.clone()),
                 callable: callable_meta,
@@ -1195,17 +1250,17 @@ impl<'a> InstanceService<'a> {
             .functions_by_item
             .get(&callable_meta.function)
             .ok_or_else(|| {
-                format!(
+                SirLoweringError::from(format!(
                     "SIR callable `{}` has no HIR source template for its provenance item",
                     callable_meta.symbol
-                )
+                ))
             })?;
         if callable_meta.instance == CallableInstance::EntryAdapter {
             let adapter = self
                 .entry_adapters
                 .get(&callable)
                 .cloned()
-                .ok_or("entry adapter has no exit plan")?;
+                .ok_or(SirLoweringError::from("entry adapter has no exit plan"))?;
             return Ok(LoweringInput {
                 function: Cow::Borrowed(function),
                 callable: callable_meta,
@@ -1230,7 +1285,7 @@ impl<'a> InstanceService<'a> {
                     return Err(format!(
                         "generic HIR template `{}` was incorrectly admitted as a monomorphic SIR body",
                         self.module.defs.path(function.declaration)
-                    ));
+                    ).into());
                 }
                 TypeSubstitution::empty()
             }
@@ -1241,7 +1296,7 @@ impl<'a> InstanceService<'a> {
                     return Err(format!(
                         "SIR generic callable `{}` does not agree with its source template declaration",
                         callable_meta.symbol
-                    ));
+                    ).into());
                 }
                 TypeSubstitution::for_instance(&self.module.defs, function, &key.type_args)?
             }
@@ -1259,40 +1314,40 @@ impl<'a> InstanceService<'a> {
         declaration: DefId,
         site: hew_hir::SiteId,
         substitution: &TypeSubstitution,
-    ) -> Result<SemCallable, String> {
+    ) -> Result<SemCallable, SirLoweringError> {
         if self.table.templates.contains_key(&declaration) {
-            let raw_args = self.module.call_site_type_args.get(&site).ok_or_else(|| {
-                format!(
+            let raw_args = self.module.call_site_type_args.get(&site).ok_or_else(|| SirLoweringError::from(format!(
                     "generic direct call to `{}` is missing checker-resolved type arguments at SIR site {}",
                     self.module.defs.path(declaration),
                     site.0
-                )
-            })?;
+                )))?;
             let type_args = raw_args
                 .iter()
                 .map(|argument| substitution.apply(argument))
                 .collect::<Vec<_>>();
             let id = self.request_instance(declaration, type_args)?;
             return self.callable(id).cloned().ok_or_else(|| {
-                format!(
+                SirLoweringError::from(format!(
                     "requested SIR generic callable {} disappeared from its table",
                     id.0
-                )
+                ))
             });
         }
         let id = self.admit_monomorphic(declaration).map_err(|reason| {
-            format!(
-                "direct callee `{}` has no scalar default-call SIR callable: {reason}",
+            reason.with_context(&format!(
+                "direct callee `{}` has no scalar default-call SIR callable",
                 self.module.defs.path(declaration)
-            )
+            ))
         })?;
         // Resolving a call edge is what makes the callee reachable, so this is
         // where its body becomes demanded. Generic callees go through
         // `request_instance`, which queues the instance it mints.
         self.request_body(id);
-        self.callable(id)
-            .cloned()
-            .ok_or_else(|| format!("SIR callable {id:?} is absent from its deterministic table"))
+        self.callable(id).cloned().ok_or_else(|| {
+            SirLoweringError::from(format!(
+                "SIR callable {id:?} is absent from its deterministic table"
+            ))
+        })
     }
 
     /// Select the implementation a static trait call reaches, from the
@@ -1311,14 +1366,14 @@ impl<'a> InstanceService<'a> {
         trait_args: &[ResolvedTy],
         site: hew_hir::SiteId,
         substitution: &TypeSubstitution,
-    ) -> Result<SemCallable, String> {
+    ) -> Result<SemCallable, SirLoweringError> {
         let self_type = self_ty
             .impl_receiver_instance(&self.module.defs)
             .ok_or_else(|| {
-                format!(
+                SirLoweringError::from(format!(
                     "static trait `Self` type `{}` cannot anchor an implementation",
                     self_ty.user_facing()
-                )
+                ))
             })?;
         let entry = hew_hir::dispatch::lookup_trait_impl_entry_by_id(
             &self.table.trait_impls,
@@ -1329,23 +1384,25 @@ impl<'a> InstanceService<'a> {
         )
         .cloned()
         .ok_or_else(|| {
-            format!(
+            SirLoweringError::from(format!(
                 "no single implementation of `{}` for `{}` provides `{}`",
                 self.module.defs.path(declaring_trait),
                 self_ty.user_facing(),
                 self.module.defs.path(method)
-            )
+            ))
         })?;
         if !self.table.templates.contains_key(&entry.method) {
             let id = self.admit_monomorphic(entry.method).map_err(|reason| {
-                format!(
-                    "static trait callee `{}` has no scalar default-call SIR callable: {reason}",
+                reason.with_context(&format!(
+                    "static trait callee `{}` has no scalar default-call SIR callable",
                     self.module.defs.path(entry.method)
-                )
+                ))
             })?;
             self.request_body(id);
             return self.callable(id).cloned().ok_or_else(|| {
-                format!("SIR callable {id:?} is absent from its deterministic table")
+                SirLoweringError::from(format!(
+                    "SIR callable {id:?} is absent from its deterministic table"
+                ))
             });
         }
         let type_args = self.static_trait_instance_args(
@@ -1358,10 +1415,10 @@ impl<'a> InstanceService<'a> {
         )?;
         let id = self.request_instance(entry.method, type_args)?;
         self.callable(id).cloned().ok_or_else(|| {
-            format!(
+            SirLoweringError::from(format!(
                 "requested SIR generic callable {} disappeared from its table",
                 id.0
-            )
+            ))
         })
     }
 
@@ -1375,7 +1432,7 @@ impl<'a> InstanceService<'a> {
         trait_arguments: &[ResolvedTy],
         site: hew_hir::SiteId,
         substitution: &TypeSubstitution,
-    ) -> Result<Vec<ResolvedTy>, String> {
+    ) -> Result<Vec<ResolvedTy>, SirLoweringError> {
         let method_args: Vec<_> = self
             .module
             .call_site_type_args
@@ -1395,11 +1452,11 @@ impl<'a> InstanceService<'a> {
                 &self.module.structural_witnesses,
             )
             .map_err(|reason| {
-                format!(
-                    "static trait call to `{}` at SIR site {}: {reason}",
+                SirLoweringError::from(reason).with_context(&format!(
+                    "static trait call to `{}` at SIR site {}",
                     self.module.defs.path(entry.method),
                     site.0,
-                )
+                ))
             })
     }
 
@@ -1408,7 +1465,7 @@ impl<'a> InstanceService<'a> {
         enclosing: CallableId,
         expression: &HirExpr,
         substitution: &TypeSubstitution,
-    ) -> Result<crate::ClosureId, String> {
+    ) -> Result<crate::ClosureId, SirLoweringError> {
         let instance = crate::ClosureInstanceKey {
             enclosing,
             literal: expression.node,
@@ -1417,7 +1474,9 @@ impl<'a> InstanceService<'a> {
             return Ok(*id);
         }
         let HirExprKind::Closure { captures, .. } = &expression.kind else {
-            return Err("closure demand requires a checked literal".to_string());
+            return Err("closure demand requires a checked literal"
+                .to_string()
+                .into());
         };
         let ty = substitution.apply(&expression.ty);
         self.require_type_facts(&ty)?;
@@ -1435,7 +1494,7 @@ impl<'a> InstanceService<'a> {
         }
         let id = crate::ClosureId(
             u32::try_from(self.closures.len())
-                .map_err(|_| "closure count exceeds u32".to_string())?,
+                .map_err(|_| SirLoweringError::from("closure count exceeds u32".to_string()))?,
         );
         self.closures.push(crate::SemClosure {
             generator_type: None,
@@ -1461,12 +1520,14 @@ impl<'a> InstanceService<'a> {
         &mut self,
         closure: crate::ClosureId,
         specialization: Option<crate::CallableSpecializationId>,
-    ) -> Result<CallableId, String> {
+    ) -> Result<CallableId, SirLoweringError> {
         let environment = self
             .closures
             .get(closure.0 as usize)
             .cloned()
-            .ok_or_else(|| "closure entry has no environment".to_string())?;
+            .ok_or_else(|| {
+                SirLoweringError::from("closure entry has no environment".to_string())
+            })?;
         if let Some(entry) = environment
             .entries
             .iter()
@@ -1475,7 +1536,7 @@ impl<'a> InstanceService<'a> {
             return Ok(entry.body);
         }
         if self.table.callables.len() >= SIR_GENERIC_INSTANCE_CAP + self.table.admissible.len() {
-            return Err("callable specialization limit exceeded".to_string());
+            return Err("callable specialization limit exceeded".to_string().into());
         }
         let invocation_ty = match specialization {
             Some(id) => environment
@@ -1483,15 +1544,25 @@ impl<'a> InstanceService<'a> {
                 .instantiate_callable(
                     self.callable_specializations
                         .get(id.0 as usize)
-                        .ok_or_else(|| "closure entry has no type arguments".to_string())?,
+                        .ok_or_else(|| {
+                            SirLoweringError::from(
+                                "closure entry has no type arguments".to_string(),
+                            )
+                        })?,
                 )
                 .ok_or_else(|| {
-                    "closure entry arguments do not match its quantifiers".to_string()
+                    SirLoweringError::from({
+                        "closure entry arguments do not match its quantifiers".to_string()
+                    })
                 })?,
             None if !matches!(environment.ty, ResolvedTy::GenericCallable { .. }) => {
                 environment.ty.clone()
             }
-            None => return Err("generic closure entry requires concrete arguments".to_string()),
+            None => {
+                return Err("generic closure entry requires concrete arguments"
+                    .to_string()
+                    .into())
+            }
         };
         self.require_type_facts(&invocation_ty)?;
         let (_, _, capabilities) = crate::callable_parts(&invocation_ty)?;
@@ -1513,10 +1584,12 @@ impl<'a> InstanceService<'a> {
         let parent = self
             .callable(environment.instance.enclosing)
             .cloned()
-            .ok_or_else(|| "closure entry has no enclosing instance".to_string())?;
+            .ok_or_else(|| {
+                SirLoweringError::from("closure entry has no enclosing instance".to_string())
+            })?;
         let body = CallableId(
             u32::try_from(self.table.callables.len())
-                .map_err(|_| "callable count exceeds u32".to_string())?,
+                .map_err(|_| SirLoweringError::from("callable count exceeds u32".to_string()))?,
         );
         let suffix = specialization.map_or_else(String::new, |id| format!("$entry${}", id.0));
         let symbol = format!(
@@ -1547,14 +1620,18 @@ impl<'a> InstanceService<'a> {
         &mut self,
         scheme: &ResolvedTy,
         arguments: Vec<ResolvedTy>,
-    ) -> Result<crate::CallableSpecializationId, String> {
+    ) -> Result<crate::CallableSpecializationId, SirLoweringError> {
         if scheme.instantiate_callable(&arguments).is_none() {
-            return Err("callable specialization disagrees with its checked scheme".to_string());
+            return Err("callable specialization disagrees with its checked scheme"
+                .to_string()
+                .into());
         }
         for argument in &arguments {
             if !is_supported_instance_type_arg(self.module, &self.checked_facts, argument) {
                 return Err(
-                    "callable specialization requires concrete semantic arguments".to_string(),
+                    "callable specialization requires concrete semantic arguments"
+                        .to_string()
+                        .into(),
                 );
             }
         }
@@ -1567,15 +1644,14 @@ impl<'a> InstanceService<'a> {
         } else {
             let index = self.callable_specializations.len();
             if index >= SIR_GENERIC_INSTANCE_CAP {
-                return Err("callable specialization limit exceeded".to_string());
+                return Err("callable specialization limit exceeded".to_string().into());
             }
             self.callable_specializations.push(arguments);
             index
         };
-        let id = crate::CallableSpecializationId(
-            u32::try_from(index)
-                .map_err(|_| "callable specialization count exceeds u32".to_string())?,
-        );
+        let id = crate::CallableSpecializationId(u32::try_from(index).map_err(|_| {
+            SirLoweringError::from("callable specialization count exceeds u32".to_string())
+        })?);
         self.callable_demands
             .entry(scheme.clone())
             .or_default()
@@ -1588,7 +1664,7 @@ impl<'a> InstanceService<'a> {
         &mut self,
         source: &ResolvedTy,
         target: &ResolvedTy,
-    ) -> Result<(), String> {
+    ) -> Result<(), SirLoweringError> {
         if matches!(
             (source, target),
             (
@@ -1603,7 +1679,7 @@ impl<'a> InstanceService<'a> {
         Ok(())
     }
 
-    fn fulfil_callable_demands(&mut self) -> Result<(), String> {
+    fn fulfil_callable_demands(&mut self) -> Result<(), SirLoweringError> {
         loop {
             let mut changed = false;
             for (source, target) in &self.callable_coercions {
@@ -1642,17 +1718,17 @@ impl<'a> InstanceService<'a> {
         &mut self,
         declaration: DefId,
         type_args: Vec<ResolvedTy>,
-    ) -> Result<CallableId, String> {
+    ) -> Result<CallableId, SirLoweringError> {
         let template = self
             .table
             .templates
             .get(&declaration)
             .cloned()
             .ok_or_else(|| {
-                format!(
+                SirLoweringError::from(format!(
                     "generic direct callee `{}` has no SIR template admission record",
                     self.module.defs.path(declaration)
-                )
+                ))
             })?;
         if type_args.len() != template.function.type_params.len() {
             return Err(format!(
@@ -1660,7 +1736,8 @@ impl<'a> InstanceService<'a> {
                 self.module.defs.path(declaration),
                 template.function.type_params.len(),
                 type_args.len()
-            ));
+            )
+            .into());
         }
         for (index, argument) in type_args.iter().enumerate() {
             if !is_supported_instance_type_arg(self.module, &self.checked_facts, argument) {
@@ -1668,7 +1745,7 @@ impl<'a> InstanceService<'a> {
                     "generic direct callee `{}` type argument {index} is `{}`; SIR generic instances require a concrete semantic value contract",
                     self.module.defs.path(declaration),
                     argument.user_facing()
-                ));
+                ).into());
             }
         }
         for argument in &type_args {
@@ -1685,10 +1762,10 @@ impl<'a> InstanceService<'a> {
             return Ok(existing);
         }
         if self.by_instance.len() >= SIR_GENERIC_INSTANCE_CAP {
-            return Err(format!(
+            return Err(SirLoweringError::Limit(format!(
                 "SIR generic instance cap ({SIR_GENERIC_INSTANCE_CAP}) exceeded while specializing `{}`; refuse unbounded semantic specialization",
                 self.module.defs.path(declaration)
-            ));
+            )));
         }
         let substitution =
             TypeSubstitution::for_instance(&self.module.defs, template.function, &key.type_args)?;
@@ -1710,12 +1787,13 @@ impl<'a> InstanceService<'a> {
             return Err(format!(
                 "SIR generic instance `{}` would collide with callable {} despite a distinct semantic key",
                 symbol, existing.id.0
-            ));
+            ).into());
         }
-        let id = CallableId(
-            u32::try_from(self.table.callables.len())
-                .map_err(|_| "SIR callable count exceeds the module-local ID range".to_string())?,
-        );
+        let id = CallableId(u32::try_from(self.table.callables.len()).map_err(|_| {
+            SirLoweringError::from(
+                "SIR callable count exceeds the module-local ID range".to_string(),
+            )
+        })?);
         self.table.callables.push(SemCallable {
             id,
             function: template.function.id,
@@ -1755,7 +1833,7 @@ impl<'a> InstanceService<'a> {
         // asked for it.
         self.table.ineligible.get(&function.declaration).map_or(
             SirLoweringStatus::NotReached,
-            |reason| SirLoweringStatus::Unsupported {
+            |reason| SirLoweringStatus::Failed {
                 reason: reason.clone(),
                 // Same root-unit-only rule as the body-lowering site above.
                 span: matches!(

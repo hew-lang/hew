@@ -511,6 +511,28 @@ impl RuntimeCallFamily {
                 physical: RuntimePhysicalForm::Direct,
                 c_return: RuntimeCReturn::Storage,
             },
+            Self::ContextActorId | Self::ContextSupervisor | Self::ContextTraceSpan => {
+                RuntimeOpRow {
+                    authority: RuntimeAuthority::Service,
+                    symbol: match self {
+                        Self::ContextActorId => "hew_context_actor_id",
+                        Self::ContextSupervisor => "hew_context_supervisor",
+                        _ => "hew_context_trace_span",
+                    },
+                    contract: Some(RuntimeSemanticContract {
+                        arguments: &[],
+                        result: R::BitCopy(match self {
+                            Self::ContextSupervisor => K::MutableUnitPointer,
+                            _ => K::U64,
+                        }),
+                        failures: &[],
+                    }),
+                    staging: RuntimeStaging::Declared,
+                    abi_shape: RuntimeCallAbiShape::Other,
+                    physical: RuntimePhysicalForm::Direct,
+                    c_return: RuntimeCReturn::Storage,
+                }
+            }
             Self::CancelTokenIsRequested => RuntimeOpRow {
                 authority: RuntimeAuthority::Service,
                 symbol: "hew_cancel_token_is_requested",
@@ -7160,7 +7182,7 @@ impl RuntimeCallFamily {
             },
             Self::StderrWrite => RuntimeOpRow {
                 authority: RuntimeAuthority::Ambient,
-                symbol: "hew_io_write_err",
+                symbol: "hew_report_stderr",
                 contract: Some(RuntimeSemanticContract {
                     arguments: &[A {
                         ty: K::String,

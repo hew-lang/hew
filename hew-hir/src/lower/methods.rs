@@ -905,25 +905,35 @@ impl LowerCtx {
                 let evaluation_order = method_args.order_after_receiver();
                 let mut lowered_args = vec![lowered_receiver];
                 lowered_args.extend(method_args.args);
-                // Closed-set builtin rewrites carry the checker-resolved
-                // descriptor: resolve the callee to the typed family so MIR
-                // dispatches on the resolution, not the name string. Rewrites
-                // without a descriptor (open-set `#[extern_symbol]` methods,
-                // user `Type::method` keys, pre-catalog symbols) fall back to
-                // the seeded stdlib fn_registry (`seed_stdlib_fn_registry`),
-                // matching the `RewriteModuleQualifiedToFunction` arm just
-                // below. Without that fallback the BindingRef stays
-                // `Unresolved` and the verifier emits
-                // `UnresolvedSymbol(<c_symbol>)` even though the registry
-                // entry exists.
-                let resolved_ref = descriptor.as_ref().map_or_else(
-                    || {
-                        self.fn_registry
-                            .get(&c_symbol)
-                            .map_or(ResolvedRef::Unresolved, |entry| ResolvedRef::Item(entry.id))
-                    },
-                    |d| ResolvedRef::Builtin(d.family()),
-                );
+                // The selected target owns dispatch. An extern method's
+                // declared boundary already has a reserved HIR item; its ABI
+                // spelling need not be a source function-registry key.
+                let resolved_ref = match &target {
+                    CallTarget::Runtime(family) => ResolvedRef::Builtin(*family),
+                    CallTarget::Extern {
+                        declaration,
+                        endpoint,
+                        ..
+                    } => self
+                        .extern_method_signatures
+                        .get(&(*declaration, endpoint.clone()))
+                        .map(|(id, _)| *id)
+                        .map_or_else(
+                            || {
+                                self.missing_checked_fact(
+                                    span.clone(),
+                                    "selected extern method has no declared C-boundary signature",
+                                    "extern method call",
+                                );
+                                ResolvedRef::Unresolved
+                            },
+                            ResolvedRef::Item,
+                        ),
+                    _ => self
+                        .fn_registry
+                        .get(&c_symbol)
+                        .map_or(ResolvedRef::Unresolved, |entry| ResolvedRef::Item(entry.id)),
+                };
                 let callee = HirExpr {
                     node: self.ids.node(),
                     site: self.ids.site(),
@@ -1049,33 +1059,6 @@ impl LowerCtx {
                     site,
                 );
                 (call_kind, ret_ty)
-            }
-            Some(MethodCallRewrite::DeferToLowering) => {
-                // `DeferToLowering` belonged to the legacy codegen pipeline and is
-                // not consumed by the Rust MIR pipeline.  Fail-closed.
-                self.diagnostics.push(HirDiagnostic::new(
-                    HirDiagnosticKind::NotYetImplemented {
-                        construct: format!("method-call rewrite variant for `.{method}`"),
-                        owning_pass: "mir-pipeline".to_string(),
-                    },
-                    span,
-                    "this method-call rewrite variant is not supported in the Rust MIR pipeline",
-                ));
-                (
-                    HirExprKind::Unsupported(format!(
-                        "unsupported rewrite variant for method `{method}`"
-                    )),
-                    ResolvedTy::Unit,
-                )
-            }
-            Some(MethodCallRewrite::CancellationTokenIsCancelled) => {
-                let lowered_receiver = self.lower_expr(receiver, IntentKind::Read);
-                (
-                    HirExprKind::CancellationTokenIsCancelled {
-                        receiver: Box::new(lowered_receiver),
-                    },
-                    ResolvedTy::Bool,
-                )
             }
             Some(MethodCallRewrite::GeneratorNext { yield_ty }) => {
                 // The result is `Option<yield_ty>`; register its layout so MIR /

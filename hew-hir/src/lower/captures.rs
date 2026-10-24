@@ -49,7 +49,6 @@ pub(super) fn collect_general_closure_captures_walk(
         | HirExprKind::ContextReader { .. }
         | HirExprKind::Literal(_)
         | HirExprKind::RegexLiteralRef { .. }
-        | HirExprKind::SpawnLambdaActor { .. }
         | HirExprKind::Continue { .. }
         | HirExprKind::ActorSelf
         | HirExprKind::Unsupported(_) => {}
@@ -200,8 +199,7 @@ pub(super) fn collect_general_closure_captures_walk(
                 collect_general_closure_captures_walk(e, outer_bindings, seen, captures);
             }
         }
-        HirExprKind::CancellationTokenIsCancelled { receiver }
-        | HirExprKind::GeneratorNext { receiver, .. }
+        HirExprKind::GeneratorNext { receiver, .. }
         | HirExprKind::RecordCloneCall { src: receiver, .. }
         | HirExprKind::CallableSpecialize {
             source: receiver, ..
@@ -226,21 +224,33 @@ pub(super) fn collect_general_closure_captures_walk(
             collect_general_closure_captures_walk(condition, outer_bindings, seen, captures);
             collect_general_closure_captures_walk_block(body, outer_bindings, seen, captures);
         }
-        HirExprKind::ForRange {
-            start,
-            end,
-            step,
-            body,
-            ..
-        } => {
+        HirExprKind::RangeValue { start, end, .. } => {
             collect_general_closure_captures_walk(start, outer_bindings, seen, captures);
             collect_general_closure_captures_walk(end, outer_bindings, seen, captures);
-            collect_general_closure_captures_walk(step, outer_bindings, seen, captures);
+        }
+        HirExprKind::RangeAdapt { range, adapter } => {
+            collect_general_closure_captures_walk(range, outer_bindings, seen, captures);
+            if let crate::HirRangeAdapter::Step(step) = adapter {
+                collect_general_closure_captures_walk(step, outer_bindings, seen, captures);
+            }
+        }
+        HirExprKind::ForRange { range, body, .. } => {
+            collect_general_closure_captures_walk(range, outer_bindings, seen, captures);
             collect_general_closure_captures_walk_block(body, outer_bindings, seen, captures);
         }
         HirExprKind::Match { scrutinee, arms } => {
             collect_general_closure_captures_walk(scrutinee, outer_bindings, seen, captures);
             for arm in arms {
+                for statement in &arm.pattern_bindings {
+                    if let HirStmtKind::Destructure { value, .. } = &statement.kind {
+                        collect_general_closure_captures_walk(
+                            value,
+                            outer_bindings,
+                            seen,
+                            captures,
+                        );
+                    }
+                }
                 if let Some(guard) = &arm.guard {
                     collect_general_closure_captures_walk(guard, outer_bindings, seen, captures);
                 }

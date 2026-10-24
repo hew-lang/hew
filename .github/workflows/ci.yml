@@ -472,24 +472,25 @@ jobs:
           name: compiled-hew-linux-${{ github.sha }}
           path: ${{ runner.temp }}/compiled-hew-download
       - name: Install compiled Hew artefacts
+        id: native_bundle
         run: bash scripts/ci-install-compiled-hew.sh "${{ runner.temp }}/compiled-hew-download/compiled-hew-linux.tar.gz"
       - name: Run core acceptance partition
         run: make -o hew-native core-acceptance CORE_ACCEPTANCE_ARGS="--partition ${{ matrix.shard }}/3"
       - name: Run documentation examples
-        if: matrix.shard == 0
+        if: ${{ !cancelled() && steps.native_bundle.outcome == 'success' && matrix.shard == 0 }}
         run: make -o hew-native test-doc-examples
       - name: Run package integration
-        if: matrix.shard == 0
-        run: make -o hew-native observe-functional-test test-pkg-import test-package-install
+        if: ${{ !cancelled() && steps.native_bundle.outcome == 'success' && matrix.shard == 0 }}
+        run: make -k -o hew-native observe-functional-test test-pkg-import test-package-install
       - name: Run C extern and host client integrations
-        if: matrix.shard == 1
+        if: ${{ !cancelled() && steps.native_bundle.outcome == 'success' && matrix.shard == 1 }}
         run: >-
-          make -o hew-native compile-determinism-verify
+          make -k -o hew-native compile-determinism-verify
           stdlib-user-build-clean stdlib-errno-gate
           test-extern-bytes test-host-client
       - name: Run migration and MQTT integrations
-        if: matrix.shard == 2
-        run: make -o hew-native test-leak-oracle-selftest test-migrate-corpus mqtt-broker-e2e
+        if: ${{ !cancelled() && steps.native_bundle.outcome == 'success' && matrix.shard == 2 }}
+        run: make -k -o hew-native test-leak-oracle-selftest test-migrate-corpus mqtt-broker-e2e
 
   nextest:
     name: Workspace nextest (${{ matrix.shard }}/2)
@@ -539,11 +540,12 @@ jobs:
           name: compiled-hew-linux-${{ github.sha }}
           path: ${{ runner.temp }}/compiled-hew-download
       - name: Install compiled Hew artefacts
+        id: native_bundle
         run: bash scripts/ci-install-compiled-hew.sh "${{ runner.temp }}/compiled-hew-download/compiled-hew-linux.tar.gz"
       - name: Run workspace test partition with ratchet accounting
         run: make -o test-artifacts test NEXTEST_PARTITION="${{ matrix.shard }}/2"
       - name: Run C ABI crate tests
-        if: matrix.shard == 1
+        if: ${{ !cancelled() && steps.native_bundle.outcome == 'success' && matrix.shard == 1 }}
         run: make test-cabi
       - name: Upload test reports
         if: always()

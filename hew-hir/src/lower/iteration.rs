@@ -2,32 +2,30 @@
 
 use super::*;
 
-/// The base range plus resolved iteration adapters peeled from a for-loop
-/// iterable by [`LowerCtx::peel_range_adapter_chain`].  Borrows the AST
-/// sub-expressions; lowered into a single `HirExprKind::ForRange`.
-pub(super) struct RangeAdapterChain<'a> {
-    /// Left bound of the base `..` / `..=` range literal.
-    pub(super) range_start: &'a Spanned<Expr>,
-    /// Right bound of the base range literal.
-    pub(super) range_end: &'a Spanned<Expr>,
-    /// `true` for an inclusive (`..=`) upper bound.
-    pub(super) inclusive: bool,
-    /// `true` when the chain reverses iteration direction (`.rev()`).
-    pub(super) descending: bool,
-    /// The `.step_by(k)` stride argument when present; `None` defaults to a
-    /// stride of `1`.
-    pub(super) step_expr: Option<&'a Spanned<Expr>>,
-    /// `true` when a `.step_by(k)` precedes a `.rev()` in the chain
-    /// (`(a..b).step_by(k).rev()`).  That order is unsupported: `.rev()` and
-    /// `.step_by(k)` do not commute, so folding them into an order-insensitive
-    /// `{descending, step}` pair would silently miscompile (the descending
-    /// counter would start at the raw high bound rather than the last strided
-    /// element).  The caller rejects the chain fail-closed instead of emitting
-    /// a wrong sequence.  Only `(a..b).rev()?.step_by(k)?` is supported.
-    pub(super) step_before_rev: bool,
-}
-
 impl LowerCtx {
+    pub(super) fn make_range_value(
+        &mut self,
+        start: HirExpr,
+        end: HirExpr,
+        inclusive: bool,
+        span: Span,
+    ) -> HirExpr {
+        let ty = ResolvedTy::Named {
+            head: hew_types::TypeHead::Builtin(BuiltinType::Range),
+            args: vec![start.ty.clone()],
+            is_opaque: false,
+        };
+        self.make_expr(
+            HirExprKind::RangeValue {
+                start: Box::new(start),
+                end: Box::new(end),
+                inclusive,
+            },
+            ty,
+            IntentKind::Read,
+            span,
+        )
+    }
     pub(super) fn make_direct_method_call(
         &mut self,
         callee_name: String,
@@ -210,83 +208,6 @@ impl LowerCtx {
         }
     }
 
-    /// Peel a `(a..b).rev()` / `.step_by(k)` adapter chain off a for-loop
-    /// iterable down to its base range literal.
-    ///
-    /// Returns `Some` for a plain range (`a..b` / `a..=b`, no adapters) and for
-    /// any chain of `.rev()` / `.step_by(k)` adapters terminating in a range
-    /// literal; returns `None` for any other iterable shape (Vec, a bare
-    /// identifier, a user method that is not a range adapter, …), which then
-    /// flows to `lower_for_iter_desugar`.
-    ///
-    /// Adapter semantics are left-to-right as written and well-defined on the
-    /// `ForRange` primitive:
-    ///
-    /// - `.rev()` flips the iteration direction (`descending`).
-    /// - `.step_by(k)` sets the stride magnitude (`step`); the *last* stride
-    ///   in the chain wins.
-    ///
-    /// The MIR counting loop then initialises the counter at the high bound for
-    /// a descending range and at the low bound otherwise, advancing by `step`
-    /// each iteration.  This makes `(0..5).rev()` yield `4 3 2 1 0` and
-    /// `(0..=10).rev().step_by(3)` yield `10 7 4 1`.
-    ///
-    /// `.rev()` and `.step_by(k)` do **not** commute, so only `.rev()` before
-    /// `.step_by(k)` (`(a..b).rev()?.step_by(k)?`) is supported: descend from
-    /// the high bound, then stride.  A `.step_by(k)` *before* a `.rev()` would
-    /// have to start the descending sequence at the last strided element, which
-    /// the order-insensitive `{descending, step}` fold cannot express; the
-    /// chain records `step_before_rev` and the caller rejects it fail-closed
-    /// rather than emit a wrong sequence.
-    pub(super) fn peel_range_adapter_chain(iterable: &Expr) -> Option<RangeAdapterChain<'_>> {
-        match iterable {
-            Expr::Binary {
-                op: op @ (BinaryOp::Range | BinaryOp::RangeInclusive),
-                left,
-                right,
-            } => Some(RangeAdapterChain {
-                range_start: left,
-                range_end: right,
-                inclusive: matches!(op, BinaryOp::RangeInclusive),
-                descending: false,
-                step_expr: None,
-                step_before_rev: false,
-            }),
-            Expr::MethodCall {
-                receiver,
-                method,
-                args,
-            } => {
-                let mut chain = Self::peel_range_adapter_chain(&receiver.0)?;
-                match method.0.name.as_str() {
-                    "rev" => {
-                        // `.rev()` carries no arguments (the checker rejects any).
-                        // Reversing twice is the forward direction again.
-                        chain.descending = !chain.descending;
-                        // `.step_by(k)` before `.rev()` does not commute with
-                        // the order-insensitive `{descending, step}` fold: the
-                        // descending counter would start at the raw high bound
-                        // instead of the last strided element.  Flag it so the
-                        // caller rejects fail-closed rather than miscompile.
-                        if chain.step_expr.is_some() {
-                            chain.step_before_rev = true;
-                        }
-                        Some(chain)
-                    }
-                    "step_by" => {
-                        // The last stride in the chain wins; the checker has
-                        // already validated arity (exactly one argument).
-                        let step = args.first()?;
-                        chain.step_expr = Some(step.expr());
-                        Some(chain)
-                    }
-                    _ => None,
-                }
-            }
-            _ => None,
-        }
-    }
-
     /// `for c in s` over `string` and `for b in raw` over `bytes`.
     ///
     /// Both lower to `for __i in 0..seq.len() { let c = seq[__i]; body }` over
@@ -373,7 +294,6 @@ impl LowerCtx {
         );
         let index_id = index_binding.id;
         let start = self.make_i64_literal(0, iterable_span.clone());
-        let step = self.make_i64_literal(1, iterable_span.clone());
 
         self.push_scope();
         let element_binding = if checked_binding {
@@ -430,15 +350,12 @@ impl LowerCtx {
         loop_body.statements.insert(0, element_stmt);
         self.pop_scope();
 
+        let range = self.make_range_value(start, length, false, iterable_span.clone());
         let loop_expr = self.make_expr(
             HirExprKind::ForRange {
                 label: label.cloned(),
                 binding: index_binding,
-                start: Box::new(start),
-                end: Box::new(length),
-                inclusive: false,
-                step: Box::new(step),
-                descending: false,
+                range: Box::new(range),
                 body: loop_body,
             },
             ResolvedTy::Unit,
@@ -485,6 +402,31 @@ impl LowerCtx {
         };
         // Retain the checked iterable and source intent for iterator desugaring.
         let mut lowered_iterable = self.lower_expr(iterable, IntentKind::Read);
+        if let ResolvedTy::Named {
+            head: hew_types::TypeHead::Builtin(BuiltinType::Range),
+            args,
+            ..
+        } = &lowered_iterable.ty
+        {
+            let [element_ty] = args.as_slice() else {
+                return HirExprKind::Unsupported("checked range has no element type".into());
+            };
+            let element_ty = element_ty.clone();
+            self.push_scope();
+            let binding = if matches!(pattern.0, Pattern::Identifier(_)) {
+                self.bind_checked(var_name, element_ty, false, pattern.1.clone())
+            } else {
+                self.bind(var_name, element_ty, false, pattern.1.clone())
+            };
+            let body = self.lower_block(body, &ResolvedTy::Unit);
+            self.pop_scope();
+            return HirExprKind::ForRange {
+                label: label.cloned(),
+                binding,
+                range: Box::new(lowered_iterable),
+                body,
+            };
+        }
 
         // `for c in s` / `for b in raw` are index walks, not cursors: the
         // element is a scalar copy, so there is no iterator object to own and
@@ -632,7 +574,7 @@ impl LowerCtx {
                 if let Some(shape) = shape {
                     shape
                 } else {
-                    self.unsupported(
+                    self.missing_checked_fact(
                         iterable.1.clone(),
                         format!("for-in iterable `{other}` has no checked iterator call plan"),
                         "iterator-runtime-dispatch",
@@ -796,6 +738,7 @@ impl LowerCtx {
                         bindings: vec![some_binding],
                         payload_predicates: Vec::new(),
                         payload_variant_predicates: Vec::new(),
+                        pattern_bindings: Vec::new(),
                         guard: None,
                         body: some_body,
                         span: span.clone(),
@@ -812,6 +755,7 @@ impl LowerCtx {
                         bindings: Vec::new(),
                         payload_predicates: Vec::new(),
                         payload_variant_predicates: Vec::new(),
+                        pattern_bindings: Vec::new(),
                         guard: None,
                         body: none_body,
                         span: iterable.1.clone(),

@@ -47,7 +47,7 @@ fn lower_source(body: &str, call: &str) -> SemModule {
     let lowered = hew_sir::lower_module(&hir.module, &facts);
     for status in &lowered.statuses {
         assert!(
-            !matches!(status.status, SirLoweringStatus::Unsupported { .. }),
+            !matches!(status.status, SirLoweringStatus::Failed { .. }),
             "{}: {:?}",
             status.name,
             status.status

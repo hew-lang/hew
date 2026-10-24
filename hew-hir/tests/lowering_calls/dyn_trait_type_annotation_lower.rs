@@ -1,6 +1,6 @@
 //! Verify that `dyn Trait` in a type-annotation position lowers cleanly
 //! through `lower_type`, producing `ResolvedTy::TraitObject` with no
-//! `NotYetImplemented` diagnostic.
+//! `diagnostics` diagnostic.
 //!
 //! These tests pin the `TypeExpr::TraitObject` arm added to `lower_type`
 //! (hew-hir/src/lower.rs). Prior to that arm the catch-all `_` emitted
@@ -9,8 +9,6 @@
 
 use crate::support;
 
-use hew_hir::HirDiagnosticKind;
-
 fn lower(source: &str) -> hew_hir::LowerOutput {
     support::checker_pipeline::lower_through_checker(source)
 }
@@ -18,7 +16,7 @@ fn lower(source: &str) -> hew_hir::LowerOutput {
 // ─── basic parameter annotation ─────────────────────────────────────────────
 
 /// `fn f(s: dyn Shape) -> i64` — `dyn Trait` in a function parameter type
-/// annotation must lower without any `NotYetImplemented` diagnostic.
+/// annotation must lower without any `diagnostics` diagnostic.
 #[test]
 fn dyn_trait_parameter_annotation_lowers_without_nyi() {
     let src = r"trait Shape {
@@ -45,21 +43,17 @@ fn main() -> i64 {
 }
 ";
     let output = lower(src);
-    let nyi: Vec<_> = output
-        .diagnostics
-        .iter()
-        .filter(|d| matches!(&d.kind, HirDiagnosticKind::NotYetImplemented { .. }))
-        .collect();
+    let diagnostics = &output.diagnostics;
     assert!(
-        nyi.is_empty(),
-        "dyn Trait parameter annotation must not emit NotYetImplemented; got: {nyi:#?}"
+        diagnostics.is_empty(),
+        "dyn Trait parameter annotation must not emit diagnostics; got: {diagnostics:#?}"
     );
 }
 
 // ─── let-binding annotation ──────────────────────────────────────────────────
 
 /// `let d: dyn Display = 42` — `dyn Trait` in a let-binding type annotation
-/// must lower without any `NotYetImplemented` diagnostic.
+/// must lower without any `diagnostics` diagnostic.
 #[test]
 fn dyn_trait_let_annotation_lowers_without_nyi() {
     let src = r"
@@ -68,14 +62,10 @@ fn main() {
 }
 ";
     let output = lower(src);
-    let nyi: Vec<_> = output
-        .diagnostics
-        .iter()
-        .filter(|d| matches!(&d.kind, HirDiagnosticKind::NotYetImplemented { .. }))
-        .collect();
+    let diagnostics = &output.diagnostics;
     assert!(
-        nyi.is_empty(),
-        "dyn Trait let-binding annotation must not emit NotYetImplemented; got: {nyi:#?}"
+        diagnostics.is_empty(),
+        "dyn Trait let-binding annotation must not emit diagnostics; got: {diagnostics:#?}"
     );
 }
 
@@ -91,14 +81,10 @@ fn first(idx: dyn Index<i64, Output = i32>) -> i32 {
 }
 ";
     let output = lower(src);
-    let nyi: Vec<_> = output
-        .diagnostics
-        .iter()
-        .filter(|d| matches!(&d.kind, HirDiagnosticKind::NotYetImplemented { .. }))
-        .collect();
+    let diagnostics = &output.diagnostics;
     assert!(
-        nyi.is_empty(),
-        "dyn Trait with assoc-type binding must not emit NotYetImplemented; got: {nyi:#?}"
+        diagnostics.is_empty(),
+        "dyn Trait with assoc-type binding must not emit diagnostics; got: {diagnostics:#?}"
     );
 }
 
@@ -144,13 +130,9 @@ fn main() -> i64 {
 }
 ";
     let output = lower(src);
-    let nyi: Vec<_> = output
-        .diagnostics
-        .iter()
-        .filter(|d| matches!(&d.kind, HirDiagnosticKind::NotYetImplemented { .. }))
-        .collect();
+    let diagnostics = &output.diagnostics;
     assert!(
-        nyi.is_empty(),
-        "dyn Trait two-impl dispatch must not emit NotYetImplemented; got: {nyi:#?}"
+        diagnostics.is_empty(),
+        "dyn Trait two-impl dispatch must not emit diagnostics; got: {diagnostics:#?}"
     );
 }

@@ -197,6 +197,12 @@ proceed with the required Linux and browser products.
 
 ## Prerequisites
 
+Use the repository's protected merge queue for integration. A conflicted pull
+request cannot produce a merge ref, so its `pull_request` workflow may never
+start; an empty or unrelated green check set is not a readiness result. Resolve
+the conflict and require the configured checks on the exact candidate and queue
+commit. Preserve a completed check's evidence while its inputs remain unchanged.
+
 - [ ] All release PRs merged to `main`
 - [ ] Required protected `main` checks pass; other results have been assessed
       under the [platform policy](#platform-policy)

@@ -215,6 +215,27 @@ establish long-running service retention or overload/cancellation-tail bounds.
    reduced. Compiler, runtime, stdlib, dependency and option identities must
    participate; a cache is more complex than the first two fixes.
 
+## Implementation follow-through
+
+Source-key reuse (`addf814107`) now looks up resolved paths in the existing
+module identity map. Unfamiliar spellings retain canonicalization through the
+same fallback. The change is integrated in PR #3789; final SDK measurements will
+quantify the effect on checks and builds.
+
+The dormant trace reset fix (`84a236d300`) and completion-watermark fix
+(`c216d3c39e`) are composed in the 0.9 integration branch. A focused runtime
+Memcheck control reduced untraced reset exit retention from 4,457,445 bytes to
+624 bytes, with zero definite or indirect losses and 48 possibly lost bytes.
+For 1,024 closes, Callgrind attributed 22,782,976 inclusive instructions before
+the watermark change and 176,128 after it; ordinary close watermark scans fell
+from 1,024 to zero. Observation barriers retain their completion contract.
+
+These follow-up controls use the unoptimized Rust runtime test profile. The
+full runtime suite and lint pass at the recorded implementation revisions.
+Final native timing, process RSS and allocation comparisons will use a matching
+0.9 compiler/runtime SDK and the workloads above. The original 0.7.1 samples
+remain the release baseline.
+
 ## Reproduction
 
 Use the official matching SDK, set `HEW_STD` to its `std/`, and use a dedicated

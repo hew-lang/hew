@@ -27,7 +27,7 @@ fn main() -> i64 {
         match arguments[1] {
             "capture" => {
                 println(arguments[2]);
-                io.write_err("owned stderr\n");
+                io.write_err("owned stderr\n").expect("standard I/O");
                 return 23;
             }
             "silent" => return 0,

@@ -1,6 +1,9 @@
 import std.time.cron;
 
-fn main() -> i64 {
-    let _ = cron.parse("nope");
-    0
+fn main() {
+    match cron.parse("nope") {
+        .Err(.InvalidInput(message)) => assert(!message.is_empty()),
+        _ => panic("expected invalid schedule"),
+    }
+    println("invalid schedule recovered");
 }

@@ -1999,16 +1999,7 @@ pub enum MethodCallRewrite {
     },
     /// Rewrite a generic `math.abs/min/max` call to the concrete intrinsic
     /// selected from the lowered argument type in HIR.
-    GenericMathIntrinsic {
-        op: MathGenericOp,
-    },
-    DeferToLowering,
-    /// Checker-authoritative `CancellationToken.is_cancelled()` intrinsic.
-    ///
-    /// HIR/MIR consume this structured marker without re-checking the
-    /// receiver type; codegen lowers it to the borrowing
-    /// `hew_cancel_token_is_requested` runtime call.
-    CancellationTokenIsCancelled,
+    GenericMathIntrinsic { op: MathGenericOp },
     /// Builtin `Generator<Y, R>::next()` consumption. HIR emits a dedicated
     /// `HirExprKind::GeneratorNext`; MIR lowers it to `Instr::GeneratorNext`,
     /// which codegen turns into a `hew_gen_next(ctx, &out_size)` runtime call
@@ -2064,9 +2055,7 @@ pub enum MethodCallRewrite {
     /// `__hew_record_clone_inplace_<record_name>` thunk (non-consuming read of
     /// the source). `record_name` is the canonical (unqualified) name used by
     /// the codegen thunk naming convention.
-    RecordCloneInplace {
-        record_name: String,
-    },
+    RecordCloneInplace { record_name: String },
     /// `clone x` or `x.clone()` where `x` has a Copy/BitCopy type (`i64`,
     /// `bool`, `char`, etc.). The checker emits a non-fatal `RedundantClone`
     /// warning and returns the operand type unchanged. HIR lowers this as a
@@ -3306,8 +3295,8 @@ pub struct Checker {
     /// Source files assembled into each module of this check's graph.
     ///
     /// A directory module owns its primary file plus every peer `.hew` file in
-    /// that directory, so importing both `std::net::http` and its
-    /// `http_client` peer registers one declaration under two owners. This map
+    /// that directory, so importing both `std.net.http.codec` and its
+    /// `request` peer registers one declaration under two owners. This map
     /// is what lets a consumer prove that relation from the graph rather than
     /// guessing it from the two owner spellings.
     pub(super) module_source_paths: HashMap<String, Vec<std::path::PathBuf>>,
@@ -3506,6 +3495,8 @@ pub struct Checker {
     /// Per-call target facts for ordinary `Expr::Call` expressions.
     pub(super) recovery_kinds: HashMap<SpanKey, RecoveryKind>,
     pub(super) chain_values: Vec<ChainValueContext>,
+    /// Contextual result types, scoped to the exact call being checked.
+    pub(super) call_result_expectations: Vec<(SpanKey, Ty)>,
     /// See [`TypeCheckOutput::call_argument_slots`].
     pub(super) call_argument_slots: HashMap<SpanKey, Vec<usize>>,
     pub(super) call_default_arguments: HashMap<SpanKey, Vec<CheckedDefaultArgument>>,
@@ -4526,6 +4517,7 @@ impl Checker {
             file_import_const_exports: HashMap::new(),
             recovery_kinds: HashMap::new(),
             chain_values: Vec::new(),
+            call_result_expectations: Vec::new(),
             call_argument_slots: HashMap::new(),
             call_default_arguments: HashMap::new(),
             next_default_span: 0,

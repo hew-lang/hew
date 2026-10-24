@@ -1,6 +1,8 @@
 //! Produce exact field places and preserve their partitions across SSA edges.
 //! Availability and cleanup remain decisions of the ordinary lifetime verifier.
 
+use crate::SirLoweringError;
+
 use super::{BindingPlace, Builder};
 use crate::ownership::TypeFactTable;
 use crate::{
@@ -36,7 +38,7 @@ impl Builder<'_, '_> {
     pub(super) fn expression_projection(
         &mut self,
         expression: &HirExpr,
-    ) -> Result<Option<PlaceId>, String> {
+    ) -> Result<Option<PlaceId>, SirLoweringError> {
         let Some(place) = self.resolve_binding_place(expression)? else {
             return Ok(None);
         };
@@ -46,7 +48,7 @@ impl Builder<'_, '_> {
     pub(super) fn owned_projection(
         &mut self,
         place: &BindingPlace,
-    ) -> Result<Option<PlaceId>, String> {
+    ) -> Result<Option<PlaceId>, SirLoweringError> {
         // A resource's release owns its members as a whole. Reads through it
         // use aggregate loans, rather than inventing independently owned field
         // places beneath the resource. An enclosing ordinary record may still
@@ -98,9 +100,9 @@ impl Builder<'_, '_> {
             .map(|(_, shape, field)| {
                 u32::try_from(*field)
                     .map(|field| (*shape, field))
-                    .map_err(|_| "aggregate field exceeds u32".to_string())
+                    .map_err(|_| SirLoweringError::from("aggregate field exceeds u32".to_string()))
             })
-            .collect::<Result<Vec<_>, _>>()?;
+            .collect::<Result<Vec<_>, SirLoweringError>>()?;
         declare_path(
             &mut self.places,
             base,
@@ -126,7 +128,7 @@ impl Builder<'_, '_> {
     pub(super) fn whole_owner_root(
         &mut self,
         place: &BindingPlace,
-    ) -> Result<Option<PlaceId>, String> {
+    ) -> Result<Option<PlaceId>, SirLoweringError> {
         if place.projections.is_empty() {
             return Ok(None);
         }
@@ -149,7 +151,7 @@ impl Builder<'_, '_> {
         root: PlaceId,
         place: &BindingPlace,
         provenance: &Provenance,
-    ) -> Result<(ValueId, OpenOwner), String> {
+    ) -> Result<(ValueId, OpenOwner), SirLoweringError> {
         let mut value = self.emit_typed(
             provenance.clone(),
             &place.root_ty,
@@ -177,7 +179,7 @@ impl Builder<'_, '_> {
         owner: OpenOwner,
         field: ValueId,
         provenance: Provenance,
-    ) -> Result<(), String> {
+    ) -> Result<(), SirLoweringError> {
         let mut rebuilt = field;
         for (ty, shape, index, fields) in owner.levels.into_iter().rev() {
             let fields = fields
@@ -209,19 +211,24 @@ impl Builder<'_, '_> {
         place: &BindingPlace,
         provenance: &Provenance,
         why: &str,
-    ) -> Result<ValueId, String> {
-        if self
+    ) -> Result<ValueId, SirLoweringError> {
+        let facts = self
             .service
             .checked_facts
             .rows()
             .get(&hew_types::TypeInstanceKey(place.leaf_ty.clone()))
-            .is_none_or(|facts| facts.clone == hew_types::CloneKind::None)
-        {
+            .ok_or_else(|| {
+                SirLoweringError::Internal(format!(
+                    "{why} has no checked copy classification for `{}`",
+                    place.leaf_ty.user_facing()
+                ))
+            })?;
+        if facts.clone == hew_types::CloneKind::None {
             let leaf = place.leaf_ty.user_facing();
-            return Err(format!(
-                "mutating a `{leaf}` held by an actor state field, a capture or a resource is \
-                 not implemented for {why}: the mutation works on a copy, and `{leaf}` has none"
-            ));
+            return Err(SirLoweringError::Internal(format!(
+                "{why} crossed the checked copy boundary for `{leaf}`: indexed writeback must \
+                 reject affine element loans, and staged machine receivers must have an independent value copy"
+            )));
         }
         let mut loans = vec![self.emit_typed(
             provenance.clone(),
@@ -240,7 +247,8 @@ impl Builder<'_, '_> {
             let aggregate = Operand {
                 value: *loans.last().expect("a loan roots the projection"),
             };
-            let field = u32::try_from(*field).map_err(|_| "aggregate field exceeds u32")?;
+            let field = u32::try_from(*field)
+                .map_err(|_| SirLoweringError::from("aggregate field exceeds u32"))?;
             loans.push(self.emit_typed(
                 provenance.clone(),
                 &ty,
@@ -273,7 +281,7 @@ impl Builder<'_, '_> {
         place: &BindingPlace,
         replacement: ValueId,
         provenance: Provenance,
-    ) -> Result<(), String> {
+    ) -> Result<(), SirLoweringError> {
         let (replaced, owner) = self.open_owner(root, place, &provenance)?;
         self.close_owner(owner, replacement, provenance)?;
         if self.owned_live.contains_key(&replaced) {
@@ -287,15 +295,15 @@ impl Builder<'_, '_> {
         owner: ValueId,
         ty: &ResolvedTy,
         projections: &[super::AggregateSelection],
-    ) -> Result<PlaceId, String> {
+    ) -> Result<PlaceId, SirLoweringError> {
         let path = projections
             .iter()
             .map(|(_, shape, field)| {
                 u32::try_from(*field)
                     .map(|field| (*shape, field))
-                    .map_err(|_| "aggregate field exceeds u32".to_string())
+                    .map_err(|_| SirLoweringError::from("aggregate field exceeds u32".to_string()))
             })
-            .collect::<Result<Vec<_>, _>>()?;
+            .collect::<Result<Vec<_>, SirLoweringError>>()?;
         declare_path(
             &mut self.places,
             PlaceBase::Value(owner),
@@ -317,7 +325,7 @@ impl Builder<'_, '_> {
         projections: &[super::AggregateSelection],
         replacement: ValueId,
         provenance: Provenance,
-    ) -> Result<(), String> {
+    ) -> Result<(), SirLoweringError> {
         let leaf = self.value_projection_place(owner, owner_ty, projections)?;
         self.store_projected(leaf, replacement, provenance)
     }
@@ -329,7 +337,7 @@ impl Builder<'_, '_> {
         place: PlaceId,
         value: ValueId,
         provenance: Provenance,
-    ) -> Result<(), String> {
+    ) -> Result<(), SirLoweringError> {
         self.emit_place_operation(
             SemOpKind::StoreInit {
                 place,
@@ -347,7 +355,7 @@ impl Builder<'_, '_> {
         place: PlaceId,
         value: ValueId,
         provenance: Provenance,
-    ) -> Result<(), String> {
+    ) -> Result<(), SirLoweringError> {
         self.note_release_may_fault(&self.places[place.0 as usize].ty.clone());
         self.emit_place_operation(
             SemOpKind::StoreAssign {
@@ -374,7 +382,7 @@ fn declare_path(
     path: &[(AggregateShapeRef, u32)],
     shapes: &[SemAggregateShape],
     facts: &TypeFactTable,
-) -> Result<PlaceId, String> {
+) -> Result<PlaceId, SirLoweringError> {
     let mut ty = root_ty.clone();
     for &(shape, selected) in path {
         let recipes = aggregate_field_recipes(shape, &ty, shapes, facts)?;
@@ -383,7 +391,8 @@ fn declare_path(
         }
         let mut selected_place = None;
         for (field, recipe) in recipes.into_iter().enumerate() {
-            let field = u32::try_from(field).map_err(|_| "aggregate field exceeds u32")?;
+            let field = u32::try_from(field)
+                .map_err(|_| SirLoweringError::from("aggregate field exceeds u32"))?;
             let origin = PlaceOrigin::Aggregate { base, shape, field };
             let id = if let Some(existing) = places.iter().find(|place| place.origin == origin) {
                 if existing.ty != recipe.ty {
@@ -391,8 +400,10 @@ fn declare_path(
                 }
                 existing.id
             } else {
-                let id =
-                    PlaceId(u32::try_from(places.len()).map_err(|_| "place count exceeds u32")?);
+                let id = PlaceId(
+                    u32::try_from(places.len())
+                        .map_err(|_| SirLoweringError::from("place count exceeds u32"))?,
+                );
                 places.push(PlaceDecl {
                     id,
                     ty: recipe.ty.clone(),
@@ -405,9 +416,10 @@ fn declare_path(
                 ty = recipe.ty;
             }
         }
-        base = PlaceBase::Place(
-            selected_place.ok_or_else(|| "aggregate field disappeared".to_string())?,
-        );
+        base =
+            PlaceBase::Place(selected_place.ok_or_else(|| {
+                SirLoweringError::from("aggregate field disappeared".to_string())
+            })?);
     }
     match base {
         PlaceBase::Place(place) => Ok(place),
@@ -421,7 +433,7 @@ pub(super) fn complete_edge_partitions(
     function: &mut SemFunction,
     shapes: &[SemAggregateShape],
     facts: &TypeFactTable,
-) -> Result<(), String> {
+) -> Result<(), SirLoweringError> {
     if !function
         .places
         .iter()
@@ -482,10 +494,10 @@ pub(super) fn complete_edge_partitions(
                             .map(|step| (step.shape, step.field))
                             .collect::<Vec<_>>())),
                         Ok(_) => None,
-                        Err(error) => Some(Err(error)),
+                        Err(error) => Some(Err(error.into())),
                     }
                 })
-                .collect::<Result<Vec<_>, _>>()?;
+                .collect::<Result<Vec<_>, SirLoweringError>>()?;
             let (_, ty) = &types[&destination];
             for path in paths {
                 declare_path(

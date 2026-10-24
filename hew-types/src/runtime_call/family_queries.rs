@@ -519,6 +519,7 @@ impl RuntimeCallFamily {
                     | RuntimeValueKind::ActorRequestAdmission
                     | RuntimeValueKind::ActorHandle
                     | RuntimeValueKind::ConstBytePointer
+                    | RuntimeValueKind::MutableUnitPointer
                     | RuntimeValueKind::TypeArgument(_)
                     | RuntimeValueKind::SharedPayload
                     | RuntimeValueKind::CodecGenerator
@@ -751,6 +752,9 @@ impl RuntimeCallFamily {
             | F::BytesNew
             | F::CancelTokenIsRequested
             | F::CancelTokenRelease
+            | F::ContextActorId
+            | F::ContextSupervisor
+            | F::ContextTraceSpan
             | F::CancelTokenRetain
             | F::DequePopFront
             | F::DequePopBack

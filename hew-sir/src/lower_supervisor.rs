@@ -5,6 +5,8 @@
 //! supervisor runs it for the initial spawn and for every restart, so a
 //! restarted child re-runs init and start against the same config.
 
+use crate::SirLoweringError;
+
 use super::{
     function_source_origin, lower_initial_value_transfer, Builder, CallableId, CallableInstance,
     CallableState, HirBlock, HirExpr, HirExprKind, HirFn, HirItem, HirModule, InstanceService,
@@ -21,7 +23,7 @@ fn stop_deadline(
     child: &hew_hir::HirSupervisorChild,
     source: &hew_hir::HirSupervisorDecl,
     role: SemSupervisedRole,
-) -> Result<SemStopDeadline, String> {
+) -> Result<SemStopDeadline, SirLoweringError> {
     let Some(stop) = &child.stop else {
         return Ok(if matches!(role, SemSupervisedRole::Actor(_)) {
             SemStopDeadline::DefaultActor
@@ -45,7 +47,9 @@ fn stop_deadline(
             .position(|param| param.id == *binding)
             .map(SemStopDeadline::Config)
             .ok_or_else(|| {
-                "child stop deadline does not name a supervisor config parameter".into()
+                SirLoweringError::from(
+                    "child stop deadline does not name a supervisor config parameter",
+                )
             }),
         _ => Err(
             "child stop deadline requires a duration literal or supervisor config parameter".into(),
@@ -67,24 +71,29 @@ pub(super) fn declaration<'a>(
 }
 
 /// The restart window as whole seconds; the spec default is `10 within 5s`.
-fn restart_window_secs(window: Option<&str>) -> Result<u32, String> {
+fn restart_window_secs(window: Option<&str>) -> Result<u32, SirLoweringError> {
     const SECOND: i64 = 1_000_000_000;
     let Some(window) = window else {
         return Ok(5);
     };
-    let ns = hew_parser::parse_duration_ns(window)
-        .ok_or_else(|| format!("restart window `{window}` is not a duration"))?;
+    let ns = hew_parser::parse_duration_ns(window).ok_or_else(|| {
+        SirLoweringError::from(format!("restart window `{window}` is not a duration"))
+    })?;
     if ns <= 0 || ns % SECOND != 0 {
-        return Err(format!(
-            "restart window `{window}` must be a whole number of seconds"
-        ));
+        return Err(format!("restart window `{window}` must be a whole number of seconds").into());
     }
-    u32::try_from(ns / SECOND)
-        .map_err(|_| format!("restart window `{window}` exceeds the supported range"))
+    u32::try_from(ns / SECOND).map_err(|_| {
+        SirLoweringError::from(format!(
+            "restart window `{window}` exceeds the supported range"
+        ))
+    })
 }
 
 impl InstanceService<'_> {
-    pub(super) fn require_supervisor(&mut self, ty: &ResolvedTy) -> Result<SupervisorId, String> {
+    pub(super) fn require_supervisor(
+        &mut self,
+        ty: &ResolvedTy,
+    ) -> Result<SupervisorId, SirLoweringError> {
         self.require_supervisor_intercepted(ty, &[])
     }
 
@@ -96,7 +105,7 @@ impl InstanceService<'_> {
         &mut self,
         ty: &ResolvedTy,
         chain: &[ResolvedTy],
-    ) -> Result<SupervisorId, String> {
+    ) -> Result<SupervisorId, SirLoweringError> {
         if let Some(supervisor) = self
             .supervisors
             .iter()
@@ -105,10 +114,13 @@ impl InstanceService<'_> {
             return Ok(supervisor.id);
         }
         let source = declaration(self.module, ty)
-            .ok_or("supervisor handle lacks its exact declaration")?
+            .ok_or(SirLoweringError::from(
+                "supervisor handle lacks its exact declaration",
+            ))?
             .clone();
-        let instance = crate::actor::local_actor_instance(ty)
-            .ok_or("supervisor instance lacks its nominal identity")?;
+        let instance = crate::actor::local_actor_instance(ty).ok_or(SirLoweringError::from(
+            "supervisor instance lacks its nominal identity",
+        ))?;
         if instance.args.len() != source.type_params.len() {
             return Err("supervisor instance type arguments differ from its declaration".into());
         }
@@ -126,9 +138,9 @@ impl InstanceService<'_> {
         };
         let max_restarts = match source.max_restarts {
             None => 10,
-            Some(count) => u32::try_from(count)
-                .ok()
-                .ok_or("restart intensity must be a non-negative count")?,
+            Some(count) => u32::try_from(count).ok().ok_or(SirLoweringError::from(
+                "restart intensity must be a non-negative count",
+            ))?,
         };
         let window_secs = restart_window_secs(source.window.as_deref())?;
         let config: Vec<ResolvedTy> = source
@@ -144,7 +156,8 @@ impl InstanceService<'_> {
             self.require_type_facts(ty)?;
         }
         let id = SupervisorId(
-            u32::try_from(self.supervisors.len()).map_err(|_| "supervisor count exceeds u32")?,
+            u32::try_from(self.supervisors.len())
+                .map_err(|_| SirLoweringError::from("supervisor count exceeds u32"))?,
         );
         // Publish the header first so a nested child resolves this identity.
         self.supervisors.push(SemSupervisor {
@@ -195,7 +208,8 @@ impl InstanceService<'_> {
                 return Err(format!(
                     "supervisor child `{}` names no actor or supervisor declaration",
                     child.name
-                ));
+                )
+                .into());
             };
             // A pool's slots are actor slots: the runtime keeps supervisor
             // children in their own space, which the member accessor does not
@@ -223,24 +237,22 @@ impl InstanceService<'_> {
                 restart,
                 stop_deadline: stop_deadline(child, &source, role)?,
                 pool_count: if child.is_pool {
-                    let count = child
-                        .pool_count
-                        .as_ref()
-                        .ok_or_else(|| format!("pool `{}` declares no count", child.name))?;
-                    Some(
-                        self.register_supervisor_expression(
-                            id,
-                            &source,
-                            count.clone(),
-                            CallableInstance::SupervisorPoolCount {
-                                supervisor: id,
-                                child: u32::try_from(index)
-                                    .map_err(|_| "pool declaration index exceeds u32")?,
-                            },
-                            &format!("pool_{index}_count"),
-                            &substitution,
-                        )?,
-                    )
+                    let count = child.pool_count.as_ref().ok_or_else(|| {
+                        SirLoweringError::from(format!("pool `{}` declares no count", child.name))
+                    })?;
+                    Some(self.register_supervisor_expression(
+                        id,
+                        &source,
+                        count.clone(),
+                        CallableInstance::SupervisorPoolCount {
+                            supervisor: id,
+                            child: u32::try_from(index).map_err(|_| {
+                                SirLoweringError::from("pool declaration index exceeds u32")
+                            })?,
+                        },
+                        &format!("pool_{index}_count"),
+                        &substitution,
+                    )?)
                 } else {
                     None
                 },
@@ -262,13 +274,14 @@ impl InstanceService<'_> {
         child: &hew_hir::HirSupervisorChild,
         handle: ResolvedTy,
         substitution: &TypeSubstitution,
-    ) -> Result<CallableId, String> {
+    ) -> Result<CallableId, SirLoweringError> {
         let actor_name = self
             .module
             .defs
             .path(
-                crate::supervisor::declared_handle(&self.module.defs, &handle)
-                    .ok_or("supervised child lacks its declared handle type")?,
+                crate::supervisor::declared_handle(&self.module.defs, &handle).ok_or(
+                    SirLoweringError::from("supervised child lacks its declared handle type"),
+                )?,
             )
             .to_string();
         let spawn = HirExpr {
@@ -289,7 +302,8 @@ impl InstanceService<'_> {
             spawn,
             CallableInstance::SupervisorChild {
                 supervisor,
-                child: u32::try_from(index).map_err(|_| "supervisor child count exceeds u32")?,
+                child: u32::try_from(index)
+                    .map_err(|_| SirLoweringError::from("supervisor child count exceeds u32"))?,
             },
             &format!("child_{index}"),
             substitution,
@@ -304,9 +318,10 @@ impl InstanceService<'_> {
         instance: CallableInstance,
         suffix: &str,
         substitution: &TypeSubstitution,
-    ) -> Result<CallableId, String> {
+    ) -> Result<CallableId, SirLoweringError> {
         let id = CallableId(
-            u32::try_from(self.table.callables.len()).map_err(|_| "callable count exceeds u32")?,
+            u32::try_from(self.table.callables.len())
+                .map_err(|_| SirLoweringError::from("callable count exceeds u32"))?,
         );
         let result_ty = substitution.apply(&expression.ty);
         let span = expression.span.clone();
@@ -393,7 +408,7 @@ impl Builder<'_, '_> {
         expression: &HirExpr,
         object: &HirExpr,
         slot: &hew_types::ChildSlot,
-    ) -> Result<ValueId, String> {
+    ) -> Result<ValueId, SirLoweringError> {
         if slot.kind == hew_types::ChildKind::Pool {
             return self.lower_supervisor_pool_view(expression, object, slot);
         }
@@ -405,18 +420,23 @@ impl Builder<'_, '_> {
         expression: &HirExpr,
         object: &HirExpr,
         slot: &hew_types::ChildSlot,
-    ) -> Result<ValueId, String> {
+    ) -> Result<ValueId, SirLoweringError> {
         let supervisor = self.service.require_supervisor(&self.ty(&object.ty))?;
         let child = declaration(self.service.module, &self.ty(&object.ty))
-            .ok_or("supervisor lookup lacks its declaration")?
+            .ok_or(SirLoweringError::from(
+                "supervisor lookup lacks its declaration",
+            ))?
             .children
             .iter()
             .enumerate()
             .filter(|(_, child)| child.is_pool == (slot.kind == hew_types::ChildKind::Pool))
             .nth(slot.index as usize)
             .map(|(index, _)| index)
-            .ok_or("supervisor child lookup names no declared child")?;
-        let child = u32::try_from(child).map_err(|_| "supervisor child count exceeds u32")?;
+            .ok_or(SirLoweringError::from(
+                "supervisor child lookup names no declared child",
+            ))?;
+        let child = u32::try_from(child)
+            .map_err(|_| SirLoweringError::from("supervisor child count exceeds u32"))?;
         let operation = ActorOperation::SupervisorChild { supervisor, child };
         let signature = self.actor_signature(&operation)?;
         if signature.return_ty != self.ty(&expression.ty) {
@@ -428,7 +448,7 @@ impl Builder<'_, '_> {
             return Err("supervisor handle evaluation diverged".into());
         }
         self.emit_actor_call(operation, signature, vec![handle])?
-            .ok_or_else(|| "supervisor child lookup has no result".into())
+            .ok_or_else(|| SirLoweringError::from("supervisor child lookup has no result"))
     }
 
     /// `sup.pool`: the pool's view — its supervisor and the first of the
@@ -439,18 +459,23 @@ impl Builder<'_, '_> {
         expression: &HirExpr,
         object: &HirExpr,
         slot: &hew_types::ChildSlot,
-    ) -> Result<ValueId, String> {
+    ) -> Result<ValueId, SirLoweringError> {
         let supervisor = self.service.require_supervisor(&self.ty(&object.ty))?;
         let child = declaration(self.service.module, &self.ty(&object.ty))
-            .ok_or("supervisor lookup lacks its declaration")?
+            .ok_or(SirLoweringError::from(
+                "supervisor lookup lacks its declaration",
+            ))?
             .children
             .iter()
             .enumerate()
             .filter(|(_, child)| child.is_pool == (slot.kind == hew_types::ChildKind::Pool))
             .nth(slot.index as usize)
             .map(|(index, _)| index)
-            .ok_or("supervisor pool lookup names no declared child")?;
-        let child = u32::try_from(child).map_err(|_| "supervisor child count exceeds u32")?;
+            .ok_or(SirLoweringError::from(
+                "supervisor pool lookup names no declared child",
+            ))?;
+        let child = u32::try_from(child)
+            .map_err(|_| SirLoweringError::from("supervisor child count exceeds u32"))?;
         let operation = ActorOperation::SupervisorPoolView { supervisor, child };
         let signature = self.actor_signature(&operation)?;
         if signature.return_ty != self.ty(&expression.ty) {
@@ -462,7 +487,7 @@ impl Builder<'_, '_> {
             return Err("supervisor handle evaluation diverged".into());
         }
         self.emit_actor_call(operation, signature, vec![handle])?
-            .ok_or_else(|| "supervisor pool lookup has no result".into())
+            .ok_or_else(|| SirLoweringError::from("supervisor pool lookup has no result"))
     }
 
     pub(super) fn lower_supervisor_configuration(
@@ -470,11 +495,13 @@ impl Builder<'_, '_> {
         expression: &HirExpr,
         configure: CallableId,
         config: &[ValueId],
-    ) -> Result<ValueId, String> {
+    ) -> Result<ValueId, SirLoweringError> {
         let signature = self
             .service
             .callable(configure)
-            .ok_or("supervisor configuration lost its callable")?
+            .ok_or(SirLoweringError::from(
+                "supervisor configuration lost its callable",
+            ))?
             .signature
             .clone();
         if signature.params.len() != config.len() {
@@ -520,7 +547,7 @@ impl Builder<'_, '_> {
             true,
             None,
         )?
-        .ok_or_else(|| "supervisor configuration returned no value".into())
+        .ok_or_else(|| SirLoweringError::from("supervisor configuration returned no value"))
     }
 
     pub(super) fn lower_supervisor_pool_count(
@@ -528,7 +555,7 @@ impl Builder<'_, '_> {
         expression: &HirExpr,
         count: CallableId,
         config: &[ValueId],
-    ) -> Result<ValueId, String> {
+    ) -> Result<ValueId, SirLoweringError> {
         let value = self.lower_supervisor_configuration(expression, count, config)?;
         if !self.value_ty(value).is_some_and(|ty| ty.is_integer()) {
             return Err("pool count returned no integer".into());
@@ -554,7 +581,7 @@ impl Builder<'_, '_> {
         &mut self,
         expression: &HirExpr,
         kind: hew_types::PoolAccessorKind,
-    ) -> Result<ValueId, String> {
+    ) -> Result<ValueId, SirLoweringError> {
         let (receiver, index) = match &expression.kind {
             HirExprKind::Index { container, index } => (container.as_ref(), Some(index.as_ref())),
             HirExprKind::Call { args, .. } => match args.as_slice() {
@@ -580,6 +607,6 @@ impl Builder<'_, '_> {
             true,
             &[],
         )?
-        .ok_or_else(|| "pool accessor produces no value".into())
+        .ok_or_else(|| SirLoweringError::from("pool accessor produces no value"))
     }
 }

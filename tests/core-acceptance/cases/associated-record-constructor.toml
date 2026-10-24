@@ -1,0 +1,10 @@
+[[case]]
+id = "associated-record-constructor"
+intent = "An associated type projecting to a generic record uses ordinary field and functional-update semantics."
+source = "cases/associated-record-constructor.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.expected]
+stdout = "ready 42\n"
+exit = 0

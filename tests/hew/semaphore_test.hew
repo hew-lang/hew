@@ -4,13 +4,15 @@ import std.semaphore;
 
 #[test]
 fn test_new_preserves_valid_permit_count() {
-    let sem = semaphore.new(3);
+    let sem = semaphore.new(3).expect("valid permit count");
     assert(sem.count() == 3);
     sem.close();
 }
 
 #[test]
-#[should_panic]
 fn test_new_rejects_count_above_i32_max() {
-    semaphore.new(2147483648);
+    match semaphore.new(2147483648) {
+        .Err(.InvalidPermitCount(value)) => assert(value == 2147483648),
+        _ => panic("expected invalid permit count"),
+    }
 }

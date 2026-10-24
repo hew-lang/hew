@@ -337,28 +337,16 @@ generate_endpoints = ["hew_http_request_hew"]
 deterministic = "refuse"
 deterministic_endpoints = ["hew_http_request_hew"]
 enum_variant = "HttpClient"
-label = "std.net.http.http_client operations"
-prose_label = "`std.net.http.http_client.*`, `http_client.Response.*`"
-reason = "the std.net.http.http_client wrappers are native-only and have no wasm32 networking bridge"
+label = "std.net.http.client operations"
+prose_label = "`std.net.http.client.*`, `client.Response.*`"
+reason = "the std.net.http.client wrappers are native-only and have no wasm32 networking bridge"
 checker = "reject"
 runtime = "native-only"
 runtime_status = "Native-only wrapper module"
 categories = ["stdlib", "networking"]
 tracking = "WASM-TODO"
 tracking_label = "WASM-TODO(http-client):"
-native_only_modules = ["http_client"]
-# Directory-module imports share the canonical std.net.http declaration owner.
-# Classify client members before the HTTP server module's default policy.
-native_only_functions = [
-  "std.net.http.request",
-  "std.net.http.request_string",
-  "std.net.http.set_timeout",
-  "std.net.http.last_error",
-  "std.net.http.get",
-  "std.net.http.post",
-  "std.net.http.get_string",
-  "std.net.http.post_string",
-]
+native_only_modules = ["std.net.http.client"]
 
 [[feature]]
 id = "smtp"
@@ -390,7 +378,7 @@ runtime_status = "Native-only transport wrapper"
 categories = ["stdlib", "networking"]
 tracking = "WASM-TODO"
 tracking_label = "WASM-TODO(smtp):"
-native_only_modules = ["smtp"]
+native_only_modules = ["std.net.smtp"]
 
 [[feature]]
 id = "websocket"
@@ -422,7 +410,7 @@ runtime_status = "Native-only socket and reader-thread transport"
 categories = ["stdlib", "networking"]
 tracking = "WASM-TODO"
 tracking_label = "WASM-TODO(websocket):"
-native_only_modules = ["websocket"]
+native_only_modules = ["std.net.websocket"]
 
 [[feature]]
 id = "http-server"
@@ -454,7 +442,7 @@ runtime_status = "Native-only runtime module"
 categories = ["stdlib", "networking"]
 tracking = "WASM-TODO"
 tracking_label = "WASM-TODO(http-server):"
-native_only_modules = ["http"]
+native_only_modules = ["std.net.http.server"]
 
 [[feature]]
 id = "tcp-networking"
@@ -510,7 +498,7 @@ runtime_status = "Native-only runtime module"
 categories = ["stdlib", "networking"]
 tracking = "WASM-TODO"
 tracking_label = "WASM-TODO(tcp-networking):"
-native_only_modules = ["net"]
+native_only_modules = ["std.net"]
 
 [[feature]]
 id = "process-execution"
@@ -564,7 +552,7 @@ runtime_status = "Native-only runtime module"
 categories = ["stdlib", "process"]
 tracking = "WASM-TODO"
 tracking_label = "WASM-TODO(process-execution):"
-native_only_modules = ["process"]
+native_only_modules = ["std.process"]
 
 [[feature]]
 id = "tls"
@@ -590,7 +578,7 @@ runtime_status = "Native TLS-over-TCP stack today; no documented wasm32 path"
 categories = ["stdlib", "networking"]
 tracking = "WASM-TODO"
 tracking_label = "WASM-TODO(tls):"
-native_only_modules = ["tls"]
+native_only_modules = ["std.net.tls"]
 
 [[feature]]
 id = "quic"
@@ -634,7 +622,7 @@ runtime_status = "native QUIC is feature-gated and not compiled for wasm32"
 categories = ["stdlib", "networking"]
 tracking = "WASM-TODO"
 tracking_label = "WASM-TODO(quic):"
-native_only_modules = ["quic"]
+native_only_modules = ["std.net.quic"]
 
 [[feature]]
 id = "dns"
@@ -664,7 +652,7 @@ runtime_status = "Native OS resolver; not compiled for wasm32"
 categories = ["stdlib", "networking"]
 tracking = "WASM-TODO"
 tracking_label = "WASM-TODO(dns):"
-native_only_modules = ["dns"]
+native_only_modules = ["std.net.dns"]
 
 [[feature]]
 id = "std-os"
@@ -699,7 +687,7 @@ runtime_status = "Hew OS/env helpers are native-only today even where WASI may o
 categories = ["stdlib", "os"]
 tracking = "WASM-TODO"
 tracking_label = "WASM-TODO(os):"
-native_only_modules = ["os"]
+native_only_modules = ["std.os"]
 
 [[feature]]
 id = "distributed"
@@ -819,11 +807,11 @@ deterministic_endpoints = ["hew_stdin_read_line"]
 [[feature]]
 id = "crypto-random"
 generate = "refuse"
-generate_functions = ["std.crypto.crypto.random_bytes"]
+generate_functions = ["std.crypto.hash.random_bytes"]
 generate_endpoints = ["hew_random_bytes_hew", "hew_random_bytes"]
 enum_variant = "CryptoRandom"
-label = "std.crypto.crypto.random_bytes operations"
-prose_label = "`std.crypto.crypto.random_bytes`"
+label = "std.crypto.hash.random_bytes operations"
+prose_label = "`std.crypto.hash.random_bytes`"
 reason = "the std.crypto.random_bytes secure entropy source (ring::SystemRandom) is native-only and absent from the wasm32 link set; generating key material without a cryptographic entropy source would be unsafe"
 checker = "reject"
 runtime = "native-only"
@@ -847,7 +835,7 @@ runtime_status = "Native-only AES-256-GCM companion crate; not linked for wasm32
 categories = ["stdlib", "crypto"]
 tracking = "WASM-TODO"
 tracking_label = "WASM-TODO(crypto-encrypt):"
-native_only_modules = ["encrypt"]
+native_only_modules = ["std.crypto.encrypt"]
 
 [[feature]]
 id = "crypto-sign"
@@ -861,7 +849,7 @@ runtime_status = "Native-only Ed25519 companion crate; not linked for wasm32"
 categories = ["stdlib", "crypto"]
 tracking = "WASM-TODO"
 tracking_label = "WASM-TODO(crypto-sign):"
-native_only_modules = ["sign"]
+native_only_modules = ["std.crypto.sign"]
 
 [[feature]]
 id = "unseeded-random"
@@ -872,8 +860,8 @@ runtime_status = "Native UUID and password helpers use host entropy rather than 
 categories = ["stdlib", "random"]
 generate = "refuse"
 generate_functions = [
-  "std.misc.uuid.v4",
-  "std.misc.uuid.v7",
+  "std.uuid.v4",
+  "std.uuid.v7",
   "std.crypto.password.hash",
   "std.crypto.password.hash_custom",
 ]
@@ -967,7 +955,7 @@ non_source_reason = "The capability is rejected by generated checker metadata; n
 
 [[backlog]]
 id = "crypto-random"
-gap = "`crypto.random_bytes` parity"
+gap = "`hash.random_bytes` parity"
 blocker = "Secure wasm32 entropy source and explicit capability classification"
 tracking_label = "WASM-TODO(crypto-random):"
 marker_disposition = "non-source"

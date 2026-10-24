@@ -11,7 +11,7 @@
 //!
 //! The DEBUG line is suppressed by the INFO threshold filter.
 
-import std.misc.log;
+import std.log;
 
 fn main() {
     log.setup(); // INFO threshold, TEXT format

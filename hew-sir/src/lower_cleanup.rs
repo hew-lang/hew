@@ -12,6 +12,8 @@
 
 use std::collections::BTreeMap;
 
+use crate::SirLoweringError;
+
 use super::{
     BindingId, BindingTarget, Builder, Edge, PlaceOrigin, Provenance, ResolvedTy, SemOpKind,
 };
@@ -176,7 +178,11 @@ impl Builder<'_, '_> {
     /// fault path a finished defer dispatches its outcome at once: the
     /// deferred body may itself have faulted, and the remaining steps run
     /// under whichever fault is now active.
-    pub(super) fn emit_exit_step(&mut self, step: &ExitStep, fault: bool) -> Result<(), String> {
+    pub(super) fn emit_exit_step(
+        &mut self,
+        step: &ExitStep,
+        fault: bool,
+    ) -> Result<(), SirLoweringError> {
         match step {
             ExitStep::JoinScope { scope, mode } => {
                 let frame = self.task_scopes.pop().expect("active task scope");
@@ -246,7 +252,7 @@ impl Builder<'_, '_> {
     /// Emit an exit's scope drain inline, without changing the declaration
     /// context used to generate another successor. A failed drain escalates
     /// through the enclosing cleanup boundary instead of resuming the exit.
-    pub(super) fn end_scopes(&mut self, floor: usize) -> Result<(), String> {
+    pub(super) fn end_scopes(&mut self, floor: usize) -> Result<(), SirLoweringError> {
         let plan = self.plan_scope_drain(floor);
         let previous_draining = self.cleanup_draining;
         self.cleanup_draining = true;
@@ -315,7 +321,7 @@ impl Builder<'_, '_> {
         &mut self,
         steps: &[ExitStep],
         end: ExitEnd,
-    ) -> Result<crate::BlockId, String> {
+    ) -> Result<crate::BlockId, SirLoweringError> {
         let site = self.current_site.take();
         let bottom = match end {
             ExitEnd::Finish(block) => block,
@@ -347,7 +353,7 @@ impl Builder<'_, '_> {
 
     /// The body's one `resume_unwind`, the bottom of every ladder that
     /// leaves the body.
-    fn unwind_block(&mut self) -> Result<crate::BlockId, String> {
+    fn unwind_block(&mut self) -> Result<crate::BlockId, SirLoweringError> {
         if let Some(block) = self.cleanup_ladder.unwind {
             return Ok(block);
         }

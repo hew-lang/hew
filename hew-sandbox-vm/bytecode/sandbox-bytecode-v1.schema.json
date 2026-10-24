@@ -3677,6 +3677,36 @@
               "type": "null"
             },
             "family": {
+              "const": "ContextActorId"
+            }
+          }
+        },
+        {
+          "properties": {
+            "detail": {
+              "type": "null"
+            },
+            "family": {
+              "const": "ContextSupervisor"
+            }
+          }
+        },
+        {
+          "properties": {
+            "detail": {
+              "type": "null"
+            },
+            "family": {
+              "const": "ContextTraceSpan"
+            }
+          }
+        },
+        {
+          "properties": {
+            "detail": {
+              "type": "null"
+            },
+            "family": {
               "const": "ActorRequestRelease"
             }
           }

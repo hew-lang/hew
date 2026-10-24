@@ -1,9 +1,9 @@
-//! Tests for std::misc::uuid — v4/v7 generation and is_valid validation.
+//! Tests for std::uuid — v4/v7 generation and is_valid validation.
 //!
 //! UUID generation is non-deterministic; tests verify structural properties
 //! (length, format, is_valid round-trip) rather than specific values.
 
-import std.misc.uuid;
+import std.uuid;
 
 // ── is_valid rejects known-bad strings ───────────────────────────────
 #[test]

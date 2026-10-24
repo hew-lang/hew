@@ -187,8 +187,11 @@ fn lower_program_to_semantics(
             error @ hew_compile::SessionError::Semantic(_) => {
                 emit_semantic_error("E_SIR_VERIFY", &error.to_string(), DiagChannel::Internal)
             }
-            hew_compile::SessionError::Unsupported { message, span, .. } => {
-                diagnostic::render_unsupported_error(&message, span.as_ref(), source, label)
+            hew_compile::SessionError::Lowering { error, span, .. } => {
+                diagnostic::render_lowering_error(&error, span.as_ref(), source, label)
+            }
+            hew_compile::SessionError::Selection(message) => {
+                emit_semantic_error("E_SOURCE_SELECTION", &message, DiagChannel::User)
             }
         })
 }

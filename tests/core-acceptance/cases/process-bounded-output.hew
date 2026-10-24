@@ -34,8 +34,8 @@ fn main() -> i32 {
             return 7;
         }
         if args[1] == "exact" {
-            io.write("é\0");
-            io.write_err("雪");
+            io.write("é\0").expect("standard I/O");
+            io.write_err("雪").expect("standard I/O");
             return 7;
         }
         fs.write(args[2], f"{os.pid()}").expect("write child PID");
@@ -43,10 +43,10 @@ fn main() -> i32 {
             let chunk = "雪".repeat(32768);
             for _ in 0..64 {
                 if args[1] == "stderr" {
-                    io.write_err(chunk);
+                    io.write_err(chunk).expect("standard I/O");
                 } else {
-                    io.write(chunk);
-                    io.write_err(chunk);
+                    io.write(chunk).expect("standard I/O");
+                    io.write_err(chunk).expect("standard I/O");
                 }
             }
         }

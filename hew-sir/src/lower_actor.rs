@@ -2,6 +2,8 @@
 
 use hew_types::actor_protocol::{CoalesceFallback, OverflowContract};
 
+use crate::SirLoweringError;
+
 use super::{
     function_source_origin, lower_initial_value_transfer, Binding, BindingTarget, BlockArg,
     BodySource, Builder, CallResult, CallUnwind, CallableId, CallableInstance, CallableState,
@@ -45,12 +47,14 @@ fn actor_substitution(
     _defs: &hew_types::DefTable,
     source: &hew_hir::HirActorDecl,
     ty: &ResolvedTy,
-) -> Result<TypeSubstitution, String> {
+) -> Result<TypeSubstitution, SirLoweringError> {
     let args = if source.lambda_handle_ty.is_some() {
         Vec::new()
     } else {
         crate::actor::local_actor_instance(ty)
-            .ok_or("actor instance lacks its nominal identity")?
+            .ok_or(SirLoweringError::from(
+                "actor instance lacks its nominal identity",
+            ))?
             .args
     };
     if args.len() != source.type_params.len() {
@@ -65,7 +69,7 @@ fn actor_substitution(
 fn actor_coalesce(
     source: &hew_types::ActorProtocolDescriptor,
     handlers: &[crate::SemActorHandler],
-) -> Result<Option<crate::SemActorCoalesce>, String> {
+) -> Result<Option<crate::SemActorCoalesce>, SirLoweringError> {
     let OverflowContract::Coalesce { fallback } = source.mailbox.overflow() else {
         return Ok(None);
     };
@@ -82,16 +86,18 @@ fn actor_coalesce(
             let handler = handlers
                 .iter()
                 .find(|handler| handler.declaration == member.declaration)
-                .ok_or("checked coalesce member has no registered handler")?;
+                .ok_or(SirLoweringError::from(
+                    "checked coalesce member has no registered handler",
+                ))?;
             if handler.params.get(param as usize).is_none() {
-                return Err("coalesce key parameter is absent from the message payload");
+                return Err("coalesce key parameter is absent from the message payload".into());
             }
             Ok(crate::SemCoalesceKey {
                 message: handler.message_id,
                 param,
             })
         })
-        .collect::<Result<Vec<_>, _>>()?;
+        .collect::<Result<Vec<_>, SirLoweringError>>()?;
     if keys.is_empty() {
         return Err("checked coalescing mailbox has no keyed handler".into());
     }
@@ -100,7 +106,10 @@ fn actor_coalesce(
 
 impl InstanceService<'_> {
     /// The descriptor an actor handle or supervised role addresses.
-    pub(super) fn require_actor(&mut self, ty: &ResolvedTy) -> Result<crate::ActorId, String> {
+    pub(super) fn require_actor(
+        &mut self,
+        ty: &ResolvedTy,
+    ) -> Result<crate::ActorId, SirLoweringError> {
         self.require_actor_declaration(ty, None)
     }
 
@@ -116,7 +125,7 @@ impl InstanceService<'_> {
         &mut self,
         ty: &ResolvedTy,
         exact: Option<&str>,
-    ) -> Result<crate::ActorId, String> {
+    ) -> Result<crate::ActorId, SirLoweringError> {
         self.require_actor_intercepted(ty, exact, &[])
     }
 
@@ -125,7 +134,7 @@ impl InstanceService<'_> {
         ty: &ResolvedTy,
         exact: Option<&str>,
         chain: &[ResolvedTy],
-    ) -> Result<crate::ActorId, String> {
+    ) -> Result<crate::ActorId, SirLoweringError> {
         if let Some(actor) = self.actors.iter().find(|actor| {
             actor.interceptor_chain == chain
                 && exact.map_or_else(
@@ -144,15 +153,18 @@ impl InstanceService<'_> {
             }),
             None => declaration(self.module, ty),
         }
-        .ok_or("local actor handle lacks its exact declaration")?
+        .ok_or(SirLoweringError::from(
+            "local actor handle lacks its exact declaration",
+        ))?
         .clone();
         // All references share the actor's own descriptor identity.
         let lambda_handle = source.lambda_handle_ty.clone().map(|ty| *ty);
         let handle_ty = if let Some(handle) = lambda_handle {
             handle
         } else {
-            let instance = crate::actor::local_actor_instance(ty)
-                .ok_or("declaration() matched a local actor reference")?;
+            let instance = crate::actor::local_actor_instance(ty).ok_or(SirLoweringError::from(
+                "declaration() matched a local actor reference",
+            ))?;
             ResolvedTy::Named {
                 head: hew_types::TypeHead::Actor(hew_types::NominalHead::new(
                     instance.nominal,
@@ -188,7 +200,8 @@ impl InstanceService<'_> {
         self.require_type_facts(ty)?;
         self.require_type_facts(&state_ty)?;
         let id = crate::ActorId(
-            u32::try_from(self.actors.len()).map_err(|_| "actor count exceeds u32")?,
+            u32::try_from(self.actors.len())
+                .map_err(|_| SirLoweringError::from("actor count exceeds u32"))?,
         );
         self.actors.push(crate::SemActor {
             id,
@@ -223,7 +236,7 @@ impl InstanceService<'_> {
         id: crate::ActorId,
         source: &hew_hir::HirActorDecl,
         substitution: &TypeSubstitution,
-    ) -> Result<(), String> {
+    ) -> Result<(), SirLoweringError> {
         for hook in &source.lifecycle_hooks {
             let (params, return_ty) = match hook.kind {
                 hew_hir::HirLifecycleHookKind::Start | hew_hir::HirLifecycleHookKind::Stop => {
@@ -271,7 +284,8 @@ impl InstanceService<'_> {
                         .collect::<Vec<_>>()
                         .join(", "),
                     return_ty.user_facing()
-                ));
+                )
+                .into());
             }
             let body = self.register_actor_body(
                 id,
@@ -306,7 +320,7 @@ impl InstanceService<'_> {
         id: crate::ActorId,
         source: &hew_hir::HirActorDecl,
         substitution: &TypeSubstitution,
-    ) -> Result<(), String> {
+    ) -> Result<(), SirLoweringError> {
         if let Some(init) = &source.init {
             let body = self.register_actor_body(
                 id,
@@ -355,14 +369,16 @@ impl InstanceService<'_> {
         id: crate::ActorId,
         source: &hew_hir::HirActorDecl,
         substitution: &TypeSubstitution,
-    ) -> Result<(), String> {
+    ) -> Result<(), SirLoweringError> {
         for handler in &source.receive_handlers {
             let row = source
                 .protocol_descriptor
                 .handlers
                 .iter()
                 .find(|row| row.declaration == handler.declaration)
-                .ok_or("receive body lacks its checker-selected protocol member")?;
+                .ok_or(SirLoweringError::from(
+                    "receive body lacks its checker-selected protocol member",
+                ))?;
             let mut params: Vec<_> = handler
                 .params
                 .iter()
@@ -394,7 +410,7 @@ impl InstanceService<'_> {
                     row.return_ty.user_facing(),
                     params,
                     handler.return_ty.user_facing()
-                ));
+                ).into());
             }
             // A stream producer's request carries the consumer's sink and
             // replies through it, so its body returns unit.
@@ -499,9 +515,10 @@ impl InstanceService<'_> {
         symbol: &str,
         transfers_arguments: bool,
         implicit_owned: Option<&ResolvedTy>,
-    ) -> Result<CallableId, String> {
+    ) -> Result<CallableId, SirLoweringError> {
         let id = CallableId(
-            u32::try_from(self.table.callables.len()).map_err(|_| "callable count exceeds u32")?,
+            u32::try_from(self.table.callables.len())
+                .map_err(|_| SirLoweringError::from("callable count exceeds u32"))?,
         );
         let function = HirFn {
             failure_domain: hew_types::CallableFailureDomain::HewFault,
@@ -651,7 +668,7 @@ impl Builder<'_, '_> {
         args: &[HirExpr],
         parameters: &[ResolvedTy],
         evaluation_order: &[usize],
-    ) -> Result<std::ops::ControlFlow<ValueId, Vec<ValueId>>, String> {
+    ) -> Result<std::ops::ControlFlow<ValueId, Vec<ValueId>>, SirLoweringError> {
         if parameters.len() != args.len() {
             return Err("actor payload differs from its protocol".into());
         }
@@ -685,7 +702,7 @@ impl Builder<'_, '_> {
     fn prepare_actor_request(
         &mut self,
         expression: &HirExpr,
-    ) -> Result<ActorRequestPreparation, String> {
+    ) -> Result<ActorRequestPreparation, SirLoweringError> {
         let HirExprKind::ActorAsk {
             receiver,
             handler,
@@ -719,7 +736,9 @@ impl Builder<'_, '_> {
                 .handlers
                 .iter()
                 .find(|candidate| candidate.declaration == *handler)
-                .ok_or("ask has no exact receive protocol member")?
+                .ok_or(SirLoweringError::from(
+                    "ask has no exact receive protocol member",
+                ))?
         };
         let message = handler.message_id;
 
@@ -781,7 +800,10 @@ impl Builder<'_, '_> {
         })
     }
 
-    pub(super) fn lower_actor_ask(&mut self, expression: &HirExpr) -> Result<ValueId, String> {
+    pub(super) fn lower_actor_ask(
+        &mut self,
+        expression: &HirExpr,
+    ) -> Result<ValueId, SirLoweringError> {
         let retained = self.owned_live.clone();
         let value = match self.prepare_actor_request(expression)? {
             ActorRequestPreparation::Diverged(value) => Ok(value),
@@ -806,7 +828,7 @@ impl Builder<'_, '_> {
         &mut self,
         mut retained: std::collections::BTreeMap<ValueId, ResolvedTy>,
         result: Option<ValueId>,
-    ) -> Result<(), String> {
+    ) -> Result<(), SirLoweringError> {
         if self.is_open() {
             if let Some(value) = result {
                 if let Some(ty) = self.owned_live.get(&value) {
@@ -823,7 +845,7 @@ impl Builder<'_, '_> {
     pub(super) fn lower_actor_select_start(
         &mut self,
         expression: &HirExpr,
-    ) -> Result<Option<StartedActorCall>, String> {
+    ) -> Result<Option<StartedActorCall>, SirLoweringError> {
         if !matches!(expression.kind, HirExprKind::ActorAsk { .. }) {
             return Err("native selection requires a checked local actor completion".into());
         }
@@ -844,7 +866,9 @@ impl Builder<'_, '_> {
                 signature,
                 inputs.iter().map(|input| input.operand.value).collect(),
             )?
-            .ok_or("completion start must return its operation owner")?;
+            .ok_or(SirLoweringError::from(
+                "completion start must return its operation owner",
+            ))?;
         Ok(Some(StartedActorCall {
             protocol,
             target,
@@ -864,7 +888,7 @@ impl Builder<'_, '_> {
         policy: hew_types::actor_delivery::SendPolicy,
         sealed: bool,
         inputs: Vec<crate::BoundaryOperand>,
-    ) -> Result<ValueId, String> {
+    ) -> Result<ValueId, SirLoweringError> {
         let output = self.ty(&expression.ty);
         self.service.require_type_facts(&output)?;
         let own = OwnKind::of_ty(&output, self.service.checked_facts.rows())?;
@@ -924,7 +948,7 @@ impl Builder<'_, '_> {
     fn actor_arguments(
         &mut self,
         expression: &HirExpr,
-    ) -> Result<(crate::ActorOperation, Vec<HirExpr>, Vec<usize>), String> {
+    ) -> Result<(crate::ActorOperation, Vec<HirExpr>, Vec<usize>), SirLoweringError> {
         match &expression.kind {
             HirExprKind::ActorDelivery {
                 receiver,
@@ -989,8 +1013,9 @@ impl Builder<'_, '_> {
                     }
                     None => self.service.require_supervisor(&ty)?,
                 };
-                let source = super::supervisor::declaration(self.service.module, &ty)
-                    .ok_or("spawn lost its supervisor declaration")?;
+                let source = super::supervisor::declaration(self.service.module, &ty).ok_or(
+                    SirLoweringError::from("spawn lost its supervisor declaration"),
+                )?;
                 if slots.len() != source.params.len() {
                     return Err("supervisor spawn binding does not cover its parameters".into());
                 }
@@ -1000,10 +1025,10 @@ impl Builder<'_, '_> {
                         hew_hir::node::HirSpawnSlot::Written(index)
                         | hew_hir::node::HirSpawnSlot::ArgumentDefault(index) => Ok(*index),
                         hew_hir::node::HirSpawnSlot::Default => {
-                            Err("a supervisor parameter has no default".to_string())
+                            Err("a supervisor parameter has no default".to_string().into())
                         }
                     })
-                    .collect::<Result<Vec<_>, _>>()?;
+                    .collect::<Result<Vec<_>, SirLoweringError>>()?;
                 let values: Vec<_> = args.iter().map(|(_, value)| value.clone()).collect();
                 Ok((
                     crate::ActorOperation::SupervisorSpawn(id),
@@ -1039,7 +1064,7 @@ impl Builder<'_, '_> {
                         HirItem::Actor(actor) if actor.declaration == declaration => Some(actor),
                         _ => None,
                     })
-                    .ok_or("spawn lost its actor declaration")?;
+                    .ok_or(SirLoweringError::from("spawn lost its actor declaration"))?;
                 // The checker bound one slot per spawn key: each state field
                 // init does not initialize (D447), then each init parameter.
                 // Written values evaluate in source order; defaults follow.
@@ -1070,9 +1095,11 @@ impl Builder<'_, '_> {
                             values.push(args[*index].1.clone());
                         }
                         hew_hir::node::HirSpawnSlot::Default => {
-                            let default = field
-                                .and_then(|field| field.default.as_ref())
-                                .ok_or("a spawn default names a key with no default")?;
+                            let default = field.and_then(|field| field.default.as_ref()).ok_or(
+                                SirLoweringError::from(
+                                    "a spawn default names a key with no default",
+                                ),
+                            )?;
                             argument_order.push(values.len());
                             values.push(default.clone());
                         }
@@ -1095,7 +1122,9 @@ impl Builder<'_, '_> {
                 else {
                     return Err("submission has no message type arguments".into());
                 };
-                let target = type_args.first().ok_or("message has no target type")?;
+                let target = type_args
+                    .first()
+                    .ok_or(SirLoweringError::from("message has no target type"))?;
                 let actor = self.service.require_actor(target)?;
                 let result_ty = self.ty(&expression.ty);
                 self.service.require_type_facts(&result_ty)?;
@@ -1121,7 +1150,7 @@ impl Builder<'_, '_> {
     pub(super) fn lower_actor_boundary(
         &mut self,
         expression: &HirExpr,
-    ) -> Result<Option<ValueId>, String> {
+    ) -> Result<Option<ValueId>, SirLoweringError> {
         if let HirExprKind::Spawn { args, slots, .. } = &expression.kind {
             if !matches!(self.callable.instance, CallableInstance::ActorConstruction { site, .. } if site == expression.node)
                 && super::supervisor::declaration(self.service.module, &self.ty(&expression.ty))
@@ -1159,8 +1188,9 @@ impl Builder<'_, '_> {
                     } =>
                 {
                     let actor = &self.service.actors[actor.0 as usize];
-                    let declaration = declaration(self.service.module, &actor.handle_ty)
-                        .ok_or("spawn default lacks its actor declaration")?;
+                    let declaration = declaration(self.service.module, &actor.handle_ty).ok_or(
+                        SirLoweringError::from("spawn default lacks its actor declaration"),
+                    )?;
                     Some(actor_substitution(
                         &self.service.module.defs,
                         declaration,
@@ -1212,9 +1242,9 @@ impl Builder<'_, '_> {
             remaining[index] += 1;
         }
         for (index, parameter) in argument_order.into_iter().zip(&signature.params) {
-            let source_ty = self
-                .value_ty(values[index])
-                .ok_or("actor argument has no concrete type")?;
+            let source_ty = self.value_ty(values[index]).ok_or(SirLoweringError::from(
+                "actor argument has no concrete type",
+            ))?;
             remaining[index] -= 1;
             let value = if remaining[index] != 0
                 && OwnKind::of_ty(&source_ty, self.service.checked_facts.rows())? == OwnKind::Owned
@@ -1251,7 +1281,9 @@ impl Builder<'_, '_> {
         }
         if let Some(backoff) = backoff {
             let value = self.lower_supervisor_configuration(expression, backoff, &args)?;
-            let ty = self.value_ty(value).ok_or("backoff value has no type")?;
+            let ty = self
+                .value_ty(value)
+                .ok_or(SirLoweringError::from("backoff value has no type"))?;
             let shape = self.service.require_aggregate_shape(&ty)?;
             for field in 0..2 {
                 args.push(self.emit_typed(
@@ -1324,7 +1356,7 @@ impl Builder<'_, '_> {
         &mut self,
         expression: &HirExpr,
         parameters: &[HirBinding],
-    ) -> Result<CallableId, String> {
+    ) -> Result<CallableId, SirLoweringError> {
         let instance = CallableInstance::ActorConstruction {
             enclosing: self.callable.id,
             site: expression.node,
@@ -1339,7 +1371,8 @@ impl Builder<'_, '_> {
             return Ok(callable.id);
         }
         let id = CallableId(
-            u32::try_from(self.service.table.callables.len()).map_err(|_| "too many callables")?,
+            u32::try_from(self.service.table.callables.len())
+                .map_err(|_| SirLoweringError::from("too many callables"))?,
         );
         let function = self.actor_construction_function(expression, parameters);
         let signature = SemSignature {
@@ -1361,7 +1394,7 @@ impl Builder<'_, '_> {
                         caller_visible_projection: false,
                     })
                 })
-                .collect::<Result<Vec<_>, String>>()?,
+                .collect::<Result<Vec<_>, SirLoweringError>>()?,
             return_ty: function.return_ty.clone(),
         };
         self.service.require_signature_shapes(&signature)?;
@@ -1389,7 +1422,7 @@ impl Builder<'_, '_> {
         &mut self,
         expression: &HirExpr,
         written: &[(String, HirExpr)],
-    ) -> Result<Option<ValueId>, String> {
+    ) -> Result<Option<ValueId>, SirLoweringError> {
         let live_before = self.owned_live.keys().copied().collect();
         let mut values = Vec::new();
         let mut parameters = Vec::new();
@@ -1416,7 +1449,8 @@ impl Builder<'_, '_> {
             });
             parameters.push(HirBinding {
                 id: hew_hir::BindingId(
-                    u32::try_from(index).map_err(|_| "too many constructor arguments")?,
+                    u32::try_from(index)
+                        .map_err(|_| SirLoweringError::from("too many constructor arguments"))?,
                 ),
                 name: format!("argument{index}"),
                 ty,
@@ -1429,7 +1463,7 @@ impl Builder<'_, '_> {
         let signature = self
             .service
             .callable(target)
-            .ok_or("missing construction callable")?
+            .ok_or(SirLoweringError::from("missing construction callable"))?
             .signature
             .clone();
         self.finish_user_call(
@@ -1446,17 +1480,19 @@ impl Builder<'_, '_> {
     pub(super) fn actor_signature(
         &self,
         operation: &crate::ActorOperation,
-    ) -> Result<SemSignature, String> {
-        operation.signature(
-            &self.service.module.defs,
-            &self.service.actors,
-            &self.service.supervisors,
-            |id| {
-                self.service
-                    .callable(id)
-                    .map(|callable| callable.signature.clone())
-            },
-        )
+    ) -> Result<SemSignature, SirLoweringError> {
+        operation
+            .signature(
+                &self.service.module.defs,
+                &self.service.actors,
+                &self.service.supervisors,
+                |id| {
+                    self.service
+                        .callable(id)
+                        .map(|callable| callable.signature.clone())
+                },
+            )
+            .map_err(SirLoweringError::from)
     }
 
     /// Transfer evaluated operands across one actor boundary and continue
@@ -1466,7 +1502,7 @@ impl Builder<'_, '_> {
         operation: crate::ActorOperation,
         signature: SemSignature,
         args: Vec<ValueId>,
-    ) -> Result<Option<ValueId>, String> {
+    ) -> Result<Option<ValueId>, SirLoweringError> {
         let retains_cleanup_fault = operation.retains_cleanup_fault();
         let args: Vec<_> = args
             .into_iter()
@@ -1536,7 +1572,8 @@ impl Builder<'_, '_> {
             if self.value_own_kind(value) == Some(OwnKind::Owned) {
                 self.owned_live.insert(
                     value,
-                    self.value_ty(value).ok_or("actor result lacks its type")?,
+                    self.value_ty(value)
+                        .ok_or(SirLoweringError::from("actor result lacks its type"))?,
                 );
             }
         }
@@ -1547,7 +1584,7 @@ impl Builder<'_, '_> {
         Ok(continuation)
     }
 
-    pub(super) fn bind_actor_state(&mut self, source: &BodySource) -> Result<(), String> {
+    pub(super) fn bind_actor_state(&mut self, source: &BodySource) -> Result<(), SirLoweringError> {
         let BodySource::Actor {
             actor,
             state_bindings,
@@ -1560,7 +1597,9 @@ impl Builder<'_, '_> {
             .service
             .actors
             .get(actor.0 as usize)
-            .ok_or_else(|| "actor body has no state descriptor".to_string())?
+            .ok_or_else(|| {
+                SirLoweringError::from("actor body has no state descriptor".to_string())
+            })?
             .clone();
         let abi = &self.callable.signature.params[0];
         if abi.ty != descriptor.state_ty || abi.passing != SemParamPassing::BorrowMut {
@@ -1592,15 +1631,18 @@ impl Builder<'_, '_> {
             if self.ty(&binding.ty) != field.ty {
                 return Err("actor field binding changes its declared type".into());
             }
-            let place =
-                PlaceId(u32::try_from(self.places.len()).map_err(|_| "place count exceeds u32")?);
+            let place = PlaceId(
+                u32::try_from(self.places.len())
+                    .map_err(|_| SirLoweringError::from("place count exceeds u32"))?,
+            );
             self.places.push(crate::PlaceDecl {
                 id: place,
                 ty: field.ty.clone(),
                 origin: PlaceOrigin::ActorState {
                     actor: *actor,
                     state: ValueId(0),
-                    field: u32::try_from(index).map_err(|_| "state field count exceeds u32")?,
+                    field: u32::try_from(index)
+                        .map_err(|_| SirLoweringError::from("state field count exceeds u32"))?,
                     initialized: !(field.deferred && descriptor.init == Some(self.callable.id)),
                 },
             });
@@ -1609,7 +1651,8 @@ impl Builder<'_, '_> {
             let declaration = self.source_bindings.len();
             self.source_bindings.push(Binding {
                 id: crate::BindingId(
-                    u32::try_from(declaration).map_err(|_| "binding count exceeds u32")?,
+                    u32::try_from(declaration)
+                        .map_err(|_| SirLoweringError::from("binding count exceeds u32"))?,
                 ),
                 name: binding.name.clone(),
                 span: binding.span.clone(),
@@ -1625,7 +1668,10 @@ impl Builder<'_, '_> {
 }
 
 impl Builder<'_, '_> {
-    fn delivery_target(&mut self, receiver: &HirExpr) -> Result<(ValueId, ResolvedTy), String> {
+    fn delivery_target(
+        &mut self,
+        receiver: &HirExpr,
+    ) -> Result<(ValueId, ResolvedTy), SirLoweringError> {
         let ty = self.ty(&receiver.ty);
         let value =
             lower_initial_value_transfer(self, receiver, "sender target", OwnedBindingUse::Copy)?;
@@ -1651,7 +1697,10 @@ impl Builder<'_, '_> {
         Ok((target, target_ty))
     }
 
-    pub(super) fn lower_actor_message(&mut self, expression: &HirExpr) -> Result<ValueId, String> {
+    pub(super) fn lower_actor_message(
+        &mut self,
+        expression: &HirExpr,
+    ) -> Result<ValueId, SirLoweringError> {
         let HirExprKind::ActorMessage {
             receiver,
             handler,
@@ -1682,7 +1731,9 @@ impl Builder<'_, '_> {
                 .handlers
                 .iter()
                 .find(|candidate| candidate.declaration == *handler)
-                .ok_or("message description has no exact receive member")?
+                .ok_or(SirLoweringError::from(
+                    "message description has no exact receive member",
+                ))?
         }
         .clone();
         if !handler.owes_no_reply() {
@@ -1731,22 +1782,26 @@ impl Builder<'_, '_> {
         method: hew_types::DefId,
         policy: hew_types::actor_delivery::SendPolicy,
         evaluation_order: &[usize],
-    ) -> Result<ValueId, String> {
+    ) -> Result<ValueId, SirLoweringError> {
         let view_ty = self.ty(&receiver.ty);
         let source_ty = view_ty.to_ty();
-        let (target_ty, selected) = hew_types::actor_delivery::timer_view_parts(&source_ty)
-            .ok_or("timer schedule has no checked timer view")?;
+        let (target_ty, selected) = hew_types::actor_delivery::timer_view_parts(&source_ty).ok_or(
+            SirLoweringError::from("timer schedule has no checked timer view"),
+        )?;
         if policy != selected || policy.may_suspend() {
             return Err("timer schedule changes its admission policy".into());
         }
-        let target_ty = ResolvedTy::from_ty(target_ty).map_err(|error| error.to_string())?;
+        let target_ty = ResolvedTy::from_ty(target_ty)
+            .map_err(|error| SirLoweringError::from(error.to_string()))?;
         let actor = self.service.require_actor(&target_ty)?;
         let handler = self.service.actors[actor.0 as usize]
             .handlers
             .iter()
             .find(|handler| handler.declaration == method && handler.owes_no_reply())
             .cloned()
-            .ok_or("timer schedule has no exact one-way handler")?;
+            .ok_or(SirLoweringError::from(
+                "timer schedule has no exact one-way handler",
+            ))?;
         let view =
             lower_initial_value_transfer(self, receiver, "timer view", OwnedBindingUse::Copy)?;
         if !self.is_open() {
@@ -1763,15 +1818,18 @@ impl Builder<'_, '_> {
         .iter()
         .enumerate()
         {
-            inputs.push(self.emit_typed(
-                crate::Provenance::Site(expression.site),
-                ty,
-                crate::SemOpKind::AggregateProjectCopy {
-                    shape,
-                    aggregate: Operand { value: view },
-                    field: u32::try_from(field).map_err(|_| "timer field index")?,
-                },
-            )?);
+            inputs.push(
+                self.emit_typed(
+                    crate::Provenance::Site(expression.site),
+                    ty,
+                    crate::SemOpKind::AggregateProjectCopy {
+                        shape,
+                        aggregate: Operand { value: view },
+                        field: u32::try_from(field)
+                            .map_err(|_| SirLoweringError::from("timer field index"))?,
+                    },
+                )?,
+            );
         }
         let values = match self.lower_actor_payload(args, &handler.params, evaluation_order)? {
             std::ops::ControlFlow::Continue(values) => values,
@@ -1802,14 +1860,14 @@ impl Builder<'_, '_> {
         let signature = self.actor_signature(&operation)?;
         self.service.require_signature_shapes(&signature)?;
         self.emit_actor_call(operation, signature, inputs)?
-            .ok_or_else(|| "timer schedule has no cancellation handle".into())
+            .ok_or_else(|| SirLoweringError::from("timer schedule has no cancellation handle"))
     }
 
     fn make_delivery_record(
         &mut self,
         expression: &HirExpr,
         fields: Vec<ValueId>,
-    ) -> Result<ValueId, String> {
+    ) -> Result<ValueId, SirLoweringError> {
         let shape = self
             .service
             .require_aggregate_shape(&self.ty(&expression.ty))?;
@@ -1833,7 +1891,10 @@ impl Builder<'_, '_> {
         clippy::too_many_lines,
         reason = "delivery lowering keeps sealed-owner transfer and admission in one operation"
     )]
-    pub(super) fn lower_actor_delivery(&mut self, expression: &HirExpr) -> Result<ValueId, String> {
+    pub(super) fn lower_actor_delivery(
+        &mut self,
+        expression: &HirExpr,
+    ) -> Result<ValueId, SirLoweringError> {
         use hew_types::actor_delivery::ActorDeliveryCall;
         let HirExprKind::ActorDelivery {
             receiver,
@@ -1906,14 +1967,20 @@ impl Builder<'_, '_> {
                             || self.service.module.defs.kind(*method)
                                 == hew_types::DeclarationKind::RequestProtocol
                     })
-                    .ok_or("request recovery lacks its checked handler")?;
+                    .ok_or(SirLoweringError::from(
+                        "request recovery lacks its checked handler",
+                    ))?;
                 let source_ty = request_ty.to_ty();
                 let (_, payload_ty, source_policy) =
-                    hew_types::actor_delivery::message_parts(&source_ty)
-                        .ok_or("recovery input is not a checked message")?;
-                let (source_method, params, _, _) =
-                    hew_types::actor_delivery::request_parts(payload_ty)
-                        .ok_or("recovery input lacks its sealed completion protocol")?;
+                    hew_types::actor_delivery::message_parts(&source_ty).ok_or(
+                        SirLoweringError::from("recovery input is not a checked message"),
+                    )?;
+                let (source_method, params, _, _) = hew_types::actor_delivery::request_parts(
+                    payload_ty,
+                )
+                .ok_or(SirLoweringError::from(
+                    "recovery input lacks its sealed completion protocol",
+                ))?;
                 let source_handler = source_method.id.declaration();
                 if source_policy != *policy
                     || source_handler != *expected_source_method
@@ -1969,11 +2036,11 @@ impl Builder<'_, '_> {
                 let after_index = usize::from(overdue.is_some_and(|index| index < *after));
                 let after_value = *timing
                     .get(after_index)
-                    .ok_or("timer view lacks its delay")?;
+                    .ok_or(SirLoweringError::from("timer view lacks its delay"))?;
                 let overdue_value = if overdue.is_some() {
-                    *timing
-                        .get(1 - after_index)
-                        .ok_or("timer view lacks its overdue duration")?
+                    *timing.get(1 - after_index).ok_or(SirLoweringError::from(
+                        "timer view lacks its overdue duration",
+                    ))?
                 } else {
                     self.emit_typed(
                         crate::Provenance::Site(expression.site),
@@ -2036,7 +2103,7 @@ impl Builder<'_, '_> {
             }
             ActorDeliveryCall::Submit { .. } => self
                 .lower_actor_boundary(expression)?
-                .ok_or_else(|| "submission has no result".into()),
+                .ok_or_else(|| SirLoweringError::from("submission has no result")),
             ActorDeliveryCall::Stop
             | ActorDeliveryCall::Terminate
             | ActorDeliveryCall::AwaitStopped
@@ -2049,7 +2116,10 @@ impl Builder<'_, '_> {
 
     /// `pid.stream()`: create a bounded pipe, start the producer turn with
     /// the request and its sink, and continue with the stream half.
-    pub(super) fn lower_actor_stream(&mut self, expression: &HirExpr) -> Result<ValueId, String> {
+    pub(super) fn lower_actor_stream(
+        &mut self,
+        expression: &HirExpr,
+    ) -> Result<ValueId, SirLoweringError> {
         let HirExprKind::ActorGenStream {
             receiver,
             handler,
@@ -2068,7 +2138,9 @@ impl Builder<'_, '_> {
             .handlers
             .iter()
             .find(|candidate| candidate.declaration == *handler && candidate.stream.is_some())
-            .ok_or("stream request has no exact producer member")?
+            .ok_or(SirLoweringError::from(
+                "stream request has no exact producer member",
+            ))?
             .clone();
         let stream_ty = self.ty(&expression.ty);
         let Some(sink_ty) = handler.params.last() else {
@@ -2128,7 +2200,7 @@ impl Builder<'_, '_> {
         stream_ty: &ResolvedTy,
         sink_ty: &ResolvedTy,
         provenance: crate::Provenance,
-    ) -> Result<(ValueId, ValueId), String> {
+    ) -> Result<(ValueId, ValueId), SirLoweringError> {
         self.service.require_type_facts(stream_ty)?;
         self.service.require_type_facts(sink_ty)?;
         let stream = self.fresh_value();

@@ -1,0 +1,10 @@
+[[case]]
+id = "qualified-record-bindings"
+source = "cases/qualified-record-bindings.hew"
+intent = "Imported nested record bindings retain declaration identity through let, for and select."
+suites = ["acceptance", "safety"]
+timeout_seconds = 30
+
+[case.expected]
+stdout = "let 7\nfor 8\nselect 9\n"
+exit = 0

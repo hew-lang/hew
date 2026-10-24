@@ -1342,7 +1342,7 @@ fn checker_output_contract_retains_valid_method_call_metadata() {
     );
     checker
         .method_call_rewrites
-        .insert(span.clone(), MethodCallRewrite::DeferToLowering);
+        .insert(span.clone(), MethodCallRewrite::CopyCloneNoop);
 
     // expr_types has the matching span with a concrete, fully-resolved type.
     let mut expr_types = HashMap::new();
@@ -1478,7 +1478,7 @@ fn checker_output_contract_prunes_method_call_metadata_for_leaked_inference_var_
     );
     checker
         .method_call_rewrites
-        .insert(leaked_span.clone(), MethodCallRewrite::DeferToLowering);
+        .insert(leaked_span.clone(), MethodCallRewrite::CopyCloneNoop);
     // The good span carries a fully-resolved type and its metadata should survive.
     checker.method_call_receiver_kinds.insert(
         good_span.clone(),
@@ -1488,7 +1488,7 @@ fn checker_output_contract_prunes_method_call_metadata_for_leaked_inference_var_
     );
     checker
         .method_call_rewrites
-        .insert(good_span.clone(), MethodCallRewrite::DeferToLowering);
+        .insert(good_span.clone(), MethodCallRewrite::CopyCloneNoop);
 
     // Build expr_types: leaked entry has a fresh (unresolved) inference var;
     // good entry carries a concrete type.

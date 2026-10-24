@@ -86,6 +86,12 @@ panic = "unwind"
 debug = "line-tables-only"
 split-debuginfo = "unpacked"
 
+# Keep debugger fixtures independent of cached split-DWARF files.
+[profile.debugger]
+inherits = "dev"
+debug = "full"
+split-debuginfo = "off"
+
 [profile.release]
 opt-level = "s"
 lto = true

@@ -138,7 +138,7 @@ impl Parser<'_> {
             Some(Token::Minus)
                 if matches!(
                     self.peek_at(self.pos + 1),
-                    Some(Token::Integer(_) | Token::Float(_))
+                    Some(Token::Integer(_) | Token::Float(_) | Token::Duration(_))
                 ) =>
             {
                 self.advance(); // consume '-'
@@ -167,7 +167,14 @@ impl Parser<'_> {
                             return None;
                         }
                     }
-                    _ => unreachable!("negative literal arm accepts only integer or float tokens"),
+                    Token::Duration(s) => {
+                        let Some(nanos) = parse_duration_literal(&format!("-{s}")) else {
+                            self.error_invalid_literal(format!("invalid duration literal '-{s}'"));
+                            return None;
+                        };
+                        Pattern::Literal(Literal::Duration(nanos))
+                    }
+                    _ => unreachable!("negative literal arm accepts only numeric literal tokens"),
                 }
             }
             // Leading-dot variants retain their contextual origin in the AST.
@@ -264,6 +271,14 @@ impl Parser<'_> {
                 self.advance(); // consume '{'
                 let (fields, rest) = self.parse_record_pattern_fields()?;
                 Pattern::RecordShorthand { fields, rest }
+            }
+            Some(Token::Duration(s)) => {
+                let Some(nanos) = parse_duration_literal(s) else {
+                    self.error_invalid_literal(format!("invalid duration literal '{s}'"));
+                    return None;
+                };
+                self.advance();
+                Pattern::Literal(Literal::Duration(nanos))
             }
             Some(Token::Integer(s)) => {
                 if let Ok((val, radix)) = parse_int_literal(s) {

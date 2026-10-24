@@ -1,6 +1,8 @@
 //! Statement loops, labelled exits and integer ranges share lexical cleanup.
 //! Source loops produce Unit or Never; the parser rejects break operands.
 
+use crate::SirLoweringError;
+
 use super::{
     BindingId, BindingTarget, BlockArg, BlockId, Builder, ControlState, Edge, HirBinding, HirBlock,
     HirExpr, HirExprKind, HirLiteral, LoopScope, Operand, OwnedBindingUse, Provenance, ResolvedTy,
@@ -8,7 +10,7 @@ use super::{
 };
 
 impl Builder<'_, '_> {
-    fn loop_edge(&mut self, scope: &LoopScope, target: BlockId) -> Result<Edge, String> {
+    fn loop_edge(&mut self, scope: &LoopScope, target: BlockId) -> Result<Edge, SirLoweringError> {
         let saved = self.control_state();
         let recovery = self.recovery_bodies.clone();
         let preserved = self
@@ -23,7 +25,7 @@ impl Builder<'_, '_> {
             .carried
             .iter()
             .map(|&binding| self.scalar_binding(binding).map(|value| Operand { value }))
-            .collect::<Result<Vec<_>, _>>()?;
+            .collect::<Result<Vec<_>, SirLoweringError>>()?;
         let dead = self
             .owned_live
             .keys()
@@ -46,7 +48,7 @@ impl Builder<'_, '_> {
         continuing: bool,
         label: Option<&str>,
         value: Option<&HirExpr>,
-    ) -> Result<(), String> {
+    ) -> Result<(), SirLoweringError> {
         let index = self
             .loops
             .iter()
@@ -55,7 +57,9 @@ impl Builder<'_, '_> {
             .take_while(|(_, scope)| scope.is_some())
             .find(|(_, scope)| label.is_none() || scope.as_ref().unwrap().label.as_deref() == label)
             .map(|(index, _)| index)
-            .ok_or_else(|| "break/continue has no enclosing loop target".to_string())?;
+            .ok_or_else(|| {
+                SirLoweringError::from("break/continue has no enclosing loop target".to_string())
+            })?;
         self.check_deferred_loop_exit(index)?;
         // HIR can still contain an operand from a non-parser producer. Preserve
         // its effects and ordinary temporary cleanup without returning a value.
@@ -72,17 +76,17 @@ impl Builder<'_, '_> {
     }
 
     /// Give each loop-carried binding a fresh SSA argument at a CFG join.
-    fn loop_join(&mut self, carried: &[BindingId]) -> Result<ControlState, String> {
+    fn loop_join(&mut self, carried: &[BindingId]) -> Result<ControlState, SirLoweringError> {
         let mut state = self.control_state();
         let mut args = Vec::new();
         for &binding in carried {
             let source = self.scalar_binding(binding)?;
-            let ty = self
-                .value_ty(source)
-                .ok_or_else(|| "scalar loop binding has no type".to_string())?;
-            let own = self
-                .value_own_kind(source)
-                .ok_or_else(|| "scalar loop binding has no ownership facts".to_string())?;
+            let ty = self.value_ty(source).ok_or_else(|| {
+                SirLoweringError::from("scalar loop binding has no type".to_string())
+            })?;
+            let own = self.value_own_kind(source).ok_or_else(|| {
+                SirLoweringError::from("scalar loop binding has no ownership facts".to_string())
+            })?;
             let value = self.fresh_value();
             args.push(BlockArg { value, ty, own });
             state.bindings.insert(binding, BindingTarget::Value(value));
@@ -97,7 +101,7 @@ impl Builder<'_, '_> {
         label: Option<&str>,
         condition: Option<&HirExpr>,
         body: &HirBlock,
-    ) -> Result<(), String> {
+    ) -> Result<(), SirLoweringError> {
         let carried = self.mutable_bindings();
         let header = self.loop_join(&carried)?;
         let exit = self.loop_join(&carried)?;
@@ -157,63 +161,24 @@ impl Builder<'_, '_> {
         Ok(())
     }
 
-    #[allow(
-        clippy::too_many_arguments,
-        clippy::too_many_lines,
-        reason = "checked range facts share one setup, condition and increment CFG"
-    )]
     pub(super) fn lower_for_range(
         &mut self,
         label: Option<&str>,
         loop_binding: &HirBinding,
-        start: &HirExpr,
-        end: &HirExpr,
-        step: &HirExpr,
-        inclusive: bool,
-        descending: bool,
+        range: &HirExpr,
         body: &HirBlock,
-    ) -> Result<(), String> {
+    ) -> Result<(), SirLoweringError> {
         use hew_parser::ast::BinaryOp;
         let ty = self.ty(&loop_binding.ty);
+        let range_value = self.lower_read_operand(range, "range iterable")?;
+        let [_, _, first, last, stride, descending, nonempty] =
+            self.range_fields(range, &range_value)?;
         if !ty.is_integer() {
             return Err("range binding requires an integer type".into());
         }
-        let initial = self.lower_range_operand(start, &ty)?;
-        let bound = self.lower_range_operand(end, &ty)?;
-        let stride = self.lower_range_operand(step, &ty)?;
-        let zero = Operand {
-            value: self.emit_typed(Provenance::Synthesized, &ty, SemOpKind::ConstInteger(0))?,
-        };
-        let positive = self.range_compare(BinaryOp::Greater, stride.clone(), zero)?;
-        let valid = self.new_block(Vec::new());
-        let invalid = self.new_block(Vec::new());
-        self.set_terminator(SemTerminator::Branch {
-            condition: positive,
-            then_target: Edge {
-                target: valid,
-                args: Vec::new(),
-            },
-            else_target: Edge {
-                target: invalid,
-                args: Vec::new(),
-            },
-        })?;
-        let before = self.control_state();
-        self.current = invalid;
-        let mut message = step.clone();
-        message.ty = ResolvedTy::String;
-        message.kind = HirExprKind::Literal(HirLiteral::String(
-            "step_by requires a positive step".into(),
-        ));
-        let mut panic = step.clone();
-        panic.ty = ResolvedTy::Never;
-        self.lower_panic(&panic, &[message])?;
-        self.restore_control_state(&before);
-        self.current = valid;
-
         let outer_floor = self.scopes.len();
         self.open_scope();
-        self.bind_source_value(loop_binding, initial.value)?;
+        self.bind_source_value(loop_binding, first.value)?;
         let mut carried = self.mutable_bindings();
         carried.push(loop_binding.id);
         let header = self.loop_join(&carried)?;
@@ -227,17 +192,6 @@ impl Builder<'_, '_> {
             preserved: self.owned_live.keys().copied().collect(),
             scope_floor: self.scopes.len(),
         };
-        // Check emptiness before subtracting from an exclusive high endpoint.
-        // Even MIN..MIN reversed is empty without overflowing MIN - 1.
-        let nonempty = self.range_compare(
-            if inclusive {
-                BinaryOp::LessEqual
-            } else {
-                BinaryOp::Less
-            },
-            initial.clone(),
-            bound.clone(),
-        )?;
         let setup = self.new_block(Vec::new());
         let empty = self.loop_edge(&scope, exit.block)?;
         self.set_terminator(SemTerminator::Branch {
@@ -249,22 +203,9 @@ impl Builder<'_, '_> {
             else_target: empty,
         })?;
         self.current = setup;
-        if descending {
-            let first = if inclusive {
-                bound.value
-            } else {
-                let one = Operand {
-                    value: self.emit_typed(
-                        Provenance::Synthesized,
-                        &ty,
-                        SemOpKind::ConstInteger(1),
-                    )?,
-                };
-                self.range_advance(&ty, BinaryOp::Subtract, bound.clone(), one, &scope)?
-            };
-            self.bindings
-                .insert(loop_binding.id, BindingTarget::Value(first));
-        }
+        let stride = self.range_cast(stride, &ty)?;
+        self.bindings
+            .insert(loop_binding.id, BindingTarget::Value(first.value));
         let entry = self.loop_edge(&scope, header.block)?;
         self.set_terminator(SemTerminator::Goto(entry))?;
         self.restore_control_state(&header);
@@ -272,19 +213,15 @@ impl Builder<'_, '_> {
         let counter = Operand {
             value: self.scalar_binding(loop_binding.id)?,
         };
-        let (comparison, endpoint) = if descending {
-            (BinaryOp::GreaterEqual, initial)
-        } else {
-            (
-                if inclusive {
-                    BinaryOp::LessEqual
-                } else {
-                    BinaryOp::Less
-                },
-                bound,
-            )
-        };
-        let condition = self.range_compare(comparison, counter, endpoint)?;
+        let ascending_condition =
+            self.range_compare(BinaryOp::LessEqual, counter.clone(), last.clone())?;
+        let descending_condition = self.range_compare(BinaryOp::GreaterEqual, counter, last)?;
+        let condition = self.range_select(
+            descending.clone(),
+            &ResolvedTy::Bool,
+            descending_condition,
+            ascending_condition,
+        )?;
         let exit_edge = self.loop_edge(&scope, exit.block)?;
         let body_block = self.new_block(Vec::new());
         self.set_terminator(SemTerminator::Branch {
@@ -312,17 +249,7 @@ impl Builder<'_, '_> {
         let counter = Operand {
             value: self.scalar_binding(loop_binding.id)?,
         };
-        let next = self.range_advance(
-            &ty,
-            if descending {
-                BinaryOp::Subtract
-            } else {
-                BinaryOp::Add
-            },
-            counter,
-            stride,
-            &scope,
-        )?;
+        let next = self.range_advance(&ty, descending, counter, &stride, &scope)?;
         self.bindings
             .insert(loop_binding.id, BindingTarget::Value(next));
         let edge = self.loop_edge(&scope, header.block)?;
@@ -333,19 +260,148 @@ impl Builder<'_, '_> {
         Ok(())
     }
 
-    fn lower_range_operand(&mut self, expr: &HirExpr, ty: &ResolvedTy) -> Result<Operand, String> {
+    pub(super) fn require_positive_range_step(
+        &mut self,
+        step: &HirExpr,
+        ty: &ResolvedTy,
+        stride: Operand,
+    ) -> Result<(), SirLoweringError> {
+        let zero = Operand {
+            value: self.emit_typed(Provenance::Synthesized, ty, SemOpKind::ConstInteger(0))?,
+        };
+        let positive = self.range_compare(hew_parser::ast::BinaryOp::Greater, stride, zero)?;
+        let valid = self.new_block(Vec::new());
+        let invalid = self.new_block(Vec::new());
+        self.set_terminator(SemTerminator::Branch {
+            condition: positive,
+            then_target: Edge {
+                target: valid,
+                args: Vec::new(),
+            },
+            else_target: Edge {
+                target: invalid,
+                args: Vec::new(),
+            },
+        })?;
+        let before = self.control_state();
+        self.current = invalid;
+        let mut message = step.clone();
+        message.ty = ResolvedTy::String;
+        message.kind = HirExprKind::Literal(HirLiteral::String(
+            "step_by requires a positive step".into(),
+        ));
+        let mut panic = step.clone();
+        panic.ty = ResolvedTy::Never;
+        self.lower_panic(&panic, &[message])?;
+        self.restore_control_state(&before);
+        self.current = valid;
+        Ok(())
+    }
+
+    pub(super) fn range_cast(
+        &mut self,
+        value: Operand,
+        ty: &ResolvedTy,
+    ) -> Result<Operand, SirLoweringError> {
+        Ok(Operand {
+            value: self.emit_typed(
+                Provenance::Synthesized,
+                ty,
+                SemOpKind::Cast {
+                    value,
+                    to: ty.clone(),
+                },
+            )?,
+        })
+    }
+
+    pub(super) fn range_integer_op(
+        &mut self,
+        source: &HirExpr,
+        op: hew_parser::ast::BinaryOp,
+        lhs: Operand,
+        rhs: Operand,
+    ) -> Result<Operand, SirLoweringError> {
+        if op == hew_parser::ast::BinaryOp::Divide {
+            let mut expression = source.clone();
+            expression.ty = ResolvedTy::U64;
+            return self
+                .lower_checked_binary(&expression, op, lhs, rhs)
+                .map(|value| Operand { value });
+        }
+        Ok(Operand {
+            value: self.emit_typed(
+                Provenance::Synthesized,
+                &ResolvedTy::U64,
+                SemOpKind::Binary { op, lhs, rhs },
+            )?,
+        })
+    }
+
+    pub(super) fn nonzero_range_stride(
+        &mut self,
+        stride: Operand,
+    ) -> Result<Operand, SirLoweringError> {
+        let zero = Operand {
+            value: self.emit_typed(
+                Provenance::Synthesized,
+                &ResolvedTy::U64,
+                SemOpKind::ConstInteger(0),
+            )?,
+        };
+        let condition =
+            self.range_compare(hew_parser::ast::BinaryOp::NotEqual, stride.clone(), zero)?;
+        let value = self.fresh_value();
+        let join = self.new_block(vec![BlockArg {
+            value,
+            ty: ResolvedTy::U64,
+            own: crate::OwnKind::None,
+        }]);
+        let singleton = self.new_block(Vec::new());
+        self.set_terminator(SemTerminator::Branch {
+            condition,
+            then_target: Edge {
+                target: join,
+                args: vec![stride],
+            },
+            else_target: Edge {
+                target: singleton,
+                args: Vec::new(),
+            },
+        })?;
+        self.current = singleton;
+        let one = Operand {
+            value: self.emit_typed(
+                Provenance::Synthesized,
+                &ResolvedTy::U64,
+                SemOpKind::ConstInteger(1),
+            )?,
+        };
+        self.set_terminator(SemTerminator::Goto(Edge {
+            target: join,
+            args: vec![one],
+        }))?;
+        self.current = join;
+        Ok(Operand { value })
+    }
+
+    pub(super) fn lower_range_operand(
+        &mut self,
+        expr: &HirExpr,
+        ty: &ResolvedTy,
+    ) -> Result<Operand, SirLoweringError> {
         let value = self.lower_read_operand(expr, "range operand")?;
         Ok(Operand {
             value: self.coerce_value(value.value, ty, Provenance::Site(expr.site))?,
         })
     }
 
-    fn range_compare(
+    pub(super) fn range_compare(
         &mut self,
         op: hew_parser::ast::BinaryOp,
         lhs: Operand,
         rhs: Operand,
-    ) -> Result<Operand, String> {
+    ) -> Result<Operand, SirLoweringError> {
         Ok(Operand {
             value: self.emit_typed(
                 Provenance::Synthesized,
@@ -360,36 +416,36 @@ impl Builder<'_, '_> {
     fn range_advance(
         &mut self,
         ty: &ResolvedTy,
-        op: hew_parser::ast::BinaryOp,
+        descending: Operand,
         lhs: Operand,
-        rhs: Operand,
+        rhs: &Operand,
         scope: &LoopScope,
-    ) -> Result<ValueId, String> {
+    ) -> Result<ValueId, SirLoweringError> {
         use hew_parser::ast::BinaryOp;
-        let ascending = op == BinaryOp::Add;
-        let next = self.emit_typed(
-            Provenance::Synthesized,
-            ty,
-            SemOpKind::Binary {
-                op: if ascending {
-                    BinaryOp::WrappingAdd
-                } else {
-                    BinaryOp::WrappingSub
-                },
-                lhs: lhs.clone(),
-                rhs,
-            },
-        )?;
-        // A positive stride must move strictly in its declared direction.
-        // Reversed order after wrapping means the integer domain is exhausted.
-        let progressed = self.range_compare(
-            if ascending {
-                BinaryOp::Greater
-            } else {
-                BinaryOp::Less
-            },
-            Operand { value: next },
-            lhs,
+        let mut advance = |op| -> Result<Operand, SirLoweringError> {
+            Ok(Operand {
+                value: self.emit_typed(
+                    Provenance::Synthesized,
+                    ty,
+                    SemOpKind::Binary {
+                        op,
+                        lhs: lhs.clone(),
+                        rhs: rhs.clone(),
+                    },
+                )?,
+            })
+        };
+        let add = advance(BinaryOp::WrappingAdd)?;
+        let sub = advance(BinaryOp::WrappingSub)?;
+        let next = self.range_select(descending.clone(), ty, sub, add)?;
+        let ascending_progress =
+            self.range_compare(BinaryOp::Greater, next.clone(), lhs.clone())?;
+        let descending_progress = self.range_compare(BinaryOp::Less, next.clone(), lhs)?;
+        let progressed = self.range_select(
+            descending,
+            &ResolvedTy::Bool,
+            descending_progress,
+            ascending_progress,
         )?;
         let normal = self.new_block(Vec::new());
         let exhausted = self.loop_edge(scope, scope.exit)?;
@@ -402,6 +458,6 @@ impl Builder<'_, '_> {
             else_target: exhausted,
         })?;
         self.current = normal;
-        Ok(next)
+        Ok(next.value)
     }
 }

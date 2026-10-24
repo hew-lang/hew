@@ -13,12 +13,14 @@
 //!         .Ok(version) => version,
 //!         .Err(reason) => panic(f"{reason}"),
 //!     };
-//!     println(v.major());
+//!     println(v.major().expect("component fits i64"));
 //!     if v.matches(">=1.0.0") {
 //!         println("compatible");
 //!     }
 //! }
 //! ```
+
+import std.iter;
 
 import std.string;
 
@@ -34,16 +36,16 @@ type Version {
 /// Methods available on a parsed `Version`.
 trait VersionMethods {
     /// Return the major version number.
-    fn major(self) -> i64;
+    fn major(self) -> i64 fails VersionError;
 
     /// Return the minor version number.
-    fn minor(self) -> i64;
+    fn minor(self) -> i64 fails VersionError;
 
     /// Return the patch version number.
-    fn patch(self) -> i64;
+    fn patch(self) -> i64 fails VersionError;
 
-    /// Return the pre-release label, or an empty string if none.
-    fn pre(self) -> string;
+    /// Return the pre-release label, or `None` for a release version.
+    fn pre(self) -> Option<string>;
 
     /// Compare this version to another. Returns -1, 0, or 1.
     fn compare(self, other: Version) -> i64;
@@ -57,20 +59,24 @@ trait VersionMethods {
 
 impl VersionMethods for Version {
     /// Return the major version number.
-    fn major(self) -> i64 {
-        component_as_i64("major", self.maj)
+    fn major(self) -> i64 fails VersionError {
+        component_as_i64("major", self.maj)?
     }
     /// Return the minor version number.
-    fn minor(self) -> i64 {
-        component_as_i64("minor", self.min)
+    fn minor(self) -> i64 fails VersionError {
+        component_as_i64("minor", self.min)?
     }
     /// Return the patch version number.
-    fn patch(self) -> i64 {
-        component_as_i64("patch", self.pat)
+    fn patch(self) -> i64 fails VersionError {
+        component_as_i64("patch", self.pat)?
     }
-    /// Return the pre-release label, or an empty string if none.
-    fn pre(self) -> string {
-        self.pre_release
+    /// Return the pre-release label, or `None` for a release version.
+    fn pre(self) -> Option<string> {
+        if self.pre_release.is_empty() {
+            .None
+        } else {
+            .Some(self.pre_release)
+        }
     }
     /// Compare this version to another. Return -1, 0, or 1.
     fn compare(self, other: Version) -> i64 {
@@ -95,13 +101,10 @@ impl VersionMethods for Version {
 // unbounded per SemVer 2.0; when a caller explicitly asks an accessor to
 // narrow an oversized component, fail observably rather than fabricating a
 // sentinel. `to_string`, `compare`, and `matches` never narrow.
-fn component_as_i64(name: string, digits: string) -> i64 {
-    match string.to_int(digits) {
+fn component_as_i64(name: string, digits: string) -> i64 fails VersionError {
+    match digits.to_int() {
         .Ok(value) => value,
-        .Err(_) => {
-            panic(f"semver.Version.{name}: component does not fit in i64");
-            0
-        }
+        .Err(_) => return error VersionError.ComponentOutOfRange(name),
     }
 }
 
@@ -226,6 +229,8 @@ fn compare_decimal_strings(a: string, b: string) -> i64 {
 /// Text that is not a semantic version, by the part that is wrong. Each
 /// carries the whole text.
 pub enum VersionError {
+    /// A valid version component cannot be represented as an i64.
+    ComponentOutOfRange(string);
     /// The `+` build metadata is not dot-separated identifiers.
     InvalidBuild(string);
     /// The `-` pre-release is not dot-separated identifiers.
@@ -395,8 +400,8 @@ fn compare_pre(a: string, b: string) -> i64 {
 
 /// Compare two individual pre-release identifiers (numeric or alphanumeric).
 fn compare_pre_id(a: string, b: string) -> i64 {
-    let a_num = string.is_numeric(a);
-    let b_num = string.is_numeric(b);
+    let a_num = (!a.is_empty() && iter.all(a.iter(), |c: char| c.is_digit()));
+    let b_num = (!b.is_empty() && iter.all(b.iter(), |c: char| c.is_digit()));
     if a_num && b_num {
         // Numeric identifiers compare numerically at any length, so this must
         // not route through an i64: SemVer 2.0 puts no bound on the number of

@@ -1201,6 +1201,18 @@ fn debugger_names_suspended_actor_handler_frame_at_runtime_boundary() {
     };
     let out = run_debugger_query(cmd, format!("{dbg} handler backtrace"));
     let text = String::from_utf8_lossy(&out.stdout);
+    let test_exe = std::env::current_exe().expect("test executable path");
+    let profile = test_exe
+        .parent()
+        .and_then(Path::parent)
+        .and_then(Path::file_name);
+    if profile == Some(std::ffi::OsStr::new("debugger")) {
+        assert!(
+            !String::from_utf8_lossy(&out.stderr).contains("Could not find DWO"),
+            "the full-debug runtime must have self-contained symbols:\n{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
     assert!(
         out.status.success(),
         "{dbg} failed while reading handler backtrace:\n{text}\n{}",

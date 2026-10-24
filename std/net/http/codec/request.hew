@@ -9,8 +9,7 @@
 //!
 //! ```
 //! import std.net;
-//! import std.net.http.http_async_server;
-//! import std.string;
+//! import std.net.http.codec;
 //! import std.encoding.utf8;
 //!
 //! actor Server {
@@ -34,24 +33,24 @@
 //!                 done = true;
 //!             } else {
 //!                 raw = raw + chunk;
-//!                 if http_async_server.over_limit(raw) {       // F2: fail closed
+//!                 if codec.over_limit(raw) {       // F2: fail closed
 //!                     done = true;
-//!                 } else if http_async_server.request_complete(raw) {
+//!                 } else if codec.request_complete(raw) {
 //!                     done = true;
 //!                 }
 //!             }
-//!             if reads > http_async_server.MAX_READS {         // F2: read ceiling
+//!             if reads > codec.MAX_READS {         // F2: read ceiling
 //!                 done = true;
 //!             }
 //!         }
-//!         let req = http_async_server.parse_request(raw);
-//!         var reply = http_async_server.response_text(req.reject_status(), "rejected");
-//!         if req.is_valid() {                                  // F2/F3: fail closed
-//!             reply = match req.path() {
-//!                 "/hello" => http_async_server.response_text(200, "hi from hew"),
-//!                 _        => http_async_server.response_text(404, "nope"),
-//!             };
-//!         }
+//!         let reply = match codec.parse_request(raw) {
+//!             .Ok(.Some(req)) => match req.path() {
+//!                 "/hello" => codec.response_text(200, "hi from hew"),
+//!                 _ => codec.response_text(404, "nope"),
+//!             }
+//!             .Ok(.None) => codec.response_text(400, "incomplete request"),
+//!             .Err(error) => codec.response_text(error.status(), "rejected"),
+//!         }.expect("valid response fields");
 //!         conn.send(reply.to_bytes()) handle error {
 //!             println(f"response send failed: {error}");
 //!             return;
@@ -62,7 +61,7 @@
 //! }
 //! ```
 
-import std.string;
+import std.iter;
 
 // ── Hardening limits (fail-closed DoS / injection bounds) ─────────────
 /// Maximum bytes accepted in the request head (request line + headers). A head
@@ -85,57 +84,59 @@ pub const MAX_READS: i64 = 4096;
 /// A fully-buffered HTTP/1.1 request parsed from the bytes read off an accepted
 /// connection. `verb` is the method (`GET`/`POST`/…), `target` the request path,
 /// `header_section` the raw header block (CRLF-separated lines after the request
-/// line), and `body_text` the request body. `reject_code` is `0` for a
-/// well-formed request, or the HTTP status the codec failed closed with
-/// (`400` malformed framing, `413` over a size bound).
-pub type AsyncRequest {
+/// line), and `body_text` the request body. Parsing returns only validated requests.
+pub type Request {
     verb: string;
     target: string;
     header_section: string;
     body_text: string;
-    reject_code: i64;
 }
 
-/// Methods on [`AsyncRequest`] — the request-side accessor surface.
-trait AsyncRequestMethods {
-    /// The HTTP method (e.g. `"GET"`, `"POST"`). Empty on a malformed request.
+/// A malformed or oversized buffered HTTP request.
+pub enum RequestError {
+    Malformed(string);
+    TooLarge;
+}
+
+impl Error for RequestError {}
+
+impl RequestError {
+    /// The HTTP rejection status appropriate for this parse failure.
+    pub fn status(self) -> i64 {
+        match self {
+            .Malformed(_) => 400,
+            .TooLarge => 413,
+        }
+    }
+}
+
+/// Methods on [`Request`] — the request-side accessor surface.
+trait RequestMethods {
+    /// The HTTP method (e.g. `"GET"`, `"POST"`).
     fn method(self) -> string;
 
-    /// The request path (e.g. `"/api/users"`). Empty on a malformed request.
+    /// The request path (e.g. `"/api/users"`).
     fn path(self) -> string;
 
-    /// Look up a request header by name (case-insensitive). Empty if absent.
-    fn header(self, name: string) -> string;
+    /// Look up a request header by name (case-insensitive), or `None` if absent.
+    fn header(self, name: string) -> Option<string>;
 
     /// The request body as a string.
     fn body(self) -> string;
-
-    /// The fail-closed reject status (`0` when the request is well-formed, else
-    /// the HTTP status to reply with: `400` malformed framing, `413` too large).
-    fn reject_status(self) -> i64;
-
-    /// Whether the request passed all framing + size validation.
-    fn is_valid(self) -> bool;
 }
 
-impl AsyncRequestMethods for AsyncRequest {
+impl RequestMethods for Request {
     fn method(self) -> string {
         self.verb
     }
     fn path(self) -> string {
         self.target
     }
-    fn header(self, name: string) -> string {
+    fn header(self, name: string) -> Option<string> {
         find_header(self.header_section, name)
     }
     fn body(self) -> string {
         self.body_text
-    }
-    fn reject_status(self) -> i64 {
-        self.reject_code
-    }
-    fn is_valid(self) -> bool {
-        self.reject_code == 0
     }
 }
 
@@ -180,96 +181,58 @@ pub fn over_limit(raw: string) -> bool {
     return declared > MAX_BODY_BYTES;
 }
 
-/// Parse the buffered bytes into an [`AsyncRequest`]. The request line is the
-/// first CRLF-terminated line (`GET /path HTTP/1.1`); the method and path are
-/// its first two space-separated tokens. The body is everything after the first
-/// CRLF-CRLF. The framing is validated and the request FAILS CLOSED — see
-/// [`AsyncRequest.reject_status`] — on a malformed request line, an unsupported
-/// `Transfer-Encoding`, a duplicate/conflicting/non-numeric `Content-Length`, or
-/// any size bound (F2/F3); the acceptor replies with that status and closes.
-pub fn parse_request(raw: string) -> AsyncRequest {
-    let sep = raw.find("\r\n\r\n");
-    let head = match sep {
-        .Some(i) => raw[0..i],
-        .None => raw,
-    };
-    let body = match sep {
-        .Some(i) => raw[i + 4 .. raw.len()],
-        .None => "",
-    };
-    let head_lines = (head).split("\r\n");
-    let request_line = if head_lines.len() > 0 {
-        head_lines[0]
-    } else {
-        ""
-    };
-    let verb = token_at(request_line, 0);
-    let target = token_at(request_line, 1);
-    let header_section = header_section_after_request_line(head);
-    let reject = request_reject_status(raw, sep, head, header_section, body);
-    AsyncRequest { verb: verb, target: target, header_section: header_section, body_text: body, reject_code: reject }
-}
-
-/// The fail-closed framing verdict for a buffered request: `0` when well-formed,
-/// else the HTTP status to reply with. `413` on any size bound (F2); `400` on an
-/// unframed/malformed request line, an unsupported `Transfer-Encoding`, or a
-/// duplicate/conflicting/non-numeric `Content-Length` (F3).
-fn request_reject_status(raw: string, sep: Option<i64>, head: string, header_section: string, body: string) -> i64 {
-    // F2 — size bounds (fail closed with 413).
-    if raw.len() > MAX_REQUEST_BYTES {
-        return 413;
+/// Parse a buffered request. `None` means more header or declared body bytes
+/// are needed. Malformed framing and size limits return a checked error;
+/// `RequestError.status()` supplies the rejection status for the response.
+pub fn parse_request(raw: string) -> Option<Request> fails RequestError {
+    if over_limit(raw) {
+        return error RequestError.TooLarge;
     }
-    if head.len() > MAX_HEADER_BYTES {
-        return 413;
-    }
+    let sep = match raw.find("\r\n\r\n") {
+        .Some(index) => index,
+        .None => return .None,
+    };
+    let head = raw[0..sep];
+    let body = raw[sep + 4 .. raw.len()];
     if body.len() > MAX_BODY_BYTES {
-        return 413;
+        return error RequestError.TooLarge;
     }
-    // F3 — the request must be fully framed (header terminator present).
-    if sep.is_none() {
-        return 400;
+    let request_line = first_line(head);
+    if !valid_request_line(request_line) {
+        return error RequestError.Malformed("invalid request line");
     }
-    // F3 — request line: method SP target SP HTTP/1.1.
-    if !valid_request_line(first_line(head)) {
-        return 400;
+    let header_section = header_section_after_request_line(head);
+    if !headers_have_colons(header_section) || header_count(header_section, "Transfer-Encoding") > 0 {
+        return error RequestError.Malformed("invalid or unsupported request headers");
     }
-    // SF3 — every non-empty header line must carry a ':' name/value separator;
-    // a colonless header line (e.g. `BadHeader`) is malformed → fail closed.
-    if !headers_have_colons(header_section) {
-        return 400;
+    let count = header_count(header_section, "Content-Length");
+    if count > 1 {
+        return error RequestError.Malformed("duplicate Content-Length");
     }
-    // F3 — chunked/other transfer codings are unsupported in this buffered codec.
-    if header_count(header_section, "Transfer-Encoding") > 0 {
-        return 400;
-    }
-    // F3 — Content-Length must be single, numeric, and within the body ceiling.
-    let cl_count = header_count(header_section, "Content-Length");
-    if cl_count > 1 {
-        return 400;
-    }
-    if cl_count == 1 {
-        let value = find_header(header_section, "Content-Length");
-        if !string.is_numeric(value) {
-            return 400;
+    if count == 1 {
+        let length = match find_header(header_section, "Content-Length") {
+            .Some(value) => value,
+            .None => "",
+        };
+        if length.is_empty() || !iter.all(length.iter(), |c: char| c.is_digit()) {
+            return error RequestError.Malformed("invalid Content-Length");
         }
-        // SF1 — a bounded parse: an oversized OR overflowing numeric
-        // Content-Length exceeds the ceiling and fails closed with 413.
-        if content_length_of(header_section) > MAX_BODY_BYTES {
-            return 413;
+        if body.len() < content_length_of(header_section) {
+            return .None;
         }
     }
-    0
+    .Some(Request { verb: token_at(request_line, 0), target: token_at(request_line, 1), header_section: header_section, body_text: body })
 }
 
 // ── Response building ─────────────────────────────────────────────────
 /// Build a plain-text HTTP/1.1 response (`Content-Type: text/plain`).
-pub fn response_text(status: i64, body: string) -> string {
-    build_response(status, "text/plain; charset=utf-8", body)
+pub fn response_text(status: i64, body: string) -> string fails BuildError {
+    build_response(status, "text/plain; charset=utf-8", body)?
 }
 
 /// Build a JSON HTTP/1.1 response (`Content-Type: application/json`).
-pub fn response_json(status: i64, json: string) -> string {
-    build_response(status, "application/json", json)
+pub fn response_json(status: i64, json: string) -> string fails BuildError {
+    build_response(status, "application/json", json)?
 }
 
 /// Build a full HTTP/1.1 response: the status line, `Content-Type`,
@@ -279,14 +242,13 @@ pub fn response_json(status: i64, json: string) -> string {
 ///
 /// FAILS CLOSED on header smuggling (F4): a `content_type` carrying a `\r`/`\n`
 /// or other control character would inject extra headers into the response, so
-/// such a value is rejected and an empty string is returned (the acceptor writes
-/// nothing and closes) rather than emitting an attacker-controlled header.
-pub fn build_response(status: i64, content_type: string, body: string) -> string {
+/// such a value returns a checked error before response bytes are emitted.
+pub fn build_response(status: i64, content_type: string, body: string) -> string fails BuildError {
     if status < 100 || status > 599 {
-        return "";
+        return error BuildError.InvalidStatus(status);
     }
     if has_control_char(content_type) {
-        return "";
+        return error BuildError.InvalidField("content_type contains a control character");
     }
     let nl = "\r\n";
     var resp = f"HTTP/1.1 {status} {status_text(status)}" + nl;
@@ -344,31 +306,34 @@ fn header_section_after_request_line(head: string) -> string {
 /// The value is parsed into a BOUNDED integer (SF1): an all-digit value that
 /// OVERFLOWS i64 saturates to `MAX_BODY_BYTES + 1` — a sentinel guaranteed to
 /// exceed the body ceiling — so an overflowing `Content-Length` fails closed
-/// (`over_limit`/`request_reject_status` → 413) rather than `string.to_int`
+/// (`over_limit`/`parse_request` → `TooLarge`) rather than `string.to_int`
 /// returning `0` and the huge body bypassing the cap.
 fn content_length_of(header_section: string) -> i64 {
-    let value = find_header(header_section, "Content-Length");
+    let value = match find_header(header_section, "Content-Length") {
+        .Some(value) => value,
+        .None => "",
+    };
     if (value).is_empty() {
         return 0;
     }
-    if !string.is_numeric(value) {
+    if !(!value.is_empty() && iter.all(value.iter(), |c: char| c.is_digit())) {
         return 0;
     }
-    match string.to_int(value) {
+    match value.to_int() {
         .Ok(n) => n,
         .Err(_) => MAX_BODY_BYTES + 1,
     }
 }
 
 /// Case-insensitive header lookup over a CRLF-separated header section.
-fn find_header(header_section: string, name: string) -> string {
+fn find_header(header_section: string, name: string) -> Option<string> {
     if (header_section).is_empty() {
-        return "";
+        return .None;
     }
     let target = name.to_lower();
     let lines = (header_section).split("\r\n");
     let n = lines.len();
-    var found = "";
+    var found: Option<string> = .None;
     for i in 0..n {
         let line = lines[i];
         // A colon at index 0 is an empty header name — skip it, exactly as
@@ -377,7 +342,7 @@ fn find_header(header_section: string, name: string) -> string {
             .Some(colon) if colon > 0 => {
                 let key = (line[0..colon]).trim().to_lower();
                 if key == target {
-                    found = (line[colon + 1 .. line.len()]).trim();
+                    found = .Some((line[colon + 1 .. line.len()]).trim());
                 }
             }
             _ => {}

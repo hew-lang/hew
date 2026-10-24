@@ -19,7 +19,7 @@ impl Iterator for BrokenSource {
 }
 
 fn main() {
-    let closed = semaphore.new(0);
+    let closed = semaphore.new(0).expect("valid permit count");
     var failed = false;
     scope {
         for _index in pipeline.map(items.source(closed), |item: items.Item| {
@@ -41,7 +41,7 @@ fn main() {
     };
     assert(failed);
     assert(closed.count() == 6);
-    let source_closed = semaphore.new(0);
+    let source_closed = semaphore.new(0).expect("valid permit count");
     var source_failed = false;
     scope {
         for _index in pipeline.map(BrokenSource { closed: source_closed.clone(), started: false }, |item: items.Item| {
@@ -60,7 +60,7 @@ fn main() {
     };
     assert(source_failed);
     assert(source_closed.count() == 1);
-    let prefetched_closed = semaphore.new(0);
+    let prefetched_closed = semaphore.new(0).expect("valid permit count");
     var prefetch_failed = false;
     scope {
         for item in pipeline.prefetch(BrokenSource { closed: prefetched_closed.clone(), started: false }, capacity: 1) {

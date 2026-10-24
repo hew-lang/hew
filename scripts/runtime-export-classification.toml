@@ -237,6 +237,9 @@ stable = [
   "hew_bytes_slice",
   "hew_bytes_slice_owned",
   "hew_cancel_token_cancel",
+  "hew_context_actor_id",
+  "hew_context_supervisor",
+  "hew_context_trace_span",
   "hew_cancel_token_is_requested",
   "hew_cancel_token_new_child",
   "hew_cancel_token_release",
@@ -386,6 +389,7 @@ stable = [
   "hew_io_watch_readable",
   "hew_io_write",
   "hew_io_write_err",
+  "hew_report_stderr",
   "hew_iter_free",
   "hew_iter_next",
   "hew_iter_reset",
@@ -938,6 +942,8 @@ stable-stdlib = [
   "hew_http_request_body_string",
   "hew_http_request_free",
   "hew_http_request_header",
+  "hew_http_request_has_header",
+  "hew_http_request_is_valid",
   "hew_http_request_headers",
   "hew_http_request_hew",
   "hew_http_request_method",
@@ -949,6 +955,7 @@ stable-stdlib = [
   "hew_http_response_body",
   "hew_http_response_content_type",
   "hew_http_response_free",
+  "hew_http_response_has_header",
   "hew_http_response_header",
   "hew_http_response_headers",
   "hew_http_response_status",
@@ -1047,6 +1054,9 @@ stable-stdlib = [
   "hew_quic_event_free",
   "hew_quic_event_kind",
   "hew_quic_last_error",
+  "hew_quic_endpoint_is_valid",
+  "hew_quic_conn_is_valid",
+  "hew_quic_stream_is_valid",
   "hew_quic_new_client",
   "hew_quic_new_client_with_ca",
   "hew_quic_new_server",
@@ -2844,6 +2854,13 @@ discharge-depth = "none"
 
 [[ownership.contracts]]
 symbol = "hew_io_write_err"
+result = "none"
+params = ["borrow"]
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_report_stderr"
 result = "none"
 params = ["borrow"]
 release-symbol = ""
@@ -4874,7 +4891,7 @@ result-retention = "transferred"
 symbol = "hew_http_request_body_string"
 result = "fresh"
 params = ["borrow", "borrow"]
-resource-param-types = ["std.net.http.Request", ""]
+resource-param-types = ["std.net.http.server.Request", ""]
 release-symbol = "hew_string_drop"
 discharge-depth = "shallow"
 result-retention = "transferred"
@@ -4883,7 +4900,23 @@ result-retention = "transferred"
 symbol = "hew_http_request_free"
 result = "none"
 params = ["consume"]
-resource-param-types = ["std.net.http.Request"]
+resource-param-types = ["std.net.http.server.Request"]
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_http_request_has_header"
+result = "none"
+params = ["borrow", "borrow"]
+resource-param-types = ["std.net.http.server.Request", ""]
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_http_request_is_valid"
+result = "none"
+params = ["borrow"]
+resource-param-types = ["std.net.http.server.Request"]
 release-symbol = ""
 discharge-depth = "none"
 
@@ -4891,7 +4924,7 @@ discharge-depth = "none"
 symbol = "hew_http_request_header"
 result = "fresh"
 params = ["borrow", "borrow"]
-resource-param-types = ["std.net.http.Request", ""]
+resource-param-types = ["std.net.http.server.Request", ""]
 release-symbol = "hew_string_drop"
 discharge-depth = "shallow"
 result-retention = "transferred"
@@ -4900,7 +4933,7 @@ result-retention = "transferred"
 symbol = "hew_http_request_headers"
 result = "fresh"
 params = ["borrow"]
-resource-param-types = ["std.net.http.Request"]
+resource-param-types = ["std.net.http.server.Request"]
 release-symbol = "hew_vec_free_owned"
 discharge-depth = "deep"
 
@@ -4908,7 +4941,7 @@ discharge-depth = "deep"
 symbol = "hew_http_request_method"
 result = "fresh"
 params = ["borrow"]
-resource-param-types = ["std.net.http.Request"]
+resource-param-types = ["std.net.http.server.Request"]
 release-symbol = "hew_string_drop"
 discharge-depth = "shallow"
 result-retention = "transferred"
@@ -4917,7 +4950,7 @@ result-retention = "transferred"
 symbol = "hew_http_request_path"
 result = "fresh"
 params = ["borrow"]
-resource-param-types = ["std.net.http.Request"]
+resource-param-types = ["std.net.http.server.Request"]
 release-symbol = "hew_string_drop"
 discharge-depth = "shallow"
 result-retention = "transferred"
@@ -4926,7 +4959,7 @@ result-retention = "transferred"
 symbol = "hew_http_respond_bridge"
 result = "none"
 params = ["borrow", "borrow", "borrow", "borrow"]
-resource-param-types = ["std.net.http.Request", "", "", ""]
+resource-param-types = ["std.net.http.server.Request", "", "", ""]
 release-symbol = ""
 discharge-depth = "none"
 
@@ -4934,7 +4967,7 @@ discharge-depth = "none"
 symbol = "hew_http_respond_json"
 result = "none"
 params = ["borrow", "borrow", "borrow"]
-resource-param-types = ["std.net.http.Request", "", ""]
+resource-param-types = ["std.net.http.server.Request", "", ""]
 release-symbol = ""
 discharge-depth = "none"
 
@@ -4942,7 +4975,7 @@ discharge-depth = "none"
 symbol = "hew_http_respond_stream"
 result = "fresh"
 params = ["borrow", "borrow", "borrow"]
-resource-param-types = ["std.net.http.Request", "", ""]
+resource-param-types = ["std.net.http.server.Request", "", ""]
 release-symbol = "hew_sink_close"
 discharge-depth = "shallow"
 
@@ -4950,7 +4983,7 @@ discharge-depth = "shallow"
 symbol = "hew_http_respond_text"
 result = "none"
 params = ["borrow", "borrow", "borrow"]
-resource-param-types = ["std.net.http.Request", "", ""]
+resource-param-types = ["std.net.http.server.Request", "", ""]
 release-symbol = ""
 discharge-depth = "none"
 
@@ -4958,7 +4991,7 @@ discharge-depth = "none"
 symbol = "hew_http_server_close"
 result = "none"
 params = ["consume"]
-resource-param-types = ["std.net.http.Server"]
+resource-param-types = ["std.net.http.server.Server"]
 release-symbol = ""
 discharge-depth = "none"
 
@@ -4966,7 +4999,7 @@ discharge-depth = "none"
 symbol = "hew_http_server_new"
 result = "fresh"
 params = ["borrow"]
-resource-result-type = "std.net.http.Server"
+resource-result-type = "std.net.http.server.Server"
 release-symbol = "hew_http_server_close"
 discharge-depth = "shallow"
 result-retention = "resource-transfer"
@@ -4976,8 +5009,8 @@ result-retention-basis = "successful bind returns one fresh Box::into_raw(HewHtt
 symbol = "hew_http_server_recv"
 result = "fresh"
 params = ["borrow"]
-resource-result-type = "std.net.http.Request"
-resource-param-types = ["std.net.http.Server"]
+resource-result-type = "std.net.http.server.Request"
+resource-param-types = ["std.net.http.server.Server"]
 release-symbol = "hew_http_request_free"
 discharge-depth = "deep"
 result-retention = "resource-transfer"
@@ -4987,7 +5020,7 @@ result-retention-basis = "successful receive creates one Box::into_raw(HewHttpRe
 symbol = "hew_http_server_set_request_timeout_ms"
 result = "none"
 params = ["borrow", "borrow"]
-resource-param-types = ["std.net.http.Server", ""]
+resource-param-types = ["std.net.http.server.Server", ""]
 release-symbol = ""
 discharge-depth = "none"
 
@@ -5007,7 +5040,7 @@ result-retention = "transferred"
 symbol = "hew_http_request_hew"
 result = "fresh"
 params = ["borrow", "borrow", "borrow", "borrow"]
-resource-result-type = "std.net.http.Response"
+resource-result-type = "std.net.http.client.Response"
 release-symbol = "hew_http_response_free"
 discharge-depth = "deep"
 result-retention = "resource-transfer"
@@ -5017,7 +5050,7 @@ result-retention-basis = "build_response returns one Box::into_raw(HewHttpRespon
 symbol = "hew_http_response_body"
 result = "fresh"
 params = ["borrow"]
-resource-param-types = ["std.net.http.Response"]
+resource-param-types = ["std.net.http.client.Response"]
 release-symbol = "hew_string_drop"
 discharge-depth = "shallow"
 result-retention = "transferred"
@@ -5026,7 +5059,7 @@ result-retention = "transferred"
 symbol = "hew_http_response_content_type"
 result = "fresh"
 params = ["borrow"]
-resource-param-types = ["std.net.http.Response"]
+resource-param-types = ["std.net.http.client.Response"]
 release-symbol = "hew_string_drop"
 discharge-depth = "shallow"
 result-retention = "transferred"
@@ -5035,7 +5068,15 @@ result-retention = "transferred"
 symbol = "hew_http_response_free"
 result = "none"
 params = ["consume"]
-resource-param-types = ["std.net.http.Response"]
+resource-param-types = ["std.net.http.client.Response"]
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_http_response_has_header"
+result = "none"
+params = ["borrow", "borrow"]
+resource-param-types = ["std.net.http.client.Response", ""]
 release-symbol = ""
 discharge-depth = "none"
 
@@ -5043,7 +5084,7 @@ discharge-depth = "none"
 symbol = "hew_http_response_header"
 result = "fresh"
 params = ["borrow", "borrow"]
-resource-param-types = ["std.net.http.Response", ""]
+resource-param-types = ["std.net.http.client.Response", ""]
 release-symbol = "hew_string_drop"
 discharge-depth = "shallow"
 result-retention = "transferred"
@@ -5052,7 +5093,7 @@ result-retention = "transferred"
 symbol = "hew_http_response_headers"
 result = "fresh"
 params = ["borrow"]
-resource-param-types = ["std.net.http.Response"]
+resource-param-types = ["std.net.http.client.Response"]
 release-symbol = "hew_vec_free_owned"
 discharge-depth = "deep"
 
@@ -5060,7 +5101,7 @@ discharge-depth = "deep"
 symbol = "hew_http_response_status"
 result = "none"
 params = ["borrow"]
-resource-param-types = ["std.net.http.Response"]
+resource-param-types = ["std.net.http.client.Response"]
 release-symbol = ""
 discharge-depth = "none"
 
@@ -5547,6 +5588,30 @@ params = []
 release-symbol = "hew_string_drop"
 discharge-depth = "shallow"
 result-retention = "transferred"
+
+[[ownership.contracts]]
+symbol = "hew_quic_endpoint_is_valid"
+result = "none"
+params = ["borrow"]
+resource-param-types = ["std.net.quic.QUICEndpoint"]
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_quic_conn_is_valid"
+result = "none"
+params = ["borrow"]
+resource-param-types = ["std.net.quic.QUICConnection"]
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_quic_stream_is_valid"
+result = "none"
+params = ["borrow"]
+resource-param-types = ["std.net.quic.QUICStream"]
+release-symbol = ""
+discharge-depth = "none"
 
 [[ownership.contracts]]
 symbol = "hew_quic_new_client"
@@ -6800,7 +6865,7 @@ discharge-depth = "none"
 symbol = "hew_http_server_is_valid"
 result = "none"
 params = ["borrow"]
-resource-param-types = ["std.net.http.Server"]
+resource-param-types = ["std.net.http.server.Server"]
 release-symbol = ""
 discharge-depth = "none"
 
@@ -6808,7 +6873,7 @@ discharge-depth = "none"
 symbol = "hew_http_server_port"
 result = "none"
 params = ["borrow"]
-resource-param-types = ["std.net.http.Server"]
+resource-param-types = ["std.net.http.server.Server"]
 release-symbol = ""
 discharge-depth = "none"
 

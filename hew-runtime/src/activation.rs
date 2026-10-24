@@ -1152,11 +1152,26 @@ pub(crate) fn activate_queued_actor(actor: *mut HewActor) {
                         let code =
                             unsafe { crate::actor_native::finish_dispatch_failure(actor, failure) };
                         set_last_error("actor dispatch failed");
+                        let link_target = match dispatch {
+                            DispatchTarget::Sys(_, HewSysMsg::Exit)
+                                if !msg_ref.data.is_null()
+                                    && msg_ref.data_size
+                                        == std::mem::size_of::<crate::link::ExitMessage>() =>
+                            {
+                                // SAFETY: the typed system lane owns this validated
+                                // EXIT payload until this activation frees its node.
+                                Some(unsafe {
+                                    (*msg_ref.data.cast::<crate::link::ExitMessage>()).target
+                                })
+                            }
+                            _ => None,
+                        };
                         crate::crash::record_logical_crash(
                             a.id,
                             code,
                             msg_ref.msg_type,
                             a.dispatch.map_or(0, |f| f as usize),
+                            link_target,
                         );
                         // SAFETY: this scheduler frame exclusively owns the
                         // active actor and has completed stack cleanup.
@@ -1777,6 +1792,7 @@ unsafe fn finish_failed_resume(
             code,
             message_type,
             a.dispatch.map_or(0, |f| f as usize),
+            None,
         );
     }
 

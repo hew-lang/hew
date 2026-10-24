@@ -1086,9 +1086,11 @@ fn authored_resource_close_runs_once_for_explicit_and_implicit_release() {
 
 #[test]
 fn authored_close_compute_helpers_yield_to_the_queued_peer() {
-    assert_native_manifest(
+    assert_native_manifest_options(
         "compute-close-safepoints",
         hew_compile::SourceSet::in_memory(),
+        r#"{"stepBudget":2000000}"#,
+        "ok",
     );
 }
 

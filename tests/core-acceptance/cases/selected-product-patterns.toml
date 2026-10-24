@@ -1,0 +1,10 @@
+[[case]]
+id = "selected-product-patterns"
+intent = "Selected tuple, nested record and wildcard patterns bind the winning value through ordinary destructuring and release unused owned values exactly once."
+source = "cases/selected-product-patterns.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 30
+
+[case.expected]
+stdout = "tuple 7\nrecord 8\ndiscarded\nreleased 9\nprepared unit\nunit\nprepared unit\n"
+exit = 0

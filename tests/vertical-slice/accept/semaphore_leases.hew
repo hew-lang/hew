@@ -6,7 +6,7 @@ fn hold(consume lease: semaphore.Lease) {
 }
 
 fn main() {
-    let sem = semaphore.new(1);
+    let sem = semaphore.new(1).expect("valid permit count");
     scope {
         let lease = sem.lease();
         assert(sem.count() == 0);

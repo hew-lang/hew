@@ -1423,29 +1423,6 @@ pub enum HirExprKind {
     /// other surface shape is rejected with `SelectArmNotSealedForm`
     /// during lowering.
     Select(HirSelect),
-    /// `actor |params| { body }` — a lambda-actor literal. Produces a
-    /// `Duplex<Msg, Reply>` handle at runtime that addresses the
-    /// spawned actor's message queue (the surface call syntax dispatches
-    /// through this Duplex). The HIR shape carries the parameter
-    /// bindings, the optional reply-type annotation, the lambda body,
-    /// and the resolved capture set with per-capture strength
-    /// (Strong vs Weak).
-    ///
-    /// Capture-strength discipline (§5.9 ratification 2): each free
-    /// variable in the body that resolves to a binding from the
-    /// enclosing scope is recorded as a capture. When the captured
-    /// binding is the lambda's own let-binding name (the forward-bind
-    /// recursive case `let fib = actor |n| { fib(n - 1) }`), the
-    /// capture is `Weak` — the body must NOT keep the actor alive
-    /// past external refcount zero. Every other capture is `Strong`.
-    /// MIR's `LambdaCapture` side-table is populated directly from
-    /// this list at lowering.
-    SpawnLambdaActor {
-        params: Vec<HirBinding>,
-        reply_ty: ResolvedTy,
-        body: Box<HirExpr>,
-        captures: Vec<HirLambdaCapture>,
-    },
     /// General closure literal (`|...| ...` / `move |...| ...`).
     ///
     /// The checker owns capture legality and records binding-accurate capture
@@ -1734,14 +1711,6 @@ pub enum HirExprKind {
         /// downstream consumers do not have to plumb `expr_types` separately.
         ret_ty: ResolvedTy,
     },
-    /// `CancellationToken.is_cancelled() -> bool`.
-    ///
-    /// The checker records this as a structured intrinsic so frontend lowering
-    /// carries the token value; codegen consumes the variant directly and emits
-    /// the borrowing `hew_cancel_token_is_requested` runtime call.
-    CancellationTokenIsCancelled {
-        receiver: Box<HirExpr>,
-    },
     /// `Generator<Y, R>.next() -> Option<Y>`.
     ///
     /// The checker records this as a structured rewrite so frontend lowering
@@ -1855,16 +1824,17 @@ pub enum HirExprKind {
         condition: Box<HirExpr>,
         body: HirBlock,
     },
-    /// `for binding in start..end { body }` / `@label: for ...` — Range iteration
-    /// (exclusive or inclusive) over an integer range.
-    ///
-    /// This node is produced only for `Range`-typed iterables; other
-    /// iterable types (Vec, Stream, etc.) are not yet implemented and
-    /// cause HIR lowering to emit `NotYetImplemented`.
-    ///
-    /// The expression type is always `Unit`.  MIR lowering emits a
-    /// counter local (typed `i64`), a header block (bounds check), a
-    /// body block, and a back-edge.
+    /// Construct one bounded integer-range value from its checked bounds.
+    RangeValue {
+        start: Box<HirExpr>,
+        end: Box<HirExpr>,
+        inclusive: bool,
+    },
+    RangeAdapt {
+        range: Box<HirExpr>,
+        adapter: HirRangeAdapter,
+    },
+    /// Iterate one range value with the checker's exact element width.
     ForRange {
         /// Optional source label targeted by `break @label` / `continue @label`.
         label: Option<String>,
@@ -1872,23 +1842,8 @@ pub enum HirExprKind {
         /// iteration; MIR lowering overwrites the backing local on every
         /// iteration rather than allocating a new one each time.
         binding: HirBinding,
-        /// Resolved start expression (the left side of `..`).
-        start: Box<HirExpr>,
-        /// Resolved end expression (the right side of `..` / `..=`).
-        end: Box<HirExpr>,
-        /// `true` for `..=` (inclusive upper bound).
-        inclusive: bool,
-        /// Per-iteration stride magnitude (always positive).  Defaults to a
-        /// literal `1`; set to `k` by the `(a..b).step_by(k)` adapter.  MIR
-        /// lowering advances the counter by this value each iteration (adding
-        /// it ascending, subtracting it descending).
-        step: Box<HirExpr>,
-        /// `true` when the loop iterates from the high bound down to the low
-        /// bound — produced by the `(a..b).rev()` adapter.  MIR lowering
-        /// initialises the counter at the high bound, decrements by `step`, and
-        /// flips the header comparison so the sequence is the forward range's
-        /// reverse (e.g. `(0..5).rev()` yields `4 3 2 1 0`).
-        descending: bool,
+        /// The checked range value, evaluated once before the loop.
+        range: Box<HirExpr>,
         /// Loop body.
         body: HirBlock,
     },
@@ -2166,6 +2121,10 @@ pub struct HirMatchArm {
     /// or tuple elements, evaluated after `payload_predicates` and before
     /// bindings/guard/body.
     pub payload_variant_predicates: Vec<HirPayloadVariantPredicate>,
+    /// Nested aggregate projections introduced by the pattern. A candidate
+    /// probes these without taking ownership before its guard; the selected
+    /// arm then binds their owned values before evaluating its body.
+    pub pattern_bindings: Vec<HirStmt>,
     /// Optional guard expression (`Pattern if <guard> => ...`).
     ///
     /// When `Some`, the arm fires only if the pattern matches AND the guard
@@ -2179,6 +2138,13 @@ pub struct HirMatchArm {
     pub body: HirExpr,
     /// Source span of the arm (pattern through body).
     pub span: std::ops::Range<usize>,
+}
+
+/// One integer-range iterator adapter, retained in source order.
+#[derive(Debug, Clone, PartialEq)]
+pub enum HirRangeAdapter {
+    Reverse,
+    Step(Box<HirExpr>),
 }
 
 /// One named payload binding introduced by a constructor-pattern match arm.
@@ -2206,18 +2172,9 @@ pub struct HirMatchArmBinding {
     pub ty: ResolvedTy,
 }
 
-/// One captured binding inside an `HirExprKind::SpawnLambdaActor`
-/// body. The `kind` discriminator selects the runtime refcount
-/// strength: `Strong` bumps the captured value's refcount so the
-/// actor body keeps the captured handle alive; `Weak` is the
-/// self-binding-name recursive case (§5.9 ratification 2) and does
-/// NOT bump the refcount.
-///
-/// The HIR `captures` field is the producer for the MIR
-/// `LambdaCapture` side-table; the structural fail-closed checker in
-/// `hew-mir` rejects malformed shapes (Weak on a non-lambda-actor
-/// handle, multiple Weak captures on the same handle) that would
-/// otherwise reach codegen.
+/// One checker-resolved capture used to synthesize an ordinary lambda actor.
+/// Strong captures become owning state fields; the recursive self capture is
+/// weak so the actor does not retain itself.
 #[derive(Debug, Clone, PartialEq)]
 pub struct HirLambdaCapture {
     /// The captured binding's id in the enclosing scope.

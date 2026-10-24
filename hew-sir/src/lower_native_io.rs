@@ -1,5 +1,7 @@
 //! Borrowed native requests keep their inputs live through checked resumption.
 
+use crate::SirLoweringError;
+
 use super::{Builder, CallResult, Edge, HirExpr, Operand, OwnKind, SemTerminator};
 use crate::{BlockArg, BoundaryDecision, BoundaryOperand, SuspendKind, ValueDef};
 use hew_types::runtime_call::AsyncIoOp;
@@ -10,7 +12,7 @@ impl Builder<'_, '_> {
         expression: &HirExpr,
         operation: AsyncIoOp,
         args: &[&HirExpr],
-    ) -> Result<Option<crate::ValueId>, String> {
+    ) -> Result<Option<crate::ValueId>, SirLoweringError> {
         self.lower_borrowed_native_suspend(
             expression,
             SuspendKind::NativeIo { operation },
@@ -25,7 +27,7 @@ impl Builder<'_, '_> {
         kind: SuspendKind,
         contract: hew_types::runtime_call::RuntimeSemanticContract,
         args: &[&HirExpr],
-    ) -> Result<Option<crate::ValueId>, String> {
+    ) -> Result<Option<crate::ValueId>, SirLoweringError> {
         let result_ty = self.ty(&expression.ty);
         let argument_types = args.iter().map(|arg| self.ty(&arg.ty)).collect::<Vec<_>>();
         contract.instantiate(&self.service.module.defs, &argument_types, &result_ty)?;

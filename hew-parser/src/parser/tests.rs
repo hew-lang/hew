@@ -6566,7 +6566,7 @@ fn pure_dot_record_literal_parses_to_segmented_struct_init_path() {
 
 #[test]
 fn import_parses_to_segmented_path() {
-    let source = "import std.net.http;";
+    let source = "import std.net.http.server as http;";
     let result = parse(source);
     assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
     let Item::Import(import) = &result.program.items[0].0 else {
@@ -6574,7 +6574,7 @@ fn import_parses_to_segmented_path() {
     };
     assert_eq!(
         path_segments(source, &import.path),
-        idents(&["std", "net", "http"])
+        idents(&["std", "net", "http", "server"])
     );
 }
 

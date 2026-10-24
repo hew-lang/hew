@@ -146,7 +146,7 @@ use an explicit Display implementation to choose the user-facing text.
 Each pair of braces holds one expression, optionally followed by `:?`.
 Anything else after the expression is an error, including width, alignment and
 precision specifiers such as `{x:<8}` or `{f:.2}`. Format the value first, for
-example with `fmt.pad_left`, `fmt.pad_right` or `fmt.to_hex` from `std.fmt`.
+example with string `.pad_left` and `.pad_right`, or `fmt.to_hex` from `std.fmt`.
 
 ### Structural rendering with `:?`
 
@@ -560,7 +560,7 @@ fn port(raw: Option<string>) -> Result<i64, string> {
     let .Some(text) = raw else {
         return .Err("port missing");
     };
-    let .Ok(value) = string.to_int(text) else {
+    let .Ok(value) = (text).to_int() else {
         return .Err("port is not a number");
     };
     .Ok(value)
@@ -1113,7 +1113,9 @@ fn main() -> i32 {
 }
 ```
 
-```hew
+The next example expects a command-line argument; running it without one exits with code 1.
+
+```hew,no_run
 import std.os;
 
 // Pattern 2: check args, exit non-zero on error
@@ -3847,14 +3849,14 @@ fn main() {
 import std.string;
 fn main() {
     println(f"{42}");            // 42
-    let n = match string.to_int("42") {
+    let n = match ("42").to_int() {
         .Ok(v) => v,
         .Err(_) => 0,
     };
     println(f"n={n}");                        // 42
-    println(string.pad_left("7", 3, "0"));   // 007
+    println(("7").pad_left(3, '0'));   // 007
     println(["a", "b", "c"].join(", "));  // a, b, c
-    let c = string.count("abcabc", "abc");
+    let c = ("abcabc").count("abc");
     println(f"count={c}");                    // 2
 }
 ```
@@ -4176,9 +4178,9 @@ Use `?` to short-circuit a failure and propagate it; the enclosing fn declares i
 import std.string;
 fn main() {
     println(f"{42}");            // 42
-    println(string.to_int("100") handle _ { 0 });  // 100
+    println(("100").to_int() handle _ { 0 });  // 100
     println("*".repeat(3));          // ***
-    println(string.pad_left("7", 3, "0"));   // 007
+    println(("7").pad_left(3, '0'));   // 007
 }
 ```
 
@@ -4233,7 +4235,7 @@ fn main() {
 }
 ```
 
-`std.iter` builds lazy adapters (`map`, `filter`, `take`, `skip`) over any `Iterator`; terminal helpers (`fold`, `count`, `collect`, `any`, `all`, `sum`, `sum_f64`, `product`, `product_f64`) drive an adapter chain to completion. Drive a `Vec<T>` through the lazy surface via `v.iter()` (clones elements out, `v` stays live) or `v.into_iter()` (accepts ownership, copying an ordinary `v` if it is reused).
+`std.iter` builds lazy adapters (`map`, `filter`, `take`, `skip`) over any `Iterator`; terminal helpers (`fold`, `count`, `collect`, `any`, `all`, `sum`, `product`) drive an adapter chain to completion. Drive a `Vec<T>` through the lazy surface via `v.iter()` (clones elements out, `v` stays live) or `v.into_iter()` (accepts ownership, copying an ordinary `v` if it is reused).
 
 `v.iter()` creates an independent snapshot, while `v.into_iter()` owns the
 supplied vector. `VecIter` keeps untaken elements in order and releases that
@@ -4312,7 +4314,7 @@ import std.random;
 fn main() {
     random.seed(42);                   // deterministic sequence
     let r = random.random();           // f64 in [0.0, 1.0)
-    let n = random.randint(1, 7);      // i64 in [1, 7)  — like a d6 roll
+    let n = random.randint(1, 7).expect("valid random draw");      // i64 in [1, 7)  — like a d6 roll
     let g = random.gauss(0.0, 1.0);   // Gaussian sample
 
     println(f"{r} {n} {g}");
@@ -4329,7 +4331,7 @@ fn main() {
     var rng = random.Rng.new(42);
     println(rng.next_u64());
     println(rng.next_f64());     // f64 in [0.0, 1.0)
-    println(rng.range(1, 7));    // i64 in [1, 7)
+    println(rng.range(1, 7).expect("valid range"));  // i64 in [1, 7)
 
     let hand: Vec<i64> = [1, 2, 3, 4, 5];
     let shuffled = rng.shuffle(hand);
@@ -4344,13 +4346,15 @@ fn main() {
 
 Advancing an `Rng` requires a `var` binding. Copying one gives an independent stream at the same position. Both `rng.shuffle(values)` and `random.shuffle(values)` return a shuffled vector and preserve `values`.
 
-`Rng` uses xoshiro256++ rather than MT19937, so it does not produce the same sequence as the module-level functions for the same seed; two `Rng` values created with the same seed always agree with each other. It is not cryptographically secure — for that, use `random.crypto_bytes(n)` and `random.crypto_u64()`, convenience wrappers over `crypto.random_bytes` (`std.crypto.crypto`) that draw from OS entropy:
+`Rng` uses xoshiro256++ rather than MT19937, so it does not produce the same sequence as the module-level functions for the same seed; two `Rng` values created with the same seed always agree with each other. It is not cryptographically secure. For cryptographic randomness, use `hash.random_bytes` from `std.crypto.hash` or `random.crypto_u64`; both return checked results and draw from OS entropy:
 
 ```hew
 import std.random;
+import std.crypto.hash;
 fn main() {
-    let key = random.crypto_bytes(32);  // bytes, always freshly drawn
-    let token = random.crypto_u64();
+    let key = hash.random_bytes(32).expect("valid random draw");  // bytes, always freshly drawn
+    let token = random.crypto_u64().expect("valid random draw");
+    println(f"Generated {key.len()} key bytes and token {token}");
 }
 ```
 
@@ -5108,7 +5112,7 @@ example: [`examples/pipe/`](../examples/pipe).
 import std.text.regex;
 
 fn main() {
-    let re = regex.new("(?P<k>[a-z]+)=(?P<v>[0-9]+)");
+    let re = regex.new("(?P<k>[a-z]+)=(?P<v>[0-9]+)").expect("valid pattern");
     let text = "a=1 bb=22";
     match re.capture_named(text, "v") {
         .Some(v) => println(f"first value: {v}"),   // first value: 1
@@ -5124,7 +5128,7 @@ fn main() {
 }
 ```
 
-Compile a pattern with `regex.new`; invalid syntax panics. `capture(input, group)` /
+Compile a pattern with `regex.new`; invalid syntax returns `RegexError.InvalidPattern`. `capture(input, group)` /
 `capture_named(input, name)` return the
 indexed/named submatch of the FIRST match as an `Option<string>` — group 0 is the
 whole match. `find_all` returns every whole match as a `Vec<string>`;
@@ -5150,7 +5154,7 @@ fn main() {
         println(f"template parse failed: {error}");
         return;
     };
-    match template.render_try(t, ctx) {
+    match template.render_template(t, ctx) {
         .Ok(s) => println(s),   // hi Hew: a b
         .Err(_) => println("error"),
     }
@@ -5161,9 +5165,9 @@ Build a flat `Ctx` with `new_ctx()` in a `var` binding, then call its
 `set_str`, `set_int`, `set_bool` or `set_list` methods. `parse` compiles a
 Go-style template — `{{.key}}` substitutes, `{{if .key}}…{{end}}` is conditional,
 `{{range .list}}…{{.}}…{{end}}` iterates with `.` bound to each item. Render with
-the free function `template.render_template(t, ctx)` (panics on error) or
-`template.render_try(t, ctx)` (returns `Result`). `TemplateError` has no `Display`, so handle the `Err` arm
-with a literal message rather than interpolating it. Full example:
+`template.render_template(t, ctx)`, which returns a checked result. Propagate
+its error with `?`, recover with `handle`, or use `expect` for a known-valid
+template. `TemplateError` supports `Display`. Full example:
 [`examples/v05/surfaces/template_render.hew`](../examples/v05/surfaces/template_render.hew).
 
 ### Unicode scalars and character methods
@@ -5223,7 +5227,7 @@ scanner plus `Option<string>`. Full example:
 
 The flagship networking surface is a suspending HTTP/1.1 client and
 server built on `net.connect` / `net.listen` plus the pure-Hew codecs in
-`std.net.http.http_async_client` / `http_async_server`. A server handler
+`std.net.http.codec`. A server handler
 accepts a connection, drives a `conn.recv()` loop until the
 request is buffered, then replies; a client writes a request and reads the
 response. Each call suspends the handler (not the worker), so one worker can
@@ -5231,22 +5235,26 @@ serve and fetch on the same thread. The request/response codecs are pure and
 runnable in isolation:
 
 ```hew
-import std.net.http.http_async_client;
+import std.net.http.codec;
 
 fn main() {
-    let parts = http_async_client.split_address("http://127.0.0.1:8080/health");
+    let parts = codec.split_address("http://127.0.0.1:8080/health");
     println(f"connect to {parts.0}");   // connect to 127.0.0.1:8080
     let raw = "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\r\n{\"ok\":true}";
-    let resp = http_async_client.parse_response(raw);
-    println(f"status={resp.status()} type={resp.content_type()} body={resp.body()}");
+    let resp = codec.parse_response(raw).expect("valid response").expect("complete response");
+    println(f"status={resp.status()} type={resp.content_type().expect("content type header")} body={resp.body()}");
 }
 ```
 
-Build requests with `build_get(host, path)` / `build_request(...)` and parse
-replies with `parse_response` → `status()` / `body()` / `header(name)` /
-`content_type()`; the server side parses with `parse_request` → `method()` /
-`path()` / `header(name)` / `is_valid()` and builds replies with
-`response_text` / `response_json`. The `Listener` / `Connection` handles must be
+Build requests with `build_get(host, path)` / `build_request(...)`, handling
+`BuildError`. Parse replies with `parse_response`, which returns
+`Result<Option<Response>, ResponseError>`:
+`Ok(None)` needs more input, and `Err` reports malformed or oversized input.
+A complete response provides `status()` / `body()` / `header(name)` /
+`content_type()`. The server side uses `parse_request`, returning
+`Result<Option<Request>, RequestError>`, then reads `method()` / `path()` /
+`header(name)` from a complete request. `response_text` / `response_json` build
+replies with checked `BuildError` results. The `Listener` / `Connection` handles must be
 handler LOCALS — an opaque handle in actor state is rejected by the
 supervisor-restart clone gate. Full client+server program (two routes):
 [`examples/net/http_await_service.hew`](../examples/net/http_await_service.hew)
@@ -5265,7 +5273,7 @@ call, and a deadline over it comes from one of three places:
 
 Socket and network timeouts take `duration` values such as `250ms` or `2s`.
 Use `net.connect_timeout(address, 2s)` for connection establishment,
-`http_client.set_timeout(2s)` for outbound HTTP, and
+`client.set_timeout(2s)` for outbound HTTP, and
 `server.set_request_timeout(2s)` for incoming HTTP request bodies. TCP timeout
 setters accept a negative duration to clear the timeout. DNS and QUIC per-call
 timeouts disable their deadline for non-positive durations. Positive fractional
@@ -5489,8 +5497,8 @@ fn main() {
 verified handshake before it returns, all within `handshake_timeout`; then
 `io_timeout` bounds each read and write (`0s` is none). Failures are typed
 `NetError`s: `TimedOut` past the deadline, `InvalidArgument` for a bad host,
-port, duration or trust PEM, and `Other` for a certificate the trust does not
-accept, with the alert in `tls.last_error()`. `Trust.Bundled` is the Mozilla
+port, duration or trust PEM, and `Protocol(detail)` for a certificate the trust
+does not accept, with the alert carried by the error. `Trust.Bundled` is the Mozilla
 root programme compiled into Hew, not the operating system's store;
 `Trust.Pem(bytes)` trusts only the CAs given. Each call blocks its worker
 until it finishes.

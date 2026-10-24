@@ -306,6 +306,22 @@ impl LowerCtx {
         {
             self.indexed_place_operations.insert(site, *operations);
         }
+        if matches!(
+            expr.0,
+            Expr::Ident(_) | Expr::FieldAccess { .. } | Expr::GenericApplySuffix { .. }
+        ) && self.actor_delivery_calls.contains_key(&self.mk_key(&span))
+        {
+            if let Some((kind, ty)) = self.lower_intrinsic_function_value(&span) {
+                return HirExpr {
+                    node: self.ids.node(),
+                    site,
+                    ty,
+                    intent,
+                    kind,
+                    span,
+                };
+            }
+        }
         if let Some(operation) = self.actor_delivery_calls.get(&self.mk_key(&span)).cloned() {
             use hew_types::actor_delivery::ActorDeliveryCall;
             let (receiver, args) = match (&operation, &expr.0) {
@@ -444,7 +460,7 @@ impl LowerCtx {
                         )
                     }
                     None => {
-                        self.unsupported(
+                        self.missing_checked_fact(
                             span.clone(),
                             "macro invocation has no checked constant",
                             "checker-boundary",
@@ -595,34 +611,12 @@ impl LowerCtx {
             Expr::ContextVariant(_) | Expr::GenericApplySuffix { .. } => {
                 unreachable!("compatibility suffix expressions are lowered before site allocation")
             }
-            Expr::RecordInitSuffix {
-                target,
-                fields,
-                base,
-            } => {
-                self.lower_expr(target, IntentKind::Read);
-                for (_, value) in fields {
-                    self.lower_expr(value, IntentKind::Read);
-                }
-                if let Some(base) = base {
-                    self.lower_expr(base, IntentKind::Read);
-                }
-                self.unsupported(
-                    span.clone(),
-                    "qualified record initializer",
-                    "qualified-record-init",
-                );
-                (
-                    HirExprKind::Unsupported("unsupported qualified record initializer".into()),
-                    ResolvedTy::Unit,
-                )
-            }
             Expr::QualifiedAssoc(path) => {
                 let _ = render_type_expr(&path.base.0);
-                self.unsupported(
+                self.missing_checked_fact(
                     span.clone(),
+                    "qualified associated value has no selected declaration",
                     "qualified associated value",
-                    "qualified-assoc-value",
                 );
                 (
                     HirExprKind::Unsupported("unsupported qualified associated value".into()),
@@ -660,6 +654,18 @@ impl LowerCtx {
                 let Ok(ty) = ResolvedTy::from_ty(checked_ty) else {
                     return self.unsupported_expr(span, "binary expression type is unresolved");
                 };
+                if matches!(op, BinaryOp::Range | BinaryOp::RangeInclusive) {
+                    return self.make_expr(
+                        HirExprKind::RangeValue {
+                            start: Box::new(left),
+                            end: Box::new(right),
+                            inclusive: *op == BinaryOp::RangeInclusive,
+                        },
+                        ty,
+                        intent,
+                        span,
+                    );
+                }
                 (
                     HirExprKind::Binary {
                         op: *op,
@@ -720,7 +726,6 @@ impl LowerCtx {
                 )
             }
             Expr::StructInit {
-                path: named_path,
                 fields,
                 // Surface-level explicit type arguments (`Box<i64> { ... }`).
                 // The HIR-recorded `type_args` below comes from the checker's
@@ -729,8 +734,17 @@ impl LowerCtx {
                 type_args: _,
                 base,
                 ..
-            } => {
-                let name = &named_path.to_string();
+            }
+            | Expr::RecordInitSuffix { fields, base, .. } => {
+                let constructor_name = match &expr.0 {
+                    Expr::StructInit { path, .. } => path.to_string(),
+                    Expr::RecordInitSuffix { .. } => self
+                        .checker_expr_ty_if_present(&span)
+                        .and_then(|ty| ty.head().map(|head| head.registry_key().to_string()))
+                        .unwrap_or_default(),
+                    _ => unreachable!("record initializer match arm"),
+                };
+                let name = &constructor_name;
                 // A coercion changes the published expression type, while the
                 // initializer still constructs the checked concrete value.
                 let checked_constructor = self
@@ -780,10 +794,10 @@ impl LowerCtx {
                 {
                     if base.is_some() {
                         self.diagnostics.push(HirDiagnostic::new(
-                            HirDiagnosticKind::NotYetImplemented {
-                                construct: "functional-update syntax on enum variant constructors"
+                            HirDiagnosticKind::CheckerBoundaryViolation {
+                                name: "enum variant constructor".to_string(),
+                                reason: "record-only base update crossed the checker boundary"
                                     .to_string(),
-                                owning_pass: "variant ctor validation".to_string(),
                             },
                             span.clone(),
                             "enum variant constructors do not support `..base` syntax",
@@ -1195,7 +1209,7 @@ impl LowerCtx {
                         ResolvedTy::Never,
                     )
                 } else {
-                    self.unsupported_postfix_try(
+                    self.missing_recovery_fact(
                         &span,
                         "error return without checked failure selection",
                     )
@@ -1205,7 +1219,39 @@ impl LowerCtx {
                 receiver,
                 method,
                 args,
-            } => self.lower_method_call(receiver, method.0.name.as_str(), args, span.clone(), site),
+            } => {
+                if let Some(CallTarget::RangeAdapter(adapter)) = self.ordinary_call_target(&span) {
+                    let range = self.lower_expr(receiver, IntentKind::Read);
+                    let ty = range.ty.clone();
+                    let adapter = match adapter {
+                        hew_types::range_value::RangeAdapter::Reverse => HirRangeAdapter::Reverse,
+                        hew_types::range_value::RangeAdapter::Step => {
+                            let Some(step) = args.first() else {
+                                return self
+                                    .unsupported_expr(span, "checked range step has no operand");
+                            };
+                            HirRangeAdapter::Step(Box::new(
+                                self.lower_expr(step.expr(), IntentKind::Read),
+                            ))
+                        }
+                    };
+                    (
+                        HirExprKind::RangeAdapt {
+                            range: Box::new(range),
+                            adapter,
+                        },
+                        ty,
+                    )
+                } else {
+                    self.lower_method_call(
+                        receiver,
+                        method.0.name.as_str(),
+                        args,
+                        span.clone(),
+                        site,
+                    )
+                }
+            }
             // `clone <operand>` reuses the `.clone()` lowering: the checker
             // recorded the method resolution / rewrite at this span (see
             // `synthesize` `Expr::Clone`), so this routes through the same
@@ -1750,7 +1796,7 @@ impl LowerCtx {
             }
             Expr::ChainValue => match self.chain_values.last() {
                 Some(value) => (value.kind.clone(), value.ty.clone()),
-                None => self.unsupported_postfix_try(&span, "optional payload outside its chain"),
+                None => self.missing_recovery_fact(&span, "optional payload outside its chain"),
             },
             Expr::Coalesce { left, right } => self.lower_local_recovery(left, right, None, &span),
             Expr::Handle {
@@ -1800,8 +1846,31 @@ impl LowerCtx {
                 HirExprKind::Literal(HirLiteral::Bytes(elems.clone())),
                 ResolvedTy::Bytes,
             ),
+            Expr::Range {
+                start: Some(start),
+                end: Some(end),
+                inclusive,
+            } => {
+                let bounded = (
+                    Expr::Binary {
+                        left: start.clone(),
+                        right: end.clone(),
+                        op: if *inclusive {
+                            BinaryOp::RangeInclusive
+                        } else {
+                            BinaryOp::Range
+                        },
+                    },
+                    span,
+                );
+                return self.lower_expr(&bounded, intent);
+            }
             Expr::Range { .. } => {
-                self.unsupported(span.clone(), "expression", "slice-2");
+                self.missing_checked_fact(
+                    span.clone(),
+                    "open range reached value lowering outside an indexed receiver",
+                    "range expression",
+                );
                 (
                     HirExprKind::Unsupported("unsupported expression".into()),
                     ResolvedTy::Unit,

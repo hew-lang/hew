@@ -19,6 +19,7 @@ sys.path.insert(0, str(REPO_ROOT / "scripts" / "lib"))
 from corpus_nonempty import assert_nonempty  # noqa: E402
 from hew_junit import (  # noqa: E402
     FAILURE_KINDS,
+    LEDGER_FAILURE_KINDS,
     JUnitError,
     JUnitReport,
     parse as parse_hew_junit,
@@ -429,7 +430,7 @@ def expected_failures(path: Path, full: set[str]) -> dict[str, str]:
                 f"{path}: {value!r}"
             )
         identity, failure_kind = fields
-        if failure_kind not in FAILURE_KINDS:
+        if failure_kind not in LEDGER_FAILURE_KINDS:
             die(
                 f"expected-failure entry has unsupported failure kind "
                 f"{failure_kind!r}: {path}: {identity}"

@@ -227,87 +227,33 @@ impl LowerCtx {
         if let Some(value) = self.fold_aggregate_const_expr(expr, declared_ty, &span) {
             return value;
         }
-        if let Expr::ByteStringLiteral(bytes) | Expr::ByteArrayLiteral(bytes) = expr {
-            return HirConstValue::Bytes(bytes.clone());
-        }
-        // Dispatch on the initializer shape rather than the declared type:
-        // the string primitive spells out as either `ResolvedTy::String` or
-        // `ResolvedTy::Named { name: "String" }` depending on annotation form,
-        // and the checker has already proven value/type agreement upstream.
-        if let Expr::Literal(lit) = expr {
-            match lit {
-                Literal::String(s) => return HirConstValue::String(s.clone()),
-                Literal::Bool(value) => return HirConstValue::Bool(*value),
-                Literal::Char(value) => return HirConstValue::Char(*value),
-                Literal::Duration(value) => return HirConstValue::Duration(*value),
-                Literal::Float(value) if Self::is_float_ty(declared_ty) => {
-                    if Self::float_literal_fits_declared_ty(*value, declared_ty) {
-                        return HirConstValue::Float(*value);
-                    }
-                    self.unsupported(
-                        span,
-                        "float const initializer exceeds the declared float range",
-                        "const-fold",
-                    );
-                    return HirConstValue::Float(0.0);
-                }
-                _ => {}
-            }
-        }
-
-        if let Expr::Unary {
-            op: UnaryOp::Negate,
-            operand,
-        } = expr
-        {
-            if let Expr::Literal(Literal::Float(value)) = &operand.0 {
-                if Self::is_float_ty(declared_ty) {
-                    let negated = -*value;
-                    if Self::float_literal_fits_declared_ty(negated, declared_ty) {
-                        return HirConstValue::Float(negated);
-                    }
-                    self.unsupported(
-                        span,
-                        "negative float const initializer exceeds the declared float range",
-                        "const-fold",
-                    );
-                    return HirConstValue::Float(0.0);
-                }
-            }
-        }
-
-        // Delegate integer/arithmetic evaluation to the sanctioned engine.
-        // `decl.value` is a `Spanned<Expr>`, but `fold_const_expr` is handed the
-        // bare `Expr`; reconstruct the `Spanned` shape the engine expects. The
-        // `UnknownConst` is mapped to a fail-closed diagnostic below.
-        let spanned: hew_parser::ast::Spanned<Expr> = (expr.clone(), span.clone());
+        let spanned = (expr.clone(), span.clone());
         let target_width = if self.target_arch == TargetArch::Wasm32 {
             32
         } else {
             64
         };
-        let target = hew_types::check::const_eval::ConstIntegerTarget::from_resolved_ty(
+        let result = hew_types::check::const_eval::eval_scalar_const_expr(
+            &spanned,
             declared_ty,
             target_width,
+            &mut |expr| {
+                let key = self.mk_key(&expr.1);
+                let ty = self
+                    .numeric_operand_coercions
+                    .get(&key)
+                    .and_then(|ty| ResolvedTy::from_ty(ty).ok())
+                    .or_else(|| self.checker_expr_ty_if_present(&expr.1));
+                let value = self.constant_at(&expr.1).or_else(|| {
+                    ty.as_ref()
+                        .and_then(|ty| self.fold_aggregate_const_expr(&expr.0, ty, &expr.1))
+                });
+                (ty, value)
+            },
         );
-        match target.map(|target| {
-            hew_types::check::const_eval::eval_integer_const_expr_with_values(
-                &spanned,
-                target,
-                |expr| {
-                    if let HirConstValue::Integer(value) = self.constant_at(&expr.1)? {
-                        Some(value)
-                    } else {
-                        None
-                    }
-                },
-            )
-        }) {
-            // The const evaluator and the HIR carrier are both `i128`, and the
-            // evaluator has already range-checked the value against the
-            // declared type, so the folded value passes through exactly.
-            Some(Ok(value)) => return HirConstValue::Integer(value),
-            Some(Err(hew_types::check::const_eval::ConstEvalError::UnknownConst(_))) => {
+        match result {
+            Ok(value) => return value,
+            Err(hew_types::check::const_eval::ConstEvalError::UnknownConst(_)) => {
                 if !self.diagnostics.iter().any(|diagnostic| {
                     matches!(
                         diagnostic.kind,
@@ -321,36 +267,35 @@ impl LowerCtx {
                     );
                 }
             }
-            Some(Err(
+            Err(
                 hew_types::check::const_eval::ConstEvalError::ArithmeticOverflow
                 | hew_types::check::const_eval::ConstEvalError::Overflow,
-            )) => {
-                self.const_integer_evaluation_error(
-                    span,
-                    "arithmetic-overflow",
-                    "constant initializer arithmetic overflows its declared integer type",
-                );
-            }
-            Some(Err(hew_types::check::const_eval::ConstEvalError::DivisionByZero)) => {
-                self.const_integer_evaluation_error(
+            ) => self.const_integer_evaluation_error(
+                span,
+                "arithmetic-overflow",
+                "constant initializer arithmetic overflows its declared type",
+            ),
+            Err(hew_types::check::const_eval::ConstEvalError::DivisionByZero) => self
+                .const_integer_evaluation_error(
                     span,
                     "division-by-zero",
                     "constant initializer divides by zero",
-                );
-            }
-            Some(Err(hew_types::check::const_eval::ConstEvalError::OutOfRange)) => {
-                self.const_integer_evaluation_error(
+                ),
+            Err(hew_types::check::const_eval::ConstEvalError::OutOfRange) => self
+                .const_integer_evaluation_error(
                     span,
                     "out-of-range",
-                    "constant initializer value does not fit in its declared integer type",
-                );
-            }
-            Some(Err(hew_types::check::const_eval::ConstEvalError::NotConstant)) | None => {
-                self.unsupported(
+                    "constant initializer value does not fit in its declared type",
+                ),
+            Err(hew_types::check::const_eval::ConstEvalError::NotConstant) => {
+                self.diagnostics.push(HirDiagnostic::new(
+                    HirDiagnosticKind::CheckerBoundaryViolation {
+                        name: "constant initializer".to_string(),
+                        reason: "checked initializer has no constant evaluation plan".to_string(),
+                    },
                     span,
-                    "unsupported const initializer expression",
-                    "const-fold",
-                );
+                    "constant eligibility must be checked before HIR lowering",
+                ));
             }
         }
 
@@ -396,19 +341,5 @@ impl LowerCtx {
 
     pub(super) fn is_float_ty(ty: &ResolvedTy) -> bool {
         matches!(ty, ResolvedTy::F32 | ResolvedTy::F64)
-    }
-
-    pub(super) fn float_literal_fits_declared_ty(value: f64, ty: &ResolvedTy) -> bool {
-        match ty {
-            ResolvedTy::F32 => {
-                if value.is_infinite() || value.is_nan() {
-                    return true;
-                }
-                let abs = value.abs();
-                abs == 0.0 || (abs >= f64::from(f32::MIN_POSITIVE) && abs <= f64::from(f32::MAX))
-            }
-            ResolvedTy::F64 => true,
-            _ => false,
-        }
     }
 }

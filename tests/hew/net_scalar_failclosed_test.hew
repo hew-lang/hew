@@ -8,7 +8,7 @@
 
 import std.net;
 
-import std.net.http.http_client;
+import std.net.http.client;
 
 fn wrapped_to_500() -> i64 {
     4294967796 // 2^32 + 500: narrows to 500 as i32
@@ -155,13 +155,13 @@ fn test_connect_timeout_rejects_a_malformed_address_before_connecting() {
 
 #[test]
 fn test_http_client_timeout_above_abi_range_is_rejected() {
-    match http_client.set_timeout(duration.from_millis(wrapped_to_500())) {
+    match client.set_timeout(duration.from_millis(wrapped_to_500())) {
         .Ok(_) => panic("expected a wrapped HTTP timeout to be rejected"),
-        .Err(err) => assert(to_string(err) == "InvalidArgument(http_client.set_timeout: invalid duration 4294967796 ms (must be <= 2147483647))"),
+        .Err(err) => assert(to_string(err) == "InvalidArgument(client.set_timeout: invalid duration 4294967796 ms (must be <= 2147483647))"),
     }
-    match http_client.set_timeout(1000ms) {
+    match client.set_timeout(1000ms) {
         .Ok(_) => {}
         .Err(_) => panic("expected a 1000 ms HTTP timeout to be accepted"),
     }
-    assert(http_client.set_timeout(0ms).is_ok());
+    assert(client.set_timeout(0ms).is_ok());
 }

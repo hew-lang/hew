@@ -809,28 +809,6 @@ impl Verifier {
                     self.expr(&arm.body);
                 }
             }
-            HirExprKind::SpawnLambdaActor { body, captures, .. } => {
-                // The lambda body is a child expression — recurse for
-                // node/site/diagnostic coverage. The capture set is
-                // metadata produced by the resolver; verify each
-                // captured binding id was declared somewhere in the
-                // HIR (catches a resolver bug that records a freed
-                // binding id).
-
-                self.expr(body);
-
-                for capture in captures {
-                    if !self.bindings.contains(&capture.binding) {
-                        self.diagnostics.push(self.diagnostic(
-                            HirDiagnosticKind::DanglingRef {
-                                resolved: ResolvedRef::Binding(capture.binding),
-                            },
-                            expr.span.clone(),
-                            "lambda-actor capture references a binding not declared in resolved HIR",
-                        ));
-                    }
-                }
-            }
             HirExprKind::Closure {
                 params,
                 body,
@@ -995,8 +973,7 @@ impl Verifier {
             HirExprKind::CoerceToDynTrait { value, .. } => {
                 self.expr(value);
             }
-            HirExprKind::CancellationTokenIsCancelled { receiver }
-            | HirExprKind::GeneratorNext { receiver, .. }
+            HirExprKind::GeneratorNext { receiver, .. }
             | HirExprKind::RecordCloneCall { src: receiver, .. } => {
                 self.expr(receiver);
             }
@@ -1068,24 +1045,46 @@ impl Verifier {
                     for binding in &arm.bindings {
                         self.binding(binding.binding, binding.span.clone());
                     }
+                    for statement in &arm.pattern_bindings {
+                        self.node(statement.node, statement.span.clone());
+                        if let HirStmtKind::Destructure { value, fields } = &statement.kind {
+                            self.destructure_bindings(value, fields);
+                        } else {
+                            self.diagnostics.push(self.diagnostic(
+                                HirDiagnosticKind::CheckerBoundaryViolation {
+                                    name: "match pattern binding".into(),
+                                    reason:
+                                        "pattern binding is not an aggregate destructure".into(),
+                                },
+                                statement.span.clone(),
+                                "match arm contains an invalid pattern-binding plan",
+                            ));
+                        }
+                    }
                     if let Some(guard) = &arm.guard {
                         self.expr(guard);
                     }
                     self.expr(&arm.body);
                 }
             }
+            HirExprKind::RangeValue { start, end, .. } => {
+                self.expr(start);
+                self.expr(end);
+            }
+            HirExprKind::RangeAdapt { range, adapter } => {
+                self.expr(range);
+                if let crate::HirRangeAdapter::Step(step) = adapter {
+                    self.expr(step);
+                }
+            }
             HirExprKind::ForRange {
-                binding,
-                start,
-                end,
-                step,
+                range,
                 body,
+                binding,
                 ..
             } => {
                 self.binding(binding.id, binding.span.clone());
-                self.expr(start);
-                self.expr(end);
-                self.expr(step);
+                self.expr(range);
                 self.block(body);
             }
             HirExprKind::Break { value, .. } | HirExprKind::Return { value, .. } => {
@@ -1094,21 +1093,14 @@ impl Verifier {
                 }
             }
             HirExprKind::Unsupported(reason) => {
-                if !reason.starts_with("diagnosed:")
-                    && !self.diagnostics.iter().any(|diag| {
-                        diag.span == expr.span
-                            && matches!(diag.kind, HirDiagnosticKind::NotYetImplemented { .. })
-                    })
-                {
-                    self.diagnostics.push(self.diagnostic(
-                        HirDiagnosticKind::NotYetImplemented {
-                            construct: reason.clone(),
-                            owning_pass: "hir-lowering".to_string(),
-                        },
-                        expr.span.clone(),
-                        "verifier: Unsupported HIR node reached verification without a prior diagnostic",
-                    ));
-                }
+                self.diagnostics.push(self.diagnostic(
+                    HirDiagnosticKind::CheckerBoundaryViolation {
+                        name: "HIR expression".to_string(),
+                        reason: reason.clone(),
+                    },
+                    expr.span.clone(),
+                    "incomplete HIR must stop before semantic lowering",
+                ));
             }
         }
     }
@@ -1145,19 +1137,19 @@ impl Verifier {
             (HirLiteral::Float(_), ResolvedTy::F32 | ResolvedTy::F64)
             | (HirLiteral::Bool(_), ResolvedTy::Bool)
             | (HirLiteral::Char(_), ResolvedTy::Char)
-            | (HirLiteral::String(_), ResolvedTy::String) => true,
+            | (HirLiteral::String(_), ResolvedTy::String)
+            | (HirLiteral::Duration(_), ResolvedTy::Duration)
+            | (HirLiteral::Unit, ResolvedTy::Unit) => true,
             _ => false,
         };
         if !valid {
             self.diagnostics.push(self.diagnostic(
-                HirDiagnosticKind::NotYetImplemented {
-                    construct: format!(
-                        "unsupported top-level literal match predicate {lit:?}: {ty:?}"
-                    ),
-                    owning_pass: "match-literal".to_string(),
+                HirDiagnosticKind::CheckerBoundaryViolation {
+                    name: "literal match predicate".to_string(),
+                    reason: format!("literal {lit:?} disagrees with checked scrutinee type {ty:?}"),
                 },
                 span,
-                "literal match predicates are currently limited to integers, floats, bool, char, and string",
+                "literal predicates must preserve the checked scalar type",
             ));
         }
     }

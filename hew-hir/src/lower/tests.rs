@@ -716,7 +716,7 @@ fn checker_stream_compatibility_spelling_requires_exact_std_provenance() {
     let mut ctx = LowerCtx::new(&TypeCheckOutput::default(), TargetArch::host());
     ctx.canonical_std_source_type_identities
         .insert("std.stream.Sink".to_string());
-    ctx.current_module_name = Some("std.net.http".to_string());
+    ctx.current_module_name = Some("std.net.http.server".to_string());
     let checker_result = ResolvedTy::named_builtin(
         BuiltinType::Result,
         vec![

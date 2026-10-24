@@ -51,7 +51,7 @@ fn main() -> i32 {
         }
         if args[1] == "echo" {
             assert(os.env("HEW_PROCESS_BOUND") == .Some("piped"));
-            println(io.read_line() ?? "");
+            println(io.read_line().expect("standard I/O") ?? "");
             return 0;
         }
         if args[1] == "sleep" {

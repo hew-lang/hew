@@ -1,41 +1,72 @@
-//! Smoke tests for the bounded std::net::http::http_client slice.
+//! Checked HTTP failures and response headers are exercised without external services.
 
-import std.net.http.http_client;
+import std.net;
+import std.net.http.client;
 
-#[test]
-#[real_time]
-fn test_request_surface_is_importable_from_http_client() {
-    let headers: Vec<(string, string)> = Vec.new();
-    assert(http_client.set_timeout(250ms).is_ok());
-    let resp = http_client.request("TRACE", "http://example.com", "", headers);
-    assert(resp.status() == -1);
-    resp.close();
-}
+actor RawPeer {
+    let listener: net.Listener;
+    let response: bytes;
 
-#[test]
-#[real_time]
-fn test_request_string_surface_is_importable_from_http_client() {
-    let headers: Vec<(string, string)> = Vec.new();
-    assert(http_client.set_timeout(250ms).is_ok());
-
-    // TRACE is unsupported — returns None (transport/validation failure).
-    let result = http_client.request_string("TRACE", "http://example.com", "", headers);
-    match result {
-        .Some(_) => assert(true),
-        .None => assert(true),
+    receive fn serve() {
+        let connection = listener.accept().expect("accept HTTP client");
+        let _request = connection.recv().expect("receive request");
+        connection.send(response).expect("send HTTP response");
+        connection.close();
     }
 }
 
 #[test]
 #[real_time]
-fn test_request_with_header_pairs() {
-    var headers: Vec<(string, string)> = Vec.new();
-    headers.push(("Accept", "application/json"));
-    headers.push(("X-Custom-Header", "hew-test"));
-    assert(http_client.set_timeout(250ms).is_ok());
-    let resp = http_client.request("GET", "http://example.com", "", headers);
-    // Transport will fail (TRACE/unsupported method or network), status -1 is acceptable.
-    // The important property is that the call compiles and executes without panic.
-    resp.close();
-    assert(true);
+fn test_unsupported_method_returns_request_error() {
+    match client.request("TRACE", "http://127.0.0.1/", "", []) {
+        .Err(client.HttpError.Request(detail)) => assert(detail.contains("unsupported HTTP method")),
+        _ => panic("unsupported method must return a request error"),
+    }
+    assert(client.request_string("TRACE", "http://127.0.0.1/", "", []).is_err());
+}
+
+#[test]
+#[real_time]
+fn test_transport_failure_is_not_an_empty_body() {
+    let listener = net.listen("127.0.0.1:0").expect("reserve port");
+    let port = listener.local_port();
+    listener.close();
+    match client.get_string(f"http://127.0.0.1:{port}/") {
+        .Err(client.HttpError.Request(detail)) => assert(!detail.is_empty()),
+        _ => panic("closed port must return a transport error"),
+    }
+}
+
+#[test]
+#[real_time]
+fn test_absent_and_empty_headers_are_distinct() {
+    let listener = net.listen("127.0.0.1:0").expect("listen");
+    let port = listener.local_port();
+    let peer = spawn RawPeer { listener, response: b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\nX-Empty: \r\nConnection: close\r\n\r\n" };
+    let serving = fork peer.serve();
+    let response = client.get(f"http://127.0.0.1:{port}/").expect("request");
+    assert(response.body().expect("body") == "");
+    assert(response.header("x-empty").expect("empty header") == .Some(""));
+    assert(response.header("x-absent").expect("absent header") == .None);
+    assert(response.content_type().expect("content type") == .None);
+    assert((await serving).is_ok());
+    stop(peer);
+    stopped(peer);
+}
+
+#[test]
+#[real_time]
+fn test_invalid_utf8_body_returns_a_decoding_failure() {
+    let listener = net.listen("127.0.0.1:0").expect("listen");
+    let port = listener.local_port();
+    let peer = spawn RawPeer { listener, response: b"HTTP/1.1 200 OK\r\nContent-Length: 1\r\nConnection: close\r\n\r\n\xff" };
+    let serving = fork peer.serve();
+    match client.get_string(f"http://127.0.0.1:{port}/") {
+        .Err(client.HttpError.Request(detail)) => assert(detail.contains("body")),
+        .Err(client.HttpError.Body(detail)) => assert(!detail.is_empty()),
+        _ => panic("invalid UTF-8 must not become a successful empty body"),
+    }
+    assert((await serving).is_ok());
+    stop(peer);
+    stopped(peer);
 }

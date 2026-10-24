@@ -20,12 +20,12 @@ pub(super) enum ResultVariant {
 }
 
 impl LowerCtx {
-    pub(super) fn unsupported_postfix_try(
+    pub(super) fn missing_recovery_fact(
         &mut self,
         span: &std::ops::Range<usize>,
         construct: impl Into<String>,
     ) -> (HirExprKind, ResolvedTy) {
-        self.unsupported(span.clone(), construct, "question-operator");
+        self.missing_checked_fact(span.clone(), construct, "question-operator");
         (
             HirExprKind::Unsupported("unsupported `?` expression".into()),
             ResolvedTy::Unit,
@@ -195,7 +195,7 @@ impl LowerCtx {
         span: &std::ops::Range<usize>,
     ) -> HirExpr {
         let Some(return_ty) = self.current_return_type.clone() else {
-            self.unsupported(
+            self.missing_checked_fact(
                 span.clone(),
                 "tail Ok-coercion without an enclosing return type",
                 "tail-ok-coercion",
@@ -203,7 +203,7 @@ impl LowerCtx {
             return value;
         };
         if Self::resolved_result_parts(&return_ty).is_none() {
-            self.unsupported(
+            self.missing_checked_fact(
                 span.clone(),
                 "tail Ok-coercion on a non-Result return type",
                 "tail-ok-coercion",
@@ -333,7 +333,7 @@ impl LowerCtx {
                     .clone()
                     .filter(|ty| Self::resolved_result_parts(ty).is_some())
                 else {
-                    self.unsupported(
+                    self.missing_checked_fact(
                         span.clone(),
                         "error return without an enclosing Result type",
                         "result-return",
@@ -388,10 +388,10 @@ impl LowerCtx {
             HirExprKind::Scope { .. } | HirExprKind::ScopeDeadline { .. }
         ) {
             return self
-                .unsupported_postfix_try(span, "checked scope recovery lacks a scope operand");
+                .missing_recovery_fact(span, "checked scope recovery lacks a scope operand");
         }
         let Some(result_ty) = self.checker_expr_resolved_ty(span, "scope recovery") else {
-            return self.unsupported_postfix_try(span, "missing checked scope recovery result");
+            return self.missing_recovery_fact(span, "missing checked scope recovery result");
         };
 
         self.push_scope();
@@ -422,7 +422,7 @@ impl LowerCtx {
             consumes_receiver,
         }) = self.recovery_kinds.get(&self.mk_key(span)).cloned()
         else {
-            return self.unsupported_postfix_try(span, "missing checked optional chain semantics");
+            return self.missing_recovery_fact(span, "missing checked optional chain semantics");
         };
         let scrutinee = self.lower_expr(
             receiver,
@@ -433,22 +433,21 @@ impl LowerCtx {
             },
         );
         let Some(payload) = Self::resolved_option_inner(&scrutinee.ty).cloned() else {
-            return self
-                .unsupported_postfix_try(span, "optional chain receiver without Option type");
+            return self.missing_recovery_fact(span, "optional chain receiver without Option type");
         };
         let Some(result_ty) = self.checker_expr_resolved_ty(span, "optional chain") else {
-            return self.unsupported_postfix_try(span, "optional chain result type missing");
+            return self.missing_recovery_fact(span, "optional chain result type missing");
         };
 
         let Some((some_predicate, some_idx)) =
             self.builtin_variant_predicate(BuiltinType::Option, "Some", span)
         else {
-            return self.unsupported_postfix_try(span, "optional chain Some identity");
+            return self.missing_recovery_fact(span, "optional chain Some identity");
         };
         let Some((none_predicate, none_idx)) =
             self.builtin_variant_predicate(BuiltinType::Option, "None", span)
         else {
-            return self.unsupported_postfix_try(span, "optional chain None identity");
+            return self.missing_recovery_fact(span, "optional chain None identity");
         };
         let binding = self.ids.binding();
         let value = self.synthetic_binding_ref("__chain_value", binding, payload.clone(), span);
@@ -479,6 +478,7 @@ impl LowerCtx {
                 }],
                 payload_predicates: Vec::new(),
                 payload_variant_predicates: Vec::new(),
+                pattern_bindings: Vec::new(),
                 guard: None,
                 body: some_body,
                 span: body.1.clone(),
@@ -489,6 +489,7 @@ impl LowerCtx {
                 bindings: Vec::new(),
                 payload_predicates: Vec::new(),
                 payload_variant_predicates: Vec::new(),
+                pattern_bindings: Vec::new(),
                 guard: None,
                 body: none_body,
                 span: span.clone(),
@@ -511,12 +512,11 @@ impl LowerCtx {
         span: &Span,
     ) -> (HirExprKind, ResolvedTy) {
         let Some(recovery) = self.recovery_kinds.get(&self.mk_key(span)).cloned() else {
-            return self.unsupported_postfix_try(span, "missing checked recovery semantics");
+            return self.missing_recovery_fact(span, "missing checked recovery semantics");
         };
         if let hew_types::check::RecoveryKind::Scope { failure_ty } = recovery {
             let Some((name, binding_span)) = error else {
-                return self
-                    .unsupported_postfix_try(span, "scope recovery requires an error binder");
+                return self.missing_recovery_fact(span, "scope recovery requires an error binder");
             };
             return self.lower_scope_recovery(operand, body, *name, binding_span, failure_ty, span);
         }
@@ -524,7 +524,7 @@ impl LowerCtx {
 
         let (builtin, success, failure, payload, error_ty) = if error.is_some() {
             let Some((ok, err)) = Self::resolved_result_parts(&scrutinee.ty) else {
-                return self.unsupported_postfix_try(span, "handle operand without a Result type");
+                return self.missing_recovery_fact(span, "handle operand without a Result type");
             };
             (
                 BuiltinType::Result,
@@ -535,18 +535,17 @@ impl LowerCtx {
             )
         } else {
             let Some(some) = Self::resolved_option_inner(&scrutinee.ty) else {
-                return self
-                    .unsupported_postfix_try(span, "default operand without an Option type");
+                return self.missing_recovery_fact(span, "default operand without an Option type");
             };
             (BuiltinType::Option, "Some", "None", some.clone(), None)
         };
         let Some((success_predicate, _)) = self.builtin_variant_predicate(builtin, success, span)
         else {
-            return self.unsupported_postfix_try(span, "recovery success variant identity");
+            return self.missing_recovery_fact(span, "recovery success variant identity");
         };
         let Some((failure_predicate, _)) = self.builtin_variant_predicate(builtin, failure, span)
         else {
-            return self.unsupported_postfix_try(span, "recovery failure variant identity");
+            return self.missing_recovery_fact(span, "recovery failure variant identity");
         };
         let success_binding = self.ids.binding();
         let success_body =
@@ -580,6 +579,7 @@ impl LowerCtx {
                 }],
                 payload_predicates: Vec::new(),
                 payload_variant_predicates: Vec::new(),
+                pattern_bindings: Vec::new(),
                 guard: None,
                 body: success_body,
                 span: span.clone(),
@@ -590,6 +590,7 @@ impl LowerCtx {
                 bindings: error_bindings,
                 payload_predicates: Vec::new(),
                 payload_variant_predicates: Vec::new(),
+                pattern_bindings: Vec::new(),
                 guard: None,
                 body: failure_body,
                 span: body.1.clone(),
@@ -622,10 +623,10 @@ impl LowerCtx {
             self.failing_generator_item.clone(),
         ) {
             let Some(result_ty) = self.checker_expr_resolved_ty(span, "`?` expression") else {
-                return self.unsupported_postfix_try(span, "`?` checker payload type is missing");
+                return self.missing_recovery_fact(span, "`?` checker payload type is missing");
             };
             if &result_ty != ok_ty {
-                return self.unsupported_postfix_try(
+                return self.missing_recovery_fact(
                     span,
                     "`?` checker payload type disagrees with Result::Ok payload type",
                 );
@@ -645,10 +646,10 @@ impl LowerCtx {
             }
 
             let Some(result_ty) = self.checker_expr_resolved_ty(span, "`?` expression") else {
-                return self.unsupported_postfix_try(span, "`?` checker payload type is missing");
+                return self.missing_recovery_fact(span, "`?` checker payload type is missing");
             };
             if &result_ty != ok_ty {
-                return self.unsupported_postfix_try(
+                return self.missing_recovery_fact(
                     span,
                     format!(
                         "`?` checker payload type `{result_ty}` disagrees with Result::Ok payload type `{ok_ty}`",
@@ -669,10 +670,10 @@ impl LowerCtx {
             }
 
             let Some(result_ty) = self.checker_expr_resolved_ty(span, "`?` expression") else {
-                return self.unsupported_postfix_try(span, "`?` checker payload type is missing");
+                return self.missing_recovery_fact(span, "`?` checker payload type is missing");
             };
             if &result_ty != some_ty {
-                return self.unsupported_postfix_try(
+                return self.missing_recovery_fact(
                     span,
                     format!(
                         "`?` checker payload type `{result_ty}` disagrees with Option::Some payload type `{some_ty}`",
@@ -681,7 +682,7 @@ impl LowerCtx {
             }
             self.lower_option_postfix_try(scrutinee, result_ty, return_ty, span)
         } else {
-            self.unsupported_postfix_try(span, "`?` scrutinee that is not Result or Option")
+            self.missing_recovery_fact(span, "`?` scrutinee that is not Result or Option")
         }
     }
 
@@ -696,12 +697,12 @@ impl LowerCtx {
         let Some((ok_predicate, _)) =
             self.builtin_variant_predicate(BuiltinType::Result, "Ok", span)
         else {
-            return self.unsupported_postfix_try(span, "`?` Result.Ok predicate");
+            return self.missing_recovery_fact(span, "`?` Result.Ok predicate");
         };
         let Some((err_predicate, err_idx)) =
             self.builtin_variant_predicate(BuiltinType::Result, "Err", span)
         else {
-            return self.unsupported_postfix_try(span, "`?` Result.Err predicate");
+            return self.missing_recovery_fact(span, "`?` Result.Err predicate");
         };
 
         let ok_binding = self.ids.binding();
@@ -748,6 +749,7 @@ impl LowerCtx {
                 }],
                 payload_predicates: Vec::new(),
                 payload_variant_predicates: Vec::new(),
+                pattern_bindings: Vec::new(),
                 guard: None,
                 body: ok_body,
                 span: span.clone(),
@@ -764,6 +766,7 @@ impl LowerCtx {
                 }],
                 payload_predicates: Vec::new(),
                 payload_variant_predicates: Vec::new(),
+                pattern_bindings: Vec::new(),
                 guard: None,
                 body: err_body,
                 span: span.clone(),
@@ -789,12 +792,12 @@ impl LowerCtx {
         let Some((some_predicate, _)) =
             self.builtin_variant_predicate(BuiltinType::Option, "Some", span)
         else {
-            return self.unsupported_postfix_try(span, "`?` Option.Some predicate");
+            return self.missing_recovery_fact(span, "`?` Option.Some predicate");
         };
         let Some((none_predicate, none_idx)) =
             self.builtin_variant_predicate(BuiltinType::Option, "None", span)
         else {
-            return self.unsupported_postfix_try(span, "`?` Option.None predicate");
+            return self.missing_recovery_fact(span, "`?` Option.None predicate");
         };
 
         let some_binding = self.ids.binding();
@@ -816,6 +819,7 @@ impl LowerCtx {
                 }],
                 payload_predicates: Vec::new(),
                 payload_variant_predicates: Vec::new(),
+                pattern_bindings: Vec::new(),
                 guard: None,
                 body: some_body,
                 span: span.clone(),
@@ -826,6 +830,7 @@ impl LowerCtx {
                 bindings: Vec::new(),
                 payload_predicates: Vec::new(),
                 payload_variant_predicates: Vec::new(),
+                pattern_bindings: Vec::new(),
                 guard: None,
                 body: none_body,
                 span: span.clone(),

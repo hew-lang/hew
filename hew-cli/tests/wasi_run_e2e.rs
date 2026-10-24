@@ -1285,13 +1285,13 @@ fn stdin_lines_and_read_all_match_on_native_and_wasi() {
         r#"import std.io;
 
 fn main() {
-    let first = io.read_line();
-    let second = io.read_line();
+    let first = io.read_line().expect("standard I/O");
+    let second = io.read_line().expect("standard I/O");
     println(f"first={first ?? "<none>"}");
     println(f"second={second ?? "<none>"}");
-    let rest = io.read_all();
+    let rest = io.read_all().expect("standard I/O");
     println(f"rest=[{rest}]");
-    let after = io.read_line();
+    let after = io.read_line().expect("standard I/O");
     println(f"after={after ?? "<none>"}");
 }
 "#,

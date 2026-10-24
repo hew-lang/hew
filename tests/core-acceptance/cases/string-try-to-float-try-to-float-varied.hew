@@ -2,8 +2,8 @@ import std.string;
 
 fn main() -> i64 {
     var checks: i64 = 0;
-    for i in 0 .. 50 {
-        match string.to_float("1234567") {
+    for i in 0..50 {
+        match "1234567".to_float() {
             .Ok(value) => {
                 if value != 1234567.0 {
                     return 101;
@@ -14,7 +14,7 @@ fn main() -> i64 {
                 return 102;
             }
         }
-        match string.to_float("12.5") {
+        match "12.5".to_float() {
             .Ok(value) => {
                 if value != 12.5 {
                     return 103;
@@ -25,7 +25,7 @@ fn main() -> i64 {
                 return 104;
             }
         }
-        match string.to_float("6e2") {
+        match "6e2".to_float() {
             .Ok(value) => {
                 if value != 600.0 {
                     return 105;
@@ -36,7 +36,7 @@ fn main() -> i64 {
                 return 106;
             }
         }
-        match string.to_float("-2.5E-1") {
+        match "-2.5E-1".to_float() {
             .Ok(value) => {
                 if value != -0.25 {
                     return 107;
@@ -47,7 +47,7 @@ fn main() -> i64 {
                 return 108;
             }
         }
-        match string.to_float("+.75") {
+        match "+.75".to_float() {
             .Ok(value) => {
                 if value != 0.75 {
                     return 109;
@@ -58,7 +58,7 @@ fn main() -> i64 {
                 return 110;
             }
         }
-        match string.to_float("4.") {
+        match "4.".to_float() {
             .Ok(value) => {
                 if value != 4.0 {
                     return 111;
@@ -69,7 +69,7 @@ fn main() -> i64 {
                 return 112;
             }
         }
-        match string.to_float("1.2.3") {
+        match "1.2.3".to_float() {
             .Ok(_) => {
                 return 113;
             }
@@ -77,7 +77,7 @@ fn main() -> i64 {
                 checks = checks + 1;
             }
         }
-        match string.to_float("9e2ms") {
+        match "9e2ms".to_float() {
             .Ok(_) => {
                 return 114;
             }
@@ -85,7 +85,7 @@ fn main() -> i64 {
                 checks = checks + 1;
             }
         }
-        match string.to_float("1e2e3") {
+        match "1e2e3".to_float() {
             .Ok(_) => {
                 return 115;
             }
@@ -93,7 +93,7 @@ fn main() -> i64 {
                 checks = checks + 1;
             }
         }
-        match string.to_float("-") {
+        match "-".to_float() {
             .Ok(_) => {
                 return 116;
             }

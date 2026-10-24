@@ -1,5 +1,7 @@
 //! Builder construction, bindings, control-state, cleanup and loan bookkeeping.
 
+use crate::{SirLoweringError, SirOwnershipError};
+
 use super::{
     lower_initial_value_transfer, projection, require_initial_scalar_read, tasks, BTreeMap,
     BTreeSet, Binding, BindingId, BindingTarget, BlockArg, BlockId, BodySource, Builder,
@@ -20,7 +22,7 @@ impl<'hir, 'service> Builder<'hir, 'service> {
         substitution: TypeSubstitution,
         source: &BodySource,
         service: &'service mut InstanceService<'hir>,
-    ) -> Result<Self, String> {
+    ) -> Result<Self, SirLoweringError> {
         let source_params = source.parameters(&function)?.to_vec();
         let receiver_count = usize::from(matches!(
             source,
@@ -40,7 +42,7 @@ impl<'hir, 'service> Builder<'hir, 'service> {
                 callable.symbol,
                 callable.signature.params.len(),
                 source_params.len()
-            ));
+            ).into());
         }
         service.require_signature_shapes(&callable.signature)?;
         let entry = BlockId(0);
@@ -57,7 +59,7 @@ impl<'hir, 'service> Builder<'hir, 'service> {
                         callable.symbol,
                         abi.ty.user_facing(),
                         ty.user_facing()
-                    ));
+                    ).into());
                 }
                 let value = ValueId(values);
                 values += 1;
@@ -68,9 +70,7 @@ impl<'hir, 'service> Builder<'hir, 'service> {
                 Ok((
                     BlockArg { value, ty, own },
                     Binding {
-                        id: crate::BindingId(u32::try_from(index).map_err(|_| {
-                            "SIR source binding count exceeds u32".to_string()
-                        })?),
+                        id: crate::BindingId(u32::try_from(index).map_err(|_| SirLoweringError::from("SIR source binding count exceeds u32".to_string()))?),
                         name: param.name.clone(),
                         span: param.span.clone(),
                         mutable: param.mutable,
@@ -78,7 +78,7 @@ impl<'hir, 'service> Builder<'hir, 'service> {
                     },
                 ))
             })
-            .collect::<Result<Vec<(BlockArg, Binding)>, String>>()?;
+            .collect::<Result<Vec<(BlockArg, Binding)>, SirLoweringError>>()?;
         let (mut params, source_bindings): (Vec<BlockArg>, Vec<Binding>) =
             params.into_iter().unzip();
         let stream_sink = stream.map(|element| {
@@ -173,7 +173,7 @@ impl<'hir, 'service> Builder<'hir, 'service> {
     pub(super) fn bind_private_value_parameters(
         &mut self,
         parameters: &[HirBinding],
-    ) -> Result<(), String> {
+    ) -> Result<(), SirLoweringError> {
         for parameter in parameters {
             if !parameter.mutable || parameter.is_consume {
                 continue;
@@ -211,7 +211,7 @@ impl<'hir, 'service> Builder<'hir, 'service> {
         Ok(())
     }
 
-    pub(super) fn bind_captures(&mut self, source: &BodySource) -> Result<(), String> {
+    pub(super) fn bind_captures(&mut self, source: &BodySource) -> Result<(), SirLoweringError> {
         let BodySource::Closure(expression) = source else {
             return Ok(());
         };
@@ -232,10 +232,12 @@ impl<'hir, 'service> Builder<'hir, 'service> {
             self.owned_live.insert(ValueId(0), abi.ty.clone());
         }
         for (index, capture) in captures.iter().enumerate() {
-            let field =
-                u32::try_from(index).map_err(|_| "capture count exceeds u32".to_string())?;
-            let place =
-                PlaceId(u32::try_from(self.places.len()).map_err(|_| "place count exceeds u32")?);
+            let field = u32::try_from(index)
+                .map_err(|_| SirLoweringError::from("capture count exceeds u32".to_string()))?;
+            let place = PlaceId(
+                u32::try_from(self.places.len())
+                    .map_err(|_| SirLoweringError::from("place count exceeds u32"))?,
+            );
             self.places.push(crate::PlaceDecl {
                 id: place,
                 ty: self.ty(&capture.ty),
@@ -248,10 +250,9 @@ impl<'hir, 'service> Builder<'hir, 'service> {
             self.bindings
                 .insert(capture.binding, BindingTarget::Place(place));
             self.source_bindings.push(Binding {
-                id: crate::BindingId(
-                    u32::try_from(self.source_bindings.len())
-                        .map_err(|_| "binding count exceeds u32".to_string())?,
-                ),
+                id: crate::BindingId(u32::try_from(self.source_bindings.len()).map_err(|_| {
+                    SirLoweringError::from("binding count exceeds u32".to_string())
+                })?),
                 name: capture.name.clone(),
                 span: expression.span.clone(),
                 mutable: capture.access == hew_types::ClosureCaptureAccess::Var,
@@ -279,17 +280,20 @@ impl<'hir, 'service> Builder<'hir, 'service> {
         clippy::too_many_lines,
         reason = "lower one checked body and publish its ownership and Send obligations"
     )]
-    pub(super) fn lower(mut self, source: BodySource) -> Result<SemFunction, String> {
+    pub(super) fn lower(mut self, source: BodySource) -> Result<SemFunction, SirLoweringError> {
         if self.callable.function != self.function.id
             || self.callable.declaration != self.function.declaration
         {
             return Err(
                 "SIR callable provenance does not match the HIR function's checked identity"
-                    .to_string(),
+                    .to_string()
+                    .into(),
             );
         }
         if self.function.intrinsic_id.is_some() {
-            return Err("floor intrinsic has no checked SIR operation contract".to_string());
+            return Err("floor intrinsic has no checked SIR operation contract"
+                .to_string()
+                .into());
         }
         match (
             &self.callable.instance,
@@ -317,7 +321,8 @@ impl<'hir, 'service> Builder<'hir, 'service> {
                     && key.type_args == self.substitution.args => {}
             _ => return Err(
                 "SIR callable instance does not match its HIR template and semantic substitution"
-                    .to_string(),
+                    .to_string()
+                    .into(),
             ),
         }
         if matches!(source, BodySource::Function)
@@ -328,7 +333,7 @@ impl<'hir, 'service> Builder<'hir, 'service> {
                 self.callable.symbol,
                 self.callable.signature.return_ty.user_facing(),
                 self.ty(&self.function.return_ty).user_facing()
-            ));
+            ).into());
         }
         if let Some(owner) = self.service.checked_body(self.callable.id) {
             for (site, ty) in self.service.callable_facts.send_obligations(&owner) {
@@ -338,7 +343,7 @@ impl<'hir, 'service> Builder<'hir, 'service> {
                     continue;
                 }
                 let ty = ResolvedTy::from_ty(&ty.materialize_literal_defaults())
-                    .map_err(|error| error.to_string())?;
+                    .map_err(|error| SirLoweringError::from(error.to_string()))?;
                 self.service.generator_send_obligations.push((
                     self.callable.id,
                     self.ty(&ty),
@@ -371,7 +376,7 @@ impl<'hir, 'service> Builder<'hir, 'service> {
         let blocks = std::mem::take(&mut self.blocks)
             .into_iter()
             .map(PendingBlock::into_sem_block)
-            .collect::<Result<Vec<_>, _>>()?;
+            .collect::<Result<Vec<_>, SirLoweringError>>()?;
         let mut function = SemFunction {
             id: self.function.id,
             callable: self.callable.id,
@@ -399,7 +404,7 @@ impl<'hir, 'service> Builder<'hir, 'service> {
     pub(super) fn lower_source_body(
         &mut self,
         source: BodySource,
-    ) -> Result<Option<Operand>, String> {
+    ) -> Result<Option<Operand>, SirLoweringError> {
         match source {
             BodySource::Actor {
                 actor,
@@ -426,7 +431,9 @@ impl<'hir, 'service> Builder<'hir, 'service> {
                     unreachable!()
                 };
                 if self.ty(ret_ty) != self.callable.signature.return_ty {
-                    return Err("closure body return differs from its exact signature".to_string());
+                    return Err("closure body return differs from its exact signature"
+                        .to_string()
+                        .into());
                 }
                 if matches!(self.ty(&body.ty), ResolvedTy::Unit | ResolvedTy::Never) {
                     self.lower_discarded_expr(body)?;
@@ -460,9 +467,9 @@ impl<'hir, 'service> Builder<'hir, 'service> {
         &mut self,
         expr: &HirExpr,
         context: &str,
-    ) -> Result<Operand, String> {
+    ) -> Result<Operand, SirLoweringError> {
         require_initial_scalar_read(expr.intent)
-            .map_err(|reason| format!("{context}: {reason}"))?;
+            .map_err(|reason| SirLoweringError::from(format!("{context}: {reason}")))?;
         Ok(Operand {
             value: self.lower_expr(expr)?,
         })
@@ -476,7 +483,7 @@ impl<'hir, 'service> Builder<'hir, 'service> {
         binding: BindingId,
         source: ValueId,
         binding_use: OwnedBindingUse,
-    ) -> Result<Option<ValueId>, String> {
+    ) -> Result<Option<ValueId>, SirLoweringError> {
         self.require_selected_binding(binding, source)?;
         let name = self.source_bindings[self.binding_declarations[&binding]]
             .name
@@ -485,16 +492,16 @@ impl<'hir, 'service> Builder<'hir, 'service> {
             && self.value_own_kind(source) == Some(OwnKind::Guaranteed)
         {
             if self.ended_loans.contains(&source) {
-                return Err(format!(
-                    "E_OWN_CONSUME_BORROWED: `{name}` borrows a collection that was since mutated or drained; the loan ended there and cannot be read again"
-                ));
+                return Err(SirLoweringError::Ownership { kind: SirOwnershipError::ConsumeBorrowed, message: format!(
+                    "`{name}` borrows a collection that was since mutated or drained; the loan ended there and cannot be read again"
+                ) });
             }
             return Ok(Some(source));
         }
         if self.value_own_kind(source) != Some(OwnKind::Owned) {
-            return Err(format!(
-                "E_OWN_CONSUME_BORROWED: `{name}` is borrowed here; a value with no copy operation transfers only from an owning binding"
-            ));
+            return Err(SirLoweringError::Ownership { kind: SirOwnershipError::ConsumeBorrowed, message: format!(
+                "`{name}` is borrowed here; a value with no copy operation transfers only from an owning binding"
+            ) });
         }
         Ok(None)
     }
@@ -505,7 +512,7 @@ impl<'hir, 'service> Builder<'hir, 'service> {
         &mut self,
         expr: &HirExpr,
         ty: &ResolvedTy,
-    ) -> Result<Option<ValueId>, String> {
+    ) -> Result<Option<ValueId>, SirLoweringError> {
         let Some(place) = self.expression_projection(expr)? else {
             return Ok(None);
         };
@@ -532,7 +539,7 @@ impl<'hir, 'service> Builder<'hir, 'service> {
         &mut self,
         expr: &HirExpr,
         binding_use: OwnedBindingUse,
-    ) -> Result<ValueId, String> {
+    ) -> Result<ValueId, SirLoweringError> {
         let mut expr = expr;
         while let HirExprKind::SubsumedValue { source } = &expr.kind {
             if self.ty(&source.ty) != self.ty(&expr.ty) {
@@ -584,7 +591,11 @@ impl<'hir, 'service> Builder<'hir, 'service> {
                                     != hew_types::ClosureCaptureConsumption::Consumed
                                 {
                                     if movable {
-                                        return Err("E_OWN_CONSUME_BORROWED: capture transfer requires consuming access".into());
+                                        return Err(SirLoweringError::Ownership {
+                                            kind: SirOwnershipError::ConsumeBorrowed,
+                                            message: "capture transfer requires consuming access"
+                                                .into(),
+                                        });
                                     }
                                     take = false;
                                 }
@@ -672,12 +683,14 @@ impl<'hir, 'service> Builder<'hir, 'service> {
         binding: BindingId,
         provenance: Provenance,
         take: bool,
-    ) -> Result<ValueId, String> {
-        let (place, field) = self
-            .capture_field(binding)
-            .ok_or_else(|| "capture binding has no exact environment field".to_string())?;
+    ) -> Result<ValueId, SirLoweringError> {
+        let (place, field) = self.capture_field(binding).ok_or_else(|| {
+            SirLoweringError::from("capture binding has no exact environment field".to_string())
+        })?;
         if take && field.consumption != hew_types::ClosureCaptureConsumption::Consumed {
-            return Err("capture extraction lacks checker-selected consuming access".to_string());
+            return Err("capture extraction lacks checker-selected consuming access"
+                .to_string()
+                .into());
         }
         self.emit_typed(
             provenance,
@@ -690,7 +703,10 @@ impl<'hir, 'service> Builder<'hir, 'service> {
         )
     }
 
-    pub(super) fn lower_closure(&mut self, expression: &HirExpr) -> Result<ValueId, String> {
+    pub(super) fn lower_closure(
+        &mut self,
+        expression: &HirExpr,
+    ) -> Result<ValueId, SirLoweringError> {
         let HirExprKind::Closure { captures, .. } = &expression.kind else {
             unreachable!()
         };
@@ -755,10 +771,10 @@ impl<'hir, 'service> Builder<'hir, 'service> {
         value: ValueId,
         target: &ResolvedTy,
         provenance: Provenance,
-    ) -> Result<ValueId, String> {
-        let source = self
-            .value_ty(value)
-            .ok_or_else(|| "coercion has no typed source value".to_string())?;
+    ) -> Result<ValueId, SirLoweringError> {
+        let source = self.value_ty(value).ok_or_else(|| {
+            SirLoweringError::from("coercion has no typed source value".to_string())
+        })?;
         if crate::call_boundary_types_match(&source, target) {
             return Ok(value);
         }
@@ -780,7 +796,9 @@ impl<'hir, 'service> Builder<'hir, 'service> {
             crate::verify_callable_coercion
         };
         verify(&source, target, self.service.checked_facts.rows()).map_err(|reason| {
-            format!("value coercion from {source:?} to {target:?} refused: {reason}")
+            SirLoweringError::from(format!(
+                "value coercion from {source:?} to {target:?} refused: {reason}"
+            ))
         })?;
         self.service.register_callable_coercion(&source, target)?;
         self.owned_live.remove(&value);
@@ -806,7 +824,7 @@ impl<'hir, 'service> Builder<'hir, 'service> {
         &self,
         binding: BindingId,
         value: ValueId,
-    ) -> Result<(), String> {
+    ) -> Result<(), SirLoweringError> {
         let borrowed = self.value_own_kind(value) == Some(OwnKind::Guaranteed);
         if borrowed
             || self.value_own_kind(value) == Some(OwnKind::Owned)
@@ -820,13 +838,16 @@ impl<'hir, 'service> Builder<'hir, 'service> {
                 if !self.argument_receiver_loans.contains(&value) {
                     return Ok(());
                 }
-                return Err(format!(
-                    "E_OWN_CONSUME_BORROWED: `{name}` is borrowed here; a value with no copy operation transfers only from an owning binding"
-                ));
+                return Err(SirLoweringError::Ownership { kind: SirOwnershipError::ConsumeBorrowed, message: format!(
+                    "`{name}` is borrowed here; a value with no copy operation transfers only from an owning binding"
+                ) });
             }
-            return Err(format!(
-                "E_OWN_GUARD_CONSUME: match guard consumes pattern binding `{name}`; a guard can only read its bindings"
-            ));
+            return Err(SirLoweringError::Ownership {
+                kind: SirOwnershipError::GuardConsume,
+                message: format!(
+                "match guard consumes pattern binding `{name}`; a guard can only read its bindings"
+            ),
+            });
         }
         Ok(())
     }
@@ -898,16 +919,17 @@ impl<'hir, 'service> Builder<'hir, 'service> {
         &mut self,
         binding: BindingId,
         value: ValueId,
-    ) -> Result<(), String> {
+    ) -> Result<(), SirLoweringError> {
         let declaration = *self.binding_declarations.get(&binding).ok_or_else(|| {
-            format!("binding `{binding}` has no source declaration in SIR lowering")
+            SirLoweringError::from(format!(
+                "binding `{binding}` has no source declaration in SIR lowering"
+            ))
         })?;
         let source = self.source_bindings[declaration].clone();
         self.source_bindings.push(Binding {
-            id: crate::BindingId(
-                u32::try_from(self.source_bindings.len())
-                    .map_err(|_| "SIR source binding count exceeds u32".to_string())?,
-            ),
+            id: crate::BindingId(u32::try_from(self.source_bindings.len()).map_err(|_| {
+                SirLoweringError::from("SIR source binding count exceeds u32".to_string())
+            })?),
             name: source.name,
             span: source.span,
             mutable: source.mutable,
@@ -920,11 +942,13 @@ impl<'hir, 'service> Builder<'hir, 'service> {
         &mut self,
         binding: &HirBinding,
         value: ValueId,
-    ) -> Result<(), String> {
+    ) -> Result<(), SirLoweringError> {
         if binding.mutable && self.value_own_kind(value) == Some(OwnKind::Guaranteed) {
             // Like an affine borrowed parameter, the incoming loan remains the
             // readable value; only a replacement initializes this local owner.
-            let ty = self.value_ty(value).ok_or("borrowed binding has no type")?;
+            let ty = self
+                .value_ty(value)
+                .ok_or(SirLoweringError::from("borrowed binding has no type"))?;
             let place = self.allocate_local(ty)?;
             self.bind_source_target(binding, BindingTarget::Place(place))?;
             self.bindings
@@ -943,11 +967,12 @@ impl<'hir, 'service> Builder<'hir, 'service> {
         &mut self,
         binding: &HirBinding,
         target: BindingTarget,
-    ) -> Result<(), String> {
+    ) -> Result<(), SirLoweringError> {
         let declaration = self.source_bindings.len();
         self.source_bindings.push(Binding {
             id: crate::BindingId(
-                u32::try_from(declaration).map_err(|_| "binding count exceeds u32")?,
+                u32::try_from(declaration)
+                    .map_err(|_| SirLoweringError::from("binding count exceeds u32"))?,
             ),
             name: binding.name.clone(),
             span: binding.span.clone(),
@@ -991,7 +1016,7 @@ impl<'hir, 'service> Builder<'hir, 'service> {
         .then_some(param.value)
     }
 
-    pub(super) fn emit_destroy(&mut self, value: ValueId) -> Result<(), String> {
+    pub(super) fn emit_destroy(&mut self, value: ValueId) -> Result<(), SirLoweringError> {
         if let Some(ty) = self.value_ty(value) {
             self.note_release_may_fault(&ty);
         }
@@ -1012,7 +1037,7 @@ impl<'hir, 'service> Builder<'hir, 'service> {
         Ok(())
     }
 
-    pub(super) fn destroy_all_live(&mut self) -> Result<(), String> {
+    pub(super) fn destroy_all_live(&mut self) -> Result<(), SirLoweringError> {
         // Keep the lexical stack: another generated continuation can still
         // finish the enclosing call's argument evaluation normally.
         self.end_call_loans(&self.argument_receiver_loans.clone())?;
@@ -1077,7 +1102,7 @@ impl<'hir, 'service> Builder<'hir, 'service> {
     }
 
     /// End the loans opened since `depth`, innermost first.
-    pub(super) fn end_loans_since(&mut self, depth: usize) -> Result<(), String> {
+    pub(super) fn end_loans_since(&mut self, depth: usize) -> Result<(), SirLoweringError> {
         let loans = self.argument_receiver_loans.split_off(depth);
         self.end_call_loans(&loans)
     }
@@ -1087,7 +1112,7 @@ impl<'hir, 'service> Builder<'hir, 'service> {
         root_live: &BTreeMap<ValueId, ResolvedTy>,
         root_loans: usize,
         outer_bindings: &std::collections::HashSet<BindingId>,
-    ) -> Result<(), String> {
+    ) -> Result<(), SirLoweringError> {
         self.end_loans_since(root_loans)?;
         let keep = root_live
             .iter()
@@ -1118,9 +1143,14 @@ impl<'hir, 'service> Builder<'hir, 'service> {
         Ok(())
     }
 
-    pub(super) fn merge_control_states(&mut self, states: Vec<ControlState>) -> Result<(), String> {
+    pub(super) fn merge_control_states(
+        &mut self,
+        states: Vec<ControlState>,
+    ) -> Result<(), SirLoweringError> {
         let Some(first) = states.first() else {
-            return Err("control-flow join has no live predecessor".to_string());
+            return Err("control-flow join has no live predecessor"
+                .to_string()
+                .into());
         };
         if states.len() == 1 {
             self.restore_control_state(first);
@@ -1135,10 +1165,10 @@ impl<'hir, 'service> Builder<'hir, 'service> {
         states: Vec<ControlState>,
         mut block_args: Vec<BlockArg>,
         mut edge_args: Vec<Vec<Operand>>,
-    ) -> Result<(), String> {
-        let first = states
-            .first()
-            .ok_or_else(|| "control-flow join has no predecessor".to_string())?;
+    ) -> Result<(), SirLoweringError> {
+        let first = states.first().ok_or_else(|| {
+            SirLoweringError::from("control-flow join has no predecessor".to_string())
+        })?;
         if edge_args.len() != states.len() {
             return Err("control-flow join has inconsistent edge metadata".into());
         }
@@ -1196,22 +1226,22 @@ impl<'hir, 'service> Builder<'hir, 'service> {
                 .map(|state| match state.bindings[&binding] {
                     BindingTarget::Value(value) => Ok(value),
                     BindingTarget::Place(_) => {
-                        Err("scalar join received a place binding".to_string())
+                        Err("scalar join received a place binding".to_string().into())
                     }
                 })
-                .collect::<Result<Vec<_>, _>>()?;
-            let ty = self
-                .value_ty(values[0])
-                .ok_or_else(|| "scalar join value has no type".to_string())?;
+                .collect::<Result<Vec<_>, SirLoweringError>>()?;
+            let ty = self.value_ty(values[0]).ok_or_else(|| {
+                SirLoweringError::from("scalar join value has no type".to_string())
+            })?;
             if values.iter().any(|value| {
                 self.value_ty(*value).as_ref() != Some(&ty)
                     || self.value_own_kind(*value) == Some(OwnKind::Owned)
             }) {
                 return Err("scalar binding join has inconsistent type or ownership".into());
             }
-            let own = self
-                .value_own_kind(values[0])
-                .ok_or_else(|| "scalar join has no ownership facts".to_string())?;
+            let own = self.value_own_kind(values[0]).ok_or_else(|| {
+                SirLoweringError::from("scalar join has no ownership facts".to_string())
+            })?;
             let value = self.fresh_value();
             block_args.push(BlockArg { value, ty, own });
             for (args, value) in edge_args.iter_mut().zip(values) {

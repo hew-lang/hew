@@ -139,7 +139,9 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             .iter()
             .zip(arguments.carriers())
             .map(|(transfer, carrier)| {
-                self.emit_physical_argument(transfer, *carrier, "extern.argument")
+                let value = self.emit_physical_argument(transfer, *carrier, "extern.argument")?;
+                self.value_emitter()
+                    .c_scalar_argument(value, &self.storage(argument_source(transfer))?.ty)
             })
             .collect::<CodegenResult<Vec<_>>>()?;
         self.emit_c_call(symbol, &values, transfers, result, result_abi)?;
@@ -233,6 +235,28 @@ pub(super) struct ForeignResult<'ctx> {
 }
 
 impl<'ctx> ValueEmitter<'_, 'ctx> {
+    /// C truth carriers differ from Hew's byte-sized Boolean storage.
+    pub(super) fn c_scalar_argument(
+        &self,
+        value: BasicValueEnum<'ctx>,
+        ty: &ResolvedTy,
+    ) -> CodegenResult<BasicValueEnum<'ctx>> {
+        if *ty == ResolvedTy::Bool {
+            let value = value.into_int_value();
+            return self
+                .builder
+                .build_int_compare(
+                    inkwell::IntPredicate::NE,
+                    value,
+                    value.get_type().const_zero(),
+                    "extern.truth",
+                )
+                .map(Into::into)
+                .llvm_ctx("convert Boolean to C truth");
+        }
+        Ok(value)
+    }
+
     /// Declare and call a C symbol under the target-classified result ABI,
     /// writing its result to `result`. This is the one realization of the
     /// extern call ABI, shared by direct calls and offloaded call thunks.
@@ -302,6 +326,20 @@ impl<'ctx> ValueEmitter<'_, 'ctx> {
             }
             (Some(result), PhysicalExternResultAbi::Coerce(_)) => {
                 let value = call_value(&arguments)?;
+                if let (BasicValueEnum::IntValue(value), BasicTypeEnum::IntType(storage)) =
+                    (value, result.storage)
+                {
+                    if value.get_type().get_bit_width() == 1 {
+                        let value = self
+                            .builder
+                            .build_int_z_extend(value, storage, "extern.boolean")
+                            .llvm_ctx("convert C truth to Boolean storage")?;
+                        self.builder
+                            .build_store(result.destination, value)
+                            .llvm_ctx("store extern Boolean")?;
+                        return Ok(());
+                    }
+                }
                 // The ABI carrier may include tail padding absent from storage
                 // (AAPCS64's two integer registers for a 12-byte record), or vice
                 // versa. Allocate enough space and alignment for both views.

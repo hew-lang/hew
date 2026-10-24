@@ -7,7 +7,7 @@
 //!   {"ts":...,"level":"WARN","msg":"high memory","threshold":"90%"}
 //!   {"ts":...,"level":"ERROR","msg":"request failed","status":"500","path":"/api"}
 
-import std.misc.log;
+import std.log;
 
 fn main() {
     log.set_level(log.INFO);

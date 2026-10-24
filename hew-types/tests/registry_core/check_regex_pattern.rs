@@ -60,7 +60,7 @@ fn regex_pattern_clone_preserves_pattern_type_via_registry_fallback() {
         import std.text.regex;
 
         fn main() {
-            let re = regex.new("a+");
+            let re = regex.new("a+").expect("valid pattern");
             let copy: regex.Pattern = re.clone();
             copy.close();
             re.close();
@@ -82,7 +82,7 @@ fn regex_pattern_is_match_rejects_non_string_argument_via_registry_fallback() {
         import std.text.regex;
 
         fn main() {
-            let re = regex.new("a+");
+            let re = regex.new("a+").expect("valid pattern");
             re.is_match(42);
         }
         "#,
@@ -105,7 +105,7 @@ fn regex_pattern_replace_rejects_non_string_replacement_via_registry_fallback() 
         import std.text.regex;
 
         fn main() {
-            let re = regex.new("[0-9]+");
+            let re = regex.new("[0-9]+").expect("valid pattern");
             re.replace("abc123", 99);
         }
         "#,
@@ -128,7 +128,7 @@ fn regex_pattern_unknown_method_reports_undefined_method_via_registry_fallback()
         import std.text.regex;
 
         fn main() {
-            let re = regex.new("a+");
+            let re = regex.new("a+").expect("valid pattern");
             re.nonexistent_method();
         }
         "#,

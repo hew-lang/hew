@@ -28,12 +28,12 @@ impl LowerCtx {
         };
         let Some(mut actor_name) = actor_name else {
             self.diagnostics.push(HirDiagnostic::new(
-                HirDiagnosticKind::NotYetImplemented {
-                    construct: "spawn target expression".to_string(),
-                    owning_pass: "actor-body-lowering".to_string(),
+                HirDiagnosticKind::CheckerBoundaryViolation {
+                    name: "spawn target".to_string(),
+                    reason: "checked spawn has no named actor target".to_string(),
                 },
                 span,
-                "`spawn` currently requires a named actor target",
+                "spawn targets must be selected by the checker before HIR lowering",
             ));
             return (
                 HirExprKind::Unsupported("unsupported spawn target".to_string()),
@@ -185,7 +185,7 @@ impl LowerCtx {
             }
         };
         let Some(facts) = self.closure_capture_facts.get(&self.mk_key(span)).cloned() else {
-            self.unsupported(
+            self.missing_checked_fact(
                 span.clone(),
                 "missing lambda actor capture facts",
                 "hir-lowering",
@@ -198,7 +198,7 @@ impl LowerCtx {
         let mut captures = Vec::with_capacity(facts.len());
         for fact in &facts {
             let Some((binding, ty)) = self.lookup_checked(fact.binding_id) else {
-                self.unsupported(
+                self.missing_checked_fact(
                     span.clone(),
                     "missing lambda actor capture binding",
                     "hir-lowering",

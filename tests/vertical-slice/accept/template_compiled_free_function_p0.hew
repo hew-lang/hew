@@ -7,14 +7,14 @@ fn main() {
         .Ok(template) => template,
         .Err(_) => panic("valid template failed to parse"),
     };
-    println(template.render_template(t, ctx));
+    println(template.render_template(t, ctx).expect("template renders"));
     var ctx_try = template.new_ctx();
     ctx_try.set_bool("ok", true);
     let t_try = match template.parse("{{if .ok}}free-ok{{end}}") {
         .Ok(template) => template,
         .Err(_) => panic("valid template failed to parse"),
     };
-    match template.render_try(t_try, ctx_try) {
+    match template.render_template(t_try, ctx_try) {
         .Ok(s) => println(s),
         .Err(_) => println("free-error"),
     }

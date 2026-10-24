@@ -401,6 +401,12 @@ LSP_PROTOCOL_ARGS ?=
 test-lsp-protocol: ## Test: drive the language server over its stdio protocol
 	cargo test -p hew-cli --test lsp_protocol $(LSP_PROTOCOL_ARGS)
 
+.PHONY: test-debugger
+DEBUGGER_TEST_ARGS ?=
+test-debugger: require-host-cargo-target ## Test: run live debugger fixtures with full runtime symbols
+	cargo build -p hew-runtime -p hew-lib -p hew-cli --profile debugger $(CARGO_TARGET_FLAG)
+	$(TEST_RUN_ENV) cargo nextest run --profile ci --cargo-profile debugger -p hew-cli --test dwarf_debugger_locals_e2e $(DEBUGGER_TEST_ARGS)
+
 # Build the native artifacts required for `hew build` from a source checkout:
 # the driver plus hew-lib's staticlib (`target/debug/libhew.a` on Unix,
 # `target/debug/hew.lib` on Windows). Keep this target cross-platform so fresh
@@ -1335,8 +1341,9 @@ stdlib-user-build-clean: hew-native
 # per-source deadline.
 
 # Compile and run documentation examples in docs/ and std/.
+DOC_TEST_PATHS ?= docs std
 test-doc-examples: hew-native
-	"$(DEBUG_HEW)" test --doc docs std --filter '::doc('
+	"$(DEBUG_HEW)" test --doc $(DOC_TEST_PATHS) --filter '::doc('
 
 # Nightly rust-runtime ASan command (Linux/nightly toolchain required).
 #

@@ -1,5 +1,7 @@
 //! Call, dyn-dispatch and runtime-operation lowering.
 
+use crate::{SirLoweringError, SirOwnershipError};
+
 use super::{
     collection_type_arguments, dyn_boundary_passing, evaluation_sequence, is_initial_value_type,
     lower_initial_value_transfer, positional_call_target, require_initial_scalar_read,
@@ -32,7 +34,7 @@ impl Builder<'_, '_> {
         &mut self,
         expr: &HirExpr,
         loans: &mut Vec<ValueId>,
-    ) -> Result<Operand, String> {
+    ) -> Result<Operand, SirLoweringError> {
         self.lower_place_read(expr, loans, false)
     }
 
@@ -45,7 +47,7 @@ impl Builder<'_, '_> {
         expr: &HirExpr,
         loans: &mut Vec<ValueId>,
         exclusive: bool,
-    ) -> Result<Operand, String> {
+    ) -> Result<Operand, SirLoweringError> {
         // Declared child access computes a stable role; it does not borrow a
         // field from the supervisor handle's physical representation.
         if self
@@ -93,7 +95,10 @@ impl Builder<'_, '_> {
             }
             if let BindingTarget::Value(value) = self.binding_target(*binding)? {
                 if self.ended_loans.contains(&value) {
-                    return Err("E_OWN_CONSUME_BORROWED: call argument names an ended loan".into());
+                    return Err(SirLoweringError::Ownership {
+                        kind: SirOwnershipError::ConsumeBorrowed,
+                        message: "call argument names an ended loan".into(),
+                    });
                 }
                 return Ok(Operand { value });
             }
@@ -167,7 +172,10 @@ impl Builder<'_, '_> {
     /// End the loans a `let` binding holds on `root` before the collection
     /// they borrow is taken. The take is past the binding's last use, so the
     /// loan ends here; a read of the binding afterwards is refused by name.
-    pub(super) fn end_binding_loans_on(&mut self, root: crate::OwnerRoot) -> Result<(), String> {
+    pub(super) fn end_binding_loans_on(
+        &mut self,
+        root: crate::OwnerRoot,
+    ) -> Result<(), SirLoweringError> {
         let mut ending = Vec::new();
         for group in &self.binding_loans {
             if group.root != root {
@@ -186,12 +194,13 @@ impl Builder<'_, '_> {
             // Ending it inside a branch or a loop would leave it live on the
             // sibling path, so a take there meets the loan instead.
             if group.loop_depth != self.loops.len() || group.branch_depth != self.branch_depth {
-                return Err(
-                    "E_OWN_CONSUME_BORROWED: this collection is borrowed by a live element \
+                return Err(SirLoweringError::Ownership {
+                    kind: SirOwnershipError::ConsumeBorrowed,
+                    message: "this collection is borrowed by a live element \
                      loan; the loop or read holding it must end before the collection is \
                      mutated or drained"
                         .to_string(),
-                );
+                });
             }
             ending.extend(live);
         }
@@ -203,7 +212,7 @@ impl Builder<'_, '_> {
         Ok(())
     }
 
-    pub(super) fn end_call_loans(&mut self, loans: &[ValueId]) -> Result<(), String> {
+    pub(super) fn end_call_loans(&mut self, loans: &[ValueId]) -> Result<(), SirLoweringError> {
         for &value in loans.iter().rev() {
             // A binding's loan may have ended at its last use already.
             if self.ended_loans.contains(&value) {
@@ -232,7 +241,7 @@ impl Builder<'_, '_> {
         loans: &mut Vec<ValueId>,
         later_arguments_are_stable: bool,
         can_borrow_projection: bool,
-    ) -> Result<Operand, String> {
+    ) -> Result<Operand, SirLoweringError> {
         let scope_loan_floor = self.scope_loans.len();
         let call_loan_floor = loans.len();
         let ty = self.ty(&expr.ty);
@@ -280,7 +289,7 @@ impl Builder<'_, '_> {
         expr: &HirExpr,
         args: [&HirExpr; 2],
         capability: hew_types::ValueCapability,
-    ) -> Result<ValueId, String> {
+    ) -> Result<ValueId, SirLoweringError> {
         let ty = self.ty(&args[0].ty);
         if self.ty(&args[1].ty) != ty || self.ty(&expr.ty) != ResolvedTy::Bool {
             return Err("selected comparison requires matching operands and a bool result".into());
@@ -356,7 +365,10 @@ impl Builder<'_, '_> {
     /// A projected consume needs a verified transfer of the selected field.
     /// Check before evaluating the receiver: ordinary projection lowering is a
     /// copy and must never manufacture an owner for a consuming field call.
-    pub(super) fn reject_projected_callable_consume(&self, callee: &HirExpr) -> Result<(), String> {
+    pub(super) fn reject_projected_callable_consume(
+        &self,
+        callee: &HirExpr,
+    ) -> Result<(), SirLoweringError> {
         let mut root = callee;
         let mut projected = false;
         loop {
@@ -386,10 +398,10 @@ impl Builder<'_, '_> {
                 .get(binding)
                 .is_some_and(|target| matches!(target, BindingTarget::Value(value) if self.value_own_kind(*value) == Some(OwnKind::Guaranteed)))
             {
-                return Err("E_OWN_CONSUME_BORROWED: a borrowed aggregate field cannot be consumed; acquire an owned aggregate and destructure it first".into());
+                return Err(SirLoweringError::Ownership { kind: SirOwnershipError::ConsumeBorrowed, message: "a borrowed aggregate field cannot be consumed; acquire an owned aggregate and destructure it first".into() });
             }
         }
-        Err("E_OWN_PARTIAL_CONSUME: a live aggregate field cannot be consumed; destructure the aggregate into owning bindings before calling the once field".into())
+        Err(SirLoweringError::Ownership { kind: SirOwnershipError::PartialConsume, message: "a live aggregate field cannot be consumed; destructure the aggregate into owning bindings before calling the once field".into() })
     }
 
     /// A state field the body cannot publish back leaves as a copy, so the seat
@@ -399,7 +411,7 @@ impl Builder<'_, '_> {
         &mut self,
         place: PlaceId,
         expression: &HirExpr,
-    ) -> Result<bool, String> {
+    ) -> Result<bool, SirLoweringError> {
         if !matches!(
             self.places[place.0 as usize].origin,
             crate::PlaceOrigin::ActorState { .. }
@@ -454,7 +466,10 @@ impl Builder<'_, '_> {
     }
 
     /// Whether the binding this expression is rooted at was declared mutable.
-    pub(super) fn binding_root_is_mutable(&mut self, expression: &HirExpr) -> Result<bool, String> {
+    pub(super) fn binding_root_is_mutable(
+        &mut self,
+        expression: &HirExpr,
+    ) -> Result<bool, SirLoweringError> {
         let Some(place) = self.resolve_binding_place(expression)? else {
             return Ok(false);
         };
@@ -469,7 +484,7 @@ impl Builder<'_, '_> {
     pub(super) fn lower_consuming_projection(
         &mut self,
         expression: &HirExpr,
-    ) -> Result<Option<ValueId>, String> {
+    ) -> Result<Option<ValueId>, SirLoweringError> {
         if let Some(place) = self.expression_projection(expression)? {
             let kind = if self.state_field_leaves_as_copy(place, expression)? {
                 SemOpKind::LoadCopy { place }
@@ -516,14 +531,17 @@ impl Builder<'_, '_> {
         }
         let mut value = self.lower_expr_with_binding_use(root, OwnedBindingUse::Move)?;
         if self.value_own_kind(value) != Some(OwnKind::Owned) {
-            return Err(
-                "E_OWN_CONSUME_BORROWED: projected consumption requires an owned aggregate".into(),
-            );
+            return Err(SirLoweringError::Ownership {
+                kind: SirOwnershipError::ConsumeBorrowed,
+                message: "projected consumption requires an owned aggregate".into(),
+            });
         }
         for (ty, shape, field) in projections.into_iter().rev() {
             let fields =
                 self.emit_destructure_value(value, &ty, shape, Provenance::Site(expression.site))?;
-            value = fields[usize::try_from(field).map_err(|_| "aggregate field exceeds usize")?].id;
+            value = fields[usize::try_from(field)
+                .map_err(|_| SirLoweringError::from("aggregate field exceeds usize"))?]
+            .id;
         }
         Ok(Some(value))
     }
@@ -531,7 +549,10 @@ impl Builder<'_, '_> {
     /// Acquire the callee's owner before evaluating later arguments. Ordinary
     /// values copy when needed; affine values transfer their existing owner.
     /// The acquired value stays live for argument-failure cleanup until entry.
-    pub(super) fn lower_consuming_value(&mut self, argument: &HirExpr) -> Result<ValueId, String> {
+    pub(super) fn lower_consuming_value(
+        &mut self,
+        argument: &HirExpr,
+    ) -> Result<ValueId, SirLoweringError> {
         let value = if argument.intent == IntentKind::Discharge {
             // Closing a resource releases its existing obligation rather than
             // acquiring an ordinary value copy for a source call.
@@ -549,7 +570,7 @@ impl Builder<'_, '_> {
             )?
         };
         if self.value_own_kind(value) != Some(OwnKind::Owned) {
-            return Err("E_OWN_CONSUME_BORROWED: a consuming argument requires an owned value; declare the forwarding parameter consume".into());
+            return Err(SirLoweringError::Ownership { kind: SirOwnershipError::ConsumeBorrowed, message: "a consuming argument requires an owned value; declare the forwarding parameter consume".into() });
         }
         self.owned_live.remove(&value);
         self.emit(
@@ -560,7 +581,10 @@ impl Builder<'_, '_> {
         )
     }
 
-    pub(super) fn require_consuming_capture(&self, expression: &HirExpr) -> Result<(), String> {
+    pub(super) fn require_consuming_capture(
+        &self,
+        expression: &HirExpr,
+    ) -> Result<(), SirLoweringError> {
         let mut source = expression;
         while let HirExprKind::SubsumedValue { source: inner } = &source.kind {
             source = inner;
@@ -572,7 +596,12 @@ impl Builder<'_, '_> {
         {
             if let Some((_, field)) = self.capture_field(*binding) {
                 if field.consumption != hew_types::ClosureCaptureConsumption::Consumed {
-                    return Err("E_OWN_CONSUME_BORROWED: consuming a captured argument requires an owning capture transfer".into());
+                    return Err(SirLoweringError::Ownership {
+                        kind: SirOwnershipError::ConsumeBorrowed,
+                        message:
+                            "consuming a captured argument requires an owning capture transfer"
+                                .into(),
+                    });
                 }
             }
         }
@@ -585,7 +614,7 @@ impl Builder<'_, '_> {
         expr: &HirExpr,
         value: &HirExpr,
         concrete_type: &ResolvedTy,
-    ) -> Result<ValueId, String> {
+    ) -> Result<ValueId, SirLoweringError> {
         let dyn_ty = self.ty(&expr.ty);
         let concrete_ty = self.ty(concrete_type);
         let vtable = self.service.request_vtable(
@@ -600,7 +629,8 @@ impl Builder<'_, '_> {
                 "erasure input `{}` differs from the checker's concrete type `{}`",
                 self.ty(&value.ty).user_facing(),
                 concrete_ty.user_facing()
-            ));
+            )
+            .into());
         }
         // A bit-copy concrete value carries no obligation to transfer; the
         // box holds its bits and the table's drop slot has nothing to run.
@@ -630,7 +660,7 @@ impl Builder<'_, '_> {
         &mut self,
         args: &[HirExpr],
         return_ty: &ResolvedTy,
-    ) -> Result<SemSignature, String> {
+    ) -> Result<SemSignature, SirLoweringError> {
         let mut params = Vec::with_capacity(args.len());
         for arg in args {
             let ty = self.ty(&arg.ty);
@@ -658,7 +688,7 @@ impl Builder<'_, '_> {
         args: &[HirExpr],
         evaluation_order: &[usize],
         value_required: bool,
-    ) -> Result<Option<ValueId>, String> {
+    ) -> Result<Option<ValueId>, SirLoweringError> {
         self.lower_dyn_call_in_scope(
             expr,
             receiver,
@@ -685,9 +715,11 @@ impl Builder<'_, '_> {
         value_required: bool,
         scope: Option<crate::TaskScopeId>,
         retained_loans: &mut Vec<ValueId>,
-    ) -> Result<Option<ValueId>, String> {
+    ) -> Result<Option<ValueId>, SirLoweringError> {
         let hew_types::CallTarget::DynamicVtable { method, slot, .. } = target else {
-            return Err("dynamic dispatch carries no checker vtable target".to_string());
+            return Err("dynamic dispatch carries no checker vtable target"
+                .to_string()
+                .into());
         };
         let live_before_arguments: std::collections::HashSet<_> =
             self.owned_live.keys().copied().collect();
@@ -703,10 +735,10 @@ impl Builder<'_, '_> {
             .get(&receiver.ty)
             .and_then(|layout| layout.slots.get(*slot as usize))
             .ok_or_else(|| {
-                format!(
+                SirLoweringError::from(format!(
                     "the checker published no slot {slot} for `{}`",
                     receiver.ty.user_facing()
-                )
+                ))
             })?;
         let decision = match layout_slot.receiver {
             hew_types::DynReceiver::Consume => crate::BoundaryDecision::Move,
@@ -763,7 +795,7 @@ impl Builder<'_, '_> {
         &mut self,
         expr: &HirExpr,
         value_required: bool,
-    ) -> Result<Option<ValueId>, String> {
+    ) -> Result<Option<ValueId>, SirLoweringError> {
         self.lower_direct_call_in_scope(expr, value_required, None, &mut Vec::new())
     }
 
@@ -772,7 +804,7 @@ impl Builder<'_, '_> {
         expr: &HirExpr,
         scope: crate::TaskScopeId,
         loans: &mut Vec<ValueId>,
-    ) -> Result<ValueId, String> {
+    ) -> Result<ValueId, SirLoweringError> {
         let result = if let HirExprKind::CallDynMethod {
             receiver,
             target,
@@ -798,7 +830,7 @@ impl Builder<'_, '_> {
         } else {
             self.lower_direct_call_in_scope(expr, true, Some(scope), loans)?
         };
-        result.ok_or_else(|| "prepared select call has no task handle".into())
+        result.ok_or_else(|| SirLoweringError::from("prepared select call has no task handle"))
     }
 
     #[allow(
@@ -811,7 +843,7 @@ impl Builder<'_, '_> {
         value_required: bool,
         scope: Option<crate::TaskScopeId>,
         retained_loans: &mut Vec<ValueId>,
-    ) -> Result<Option<ValueId>, String> {
+    ) -> Result<Option<ValueId>, SirLoweringError> {
         let HirExprKind::Call {
             target,
             callee,
@@ -819,7 +851,7 @@ impl Builder<'_, '_> {
             evaluation_order,
         } = &expr.kind
         else {
-            return Err("user-call lowering received a non-call".to_string());
+            return Err("user-call lowering received a non-call".to_string().into());
         };
         let live_before_arguments: std::collections::HashSet<_> =
             self.owned_live.keys().copied().collect();
@@ -872,14 +904,19 @@ impl Builder<'_, '_> {
                             .call_site_type_args
                             .get(&expr.site)
                             .ok_or_else(|| {
-                                "generic callable invocation has no checked type arguments"
-                                    .to_string()
+                                SirLoweringError::from(
+                                    "generic callable invocation has no checked type arguments"
+                                        .to_string(),
+                                )
                             })?
                             .iter()
                             .map(|argument| self.ty(argument))
                             .collect::<Vec<_>>();
                         let invocation = ty.instantiate_callable(&arguments).ok_or_else(|| {
-                            "generic callable arguments disagree with its quantifiers".to_string()
+                            SirLoweringError::from(
+                                "generic callable arguments disagree with its quantifiers"
+                                    .to_string(),
+                            )
                         })?;
                         let specialization = self
                             .service
@@ -918,7 +955,9 @@ impl Builder<'_, '_> {
             }
             _ => {
                 return Err(
-                    "user-call lowering requires a resolved direct or indirect target".to_string(),
+                    "user-call lowering requires a resolved direct or indirect target"
+                        .to_string()
+                        .into(),
                 )
             }
         };
@@ -937,7 +976,7 @@ impl Builder<'_, '_> {
             return Err(format!(
                 "user call to `{name}` differs from its semantic signature: {} arguments, expected {}; result {result_ty:?}, expected {:?}",
                 args.len(), signature.params.len(), signature.return_ty
-            ));
+            ).into());
         }
         // The two spellings of a channel half denote one value; the call site's
         // is the one that carries the message type, so the produced value
@@ -1014,7 +1053,9 @@ impl Builder<'_, '_> {
         )?;
         if let Some(place) = receiver_writeback {
             let value = result.ok_or_else(|| {
-                "receiver-preserving consume did not return its receiver owner".to_string()
+                SirLoweringError::from({
+                    "receiver-preserving consume did not return its receiver owner".to_string()
+                })
             })?;
             self.emit_place_operation(
                 SemOpKind::StoreInit {
@@ -1037,7 +1078,7 @@ impl Builder<'_, '_> {
         signature: SemSignature,
         lowered_args: Vec<crate::BoundaryOperand>,
         loans: &mut Vec<ValueId>,
-    ) -> Result<ValueId, String> {
+    ) -> Result<ValueId, SirLoweringError> {
         let callee = match callee {
             PreparedCallee::Direct { target, site } => {
                 if let Some(site) = site {
@@ -1069,7 +1110,7 @@ impl Builder<'_, '_> {
         signature: SemSignature,
         mut lowered_args: Vec<crate::BoundaryOperand>,
         loans: &mut Vec<ValueId>,
-    ) -> Result<ValueId, String> {
+    ) -> Result<ValueId, SirLoweringError> {
         let task_ty = ResolvedTy::Task(Box::new(signature.return_ty.clone()));
         self.service.require_type_facts(&task_ty)?;
         for argument in callee.receiver_mut().into_iter().chain(&mut lowered_args) {
@@ -1079,7 +1120,9 @@ impl Builder<'_, '_> {
             ) {
                 let ty = self
                     .value_ty(argument.operand.value)
-                    .ok_or("prepared input lacks its checked type")?;
+                    .ok_or(SirLoweringError::from(
+                        "prepared input lacks its checked type",
+                    ))?;
                 let loan = self.emit_typed(
                     Provenance::Site(expr.site),
                     &ty,
@@ -1123,7 +1166,7 @@ impl Builder<'_, '_> {
         &mut self,
         expr: &HirExpr,
         value_required: bool,
-    ) -> Result<Option<ValueId>, String> {
+    ) -> Result<Option<ValueId>, SirLoweringError> {
         self.lower_static_trait_call_in_scope(expr, value_required, None, &mut Vec::new())
     }
 
@@ -1133,7 +1176,7 @@ impl Builder<'_, '_> {
         value_required: bool,
         scope: Option<crate::TaskScopeId>,
         retained_loans: &mut Vec<ValueId>,
-    ) -> Result<Option<ValueId>, String> {
+    ) -> Result<Option<ValueId>, SirLoweringError> {
         let HirExprKind::CallTraitMethodStatic {
             receiver,
             trait_args,
@@ -1143,14 +1186,18 @@ impl Builder<'_, '_> {
             ..
         } = &expr.kind
         else {
-            return Err("static trait call lowering received a non-call".to_string());
+            return Err("static trait call lowering received a non-call"
+                .to_string()
+                .into());
         };
         let CallTarget::StaticTraitMethod {
             declaring_trait,
             method,
         } = target
         else {
-            return Err("static trait call requires a checker-selected trait method".to_string());
+            return Err("static trait call requires a checker-selected trait method"
+                .to_string()
+                .into());
         };
         let self_ty = self.ty(receiver.self_ty());
         let trait_args: Vec<ResolvedTy> = trait_args.iter().map(|arg| self.ty(arg)).collect();
@@ -1174,7 +1221,7 @@ impl Builder<'_, '_> {
                 arguments.len(),
                 signature.params.len(),
                 signature.return_ty
-            ));
+            ).into());
         }
         let live_before_arguments: std::collections::HashSet<_> =
             self.owned_live.keys().copied().collect();
@@ -1230,7 +1277,7 @@ impl Builder<'_, '_> {
         evaluation_order: &[usize],
         params: &[SemAbiParam],
         loans: &mut Vec<ValueId>,
-    ) -> Result<Vec<crate::BoundaryOperand>, String> {
+    ) -> Result<Vec<crate::BoundaryOperand>, SirLoweringError> {
         if args.len() != params.len() {
             return Err("call arguments differ from the callee's parameters".into());
         }
@@ -1304,9 +1351,9 @@ impl Builder<'_, '_> {
                     SemParamPassing::Borrow => crate::BoundaryDecision::Borrow,
                     SemParamPassing::Consume => crate::BoundaryDecision::Move,
                     SemParamPassing::BorrowMut => {
-                        return Err(
-                            "direct parameter transfer requires its source contract".to_string()
-                        )
+                        return Err("direct parameter transfer requires its source contract"
+                            .to_string()
+                            .into())
                     }
                 },
             });
@@ -1335,7 +1382,7 @@ impl Builder<'_, '_> {
         live_before_arguments: &std::collections::HashSet<ValueId>,
         value_required: bool,
         handback: Option<FaultHandback>,
-    ) -> Result<Option<ValueId>, String> {
+    ) -> Result<Option<ValueId>, SirLoweringError> {
         for argument in &lowered_args {
             if argument.decision == crate::BoundaryDecision::Move {
                 self.owned_live.remove(&argument.operand.value);
@@ -1359,7 +1406,9 @@ impl Builder<'_, '_> {
             (CallResult::Never, None, None)
         } else if return_ty == ResolvedTy::Unit {
             if value_required {
-                return Err("unit-valued call cannot produce an SSA value".to_string());
+                return Err("unit-valued call cannot produce an SSA value"
+                    .to_string()
+                    .into());
             }
             (
                 CallResult::Unit,
@@ -1486,15 +1535,15 @@ impl Builder<'_, '_> {
         lowered_args: &mut [crate::BoundaryOperand],
         loans: &mut Vec<ValueId>,
         provenance: &Provenance,
-    ) -> Result<(), String> {
+    ) -> Result<(), SirLoweringError> {
         for argument in lowered_args {
             let value = argument.operand.value;
             if self.value_own_kind(value) == Some(OwnKind::Guaranteed)
                 && self.value_borrow_root(value)? == root
             {
-                let ty = self
-                    .value_ty(value)
-                    .ok_or_else(|| "borrowed argument has no type".to_string())?;
+                let ty = self.value_ty(value).ok_or_else(|| {
+                    SirLoweringError::from("borrowed argument has no type".to_string())
+                })?;
                 argument.operand.value = self.emit_typed(
                     provenance.clone(),
                     &ty,
@@ -1512,7 +1561,7 @@ impl Builder<'_, '_> {
                 Ok(_) => None,
                 Err(error) => Some(Err(error)),
             })
-            .collect::<Result<Vec<_>, _>>()?;
+            .collect::<Result<Vec<_>, SirLoweringError>>()?;
         self.end_call_loans(&related)?;
         loans.retain(|loan| !related.contains(loan));
         Ok(())
@@ -1522,7 +1571,7 @@ impl Builder<'_, '_> {
         &mut self,
         expr: &HirExpr,
         value_required: bool,
-    ) -> Result<Option<ValueId>, String> {
+    ) -> Result<Option<ValueId>, SirLoweringError> {
         if matches!(expr.kind, HirExprKind::CallTraitMethodStatic { .. }) {
             return self.lower_static_trait_call(expr, value_required);
         }
@@ -1534,13 +1583,13 @@ impl Builder<'_, '_> {
         } = &expr.kind
         else {
             return Err(
-                "internal SIR lowering error: call lowering received a non-call".to_string(),
+                "internal SIR lowering error: call lowering received a non-call"
+                    .to_string()
+                    .into(),
             );
         };
         if positional_call_target(target) && !evaluation_order.is_empty() {
-            return Err(format!(
-                "call target {target:?} takes positional arguments only"
-            ));
+            return Err(format!("call target {target:?} takes positional arguments only").into());
         }
         match target {
             CallTarget::DeclaredRuntime {
@@ -1589,11 +1638,9 @@ impl Builder<'_, '_> {
             }
             CallTarget::Builtin { endpoint } => {
                 let family = hew_types::RuntimeCallFamily::from_catalog_endpoint(endpoint)
-                    .ok_or_else(|| {
-                        format!(
+                    .ok_or_else(|| SirLoweringError::from(format!(
                             "call target {target:?} has no verified ownership-SIR operation contract"
-                        )
-                    })?;
+                        )))?;
                 self.lower_runtime_operation_with(
                     expr,
                     family,
@@ -1604,7 +1651,8 @@ impl Builder<'_, '_> {
             }
             _ => Err(format!(
                 "call target {target:?} has no verified ownership-SIR operation contract"
-            )),
+            )
+            .into()),
         }
     }
 
@@ -1615,7 +1663,7 @@ impl Builder<'_, '_> {
         endpoints: &hew_types::check::dispatch::ResolvedActorEndpoints,
         args: &[HirExpr],
         value_required: bool,
-    ) -> Result<Option<ValueId>, String> {
+    ) -> Result<Option<ValueId>, SirLoweringError> {
         let [receiver, handler] = args else {
             return Err("actor attachment requires its receiver and handler".into());
         };
@@ -1664,7 +1712,7 @@ impl Builder<'_, '_> {
         family: hew_types::RuntimeCallFamily,
         args: &[&HirExpr],
         value_required: bool,
-    ) -> Result<Option<ValueId>, String> {
+    ) -> Result<Option<ValueId>, SirLoweringError> {
         self.lower_runtime_operation_with(expr, family, (args, &[]), value_required, &[])
     }
 
@@ -1686,7 +1734,7 @@ impl Builder<'_, '_> {
         (args, evaluation_order): (&[&HirExpr], &[usize]),
         value_required: bool,
         prelowered: &[(usize, ValueId)],
-    ) -> Result<Option<ValueId>, String> {
+    ) -> Result<Option<ValueId>, SirLoweringError> {
         use hew_types::{RuntimeArgumentEffect, RuntimeResultEffect};
 
         let order = evaluation_sequence(evaluation_order, args.len());
@@ -1791,7 +1839,9 @@ impl Builder<'_, '_> {
             return self.lower_stream_next(expr, stream, park).map(Some);
         }
         let contract = family.semantic_contract().ok_or_else(|| {
-            format!("runtime family `{family:?}` has no ownership-SIR semantic contract")
+            SirLoweringError::from(format!(
+                "runtime family `{family:?}` has no ownership-SIR semantic contract"
+            ))
         })?;
         let argument_count = args.len().max(
             prelowered
@@ -1803,18 +1853,25 @@ impl Builder<'_, '_> {
         let source_types = (0..argument_count)
             .map(|index| {
                 if let Some((_, value)) = prelowered.iter().find(|(at, _)| *at == index) {
-                    self.value_ty(*value)
-                        .ok_or_else(|| "runtime operand lacks its semantic value type".to_string())
+                    self.value_ty(*value).ok_or_else(|| {
+                        SirLoweringError::from(
+                            "runtime operand lacks its semantic value type".to_string(),
+                        )
+                    })
                 } else {
                     args.get(index).map(|arg| self.ty(&arg.ty)).ok_or_else(|| {
-                        "runtime operand position has no source or semantic value".to_string()
+                        SirLoweringError::from(
+                            "runtime operand position has no source or semantic value".to_string(),
+                        )
                     })
                 }
             })
-            .collect::<Result<Vec<_>, _>>()?;
+            .collect::<Result<Vec<_>, SirLoweringError>>()?;
         let instantiated = contract
             .resolve_types(&self.service.module.defs, &source_types, &self.ty(&expr.ty))
-            .map_err(|error| format!("runtime operation {family:?}: {error}"))?;
+            .map_err(|error| {
+                SirLoweringError::from(format!("runtime operation {family:?}: {error}"))
+            })?;
         let parameter_types = &instantiated.arguments;
         // Runtime mutations release receiver-typed contents inside the call.
         // Dispatch their outcome after republishing the receiver and acquiring
@@ -1840,7 +1897,8 @@ impl Builder<'_, '_> {
                 if contract.arguments[index].effect != RuntimeArgumentEffect::Value {
                     return Err(format!(
                         "runtime argument {index} cannot coerce a non-value operand"
-                    ));
+                    )
+                    .into());
                 }
                 let verify = if crate::generator_parts(source).is_some() {
                     crate::verify_generator_coercion
@@ -1857,15 +1915,22 @@ impl Builder<'_, '_> {
         ) {
             let result_ty = self.ty(&expr.ty);
             let collection_ty = parameter_types.first().unwrap_or(&result_ty);
-            let (_, arguments) = collection_type_arguments(collection_ty)
-                .ok_or_else(|| "collection operation has no canonical receiver type".to_string())?;
+            let (_, arguments) = collection_type_arguments(collection_ty).ok_or_else(|| {
+                SirLoweringError::from(
+                    "collection operation has no canonical receiver type".to_string(),
+                )
+            })?;
             self.service.require_key_capabilities(&arguments[0])?;
         }
         for capability in family.value_callback_capabilities() {
             let (_, [element, ..]) = parameter_types
                 .first()
                 .and_then(collection_type_arguments)
-                .ok_or_else(|| "collection callback has no canonical receiver type".to_string())?
+                .ok_or_else(|| {
+                    SirLoweringError::from(
+                        "collection callback has no canonical receiver type".to_string(),
+                    )
+                })?
             else {
                 return Err("collection callback has no element type".into());
             };
@@ -2075,9 +2140,9 @@ impl Builder<'_, '_> {
             let whole_owner = self.whole_owner_root(place)?;
             let projected = match whole_owner {
                 Some(root) => root,
-                None => self
-                    .owned_projection(place)?
-                    .ok_or("runtime receiver has no owning seat")?,
+                None => self.owned_projection(place)?.ok_or(SirLoweringError::from(
+                    "runtime receiver has no owning seat",
+                ))?,
             };
             // A transform takes its receiver, which a live element loan of the
             // same owner forbids. Refusing here names the source construct
@@ -2089,12 +2154,13 @@ impl Builder<'_, '_> {
                     continue;
                 }
                 if self.value_borrow_root(loan)? == root {
-                    return Err(
-                        "E_OWN_CONSUME_BORROWED: this collection is borrowed by a live element \
+                    return Err(SirLoweringError::Ownership {
+                        kind: SirOwnershipError::ConsumeBorrowed,
+                        message: "this collection is borrowed by a live element \
                          loan; the loop or read holding it must end before the collection is \
                          mutated or drained"
                             .to_string(),
-                    );
+                    });
                 }
             }
             let receiver_ty = self.ty(&args[0].ty);
@@ -2103,7 +2169,8 @@ impl Builder<'_, '_> {
             if !contract.failures.is_empty() && !contract.preserves_inputs_on_failure() {
                 return Err(format!(
                     "runtime transform `{family:?}` must keep its receiver on its failure edge"
-                ));
+                )
+                .into());
             }
             // Beneath a whole owner, a single transform opens the owner and
             // mutates its field in place. An indexed path runs several steps
@@ -2213,7 +2280,8 @@ impl Builder<'_, '_> {
                     let value = argument.operand.value;
                     live_on_failure.insert(
                         value,
-                        self.value_ty(value).ok_or("runtime input has no type")?,
+                        self.value_ty(value)
+                            .ok_or(SirLoweringError::from("runtime input has no type"))?,
                     );
                 }
             }
@@ -2231,7 +2299,7 @@ impl Builder<'_, '_> {
                 return Err(format!(
                     "runtime family `{family:?}` result contract disagrees with expression type `{}`",
                     self.ty(&expr.ty).user_facing()
-                ));
+                ).into());
             }
         }
 
@@ -2239,7 +2307,8 @@ impl Builder<'_, '_> {
             if !contract.failures.is_empty() {
                 return Err(format!(
                     "runtime family `{family:?}` never returns but declares failure edges"
-                ));
+                )
+                .into());
             }
             // The process ends here: no continuation, no scope cleanup. The
             // mandatory normal edge is a structural unreachable block.
@@ -2279,7 +2348,8 @@ impl Builder<'_, '_> {
                 return Err(format!(
                     "runtime family `{family:?}` variant result `{}` is not owned",
                     result_ty.user_facing()
-                ));
+                )
+                .into());
             }
             let raw = self.fresh_value();
             let continuation = self.fresh_value();
@@ -2315,7 +2385,7 @@ impl Builder<'_, '_> {
         if contract.failures.len() > 1 && !contract.propagates_fault() {
             return Err(format!(
                 "runtime family `{family:?}` has more failure edges than RtCall currently represents"
-            ));
+            ).into());
         }
         let failure_block = failure.map(|_| self.new_block(Vec::new()));
         let unwind = failure_block.map_or(CallUnwind::NotApplicable, |target| {
@@ -2351,10 +2421,13 @@ impl Builder<'_, '_> {
             if contract.propagates_fault() {
                 self.finish_fault_exit()?;
             } else {
-                self.finish_checked_fault(
-                    crate::runtime_failure_trap_kind(failure)
-                        .ok_or_else(|| "static runtime failure has no trap kind".to_string())?,
-                )?;
+                self.finish_checked_fault(crate::runtime_failure_trap_kind(failure).ok_or_else(
+                    || {
+                        SirLoweringError::from(
+                            "static runtime failure has no trap kind".to_string(),
+                        )
+                    },
+                )?)?;
             }
         }
         self.current = normal_target;
@@ -2391,9 +2464,9 @@ impl Builder<'_, '_> {
                 contract.result,
                 RuntimeResultEffect::UpdatedReceiverAndValue(_)
             ) {
-                let ty = self
-                    .value_ty(continuation)
-                    .ok_or_else(|| "runtime transform result disappeared".to_string())?;
+                let ty = self.value_ty(continuation).ok_or_else(|| {
+                    SirLoweringError::from("runtime transform result disappeared".to_string())
+                })?;
                 let shape = self.service.require_aggregate_shape(&ty)?;
                 let results = self.emit_destructure_value(
                     continuation,
@@ -2409,7 +2482,9 @@ impl Builder<'_, '_> {
                     )?;
                 } else {
                     self.publish_writable(
-                        transformed_target.ok_or("runtime transform has no source place")?,
+                        transformed_target.ok_or(SirLoweringError::from(
+                            "runtime transform has no source place",
+                        ))?,
                         results[0].id,
                         &Provenance::Site(expr.site),
                     )?;
@@ -2433,7 +2508,8 @@ impl Builder<'_, '_> {
         } else if value_required {
             return Err(format!(
                 "unit-valued runtime family `{family:?}` cannot produce an SSA value"
-            ));
+            )
+            .into());
         }
         // A loan keeps its argument owners until the surrounding expression
         // ends it, including snapshots taken before effectful later arguments.
@@ -2452,7 +2528,7 @@ impl Builder<'_, '_> {
     pub(super) fn dispatch_runtime_release(
         &mut self,
         ty: Option<&hew_types::ResolvedTy>,
-    ) -> Result<(), String> {
+    ) -> Result<(), SirLoweringError> {
         let Some(ty) = ty else {
             return Ok(());
         };
@@ -2472,7 +2548,7 @@ impl Builder<'_, '_> {
         &self,
         declaration: hew_types::DefId,
         endpoint: &str,
-    ) -> Result<crate::ExternSignature, String> {
+    ) -> Result<crate::ExternSignature, SirLoweringError> {
         self.service
             .module
             .items
@@ -2494,7 +2570,9 @@ impl Builder<'_, '_> {
                 })
             })
             .ok_or_else(|| {
-                format!("extern `{endpoint}` names no declaration in this compilation unit")
+                SirLoweringError::from(format!(
+                    "extern `{endpoint}` names no declaration in this compilation unit"
+                ))
             })
     }
 
@@ -2514,7 +2592,7 @@ impl Builder<'_, '_> {
         signature: &crate::ExternSignature,
         obligations: &[bool],
         result_owned: bool,
-    ) -> Result<(), String> {
+    ) -> Result<(), SirLoweringError> {
         use hew_types::ffi_contracts::{
             extern_ownership_contract, ExternParamOwnership, ExternResultOwnership,
         };
@@ -2527,7 +2605,8 @@ impl Builder<'_, '_> {
                      add its `[[ownership.contracts]]` entry to \
                      scripts/runtime-export-classification.toml",
                     signature.symbol
-                ));
+                )
+                .into());
             }
             return Ok(());
         };
@@ -2545,7 +2624,7 @@ impl Builder<'_, '_> {
                         "extern `{}` parameter {index} declares {}, its audited ownership row says {audited:?}",
                         signature.symbol,
                         if declared.ownership == hew_types::ParameterOwnership::Consume { "`consume`" } else { "a borrow" }
-                    ));
+                    ).into());
                 }
             }
         }
@@ -2553,11 +2632,11 @@ impl Builder<'_, '_> {
             ExternResultOwnership::Borrowed => Err(format!(
                 "extern `{}` returns a borrow of a foreign allocation, which has no owner to borrow from",
                 signature.symbol
-            )),
+            ).into()),
             ExternResultOwnership::None if result_owned => Err(format!(
                 "extern `{}` declares an owned result, its audited ownership row transfers nothing",
                 signature.symbol
-            )),
+            ).into()),
             _ => Ok(()),
         }
     }
@@ -2579,26 +2658,26 @@ impl Builder<'_, '_> {
         endpoint: &str,
         (args, evaluation_order): (&[HirExpr], &[usize]),
         value_required: bool,
-    ) -> Result<Option<ValueId>, String> {
+    ) -> Result<Option<ValueId>, SirLoweringError> {
         let signature = self.extern_signature(declaration, endpoint)?;
         if signature.params.len() != args.len() {
             return Err(format!(
                 "extern `{endpoint}` declares {} parameters, called with {}",
                 signature.params.len(),
                 args.len()
-            ));
+            )
+            .into());
         }
         if signature.result == ResolvedTy::Never {
-            return Err(format!(
-                "extern `{endpoint}` cannot be declared to never return"
-            ));
+            return Err(format!("extern `{endpoint}` cannot be declared to never return").into());
         }
         if self.ty(&expr.ty) != signature.result {
             return Err(format!(
                 "extern `{endpoint}` returns `{}`, used as `{}`",
                 signature.result.user_facing(),
                 self.ty(&expr.ty).user_facing()
-            ));
+            )
+            .into());
         }
         for ty in signature
             .params
@@ -2724,16 +2803,16 @@ impl Builder<'_, '_> {
             self.emit_destroy(value)?;
         }
         if let Some(continuation) = continuation {
-            let ty = self
-                .value_ty(continuation)
-                .ok_or_else(|| "extern continuation lost its type".to_string())?;
+            let ty = self.value_ty(continuation).ok_or_else(|| {
+                SirLoweringError::from("extern continuation lost its type".to_string())
+            })?;
             if self.value_own_kind(continuation) == Some(OwnKind::Owned) {
                 self.owned_live.insert(continuation, ty);
             }
         } else if value_required {
-            return Err(format!(
-                "unit-valued extern `{endpoint}` cannot produce an SSA value"
-            ));
+            return Err(
+                format!("unit-valued extern `{endpoint}` cannot produce an SSA value").into(),
+            );
         }
         Ok(continuation)
     }
@@ -2750,7 +2829,7 @@ impl Builder<'_, '_> {
         args: &[HirExpr],
         order: &[usize],
         value_required: bool,
-    ) -> Result<Option<ValueId>, String> {
+    ) -> Result<Option<ValueId>, SirLoweringError> {
         let function = self.service.request_offload(&signature)?;
         let before: std::collections::HashSet<_> = self.owned_live.keys().copied().collect();
         let inputs = self.lower_offload_inputs(&signature, args, order)?;
@@ -2829,7 +2908,8 @@ impl Builder<'_, '_> {
             None if value_required => Err(format!(
                 "unit-valued extern `{}` cannot produce an SSA value",
                 signature.symbol
-            )),
+            )
+            .into()),
             None => Ok(None),
         }
     }
@@ -2841,7 +2921,7 @@ impl Builder<'_, '_> {
         signature: &crate::ExternSignature,
         args: &[HirExpr],
         order: &[usize],
-    ) -> Result<Vec<crate::BoundaryOperand>, String> {
+    ) -> Result<Vec<crate::BoundaryOperand>, SirLoweringError> {
         let mut placed: Vec<Option<crate::BoundaryOperand>> = args.iter().map(|_| None).collect();
         for &index in order {
             let argument = &args[index];

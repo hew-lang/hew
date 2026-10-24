@@ -123,7 +123,6 @@ const fn builtin_named_type_index(kind: BuiltinNamedType) -> usize {
     match kind {
         BuiltinNamedType::Stream => 0,
         BuiltinNamedType::Sink => 1,
-        BuiltinNamedType::CancellationToken => 2,
     }
 }
 
@@ -210,18 +209,7 @@ builtin_named_types! {
             },
         ]
     },
-    CancellationToken {
-        consts: (CANCELLATION_TOKEN, QUALIFIED_CANCELLATION_TOKEN),
-        methods_const: CANCELLATION_TOKEN_METHODS,
-        canonical: "CancellationToken",
-        qualified: "CancellationToken",
-        methods: [
-            "is_cancelled" => {
-                signature: ReturnBool,
-                runtime: BuiltinMethodRuntime::None
-            },
-        ]
-    },
+
 }
 
 #[must_use]
@@ -234,9 +222,9 @@ pub fn builtin_named_type(name: &str) -> Option<BuiltinNamedType> {
     match crate::lookup_builtin_type(name) {
         Some(BuiltinType::Stream) => Some(BuiltinNamedType::Stream),
         Some(BuiltinType::Sink) => Some(BuiltinNamedType::Sink),
-        Some(BuiltinType::CancellationToken) => Some(BuiltinNamedType::CancellationToken),
         Some(
-            BuiltinType::Option
+            BuiltinType::CancellationToken
+            | BuiltinType::Option
             | BuiltinType::Result
             | BuiltinType::Vec
             | BuiltinType::HashMap
@@ -298,7 +286,6 @@ fn type_parameter(kind: BuiltinNamedType) -> crate::ParamHead {
     let anchor = match kind {
         BuiltinNamedType::Stream => BuiltinAnchor::Stream,
         BuiltinNamedType::Sink => BuiltinAnchor::Sink,
-        BuiltinNamedType::CancellationToken => unreachable!("CancellationToken has no parameters"),
     };
     crate::ParamHead::new(
         crate::TypeParamId::new(crate::DefTable::anchor(anchor), 0),
@@ -439,11 +426,7 @@ pub fn builtin_type_def(kind: BuiltinNamedType) -> &'static TypeDef {
                     TypeDef {
                         kind: TypeDefKind::Struct,
                         name: info.canonical_name.to_string(),
-                        type_params: if info.kind == BuiltinNamedType::CancellationToken {
-                            Vec::new()
-                        } else {
-                            vec![type_parameter(info.kind)]
-                        },
+                        type_params: vec![type_parameter(info.kind)],
                         bounds: crate::check::ParamBounds::default(),
                         fields: HashMap::new(),
                         variants: HashMap::new(),

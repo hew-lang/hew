@@ -9,7 +9,7 @@
 //! import std.net.url;
 //!
 //! fn main() {
-//!     let u = url.parse("https://example.com:8080/path?key=val#frag");
+//!     let u = url.parse("https://example.com:8080/path?key=val#frag").expect("valid URL");
 //!     println(u.host());
 //!     match u.port() {
 //!         .Some(port) => println(port),
@@ -23,7 +23,7 @@ import std.encoding.utf8;
 
 /// A parsed URL.
 ///
-/// Created by `url.parse(s)`. URLs close automatically at scope exit; call
+/// Created by `url.parse(s).expect("valid URL")`. URLs close automatically at scope exit; call
 /// `close()` to release one early.
 #[opaque]
 type UrlHandle {
@@ -35,12 +35,14 @@ pub type Url {
 }
 
 pub enum UrlError {
+    Invalid(string);
     Resolve { path: string; base: string; }
 }
 
 impl Display for UrlError {
     fn fmt(self) -> string {
         match self {
+            .Invalid(text) => f"Invalid: URL `{text}`",
             .Resolve { path, base } => f"url.resolve: cannot resolve `{path}` against `{base}`",
         }
     }
@@ -174,7 +176,7 @@ impl Url {
 // ── Module-level functions ────────────────────────────────────────────
 /// Parse a URL string.
 ///
-/// Panics if the string is not a valid URL.
+/// Returns `UrlError.Invalid` if the string is not a valid URL.
 ///
 /// # Examples
 ///
@@ -182,14 +184,14 @@ impl Url {
 /// import std.net.url;
 ///
 /// fn main() {
-///     let u = url.parse("https://example.com/api/v1");
+///     let u = url.parse("https://example.com/api/v1").expect("valid URL");
 /// }
 /// ```
-pub fn parse(s: string) -> Url {
+pub fn parse(s: string) -> Url fails UrlError {
     unsafe {
         let u = Url { handle: hew_url_parse(s) };
         if !hew_url_is_valid(u.handle) {
-            panic(f"url.parse: invalid URL: {s}");
+            return error UrlError.Invalid(s);
         }
         u
     }

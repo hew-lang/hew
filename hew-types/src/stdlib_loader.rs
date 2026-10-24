@@ -139,9 +139,9 @@ pub(crate) fn load_module_with_inputs(
     // Extracted signatures qualify a module-local nominal with the module's
     // short owner, and the registry later projects that spelling onto the
     // module's canonical owner. Both spellings must come from the same
-    // authority: a directory-module peer (`std.net.http.http_async_server`)
-    // is owned by its package (`std.net.http`), so it extracts as `http.T`,
-    // not `http_async_server.T`, or the projection has nothing to join.
+    // authority: a directory-module peer (`std.net.http.codec`)
+    // is owned by its package (`std.net.http.codec`), so it extracts as `codec.T`,
+    // not `codec.T`, or the projection has nothing to join.
     let module_short = crate::module_registry::canonical_stdlib_module_for_source(&hew_path)
         .and_then(|owner| owner.segments.last().map(ToString::to_string))
         .unwrap_or_else(|| module_short_name(module_path));
@@ -1451,12 +1451,12 @@ mod tests {
         let parsed = parse(
             r#"
             import std.net;
-            import std.net.http;
-            fn reply(req: http.Request) {
-                let _: Result<(), net.NetError> = req.respond(200, "text/plain", "hello");
-                let _: Result<(), net.NetError> = req.respond_text(200, "hello");
-                let _: Result<(), net.NetError> = req.respond_json(200, "{}");
-                let _: Result<Sink<string>, net.NetError> = req.respond_stream(200, "text/plain");
+            import std.net.http.server as http;
+            fn reply(consume full: http.Request, consume text: http.Request, consume json: http.Request, consume streamed: http.Request) {
+                let _: Result<(), net.NetError> = full.respond(200, "text/plain", "hello");
+                let _: Result<(), net.NetError> = text.respond_text(200, "hello");
+                let _: Result<(), net.NetError> = json.respond_json(200, "{}");
+                let _: Result<Sink<string>, net.NetError> = streamed.respond_stream(200, "text/plain");
             }
             "#,
         );
@@ -1473,15 +1473,13 @@ mod tests {
         // `net.Connection` no longer carries its own text-read wrappers
         // (`read_string`/`try_read_string`/`ReadStringError`) — a caller
         // decodes the `bytes` a `Stream<bytes>` yields itself (D506). QUIC's
-        // `recv_string`/`stream_recv_string` are unaffected and still surface
-        // `utf8.Utf8Error` on invalid bytes.
+        // `recv_string` retains both transport and UTF-8 decoding failures.
         let parsed = parse(
             r"
             import std.net.quic;
             import std.encoding.utf8;
             fn quic_read(stream: quic.QUICStream) {
-                let _: Result<string, utf8.Utf8Error> = stream.recv_string();
-                let _: Result<string, utf8.Utf8Error> = quic.stream_recv_string(stream);
+                let _: Result<string, quic.ReadError> = stream.recv_string();
             }
         ",
         );
@@ -1593,12 +1591,12 @@ mod tests {
         );
 
         let http_info =
-            load_module("std::net::http", &test_root()).expect("should load http module");
+            load_module("std::net::http::server", &test_root()).expect("should load http module");
         let close = http_info
             .handle_methods
             .iter()
-            .find(|m| m.type_name == "http.Request" && m.method_name == "close")
-            .expect("http.Request.close should be extracted");
+            .find(|m| m.type_name == "server.Request" && m.method_name == "close")
+            .expect("server.Request.close should be extracted");
         assert_eq!(close.c_symbol, "hew_http_request_free");
         assert_eq!(close.params, Vec::<crate::CallableParameter<Ty>>::new());
         assert_eq!(close.return_type, Ty::Unit);
@@ -1739,45 +1737,48 @@ mod tests {
 
     #[test]
     fn drop_types_extracted() {
-        let info = load_module("std::net::http", &test_root()).unwrap();
+        let info = load_module("std::net::http::server", &test_root()).unwrap();
 
         assert!(
-            info.drop_types.contains(&"http.Request".to_string()),
-            "http.Request should be a drop type as a `#[resource]`, got: {:?}",
+            info.drop_types.contains(&"server.Request".to_string()),
+            "server.Request should be a drop type as a `#[resource]`, got: {:?}",
             info.drop_types
         );
 
         assert!(
-            info.drop_types.contains(&"http.Server".to_string()),
-            "http.Server should be a closeable opaque drop type: {:?}",
+            info.drop_types.contains(&"server.Server".to_string()),
+            "server.Server should be a closeable opaque drop type: {:?}",
             info.drop_types
         );
     }
 
     #[test]
     fn drop_funcs_extracted() {
-        let info = load_module("std::net::http", &test_root()).unwrap();
+        let info = load_module("std::net::http::server", &test_root()).unwrap();
 
-        let request_drop = info.drop_funcs.iter().find(|(ty, _)| ty == "http.Request");
+        let request_drop = info
+            .drop_funcs
+            .iter()
+            .find(|(ty, _)| ty == "server.Request");
         assert_eq!(
             request_drop,
             Some(&(
-                "http.Request".to_string(),
+                "server.Request".to_string(),
                 "hew_http_request_free".to_string()
             )),
-            "http.Request.close consumes the handle itself, so it registers a \
+            "server.Request.close consumes the handle itself, so it registers a \
              direct drop func: {:?}",
             info.drop_funcs
         );
 
-        let server_drop = info.drop_funcs.iter().find(|(ty, _)| ty == "http.Server");
+        let server_drop = info.drop_funcs.iter().find(|(ty, _)| ty == "server.Server");
         assert_eq!(
             server_drop,
             Some(&(
-                "http.Server".to_string(),
+                "server.Server".to_string(),
                 "hew_http_server_close".to_string()
             )),
-            "http.Server should register its exact raw disposer: {:?}",
+            "server.Server should register its exact raw disposer: {:?}",
             info.drop_funcs
         );
     }

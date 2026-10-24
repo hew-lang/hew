@@ -1,0 +1,11 @@
+[[case]]
+id = "generic-numeric-overflow"
+intent = "Arithmetic justified by Num retains the concrete instance's checked overflow and surrounding cleanup."
+source = "cases/generic-numeric-overflow.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 30
+
+[case.expected]
+stdout = ""
+stderr = "hew: failure: IntegerOverflow (201)\n"
+exit = 1

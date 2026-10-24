@@ -246,11 +246,24 @@ pub unsafe extern "C" fn hew_file_size(path: *const HewString) -> i64 {
     };
     match std::fs::metadata(rust_path) {
         Ok(meta) => {
-            let len = meta.len();
-            // Saturate to i64::MAX if the file is absurdly large.
-            i64::try_from(len).unwrap_or(i64::MAX)
+            if let Ok(len) = i64::try_from(meta.len()) {
+                clear_file_io_error();
+                len
+            } else {
+                set_file_io_error(
+                    "hew_file_size",
+                    &std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        "file length exceeds the supported range",
+                    ),
+                );
+                -1
+            }
         }
-        Err(_) => -1,
+        Err(error) => {
+            set_file_io_error("hew_file_size", &error);
+            -1
+        }
     }
 }
 

@@ -1065,6 +1065,9 @@ impl Checker {
 
     fn type_satisfies_registered_bound(&mut self, ty: &Ty, bound: &TraitRef) -> bool {
         let marker = self.trait_marker(bound.trait_id);
+        if marker.is_some_and(|marker| self.type_has_marker(ty, marker)) {
+            return true;
+        }
         match ty {
             // `instant` canonicalises to i64 and satisfies what i64 does.
             Ty::Named {
@@ -1130,6 +1133,12 @@ impl Checker {
         self.type_has_marker(ty, MarkerTrait::Send)
     }
 
+    /// A numeric parameter has the same scalar arithmetic operations as each
+    /// concrete type admitted by the closed `Num` marker.
+    pub(in crate::check) fn is_numeric_parameter(&self, ty: &Ty) -> bool {
+        self.bound_parameter(ty).is_some() && self.type_has_marker(ty, MarkerTrait::Num)
+    }
+
     pub(in crate::check) fn type_has_marker(&self, ty: &Ty, requested: MarkerTrait) -> bool {
         fn bound_type(checker: &Checker, ty: &Ty) -> Ty {
             checker.bound_parameter(ty).map_or_else(
@@ -1137,7 +1146,7 @@ impl Checker {
                 Ty::param,
             )
         }
-        let ty = bound_type(self, ty);
+        let ty = bound_type(self, &self.normalize_for_use(ty));
         self.registry
             .implements_marker_with_bounds(&ty, requested, &|param, marker| {
                 self.param_carries_marker(param.id, marker)

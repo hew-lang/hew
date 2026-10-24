@@ -168,9 +168,9 @@ fn main() {
     println(text.contains("Ω"));
     println(text.contains("no"));
     println(text);
-    match string.to_int("-9223372036854775808") { .Ok(value) => println(value), .Err(_) => panic("minimum rejected"), }
-    match string.to_int("9223372036854775808") { .Ok(_) => panic("overflow accepted"), .Err(_) => println("overflow"), }
-    match string.to_int("1雪") { .Ok(_) => panic("nondigit accepted"), .Err(_) => println("nondigit"), }
+    match ("-9223372036854775808").to_int() { .Ok(value) => println(value), .Err(_) => panic("minimum rejected"), }
+    match ("9223372036854775808").to_int() { .Ok(_) => panic("overflow accepted"), .Err(_) => println("overflow"), }
+    match ("1雪").to_int() { .Ok(_) => panic("nondigit accepted"), .Err(_) => println("nondigit"), }
 }
 "#,
         "5\nabsent\n0\nélan\ntrue\ntrue\ntrue\nfalse\n雪ÉLAN:Ω\n-9223372036854775808\noverflow\nnondigit\n",
@@ -185,19 +185,17 @@ fn network_timeouts_require_explicit_duration_units() {
         "conn.set_write_timeout(TIME)",
         "dns.resolve_timed(\"localhost\", TIME)",
         "dns.lookup_host_timed(\"localhost\", TIME)",
-        "http_client.set_timeout(TIME)",
+        "client.set_timeout(TIME)",
         "server.set_request_timeout(TIME)",
         "stream.recv_timeout(TIME)",
         "stream.send_timeout(b\"data\", TIME)",
-        "quic.stream_recv_timeout(stream, TIME)",
-        "quic.stream_send_timeout(stream, b\"data\", TIME)",
     ] {
         let source = format!(
             r"
             import std.net;
             import std.net.dns;
-            import std.net.http;
-            import std.net.http.http_client;
+            import std.net.http.server as http;
+            import std.net.http.client;
             import std.net.quic;
             fn probe(conn: net.Connection, server: http.Server, stream: quic.QUICStream) {{
                 let _ = {call};

@@ -1,14 +1,14 @@
 //! Status: runnable
-//! Description: Static Content Web Server in Hew
+//! Description: Static Content Web http.Server in Hew
 
-// Static Content Web Server in Hew
+// Static Content Web http.Server in Hew
 //
 // A blocking HTTP server: the accept loop serves each request with proper MIME
 // types.
 //
 // Usage: hew build static_server.hew -o serve && ./serve [port] [root]
 // Defaults: port 8080, root "."
-import std.net.http.{Request, Server};
+import std.net.http.server as http;
 
 import std.fs;
 
@@ -31,15 +31,15 @@ fn resolve_path(root: string, url_path: string) -> string {
     path
 }
 
-fn serve_forever(root: string, server: Server) {
+fn serve_forever(root: string, server: http.Server) {
     // Accept loop: serve each request.
     loop {
-        let req = server.accept();
+        let req = server.accept().expect("accept request");
         serve_request(root, req);
     }
 }
 
-fn serve_request(root: string, consume req: Request) {
+fn serve_request(root: string, consume req: http.Request) {
     let request_path = req.path();
     if request_path.contains("..") {
         match req.respond_text(403, "403 Forbidden") {
@@ -65,7 +65,6 @@ fn serve_request(root: string, consume req: Request) {
             }
         }
     }
-    req.close();
 }
 
 fn main() {
@@ -89,8 +88,7 @@ fn main() {
         .Ok(server) => {
             serve_forever(root, server);
         }
-        .Err(_) => {
-            let detail = http.listen_error();
+        .Err(detail) => {
             println(f"cannot listen on {addr}: {detail}");
         }
     }

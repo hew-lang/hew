@@ -131,8 +131,8 @@ fn main() {
         .None => false,
     };
     println(f"WOKE:{woke} {both} {polled}");
-    println(f"LINE:{io.read_line() ?? "none"}");
-    println(f"LINE:{io.read_line() ?? "none"}");
+    println(f"LINE:{io.read_line().expect("standard I/O") ?? "none"}");
+    println(f"LINE:{io.read_line().expect("standard I/O") ?? "none"}");
     input.close();
     other.close();
 }

@@ -37,10 +37,10 @@ use crate::node::{
     HirDestructureField, HirDestructureSelector, HirExpr, HirExprKind, HirField, HirFn,
     HirGenCapture, HirItem, HirLambdaCapture, HirLifecycleHook, HirLifecycleHookKind, HirLiteral,
     HirMatchArm, HirMatchArmBinding, HirMatchArmPredicate, HirModule, HirPayloadPredicate,
-    HirPayloadVariantPredicate, HirRecordDecl, HirRegexLiteral, HirRestartPolicy, HirSelect,
-    HirSelectArm, HirSelectArmKind, HirStmt, HirStmtKind, HirSupervisorChild, HirSupervisorDecl,
-    HirSupervisorStrategy, HirTypeDecl, HirTypeDeclKind, HirVarSelfMethodTarget, HirVariant,
-    HirVariantKind,
+    HirPayloadVariantPredicate, HirRangeAdapter, HirRecordDecl, HirRegexLiteral, HirRestartPolicy,
+    HirSelect, HirSelectArm, HirSelectArmKind, HirStmt, HirStmtKind, HirSupervisorChild,
+    HirSupervisorDecl, HirSupervisorStrategy, HirTypeDecl, HirTypeDeclKind, HirVarSelfMethodTarget,
+    HirVariant, HirVariantKind,
 };
 use crate::stdlib_catalog::{self, BuiltinEntry, BuiltinLinkage};
 use crate::{IntentKind, ResourceMarker};
@@ -92,7 +92,6 @@ use self::captures::*;
 use self::gates::*;
 use self::impl_plan::*;
 use self::imports::*;
-use self::iteration::*;
 use self::patterns::*;
 use self::private_refs::*;
 use self::resource_lifecycles::*;
@@ -218,7 +217,9 @@ fn literal_match_supported(lit: &HirLiteral, ty: &ResolvedTy) -> bool {
         (HirLiteral::Float(_), ResolvedTy::F32 | ResolvedTy::F64)
         | (HirLiteral::Bool(_), ResolvedTy::Bool)
         | (HirLiteral::Char(_), ResolvedTy::Char)
-        | (HirLiteral::String(_), ResolvedTy::String) => true,
+        | (HirLiteral::String(_), ResolvedTy::String)
+        | (HirLiteral::Duration(_), ResolvedTy::Duration)
+        | (HirLiteral::Unit, ResolvedTy::Unit) => true,
         _ => false,
     }
 }
@@ -589,8 +590,6 @@ impl LowerOutput {
     /// - [`HirDiagnosticKind::NestedSupervisorAccessorUnsupported`] — dead
     ///   code; `sup.nested` field access on a nested supervisor now lowers
     ///   via `hew_supervisor_nested_get` and never constructs this variant.
-    /// - [`HirDiagnosticKind::BinaryOperatorUnsupportedInMir`] — value-position
-    ///   range operator (FC-P1-D).
     /// - [`HirDiagnosticKind::CallableUnsupportedInMir`] — a call expression
     ///   resolves to an item with no MIR body or runtime-ABI lowering.
     /// - [`HirDiagnosticKind::IndirectCallUnsupported`] — a call expression
@@ -632,7 +631,6 @@ impl LowerOutput {
                     | crate::HirDiagnosticKind::TaskSpawnCalleeUnsupported { .. }
                     | crate::HirDiagnosticKind::DeadlineBodyUnsupported { .. }
                     | crate::HirDiagnosticKind::NestedSupervisorAccessorUnsupported { .. }
-                    | crate::HirDiagnosticKind::BinaryOperatorUnsupportedInMir { .. }
                     | crate::HirDiagnosticKind::CallableUnsupportedInMir { .. }
                     | crate::HirDiagnosticKind::IndirectCallUnsupported { .. }
                     | crate::HirDiagnosticKind::VecIndexElementTypeUnsupported { .. }
@@ -979,7 +977,8 @@ struct LowerCtx {
     /// checked module dispatched, accumulated across passes. Each becomes one
     /// `HirItem::ExternFn`, so an extern method and an `extern` block reach
     /// later stages through the same declaration shape.
-    extern_method_signatures: HashMap<(hew_types::DefId, String), hew_types::ExternMethodSignature>,
+    extern_method_signatures:
+        HashMap<(hew_types::DefId, String), (ItemId, hew_types::ExternMethodSignature)>,
     /// W4.047 P1.2 — the **typed** checker→HIR handoff map (the shadow of
     /// `expr_types`). Carries `ResolvedTy` (never `Ty::Var`/`Ty::Error`/literal)
     /// for every concrete accepted span; cloned verbatim from

@@ -230,8 +230,8 @@ test("runProgram reads two stdin lines from the page input buffer byte-cleanly",
 import std.io;
 
 fn main() {
-    let first = io.read_line() ?? "<none>";
-    let second = io.read_line() ?? "<none>";
+    let first = io.read_line().expect("read stdin") ?? "<none>";
+    let second = io.read_line().expect("read stdin") ?? "<none>";
     println(f"{first}|{second}");
 }
 `,
@@ -250,7 +250,7 @@ import std.io;
 
 fn main() {
     for i in 0..6 {
-        match io.read_line() {
+        match io.read_line().expect("read stdin") {
             .Some(line) => println(f"[{line}]"),
             .None => {
                 println("end");
@@ -274,10 +274,10 @@ test("runProgram read_all keeps line endings and the unterminated tail after a r
 import std.io;
 
 fn main() {
-    let first = io.read_line() ?? "<none>";
-    let rest = io.read_all();
+    let first = io.read_line().expect("read stdin") ?? "<none>";
+    let rest = io.read_all().expect("read stdin");
     println(f"{first}|[{rest}]");
-    let after = io.read_line() ?? "<none>";
+    let after = io.read_line().expect("read stdin") ?? "<none>";
     println(after);
 }
 `,
@@ -295,8 +295,8 @@ test("runProgram records each consumed stdin line as a replay.input event withou
 import std.io;
 
 fn main() {
-    let a = io.read_line() ?? "<none>";
-    let b = io.read_line() ?? "<none>";
+    let a = io.read_line().expect("read stdin") ?? "<none>";
+    let b = io.read_line().expect("read stdin") ?? "<none>";
     println(a);
     println(b);
 }
@@ -350,7 +350,7 @@ test("authored close helpers yield without abandoning explicit or implicit relea
     ),
     "utf8",
   );
-  const result = await runProgram(source, "");
+  const result = await runProgram(source, "", undefined, { stepBudget: 2000000 });
   assert.equal(result.exit_code, 0, JSON.stringify(result.diagnostics));
   assert.equal(
     result.stdout,

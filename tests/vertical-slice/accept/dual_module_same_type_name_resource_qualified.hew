@@ -12,7 +12,7 @@
 // linkonce merge or a dropped body would surface as the "Global is external,
 // but doesn't have external or weak linkage!" verifier dump instead. The
 // compiler still fails closed for genuinely-unqualifiable same-name collisions.
-import std.net.http;
+import std.net.http.server as http;
 
 import std.net.websocket;
 

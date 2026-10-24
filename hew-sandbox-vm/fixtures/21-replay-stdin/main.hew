@@ -1,6 +1,6 @@
 import std.io;
 
 fn main() {
-    let name = io.read_line() ?? "stranger";
+    let name = io.read_line().expect("standard I/O") ?? "stranger";
     println(f"hello {name}");
 }

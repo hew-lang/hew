@@ -155,3 +155,37 @@ fn string_emptiness_borrows_managed_strings_and_preserves_later_reads_at_o0_o2()
         }
     }
 }
+
+#[test]
+fn declared_c_booleans_convert_arguments_and_results_at_o0_o2() {
+    extern "C" fn negate(value: bool) -> bool {
+        !value
+    }
+    let physical = physical(
+        "extern \"C\" { fn negate(value: bool) -> bool; } fn main() -> i64 { unsafe { if negate(false) && !negate(true) { 42 } else { 0 } } }",
+    );
+    for optimized in [false, true] {
+        let ctx = Context::create();
+        let llvm = llvm(&ctx, &physical);
+        let function = llvm.get_function("negate").unwrap();
+        assert_eq!(
+            function.get_type(),
+            ctx.bool_type().fn_type(&[ctx.bool_type().into()], false)
+        );
+        let engine = engine(&llvm, optimized);
+        engine.add_global_mapping(&function, negate as *const () as usize);
+        type Main = unsafe extern "C" fn(*mut i64, *mut *mut c_void) -> i32;
+        let mut result = 0;
+        let mut fault = std::ptr::null_mut();
+        // SAFETY: main's checked scalar result and fault ABI match these slots.
+        let status = unsafe {
+            engine
+                .get_function::<Main>("__hew_main_body")
+                .unwrap()
+                .call(&raw mut result, &raw mut fault)
+        };
+        assert_eq!(status, 0);
+        assert!(fault.is_null());
+        assert_eq!(result, 42);
+    }
+}

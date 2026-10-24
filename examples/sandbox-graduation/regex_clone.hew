@@ -1,7 +1,7 @@
 import std.text.regex;
 
 fn main() {
-    let re = regex.new("a+");
+    let re = regex.new("a+").expect("valid pattern");
     let re2 = re.clone();
     let matched = re2.is_match("aaa");
     println(f"re2.is_match: {matched}");

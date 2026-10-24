@@ -18,11 +18,7 @@ impl Session {
         tco: &hew_types::TypeCheckOutput,
         names: &[&str],
     ) -> Result<(SessionOutput, Vec<hew_types::DefId>), SessionError> {
-        let unsupported = |message: String| SessionError::Unsupported {
-            callable: None,
-            message,
-            span: None,
-        };
+        let selection_error = SessionError::Selection;
         let declarations = names
             .iter()
             .map(|name| {
@@ -41,7 +37,7 @@ impl Session {
                         _ => None,
                     })
                     .ok_or_else(|| {
-                        unsupported(format!(
+                        selection_error(format!(
                     "C export `{name}` must select a public monomorphic root-source function"
                 ))
                     })?;
@@ -52,11 +48,15 @@ impl Session {
                     hew_types::DeclarationKind::Function,
                     0,
                 );
-                tco.defs.declaration(occurrence).ok_or_else(|| {
-                    unsupported(format!(
-                        "C export `{name}` has no checked declaration identity"
-                    ))
-                })
+                tco.defs
+                    .declaration(occurrence)
+                    .ok_or_else(|| SessionError::Lowering {
+                        callable: None,
+                        error: hew_sir::SirLoweringError::Internal(format!(
+                            "C export `{name}` has no checked declaration identity"
+                        )),
+                        span: None,
+                    })
             })
             .collect::<Result<Vec<_>, _>>()?;
         let lowered =
@@ -65,7 +65,7 @@ impl Session {
             return Err(SessionError::Hir(lowered.diagnostics));
         }
         if lowered.module.entry_exit_plan.is_some() {
-            return Err(unsupported(
+            return Err(selection_error(
                 "C export input must be a library without a process entry".into(),
             ));
         }

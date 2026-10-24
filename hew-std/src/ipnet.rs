@@ -166,7 +166,7 @@ pub unsafe extern "C" fn hew_cidr_broadcast(cidr: *const HewString) -> *mut HewS
 
 /// Get the number of host addresses in a CIDR block.
 ///
-/// Returns -1 on parse error or a host count that does not fit i64.
+/// Returns -1 on parse error and -2 when the host count does not fit i64.
 ///
 /// # Safety
 ///
@@ -178,8 +178,19 @@ pub unsafe extern "C" fn hew_cidr_hosts(cidr: *const HewString) -> i64 {
     let Ok(net) = cidr_str.parse::<IpNet>() else {
         return -1;
     };
-    let total: u128 = net.hosts().count() as u128;
-    i64::try_from(total).unwrap_or(-1)
+    let (host_bits, exclude_edges) = match net {
+        IpNet::V4(network) => (32 - network.prefix_len(), network.prefix_len() < 31),
+        IpNet::V6(network) => (128 - network.prefix_len(), false),
+    };
+    if host_bits >= 63 {
+        return -2;
+    }
+    let count = 1_i64 << host_bits;
+    if exclude_edges {
+        count - 2
+    } else {
+        count
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -294,6 +305,6 @@ mod tests {
     fn cidr_hosts_rejects_counts_outside_the_hew_i64_abi() {
         let too_large = ManagedString::new("::/65");
         // SAFETY: `too_large` owns a live managed string for this call.
-        assert_eq!(unsafe { hew_cidr_hosts(too_large.as_ptr()) }, -1);
+        assert_eq!(unsafe { hew_cidr_hosts(too_large.as_ptr()) }, -2);
     }
 }

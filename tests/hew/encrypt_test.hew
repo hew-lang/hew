@@ -142,7 +142,6 @@ fn test_seal_returns_err_for_a_short_key() {
 
 #[test]
 fn test_crypto_error_display_formats_each_variant() {
-    assert(to_string(CryptoError.None) == "no error");
     assert(to_string(CryptoError.InvalidKey) == "encrypt key must be 32 bytes");
     assert(to_string(CryptoError.AuthFailed) == "encrypt authentication failed");
 }

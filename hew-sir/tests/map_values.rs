@@ -28,7 +28,7 @@ fn lower_source(source: &str) -> SemModule {
         lowered
             .callable_statuses
             .iter()
-            .all(|(_, status)| { !matches!(status, SirLoweringStatus::Unsupported { .. }) }),
+            .all(|(_, status)| { !matches!(status, SirLoweringStatus::Failed { .. }) }),
         "a demanded callable did not lower: {:#?}",
         lowered.callable_statuses
     );

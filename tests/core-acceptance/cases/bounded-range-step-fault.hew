@@ -1,0 +1,24 @@
+#[resource]
+type Guard {
+    label: string;
+}
+
+impl Guard {
+    fn close(consume self) {
+        println(self.label);
+    }
+}
+
+fn selected(span: Range<i64>, step: i64) -> Range<i64> {
+    span.step_by(step)
+}
+
+fn main() {
+    let guard = Guard { label: "closed".to_upper() };
+    let empty = 4..4;
+    let invalid = selected(empty, 0);
+    println("unreachable");
+    for value in invalid {
+        println(value);
+    }
+}

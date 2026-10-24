@@ -1,0 +1,105 @@
+import std.lazy;
+
+fn bounds(start: i64, end: i64) -> Range<i64> {
+    start..end
+}
+
+fn unchanged<T>(value: T) -> T {
+    value
+}
+
+fn duplicate<T: Copy>(value: T) -> (T, T) {
+    (value, value)
+}
+
+fn copied<T: Clone>(value: T) -> T {
+    value.clone()
+}
+
+fn copied_range<T: Clone>(value: Range<T>) -> Range<T> {
+    value.clone()
+}
+
+fn frozen<T: Frozen>(value: T) -> T {
+    value
+}
+
+fn reversed_even(span: Range<i64>) -> Range<i64> {
+    span.step_by(2).rev()
+}
+
+fn total(span: Range<i64>) -> i64 {
+    var result = 0;
+    for value in span {
+        result += value;
+    }
+    result
+}
+
+fn observed(value: i64) -> i64 {
+    println(value);
+    value
+}
+
+fn main() {
+    let span = unchanged(bounds(0, 10));
+    assert(span.start == 0);
+    assert(span.end == 10);
+    assert(total(span) == 45);
+    let (left, right) = duplicate(frozen(span.step_by(3).rev()));
+    assert(total(left) == 18);
+    assert(total(copied(right)) == 18);
+    assert(total(copied_range(right)) == 18);
+    assert(total(right.clone()) == 18);
+    var cached = lazy.new(|| {
+        println("initialize range");
+        bounds(1, 6).step_by(2).rev()
+    });
+    let first = cached.value();
+    let second = cached.value();
+    assert(first.start == 1);
+    assert(second.end == 6);
+    assert(total(first) == 9);
+    assert(total(second) == 9);
+    let descending = reversed_even(span);
+    assert(descending.start == 0);
+    assert(descending.end == 10);
+    assert(total(descending) == 20);
+    assert(total(span.rev().step_by(2)) == 25);
+    assert(total(bounds(0, 20).step_by(3).rev().step_by(2)) == 36);
+    assert(total(bounds(4, 4).rev().step_by(3)) == 0);
+    assert(total(bounds(8, 2).step_by(3).rev()) == 0);
+    let signed: Range<i8> = -128..=127;
+    var signed_values: Vec<i8> = [];
+    for value in signed.step_by(127).rev().step_by(2) {
+        signed_values.push(value);
+    }
+    assert(signed_values == [126, -128]);
+    let near_max: Range<u64> = 18446744073709551613..=18446744073709551615;
+    var wide: Vec<u64> = [];
+    for value in near_max.rev() {
+        wide.push(value);
+    }
+    assert(wide == [18446744073709551615, 18446744073709551614, 18446744073709551613]);
+    let full: Range<u64> = 0..=18446744073709551615;
+    let singleton = full.step_by(18446744073709551615).step_by(2);
+    var singleton_count = 0;
+    for value in singleton {
+        assert(value == 0);
+        singleton_count += 1;
+    }
+    assert(singleton_count == 1);
+    let samples = [bounds(0, 3), bounds(3, 5)];
+    var nested_total = 0;
+    for sample in samples {
+        for value in sample {
+            nested_total += value;
+        }
+    }
+    assert(nested_total == 10);
+    let once = (observed(3)..observed(9)).step_by(observed(2));
+    assert(total(once) == 15);
+    let text = "abcdef";
+    assert(text[1..=3] == "bcd");
+    println("bounded ranges");
+}

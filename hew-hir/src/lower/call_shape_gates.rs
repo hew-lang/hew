@@ -444,7 +444,7 @@ pub(super) fn scan_expr_for_call_shape(
                 scan_expr_for_call_shape(&arm.body, callable, diagnostics);
             }
         }
-        HirExprKind::SpawnLambdaActor { body, .. } | HirExprKind::Closure { body, .. } => {
+        HirExprKind::Closure { body, .. } => {
             scan_expr_for_call_shape(body, callable, diagnostics);
         }
         HirExprKind::Yield { value: Some(v), .. } => {
@@ -488,8 +488,7 @@ pub(super) fn scan_expr_for_call_shape(
                 scan_expr_for_call_shape(operand, callable, diagnostics);
             }
         }
-        HirExprKind::CancellationTokenIsCancelled { receiver }
-        | HirExprKind::GeneratorNext { receiver, .. }
+        HirExprKind::GeneratorNext { receiver, .. }
         | HirExprKind::RecordCloneCall { src: receiver, .. }
         | HirExprKind::CallableSpecialize {
             source: receiver, ..
@@ -513,21 +512,28 @@ pub(super) fn scan_expr_for_call_shape(
             scan_expr_for_call_shape(condition, callable, diagnostics);
             scan_block_for_call_shape(body, callable, diagnostics);
         }
-        HirExprKind::ForRange {
-            start,
-            end,
-            step,
-            body,
-            ..
-        } => {
+        HirExprKind::RangeValue { start, end, .. } => {
             scan_expr_for_call_shape(start, callable, diagnostics);
             scan_expr_for_call_shape(end, callable, diagnostics);
-            scan_expr_for_call_shape(step, callable, diagnostics);
+        }
+        HirExprKind::RangeAdapt { range, adapter } => {
+            scan_expr_for_call_shape(range, callable, diagnostics);
+            if let crate::HirRangeAdapter::Step(step) = adapter {
+                scan_expr_for_call_shape(step, callable, diagnostics);
+            }
+        }
+        HirExprKind::ForRange { range, body, .. } => {
+            scan_expr_for_call_shape(range, callable, diagnostics);
             scan_block_for_call_shape(body, callable, diagnostics);
         }
         HirExprKind::Match { scrutinee, arms } => {
             scan_expr_for_call_shape(scrutinee, callable, diagnostics);
             for arm in arms {
+                for statement in &arm.pattern_bindings {
+                    if let HirStmtKind::Destructure { value, .. } = &statement.kind {
+                        scan_expr_for_call_shape(value, callable, diagnostics);
+                    }
+                }
                 if let Some(guard) = &arm.guard {
                     scan_expr_for_call_shape(guard, callable, diagnostics);
                 }

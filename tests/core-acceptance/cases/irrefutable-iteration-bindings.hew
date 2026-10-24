@@ -1,0 +1,9 @@
+type Entry { pair: (i64, string); }
+fn main() {
+    for (number, (text, ())) in [(7, ("tuple", ()))] { println(f"{text} {number}"); }
+    for Entry { pair: (number, text) } in [Entry { pair: (8, "record") }] { println(f"{text} {number}"); }
+    for () in [(), ()] { println("unit"); }
+    for _ in 1..3 { println("range"); }
+    let values: Vec<Option<i64>> = [.Some(1), .None, .Some(3)];
+    for item in values { if let .Some(value) = item { println(value); } }
+}

@@ -8,18 +8,17 @@
 //! # Examples
 //!
 //! ```hew,no_run
-//! import std.net.http;
+//! import std.net.http.server as http;
 //!
 //! fn main() {
 //!     match http.listen(":8080") {
 //!         .Ok(server) => {
-//!             let req = server.accept();
+//!             let req = server.accept().expect("accept request");
 //!             req.respond_text(200, "Hello from Hew!").expect("respond_text succeeds");
-//!             req.close();
 //!             server.close();
 //!         }
-//!         .Err(_err) => {
-//!             println(http.listen_error());
+//!         .Err(err) => {
+//!             println(f"{err}");
 //!         }
 //!     }
 //! }
@@ -52,28 +51,47 @@ pub type Request {
 // ── Server methods ────────────────────────────────────────────────────
 /// Methods available on an HTTP `Server`.
 trait ServerMethods {
+    /// Return the TCP port selected for this listener.
+    fn port(self) -> i64;
     /// Block until a client connects and return the next `Request`.
-    fn accept(self) -> Request;
+    fn accept(self) -> Request fails net.NetError;
 
-    /// Set the per-request body read deadline. Returns 0 on success, -1 for non-positive timeouts.
-    fn set_request_timeout(self, timeout: duration) -> i64;
+    /// Set a positive per-request body read deadline.
+    fn set_request_timeout(self, timeout: duration) fails net.NetError;
 }
 
 impl ServerMethods for Server {
-    /// Accept the next incoming HTTP request.
-    fn accept(self) -> Request {
+    fn port(self) -> i64 {
         unsafe {
-            hew_http_server_recv(self)
+            hew_http_server_port(self) as i64
         }
     }
-    /// Set the per-request body read deadline. Returns 0 on success, -1 for non-positive timeouts.
-    fn set_request_timeout(self, timeout: duration) -> i64 {
-        if timeout <= 0ns {
-            return -1;
+    /// Accept the next incoming HTTP request.
+    fn accept(self) -> Request fails net.NetError {
+        let request = unsafe {
+            hew_http_server_recv(self)
+        };
+        if unsafe {
+            hew_http_request_is_valid(request)
+        } {
+            request
+        } else {
+            return error net.NetError.Protocol(unsafe {
+                hew_http_last_error()
+            });
         }
-        unsafe {
-            hew_http_server_set_request_timeout_ms(self, timeout.millis_ceil()) as i64
-        } // INTERNAL-ABI: C ABI timeout is i64
+    }
+    /// Set a positive per-request body read deadline.
+    fn set_request_timeout(self, timeout: duration) fails net.NetError {
+        if timeout <= 0ns {
+            return error net.NetError.InvalidArgument("HTTP request timeout must be positive");
+        }
+        let status = unsafe {
+            hew_http_server_set_request_timeout_ms(self, timeout.millis_ceil())
+        };
+        if status < 0 {
+            return error net.NetError.InvalidArgument("HTTP request timeout could not be set");
+        }
     }
 }
 
@@ -86,16 +104,6 @@ impl Server {
     }
 }
 
-/// Return the TCP port selected for this listener.
-///
-/// This is primarily useful after binding to port `0`, which asks the kernel
-/// to choose an available ephemeral port.
-pub fn server_port(server: Server) -> i64 {
-    unsafe {
-        hew_http_server_port(server) as i64
-    }
-}
-
 // ── Request methods ───────────────────────────────────────────────────
 /// Methods available on an HTTP `Request`.
 trait RequestMethods {
@@ -105,8 +113,8 @@ trait RequestMethods {
     /// Return the request path (e.g. `"/api/users"`).
     fn path(self) -> string;
 
-    /// Return the value of the named header, or an empty string.
-    fn header(self, name: string) -> string;
+    /// Return the named header, or `None` when absent.
+    fn header(self, name: string) -> Option<string> fails net.NetError;
 
     /// Return all request headers as a list of `(name, value)` pairs.
     ///
@@ -117,40 +125,39 @@ trait RequestMethods {
 
     /// Return the request body, decoded according to `encoding`.
     ///
-    /// Text is decoded as UTF-8. The encoding argument is reserved; binary
-    /// data that is not UTF-8 cannot be returned as a string.
-    fn body(self, encoding: string) -> string;
+    /// Text is decoded as UTF-8. An empty encoding selects UTF-8; other
+    /// encodings and invalid UTF-8 bytes return errors.
+    fn body(self, encoding: string) -> string fails net.NetError;
 
-    /// Send a full HTTP response with status, content-type, and body.
+    /// Consume this request and send a full HTTP response.
     ///
     /// The `Content-Length` header is derived from `body` automatically.
-    fn respond(self, status: i64, content_type: string, body: string) -> Result<(), net.NetError>;
+    fn respond(consume self, status: i64, content_type: string, body: string) -> Result<(), net.NetError>;
 
     /// Send a plain-text HTTP response.
     ///
     /// # Examples
     ///
     /// ```hew,no_run
-    /// import std.net.http;
+    /// import std.net.http.server as http;
     ///
     /// fn main() {
     ///     match http.listen(":8080") {
     ///         .Ok(server) => {
-    ///             let req = server.accept();
+    ///             let req = server.accept().expect("accept request");
     ///             req.respond_text(200, "OK").expect("respond_text succeeds");
-    ///             req.close();
     ///             server.close();
     ///         }
-    ///         .Err(_err) => println(http.listen_error()),
+    ///         .Err(err) => println(f"{err}"),
     ///     }
     /// }
     /// ```
-    fn respond_text(self, status: i64, body: string) -> Result<(), net.NetError>;
+    fn respond_text(consume self, status: i64, body: string) -> Result<(), net.NetError>;
 
     /// Send a JSON HTTP response with `Content-Type: application/json`.
-    fn respond_json(self, status: i64, json: string) -> Result<(), net.NetError>;
+    fn respond_json(consume self, status: i64, json: string) -> Result<(), net.NetError>;
 
-    /// Begin a streaming response and return a `Sink` for chunked output.
+    /// Consume this request and return a `Sink` for chunked response output.
     ///
     /// Each `sink.send(chunk)` sends data to the client immediately.
     /// Call `sink.close()` to finish the response.
@@ -158,23 +165,23 @@ trait RequestMethods {
     /// # Examples
     ///
     /// ```hew,no_run
-    /// import std.net.http;
+    /// import std.net.http.server as http;
     ///
     /// fn main() {
     ///     match http.listen(":8080") {
     ///         .Ok(server) => {
-    ///             let req = server.accept();
+    ///             let req = server.accept().expect("accept request");
     ///             let body = req.respond_stream(200, "text/plain").expect("begin response");
     ///             body.send("chunk 1").expect("send");
     ///             body.send("chunk 2").expect("send");
     ///             body.close();
     ///             server.close();
     ///         }
-    ///         .Err(_err) => println(http.listen_error()),
+    ///         .Err(err) => println(f"{err}"),
     ///     }
     /// }
     /// ```
-    fn respond_stream(self, status: i64, content_type: string) -> Result<Sink<string>, net.NetError>;
+    fn respond_stream(consume self, status: i64, content_type: string) -> Result<Sink<string>, net.NetError>;
 }
 
 impl RequestMethods for Request {
@@ -190,10 +197,23 @@ impl RequestMethods for Request {
             hew_http_request_path(self)
         }
     }
-    /// Return the value of the named header, or an empty string.
-    fn header(self, name: string) -> string {
-        unsafe {
+    /// Return the named header, or `None` when absent.
+    fn header(self, name: string) -> Option<string> fails net.NetError {
+        let value = unsafe {
             hew_http_request_header(self, name)
+        };
+        let detail = unsafe {
+            hew_http_last_error()
+        };
+        if !detail.is_empty() {
+            return error net.NetError.Protocol(detail);
+        }
+        if unsafe {
+            hew_http_request_has_header(self, name)
+        } {
+            .Some(value)
+        } else {
+            .None
         }
     }
     /// Return all request headers as a list of `(name, value)` pairs.
@@ -203,77 +223,59 @@ impl RequestMethods for Request {
         }
     }
     /// Return the request body decoded according to `encoding`.
-    fn body(self, encoding: string) -> string {
-        unsafe {
+    fn body(self, encoding: string) -> string fails net.NetError {
+        if !encoding.is_empty() && encoding.to_lower() != "utf-8" {
+            return error net.NetError.InvalidArgument(f"unsupported HTTP body encoding: {encoding}");
+        }
+        let value = unsafe {
             hew_http_request_body_string(self, encoding)
+        };
+        let detail = unsafe {
+            hew_http_last_error()
+        };
+        if !detail.is_empty() {
+            return error net.NetError.Protocol(detail);
+        }
+        value
+    }
+    /// Consume this request and send a full HTTP response.
+    fn respond(consume self, status: i64, content_type: string, body: string) fails net.NetError {
+        if !valid_response_status(status) {
+            return error net.NetError.InvalidArgument(f"HTTP response status {status} must be in 100..=599");
+        }
+        let result = unsafe {
+            hew_http_respond_bridge(self, status as i32, content_type, body)
+        };
+        if result < 0 {
+            return error net.NetError.Protocol(unsafe {
+                hew_stream_last_error()
+            });
         }
     }
-    /// Send a full HTTP response with status, content-type, and body.
-    fn respond(self, status: i64, content_type: string, body: string) -> Result<(), net.NetError> {
-        let n = if valid_response_status(status) {
-            (unsafe {
-                hew_http_respond_bridge(self, status as i32, content_type, body)
-            }) as i64
-        } else {
-            -1
-        };
-        if n < 0 {
-            .Err(net.net_error_from_errno(0))
-        } else {
-            .Ok(())
-        } // HTTP has no OS errno channel
-    }
     /// Send a plain-text HTTP response.
-    fn respond_text(self, status: i64, body: string) -> Result<(), net.NetError> {
-        let n = if valid_response_status(status) {
-            (unsafe {
-                hew_http_respond_text(self, status as i32, body)
-            }) as i64
-        } else {
-            -1
-        };
-        if n < 0 {
-            .Err(net.net_error_from_errno(0))
-        } else {
-            .Ok(())
-        } // HTTP has no OS errno channel
+    fn respond_text(consume self, status: i64, body: string) fails net.NetError {
+        self.respond(status, "text/plain; charset=utf-8", body)?;
     }
-    /// Send a JSON HTTP response with `Content-Type: application/json`.
-    fn respond_json(self, status: i64, json: string) -> Result<(), net.NetError> {
-        let n = if valid_response_status(status) {
-            (unsafe {
-                hew_http_respond_json(self, status as i32, json)
-            }) as i64
-        } else {
-            -1
-        };
-        if n < 0 {
-            .Err(net.net_error_from_errno(0))
-        } else {
-            .Ok(())
-        } // HTTP has no OS errno channel
+    /// Send a JSON HTTP response.
+    fn respond_json(consume self, status: i64, json: string) fails net.NetError {
+        self.respond(status, "application/json", json)?;
     }
     /// Begin a streaming response.
-    fn respond_stream(self, status: i64, content_type: string) -> Result<Sink<string>, net.NetError> {
-        if valid_response_status(status) {
-            let sink = unsafe {
-                hew_http_respond_stream(self, status as i32, content_type)
-            };
-            // HTTP has no errno channel; the runtime sets a message via set_last_error
-            // on the two failure paths (null self, already-responded).  The errno side-
-            // channel is always 0 here, so Other(0) is the correct classification.
-            if unsafe {
-                hew_sink_is_valid(sink)
-            } {
-                .Ok(sink)
-            } else {
-                let _ = unsafe {
-                    hew_stream_last_error()
-                }; // consume the error message
-                .Err(net.net_error_from_errno(0))
-            }
+    fn respond_stream(consume self, status: i64, content_type: string) -> Sink<string> fails net.NetError {
+        if !valid_response_status(status) {
+            return error net.NetError.InvalidArgument(f"HTTP response status {status} must be in 100..=599");
+        }
+        let sink = unsafe {
+            hew_http_respond_stream(self, status as i32, content_type)
+        };
+        if unsafe {
+            hew_sink_is_valid(sink)
+        } {
+            sink
         } else {
-            .Err(net.net_error_from_errno(0))
+            return error net.NetError.Protocol(unsafe {
+                hew_stream_last_error()
+            });
         }
     }
 }
@@ -292,19 +294,6 @@ impl Request {
 }
 
 // ── Module-level functions ────────────────────────────────────────────
-/// Return the detail of this actor's most recent HTTP failure.
-///
-/// Reads the same runtime authority as `http_client.last_error()`; the name
-/// differs only because both files share one package pub-name namespace.
-/// Returns the empty string when the last HTTP call succeeded. Call it
-/// immediately after an `Err` from `listen` for the precise, non-secret
-/// reason.
-pub fn listen_error() -> string {
-    unsafe {
-        hew_http_last_error()
-    }
-}
-
 /// Create a new HTTP server listening on the given address.
 ///
 /// The address format is `"host:port"` or `":port"` to listen on all
@@ -312,13 +301,13 @@ pub fn listen_error() -> string {
 ///
 /// Returns `Err(net.NetError)` when the address cannot be bound — the port is
 /// already in use, the address is not local, or the string is not a valid
-/// endpoint. Use `http.listen_error()` for the precise detail.
+/// endpoint. The returned error carries the failure detail.
 ///
 /// # Examples
 ///
 /// ```hew,no_run
 /// import std.net;
-/// import std.net.http;
+/// import std.net.http.server as http;
 ///
 /// fn main() {
 ///     match http.listen("127.0.0.1:0") {
@@ -346,27 +335,12 @@ pub fn listen(addr: string) -> Result<Server, net.NetError> {
         };
         return .Err(net.NetError.InvalidArgument(detail));
     }
+    if errno == 0 {
+        return .Err(net.NetError.Protocol(unsafe {
+            hew_http_last_error()
+        }));
+    }
     .Err(net.net_error_from_errno(errno))
-}
-
-/// Send a full HTTP response.
-pub fn respond(req: Request, status: i64, content_type: string, body: string) -> Result<(), net.NetError> {
-    req.respond(status, content_type, body)
-}
-
-/// Send a plain-text HTTP response.
-pub fn respond_text(req: Request, status: i64, body: string) -> Result<(), net.NetError> {
-    req.respond_text(status, body)
-}
-
-/// Send a JSON HTTP response.
-pub fn respond_json(req: Request, status: i64, json: string) -> Result<(), net.NetError> {
-    req.respond_json(status, json)
-}
-
-/// Begin a streaming HTTP response.
-pub fn respond_stream(req: Request, status: i64, content_type: string) -> Result<Sink<string>, net.NetError> {
-    req.respond_stream(status, content_type)
 }
 
 // ── FFI bindings (implementation detail) ──────────────────────────────
@@ -378,6 +352,8 @@ extern "C" {
     fn hew_http_last_error() -> string;
     fn hew_http_server_recv(server: Server) -> Request;
     fn hew_http_server_set_request_timeout_ms(server: Server, timeout_ms: i64) -> i32;
+    fn hew_http_request_is_valid(req: Request) -> bool;
+    fn hew_http_request_has_header(req: Request, name: string) -> bool;
     fn hew_http_request_method(req: Request) -> string;
     fn hew_http_request_path(req: Request) -> string;
     fn hew_http_request_body_string(req: Request, encoding: string) -> string;

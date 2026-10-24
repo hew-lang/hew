@@ -533,7 +533,7 @@ impl Checker {
         span: &Span,
     ) {
         use hew_parser::ast::CompoundAssignOp as Op;
-        let resolved = self.subst.resolve(target_ty);
+        let resolved = self.normalize_for_use(target_ty);
         let arithmetic = matches!(
             op,
             Op::Add | Op::Subtract | Op::Multiply | Op::Divide | Op::Modulo
@@ -548,6 +548,7 @@ impl Checker {
                 arithmetic
                     && (ty.is_numeric_literal()
                         || ty.is_float()
+                        || self.is_numeric_parameter(ty)
                         || ty.is_duration()
                         || ty.is_instant())
             }
@@ -1410,75 +1411,8 @@ impl Checker {
                     // skip the gate when the value type is unresolved — the root
                     // error has already fired and cascades would obscure it.
                     let resolved_val_ty = self.subst.resolve(&val_ty);
-                    let maybe_refutable_kind = match &pattern.0 {
-                        // Irrefutable product types — admitted without a gate error.
-                        // TRANSITION(P1): deleted by A1 commit 2
-                        Pattern::NominalPath {
-                            path: one_path,
-                            payload: Some(hew_parser::ast::NominalPatternPayload::Record { .. }),
-                        } if one_path.segments.len() == 1 => {
-                            let type_name = resolved_val_ty.type_name();
-                            match type_name {
-                                Some(_) => {
-                                    let td = self.ty_type_def(&resolved_val_ty).cloned();
-                                    match td {
-                                        Some(td)
-                                            if matches!(
-                                                td.kind,
-                                                TypeDefKind::Record | TypeDefKind::Struct
-                                            ) =>
-                                        {
-                                            // The pattern's name must be the value's
-                                            // declaration; `bind_pattern` below
-                                            // refuses any other (R5).
-                                            // A record pattern always matches its
-                                            // own type, but a field pattern can
-                                            // still fail: `let Wrap { inner:
-                                            // .Some(n) } = w;` is refutable.
-                                            if aggregate_holds_refutable_element(&pattern.0) {
-                                                Some("enum variant")
-                                            } else {
-                                                None
-                                            }
-                                        } // product type; refutable only through a field
-                                        Some(_) => Some("enum variant"),
-                                        None => {
-                                            // Unknown type — checker already reported; allow
-                                            // bind_pattern to run for error recovery.
-                                            None
-                                        }
-                                    }
-                                }
-                                None => None, // Ty::Var/Ty::Error — skip gate
-                            }
-                        }
-                        // Enum-variant constructor (e.g. `Some(x)`) — always refutable.
-                        // Qualified and contextual nominal paths retain their source
-                        // spelling in the AST, but remain refutable variant patterns.
-                        Pattern::NominalPath { .. } | Pattern::ContextVariant(_) => {
-                            Some("enum variant")
-                        }
-                        // Unit variant written as a bare/qualified identifier
-                        // (e.g. `None`, `E::A`) — refutable; binds nothing.
-                        Pattern::Identifier(_) if identifier_is_unit_variant => {
-                            Some("enum variant")
-                        }
-                        // Literal patterns are always refutable.
-                        Pattern::Literal(_) => Some("literal"),
-                        // Or-patterns are always refutable.
-                        Pattern::Or(_, _) => Some("or-pattern"),
-                        // An aggregate is refutable when one of its elements
-                        // is: `let (.Some(n), m) = pair;` can fail to match.
-                        Pattern::Tuple(_) | Pattern::RecordShorthand { .. }
-                            if aggregate_holds_refutable_element(&pattern.0) =>
-                        {
-                            Some("enum variant")
-                        }
-                        // All other patterns (irrefutable aggregates, plain
-                        // Identifier, Wildcard, Regex, …) — handled above or not
-                        // refutable here.
-                        _ => None,
-                    };
+                    let maybe_refutable_kind =
+                        self.binding_refutable_kind(&pattern.0, &resolved_val_ty);
                     match (maybe_refutable_kind, else_block) {
                         // Refutable pattern WITH an `else` clause: this is a
                         // let-else. The refutable pattern is admitted because
@@ -1861,7 +1795,7 @@ impl Checker {
                 if let Some(field) = receiver_field.as_ref() {
                     self.record_actor_state_projection_resolution(&target.1, field);
                 }
-                self.reject_indexed_writable_borrow(target);
+                self.reject_invalid_writable_projection(target);
                 // Record the type-shape metadata for every accepted target
                 // immediately after synthesising the target type so the codegen
                 // compound-assignment paths can read signedness without
@@ -2339,6 +2273,7 @@ impl Checker {
                     .contains(&SpanKey::in_module(&iterable.1, self.current_module_idx))
                     .then(|| iterable.1.clone());
                 self.bind_scrutinee_pattern(pattern, &elem_ty, true, None, loan);
+                self.require_irrefutable_binding(pattern, &elem_ty, "for");
                 self.in_for_binding = false;
                 if let Some(lbl) = label {
                     self.loop_labels.push(lbl.to_string());
@@ -2576,44 +2511,5 @@ impl Checker {
             Ty::Unit
         };
         self.record_type(span, &ty);
-    }
-}
-
-/// Whether an aggregate pattern holds an element that can fail to match.
-///
-/// A tuple or record pattern is itself irrefutable, but `let (.Some(n), m) =
-/// pair;` is not: the constructor element decides whether the whole pattern
-/// matches. Only shapes that are refutable on their own spelling count, so a
-/// bare identifier element (which may or may not name a unit variant) is left
-/// to the top-level classifier.
-fn aggregate_holds_refutable_element(pattern: &Pattern) -> bool {
-    fn is_refutable(pattern: &Pattern) -> bool {
-        match pattern {
-            // TRANSITION(P1): deleted by A1 commit 2
-            Pattern::NominalPath {
-                path,
-                payload: Some(hew_parser::ast::NominalPatternPayload::Record { fields, .. }),
-            } if path.segments.len() == 1 => fields
-                .iter()
-                .any(|field| field.pattern.as_ref().is_some_and(|(p, _)| is_refutable(p))),
-            Pattern::NominalPath { .. }
-            | Pattern::ContextVariant(_)
-            | Pattern::Literal(_)
-            | Pattern::Or(_, _) => true,
-            Pattern::Tuple(elements) => elements.iter().any(|(inner, _)| is_refutable(inner)),
-            Pattern::RecordShorthand { fields, .. } => fields
-                .iter()
-                .any(|field| field.pattern.as_ref().is_some_and(|(p, _)| is_refutable(p))),
-            _ => false,
-        }
-    }
-    match pattern {
-        Pattern::Tuple(_) | Pattern::RecordShorthand { .. } => is_refutable(pattern),
-        // TRANSITION(P1): deleted by A1 commit 2
-        Pattern::NominalPath {
-            path,
-            payload: Some(hew_parser::ast::NominalPatternPayload::Record { .. }),
-        } if path.segments.len() == 1 => is_refutable(pattern),
-        _ => false,
     }
 }

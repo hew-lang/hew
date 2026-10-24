@@ -1,20 +1,24 @@
-//! Tests for std::net::ipnet invalid-input handling.
-
+//! Checked CIDR syntax, absence and integer boundaries.
 import std.net.ipnet;
 
 #[test]
-fn test_cidr_hosts_returns_exact_valid_host_count() {
-    assert(ipnet.cidr_hosts("192.168.1.0/24") == 254);
-}
-
-#[test]
-#[should_panic]
-fn test_cidr_hosts_rejects_ipv6_count_that_exceeds_i64() {
-    ipnet.cidr_hosts("::/65");
-}
-
-#[test]
-#[should_panic]
-fn test_cidr_contains_rejects_invalid_cidr() {
-    ipnet.cidr_contains("bad-cidr", "10.0.0.1");
+fn cidr_counts_and_boundaries() {
+    assert(ipnet.cidr_hosts("192.168.1.0/24").expect("count") == 254);
+    assert(ipnet.cidr_hosts("::/66").expect("count") == 4611686018427387904);
+    assert(ipnet.cidr_hosts("::/128").expect("count") == 1);
+    match ipnet.cidr_hosts("::/65") {
+        .Err(.HostCountOverflow) => {}
+        _ => panic("oversized count must fail"),
+    }
+    match ipnet.cidr_contains("bad-cidr", "10.0.0.1") {
+        .Err(.InvalidCidr(value)) => assert(value == "bad-cidr"),
+        _ => panic("invalid CIDR must fail"),
+    }
+    match ipnet.cidr_contains("10.0.0.0/8", "bad-ip") {
+        .Err(.InvalidAddress(value)) => assert(value == "bad-ip"),
+        _ => panic("invalid IP must fail"),
+    }
+    assert(ipnet.cidr_broadcast("::/64").expect("IPv6 network").is_none());
+    assert(ipnet.cidr_broadcast("192.168.1.0/24").expect("IPv4 network") == .Some("192.168.1.255"));
+    assert(ipnet.cidr_network("bad").is_err());
 }

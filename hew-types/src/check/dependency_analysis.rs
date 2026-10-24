@@ -30,6 +30,7 @@ struct DependencyKey {
 struct DependencySeed {
     key: DependencyKey,
     checker: Option<Checker>,
+    normalized_program: Option<std::sync::Arc<machine_normalize::NormalizedProgram>>,
     lookup_footprint: std::collections::HashSet<String>,
 }
 
@@ -132,13 +133,29 @@ impl DependencyAnalysisCache {
             dependency_checker.has_checked_program = true;
             dependency_checker.prepare_program(&key.program, true);
             dependency_checker.next_default_span = key.next_default_span;
-            dependency_checker.check_dependency_bodies(&key.program);
-            dependency_checker.check_embedded_builtin_impl_bodies(&key.program);
+            let normalized_dependencies = normalized_program.as_ref().map(|normalized| {
+                let mut dependencies = (**normalized).clone();
+                dependencies.program = key.program.clone();
+                std::sync::Arc::new(dependencies)
+            });
+            let normalized_program = dependency_checker
+                .prepare_implied_error_displays(&key.program, normalized_dependencies);
+            let prepared = normalized_program
+                .as_ref()
+                .map_or(&key.program, |normalized| &normalized.program);
+            dependency_checker.next_default_span = normalized_program
+                .as_ref()
+                .map_or(key.next_default_span, |normalized| {
+                    normalized.next_free_span()
+                });
+            dependency_checker.check_dependency_bodies(prepared);
+            dependency_checker.check_embedded_builtin_impl_bodies(prepared);
             if self.seeds.len() == MAX_CHECKPOINTS {
                 self.seeds.remove(0);
             }
             self.seeds.push(DependencySeed {
                 lookup_footprint: dependency_lookup_footprint(&key),
+                normalized_program,
                 key,
                 // An invalid dependency cannot seed a checker. Remember that
                 // exact snapshot so later roots go straight to full analysis
@@ -158,6 +175,35 @@ impl DependencyAnalysisCache {
             return checker.check_program(source_program);
         }
 
+        // Generated providers belong to the cached dependency modules. Keep
+        // the real root and its source identity, and publish those same module
+        // bodies and expansion origins in this output's normalized program.
+        let normalized_program = seed
+            .normalized_program
+            .as_ref()
+            .map(|providers| {
+                let mut normalized = (**providers).clone();
+                let mut augmented = program.clone();
+                if let (Some(graph), Some(dependencies)) =
+                    (&mut augmented.module_graph, &providers.program.module_graph)
+                {
+                    for (id, module) in &dependencies.modules {
+                        if *id != dependencies.root {
+                            graph.modules.insert(id.clone(), module.clone());
+                            if let Some(sources) = dependencies.item_sources.get(&id.dotted()) {
+                                graph.item_sources.insert(id.dotted(), sources.clone());
+                            }
+                        }
+                    }
+                }
+                machine_normalize::project_normalized_imports(&mut augmented);
+                normalized.program = augmented;
+                std::sync::Arc::new(normalized)
+            })
+            .or_else(|| normalized_program.clone());
+        let program = normalized_program
+            .as_ref()
+            .map_or(program, |normalized| &normalized.program);
         let mut fork = dependency_checker.fork_dependency_state();
         fork.input_provider.clone_from(&checker.input_provider);
         if let Some(provider) = &fork.input_provider {
@@ -309,13 +355,13 @@ fn automatic_prelude_closure(
     graph: &ModuleGraph,
 ) -> std::collections::HashSet<ModulePath> {
     let mut closure = std::collections::HashSet::new();
-    for leaf in ["builtins", "option", "result", "iter"] {
+    for (leaf, _) in crate::stdlib_authority::IMPLICIT_PRELUDE_STD_SOURCES {
         closure.insert(ModulePath::new(["std", leaf]));
     }
     // The shared frontend injects this exact empty-selection load at a
     // synthetic span. A source-authored import cannot have a zero-length span.
     // It brings lifecycle types and their transitive imports into every root,
-    // just like the four floor modules. Membership never confers std authority:
+    // just like the implicit floor modules. Membership never confers std authority:
     // each selected physical source must separately prove canonical provenance.
     let injected_monitor = program.items.iter().any(|(item, span)| {
         let Item::Import(import) = item else {

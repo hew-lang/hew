@@ -1,8 +1,9 @@
 import std.net.url;
 
-fn main() -> i64 {
-    let parsed = url.parse("x");
-    let host = parsed.host();
-    parsed.close();
-    host.len()
+fn main() {
+    match url.parse("x") {
+        .Err(.Invalid(input)) => assert(input == "x"),
+        _ => panic("expected invalid URL"),
+    }
+    println("invalid URL recovered");
 }

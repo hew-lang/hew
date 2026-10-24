@@ -1079,6 +1079,107 @@ fn playground_sources_match_native() {
 
 #[cfg(unix)]
 #[test]
+fn frontend_completion_forms_match_native() {
+    set_test_hewpath();
+    ensure_native_toolchain();
+    ensure_parity_runner_built();
+    for case in [
+        ParityCase {
+            test_name: "irrefutable-iteration-bindings",
+            source_rel: "tests/core-acceptance/cases/irrefutable-iteration-bindings.hew",
+        },
+        ParityCase {
+            test_name: "selected-product-patterns",
+            source_rel: "tests/core-acceptance/cases/selected-product-patterns.hew",
+        },
+        ParityCase {
+            test_name: "whole-owner-index",
+            source_rel: "tests/core-acceptance/cases/whole-owner-index.hew",
+        },
+        ParityCase {
+            test_name: "lifecycle-function-values",
+            source_rel: "tests/core-acceptance/cases/lifecycle-function-values.hew",
+        },
+        ParityCase {
+            test_name: "scalar-constant-composition",
+            source_rel: "tests/core-acceptance/cases/scalar-constant-composition.hew",
+        },
+        ParityCase {
+            test_name: "intrinsic-function-values",
+            source_rel: "tests/core-acceptance/cases/intrinsic-function-values.hew",
+        },
+        ParityCase {
+            test_name: "execution-context-readers",
+            source_rel: "tests/core-acceptance/cases/execution-context-readers.hew",
+        },
+        ParityCase {
+            test_name: "scalar-pattern-composition",
+            source_rel: "tests/core-acceptance/cases/scalar-pattern-composition.hew",
+        },
+        ParityCase {
+            test_name: "associated-record-constructor",
+            source_rel: "tests/core-acceptance/cases/associated-record-constructor.hew",
+        },
+        ParityCase {
+            test_name: "guarded-aggregate-match",
+            source_rel: "tests/core-acceptance/cases/guarded-aggregate-match.hew",
+        },
+        ParityCase {
+            test_name: "range-adapter-composition",
+            source_rel: "tests/core-acceptance/cases/range-adapter-composition.hew",
+        },
+        ParityCase {
+            test_name: "generic-numeric-bounds",
+            source_rel: "tests/core-acceptance/cases/generic-numeric-bounds.hew",
+        },
+    ] {
+        assert_case(&case, "");
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn bounded_range_values_match_native() {
+    set_test_hewpath();
+    ensure_native_toolchain();
+    ensure_parity_runner_built();
+    for case in [
+        ParityCase {
+            test_name: "bounded-range-values",
+            source_rel: "tests/core-acceptance/cases/bounded-range-values.hew",
+        },
+        ParityCase {
+            test_name: "bounded-range-step-fault",
+            source_rel: "tests/core-acceptance/cases/bounded-range-step-fault.hew",
+        },
+    ] {
+        assert_case(&case, "");
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn qualified_record_bindings_match_native() {
+    set_test_hewpath();
+    ensure_native_toolchain();
+    ensure_parity_runner_built();
+    let mut inputs = hew_compile::SourceSet::in_memory();
+    inputs.insert(
+        "qualified_record_support/models.hew",
+        include_str!("../../tests/core-acceptance/cases/qualified_record_support/models.hew"),
+    );
+    assert_case_with_inputs(
+        &ParityCase {
+            test_name: "qualified-record-bindings",
+            source_rel: "tests/core-acceptance/cases/qualified-record-bindings.hew",
+        },
+        "",
+        inputs,
+    );
+}
+
+#[cfg(unix)]
+#[test]
 fn generic_sort_and_reverse_match_native() {
     set_test_hewpath();
     ensure_native_toolchain();
@@ -1174,6 +1275,41 @@ fn actor_state_iterator_snapshots_and_explicit_drains_match_native() {
     ] {
         assert_case(&case, "");
     }
+}
+
+#[cfg(unix)]
+#[test]
+fn http_codec_identity_and_hardening_match_native() {
+    set_test_hewpath();
+    ensure_native_toolchain();
+    ensure_parity_runner_built();
+    for case in [
+        ParityCase {
+            test_name: "http_codec_module_identity",
+            source_rel: "tests/core-acceptance/cases/std-two-file-module-identity.hew",
+        },
+        ParityCase {
+            test_name: "http_codec_hardening",
+            source_rel: "examples/net/await_http_codec_hardening.hew",
+        },
+    ] {
+        assert_case(&case, "");
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn numeric_iterator_terminals_match_native() {
+    set_test_hewpath();
+    ensure_native_toolchain();
+    ensure_parity_runner_built();
+    assert_case(
+        &ParityCase {
+            test_name: "numeric_iterator_terminals",
+            source_rel: "tests/core-acceptance/cases/numeric-iterator-terminals.hew",
+        },
+        "",
+    );
 }
 
 #[cfg(unix)]
@@ -1723,8 +1859,11 @@ fn assert_exact_stdout(case: &ParityCase, native: &Output) {
             Some("alpha 3\nbeta 3\n300\nalpha 3\nbeta 5 alpha 5 500\nright\nleft\ntag 7\n")
         }
         "identity_w7_sandbox" | "identity_w7_sandbox_control" => Some("7\n8\n"),
+        "http_codec_module_identity" => Some("0\n400\ntrue\ntrue\n"),
+        "http_codec_hardening" => Some("codec-hardening-ok\n"),
+        "numeric_iterator_terminals" => Some("numeric iterators ok\n"),
         "stdin_concurrent" => Some("one line each\nrest=[three\nfour]\n"),
-        "stdin_lines" => Some("first=[alpha] second=[]\nrest=[beta\r\ngamma]\nafter end\n"),
+        "stdin_lines" => Some("literal io.read_line()\nfirst=[alpha] second=[]\nrest=[beta\r\ngamma]\nafter end\n"),
         "closure_edges" => Some(
             "Err(empty) Ok(6) Err(not a number: x)\nOk(4) Err(not a number: x)\nprinted\nErr(nothing to print) Ok(())\nOk(7) Ok(3) Err(not a number: x)\nOk([6, 6])\nErr(not a number: x)\nErr(blank entry)\n[Some(2), None]\nSome(9) None\n",
         ),

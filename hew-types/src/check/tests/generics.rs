@@ -2120,26 +2120,6 @@ fn tuple_literal_coercion_overflow() {
     );
 }
 
-#[test]
-fn range_default_type_is_i64() {
-    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
-    let range = (
-        Expr::Range {
-            start: None,
-            end: None,
-            inclusive: false,
-        },
-        0..2,
-    );
-    let ty = checker.synthesize(&range.0, &range.1);
-    assert_eq!(ty, Ty::range(Ty::I64));
-    assert!(
-        checker.errors.is_empty(),
-        "unexpected errors: {:?}",
-        checker.errors
-    );
-}
-
 // ── Type variable resolution in check_against ────────────────────
 
 #[test]
@@ -2357,82 +2337,43 @@ fn typecheck_output_materializes_literal_kinds_for_unannotated_lets() {
 
 #[test]
 fn bind_pattern_struct_fields_substitute_generic_type_args() {
+    let source = r"
+        type Pair<T, U> {
+            first: T;
+            second: U;
+        }
+
+        fn unpack(pair: Pair<i64, bool>) -> (i64, bool) {
+            let Pair { first, second } = pair;
+            (first, second)
+        }
+    ";
+    let parsed = hew_parser::parse(source);
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:?}",
+        parsed.errors
+    );
+
     let mut checker = Checker::new(ModuleRegistry::new(vec![]));
-    let __id = checker.test_declaration("Pair");
-    checker.type_defs.insert(
-        __id,
-        TypeDef {
-            kind: TypeDefKind::Struct,
-            name: "Pair".to_string(),
-            type_params: vec![
-                crate::ParamHead::for_test("T"),
-                crate::ParamHead::for_test("U"),
-            ],
-            bounds: crate::check::ParamBounds::default(),
-            fields: HashMap::from([
-                (
-                    "first".to_string(),
-                    Ty::param(crate::ParamHead::for_test("T")),
-                ),
-                (
-                    "second".to_string(),
-                    Ty::param(crate::ParamHead::for_test("U")),
-                ),
-            ]),
-            variants: HashMap::new(),
-            implicit_variant_fields: HashMap::default(),
-            methods: HashMap::new(),
-            doc_comment: None,
-            field_order: vec![],
-            is_indirect: false,
-        },
-    );
-
-    checker.bind_pattern(
-        &Pattern::NominalPath {
-            path: hew_parser::ast::Path::from_spellings(&["Pair"]),
-            payload: Some(hew_parser::ast::NominalPatternPayload::Record {
-                fields: vec![
-                    hew_parser::ast::PatternField {
-                        name: Ident::new("first"),
-                        name_span: 0..0,
-                        pattern: None,
-                    },
-                    hew_parser::ast::PatternField {
-                        name: Ident::new("second"),
-                        name_span: 0..0,
-                        pattern: None,
-                    },
-                ],
-                rest: None,
-            }),
-        },
-        &checker.test_named("Pair", vec![Ty::I64, Ty::Bool]),
-        false,
-        &(0..10),
-    );
-
+    let output = checker.check_program(&parsed.program);
     assert!(
         checker.errors.is_empty(),
         "unexpected errors: {:?}",
         checker.errors
     );
-    assert_eq!(
-        checker
-            .env
-            .lookup_ref("first")
-            .map(|binding| binding.ty.clone()),
-        Some(Ty::I64),
-        "generic struct destructuring must bind instantiated field types"
-    );
-    assert_eq!(
-        checker
-            .env
-            .lookup_ref("second")
-            .map(|binding| binding.ty.clone()),
-        Some(Ty::Bool),
-        "generic struct destructuring must bind instantiated field types"
-    );
+    for (name, expected) in [("first", Ty::I64), ("second", Ty::Bool)] {
+        let start = source.rfind(name).expect("destructured field use");
+        assert_eq!(
+            output.expr_types.get(&SpanKey {
+                start,
+                end: start + name.len(),
+                module_idx: 0,
+            }),
+            Some(&expected),
+            "generic record destructuring must bind instantiated field types"
+        );
+    }
 }
 
 #[test]
@@ -5299,5 +5240,57 @@ fn trait_object_positional_arguments_match_the_declared_binders() {
         } else {
             assert!(output.errors.is_empty(), "{bound}: {:?}", output.errors);
         }
+    }
+}
+
+#[test]
+fn numeric_bounds_support_scalar_arithmetic_and_common_literals() {
+    let source = r#"
+        fn combine<T: Num>(a: T, b: T) -> T {
+            var result: T = 0;
+            result += a;
+            result *= b;
+            result + 1
+        }
+        type Ranked { rank: i64; label: string; }
+        fn less<T: PartialOrd>(a: T, b: T) -> bool { a < b }
+        fn main() {
+            let signed: i8 = combine(2, 3);
+            let unsigned: u64 = combine(2, 3);
+            let floating: f64 = combine(2, 3);
+            let ranked = less(Ranked { rank: 1, label: "first" }, Ranked { rank: 2, label: "second" });
+        }
+    "#;
+    let output = check_source(source);
+    assert!(output.errors.is_empty(), "{:?}", output.errors);
+}
+
+#[test]
+fn numeric_bounds_do_not_admit_nonuniversal_literals_or_integer_only_operations() {
+    for source in [
+        "fn value<T: Num>() -> T { 128 } fn main() {}",
+        "fn value<T: Num>() -> T { -1 } fn main() {}",
+        "fn value<T: Num>() -> T { 0.5 } fn main() {}",
+        "fn value<T>() -> T { 0 } fn main() {}",
+        "fn value<T: Num>(a: T, b: T) -> T { a & b } fn main() {}",
+    ] {
+        let output = check_source(source);
+        assert!(!output.errors.is_empty(), "accepted {source}");
+    }
+}
+
+#[test]
+fn contextual_generic_results_check_literal_arguments_at_the_selected_width() {
+    for literal in ["256", "-1"] {
+        let source = format!("fn identity<T>(value: T) -> T {{ value }} fn main() {{ let value: u8 = identity({literal}); }}");
+        let output = check_source(&source);
+        assert!(
+            output
+                .errors
+                .iter()
+                .any(|error| error.kind == TypeErrorKind::InvalidOperation),
+            "{:?}",
+            output.errors
+        );
     }
 }

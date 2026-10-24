@@ -1,6 +1,6 @@
 //! Structured, leveled logging for Hew programs (slog-style).
 //!
-//! import std.misc.log;
+//! import std.log;
 //!
 //! Provides two surfaces:
 //!
@@ -14,7 +14,7 @@
 //! # Usage — module-level
 //!
 //! ```
-//! import std.misc.log;
+//! import std.log;
 //!
 //! fn main() {
 //!     log.setup();   // set global level to INFO
@@ -27,7 +27,7 @@
 //! # Usage — Logger value
 //!
 //! ```
-//! import std.misc.log;
+//! import std.log;
 //!
 //! fn main() {
 //!     let lg = log.new_logger(log.DEBUG, log.JSON);
@@ -97,7 +97,7 @@ pub const JSON: i64 = 1;
 /// # Example
 ///
 /// ```
-/// import std.misc.log;
+/// import std.log;
 ///
 /// fn main() {
 ///     let lg = log.new_logger(log.DEBUG, log.JSON);
@@ -142,7 +142,7 @@ pub fn logger_format(lg: Logger) -> i64 {
 /// # Example
 ///
 /// ```
-/// import std.misc.log;
+/// import std.log;
 ///
 /// fn main() {
 ///     let f = log.field("env", "production");    // "env=production"
@@ -161,7 +161,7 @@ pub fn field(key: string, val: string) -> string {
 /// # Example
 ///
 /// ```
-/// import std.misc.log;
+/// import std.log;
 ///
 /// fn main() {
 ///     let f = log.field_int("port", 8080);  // "port=8080"
@@ -176,7 +176,7 @@ pub fn field_int(key: string, val: i64) -> string {
 /// # Example
 ///
 /// ```
-/// import std.misc.log;
+/// import std.log;
 ///
 /// fn main() {
 ///     let f = log.field_float("ratio", 0.75);  // "ratio=0.75"
@@ -191,7 +191,7 @@ pub fn field_float(key: string, val: f64) -> string {
 /// # Example
 ///
 /// ```
-/// import std.misc.log;
+/// import std.log;
 ///
 /// fn main() {
 ///     let f = log.field_bool("debug", true);  // "debug=true"
@@ -240,7 +240,7 @@ pub fn setup() {
 /// # Examples
 ///
 /// ```
-/// import std.misc.log;
+/// import std.log;
 ///
 /// fn main() {
 ///     log.set_level(log.DEBUG);
@@ -266,7 +266,7 @@ pub fn get_level() -> i64 {
 /// # Examples
 ///
 /// ```
-/// import std.misc.log;
+/// import std.log;
 ///
 /// fn main() {
 ///     log.set_format(log.JSON);
@@ -298,7 +298,7 @@ pub fn error(msg: string) {
 /// # Example
 ///
 /// ```
-/// import std.misc.log;
+/// import std.log;
 ///
 /// fn main() {
 ///     log.error_with("request failed", [log.field_int("status", 500), log.field("path", "/api")]);
@@ -338,7 +338,7 @@ pub fn info(msg: string) {
 /// # Example
 ///
 /// ```
-/// import std.misc.log;
+/// import std.log;
 ///
 /// fn main() {
 ///     log.info_with("server started", [log.field_int("port", 8080)]);
@@ -407,7 +407,7 @@ pub fn logger_warn(lg: Logger, msg: string, fields: Vec<string>) {
 /// # Example
 ///
 /// ```
-/// import std.misc.log;
+/// import std.log;
 ///
 /// fn main() {
 ///     let lg = log.new_logger(log.INFO, log.JSON);

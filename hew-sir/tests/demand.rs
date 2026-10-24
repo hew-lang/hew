@@ -177,7 +177,7 @@ fn the_same_body_reached_from_the_entry_is_reported_unsupported() {
     assert!(
         matches!(
             status_of(&lowered, "stranded"),
-            SirLoweringStatus::Unsupported { .. }
+            SirLoweringStatus::Failed { .. }
         ),
         "a demanded body outside the surface must report why: {:#?}",
         lowered.statuses
@@ -185,7 +185,7 @@ fn the_same_body_reached_from_the_entry_is_reported_unsupported() {
 }
 
 #[test]
-fn the_dump_reports_every_unsupported_body_with_a_reason() {
+fn the_dump_reports_every_failed_body_with_a_reason() {
     // Seven is deliberately past the six-entry detail limit the CLI used to
     // truncate at, so a regression to summarising would drop at least one.
     let mut helpers = String::new();
@@ -210,14 +210,14 @@ fn the_dump_reports_every_unsupported_body_with_a_reason() {
 
     let dump = dump_lowering(&lowered);
     for index in 0..7 {
-        let stanza = format!("; fn helper{index}\n; unsupported: ");
+        let stanza = format!("; fn helper{index}\n; failed: ");
         assert!(
             dump.contains(&stanza),
-            "every unsupported body must appear with its reason; `helper{index}` is missing from:\n{dump}"
+            "every failed body must appear with its reason; `helper{index}` is missing from:\n{dump}"
         );
     }
     assert_eq!(
-        dump.matches("; unsupported: ").count(),
+        dump.matches("; failed: ").count(),
         7,
         "the dump must report each failure exactly once:\n{dump}"
     );
@@ -245,7 +245,7 @@ fn a_fully_lowered_program_dumps_no_unsupported_stanza() {
 
     let dump = dump_lowering(&lowered);
     assert!(
-        !dump.contains("; unsupported: "),
+        !dump.contains("; failed: "),
         "a fully lowered program must report no failure:\n{dump}"
     );
     assert!(dump.contains("fn __hew_fn_add_one("));
@@ -459,19 +459,19 @@ fn every_callable_demand_lowers_stranded_bodies_and_names_refused_headers() {
     assert!(
         matches!(
             status_of(&every, "stranded_bad"),
-            SirLoweringStatus::Unsupported { .. }
+            SirLoweringStatus::Failed { .. }
         ),
         "an unreached body outside the surface must report why: {:#?}",
         every.statuses
     );
-    let SirLoweringStatus::Unsupported { reason, .. } = status_of(&every, "refused_header") else {
+    let SirLoweringStatus::Failed { reason, .. } = status_of(&every, "refused_header") else {
         panic!(
             "a refused header must surface its refusal under every-callable demand: {:#?}",
             every.statuses
         );
     };
     assert!(
-        reason.contains("UnregisteredDemandType"),
+        reason.to_string().contains("UnregisteredDemandType"),
         "the refusal must name the offending parameter type: {reason}"
     );
     let stranded = &every

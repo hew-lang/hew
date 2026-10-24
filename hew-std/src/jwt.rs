@@ -512,9 +512,17 @@ pub unsafe extern "C" fn hew_jwt_decode_insecure(token: *const HewString) -> *mu
         serde_json::to_string(&data.claims).ok()
     };
 
-    match decode_inner() {
-        Some(json) => string_from_str(&json),
-        None => std::ptr::null_mut(),
+    if let Some(json) = decode_inner() {
+        let result = string_from_str(&json);
+        set_last_jwt_error(if result.is_null() {
+            HewJwtError::AllocationFailure
+        } else {
+            HewJwtError::None
+        });
+        result
+    } else {
+        set_last_jwt_error(HewJwtError::TokenMalformed);
+        std::ptr::null_mut()
     }
 }
 
@@ -1085,6 +1093,7 @@ mod tests {
     /// if the declared return type is anything other than `-> i32`.
     #[test]
     fn hew_binding_declares_jwt_last_error_code_returns_i32() {
+        let _: extern "C" fn() -> i32 = hew_jwt_last_error_code;
         let hew_src = include_str!("../../std/crypto/jwt/jwt.hew");
 
         let decl = hew_src
@@ -1112,6 +1121,8 @@ mod tests {
     /// `-> i32`.
     #[test]
     fn hew_binding_declares_jwt_validate_returns_i32() {
+        let _: unsafe extern "C" fn(*const HewString, *const HewString, i32) -> i32 =
+            hew_jwt_validate;
         let hew_src = include_str!("../../std/crypto/jwt/jwt.hew");
 
         let decl = hew_src

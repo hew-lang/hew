@@ -1,0 +1,10 @@
+[[case]]
+id = "scalar-constant-composition"
+intent = "Scalar constants preserve integer width and wrapping, floating-point rounding, boolean and duration operators, forward references and owned aggregate fields."
+source = "cases/scalar-constant-composition.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.expected]
+stdout = "131\n124\n1\n1\n6.5\n0\ntrue\ntrue\n42\nconstant\n"
+exit = 0

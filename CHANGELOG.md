@@ -4,6 +4,12 @@
 
 ## [0.9.0] - 2026-10-23
 
+- Use consistent checked standard-library APIs for networking, codecs, numeric
+  operations and standard streams; migrate library namespaces and callers.
+- Execute imported aliases, typed constant expressions, aggregate patterns and
+  builtin callable values through their checked type and ownership contracts.
+- Require irrefutable `for` and `select` bindings, with explicit variant
+  selection in their bodies.
 - Initialize deferred values once with `std.lazy`, preserving ordinary value
   semantics, terminal faults and automatic capture cleanup.
 - Configure per-role supervisor restart delays with typed, bounded backoff.
@@ -15,6 +21,10 @@
   readiness notifications, cancellation and one-shot owned result transfer.
 - Reuse loaded source identities during compilation to avoid repeated path
   resolution for the same source.
+- Avoid dormant tracing allocation and ordinary-turn completion scans while
+  preserving observation barriers and remote crash origins.
+- Preserve diagnostic help and related-file locations in compiler JSON, and
+  provide a full-symbol debugger build for compiler and runtime development.
 
 See the [release notes](docs/releases/v0.9.0.md) and
 [migration guide](docs/migrations/v0.9.0.md) for examples and source updates.

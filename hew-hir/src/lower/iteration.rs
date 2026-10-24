@@ -591,7 +591,7 @@ impl LowerCtx {
                 if let Some(shape) = shape {
                     shape
                 } else {
-                    self.unsupported(
+                    self.missing_checked_fact(
                         iterable.1.clone(),
                         format!("for-in iterable `{other}` has no checked iterator call plan"),
                         "iterator-runtime-dispatch",

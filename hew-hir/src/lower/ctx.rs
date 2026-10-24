@@ -668,19 +668,19 @@ impl LowerCtx {
         }
     }
 
-    pub(super) fn unsupported(
+    pub(super) fn missing_checked_fact(
         &mut self,
         span: std::ops::Range<usize>,
-        construct: impl Into<String>,
-        owning_pass: impl Into<String>,
+        reason: impl Into<String>,
+        name: impl Into<String>,
     ) {
         self.diagnostics.push(HirDiagnostic::new(
-            HirDiagnosticKind::NotYetImplemented {
-                construct: construct.into(),
-                owning_pass: owning_pass.into(),
+            HirDiagnosticKind::CheckerBoundaryViolation {
+                name: name.into(),
+                reason: reason.into(),
             },
             span,
-            "",
+            "checked semantic facts must be complete before HIR lowering",
         ));
     }
 

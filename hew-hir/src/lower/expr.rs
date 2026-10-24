@@ -460,7 +460,7 @@ impl LowerCtx {
                         )
                     }
                     None => {
-                        self.unsupported(
+                        self.missing_checked_fact(
                             span.clone(),
                             "macro invocation has no checked constant",
                             "checker-boundary",
@@ -613,10 +613,10 @@ impl LowerCtx {
             }
             Expr::QualifiedAssoc(path) => {
                 let _ = render_type_expr(&path.base.0);
-                self.unsupported(
+                self.missing_checked_fact(
                     span.clone(),
+                    "qualified associated value has no selected declaration",
                     "qualified associated value",
-                    "qualified-assoc-value",
                 );
                 (
                     HirExprKind::Unsupported("unsupported qualified associated value".into()),
@@ -782,10 +782,10 @@ impl LowerCtx {
                 {
                     if base.is_some() {
                         self.diagnostics.push(HirDiagnostic::new(
-                            HirDiagnosticKind::NotYetImplemented {
-                                construct: "functional-update syntax on enum variant constructors"
+                            HirDiagnosticKind::CheckerBoundaryViolation {
+                                name: "enum variant constructor".to_string(),
+                                reason: "record-only base update crossed the checker boundary"
                                     .to_string(),
-                                owning_pass: "variant ctor validation".to_string(),
                             },
                             span.clone(),
                             "enum variant constructors do not support `..base` syntax",
@@ -1197,7 +1197,7 @@ impl LowerCtx {
                         ResolvedTy::Never,
                     )
                 } else {
-                    self.unsupported_postfix_try(
+                    self.missing_recovery_fact(
                         &span,
                         "error return without checked failure selection",
                     )
@@ -1752,7 +1752,7 @@ impl LowerCtx {
             }
             Expr::ChainValue => match self.chain_values.last() {
                 Some(value) => (value.kind.clone(), value.ty.clone()),
-                None => self.unsupported_postfix_try(&span, "optional payload outside its chain"),
+                None => self.missing_recovery_fact(&span, "optional payload outside its chain"),
             },
             Expr::Coalesce { left, right } => self.lower_local_recovery(left, right, None, &span),
             Expr::Handle {
@@ -1822,7 +1822,11 @@ impl LowerCtx {
                 return self.lower_expr(&bounded, intent);
             }
             Expr::Range { .. } => {
-                self.unsupported(span.clone(), "expression", "slice-2");
+                self.missing_checked_fact(
+                    span.clone(),
+                    "open range reached value lowering outside an indexed receiver",
+                    "range expression",
+                );
                 (
                     HirExprKind::Unsupported("unsupported expression".into()),
                     ResolvedTy::Unit,

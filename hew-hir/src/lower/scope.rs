@@ -7,7 +7,11 @@ impl LowerCtx {
         if let Pattern::Identifier(name) = &pattern.0 {
             Some(name.to_string())
         } else {
-            self.unsupported(pattern.1.clone(), "pattern", "slice-2");
+            self.missing_checked_fact(
+                pattern.1.clone(),
+                "unexpanded pattern reached a single-name binding",
+                "binding pattern",
+            );
             None
         }
     }
@@ -331,7 +335,7 @@ impl LowerCtx {
         let Some((registered_type, variant_idx)) =
             self.machine_ctor_registry.get(&qualified).cloned()
         else {
-            self.unsupported(
+            self.missing_checked_fact(
                 span.clone(),
                 format!("`?` builtin variant `{qualified}` missing from ctor registry"),
                 "question-operator",
@@ -339,7 +343,7 @@ impl LowerCtx {
             return None;
         };
         if registered_type != type_name {
-            self.unsupported(
+            self.missing_checked_fact(
                 span.clone(),
                 format!(
                     "`?` builtin variant `{qualified}` resolved to unexpected type `{registered_type}`"
@@ -349,7 +353,7 @@ impl LowerCtx {
             return None;
         }
         let Ok(variant_idx_u32) = u32::try_from(variant_idx) else {
-            self.unsupported(
+            self.missing_checked_fact(
                 span.clone(),
                 format!("`?` builtin variant `{qualified}` index exceeds u32::MAX"),
                 "question-operator",

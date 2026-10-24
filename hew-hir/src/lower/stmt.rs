@@ -80,6 +80,13 @@ impl LowerCtx {
                 // Lower the tuple value once as the group's sole source.
                 let tuple_val = self.lower_expr(value_expr, IntentKind::Consume);
                 let tuple_ty = tuple_val.ty.clone();
+                if element_patterns.is_empty() && tuple_ty == ResolvedTy::Unit {
+                    return vec![HirStmt {
+                        node: self.ids.node(),
+                        kind: HirStmtKind::Expr(tuple_val),
+                        span,
+                    }];
+                }
 
                 // Validate the pattern element count against the inferred tuple type.
                 let element_tys: Vec<ResolvedTy> = if let ResolvedTy::Tuple(elems) = &tuple_ty {
@@ -625,18 +632,8 @@ impl LowerCtx {
                 iterable,
                 body,
             } => {
-                // Lower `for pat in iterable { body }`.
-                // Only `Range`-typed iterables are supported in this slice:
-                // `Expr::Range { start, end, inclusive }` where the iterable
-                // expression is syntactically a range literal.  For all other
-                // iterable shapes (Vec, Stream, HashMap, trait-Iterator, etc.)
-                // a `NotYetImplemented` diagnostic is emitted and the statement
-                // is replaced with an `Unsupported` placeholder so the pipeline
-                // fails closed without fabricating a value.
-                //
-                // Only simple identifier patterns (`for i in …`) are supported;
-                // tuple or struct patterns over a range are rejected the same
-                // way.
+                // Ranges retain their compact HIR form. Other iterables use
+                // their checked iterator plan and ordinary pattern projection.
                 // Peel any `(a..b).rev()` / `.step_by(k)` adapter chain off the
                 // iterable down to its base range literal.  A plain `a..b`
                 // iterable peels to itself with no adapters.  The checker has
@@ -753,12 +750,16 @@ impl LowerCtx {
                         span.clone(),
                     ),
                     _ => {
-                        // Non-identifier range pattern: not supported in this slice.
-                        self.unsupported(
+                        // Refutable loop bindings still need a failed-match
+                        // contract; keep that admitted gap explicit.
+                        self.diagnostics.push(HirDiagnostic::new(
+                            HirDiagnosticKind::NotYetImplemented {
+                                construct: "refutable for-range binding pattern".to_string(),
+                                owning_pass: "binding-pattern-lowering".to_string(),
+                            },
                             pattern.1.clone(),
-                            "for-range with non-identifier binding pattern",
-                            "for-while-lowering",
-                        );
+                            "refutable iteration bindings need a defined failed-match path",
+                        ));
                         self.push_scope();
                         let _ = self.lower_block(body, &ResolvedTy::Unit);
                         self.pop_scope();

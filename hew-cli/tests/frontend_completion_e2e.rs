@@ -9,6 +9,10 @@ fn completed_source_forms_execute_at_both_optimization_levels() {
     support::require_codegen();
     let dir = support::tempdir();
     for (name, expected) in [
+        (
+            "selected-product-patterns",
+            "tuple 7\nrecord 8\ndiscarded\nreleased 9\nprepared unit\nunit\nprepared unit\n",
+        ),
         ("whole-owner-index", "1\n2\n2\n"),
         ("lifecycle-function-values", "stopped\nterminated\nother\n"),
         (

@@ -1091,21 +1091,14 @@ impl Verifier {
                 }
             }
             HirExprKind::Unsupported(reason) => {
-                if !reason.starts_with("diagnosed:")
-                    && !self.diagnostics.iter().any(|diag| {
-                        diag.span == expr.span
-                            && matches!(diag.kind, HirDiagnosticKind::NotYetImplemented { .. })
-                    })
-                {
-                    self.diagnostics.push(self.diagnostic(
-                        HirDiagnosticKind::NotYetImplemented {
-                            construct: reason.clone(),
-                            owning_pass: "hir-lowering".to_string(),
-                        },
-                        expr.span.clone(),
-                        "verifier: Unsupported HIR node reached verification without a prior diagnostic",
-                    ));
-                }
+                self.diagnostics.push(self.diagnostic(
+                    HirDiagnosticKind::CheckerBoundaryViolation {
+                        name: "HIR expression".to_string(),
+                        reason: reason.clone(),
+                    },
+                    expr.span.clone(),
+                    "incomplete HIR must stop before semantic lowering",
+                ));
             }
         }
     }
@@ -1149,14 +1142,12 @@ impl Verifier {
         };
         if !valid {
             self.diagnostics.push(self.diagnostic(
-                HirDiagnosticKind::NotYetImplemented {
-                    construct: format!(
-                        "unsupported top-level literal match predicate {lit:?}: {ty:?}"
-                    ),
-                    owning_pass: "match-literal".to_string(),
+                HirDiagnosticKind::CheckerBoundaryViolation {
+                    name: "literal match predicate".to_string(),
+                    reason: format!("literal {lit:?} disagrees with checked scrutinee type {ty:?}"),
                 },
                 span,
-                "literal match predicates are currently limited to integers, floats, bool, char, and string",
+                "literal predicates must preserve the checked scalar type",
             ));
         }
     }

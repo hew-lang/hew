@@ -171,7 +171,6 @@ impl LowerCtx {
 
         let checked_sources = self.select_sources.get(&self.mk_key(&span)).cloned();
         for (arm_index, arm) in arms.iter().enumerate() {
-            let binding_name = self.pattern_name(&arm.binding);
             let checked_source = checked_sources
                 .as_ref()
                 .and_then(|sources| sources.get(arm_index));
@@ -179,6 +178,11 @@ impl LowerCtx {
             let binding_span = match &arm.source.0 {
                 Expr::Await(inner) => &inner.1,
                 _ => &arm.source.1,
+            };
+            let binding_name = match (&kind, &arm.binding.0) {
+                (HirSelectArmKind::AfterTimer { .. }, _) => None,
+                (_, Pattern::Identifier(name)) => Some(name.to_string()),
+                _ => Some(format!("__hew_select_value_{arm_index}")),
             };
             if matches!(kind, HirSelectArmKind::AfterTimer { .. }) {
                 if first_after_span.is_some() {
@@ -205,16 +209,63 @@ impl LowerCtx {
             let arm_scope = binding_name.as_ref().map(|_| self.ids.scope());
             let previous_scope_id =
                 arm_scope.map(|scope| std::mem::replace(&mut self.current_scope_id, scope));
-            let binding_id = if let Some(ref name) = binding_name {
+            let binding = if let Some(ref name) = binding_name {
                 self.select_arm_binding_ty(&kind, binding_span)
                     .map(|binding_ty| {
-                        self.bind_checked(name.clone(), binding_ty, false, arm.binding.1.clone())
-                            .id
+                        if matches!(arm.binding.0, Pattern::Identifier(_)) {
+                            self.bind_checked(
+                                name.clone(),
+                                binding_ty,
+                                false,
+                                arm.binding.1.clone(),
+                            )
+                        } else {
+                            self.bind(name.clone(), binding_ty, false, arm.binding.1.clone())
+                        }
                     })
             } else {
                 None
             };
+            let binding_id = binding.as_ref().map(|binding| binding.id);
+            let mut projections = Vec::new();
+            if !matches!(arm.binding.0, Pattern::Identifier(_)) {
+                if let Some(binding) = &binding {
+                    let value = self.make_binding_ref(
+                        binding.name.clone(),
+                        binding.id,
+                        binding.ty.clone(),
+                        IntentKind::Consume,
+                        arm.binding.1.clone(),
+                    );
+                    self.lower_pattern_value_into_stmts(
+                        &arm.binding,
+                        value,
+                        binding.ty.clone(),
+                        &mut projections,
+                        arm.binding.1.clone(),
+                    );
+                }
+            }
             let body = self.lower_expr(&arm.body, IntentKind::Read);
+            let body = if projections.is_empty() {
+                body
+            } else {
+                let ty = body.ty.clone();
+                let block = HirBlock {
+                    node: self.ids.node(),
+                    scope: self.ids.scope(),
+                    statements: projections,
+                    tail: Some(Box::new(body)),
+                    ty: ty.clone(),
+                    span: arm.body.1.clone(),
+                };
+                self.make_expr(
+                    HirExprKind::Block(block),
+                    ty,
+                    IntentKind::Read,
+                    arm.body.1.clone(),
+                )
+            };
             if let Some(previous) = previous_scope_id {
                 self.current_scope_id = previous;
             }

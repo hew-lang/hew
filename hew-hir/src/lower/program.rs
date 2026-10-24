@@ -1532,7 +1532,7 @@ pub fn lower_program(
         }) {
             let canonical_name = format!("std.builtins.{}", source.name);
             let Some(declaration) = ctx.defs.lookup_path(&canonical_name) else {
-                ctx.unsupported(
+                ctx.missing_checked_fact(
                     span.clone(),
                     "source prelude declaration identity",
                     "checker-boundary",

@@ -70,25 +70,6 @@ fn inferred_type_annotation_consumes_checker_inference() {
 }
 
 #[test]
-fn unsupported_construct_emits_not_yet_implemented_diagnostic() {
-    // A type expression outside slice 1 emits NotYetImplemented.
-    // Pointer types are a slice-2 construct that exercises the _ arm in lower_type.
-    // (If this fixture stops triggering NotYetImplemented, the test will
-    //  produce `diagnostics.is_empty()` and the assert will catch it.)
-    let output = lower("fn f(x: i64) -> i64 { return x; }");
-    // No unsupported diagnostics — this is a clean hir-lowering program.
-    let nyi_count = output
-        .diagnostics
-        .iter()
-        .filter(|d| matches!(d.kind, HirDiagnosticKind::NotYetImplemented { .. }))
-        .count();
-    assert_eq!(
-        nyi_count, 0,
-        "clean program should have no not-yet-implemented diagnostics"
-    );
-}
-
-#[test]
 fn call_return_type_resolved_from_registry() {
     // Calling a known function must yield the callee's declared return type.
     // Before the function registry, all calls returned Unit and produced
@@ -409,19 +390,17 @@ fn array_repeat_runtime_count_lowers() {
 
 #[test]
 fn verifier_flags_unsupported_hir_node_as_defense_in_depth() {
-    // Defense-in-depth: verify_hir emits NotYetImplemented for any Unsupported
-    // HIR node it finds, even when the lowerer already emitted the diagnostic.
-    // Applying `?` to a non-Result/non-Option value in a function that does not
-    // return Result/Option is still unsupported at the HIR level; the lowerer
-    // emits NotYetImplemented and leaves an Unsupported node for the verifier.
+    // Invalid checker output must be refused independently at both HIR
+    // boundaries. The source checker rejects `?` on an integer; this harness
+    // deliberately lowers that invalid program to test the internal contract.
     let output = lower("fn f() -> i64 { let x: i64 = 5; x? }");
-    // The lowerer already emits NotYetImplemented for the unsupported expression.
+    // The lowerer records the broken checker contract.
     assert!(
         output
             .diagnostics
             .iter()
-            .any(|d| matches!(d.kind, HirDiagnosticKind::NotYetImplemented { .. })),
-        "lowerer must emit NotYetImplemented for unsupported expression: {:?}",
+            .any(|d| matches!(d.kind, HirDiagnosticKind::CheckerBoundaryViolation { .. })),
+        "lowerer must report the broken checker contract: {:?}",
         output.diagnostics
     );
     // The verifier independently flags the surviving Unsupported node.
@@ -429,7 +408,7 @@ fn verifier_flags_unsupported_hir_node_as_defense_in_depth() {
     assert!(
         verify
             .iter()
-            .any(|d| matches!(d.kind, HirDiagnosticKind::NotYetImplemented { .. })),
+            .any(|d| matches!(d.kind, HirDiagnosticKind::CheckerBoundaryViolation { .. })),
         "verifier must flag Unsupported HIR node as defense-in-depth: {verify:?}"
     );
 }
@@ -457,7 +436,7 @@ fn verifier_diagnostic_retains_item_source_module() {
     let verify = verify_hir(&output.module);
     let diagnostic = verify
         .iter()
-        .find(|d| matches!(d.kind, HirDiagnosticKind::NotYetImplemented { .. }))
+        .find(|d| matches!(d.kind, HirDiagnosticKind::CheckerBoundaryViolation { .. }))
         .expect("verifier should flag unsupported postfix-try HIR node");
     assert_eq!(diagnostic.source_module.as_deref(), Some("dep"));
 }

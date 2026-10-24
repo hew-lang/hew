@@ -1,0 +1,19 @@
+type Message { pair: (i64, string); }
+
+#[resource] type Receipt { id: i64; }
+impl Receipt {
+    fn close(consume self) { println(f"released {self.id}"); }
+}
+
+fn pair() -> (i64, (string, ())) { (7, ("tuple", ())) }
+fn message() -> Message { Message { pair: (8, "record") } }
+fn receipt() -> Receipt { Receipt { id: 9 } }
+fn unit() { println("prepared unit"); }
+
+fn main() {
+    select { (number, (text, ())) from pair() => println(f"{text} {number}"), };
+    select { Message { pair: (number, text) } from message() => println(f"{text} {number}"), };
+    select { _ from receipt() => println("discarded"), };
+    select { () from unit() => println("unit"), };
+    let () = unit();
+}

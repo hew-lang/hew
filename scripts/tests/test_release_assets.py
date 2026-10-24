@@ -32,7 +32,7 @@ class ReleaseInventory(unittest.TestCase):
                 "build-freebsd",
                 "build-npm-packages",
                 "build-portable-release-libs",
-                *assets.OPTIONAL_JOBS,
+                *assets.CHANNEL_JOBS,
             ]
         }
         for target, suffix in assets.NATIVE.items():
@@ -43,6 +43,9 @@ class ReleaseInventory(unittest.TestCase):
             f"hew-lang-{name}-{VERSION}.tgz" for name in ("wasm", "sandbox-vm")
         ]:
             (self.directory / name).write_bytes(name.encode())
+        (self.directory / f"hew-v{VERSION}-reference-docs.tar.gz").write_bytes(
+            b"reference docs"
+        )
         for name in [
             "hew_0.6.3_amd64.deb",
             "hew-0.6.3.x86_64.rpm",
@@ -85,14 +88,27 @@ class ReleaseInventory(unittest.TestCase):
             ).unlink()
         self.jobs["build"]["result"] = "failure"
         self.jobs["build-freebsd"]["result"] = "cancelled"
-        for job in assets.OPTIONAL_JOBS:
+        for job in assets.CHANNEL_JOBS - {"build-docs"}:
             self.jobs[job]["result"] = "failure"
         receipt = self.assemble()
         self.assertEqual(receipt["jobs"]["build"], "failure")
         self.assertEqual(receipt["jobs"]["build-freebsd"], "cancelled")
-        for target in (set(assets.NATIVE) - assets.PRIMARY) | assets.OPTIONAL_JOBS:
+        for target in (set(assets.NATIVE) - assets.PRIMARY) | (
+            assets.CHANNEL_JOBS - {"build-docs"}
+        ):
             self.assertEqual(receipt["platforms"][target]["state"], "unavailable")
+        self.assertEqual(receipt["platforms"]["build-docs"]["state"], "available")
         self.assertEqual(receipt["notes"], {})
+
+    def test_documentation_reference_is_required_for_patch_releases(self):
+        docs = self.directory / f"hew-v{VERSION}-reference-docs.tar.gz"
+        docs.unlink()
+        with self.assertRaisesRegex(ValueError, "build-docs"):
+            self.assemble()
+        docs.write_bytes(b"reference docs")
+        self.jobs["build-docs"]["result"] = "failure"
+        with self.assertRaisesRegex(ValueError, "build-docs"):
+            self.assemble()
 
     def test_failed_optional_wasi_is_reported_without_changing_native_requirements(
         self,

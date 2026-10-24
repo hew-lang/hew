@@ -16,7 +16,7 @@ NATIVE = {
     "windows-x86_64": ".zip",
     "freebsd-x86_64": ".tar.gz",
 }
-OPTIONAL_JOBS = {"linux-packages", "docker-image", "build-docs"}
+CHANNEL_JOBS = {"linux-packages", "docker-image", "build-docs"}
 PRIMARY = {"linux-x86_64", "linux-aarch64"}
 
 
@@ -40,7 +40,7 @@ def assemble(directory, version, source, run, jobs, deferrals):
             "state": "available" if present else "unavailable",
             "asset": name,
         }
-    for target in OPTIONAL_JOBS:
+    for target in CHANNEL_JOBS:
         result = jobs.get(target, {}).get("result", "missing")
         # Distro packages are not produced for prereleases.
         expected = target != "linux-packages" or "-" not in version
@@ -54,8 +54,14 @@ def assemble(directory, version, source, run, jobs, deferrals):
                     for path in directory.glob(pattern)
                 )
             ]
+        if target == "build-docs":
+            docs_asset = f"hew-v{version}-reference-docs.tar.gz"
+            if not (directory / docs_asset).is_file() or not (
+                directory / docs_asset
+            ).stat().st_size:
+                missing = [docs_asset]
         available = result == "success" and not missing
-        if expected and not available and not patch:
+        if expected and not available and (target == "build-docs" or not patch):
             raise ValueError(f"missing required channel outputs: {target}")
         states[target] = {
             "state": "not-produced"
@@ -67,6 +73,8 @@ def assemble(directory, version, source, run, jobs, deferrals):
         }
         if missing:
             states[target]["missing"] = missing
+        if target == "build-docs":
+            states[target]["asset"] = docs_asset
     required = [f"hew-lang-{name}-{version}.tgz" for name in ("wasm", "sandbox-vm")]
     for name in required:
         if not (directory / name).is_file() or not (directory / name).stat().st_size:

@@ -47,6 +47,7 @@ pub(super) fn bind_runtime<'ctx>(llvm: &Module<'ctx>, engine: &ExecutionEngine<'
         string::hew_string_length,
         string::hew_string_byte_length,
         string::hew_string_to_uppercase,
+        string::hew_string_to_bytes,
         string::hew_string_to_bytes_owned,
         bytes::hew_bytes_eq,
         bytes::hew_bytes_clone_ref,

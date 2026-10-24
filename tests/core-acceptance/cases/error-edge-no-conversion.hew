@@ -2,8 +2,6 @@
 // cannot carry one into a `ConfigError`; the refusal offers all three repairs.
 import std.fs;
 
-import std.string;
-
 enum ConfigError {
     Unreadable(string);
     Missing(string);

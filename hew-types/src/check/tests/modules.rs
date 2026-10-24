@@ -2459,6 +2459,25 @@ mod warning_source_attribution {
     }
 
     #[test]
+    fn failed_error_conversion_retains_success_type_and_independent_errors() {
+        let output = check_source(
+            "fn read(value: Result<i64, string>) -> bool fails i64 {\n\
+             let number = value?;\n\
+             number + 1\n\
+             }",
+        );
+        assert_eq!(output.errors.len(), 2, "{:#?}", output.errors);
+        assert!(output
+            .errors
+            .iter()
+            .any(|error| error.kind == TypeErrorKind::ErrorNoConversion));
+        assert!(output
+            .errors
+            .iter()
+            .any(|error| matches!(error.kind, TypeErrorKind::Mismatch { .. })));
+    }
+
+    #[test]
     fn question_mark_result_check_passes_with_matching_error_type() {
         let source = r"
 fn pass(r: Result<i64, i64>) -> i64 fails i64 {

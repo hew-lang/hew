@@ -590,14 +590,14 @@ impl Checker {
                     if let Some(edge) = self.failure_edge_or_open() {
                         // The enclosing callable's failure edge carries the
                         // error out, converting it by the edge rule.
-                        if !self.select_error_conversion(
+                        self.select_error_conversion(
                             crate::check::coerce::FailureEdge::Try,
                             &err_ty,
                             &edge,
                             span,
-                        ) {
-                            return Ty::Error;
-                        }
+                        );
+                        // A bad failure edge still has a known success type.
+                        // Preserve it to check subsequent expressions independently.
                         ok_ty
                     } else if return_unknown {
                         ok_ty

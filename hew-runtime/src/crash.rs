@@ -171,9 +171,15 @@ fn push_crash_report_to(log: &PoisonSafe<VecDeque<CrashReport>>, report: CrashRe
 /// `dispatch_ptr` is the crashing actor's dispatch function as a `usize` (zero
 /// when the activation has none) — the key both context registries are stamped
 /// with at startup.
-pub(crate) fn record_logical_crash(actor_id: u64, code: i32, msg_type: i32, dispatch_ptr: usize) {
+pub(crate) fn record_logical_crash(
+    actor_id: u64,
+    code: i32,
+    msg_type: i32,
+    dispatch_ptr: usize,
+    link_target: Option<crate::monitor::HewNotificationTarget>,
+) {
     push_logical_crash_report(actor_id, code, msg_type);
-    emit_crash_diagnostic(actor_id, code, msg_type, dispatch_ptr);
+    emit_crash_diagnostic(actor_id, code, msg_type, dispatch_ptr, link_target);
 }
 
 /// Put one logical failure in the crash log without reporting it.
@@ -206,7 +212,13 @@ fn push_logical_crash_report(actor_id: u64, code: i32, msg_type: i32) {
 /// fully-qualified handler name when `(dispatch_ptr, msg_type)` is registered,
 /// otherwise the actor's type name. Both degrade to a named actor, never to the
 /// opaque `msg_type=-N` form the retired diagnostic printed.
-fn emit_crash_diagnostic(actor_id: u64, code: i32, msg_type: i32, dispatch_ptr: usize) {
+fn emit_crash_diagnostic(
+    actor_id: u64,
+    code: i32,
+    msg_type: i32,
+    dispatch_ptr: usize,
+    link_target: Option<crate::monitor::HewNotificationTarget>,
+) {
     use crate::profiler::actor_registry;
 
     let context = actor_registry::handler_name_by_ptr(dispatch_ptr, msg_type)
@@ -215,9 +227,20 @@ fn emit_crash_diagnostic(actor_id: u64, code: i32, msg_type: i32, dispatch_ptr: 
         crate::internal::types::ExitReason::Signal(signal) => format!("Signal({signal})"),
         named => named.trap_kind_name().to_owned(),
     };
+    #[cfg(not(target_arch = "wasm32"))]
+    let origin = link_target
+        .and_then(crate::monitor::HewNotificationTarget::remote_location)
+        .map_or_else(String::new, |location| {
+            format!(" while handling link exit from remote {location}")
+        });
+    #[cfg(target_arch = "wasm32")]
+    let origin = {
+        let _ = link_target;
+        String::new()
+    };
     crate::output::write(
         crate::output::Stream::Err,
-        format!("hew: actor crash in {context} (actor {actor_id}): {reason}\n").as_bytes(),
+        format!("hew: actor crash in {context} (actor {actor_id}): {reason}{origin}\n").as_bytes(),
     );
 }
 

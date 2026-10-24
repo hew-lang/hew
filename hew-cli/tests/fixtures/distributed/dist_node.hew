@@ -2682,6 +2682,8 @@ fn scenario_client_watcher_node_death(kv: KeyValue) -> i64 {
 }
 
 fn link_cascade_common(kv: KeyValue, scenario: string, drive: string) -> i64 {
+    let origin = discover_with_retry("kv").expect("linked peer metadata");
+    println(f"LINK_ORIGIN {origin}");
     let linker = spawn Linker { policy_sel: 0 };
     let linker_id = linker.link_go(kv);
     let lid = match linker_id {

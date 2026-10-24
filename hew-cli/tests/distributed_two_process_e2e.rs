@@ -68,11 +68,13 @@ const DIST_NODE_COMPILE_TIMEOUT: Duration = Duration::from_mins(2);
 enum StderrExpectation {
     Ignore,
     ExactOneCrashIn(&'static str),
+    ExactOneLocalCrashIn(&'static str),
+    ExactOneRemoteLinkCrashIn(&'static str),
     NoCrashIn(&'static str),
     NoFaultDiagnostics,
 }
 
-fn assert_stderr_expectation(stderr: &str, expectation: StderrExpectation) {
+fn assert_stderr_expectation(stderr: &str, expectation: StderrExpectation, stdout: &str) {
     match expectation {
         StderrExpectation::Ignore => {}
         StderrExpectation::NoFaultDiagnostics => {
@@ -85,7 +87,9 @@ fn assert_stderr_expectation(stderr: &str, expectation: StderrExpectation) {
                 "remote observation must not report the origin fault again:\n{stderr}"
             );
         }
-        StderrExpectation::ExactOneCrashIn(context) => {
+        StderrExpectation::ExactOneCrashIn(context)
+        | StderrExpectation::ExactOneLocalCrashIn(context)
+        | StderrExpectation::ExactOneRemoteLinkCrashIn(context) => {
             let prefix = format!("hew: actor crash in {context} (actor ");
             let diagnostics: Vec<_> = stderr
                 .lines()
@@ -111,6 +115,30 @@ fn assert_stderr_expectation(stderr: &str, expectation: StderrExpectation) {
                 identity.parse::<u64>().is_ok_and(|actor_id| actor_id != 0),
                 "crash diagnostic must include a non-zero local actor identity; stderr:\n{stderr}"
             );
+            if matches!(expectation, StderrExpectation::ExactOneRemoteLinkCrashIn(_)) {
+                let location = stdout
+                    .lines()
+                    .find_map(|line| line.strip_prefix("LINK_ORIGIN "))
+                    .expect("fixture must publish the authenticated remote Location");
+                assert!(
+                    diagnostics[0].ends_with(&format!(
+                        " while handling link exit from remote {location}"
+                    )),
+                    "linked crash must retain its exact remote node, actor and incarnation; stdout:\n{stdout}\nstderr:\n{stderr}"
+                );
+                assert_eq!(
+                    stderr
+                        .matches("while handling link exit from remote")
+                        .count(),
+                    1,
+                    "remote origin must be reported once: {stderr}"
+                );
+            } else if matches!(expectation, StderrExpectation::ExactOneLocalCrashIn(_)) {
+                assert!(
+                    !diagnostics[0].contains("while handling link exit from remote"),
+                    "a local actor fault must not acquire a remote origin: {stderr}"
+                );
+            }
         }
         StderrExpectation::NoCrashIn(context) => {
             let prefix = format!("hew: actor crash in {context}");
@@ -477,7 +505,7 @@ fn run_client_to_completion(
                     Some(expected_exit_code),
                     "client should exit {expected_exit_code} ({status:?})\nstdout:\n{stdout}\nstderr:\n{stderr}"
                 );
-                assert_stderr_expectation(&stderr, stderr_expectation);
+                assert_stderr_expectation(&stderr, stderr_expectation, &stdout);
                 return stdout;
             }
             Ok(None) => {
@@ -652,7 +680,7 @@ fn run_conn_drop_scenario_with_env(
         Some(expected_exit_code),
         "client should exit {expected_exit_code} ({status:?}) on connection-drop scenario\nstdout:\n{captured}\nstderr:\n{stderr}"
     );
-    assert_stderr_expectation(&stderr, stderr_expectation);
+    assert_stderr_expectation(&stderr, stderr_expectation, &captured);
     captured
 }
 
@@ -1042,6 +1070,7 @@ fn assert_remote_stopped_crash(fail_close: bool) {
     assert_stderr_expectation(
         &stderr,
         StderrExpectation::ExactOneCrashIn("RemoteClosingActor.crash"),
+        "",
     );
     assert_eq!(
         stderr.matches("remote original handler fault").count(),
@@ -1661,7 +1690,7 @@ fn link_remote_crash_cascade_on_clean_exit() {
     let stdout = run_link_cascade_scenario(
         "link_remote_clean_exit",
         1,
-        StderrExpectation::ExactOneCrashIn("Linker"),
+        StderrExpectation::ExactOneRemoteLinkCrashIn("Linker"),
     );
     assert!(
         stdout.contains("PASS link_remote_clean_exit linker-crashed reason=5"),
@@ -1693,7 +1722,7 @@ fn link_remote_crash_cascade_on_crash() {
     let stdout = run_link_cascade_scenario(
         "link_remote_crash",
         1,
-        StderrExpectation::ExactOneCrashIn("Linker"),
+        StderrExpectation::ExactOneRemoteLinkCrashIn("Linker"),
     );
     assert!(
         stdout.contains("PASS link_remote_crash linker-crashed reason=5"),
@@ -1716,7 +1745,7 @@ fn link_remote_crash_cascade_on_partition() {
         "link_remote_partition",
         &[("HEW_LINK_PROBE", "1")],
         1,
-        StderrExpectation::ExactOneCrashIn("Linker"),
+        StderrExpectation::ExactOneRemoteLinkCrashIn("Linker"),
     );
     assert!(
         stdout.contains("PASS link_remote_partition linker-crashed reason=5"),
@@ -1759,7 +1788,7 @@ fn linker_local_crash_reports_once() {
     let stdout = run_link_cascade_scenario(
         "linker_local_crash",
         1,
-        StderrExpectation::ExactOneCrashIn("Linker.crash_local"),
+        StderrExpectation::ExactOneLocalCrashIn("Linker.crash_local"),
     );
     assert!(
         !stdout.contains("FAIL "),

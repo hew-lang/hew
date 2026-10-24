@@ -2181,7 +2181,7 @@ pub struct HirMatchArm {
 #[derive(Debug, Clone, PartialEq)]
 pub enum HirRangeAdapter {
     Reverse,
-    Step(HirExpr),
+    Step(Box<HirExpr>),
 }
 
 /// One named payload binding introduced by a constructor-pattern match arm.

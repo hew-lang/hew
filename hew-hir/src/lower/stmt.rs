@@ -717,9 +717,9 @@ impl LowerCtx {
                         let adapters = adapters
                             .into_iter()
                             .map(|step| match step {
-                                Some(step) => {
-                                    HirRangeAdapter::Step(self.lower_expr(step, IntentKind::Read))
-                                }
+                                Some(step) => HirRangeAdapter::Step(Box::new(
+                                    self.lower_expr(step, IntentKind::Read),
+                                )),
                                 None => HirRangeAdapter::Reverse,
                             })
                             .collect();

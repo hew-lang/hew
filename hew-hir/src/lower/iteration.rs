@@ -397,7 +397,7 @@ impl LowerCtx {
                 start: Box::new(start),
                 end: Box::new(length),
                 inclusive: false,
-                adapters: vec![HirRangeAdapter::Step(step)],
+                adapters: vec![HirRangeAdapter::Step(Box::new(step))],
                 body: loop_body,
             },
             ResolvedTy::Unit,

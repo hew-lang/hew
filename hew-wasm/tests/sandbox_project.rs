@@ -86,6 +86,53 @@ fn directory_modules_include_the_native_frontends_peer_sources() {
 }
 
 #[test]
+fn local_response_binding_shadows_imported_response_module_in_vm() {
+    let project = compile(
+        "main.hew",
+        &[
+            (
+                "main.hew",
+                include_str!("../../tests/pkg-import/local_module_shadow_response.hew"),
+            ),
+            (
+                "user/hew.toml",
+                include_str!("../../tests/pkg-import/pkgs/user/hew.toml"),
+            ),
+            (
+                "user/response.hew",
+                include_str!("../../tests/pkg-import/pkgs/user/response.hew"),
+            ),
+        ],
+    );
+    admitted(&project);
+    assert_eq!(project.resolved_files, ["main.hew", "user/response.hew"]);
+
+    let file = tempfile::NamedTempFile::new().expect("package file");
+    serde_json::to_writer(file.as_file(), project.output.bytecode.as_ref().unwrap())
+        .expect("serialize bytecode");
+    let output = std::process::Command::new("node")
+        .current_dir(concat!(env!("CARGO_MANIFEST_DIR"), "/../hew-sandbox-vm"))
+        .args([
+            "--input-type=module",
+            "-e",
+            "import fs from 'node:fs'; import { runBytecode } from './dist/interpreter/index.js'; \
+             const pkg = JSON.parse(fs.readFileSync(process.argv[1], 'utf8')); \
+             process.stdout.write(JSON.stringify(await runBytecode(pkg, {})));",
+        ])
+        .arg(file.path())
+        .output()
+        .expect("run sandbox VM");
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let trace: serde_json::Value = serde_json::from_slice(&output.stdout).expect("VM trace");
+    assert_eq!(trace["result"], "ok", "{trace:#}");
+    assert_eq!(trace["final_state"]["stdout"], json!(["ok\n"]));
+}
+
+#[test]
 fn imported_diagnostics_keep_file_local_utf8_spans() {
     let library = "// 🐦\npub fn go() -> string { 42 }";
     let project = compile(

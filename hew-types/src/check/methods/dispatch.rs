@@ -543,11 +543,18 @@ impl Checker {
                 .canonical_nominal_name(name.name.as_str())
                 .unwrap_or_else(|| name.to_string());
             let static_key = format!("{canonical_static_owner}.{method}");
-            let static_sig = self.fn_sig(&static_key).cloned().or_else(|| {
-                (canonical_static_owner != name.name.as_str())
-                    .then(|| self.fn_sig(&format!("{name}.{method}")).cloned())
-                    .flatten()
-            });
+            // A local value can have the same spelling as a module whose
+            // function has this dotted key. Its instance method must reach
+            // receiver synthesis and the method-rewrite authority below.
+            let static_sig = if receiver_is_binding {
+                None
+            } else {
+                self.fn_sig(&static_key).cloned().or_else(|| {
+                    (canonical_static_owner != name.name.as_str())
+                        .then(|| self.fn_sig(&format!("{name}.{method}")).cloned())
+                        .flatten()
+                })
+            };
             if let Some(sig) = static_sig {
                 self.check_arity(args, sig.params.len(), &format!("`{static_key}`"), span);
                 for (i, arg) in args.iter().enumerate() {

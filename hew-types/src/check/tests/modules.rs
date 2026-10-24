@@ -463,6 +463,78 @@ fn module_graph_body_local_binding_named_like_module_still_resolves_methods() {
 }
 
 #[test]
+fn local_value_shadows_its_modules_function_in_method_position() {
+    let module = hew_parser::parse(
+        r#"
+pub fn contains() -> bool {
+    let response = "ok";
+    response.contains("o")
+}
+pub type Reply { value: string; }
+pub fn value() -> string {
+    let response = Reply { value: "ok" };
+    response.value
+}
+"#,
+    );
+    let mut root = hew_parser::parse(
+        "import user.response; fn main() { assert(response.contains()); assert(response.value() == \"ok\"); }",
+    );
+    assert!(module.errors.is_empty() && root.errors.is_empty());
+    for (item, _) in &mut root.program.items {
+        if let Item::Import(import) = item {
+            import.resolved_items = Some(module.program.items.clone().into());
+        }
+    }
+    let root_id = ModulePath::root();
+    let module_id = ModulePath::new(["user", "response"]);
+    let mut graph = ModuleGraph::new(root_id.clone());
+    graph
+        .add_module(Module {
+            id: module_id.clone(),
+            items: module.program.items,
+            imports: vec![],
+            source_paths: vec![],
+            doc: None,
+        })
+        .unwrap();
+    graph
+        .add_module(Module {
+            id: root_id.clone(),
+            items: root.program.items.clone(),
+            imports: vec![],
+            source_paths: vec![],
+            doc: None,
+        })
+        .unwrap();
+    graph.topo_order = vec![module_id.clone(), root_id];
+    let module_idx = graph.file_span_indices().module_base(&module_id).unwrap();
+    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+    let output = checker.check_program(&Program {
+        expansions: hew_parser::macro_syntax::ExpansionMap::default(),
+        items: root.program.items,
+        module_graph: Some(graph),
+        module_doc: None,
+    });
+    assert!(output.errors.is_empty(), "{:#?}", output.errors);
+    assert!(
+        !output
+            .warnings
+            .iter()
+            .any(|warning| warning.message.contains("unused variable `response`")),
+        "the local receiver must be read: {:#?}",
+        output.warnings
+    );
+    assert!(
+        output
+            .method_call_rewrites
+            .keys()
+            .any(|span| span.module_idx == module_idx),
+        "the local method call needs a checker rewrite"
+    );
+}
+
+#[test]
 fn module_qualified_call_rejects_private_body_only_signature() {
     let mut checker = Checker::new(ModuleRegistry::new(vec![]));
     checker.modules.insert("mymod".to_string());

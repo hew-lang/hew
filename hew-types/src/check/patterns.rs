@@ -207,7 +207,6 @@ impl Checker {
             Pattern::Literal(_) => return Some("literal"),
             Pattern::Regex { .. } => return Some("regex"),
             Pattern::Or(_, _) => return Some("or-pattern"),
-            Pattern::ContextVariant(_) => return Some("enum variant"),
             Pattern::Tuple(elements) => {
                 if let Ty::Tuple(types) = &ty {
                     return elements
@@ -222,11 +221,11 @@ impl Checker {
                 ..
             }
             | Pattern::RecordShorthand { fields, .. } => fields,
-            Pattern::NominalPath { .. } => return Some("enum variant"),
+            Pattern::ContextVariant(_) | Pattern::NominalPath { .. } => {
+                return Some("enum variant")
+            }
         };
-        let Some(definition) = self.ty_type_def(&ty) else {
-            return None;
-        };
+        let definition = self.ty_type_def(&ty)?;
         if !matches!(definition.kind, TypeDefKind::Record | TypeDefKind::Struct) {
             return Some("enum variant");
         }

@@ -133,9 +133,14 @@ impl DependencyAnalysisCache {
             dependency_checker.has_checked_program = true;
             dependency_checker.prepare_program(&key.program, true);
             dependency_checker.next_default_span = key.next_default_span;
-            let normalized_program =
-                dependency_checker.prepare_implied_error_displays(&key.program, None);
-            let checked = normalized_program
+            let normalized_dependencies = normalized_program.as_ref().map(|normalized| {
+                let mut dependencies = (**normalized).clone();
+                dependencies.program = key.program.clone();
+                std::sync::Arc::new(dependencies)
+            });
+            let normalized_program = dependency_checker
+                .prepare_implied_error_displays(&key.program, normalized_dependencies);
+            let prepared = normalized_program
                 .as_ref()
                 .map_or(&key.program, |normalized| &normalized.program);
             dependency_checker.next_default_span = normalized_program
@@ -143,8 +148,8 @@ impl DependencyAnalysisCache {
                 .map_or(key.next_default_span, |normalized| {
                     normalized.next_free_span()
                 });
-            dependency_checker.check_dependency_bodies(checked);
-            dependency_checker.check_embedded_builtin_impl_bodies(checked);
+            dependency_checker.check_dependency_bodies(prepared);
+            dependency_checker.check_embedded_builtin_impl_bodies(prepared);
             if self.seeds.len() == MAX_CHECKPOINTS {
                 self.seeds.remove(0);
             }

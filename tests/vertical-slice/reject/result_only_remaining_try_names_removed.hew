@@ -1,5 +1,5 @@
 // Removed Result-only API names must fail at the public API boundary.
-import std.crypto.crypto;
+import std.crypto.hash;
 import std.encoding.json;
 import std.metrics;
 import std.net;
@@ -14,8 +14,7 @@ fn main() {
     let _ = stream.try_pipe;
     let _ = string.try_to_int;
     let _ = net.try_connect;
-    let _ = crypto.try_random_bytes;
-
+    let _ = hash.try_random_bytes;
     let _ = datetime.try_parse;
     let _ = metrics.try_counter;
     let _ = json.try_parse;

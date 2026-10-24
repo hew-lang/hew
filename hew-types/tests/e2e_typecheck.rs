@@ -729,7 +729,7 @@ fn consume(s: Stream<bytes>) {
 fn method_call_dispatches_resource_wrapper_through_impl() {
     let output = typecheck_inline(
         r#"
-import std.net.http;
+import std.net.http.server as http;
 
 fn respond(req: http.Request) -> i64 {
     let _sent = req.respond_text(200, "ok").is_ok();
@@ -2228,7 +2228,7 @@ fn rc_get_non_copy_rejected() {
 #[test]
 fn http_respond_three_arg_typechecks() {
     let output = typecheck_inline(
-        r#"import std.net.http;
+        r#"import std.net.http.server as http;
 
 fn main() {
     match http.listen(":8080") {
@@ -2256,7 +2256,7 @@ fn main() {
 #[test]
 fn http_respond_four_arg_rejected() {
     let output = typecheck_inline(
-        r#"import std.net.http;
+        r#"import std.net.http.server as http;
 
 fn main() {
     match http.listen(":8080") {
@@ -2281,7 +2281,7 @@ fn main() {
 fn wasm_http_server_surface_rejected_before_codegen() {
     let output = typecheck_inline_wasm(
         r#"
-        import std.net.http;
+        import std.net.http.server as http;
 
         fn inspect(server: http.Server, req: http.Request) -> string {
             let _next = server.accept();
@@ -2333,7 +2333,7 @@ fn wasm_tcp_networking_surface_rejected_before_codegen() {
 fn http_request_body_encoding_arg_checked_via_fallback() {
     let output = typecheck_inline(
         r"
-        import std.net.http;
+        import std.net.http.server as http;
 
         fn inspect(req: http.Request) {
             req.body(42);
@@ -2385,7 +2385,7 @@ fn net_resource_close_uses_source_impl_not_raw_fallback() {
 fn http_request_close_dispatches_through_resource_impl() {
     let output = typecheck_inline(
         r"
-        import std.net.http;
+        import std.net.http.server as http;
 
         fn release(consume req: http.Request) {
             req.close();
@@ -2401,7 +2401,7 @@ fn http_request_close_dispatches_through_resource_impl() {
         output.method_call_rewrites.iter().any(|(key, rewrite)| key.module_idx == 0 && matches!(
             rewrite,
             MethodCallRewrite::RewriteToFunction { target: hew_types::check::CallTarget::ImplMethod(def), .. }
-                if output.defs.path(*def).starts_with("std.net.http.Request::")
+                if output.defs.path(*def).starts_with("std.net.http.server.Request::")
         )),
         "resource-wrapper close must dispatch through the authored impl, got: {:?}",
         output.method_call_rewrites
@@ -2425,7 +2425,7 @@ fn http_request_close_dispatches_through_resource_impl() {
 fn registry_loaded_resource_close_moves_receiver() {
     let output = typecheck_inline(
         r"
-        import std.net.http;
+        import std.net.http.server as http;
 
         fn release(consume req: http.Request) {
             req.close();
@@ -2447,7 +2447,7 @@ fn registry_loaded_resource_close_moves_receiver() {
 fn http_request_unknown_method_is_undefined() {
     let output = typecheck_inline(
         r"
-        import std.net.http;
+        import std.net.http.server as http;
 
         fn inspect(req: http.Request) {
             req.nonexistent();
@@ -2614,12 +2614,12 @@ fn smtp_one_shot_helpers_typecheck() {
 fn http_client_module_helpers_typecheck_natively() {
     let output = typecheck_inline(
         r#"
-        import std.net.http.http_client;
+        import std.net.http.client;
 
         fn main() {
             let headers: Vec<(string, string)> = Vec.new();
-            let _ = http_client.set_timeout(250ms);
-            let _body = http_client.request_string("GET", "https://example.com", "", headers);
+            let _ = client.set_timeout(250ms);
+            let _body = client.request_string("GET", "https://example.com", "", headers);
         }
         "#,
     );
@@ -2633,8 +2633,8 @@ fn http_client_module_helpers_typecheck_natively() {
 #[test]
 fn http_client_module_helpers_rejected_on_wasm() {
     for (import, module) in [
-        ("std.net.http.http_client", "http_client"),
-        ("std.net.http.http_client as client", "client"),
+        ("std.net.http.client", "client"),
+        ("std.net.http.client as requests", "requests"),
     ] {
         let source = format!(
             r#"
@@ -2652,7 +2652,7 @@ fn http_client_module_helpers_rejected_on_wasm() {
 
     assert_http_client_wasm_rejections(
         r#"
-        import std.net.http.http_client.{request_string, set_timeout};
+        import std.net.http.client.{request_string, set_timeout};
         fn main() {
             let headers: Vec<(string, string)> = Vec.new();
             let _ = set_timeout(250ms);
@@ -2683,7 +2683,7 @@ fn assert_http_client_wasm_rejections(source: &str, expected: usize) {
             error.kind == TypeErrorKind::PlatformLimitation
                 && error
                     .message
-                    .contains("std.net.http.http_client operations are not supported on WASM32")
+                    .contains("std.net.http.client operations are not supported on WASM32")
         }),
         "HTTP client operations must not inherit the HTTP server capability: {:#?}",
         output.errors
@@ -2693,8 +2693,8 @@ fn assert_http_client_wasm_rejections(source: &str, expected: usize) {
 #[test]
 fn http_client_response_methods_rejected_on_wasm() {
     for (import, module) in [
-        ("std.net.http.http_client", "http_client"),
-        ("std.net.http.http_client as client", "client"),
+        ("std.net.http.client", "client"),
+        ("std.net.http.client as requests", "requests"),
     ] {
         let source = format!(
             r#"
@@ -5509,21 +5509,21 @@ fn wasm_rejects_crypto_sign_module_calls() {
     );
 }
 
-/// `std::crypto::crypto.random_bytes` is rejected on wasm32 with a structured
+/// `std::crypto::hash.random_bytes` is rejected on wasm32 with a structured
 /// `PlatformLimitation` diagnostic. The secure entropy source is native-only
 /// and absent from the wasm32 link set.
 #[test]
 fn wasm_rejects_crypto_random_bytes_module_call() {
     let output = typecheck_inline_wasm(
-        "import std.crypto.crypto;\n\
-         fn main() { let _ = crypto.random_bytes(32); }",
+        "import std.crypto.hash;\n\
+         fn main() { let _ = hash.random_bytes(32); }",
     );
     assert!(
         output.errors.iter().any(|e| {
             e.kind == hew_types::error::TypeErrorKind::PlatformLimitation
                 && e.message.contains("random_bytes")
         }),
-        "expected PlatformLimitation for crypto.random_bytes on wasm32, got: {:#?}",
+        "expected PlatformLimitation for hash.random_bytes on wasm32, got: {:#?}",
         output.errors
     );
 }

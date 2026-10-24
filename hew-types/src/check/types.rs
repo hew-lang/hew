@@ -3295,8 +3295,8 @@ pub struct Checker {
     /// Source files assembled into each module of this check's graph.
     ///
     /// A directory module owns its primary file plus every peer `.hew` file in
-    /// that directory, so importing both `std::net::http` and its
-    /// `http_client` peer registers one declaration under two owners. This map
+    /// that directory, so importing both `std.net.http.codec` and its
+    /// `request` peer registers one declaration under two owners. This map
     /// is what lets a consumer prove that relation from the graph rather than
     /// guessing it from the two owner spellings.
     pub(super) module_source_paths: HashMap<String, Vec<std::path::PathBuf>>,

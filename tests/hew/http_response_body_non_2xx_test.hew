@@ -10,9 +10,9 @@
 //! with a 404 carrying a real body. The fork is joined before the status/body
 //! asks, so readback needs no sleep.
 
-import std.net.http.http_client;
+import std.net.http.client;
 
-import std.net.http;
+import std.net.http.server as http;
 
 actor Client {
     let url: string;
@@ -20,8 +20,8 @@ actor Client {
     var body: string;
 
     receive fn fetch(unused: i64) {
-        assert(http_client.set_timeout(3000ms).is_ok());
-        let resp = http_client.get(url);
+        assert(client.set_timeout(3000ms).is_ok());
+        let resp = client.get(url);
         status = resp.status();
         body = resp.body();
         resp.close();

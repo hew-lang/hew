@@ -787,7 +787,7 @@ impl Checker {
                     // Preserve the importer's lexical module binding even
                     // when the selected source belongs to a directory
                     // module whose canonical owner has a different leaf
-                    // (`http_client` -> `http`). The binding maps to the
+                    // (`codec.request` -> `codec`). The binding maps to the
                     // canonical owner below; it must not be renamed by
                     // source canonicalisation.
                     let requested_short = module_path
@@ -1636,7 +1636,7 @@ impl Checker {
     /// `collided_type_names`): a bare record/type-decl name collides when 2+
     /// distinct non-root modules (package OR file-import) declare it, AFTER
     /// re-export subsumption so a stdlib module surfaced through two import
-    /// paths (e.g. `std::net::http` and `std::net::http::http_client` both
+    /// paths (e.g. `std::net::http` and `std::net::http::client` both
     /// re-exporting `http.Response`) is not double-counted. Only a colliding
     /// record is owner-qualified to its declaring module; a name unique to one
     /// module keeps its bare identity, so no `http.Response`/`xml.Node`

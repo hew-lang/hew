@@ -1,7 +1,7 @@
 //! HTTP client compatibility module for outbound requests.
 //!
 //! Provides basic outbound HTTP functionality for native Hew programs via
-//! `import std.net.http.http_client;`.
+//! `import std.net.http.client;`.
 //!
 //! This compatibility module now carries the bounded v0.3 client slice:
 //! `request`, `request_string`, `set_timeout`, plus the legacy `get` / `post`
@@ -15,17 +15,17 @@
 //! # Examples
 //!
 //! ```hew,no_run
-//! import std.net.http.http_client;
+//! import std.net.http.client;
 //!
 //! fn main() {
-//!     match http_client.get_string("https://example.com") {
+//!     match client.get_string("https://example.com") {
 //!         .Some(body) => println(body),
 //!         .None => println("request failed"),
 //!     }
 //!
 //!     var headers: Vec<(string, string)> = Vec.new();
 //!     headers.push(("Accept", "application/json"));
-//!     let resp = http_client.request("GET", "https://api.example.com/data", "", headers);
+//!     let resp = client.request("GET", "https://api.example.com/data", "", headers);
 //!     println(resp.status());
 //!     resp.close();
 //! }
@@ -38,8 +38,8 @@ import std.net;
 
 /// An opaque HTTP response handle.
 ///
-/// Obtained from `http_client.request(...)`, `http_client.get(...)`, or
-/// `http_client.post(...)`. Responses close automatically at scope exit; call
+/// Obtained from `client.request(...)`, `client.get(...)`, or
+/// `client.post(...)`. Responses close automatically at scope exit; call
 /// `close()` to release one early.
 #[resource]
 #[opaque]
@@ -135,12 +135,12 @@ fn content_type_headers(content_type: string) -> Vec<(string, string)> {
 /// # Examples
 ///
 /// ```hew,no_run
-/// import std.net.http.http_client;
+/// import std.net.http.client;
 ///
 /// fn main() {
 ///     var headers: Vec<(string, string)> = Vec.new();
 ///     headers.push(("Accept", "application/json"));
-///     let resp = http_client.request("GET", "https://example.com", "", headers);
+///     let resp = client.request("GET", "https://example.com", "", headers);
 ///     println(resp.status());
 ///     resp.close();
 /// }
@@ -155,17 +155,17 @@ pub fn request(method: string, url: string, body: string, headers: Vec<(string, 
 ///
 /// Each header entry is a `(name, value)` pair, e.g. `("Accept", "application/json")`.
 /// Returns `None` on transport or network failure. Non-2xx HTTP responses
-/// still return `Some` (the body may be empty); use `http_client.request`
+/// still return `Some` (the body may be empty); use `client.request`
 /// to inspect the status code.
 ///
 /// # Examples
 ///
 /// ```hew,no_run
-/// import std.net.http.http_client;
+/// import std.net.http.client;
 ///
 /// fn main() {
 ///     var headers: Vec<(string, string)> = Vec.new();
-///     match http_client.request_string("GET", "https://example.com", "", headers) {
+///     match client.request_string("GET", "https://example.com", "", headers) {
 ///         .Some(body) => println(body),
 ///         .None => println("request failed"),
 ///     }
@@ -196,7 +196,7 @@ pub fn request_string(method: string, url: string, body: string, headers: Vec<(s
 /// Set the global outbound-request timeout, rejecting a value the C ABI
 /// cannot represent rather than narrowing it into a different deadline.
 pub fn set_timeout(timeout: duration) fails net.NetError {
-    let checked = net.duration_ms("http_client.set_timeout", timeout)?;
+    let checked = net.duration_ms("client.set_timeout", timeout)?;
     unsafe {
         hew_http_set_timeout(checked as i32) // INTERNAL-ABI: range-checked above
     };
@@ -217,10 +217,10 @@ pub fn last_error() -> string {
 /// # Examples
 ///
 /// ```hew,no_run
-/// import std.net.http.http_client;
+/// import std.net.http.client;
 ///
 /// fn main() {
-///     let resp = http_client.get("https://example.com");
+///     let resp = client.get("https://example.com");
 ///     println(resp.status());
 ///     resp.close();
 /// }
@@ -234,10 +234,10 @@ pub fn get(url: string) -> Response {
 /// # Examples
 ///
 /// ```hew,no_run
-/// import std.net.http.http_client;
+/// import std.net.http.client;
 ///
 /// fn main() {
-///     let resp = http_client.post("https://api.example.com/data", "application/json", "{}");
+///     let resp = client.post("https://api.example.com/data", "application/json", "{}");
 ///     resp.close();
 /// }
 /// ```
@@ -251,16 +251,16 @@ pub fn post(url: string, content_type: string, body: string) -> Response {
 /// extraction in a single call.
 ///
 /// Returns `None` on transport or network failure. Non-2xx HTTP responses
-/// still return `Some` (the body may be empty); use `http_client.get`
+/// still return `Some` (the body may be empty); use `client.get`
 /// to inspect the status code.
 ///
 /// # Examples
 ///
 /// ```hew,no_run
-/// import std.net.http.http_client;
+/// import std.net.http.client;
 ///
 /// fn main() {
-///     match http_client.get_string("https://example.com") {
+///     match client.get_string("https://example.com") {
 ///         .Some(body) => println(body),
 ///         .None => println("request failed"),
 ///     }
@@ -273,16 +273,16 @@ pub fn get_string(url: string) -> Option<string> {
 /// Perform an HTTP POST request and return the response body as a string.
 ///
 /// Returns `None` on transport or network failure. Non-2xx HTTP responses
-/// still return `Some` (the body may be empty); use `http_client.post`
+/// still return `Some` (the body may be empty); use `client.post`
 /// to inspect the status code.
 ///
 /// # Examples
 ///
 /// ```hew,no_run
-/// import std.net.http.http_client;
+/// import std.net.http.client;
 ///
 /// fn main() {
-///     match http_client.post_string(
+///     match client.post_string(
 ///         "https://api.example.com/submit",
 ///         "application/json",
 ///         "{\"key\": \"value\"}",

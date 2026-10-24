@@ -77,9 +77,9 @@ pub fn lower_program(
             }
             // A span index is allocated per (module, file), so a file that is
             // BOTH a directory module's peer and importable in its own right
-            // owns two of them — `std/net/http/http_client.hew` is one index
-            // under `std.net.http` and another under
-            // `std.net.http.http_client`. `path_index` keeps only the first,
+            // owns two of them — `std/net/http/codec/request.hew` is one index
+            // under `std.net.http.codec` and another under
+            // `std.net.http.codec.request`. `path_index` keeps only the first,
             // so map every index the item walk can actually produce, through
             // the two accessors that own the pairing.
             for item_idx in 0..module.items.len() {
@@ -312,8 +312,8 @@ pub fn lower_program(
     // Bare record/type-decl names declared by more than one module, the
     // root included. Re-exports are deduplicated through
     // `preferred_package_module_ids`, so a stdlib module reached through two
-    // paths (`std::net::http` and `std::net::http::http_client` both surfacing
-    // `http.Response`) is not counted twice. A name unique to one owner keeps
+    // paths (`std.net.http.codec` and `std.net.http.codec.request` both surfacing
+    // `codec.Request`) is not counted twice. A name unique to one owner keeps
     // its bare identity (#2208).
     ctx.cross_module_colliding_record_names = program
         .module_graph

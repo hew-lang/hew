@@ -8,7 +8,7 @@
 //! # Examples
 //!
 //! ```hew,no_run
-//! import std.net.http;
+//! import std.net.http.server as http;
 //!
 //! fn main() {
 //!     match http.listen(":8080") {
@@ -131,7 +131,7 @@ trait RequestMethods {
     /// # Examples
     ///
     /// ```hew,no_run
-    /// import std.net.http;
+    /// import std.net.http.server as http;
     ///
     /// fn main() {
     ///     match http.listen(":8080") {
@@ -158,7 +158,7 @@ trait RequestMethods {
     /// # Examples
     ///
     /// ```hew,no_run
-    /// import std.net.http;
+    /// import std.net.http.server as http;
     ///
     /// fn main() {
     ///     match http.listen(":8080") {
@@ -294,7 +294,7 @@ impl Request {
 // ── Module-level functions ────────────────────────────────────────────
 /// Return the detail of this actor's most recent HTTP failure.
 ///
-/// Reads the same runtime authority as `http_client.last_error()`; the name
+/// Reads the same runtime authority as `client.last_error()`; the name
 /// differs only because both files share one package pub-name namespace.
 /// Returns the empty string when the last HTTP call succeeded. Call it
 /// immediately after an `Err` from `listen` for the precise, non-secret
@@ -318,7 +318,7 @@ pub fn listen_error() -> string {
 ///
 /// ```hew,no_run
 /// import std.net;
-/// import std.net.http;
+/// import std.net.http.server as http;
 ///
 /// fn main() {
 ///     match http.listen("127.0.0.1:0") {

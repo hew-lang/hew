@@ -65,7 +65,7 @@ resource cleanup uses `#[resource]` and its checked `close` method.
   closures, function values, tuple constructors and builtin methods.
 - An `impl` of a trait method must use the trait's parameter names
   (`E_IMPL_PARAM_NAME_MISMATCH`). Rename the impl's parameters to match.
-- `std.misc.log` functions no longer accept extra named arguments
+- `std.log` functions no longer accept extra named arguments
   (`log.info("x", user: 3)`), which failed to compile before this change.
 
 ---

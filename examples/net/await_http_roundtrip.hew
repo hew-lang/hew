@@ -9,9 +9,7 @@ import std.net;
 
 import std.stream;
 
-import std.net.http.http_async_server;
-
-import std.net.http.http_async_client;
+import std.net.http.codec;
 
 import std.string;
 
@@ -43,22 +41,22 @@ actor Server {
                 done = true;
             } else {
                 raw = raw + chunk;
-                if http_async_server.over_limit(raw) {
+                if codec.over_limit(raw) {
                     done = true;
-                } else if http_async_server.request_complete(raw) {
+                } else if codec.request_complete(raw) {
                     done = true;
                 }
             }
-            if reads > http_async_server.MAX_READS {
+            if reads > codec.MAX_READS {
                 done = true;
             }
         }
-        let req = http_async_server.parse_request(raw);
-        var reply = http_async_server.response_text(req.reject_status(), "rejected");
+        let req = codec.parse_request(raw);
+        var reply = codec.response_text(req.reject_status(), "rejected");
         if req.is_valid() {
             reply = match req.path() {
-                "/hello" => http_async_server.response_text(200, "hi from hew"),
-                _ => http_async_server.response_text(404, "nope"),
+                "/hello" => codec.response_text(200, "hi from hew"),
+                _ => codec.response_text(404, "nope"),
             };
         }
         let _ = conn.send(reply.to_bytes());
@@ -70,13 +68,13 @@ actor Server {
 actor Client {
     let url: string;
     receive fn go(unused: i64) {
-        let parts = http_async_client.split_address(url);
-        let host = http_async_client.host_of(url);
+        let parts = codec.split_address(url);
+        let host = codec.host_of(url);
         let conn = match net.connect(parts.0) {
             .Ok(conn) => conn,
             .Err(_) => panic(f"network setup failed"),
         };
-        let _ = conn.send(http_async_client.build_get(host, parts.1).to_bytes());
+        let _ = conn.send(codec.build_get(host, parts.1).to_bytes());
         var raw = "";
         var reads = 0;
         var done = false;
@@ -94,16 +92,16 @@ actor Client {
                 done = true;
             } else {
                 raw = raw + chunk;
-                if http_async_client.response_over_limit(raw) {
+                if codec.response_over_limit(raw) {
                     done = true;
                 }
             }
-            if reads > http_async_client.CLIENT_MAX_READS {
+            if reads > codec.CLIENT_MAX_READS {
                 done = true;
             }
         }
         let _ = conn.close();
-        let resp = http_async_client.parse_response(raw);
+        let resp = codec.parse_response(raw);
         let line = match resp.status() {
             200 => f"client-received: {resp.body()}",
             _ => f"client-error: {resp.status()}",

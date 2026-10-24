@@ -7,11 +7,11 @@
 //! # Examples
 //!
 //! ```
-//! import std.crypto.crypto;
+//! import std.crypto.hash;
 //! import std.encoding.hex;
 //!
 //! fn main() {
-//!     let hash = crypto.sha256("A".to_bytes());
+//!     let hash = hash.sha256("A".to_bytes());
 //!     println(hex.encode(hash));
 //! }
 //! ```

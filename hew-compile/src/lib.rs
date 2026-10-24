@@ -1490,12 +1490,12 @@ fn is_builtin_module(module_path: &str) -> bool {
 }
 
 /// The closest existing `std` module to a mistyped import's last path
-/// segment: an exact leaf match (`std.http` -> `std.net.http`, a missed or
+/// segment: an exact leaf match (`std.server` -> `std.net.http.server`, a missed or
 /// mis-nested path segment) when one exists, else a near-miss typo
-/// (`std.htp` -> `std.net.http`).
+/// (`std.servr` -> `std.net.http.server`).
 ///
 /// Near-miss matching compares leaf names (the last dotted segment), not
-/// full dotted paths: `std.htp` and `std.net.http` differ by far more than
+/// full dotted paths: `std.servr` and `std.net.http.server` differ by far more than
 /// [`hew_types::error::find_similar`]'s length-scaled Levenshtein threshold
 /// allows, but `htp` and `http` — the part the user actually mistyped — are
 /// one edit apart. An exact leaf match is checked first because
@@ -3779,7 +3779,7 @@ fn resolve_file_imports_internal(
                         MembershipRole::Peer if segments.len() >= 2 => {
                             if matches!(membership.anchor, ModuleAnchor::Std { .. }) {
                                 // The shipped std's directory peers stay
-                                // importable by file (`std.net.http.http_client`,
+                                // importable by file (`std.net.http.codec.request`,
                                 // D461); they load through the directory's
                                 // entry so the module is complete however it
                                 // was reached.
@@ -5687,7 +5687,7 @@ mod tests {
         let input = write_source(
             dir.path(),
             "main.hew",
-            "import std.net.http.http_client;\n\nfn main() {}\n",
+            "import std.net.http.codec.request;\n\nfn main() {}\n",
         );
         let source = fs::read_to_string(&input).expect("read importer fixture");
         let mut program = parse_source(&source, &input).expect("parse importer fixture");
@@ -5710,7 +5710,7 @@ mod tests {
             &mut ctx,
         )
         .expect("the std peer import should build a module graph");
-        let client = root.join("std/net/http/http_client.hew");
+        let client = root.join("std/net/http/codec/request.hew");
         let owners = graph
             .modules
             .values()
@@ -5718,7 +5718,7 @@ mod tests {
                 module
                     .source_paths
                     .iter()
-                    .any(|path| path.ends_with("std/net/http/http_client.hew"))
+                    .any(|path| path.ends_with("std/net/http/codec/request.hew"))
             })
             .collect::<Vec<_>>();
         assert_eq!(owners.len(), 1, "one graph node holds {}", client.display());
@@ -5770,10 +5770,10 @@ mod tests {
 
         assert_eq!(
             native.len(),
-            4,
-            "std.net.http is its entry and three peers: {native:?}"
+            2,
+            "std.net.http.codec is its entry and request peer: {native:?}"
         );
-        assert_eq!(native[0], Path::new("std/net/http/http.hew"));
+        assert_eq!(native[0], Path::new("std/net/http/codec/codec.hew"));
         assert_eq!(in_memory, native);
     }
 
@@ -5867,9 +5867,9 @@ mod tests {
             .to_path_buf();
 
         for imports in [
-            "import std.net.http;\nimport std.net.http.http_client;\n",
-            "import std.net.http.http_client;\nimport std.net.http;\n",
-            "import std.net.http.http_client;\n",
+            "import std.net.http.codec;\nimport std.net.http.codec.request;\n",
+            "import std.net.http.codec.request;\nimport std.net.http.codec;\n",
+            "import std.net.http.codec.request;\n",
         ] {
             let dir = tempfile::tempdir().expect("create module-owner fixture");
             let input = write_source(
@@ -5899,13 +5899,13 @@ mod tests {
                 &mut ctx,
             )
             .expect("stdlib peer imports should build a module graph");
-            let http_id = hew_parser::module::ModulePath::new(["std", "net", "http"]);
+            let http_id = hew_parser::module::ModulePath::new(["std", "net", "http", "codec"]);
             let peer_id =
-                hew_parser::module::ModulePath::new(["std", "net", "http", "http_client"]);
+                hew_parser::module::ModulePath::new(["std", "net", "http", "codec", "request"]);
             let http = graph
                 .modules
                 .get(&http_id)
-                .expect("the canonical std.net.http module should be present");
+                .expect("the canonical std.net.http.codec module should be present");
             assert!(
                 !graph.modules.contains_key(&peer_id),
                 "the peer must not become a second graph owner: {:?}",
@@ -5914,14 +5914,14 @@ mod tests {
             assert!(
                 http.source_paths
                     .iter()
-                    .any(|path| path.ends_with("std/net/http/http.hew")),
+                    .any(|path| path.ends_with("std/net/http/codec/codec.hew")),
                 "the canonical module must retain its entry source: {:?}",
                 http.source_paths
             );
             assert!(
                 http.source_paths
                     .iter()
-                    .any(|path| path.ends_with("std/net/http/http_client.hew")),
+                    .any(|path| path.ends_with("std/net/http/codec/request.hew")),
                 "the canonical module must retain its peer source: {:?}",
                 http.source_paths
             );
@@ -5944,7 +5944,7 @@ mod tests {
         let input = write_source(
             dir.path(),
             "main.hew",
-            "import std.net.http.http_async_server;\nimport std.net.http.http_async_client;\nimport std.encoding.json;\nfn main() {}\n",
+            "import std.net.http.codec;\nimport std.net.http.codec.request;\nimport std.encoding.json;\nfn main() {}\n",
         );
         let state = run_file_frontend_to_typecheck(
             &input,
@@ -5977,8 +5977,8 @@ mod tests {
         let input = write_source(
             dir.path(),
             "main.hew",
-            "import std.net.http;\n\
-             import std.net.http.http_client;\n\n\
+            "import std.net.http.codec;\n\
+             import std.net.http.codec.request;\n\n\
              fn main() {}\n",
         );
 
@@ -8682,7 +8682,7 @@ extern "C" { fn hew_tcp_read(foo: Foo); }
         }
     }
 
-    /// `std::misc::log` ships `pub const JSON: i64 = 1` and `pub const TEXT: i64 = 0`
+    /// `std::log` ships `pub const JSON: i64 = 1` and `pub const TEXT: i64 = 0`
     /// in its Hew source layer.  The stdlib registration path routes these through
     /// `register_stdlib_hew_items` registers these constants so `log.JSON` /
     /// `log.TEXT` are available to the type checker.
@@ -8702,7 +8702,7 @@ extern "C" { fn hew_tcp_read(foo: Foo); }
 
         let dir = tempfile::tempdir().expect("create temp dir");
         let source = concat!(
-            "import std.misc.log;\n",
+            "import std.log;\n",
             "fn main() {\n",
             "    log.set_format(log.JSON);\n",
             "    log.set_format(log.TEXT);\n",

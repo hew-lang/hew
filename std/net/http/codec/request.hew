@@ -9,7 +9,7 @@
 //!
 //! ```
 //! import std.net;
-//! import std.net.http.http_async_server;
+//! import std.net.http.codec;
 //! import std.string;
 //! import std.encoding.utf8;
 //!
@@ -34,22 +34,22 @@
 //!                 done = true;
 //!             } else {
 //!                 raw = raw + chunk;
-//!                 if http_async_server.over_limit(raw) {       // F2: fail closed
+//!                 if codec.over_limit(raw) {       // F2: fail closed
 //!                     done = true;
-//!                 } else if http_async_server.request_complete(raw) {
+//!                 } else if codec.request_complete(raw) {
 //!                     done = true;
 //!                 }
 //!             }
-//!             if reads > http_async_server.MAX_READS {         // F2: read ceiling
+//!             if reads > codec.MAX_READS {         // F2: read ceiling
 //!                 done = true;
 //!             }
 //!         }
-//!         let req = http_async_server.parse_request(raw);
-//!         var reply = http_async_server.response_text(req.reject_status(), "rejected");
+//!         let req = codec.parse_request(raw);
+//!         var reply = codec.response_text(req.reject_status(), "rejected");
 //!         if req.is_valid() {                                  // F2/F3: fail closed
 //!             reply = match req.path() {
-//!                 "/hello" => http_async_server.response_text(200, "hi from hew"),
-//!                 _        => http_async_server.response_text(404, "nope"),
+//!                 "/hello" => codec.response_text(200, "hi from hew"),
+//!                 _        => codec.response_text(404, "nope"),
 //!             };
 //!         }
 //!         conn.send(reply.to_bytes()) handle error {
@@ -90,7 +90,7 @@ pub const MAX_READS: i64 = 4096;
 /// line), and `body_text` the request body. `reject_code` is `0` for a
 /// well-formed request, or the HTTP status the codec failed closed with
 /// (`400` malformed framing, `413` over a size bound).
-pub type AsyncRequest {
+pub type Request {
     verb: string;
     target: string;
     header_section: string;
@@ -98,8 +98,8 @@ pub type AsyncRequest {
     reject_code: i64;
 }
 
-/// Methods on [`AsyncRequest`] — the request-side accessor surface.
-trait AsyncRequestMethods {
+/// Methods on [`Request`] — the request-side accessor surface.
+trait RequestMethods {
     /// The HTTP method (e.g. `"GET"`, `"POST"`). Empty on a malformed request.
     fn method(self) -> string;
 
@@ -120,7 +120,7 @@ trait AsyncRequestMethods {
     fn is_valid(self) -> bool;
 }
 
-impl AsyncRequestMethods for AsyncRequest {
+impl RequestMethods for Request {
     fn method(self) -> string {
         self.verb
     }
@@ -182,14 +182,14 @@ pub fn over_limit(raw: string) -> bool {
     return declared > MAX_BODY_BYTES;
 }
 
-/// Parse the buffered bytes into an [`AsyncRequest`]. The request line is the
+/// Parse the buffered bytes into an [`Request`]. The request line is the
 /// first CRLF-terminated line (`GET /path HTTP/1.1`); the method and path are
 /// its first two space-separated tokens. The body is everything after the first
 /// CRLF-CRLF. The framing is validated and the request FAILS CLOSED — see
-/// [`AsyncRequest.reject_status`] — on a malformed request line, an unsupported
+/// [`Request.reject_status`] — on a malformed request line, an unsupported
 /// `Transfer-Encoding`, a duplicate/conflicting/non-numeric `Content-Length`, or
 /// any size bound (F2/F3); the acceptor replies with that status and closes.
-pub fn parse_request(raw: string) -> AsyncRequest {
+pub fn parse_request(raw: string) -> Request {
     let sep = raw.find("\r\n\r\n");
     let head = match sep {
         .Some(i) => raw[0..i],
@@ -209,7 +209,7 @@ pub fn parse_request(raw: string) -> AsyncRequest {
     let target = token_at(request_line, 1);
     let header_section = header_section_after_request_line(head);
     let reject = request_reject_status(raw, sep, head, header_section, body);
-    AsyncRequest { verb: verb, target: target, header_section: header_section, body_text: body, reject_code: reject }
+    Request { verb: verb, target: target, header_section: header_section, body_text: body, reject_code: reject }
 }
 
 /// The fail-closed framing verdict for a buffered request: `0` when well-formed,

@@ -800,7 +800,7 @@ fn collision_item_declares_type_name(item: &Item, type_name: &str) -> bool {
 /// N ≠ M has `files(M) ⊆ files(N)` and either the subset is strict, or the sets
 /// are equal and N precedes M in topo order (a deterministic tiebreak keeping
 /// exactly one). Used to dedup a stdlib module surfaced through two import paths
-/// (e.g. `std::net::http` + `std::net::http::http_client`) so `http.Response`
+/// (e.g. `std::net::http` + `std::net::http::client`) so `http.Response`
 /// stays unique and is never owner-qualified (#2208).
 fn collision_preferred_package_module_ids(
     program: &Program,

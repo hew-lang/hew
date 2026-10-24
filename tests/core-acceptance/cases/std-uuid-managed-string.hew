@@ -1,4 +1,4 @@
-import std.misc.uuid;
+import std.uuid;
 
 import std.net.ipnet;
 

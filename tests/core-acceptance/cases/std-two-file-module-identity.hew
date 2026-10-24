@@ -2,19 +2,19 @@
 // import binds its own qualifier, and a type declared in one of the files has
 // exactly one identity however it was reached, so that file still checks
 // against itself and its fields stay reachable from the importer.
-import std.net.http.http_client;
+import std.net.http.codec.request;
 
-import std.net.http.http_async_server;
+import std.net.http.codec;
 
 fn reject_code(raw: string) -> i64 {
-    let parsed = http_async_server.parse_request(raw);
+    let parsed = request.parse_request(raw);
     parsed.reject_code
 }
 
 fn main() {
     println(reject_code("GET / HTTP/1.1\r\n\r\n"));
     println(reject_code("nonsense\r\n\r\n"));
-    println(http_async_server.request_complete("GET / HTTP/1.1\r\n\r\n"));
+    println(codec.request_complete("GET / HTTP/1.1\r\n\r\n"));
     // The sibling file's own surface stays reachable through its own binding.
-    println(http_client.last_error() == "");
+    println(codec.build_get("example.com", "/").starts_with("GET / HTTP/1.1"));
 }

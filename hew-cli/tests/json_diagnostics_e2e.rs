@@ -236,7 +236,7 @@ fn check_default_text_format_is_unchanged() {
 /// span) and, for a std-module typo close to a real module, names the fix.
 #[test]
 fn module_not_found_has_span_and_suggestion() {
-    let (_dir, path) = write_fixture("import std.htp;\nfn main() { }\n");
+    let (_dir, path) = write_fixture("import std.servr;\nfn main() { }\n");
     let output = run(&["check", "--format", "json", path.to_str().unwrap()]);
 
     assert_eq!(
@@ -265,8 +265,8 @@ fn module_not_found_has_span_and_suggestion() {
         not_found["message"]
             .as_str()
             .unwrap()
-            .contains("std.net.http"),
-        "a std-module typo close to `std.net.http` must suggest it: {not_found}",
+            .contains("std.net.http.server"),
+        "a std-module typo close to `std.net.http.server` must suggest it: {not_found}",
     );
     assert!(
         not_found["file"].as_str().unwrap().ends_with("main.hew"),
@@ -274,13 +274,13 @@ fn module_not_found_has_span_and_suggestion() {
     );
 }
 
-/// The right module name at the wrong nesting (`std.http` for `std.net.http`)
+/// The right module name at the wrong nesting (`std.server` for `std.net.http.server`)
 /// is the single likeliest real mistake — not a typo `find_similar` would
 /// catch (the leaf spelling is exactly right), so it needs its own exact-leaf
 /// match ahead of the fuzzy fallback.
 #[test]
 fn module_not_found_suggests_an_exact_leaf_match_at_the_wrong_nesting() {
-    let (_dir, path) = write_fixture("import std.http;\nfn main() { }\n");
+    let (_dir, path) = write_fixture("import std.server;\nfn main() { }\n");
     let output = run(&["check", "--format", "json", path.to_str().unwrap()]);
 
     let diagnostics = parse_json_array(&output);
@@ -292,8 +292,8 @@ fn module_not_found_suggests_an_exact_leaf_match_at_the_wrong_nesting() {
         not_found["message"]
             .as_str()
             .unwrap()
-            .contains("std.net.http"),
-        "the right leaf name at the wrong nesting must still suggest `std.net.http`: {not_found}",
+            .contains("std.net.http.server"),
+        "the right leaf name at the wrong nesting must still suggest `std.net.http.server`: {not_found}",
     );
 }
 

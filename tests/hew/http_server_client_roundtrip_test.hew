@@ -1,24 +1,10 @@
-//! #2391 behavioural proof: a blocking HTTP server (`std::net::http`) and the
-//! HTTP client (`std::net::http::http_client`) do a REAL loopback round-trip in
-//! ONE process. This proves the impl-dedup fix picked a WORKING surviving copy
-//! (Fix A keeps the superset `std::net::http` module's lowering of the shared
-//! `Response`/`Server` impls) — not merely that the unit links.
-//!
-//! Imports are in the REVERSE order of `http_dual_import_link_test.hew`
-//! (client first, server second) so the subsumption dedup is proven
-//! order-independent (#2391 validation): whichever package module the loader
-//! visits first, the maximal superset survives and one definition serves both
-//! import paths.
-//!
-//! Shape: the test binds the listener synchronously, forks the `Client` ask,
-//! then accepts and responds before joining that ask. The `Client` holds only
-//! `string`/`i64` state —
-//! no opaque handle crosses the actor boundary (the supervisor-restart clone
-//! gate rejects opaque handles in actor state).
+//! The separate HTTP client and server modules exchange a real loopback
+//! request in one process. Importing the client first must preserve both
+//! resource implementations and their exact response values.
 
-import std.net.http.http_client;
+import std.net.http.client;
 
-import std.net.http;
+import std.net.http.server as http;
 
 /// The `Client` runs the blocking outbound request on its own worker; the test
 /// thread serves the single request. `status`/`body` are read back via asks
@@ -29,8 +15,8 @@ actor Client {
     var body: string;
 
     receive fn fetch(unused: i64) {
-        assert(http_client.set_timeout(3000ms).is_ok());
-        let resp = http_client.get(url);
+        assert(client.set_timeout(3000ms).is_ok());
+        let resp = client.get(url);
         status = resp.status();
         body = resp.body();
         resp.close();

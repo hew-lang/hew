@@ -1,8 +1,6 @@
 import std.crypto.password;
 
-import std.net.http.http_async_client;
-
-import std.net.http.http_async_server;
+import std.net.http.codec;
 
 import std.stream;
 
@@ -33,17 +31,17 @@ fn test_malformed_password_hash_is_not_a_mismatch() {
 
 #[test]
 fn test_async_http_query_and_ipv6_authority_split() {
-    let (query_addr, query_path) = http_async_client.split_address("http://example.com?x=1");
+    let (query_addr, query_path) = codec.split_address("http://example.com?x=1");
     assert(query_addr == "example.com:80");
     assert(query_path == "/?x=1");
-    let (ipv6_addr, ipv6_path) = http_async_client.split_address("http://[::1]:8080/status");
+    let (ipv6_addr, ipv6_path) = codec.split_address("http://[::1]:8080/status");
     assert(ipv6_addr == "[::1]:8080");
     assert(ipv6_path == "/status");
-    assert(http_async_client.host_of("http://[::1]:8080/status") == "[::1]");
+    assert(codec.host_of("http://[::1]:8080/status") == "[::1]");
 }
 
 #[test]
 fn test_async_http_invalid_status_is_rejected() {
-    assert(http_async_server.response_text(-1, "body") == "");
-    assert(http_async_server.response_text(600, "body") == "");
+    assert(codec.response_text(-1, "body") == "");
+    assert(codec.response_text(600, "body") == "");
 }

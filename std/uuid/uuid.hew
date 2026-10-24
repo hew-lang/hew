@@ -6,7 +6,7 @@
 //! # Examples
 //!
 //! ```
-//! import std.misc.uuid;
+//! import std.uuid;
 //!
 //! fn main() {
 //!     let id = uuid.v4();
@@ -23,7 +23,7 @@
 /// # Examples
 ///
 /// ```
-/// import std.misc.uuid;
+/// import std.uuid;
 ///
 /// fn main() {
 ///     let id = uuid.v4();
@@ -43,7 +43,7 @@ pub fn v4() -> string {
 /// # Examples
 ///
 /// ```
-/// import std.misc.uuid;
+/// import std.uuid;
 ///
 /// fn main() {
 ///     let id = uuid.v7();
@@ -60,7 +60,7 @@ pub fn v7() -> string {
 /// # Examples
 ///
 /// ```
-/// import std.misc.uuid;
+/// import std.uuid;
 ///
 /// fn main() {
 ///     println(uuid.is_valid("550e8400-e29b-41d4-a716-446655440000"));   // true

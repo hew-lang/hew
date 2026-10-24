@@ -1,6 +1,6 @@
 // Removed core Result-only names must fail at the public API boundary.
 import std.fs;
-import std.net.http;
+import std.net.http.server as http;
 import std.os;
 import std.path;
 

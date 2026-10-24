@@ -308,7 +308,7 @@ fn doc_output_compares_stdout_without_log_stderr() {
     write_file(
         dir.path(),
         "guide.md",
-        "```hew\nimport std.misc.log;\nprintln(\"wanted\");\nlog.error(\"stderr only\");\n// Output:\n// wanted\n```\n",
+        "```hew\nimport std.log;\nprintln(\"wanted\");\nlog.error(\"stderr only\");\n// Output:\n// wanted\n```\n",
     );
     let output = run_hew_in(
         dir.path(),

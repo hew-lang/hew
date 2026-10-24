@@ -10,7 +10,7 @@
 //! binding `127.0.0.1:0`, read back, and either held (to force a conflict) or
 //! released (to force a refusal). No fixed port is held and nothing sleeps.
 
-import std.net.http;
+import std.net.http.server as http;
 
 import std.net.url;
 

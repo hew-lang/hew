@@ -4344,12 +4344,12 @@ fn main() {
 
 Advancing an `Rng` requires a `var` binding. Copying one gives an independent stream at the same position. Both `rng.shuffle(values)` and `random.shuffle(values)` return a shuffled vector and preserve `values`.
 
-`Rng` uses xoshiro256++ rather than MT19937, so it does not produce the same sequence as the module-level functions for the same seed; two `Rng` values created with the same seed always agree with each other. It is not cryptographically secure — for that, use `crypto.random_bytes(n).expect("valid random draw")` and `random.crypto_u64().expect("valid random draw")`, convenience wrappers over `crypto.random_bytes` (`std.crypto.crypto`) that draw from OS entropy:
+`Rng` uses xoshiro256++ rather than MT19937, so it does not produce the same sequence as the module-level functions for the same seed; two `Rng` values created with the same seed always agree with each other. It is not cryptographically secure — for that, use `hash.random_bytes(n).expect("valid random draw")` and `random.crypto_u64().expect("valid random draw")`, convenience wrappers over `hash.random_bytes` (`std.crypto.hash`) that draw from OS entropy:
 
 ```hew
 import std.random;
 fn main() {
-    let key = crypto.random_bytes(32).expect("valid random draw");  // bytes, always freshly drawn
+    let key = hash.random_bytes(32).expect("valid random draw");  // bytes, always freshly drawn
     let token = random.crypto_u64().expect("valid random draw");
 }
 ```
@@ -5223,7 +5223,7 @@ scanner plus `Option<string>`. Full example:
 
 The flagship networking surface is a suspending HTTP/1.1 client and
 server built on `net.connect` / `net.listen` plus the pure-Hew codecs in
-`std.net.http.http_async_client` / `http_async_server`. A server handler
+`std.net.http.codec`. A server handler
 accepts a connection, drives a `conn.recv()` loop until the
 request is buffered, then replies; a client writes a request and reads the
 response. Each call suspends the handler (not the worker), so one worker can
@@ -5231,13 +5231,13 @@ serve and fetch on the same thread. The request/response codecs are pure and
 runnable in isolation:
 
 ```hew
-import std.net.http.http_async_client;
+import std.net.http.codec;
 
 fn main() {
-    let parts = http_async_client.split_address("http://127.0.0.1:8080/health");
+    let parts = codec.split_address("http://127.0.0.1:8080/health");
     println(f"connect to {parts.0}");   // connect to 127.0.0.1:8080
     let raw = "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\r\n{\"ok\":true}";
-    let resp = http_async_client.parse_response(raw);
+    let resp = codec.parse_response(raw);
     println(f"status={resp.status()} type={resp.content_type()} body={resp.body()}");
 }
 ```
@@ -5265,7 +5265,7 @@ call, and a deadline over it comes from one of three places:
 
 Socket and network timeouts take `duration` values such as `250ms` or `2s`.
 Use `net.connect_timeout(address, 2s)` for connection establishment,
-`http_client.set_timeout(2s)` for outbound HTTP, and
+`client.set_timeout(2s)` for outbound HTTP, and
 `server.set_request_timeout(2s)` for incoming HTTP request bodies. TCP timeout
 setters accept a negative duration to clear the timeout. DNS and QUIC per-call
 timeouts disable their deadline for non-positive durations. Positive fractional

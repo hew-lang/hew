@@ -114,7 +114,7 @@ pub fn open(path: string) -> Result<Stream<bytes>, string> {
 /// # Examples
 ///
 /// ```hew,no_run
-/// import std.net.http;
+/// import std.net.http.server as http;
 /// import std.stream;
 ///
 /// fn main() {

@@ -616,8 +616,8 @@ pub fn canonical_source_module_identity(
 ) -> ModulePath {
     // Directory-module peers are alternate physical spellings of the same
     // shipped module.  Resolve their owner from the trusted source path so a
-    // direct `std.net.http.http_client` import cannot create a second nominal
-    // owner beside the assembled `std.net.http` module.
+    // direct `std.net.http.codec.request` import cannot create a second nominal
+    // owner beside the assembled `std.net.http.codec` module.
     source_paths
         .iter()
         .find_map(|source| canonical_stdlib_module_for_source(source))
@@ -1487,25 +1487,32 @@ mod tests {
     fn std_peers_are_listed_from_the_given_sources() {
         // A host with no filesystem names its embedded std as `./std/...`.
         let list = listing(&[
-            "./std/net/http/http.hew",
-            "./std/net/http/http_client.hew",
-            "./std/net/http/http_test.hew",
-            "./std/net/http/server.hew",
+            "./std/net/http/codec/codec.hew",
+            "./std/net/http/codec/request.hew",
+            "./std/net/http/codec/codec_test.hew",
+            "./std/net/http/codec/headers.hew",
         ]);
         let anchor = ModuleAnchor::Std {
             dir: PathBuf::from("./std"),
         };
-        let peer = module_membership(&anchor, Path::new("./std/net/http/http_client.hew"), &list);
+        let peer = module_membership(
+            &anchor,
+            Path::new("./std/net/http/codec/request.hew"),
+            &list,
+        );
         assert_eq!(peer.role, MembershipRole::Peer);
-        assert_eq!(peer.module, ModulePath::new(["std", "net", "http"]));
-        assert_eq!(peer.entry, Path::new("./std/net/http/http.hew"));
+        assert_eq!(
+            peer.module,
+            ModulePath::new(["std", "net", "http", "codec"])
+        );
+        assert_eq!(peer.entry, Path::new("./std/net/http/codec/codec.hew"));
         let entry = module_membership(&anchor, &peer.entry, &list);
         assert_eq!(entry.role, MembershipRole::Entry);
         assert_eq!(
             entry.peers,
             [
-                PathBuf::from("./std/net/http/http_client.hew"),
-                PathBuf::from("./std/net/http/server.hew"),
+                PathBuf::from("./std/net/http/codec/headers.hew"),
+                PathBuf::from("./std/net/http/codec/request.hew"),
             ],
             "test files are not peers"
         );
@@ -1606,14 +1613,19 @@ mod tests {
             Some("std.string".to_string())
         );
         assert_eq!(
-            canonical_stdlib_module_for_source(&stdlib.join("net/http/http.hew"))
+            canonical_stdlib_module_for_source(&stdlib.join("net/http/server.hew"))
                 .map(|module| module.dotted()),
-            Some("std.net.http".to_string())
+            Some("std.net.http.server".to_string())
         );
         assert_eq!(
-            canonical_stdlib_module_for_source(&stdlib.join("net/http/http_client.hew"))
+            canonical_stdlib_module_for_source(&stdlib.join("net/http/client.hew"))
                 .map(|module| module.dotted()),
-            Some("std.net.http".to_string())
+            Some("std.net.http.client".to_string())
+        );
+        assert_eq!(
+            canonical_stdlib_module_for_source(&stdlib.join("net/http/codec/request.hew"))
+                .map(|module| module.dotted()),
+            Some("std.net.http.codec".to_string())
         );
         assert_eq!(
             canonical_stdlib_module_for_source(&stdlib.join("io/scanner.hew"))
@@ -1627,25 +1639,25 @@ mod tests {
         let stdlib = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../std");
         assert_eq!(
             canonical_source_module_identity(
-                &ModulePath::new(["std", "net", "http", "http_client"]),
-                &[stdlib.join("net/http/http_client.hew")]
+                &ModulePath::new(["std", "net", "http", "codec", "request"]),
+                &[stdlib.join("net/http/codec/request.hew")]
             ),
-            ModulePath::new(["std", "net", "http"])
+            ModulePath::new(["std", "net", "http", "codec"])
         );
         assert_eq!(
             canonical_source_module_identity(
-                &ModulePath::new(["std", "net", "http"]),
-                &[stdlib.join("net/http/http.hew")]
+                &ModulePath::new(["std", "net", "http", "codec"]),
+                &[stdlib.join("net/http/codec/codec.hew")]
             ),
-            ModulePath::new(["std", "net", "http"])
+            ModulePath::new(["std", "net", "http", "codec"])
         );
-        let user_lookalike = std::env::temp_dir().join("user/std/net/http/http_client.hew");
+        let user_lookalike = std::env::temp_dir().join("user/std/net/http/codec/request.hew");
         assert_eq!(
             canonical_source_module_identity(
-                &ModulePath::new(["std", "net", "http", "http_client"]),
+                &ModulePath::new(["std", "net", "http", "codec", "request"]),
                 &[user_lookalike]
             ),
-            ModulePath::new(["std", "net", "http", "http_client"]),
+            ModulePath::new(["std", "net", "http", "codec", "request"]),
             "only a shipped source names a directory module; a user source keeps its own owner"
         );
     }
@@ -2055,16 +2067,16 @@ mod tests {
             "json.Value should be a handle type"
         );
         assert!(
-            !reg.is_handle_type("http.Request"),
-            "http.Request should not be loaded yet"
+            !reg.is_handle_type("server.Request"),
+            "server.Request should not be loaded yet"
         );
 
         // Load another module — types accumulate.
-        reg.load("std.net.http").unwrap();
+        reg.load("std.net.http.server").unwrap();
         assert!(reg.is_handle_type("json.Value"), "json.Value still present");
         assert!(
-            reg.is_handle_type("http.Request"),
-            "http.Request is a fieldless opaque resource with one release authority"
+            reg.is_handle_type("server.Request"),
+            "server.Request is a fieldless opaque resource with one release authority"
         );
     }
 
@@ -2077,10 +2089,10 @@ mod tests {
             "toml.Value is an encoding value released through the shared \
              encoding operation vocabulary, not a registry drop type"
         );
-        reg.load("std.net.http").unwrap();
+        reg.load("std.net.http.server").unwrap();
         assert!(
-            reg.is_drop_type("http.Request"),
-            "http.Request is a `#[resource]` handle, so it is a drop type"
+            reg.is_drop_type("server.Request"),
+            "server.Request is a `#[resource]` handle, so it is a drop type"
         );
         reg.load("std.process").unwrap();
         assert!(
@@ -2088,15 +2100,15 @@ mod tests {
             "process.Child should be a drop type"
         );
         assert!(
-            reg.is_drop_type("http.Server"),
-            "http.Server is now a closeable opaque resource"
+            reg.is_drop_type("server.Server"),
+            "server.Server is now a closeable opaque resource"
         );
         reg.load("std.text.regex").unwrap();
         assert!(
             reg.is_drop_type("regex.Pattern"),
             "regex.Pattern is a `#[resource]` handle, so it is a drop type"
         );
-        for resource in ["http.Request", "http.Server", "process.Child"] {
+        for resource in ["server.Request", "server.Server", "process.Child"] {
             assert!(
                 reg.is_drop_type(resource),
                 "{resource} must remain registered"
@@ -2113,11 +2125,11 @@ mod tests {
             None,
             "toml.Value has no source disposer; its release is EncodingOp::Free"
         );
-        reg.load("std.net.http").unwrap();
+        reg.load("std.net.http.server").unwrap();
         assert_eq!(
-            reg.drop_func_for("http.Request"),
+            reg.drop_func_for("server.Request"),
             Some("hew_http_request_free"),
-            "http.Request.close consumes the handle itself, so its drop func is \
+            "server.Request.close consumes the handle itself, so its drop func is \
              the one release authority"
         );
         reg.load("std.process").unwrap();
@@ -2146,7 +2158,7 @@ mod tests {
             "process.Child::close must release its wrapped ChildHandle exactly once"
         );
         assert_eq!(
-            reg.drop_func_for("http.Server"),
+            reg.drop_func_for("server.Server"),
             Some("hew_http_server_close"),
             "http.Server must use its sole raw disposer"
         );
@@ -2162,7 +2174,7 @@ mod tests {
             "no registry drop function may release a TOML value: {all:?}"
         );
         let expected = (
-            "http.Server".to_string(),
+            "server.Server".to_string(),
             "hew_http_server_close".to_string(),
         );
         assert!(
@@ -2485,7 +2497,7 @@ mod tests {
     fn resolve_handle_method_sig_returns_listener_and_request_close() {
         let mut reg = registry();
         reg.load("std.net").unwrap();
-        reg.load("std.net.http").unwrap();
+        reg.load("std.net.http.server").unwrap();
 
         let listener_close = reg
             .resolve_handle_method_sig("net.Listener", "close")
@@ -2498,8 +2510,8 @@ mod tests {
         assert_eq!(listener_close.2, crate::ty::Ty::Unit);
 
         let request_close = reg
-            .resolve_handle_method_sig("http.Request", "close")
-            .expect("http.Request.close should be extracted");
+            .resolve_handle_method_sig("server.Request", "close")
+            .expect("server.Request.close should be extracted");
         assert_eq!(request_close.0, "hew_http_request_free");
         assert_eq!(
             request_close.1,
@@ -2508,7 +2520,7 @@ mod tests {
         assert_eq!(request_close.2, crate::ty::Ty::Unit);
 
         assert_eq!(
-            reg.canonical_registry_signature_type_identity("net.NetError", "std.net.http"),
+            reg.canonical_registry_signature_type_identity("net.NetError", "std.net.http.server"),
             Some("std.net.NetError".to_string()),
             "a source-qualified imported type must use the import's exact declaration owner"
         );
@@ -2989,8 +3001,8 @@ mod tests {
         // the empty path and reported `""` as the root; every module source
         // loaded under it was then a cwd-relative path that
         // `canonical_stdlib_module_for_source` could not canonicalize.
-        let absolute = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../std/net/http/http.hew");
-        let relative = PathBuf::from("../std/net/http/http.hew");
+        let absolute = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../std/net/http/server.hew");
+        let relative = PathBuf::from("../std/net/http/server.hew");
         let from_absolute =
             find_enclosing_hew_root(&absolute).expect("shipped source is inside the checkout");
         let from_relative =

@@ -1,5 +1,5 @@
 import std.random;
-import std.crypto.crypto;
+import std.crypto.hash;
 
 fn bound() -> i64 {
     5
@@ -113,12 +113,12 @@ fn main() {
     assert(h.shuffle(singleton) == singleton);
 
     // crypto_bytes(n) returns exactly n bytes; two draws differ.
-    let cb1 = crypto.random_bytes(16).expect("valid random draw");
-    let cb2 = crypto.random_bytes(16).expect("valid random draw");
+    let cb1 = hash.random_bytes(16).expect("valid random draw");
+    let cb2 = hash.random_bytes(16).expect("valid random draw");
     assert(cb1.len() == 16);
     assert(cb2.len() == 16);
     assert(cb1 != cb2);
-    assert(crypto.random_bytes(0).expect("valid random draw").len() == 0);
+    assert(hash.random_bytes(0).expect("valid random draw").len() == 0);
 
     // crypto_u64 draws differ across calls.
     assert(random.crypto_u64().expect("valid random draw") != random.crypto_u64().expect("valid random draw"));

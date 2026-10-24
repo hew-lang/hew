@@ -1,4 +1,4 @@
-import std.net.http;
+import std.net.http.server as http;
 
 import std.net.websocket;
 

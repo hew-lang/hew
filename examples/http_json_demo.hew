@@ -3,7 +3,7 @@
 
 // HTTP + JSON pipeline demo.
 //
-// Demonstrates `std.net.http.http_client` and `std.encoding.json`
+// Demonstrates `std.net.http.client` and `std.encoding.json`
 // working together: fetch a JSON payload over HTTP, navigate a nested
 // object, extract typed fields, and count an array.
 //
@@ -24,13 +24,13 @@
 // Note: requires internet access. Not included in the automated test
 // suite because output depends on network availability.
 //
-import std.net.http.http_client;
+import std.net.http.client;
 
 import std.encoding.json.{self, Value};
 
 // Fetch a URL and return the body string, or None on transport failure.
 fn fetch(url: string) -> Option<string> {
-    http_client.get_string(url)
+    client.get_string(url)
 }
 
 // Distinguish a missing field from a value of the wrong kind.

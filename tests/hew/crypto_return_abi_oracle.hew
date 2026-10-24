@@ -1,24 +1,24 @@
 //! Runnable oracle for std::crypto `bytes` return ABI behaviour.
 
-import std.crypto.crypto;
+import std.crypto.hash;
 
 import std.crypto.encrypt;
 
 fn main() {
-    let key = match crypto.random_bytes(32) {
+    let key = match hash.random_bytes(32) {
         .Ok(key) => key,
         .Err(reason) => panic(f"{reason}"),
     };
     assert(key.len() == 32);
     let message = "hew".to_bytes();
-    let sha256_digest = crypto.sha256(message);
+    let sha256_digest = hash.sha256(message);
     assert(sha256_digest.len() == 32);
-    let sha384_digest = crypto.sha384(message);
+    let sha384_digest = hash.sha384(message);
     assert(sha384_digest.len() == 48);
-    let sha512_digest = crypto.sha512(message);
+    let sha512_digest = hash.sha512(message);
     assert(sha512_digest.len() == 64);
     let hmac_key = "key".to_bytes();
-    let hmac_tag = crypto.hmac_sha256(hmac_key, message);
+    let hmac_tag = hash.hmac_sha256(hmac_key, message);
     assert(hmac_tag.len() == 32);
     let ciphertext = match encrypt.seal(key, "hew crypto ABI survives") {
         .Ok(ciphertext) => ciphertext,

@@ -26,7 +26,7 @@ leaves the table intact.
 
 `resolve(method, target)` returns `Result<RouteMatch<T>, RouteError>`. Pass the
 method and raw target from `request.method()` and `request.path()` in either
-`std.net.http` or `std.net.http.http_async_server`. Among complete path matches,
+`std.net.http` or `std.net.http.codec`. Among complete path matches,
 the first differing segment prefers a literal to a parameter, regardless of
 registration order. Path selection comes before method selection: a `GET` for
 `/users/new` above returns `MethodNotAllowed(["POST"])`, even though the parameter

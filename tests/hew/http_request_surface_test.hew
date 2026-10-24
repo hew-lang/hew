@@ -1,13 +1,13 @@
-//! Smoke tests for the bounded std::net::http::http_client slice.
+//! Smoke tests for the bounded std::net::http::client slice.
 
-import std.net.http.http_client;
+import std.net.http.client;
 
 #[test]
 #[real_time]
 fn test_request_surface_is_importable_from_http_client() {
     let headers: Vec<(string, string)> = Vec.new();
-    assert(http_client.set_timeout(250ms).is_ok());
-    let resp = http_client.request("TRACE", "http://example.com", "", headers);
+    assert(client.set_timeout(250ms).is_ok());
+    let resp = client.request("TRACE", "http://example.com", "", headers);
     assert(resp.status() == -1);
     resp.close();
 }
@@ -16,10 +16,10 @@ fn test_request_surface_is_importable_from_http_client() {
 #[real_time]
 fn test_request_string_surface_is_importable_from_http_client() {
     let headers: Vec<(string, string)> = Vec.new();
-    assert(http_client.set_timeout(250ms).is_ok());
+    assert(client.set_timeout(250ms).is_ok());
 
     // TRACE is unsupported — returns None (transport/validation failure).
-    let result = http_client.request_string("TRACE", "http://example.com", "", headers);
+    let result = client.request_string("TRACE", "http://example.com", "", headers);
     match result {
         .Some(_) => assert(true),
         .None => assert(true),
@@ -32,8 +32,8 @@ fn test_request_with_header_pairs() {
     var headers: Vec<(string, string)> = Vec.new();
     headers.push(("Accept", "application/json"));
     headers.push(("X-Custom-Header", "hew-test"));
-    assert(http_client.set_timeout(250ms).is_ok());
-    let resp = http_client.request("GET", "http://example.com", "", headers);
+    assert(client.set_timeout(250ms).is_ok());
+    let resp = client.request("GET", "http://example.com", "", headers);
     // Transport will fail (TRACE/unsupported method or network), status -1 is acceptable.
     // The important property is that the call compiles and executes without panic.
     resp.close();

@@ -1911,7 +1911,7 @@ imported side by side and reached as `huffman.encode` and `rle.encode`.
 When importing a standard library module, the **last segment** of the module path becomes the local alias for the module. All access uses this short name, not the full path:
 
 ```hew,no_run
-import std.net.http; // Available as "http", not "std.net.http"
+import std.net.http.server as http; // Available as "http", not "std.net.http"
 import std.fs; // Available as "fs"
 import std.io; // Available as "io"
 import std.text.regex; // Available as "regex"
@@ -2043,7 +2043,7 @@ statements.
   (`import greeting.greeting;`) is refused as `E_ENTRY_FILE_IMPORT`; a user
   package's peer file imported directly is refused as `E_PEER_IMPORT`. Both
   name `greeting` as the fix. A standard-library peer stays importable by file
-  (`std.net.http.http_client`) and loads the whole directory module.
+  (`std.net.http.codec.request`) and loads the whole directory module.
 - Sub-directories are not automatically included; they must be imported
   explicitly.
 - Peer files are merged in sorted filename order (deterministic across

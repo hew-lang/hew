@@ -1214,6 +1214,26 @@ fn actor_state_iterator_snapshots_and_explicit_drains_match_native() {
 
 #[cfg(unix)]
 #[test]
+fn http_codec_identity_and_hardening_match_native() {
+    set_test_hewpath();
+    ensure_native_toolchain();
+    ensure_parity_runner_built();
+    for case in [
+        ParityCase {
+            test_name: "http_codec_module_identity",
+            source_rel: "tests/core-acceptance/cases/std-two-file-module-identity.hew",
+        },
+        ParityCase {
+            test_name: "http_codec_hardening",
+            source_rel: "examples/net/await_http_codec_hardening.hew",
+        },
+    ] {
+        assert_case(&case, "");
+    }
+}
+
+#[cfg(unix)]
+#[test]
 fn numeric_iterator_terminals_match_native() {
     set_test_hewpath();
     ensure_native_toolchain();
@@ -1774,6 +1794,8 @@ fn assert_exact_stdout(case: &ParityCase, native: &Output) {
             Some("alpha 3\nbeta 3\n300\nalpha 3\nbeta 5 alpha 5 500\nright\nleft\ntag 7\n")
         }
         "identity_w7_sandbox" | "identity_w7_sandbox_control" => Some("7\n8\n"),
+        "http_codec_module_identity" => Some("0\n400\ntrue\ntrue\n"),
+        "http_codec_hardening" => Some("codec-hardening-ok\n"),
         "numeric_iterator_terminals" => Some("numeric iterators ok\n"),
         "stdin_concurrent" => Some("one line each\nrest=[three\nfour]\n"),
         "stdin_lines" => Some("literal io.read_line()\nfirst=[alpha] second=[]\nrest=[beta\r\ngamma]\nafter end\n"),

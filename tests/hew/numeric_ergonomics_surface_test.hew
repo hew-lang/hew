@@ -2,7 +2,7 @@
 
 import std.crypto.password;
 
-import std.misc.log;
+import std.log;
 
 #[test]
 fn test_log_level_and_format_use_int_surface() {

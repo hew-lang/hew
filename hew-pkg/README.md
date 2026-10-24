@@ -17,7 +17,7 @@ hew build
 hew run
 ```
 
-Standard-library modules ship with the compiler. Use `import std.net.http;`
+Standard-library modules ship with the compiler. Use `import std.net.http.server as http;`
 in your source to access one; do not add it as a registry dependency.
 
 For third-party packages, first use `hew search <QUERY>` and

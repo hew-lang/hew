@@ -526,8 +526,8 @@ mod wasm_rejects {
     fn wasm_rejects_native_rc1_resource_modules() {
         let cases = [
             (
-                "std.net.http",
-                "http.listen(\"127.0.0.1:0\")",
+                "std.net.http.server",
+                "server.listen(\"127.0.0.1:0\")",
                 "HTTP server operations",
             ),
             (
@@ -814,26 +814,26 @@ mod wasm_rejects {
 
     #[test]
     fn wasm_rejects_crypto_random_bytes() {
-        // crypto.random_bytes requires secure entropy. On wasm32, no secure
+        // hash.random_bytes requires secure entropy. On wasm32, no secure
         // implementation is linked, so the checker must fail closed.
         let source = concat!(
-            "import std.crypto.crypto;\n",
-            "fn main() { crypto.random_bytes(16); }\n",
+            "import std.crypto.hash;\n",
+            "fn main() { hash.random_bytes(16); }\n",
         );
         let output = check_wasm_with_registry(source);
         assert!(
             has_platform_limitation_error(&output),
-            "crypto.random_bytes should be a compile-time error on WASM; got errors: {:?}",
+            "hash.random_bytes should be a compile-time error on WASM; got errors: {:?}",
             output.errors
         );
         assert!(
             platform_error_contains(&output, "random_bytes"),
-            "error message should mention crypto.random_bytes; got: {:?}",
+            "error message should mention hash.random_bytes; got: {:?}",
             output.errors
         );
         assert!(
             !has_platform_limitation_warning(&output),
-            "crypto.random_bytes should not emit a PlatformLimitation warning on WASM; got warnings: {:?}",
+            "hash.random_bytes should not emit a PlatformLimitation warning on WASM; got warnings: {:?}",
             output.warnings
         );
     }
@@ -841,7 +841,7 @@ mod wasm_rejects {
     /// Regression for PR #920: the bare-identifier `"random_bytes"` arm in
     /// `reject_if_wasm_incompatible_call` fired on raw name alone, so an
     /// ordinary user function bare-named `random_bytes` (nothing to do with
-    /// `std::crypto.random_bytes`) hard-failed a WASM build with the
+    /// `std::hash.random_bytes`) hard-failed a WASM build with the
     /// crypto-entropy diagnostic pointed at the user's own call — not just a
     /// spurious warning, a genuine compile break for an unrelated function.
     #[test]
@@ -864,16 +864,16 @@ mod wasm_rejects {
 
     #[test]
     fn wasm_rejects_crypto_random_bytes_value_position() {
-        // Taking crypto.random_bytes as a first-class function value on wasm32
+        // Taking hash.random_bytes as a first-class function value on wasm32
         // must be rejected with PlatformLimitation, not silently allowed.
         let source = concat!(
-            "import std.crypto.crypto;\n",
-            "fn main() { let _f = crypto.random_bytes; }\n",
+            "import std.crypto.hash;\n",
+            "fn main() { let _f = hash.random_bytes; }\n",
         );
         let output = check_wasm_with_registry(source);
         assert!(
             has_platform_limitation_error(&output),
-            "crypto.random_bytes value-position reference must be a compile-time error on WASM; got errors: {:?}",
+            "hash.random_bytes value-position reference must be a compile-time error on WASM; got errors: {:?}",
             output.errors
         );
         assert!(
@@ -888,8 +888,8 @@ mod wasm_rejects {
         // The same value-position reference must be accepted on native (non-wasm)
         // targets so the guard does not break native builds.
         let source = concat!(
-            "import std.crypto.crypto;\n",
-            "fn main() { let _f = crypto.random_bytes; }\n",
+            "import std.crypto.hash;\n",
+            "fn main() { let _f = hash.random_bytes; }\n",
         );
         let result = hew_parser::parse(source);
         assert!(
@@ -901,7 +901,7 @@ mod wasm_rejects {
         let output = checker.check_program(&result.program);
         assert!(
             !has_platform_limitation_error(&output),
-            "crypto.random_bytes value-position must not error on native target; got: {:?}",
+            "hash.random_bytes value-position must not error on native target; got: {:?}",
             output.errors
         );
     }
@@ -926,13 +926,13 @@ mod wasm_rejects {
     #[test]
     fn wasm_rejects_http_client_request_value_position() {
         let source = concat!(
-            "import std.net.http.http_client;\n",
-            "fn main() { let _f = http_client.request; }\n",
+            "import std.net.http.client;\n",
+            "fn main() { let _f = client.request; }\n",
         );
         let output = check_wasm_with_registry(source);
         assert!(
             has_platform_limitation_error(&output),
-            "http_client.request value-position reference must be a compile-time error on WASM; got: {:?}",
+            "client.request value-position reference must be a compile-time error on WASM; got: {:?}",
             output.errors
         );
     }
@@ -1122,8 +1122,8 @@ fn main() {
     #[test]
     fn native_crypto_random_bytes_no_platform_error() {
         let source = concat!(
-            "import std.crypto.crypto;\n",
-            "fn main() { crypto.random_bytes(16); }\n",
+            "import std.crypto.hash;\n",
+            "fn main() { hash.random_bytes(16); }\n",
         );
         let result = hew_parser::parse(source);
         assert!(
@@ -1135,12 +1135,12 @@ fn main() {
         let output = checker.check_program(&result.program);
         assert!(
             !has_platform_limitation_error(&output),
-            "crypto.random_bytes should not emit PlatformLimitation error on native target; got: {:?}",
+            "hash.random_bytes should not emit PlatformLimitation error on native target; got: {:?}",
             output.errors
         );
         assert!(
             !has_platform_limitation_warning(&output),
-            "crypto.random_bytes should not emit PlatformLimitation warning on native target; got: {:?}",
+            "hash.random_bytes should not emit PlatformLimitation warning on native target; got: {:?}",
             output.warnings
         );
     }

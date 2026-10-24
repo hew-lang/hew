@@ -1251,7 +1251,10 @@ impl Checker {
         // are canonical AsyncIo operations. They park on the reactor even
         // when called from a receive handler, so warning for them would direct
         // programmers away from the supported scheduler-safe spelling.
-        if matches!((type_name, method), ("std.net.http.Server", "accept")) {
+        if matches!(
+            (type_name, method),
+            ("std.net.http.server.Server", "accept")
+        ) {
             self.warn_if_blocking_in_receive_fn(&format!("{type_name}.{method}"), span);
         }
     }

@@ -11,16 +11,16 @@
 //! `string_pair_drop_thunk`, so the drop spine frees both C-string fields of
 //! every element correctly — no abort, no leak, no double-free.
 
-import std.net.http.http_client;
+import std.net.http.client;
 
 /// P0 regression: binding resp.headers() to a local and letting it go out of
 /// scope (without a for-in consume) must not abort.
 #[test]
 #[real_time]
 fn test_headers_drop_without_consume_does_not_abort() {
-    assert(http_client.set_timeout(100ms).is_ok());
+    assert(client.set_timeout(100ms).is_ok());
     // A failed request (nothing listening on 19999) returns an empty headers vec.
-    let resp = http_client.get("http://127.0.0.1:19999");
+    let resp = client.get("http://127.0.0.1:19999");
     // Bind to a local — this is the P0 path.
     // Pre-fix: drops here via hew_vec_free_owned → null elem_layout → abort.
     // Post-fix: string_pair_drop_thunk is called on each (zero) element, no abort.
@@ -35,8 +35,8 @@ fn test_headers_drop_without_consume_does_not_abort() {
 #[test]
 #[real_time]
 fn test_headers_len_bind_does_not_abort() {
-    assert(http_client.set_timeout(100ms).is_ok());
-    let resp = http_client.get("http://127.0.0.1:19999");
+    assert(client.set_timeout(100ms).is_ok());
+    let resp = client.get("http://127.0.0.1:19999");
     let h = resp.headers();
     let _n = h.len();
     // h drops here.

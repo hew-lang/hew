@@ -139,9 +139,9 @@ pub(crate) fn load_module_with_inputs(
     // Extracted signatures qualify a module-local nominal with the module's
     // short owner, and the registry later projects that spelling onto the
     // module's canonical owner. Both spellings must come from the same
-    // authority: a directory-module peer (`std.net.http.http_async_server`)
-    // is owned by its package (`std.net.http`), so it extracts as `http.T`,
-    // not `http_async_server.T`, or the projection has nothing to join.
+    // authority: a directory-module peer (`std.net.http.codec`)
+    // is owned by its package (`std.net.http.codec`), so it extracts as `codec.T`,
+    // not `codec.T`, or the projection has nothing to join.
     let module_short = crate::module_registry::canonical_stdlib_module_for_source(&hew_path)
         .and_then(|owner| owner.segments.last().map(ToString::to_string))
         .unwrap_or_else(|| module_short_name(module_path));
@@ -1451,7 +1451,7 @@ mod tests {
         let parsed = parse(
             r#"
             import std.net;
-            import std.net.http;
+            import std.net.http.server as http;
             fn reply(req: http.Request) {
                 let _: Result<(), net.NetError> = req.respond(200, "text/plain", "hello");
                 let _: Result<(), net.NetError> = req.respond_text(200, "hello");
@@ -1593,12 +1593,12 @@ mod tests {
         );
 
         let http_info =
-            load_module("std::net::http", &test_root()).expect("should load http module");
+            load_module("std::net::http::server", &test_root()).expect("should load http module");
         let close = http_info
             .handle_methods
             .iter()
-            .find(|m| m.type_name == "http.Request" && m.method_name == "close")
-            .expect("http.Request.close should be extracted");
+            .find(|m| m.type_name == "server.Request" && m.method_name == "close")
+            .expect("server.Request.close should be extracted");
         assert_eq!(close.c_symbol, "hew_http_request_free");
         assert_eq!(close.params, Vec::<crate::CallableParameter<Ty>>::new());
         assert_eq!(close.return_type, Ty::Unit);
@@ -1739,7 +1739,7 @@ mod tests {
 
     #[test]
     fn drop_types_extracted() {
-        let info = load_module("std::net::http", &test_root()).unwrap();
+        let info = load_module("std::net::http::server", &test_root()).unwrap();
 
         assert!(
             info.drop_types.contains(&"http.Request".to_string()),
@@ -1756,7 +1756,7 @@ mod tests {
 
     #[test]
     fn drop_funcs_extracted() {
-        let info = load_module("std::net::http", &test_root()).unwrap();
+        let info = load_module("std::net::http::server", &test_root()).unwrap();
 
         let request_drop = info.drop_funcs.iter().find(|(ty, _)| ty == "http.Request");
         assert_eq!(

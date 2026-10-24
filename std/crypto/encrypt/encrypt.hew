@@ -5,11 +5,11 @@
 //! # Examples
 //!
 //! ```
-//! import std.crypto.crypto;
+//! import std.crypto.hash;
 //! import std.crypto.encrypt;
 //!
 //! fn main() {
-//!     let key = match crypto.random_bytes(32) {
+//!     let key = match hash.random_bytes(32) {
 //!         .Ok(key) => key,
 //!         .Err(reason) => panic(f"{reason}"),
 //!     };

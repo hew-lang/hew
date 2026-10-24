@@ -9,7 +9,7 @@
 //!   HH:MM:SS.mmm ERROR service down  code=503
 //!   HH:MM:SS.mmm INFO  health ok  healthy=true
 
-import std.misc.log;
+import std.log;
 
 fn main() {
     // JSON logger at DEBUG level — independent of global settings

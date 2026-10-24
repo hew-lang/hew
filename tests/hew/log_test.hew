@@ -1,4 +1,4 @@
-//! Tests for std::misc::log — structured logging API.
+//! Tests for std::log — structured logging API.
 //!
 //! Tests cover: level/format constants, field builders, Logger construction
 //! (via accessors), global level/format round-trips, and filtering behaviour.
@@ -6,7 +6,7 @@
 //! The visual output shape (coloured text / NDJSON) is verified by the
 //! integration probes in examples/log/ which are run with `hew run`.
 
-import std.misc.log;
+import std.log;
 
 // ── Level and format constants ────────────────────────────────────────────────
 #[test]

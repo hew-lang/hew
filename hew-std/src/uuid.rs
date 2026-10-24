@@ -96,7 +96,7 @@ mod tests {
     #[test]
     fn hew_binding_declares_uuid_parse_returns_i32() {
         let _: unsafe extern "C" fn(*const HewString) -> i32 = hew_uuid_parse;
-        let hew_src = include_str!("../../std/misc/uuid/uuid.hew");
+        let hew_src = include_str!("../../std/uuid/uuid.hew");
 
         // Locate the `hew_uuid_parse` extern declaration line.
         let decl = hew_src

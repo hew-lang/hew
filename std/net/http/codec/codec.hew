@@ -9,7 +9,7 @@
 //!
 //! ```
 //! import std.net;
-//! import std.net.http.http_async_client;
+//! import std.net.http.codec;
 //! import std.string;
 //! import std.encoding.utf8;
 //!
@@ -19,7 +19,7 @@
 //!     let host: string;   // "127.0.0.1"
 //!     receive fn go(unused: i64) {
 //!         let conn = match net.connect(addr) { .Ok(value) => value, .Err(error) => panic("network operation failed"), };
-//!         conn.send(http_async_client.build_get(host, path).to_bytes()).expect("send succeeds");
+//!         conn.send(codec.build_get(host, path).to_bytes()).expect("send succeeds");
 //!         var raw = "";
 //!         var reads = 0;
 //!         var done = false;
@@ -36,16 +36,16 @@
 //!                 done = true;
 //!             } else {
 //!                 raw = raw + chunk;
-//!                 if http_async_client.response_over_limit(raw) {   // F2: fail closed
+//!                 if codec.response_over_limit(raw) {   // F2: fail closed
 //!                     done = true;
 //!                 }
 //!             }
-//!             if reads > http_async_client.CLIENT_MAX_READS {       // F2: read ceiling
+//!             if reads > codec.CLIENT_MAX_READS {       // F2: read ceiling
 //!                 done = true;
 //!             }
 //!         }
 //!         let _ = conn.close();
-//!         let resp = http_async_client.parse_response(raw);
+//!         let resp = codec.parse_response(raw);
 //!         println(resp.body());
 //!     }
 //! }
@@ -81,16 +81,16 @@ pub const CLIENT_MAX_READS: i64 = 8192;
 /// transport-failure convention the blocking client also uses). `body_text` is
 /// the response body. `header_section` is the raw header block (the lines
 /// between the status line and the blank line, CRLF-separated), parsed on demand
-/// by [`AsyncResponse.header`].
-pub type AsyncResponse {
+/// by [`Response.header`].
+pub type Response {
     code: i64;
     body_text: string;
     header_section: string;
 }
 
-/// Methods on [`AsyncResponse`] — byte-identical surface to the blocking
+/// Methods on [`Response`] — byte-identical surface to the blocking
 /// `Response` (`status` / `body` / `header` / `content_type`).
-trait AsyncResponseMethods {
+trait ResponseMethods {
     /// The HTTP status code (e.g. 200, 404), or `-1` on a transport/parse error.
     fn status(self) -> i64;
 
@@ -105,7 +105,7 @@ trait AsyncResponseMethods {
     fn content_type(self) -> string;
 }
 
-impl AsyncResponseMethods for AsyncResponse {
+impl ResponseMethods for Response {
     fn status(self) -> i64 {
         self.code
     }
@@ -303,23 +303,23 @@ pub fn response_over_limit(raw: string) -> bool {
     return declared > CLIENT_MAX_BODY_BYTES;
 }
 
-/// Parse the raw bytes read off a connection into an [`AsyncResponse`]. The
+/// Parse the raw bytes read off a connection into an [`Response`]. The
 /// header/body boundary is the first CRLF-CRLF; the status code is parsed and
 /// VALIDATED from the status line. A response is rejected with `code == -1` (the
 /// transport-failure convention) when it is empty, exceeds a size bound (F2/SF1),
 /// is missing the CRLF-CRLF header terminator (SF2), or has a status line that is
 /// not a valid `HTTP/1.x` version + 3-digit `100`-`599` status (SF2).
-pub fn parse_response(raw: string) -> AsyncResponse {
+pub fn parse_response(raw: string) -> Response {
     if (raw).is_empty() {
-        return AsyncResponse { code: -1, body_text: "", header_section: "" };
+        return Response { code: -1, body_text: "", header_section: "" };
     }
     if response_over_limit(raw) {
-        return AsyncResponse { code: -1, body_text: "", header_section: "" };
+        return Response { code: -1, body_text: "", header_section: "" };
     }
     let sep = match raw.find("\r\n\r\n") {
         .Some(i) => i,
         // SF2 — no header terminator: the response is not fully framed.
-        .None => return AsyncResponse { code: -1, body_text: "", header_section: "" },
+        .None => return Response { code: -1, body_text: "", header_section: "" },
     };
     let head = raw[0..sep];
     let body = raw[sep + 4 .. raw.len()];
@@ -333,7 +333,7 @@ pub fn parse_response(raw: string) -> AsyncResponse {
     // The header section is the head with the status line removed (the lines
     // after the first CRLF), re-joined for on-demand `header()` lookups.
     let header_section = header_section_of(head);
-    AsyncResponse { code: code, body_text: body, header_section: header_section }
+    Response { code: code, body_text: body, header_section: header_section }
 }
 
 /// Parse + validate the status code from an HTTP status line

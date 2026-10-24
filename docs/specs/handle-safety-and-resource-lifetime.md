@@ -394,7 +394,7 @@ by the PR itself; this spec fixes the *shape*.
 | `json.Value` | deferred; manual `free()` remains | child-consuming `with` / `push` require ownership-transfer semantics | no change |
 | `toml.Value` | `free()`, `close()` and the consuming builders removed; checked accessors and `set`/`push` on a `var` | `#[resource]` marker removed; joins the `EncodingFormat` carrier with JSON and YAML | clone and release through the format's `EncodingOp::Clone`/`Free` symbols |
 | `yaml.Value` | deferred; manual `free()` remains | child-consuming `with` / `push` require ownership-transfer semantics | no change |
-| `http_client.Response` | `resp.free()` removed; `resp.close()` releases early | fielded `#[resource]` wrapper around `ResponseHandle` | existing resource drop emission |
+| `client.Response` | `resp.free()` removed; `resp.close()` releases early | fielded `#[resource]` wrapper around `ResponseHandle` | existing resource drop emission |
 | `http.Request` | `req.free()` removed; `req.close()` releases early | fielded `#[resource]` wrapper around `RequestHandle` | existing resource drop emission |
 | `http.Server` | `srv.close()` becomes a no-op; long-lived server cleaned at session reset | tier-3; session-reset registry entry added | drop registered + session entry |
 | `http` response sink | `body.close()` becomes a no-op; affine drop produces a default flush; `defer body.close();` available for explicit early finish | tier-2; flush-on-drop semantics specified | drop registered with flush hook |

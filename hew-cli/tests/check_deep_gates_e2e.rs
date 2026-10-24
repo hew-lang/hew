@@ -317,15 +317,20 @@ fn run_check_in_fixture_dir(dir: &std::path::Path) -> std::process::Output {
 }
 
 #[test]
-fn check_http_peer_fields_match_extern_signatures_through_both_import_routes() {
-    // Import checking visits the peer's Response methods even when the entry
-    // does not call HTTP. Both routes must agree on the handle's source type.
-    for module in ["std.net.http", "std.net.http.http_client"] {
+fn check_http_resources_and_codec_peers_keep_their_source_identity() {
+    // Import checking visits every authored method without needing a live
+    // connection. Codec peer imports must retain their directory owner.
+    for module in [
+        "std.net.http.server",
+        "std.net.http.client",
+        "std.net.http.codec",
+        "std.net.http.codec.request",
+    ] {
         let (_dir, path) = write_fixture(&format!("import {module}; fn main() {{}}"));
         let output = run_check(&["check", path.to_str().unwrap()]);
         assert!(
             output.status.success(),
-            "HTTP module {module} must check its peer record fields against extern parameters\n{}",
+            "HTTP module {module} must preserve its authored method and resource types\n{}",
             describe_output(&output),
         );
     }

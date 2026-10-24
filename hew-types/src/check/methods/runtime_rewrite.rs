@@ -994,8 +994,10 @@ impl Checker {
             return;
         }
         match name {
-            "std.net.http.Response"
-                if self.canonical_std_module_sources.contains("std.net.http") =>
+            "std.net.http.client.Response"
+                if self
+                    .canonical_std_module_sources
+                    .contains("std.net.http.client") =>
             {
                 self.reject_wasm_feature(span, WasmUnsupportedFeature::HttpClient);
             }
@@ -1011,7 +1013,10 @@ impl Checker {
             "process.Child" | "std.process.Child" => {
                 self.reject_wasm_feature(span, WasmUnsupportedFeature::ProcessExecution);
             }
-            "http.Server" | "http.Request" | "std.net.http.Server" | "std.net.http.Request" => {
+            "http.Server"
+            | "http.Request"
+            | "std.net.http.server.Server"
+            | "std.net.http.server.Request" => {
                 self.reject_wasm_feature(span, WasmUnsupportedFeature::HttpServer);
             }
             STD_NET_LISTENER | STD_NET_CONNECTION => {

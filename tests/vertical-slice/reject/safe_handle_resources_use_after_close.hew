@@ -4,9 +4,9 @@ import std.semaphore;
 
 import std.deque;
 
-import std.net.http;
+import std.net.http.server as http;
 
-import std.net.http.http_client;
+import std.net.http.client;
 
 import std.net.quic;
 
@@ -36,7 +36,7 @@ fn use_request(consume value: http.Request) {
     let _ = value.path();
 }
 
-fn use_response(consume value: http_client.Response) {
+fn use_response(consume value: client.Response) {
     value.close();
     let _ = value.status();
 }

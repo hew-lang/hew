@@ -38,7 +38,7 @@
 //! }
 //! ```
 
-import std.crypto.crypto;
+import std.crypto.hash;
 
 /// Inputs that cannot describe a random draw.
 pub enum RandomError {
@@ -112,8 +112,8 @@ impl Rng {
 
 // ── Cryptographically secure randomness ─────────────────────────────────
 /// Return a cryptographically secure random `u64` drawn from OS entropy.
-pub fn crypto_u64() -> u64 fails crypto.RandomError {
-    let b = crypto.random_bytes(8)?;
+pub fn crypto_u64() -> u64 fails hash.RandomError {
+    let b = hash.random_bytes(8)?;
     var v: u64 = 0;
     for i in 0..8 {
         v = v | b[i] as u64 << i as u64 * 8;

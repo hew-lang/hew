@@ -185,7 +185,7 @@ fn network_timeouts_require_explicit_duration_units() {
         "conn.set_write_timeout(TIME)",
         "dns.resolve_timed(\"localhost\", TIME)",
         "dns.lookup_host_timed(\"localhost\", TIME)",
-        "http_client.set_timeout(TIME)",
+        "client.set_timeout(TIME)",
         "server.set_request_timeout(TIME)",
         "stream.recv_timeout(TIME)",
         "stream.send_timeout(b\"data\", TIME)",
@@ -196,8 +196,8 @@ fn network_timeouts_require_explicit_duration_units() {
             r"
             import std.net;
             import std.net.dns;
-            import std.net.http;
-            import std.net.http.http_client;
+            import std.net.http.server as http;
+            import std.net.http.client;
             import std.net.quic;
             fn probe(conn: net.Connection, server: http.Server, stream: quic.QUICStream) {{
                 let _ = {call};

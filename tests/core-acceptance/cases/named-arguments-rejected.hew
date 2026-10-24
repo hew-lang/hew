@@ -1,6 +1,6 @@
 // Every parameter is supplied exactly once, by a name the callee declares,
 // and only a callee whose parameters carry names accepts one.
-import std.misc.log;
+import std.log;
 
 enum Reading {
     Level(i64);

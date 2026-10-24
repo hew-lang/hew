@@ -95,6 +95,7 @@ mod tests {
     /// so any drift back to `bool` (or any other type) goes red here.
     #[test]
     fn hew_binding_declares_uuid_parse_returns_i32() {
+        let _: unsafe extern "C" fn(*const HewString) -> i32 = hew_uuid_parse;
         let hew_src = include_str!("../../std/misc/uuid/uuid.hew");
 
         // Locate the `hew_uuid_parse` extern declaration line.

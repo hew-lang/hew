@@ -1093,6 +1093,7 @@ mod tests {
     /// if the declared return type is anything other than `-> i32`.
     #[test]
     fn hew_binding_declares_jwt_last_error_code_returns_i32() {
+        let _: extern "C" fn() -> i32 = hew_jwt_last_error_code;
         let hew_src = include_str!("../../std/crypto/jwt/jwt.hew");
 
         let decl = hew_src
@@ -1120,6 +1121,8 @@ mod tests {
     /// `-> i32`.
     #[test]
     fn hew_binding_declares_jwt_validate_returns_i32() {
+        let _: unsafe extern "C" fn(*const HewString, *const HewString, i32) -> i32 =
+            hew_jwt_validate;
         let hew_src = include_str!("../../std/crypto/jwt/jwt.hew");
 
         let decl = hew_src

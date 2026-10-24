@@ -1074,6 +1074,36 @@ mod abi_tests {
     use std::mem::{align_of, offset_of, size_of};
 
     #[test]
+    fn runtime_crash_kind_tags_match_std_enum() {
+        use hew_runtime::internal::types::CrashKind;
+
+        let source = hew_types::builtin_enums::monomorphic_builtin_enum("std.failure.CrashKind")
+            .expect("CrashKind must be derived from its stdlib declaration");
+        // Runtime Crashed is exposed to Hew as Fault. Compare actual runtime
+        // tags with the source-derived order rather than another list of tags.
+        let kinds = [
+            (CrashKind::Crashed, "Fault"),
+            (CrashKind::HeapExceeded, "HeapExceeded"),
+            (CrashKind::PartitionDetected, "PartitionDetected"),
+            (CrashKind::HandlerFailed, "HandlerFailed"),
+            (CrashKind::TimerOverdue, "TimerOverdue"),
+        ];
+        assert_eq!(source.variants.len(), kinds.len());
+        for (runtime, name) in kinds {
+            let source_tag = source
+                .variants
+                .iter()
+                .position(|variant| variant.name == name)
+                .unwrap_or_else(|| panic!("std.failure.CrashKind must declare {name}"));
+            assert_eq!(
+                usize::try_from(runtime.tag()).expect("crash tags are nonnegative"),
+                source_tag,
+                "runtime crash kind {runtime:?} must carry the std enum tag for {name}"
+            );
+        }
+    }
+
+    #[test]
     fn native_crash_context_matches_the_runtime_c_abi() {
         let ctx = Context::create();
         let fields = [

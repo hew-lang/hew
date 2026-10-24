@@ -796,6 +796,7 @@ mod tests {
     /// than `-> i32`.
     #[test]
     fn hew_binding_declares_encrypt_last_open_error_code_returns_i32() {
+        let _: extern "C" fn() -> i32 = hew_encrypt_last_open_error_code;
         let hew_src = include_str!("../../std/crypto/encrypt/encrypt.hew");
 
         let decl = hew_src

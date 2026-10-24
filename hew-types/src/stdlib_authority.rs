@@ -18,6 +18,17 @@ use crate::LangItem;
 
 pub(crate) mod codegen;
 
+/// Ordinary standard-library modules implicitly attached to every program.
+/// Frontend graph construction and dependency analysis share this floor;
+/// physical sources must still prove their canonical stdlib provenance.
+pub const IMPLICIT_PRELUDE_STD_SOURCES: [(&str, &str); 5] = [
+    ("builtins", include_str!("../../std/builtins.hew")),
+    ("option", include_str!("../../std/option.hew")),
+    ("result", include_str!("../../std/result.hew")),
+    ("iter", include_str!("../../std/iter.hew")),
+    ("string", include_str!("../../std/string.hew")),
+];
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum StdlibRoot {
     Builtins,

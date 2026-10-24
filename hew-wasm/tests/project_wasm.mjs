@@ -63,6 +63,24 @@ test('directory peers and ordinary manifests share native module semantics', asy
   assert.deepEqual(output.resolved_files, ['main.hew', 'user/nav/nav.hew', 'user/nav/steps.hew']);
 });
 
+test('embedded stdlib directory peers compile and execute together', async () => {
+  for (const imported of ['std.net.http.codec', 'std.net.http.codec.request']) {
+    const code = String.raw`import ${imported} as codec;
+fn main() {
+  let response = codec.parse_response("HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok")
+    .expect("valid response").expect("complete response");
+  println(response.body());
+}`;
+    const single = JSON.parse(compiler.compileToSandboxBytecode(code, 'sandbox-vm-export'));
+    const project = compile('main.hew', [source('main.hew', code)]);
+    for (const output of [single, project]) {
+      const {trace, stdout} = await execute(output);
+      assert.equal(stdout, 'ok\n');
+      assert.equal(trace.final_state.exit_code, 0);
+    }
+  }
+});
+
 test('project stdin advances and executions do not retain prior input', async () => {
   const output = compile('main.hew', [source('main.hew', 'import std.io; fn main() { for i in 0..2 { println(io.read_line().expect("read stdin") ?? "<none>"); } }')]);
   assert.equal((await execute(output, 'first\nsecond\n')).stdout, 'first\nsecond\n');

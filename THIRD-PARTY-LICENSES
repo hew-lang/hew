@@ -9239,33 +9239,33 @@ limitations under the License.
 
 ================================================================================
 Apache License 2.0
-  * hew-analysis 0.9.1 — https://github.com/hew-lang/hew
-  * hew-cabi 0.9.1 — https://github.com/hew-lang/hew
-  * hew-calendar 0.9.1 — https://github.com/hew-lang/hew
-  * hew-capability-gen 0.9.1 — https://github.com/hew-lang/hew
-  * hew-cli 0.9.1 — https://github.com/hew-lang/hew
-  * hew-codec 0.9.1 — https://github.com/hew-lang/hew
-  * hew-codegen-rs 0.9.1 — https://github.com/hew-lang/hew
-  * hew-compile 0.9.1 — https://github.com/hew-lang/hew
-  * hew-expand 0.9.1 — https://github.com/hew-lang/hew
-  * hew-hir 0.9.1 — https://github.com/hew-lang/hew
-  * hew-lexer 0.9.1 — https://github.com/hew-lang/hew
-  * hew-lib 0.9.1
-  * hew-lsp 0.9.1 — https://github.com/hew-lang/hew
-  * hew-mir 0.9.1 — https://github.com/hew-lang/hew
-  * hew-observe 0.9.1 — https://github.com/hew-lang/hew
-  * hew-observe-protocol 0.9.1 — https://github.com/hew-lang/hew
-  * hew-parser 0.9.1 — https://github.com/hew-lang/hew
-  * hew-pkg 0.9.1 — https://github.com/hew-lang/hew
-  * hew-runtime 0.9.1 — https://github.com/hew-lang/hew
-  * hew-runtime-testkit 0.9.1 — https://github.com/hew-lang/hew
-  * hew-sir 0.9.1 — https://github.com/hew-lang/hew
-  * hew-std 0.9.1 — https://github.com/hew-lang/hew
-  * hew-testutil 0.9.1
-  * hew-types 0.9.1 — https://github.com/hew-lang/hew
-  * hew-wasm 0.9.1 — https://github.com/hew-lang/hew
-  * hew-std-text-template 0.9.1 — https://github.com/hew-lang/hew
-  * xtask 0.9.1 — https://github.com/hew-lang/hew
+  * hew-analysis 0.9.2 — https://github.com/hew-lang/hew
+  * hew-cabi 0.9.2 — https://github.com/hew-lang/hew
+  * hew-calendar 0.9.2 — https://github.com/hew-lang/hew
+  * hew-capability-gen 0.9.2 — https://github.com/hew-lang/hew
+  * hew-cli 0.9.2 — https://github.com/hew-lang/hew
+  * hew-codec 0.9.2 — https://github.com/hew-lang/hew
+  * hew-codegen-rs 0.9.2 — https://github.com/hew-lang/hew
+  * hew-compile 0.9.2 — https://github.com/hew-lang/hew
+  * hew-expand 0.9.2 — https://github.com/hew-lang/hew
+  * hew-hir 0.9.2 — https://github.com/hew-lang/hew
+  * hew-lexer 0.9.2 — https://github.com/hew-lang/hew
+  * hew-lib 0.9.2
+  * hew-lsp 0.9.2 — https://github.com/hew-lang/hew
+  * hew-mir 0.9.2 — https://github.com/hew-lang/hew
+  * hew-observe 0.9.2 — https://github.com/hew-lang/hew
+  * hew-observe-protocol 0.9.2 — https://github.com/hew-lang/hew
+  * hew-parser 0.9.2 — https://github.com/hew-lang/hew
+  * hew-pkg 0.9.2 — https://github.com/hew-lang/hew
+  * hew-runtime 0.9.2 — https://github.com/hew-lang/hew
+  * hew-runtime-testkit 0.9.2 — https://github.com/hew-lang/hew
+  * hew-sir 0.9.2 — https://github.com/hew-lang/hew
+  * hew-std 0.9.2 — https://github.com/hew-lang/hew
+  * hew-testutil 0.9.2
+  * hew-types 0.9.2 — https://github.com/hew-lang/hew
+  * hew-wasm 0.9.2 — https://github.com/hew-lang/hew
+  * hew-std-text-template 0.9.2 — https://github.com/hew-lang/hew
+  * xtask 0.9.2 — https://github.com/hew-lang/hew
   * abnf_to_pest 0.5.1 — https://github.com/Nadrieril/dhall-rust
   * allocator-api2 0.2.21 — https://github.com/zakarumych/allocator-api2
   * android_system_properties 0.1.6 — https://github.com/nical/android_system_properties

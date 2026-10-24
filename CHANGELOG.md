@@ -2,6 +2,15 @@
 
 ## [Unreleased]
 
+## [0.9.1] - 2026-10-24
+
+- Recognize optimized recurrences spanning multiple LLVM blocks in packaged SDK
+  validation, while checking every loop member for memory operations and calls.
+- Collect independent packaged SDK case failures in one run.
+
+This release delivers the [0.9 language and library cohort](docs/releases/v0.9.0.md).
+The [0.9 migration guide](docs/migrations/v0.9.0.md) applies.
+
 ## [0.9.0] - 2026-10-23
 
 - Use consistent checked standard-library APIs for networking, codecs, numeric

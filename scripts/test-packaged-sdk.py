@@ -27,6 +27,75 @@ def require(condition, message):
         raise RuntimeError(message)
 
 
+def require_register_recurrence(ir, loop_info):
+    identifier = r'"(?:[^"\\]|\\.)*"|[-A-Za-z$._0-9]+'
+    functions = {}
+    for match in re.finditer(
+        rf"(?ms)^define[^\n]*?@({identifier})\([^\n]*\n(.*?)^\}}", ir
+    ):
+        body = match.group(2)
+        labels = list(re.finditer(rf"(?m)^({identifier}):[^\n]*\n", body))
+        functions[match.group(1).strip('"')] = {
+            label.group(1): body[
+                label.end() : labels[index + 1].start()
+                if index + 1 < len(labels)
+                else len(body)
+            ]
+            for index, label in enumerate(labels)
+        }
+
+    function = None
+    selected = []
+    for line in loop_info.splitlines():
+        header = re.fullmatch(r"Loop info for function '(.*)':", line)
+        if header:
+            function = header.group(1)
+            continue
+        loop = re.search(r"Loop at depth \d+ containing: (.*)$", line)
+        if not loop:
+            continue
+        require(function in functions, f"missing LLVM function body: {function}")
+        members = re.findall(rf"%({identifier})(?=[<,\s]|$)", loop.group(1))
+        require(members, f"missing LLVM loop members: {line}")
+        blocks = functions[function]
+        require(
+            all(member in blocks for member in members),
+            f"missing LLVM loop member body: {line}",
+        )
+        code = "\n".join(
+            instruction.split(";", 1)[0]
+            for member in members
+            for instruction in blocks[member].splitlines()
+        )
+        if not all(re.search(rf"\b{value}\b", code) for value in (1664525, 2147483647)):
+            continue
+        # Check complete natural loops, including enclosing loops when present.
+        # A clean arithmetic block must not hide a spill or call in its header.
+        forbidden = re.search(
+            rf"(?m)^\s*(?:%({identifier})\s*=\s*)?"
+            r"(?:(?:tail|musttail|notail)\s+)?"
+            r"(?:load|store|alloca|call|invoke|callbr|atomicrmw|cmpxchg)\s",
+            code,
+        )
+        require(
+            not forbidden,
+            "optimized recurrence must keep loop state in registers: "
+            f"{function} loop {', '.join(members)}",
+        )
+        selected.append((function, members))
+    require(selected, "optimized recurrence must contain a natural loop")
+    return selected
+
+
+def case_profile_failures(cases, run_profile):
+    for selection in cases:
+        for level in (0, 2):
+            try:
+                run_profile(selection, level)
+            except Exception as error:
+                yield selection, level, error
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--archive", type=Path, required=True)
@@ -49,6 +118,7 @@ def main():
         "platform": platform.platform(),
         "commands": [],
         "cases": [],
+        "case_failures": [],
         "case_inputs": {},
         "outcome": "running",
     }
@@ -312,7 +382,8 @@ def main():
                 "packaged bytes ABI output changed",
             )
         cases = json.loads((root / "tests/packaged-sdk/cases.json").read_text())
-        for selection in cases:
+
+        def run_profile(selection, level):
             contract = None
             if "contract" in selection:
                 contract = root / selection["contract"]
@@ -330,8 +401,8 @@ def main():
             }
             save()
             previous = dict(env)
-            env.update(case.get("env", {}))
-            for level in (0, 2):
+            try:
+                env.update(case.get("env", {}))
                 label = f"{case['id']}-O{level}"
                 executable = output / f"{label}{suffix}"
                 run(
@@ -370,33 +441,13 @@ def main():
                     f"{label}: unlowered LLVM coroutine intrinsic",
                 )
                 if case["id"] == "hot-loop-dynamic" and level == 2:
-                    blocks = [
-                        match.group()
-                        for match in re.finditer(
-                            r"(?ms)^[A-Za-z$._][-A-Za-z$._0-9]*:[^\n]*\n.*?(?=^[A-Za-z$._][-A-Za-z$._0-9]*:|^\})",
-                            ir,
-                        )
-                        if "1664525" in match.group()
-                        and "2147483647" in match.group()
-                        and re.search(
-                            r"\bbr[^\n]*label %"
-                            + re.escape(match.group().split(":", 1)[0])
-                            + r"(?:[,\s]|$)",
-                            match.group(),
-                        )
-                    ]
-                    require(
-                        blocks
-                        and all(
-                            not re.search(
-                                r"\b(?:load|store|alloca|call)\b",
-                                "\n".join(
-                                    line.split(";", 1)[0] for line in block.splitlines()
-                                ),
-                            )
-                            for block in blocks
-                        ),
-                        "optimized recurrence must keep loop state in registers",
+                    _, loop_stdout, loop_stderr = run(
+                        label + "-loops",
+                        ["opt", "-passes=print<loops>", "-disable-output", llvm],
+                        seconds=30,
+                    )
+                    require_register_recurrence(
+                        ir, (loop_stdout + loop_stderr).decode()
                     )
                 receipt["cases"].append(
                     {
@@ -408,8 +459,22 @@ def main():
                 )
                 save()
                 print(f"PASS {label}", flush=True)
-            env.clear()
-            env.update(previous)
+            finally:
+                env.clear()
+                env.update(previous)
+
+        for selection, level, error in case_profile_failures(cases, run_profile):
+            receipt["case_failures"].append(
+                {"selection": selection, "opt_level": level, "failure": str(error)}
+            )
+            save()
+            name = selection.get("id", selection.get("contract"))
+            print(f"FAIL {name}-O{level}: {error}", flush=True)
+        require(
+            not receipt["case_failures"],
+            f"{len(receipt['case_failures'])} packaged SDK case/profile failures; "
+            f"see {output / 'receipt.json'}",
+        )
 
         receipt["outcome"] = "passed"
         save()

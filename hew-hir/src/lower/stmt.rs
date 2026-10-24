@@ -147,12 +147,11 @@ impl LowerCtx {
             // already bound the field names in the checker's env; HIR mirrors
             // those bindings via `self.bind(...)` below.
             let source_fields_opt = match &pattern.0 {
-                Pattern::RecordShorthand { fields, .. } => Some(fields),
-                // TRANSITION(P1): deleted by A1 commit 2
-                Pattern::NominalPath {
-                    path,
+                Pattern::RecordShorthand { fields, .. }
+                | Pattern::NominalPath {
                     payload: Some(hew_parser::ast::NominalPatternPayload::Record { fields, .. }),
-                } if path.segments.len() == 1 => Some(fields),
+                    ..
+                } => Some(fields),
                 _ => None,
             };
             if let Some(source_fields) = source_fields_opt {

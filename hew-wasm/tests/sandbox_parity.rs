@@ -1159,6 +1159,27 @@ fn bounded_range_values_match_native() {
 
 #[cfg(unix)]
 #[test]
+fn qualified_record_bindings_match_native() {
+    set_test_hewpath();
+    ensure_native_toolchain();
+    ensure_parity_runner_built();
+    let mut inputs = hew_compile::SourceSet::in_memory();
+    inputs.insert(
+        "qualified_record_support/models.hew",
+        include_str!("../../tests/core-acceptance/cases/qualified_record_support/models.hew"),
+    );
+    assert_case_with_inputs(
+        &ParityCase {
+            test_name: "qualified-record-bindings",
+            source_rel: "tests/core-acceptance/cases/qualified-record-bindings.hew",
+        },
+        "",
+        inputs,
+    );
+}
+
+#[cfg(unix)]
+#[test]
 fn generic_sort_and_reverse_match_native() {
     set_test_hewpath();
     ensure_native_toolchain();

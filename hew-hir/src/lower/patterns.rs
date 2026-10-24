@@ -505,13 +505,11 @@ impl LowerCtx {
             Pattern::Tuple(elements) => {
                 self.lower_tuple_pattern_value_into_stmts(elements, value, &value_ty, stmts, span);
             }
-            Pattern::RecordShorthand { fields, .. } => {
-                self.lower_record_pattern_value_into_stmts(fields, value, &value_ty, stmts, span);
-            }
-            Pattern::NominalPath {
-                path,
+            Pattern::RecordShorthand { fields, .. }
+            | Pattern::NominalPath {
                 payload: Some(hew_parser::ast::NominalPatternPayload::Record { fields, .. }),
-            } if path.segments.len() == 1 => {
+                ..
+            } => {
                 self.lower_record_pattern_value_into_stmts(fields, value, &value_ty, stmts, span);
             }
             Pattern::Literal(_)
@@ -567,16 +565,12 @@ impl LowerCtx {
         let (name, nested) = match &pattern.0 {
             Pattern::Identifier(name) => (name.to_string(), false),
             Pattern::Wildcard => return (None, false),
-            Pattern::Tuple(_) | Pattern::RecordShorthand { .. } => {
-                (format!("__destructure_{}", self.ids.binding().0), true)
-            }
-            // TRANSITION(P1): deleted by A1 commit 2
-            Pattern::NominalPath {
-                path,
+            Pattern::Tuple(_)
+            | Pattern::RecordShorthand { .. }
+            | Pattern::NominalPath {
                 payload: Some(hew_parser::ast::NominalPatternPayload::Record { .. }),
-            } if path.segments.len() == 1 => {
-                (format!("__destructure_{}", self.ids.binding().0), true)
-            }
+                ..
+            } => (format!("__destructure_{}", self.ids.binding().0), true),
             Pattern::Literal(_)
             | Pattern::Or(_, _)
             | Pattern::Regex { .. }

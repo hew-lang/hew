@@ -1,0 +1,2 @@
+pub type Entry { pair: (i64, string); }
+pub type Envelope { item: Entry; }

@@ -9,6 +9,7 @@ fn completed_source_forms_execute_at_both_optimization_levels() {
     support::require_codegen();
     let dir = support::tempdir();
     for (name, expected) in [
+        ("qualified-record-bindings", "let 7\nfor 8\nselect 9\n"),
         (
             "irrefutable-iteration-bindings",
             "tuple 7\nrecord 8\nunit\nunit\nrange\nrange\n1\n3\n",
@@ -233,5 +234,64 @@ fn invalid_typed_embeds_keep_their_primary_diagnostic_without_constant_cascades(
             "{diagnostics:#?}"
         );
         assert_eq!(diagnostics[0]["channel"], "user");
+    }
+}
+
+#[test]
+fn qualified_record_bindings_reject_a_different_declaration_with_the_same_fields() {
+    let dir = support::tempdir();
+    for module in ["left", "right"] {
+        std::fs::write(
+            dir.path().join(format!("{module}.hew")),
+            "pub type Entry { value: i64; }",
+        )
+        .unwrap();
+    }
+    for (name, body) in [
+        (
+            "let",
+            "let right.Entry { value } = left.Entry { value: 7 };",
+        ),
+        (
+            "for",
+            "for right.Entry { value } in [left.Entry { value: 7 }] {}",
+        ),
+        (
+            "select",
+            "select { right.Entry { value } from make() => println(value), };",
+        ),
+    ] {
+        let source = format!("import left; import right; fn make() -> left.Entry {{ left.Entry {{ value: 7 }} }} fn main() {{ {body} }}");
+        let input = dir.path().join(format!("{name}.hew"));
+        std::fs::write(&input, source).unwrap();
+        let artifact = hew_testutil::compiled_binary_path(dir.path(), name);
+        let output = Command::new(hew_binary())
+            .arg("build")
+            .arg(input)
+            .args(["-o"])
+            .arg(&artifact)
+            .args(["--format", "json"])
+            .output()
+            .unwrap();
+        assert!(!output.status.success(), "{}", describe_output(&output));
+        assert!(!artifact.exists());
+        let diagnostics: Vec<serde_json::Value> = serde_json::from_slice(&output.stdout).unwrap();
+        assert!(
+            diagnostics
+                .iter()
+                .all(|diagnostic| diagnostic["channel"] == "user"),
+            "{diagnostics:#?}"
+        );
+        assert!(
+            diagnostics
+                .iter()
+                .any(
+                    |diagnostic| diagnostic["message"]
+                        .as_str()
+                        .is_some_and(|message| message.contains("right.Entry")
+                            && message.contains("left.Entry"))
+                ),
+            "{diagnostics:#?}"
+        );
     }
 }

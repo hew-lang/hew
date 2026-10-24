@@ -257,7 +257,12 @@ impl Checker {
     /// Whether a record pattern's type name resolves to the scrutinee's own
     /// declaration. A scrutinee that is not a resolved nominal is left to the
     /// other pattern checks.
-    fn record_pattern_names_scrutinee(&self, name: &str, ty: &Ty) -> bool {
+    fn record_pattern_names_scrutinee(
+        &mut self,
+        path: &hew_parser::ast::Path,
+        ty: &Ty,
+        span: &Span,
+    ) -> bool {
         let Ty::Named { head, .. } = self.subst.resolve(ty) else {
             return true;
         };
@@ -265,7 +270,17 @@ impl Checker {
         if !matches!(head, crate::TypeHead::Nominal(_)) || self.type_def_view().of(head).is_none() {
             return true;
         }
-        self.named_ty_for_key(name, Vec::new()).head() == Some(head)
+        let Some(written) = self.resolve_type_path_head(path) else {
+            return false;
+        };
+        if let crate::TypeHead::Nominal(nominal) = written {
+            if path.segments.len() > 1
+                && !self.check_declaration_visible(nominal.id.declaration(), span)
+            {
+                return true; // The visibility diagnostic owns recovery.
+            }
+        }
+        written == head
     }
 
     /// Enumerate `(variant_name, payload_shape)` for an enum-like scrutinee
@@ -463,29 +478,25 @@ impl Checker {
             return;
         }
 
-        // A one-segment record path is checked by its bare spelling, a
-        // qualified one by its owner path.
-        let (pattern_name, fields, rest, nominal_path) = match pattern {
+        // Records name their full type path; variants name a member of
+        // their owning enum. Both retain source segments through resolution.
+        let (pattern_name, fields, rest) = match pattern {
             Pattern::NominalPath { path, payload } => match payload.as_ref() {
                 Some(hew_parser::ast::NominalPatternPayload::Record { fields, rest }) => (
                     nominal_path_leaf(path).unwrap_or_default(),
                     fields.as_slice(),
                     rest.as_ref(),
-                    (path.segments.len() > 1).then_some(path), // TRANSITION(P1): deleted by A1 commit 2
                 ),
                 _ => return,
             },
             Pattern::ContextVariant(context) => match context.payload.as_ref() {
-                Some(hew_parser::ast::NominalPatternPayload::Record { fields, rest }) => (
-                    context.name.name.as_str(),
-                    fields.as_slice(),
-                    rest.as_ref(),
-                    None,
-                ),
+                Some(hew_parser::ast::NominalPatternPayload::Record { fields, rest }) => {
+                    (context.name.name.as_str(), fields.as_slice(), rest.as_ref())
+                }
                 _ => return,
             },
             Pattern::RecordShorthand { fields, rest } => {
-                ("record shorthand", fields.as_slice(), rest.as_ref(), None)
+                ("record shorthand", fields.as_slice(), rest.as_ref())
             }
             _ => return,
         };
@@ -499,19 +510,22 @@ impl Checker {
         let Ty::Named { .. } = resolved else {
             return;
         };
-        let one_segment_record =
-            matches!(pattern, Pattern::NominalPath { .. }) && nominal_path.is_none(); // TRANSITION(P1): deleted by A1 commit 2
-        if one_segment_record && !self.variant_surface_owner_matches(pattern_name, &resolved) {
-            self.invalid_pattern_plan_spans.insert(key);
-            return;
-        }
-        if nominal_path.is_some_and(|path| !self.variant_path_owner_matches(path, &resolved)) {
-            self.invalid_pattern_plan_spans.insert(key);
-            return;
-        }
         let Some(td) = self.ty_type_def(&resolved).cloned() else {
             return;
         };
+        if let Pattern::NominalPath { path, .. } = pattern {
+            let owner_matches = if matches!(td.kind, TypeDefKind::Record | TypeDefKind::Struct) {
+                self.record_pattern_names_scrutinee(path, &resolved, span)
+            } else if path.segments.len() > 1 {
+                self.variant_path_owner_matches(path, &resolved)
+            } else {
+                self.variant_surface_owner_matches(pattern_name, &resolved)
+            };
+            if !owner_matches {
+                self.invalid_pattern_plan_spans.insert(key);
+                return;
+            }
+        }
         let type_args = if let Ty::Named { args, .. } = &resolved {
             args.clone()
         } else {
@@ -889,10 +903,18 @@ impl Checker {
         // the aggregate arms below hand it on to their own subpatterns.
         let scrutinee_place = self.pattern_place.take();
 
-        // One-segment constructor and record paths take the bare-name arms
-        // below. // TRANSITION(P1): deleted by A1 commit 2
+        // Qualified variants retain their enum-owner path. Plain records
+        // use the shared record arm, including module-qualified type paths.
         let qualified_path = match pattern {
-            Pattern::NominalPath { path, payload } if path.segments.len() > 1 => {
+            Pattern::NominalPath { path, payload }
+                if path.segments.len() > 1
+                    && !(matches!(
+                        payload,
+                        Some(hew_parser::ast::NominalPatternPayload::Record { .. })
+                    ) && self.ty_type_def(ty).is_some_and(|definition| {
+                        matches!(definition.kind, TypeDefKind::Record | TypeDefKind::Struct)
+                    })) =>
+            {
                 Some((path, payload))
             }
             _ => None,
@@ -1237,7 +1259,7 @@ impl Checker {
             Pattern::NominalPath {
                 path: one_path,
                 payload: Some(hew_parser::ast::NominalPatternPayload::Record { fields, .. }),
-            } if one_path.segments.len() == 1 => {
+            } => {
                 let name = &one_path.to_string();
                 if self
                     .canonicalize_source_lifecycle_value_path(name, span)
@@ -1267,7 +1289,7 @@ impl Checker {
                 // scrutinee's declaration (R5): `Other { x, .. }` never
                 // matches a `Point` by field shape.
                 if !self.names_struct_variant_of(name, ty)
-                    && !self.record_pattern_names_scrutinee(name, ty)
+                    && !self.record_pattern_names_scrutinee(one_path, ty, span)
                 {
                     let expected = ty.user_facing().to_string();
                     self.report_error(
@@ -1906,7 +1928,11 @@ impl Checker {
             Pattern::NominalPath {
                 path: one_path,
                 payload: Some(hew_parser::ast::NominalPatternPayload::Record { fields, .. }),
-            } if one_path.segments.len() == 1 => {
+            } if one_path.segments.len() == 1
+                || self.ty_type_def(scrutinee_ty).is_some_and(|definition| {
+                    matches!(definition.kind, TypeDefKind::Record | TypeDefKind::Struct)
+                }) =>
+            {
                 let name = &one_path.to_string();
                 // Determine whether this is an enum struct-variant or a plain
                 // struct/record pattern.
@@ -1918,7 +1944,13 @@ impl Checker {
                 //   struct-variants use their variant field Vec; plain records use
                 //   TypeDef::field_order so PayloadBinding.field_idx matches MIR's
                 //   RecordFieldLoad declaration-order offset.
-                let owner_matches = self.variant_surface_owner_matches(name, scrutinee_ty);
+                let owner_matches = if self.ty_type_def(scrutinee_ty).is_some_and(|definition| {
+                    matches!(definition.kind, TypeDefKind::Record | TypeDefKind::Struct)
+                }) {
+                    self.record_pattern_names_scrutinee(one_path, scrutinee_ty, pattern_span)
+                } else {
+                    self.variant_surface_owner_matches(name, scrutinee_ty)
+                };
                 let (variant_match, field_tys, field_order) = if owner_matches {
                     if let Some(type_name) = type_name_opt {
                         if let Some(td) = self.ty_type_def(scrutinee_ty).cloned() {

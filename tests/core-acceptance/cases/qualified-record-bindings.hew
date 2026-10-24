@@ -1,0 +1,17 @@
+import qualified_record_support.models as view;
+import qualified_record_support.models.{Entry as Renamed};
+
+fn envelope(label: string, number: i64) -> view.Envelope {
+    view.Envelope { item: view.Entry { pair: (number, label) } }
+}
+
+fn main() {
+    let view.Envelope { item: view.Entry { pair: (number, text) } } = envelope("let", 7);
+    println(f"{text} {number}");
+    for view.Envelope { item: Renamed { pair: (number, text) } } in [envelope("for", 8)] {
+        println(f"{text} {number}");
+    }
+    select {
+        view.Envelope { item: view.Entry { pair: (number, text) } } from envelope("select", 9) => println(f"{text} {number}"),
+    };
+}

@@ -1,0 +1,10 @@
+[[case]]
+id = "generic-numeric-bounds"
+intent = "Numeric bounds justify scalar operations and zero/one identities while structural ordering preserves owned record fields."
+source = "cases/generic-numeric-bounds.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.expected]
+stdout = "9 24\n9 24\n9 24\n0 1\n43\nfirst\nsecond\n"
+exit = 0

@@ -1,0 +1,10 @@
+[[case]]
+id = "guarded-aggregate-match"
+intent = "Nested owned aggregate bindings remain readable across failed guards and transfer only to the selected arm."
+source = "cases/guarded-aggregate-match.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 30
+
+[case.expected]
+stdout = "equal kept\nother fallback 2 4\nlarge selected 8\nempty\nunpacked 7\nempty unpack\n"
+exit = 0

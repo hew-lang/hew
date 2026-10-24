@@ -1,0 +1,10 @@
+[[case]]
+id = "lifecycle-function-values"
+intent = "Actor lifecycle callbacks retain concrete actor operands, independent inference and wait suspension effects through ordinary callable normalization."
+source = "cases/lifecycle-function-values.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.expected]
+stdout = "stopped\nterminated\nother\n"
+exit = 0

@@ -1,0 +1,10 @@
+[[case]]
+id = "whole-owner-index"
+intent = "Projected affine collection replacement opens and restores its resource owner, releasing the replaced element and final actor state exactly once."
+source = "cases/whole-owner-index.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 30
+
+[case.expected]
+stdout = "1\n2\n2\n"
+exit = 0

@@ -1330,6 +1330,12 @@ jobs:
             exit 1
           fi
           grep -q "Hew ${VERSION}" dist/docs/index.html
+          while IFS= read -r page; do
+            if ! grep -q "Hew ${VERSION}" "$page"; then
+              echo "::error::$page does not identify the documented Hew ${VERSION} release"
+              exit 1
+            fi
+          done < <(find dist/docs -maxdepth 1 -type f -name '*.html' ! -name '404.html' -print)
           grep -q '<link rel="canonical" href="https://docs.hew.sh/">' dist/docs/index.html
           grep -q '<meta name="robots" content="noindex,nofollow">' dist/docs/404.html
           grep -q 'Sitemap: https://docs.hew.sh/sitemap.xml' dist/docs/robots.txt

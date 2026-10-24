@@ -224,6 +224,7 @@ hew doc src/                                # document all .hew files under src/
 hew doc src/ --output-dir site/docs         # custom output directory
 hew doc src/ --format markdown              # render Markdown instead of HTML
 hew doc src/ --site-config docs-site.toml   # apply explicit site presentation settings
+hew doc src/ --site-version 1.2.3           # label a maintenance build for its documented release
 hew doc src/ --open                         # open index.html in the browser after generation
 ```
 
@@ -247,6 +248,10 @@ input module, and adds no external navigation. Publishing metadata such as
 canonical URLs, sitemaps, and crawler files belongs to the hosting pipeline;
 [`../docs/docs-site.toml`](../docs/docs-site.toml) configures this repository's
 reference site without changing the generator defaults.
+
+**`--site-version VERSION`** replaces `{version}` in the configured brand and
+footer text. It defaults to the generator's own version; set it explicitly
+when a newer generator rebuilds documentation for an older stable release.
 
 **Parse-error behaviour**: if one or more input files fail to parse, their
 errors are printed to stderr and those files are skipped. Documentation for

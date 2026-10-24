@@ -221,6 +221,47 @@ The optional Cloudflare AI Search Worker under `docs/ai-search/` is deployed and
 enabled separately; absent or disabled AI resources must not alter docs site
 generation, Pagefind assets, or publication.
 
+To refresh documentation for the current stable release without creating a new
+language release, build the generator from the reviewed documentation commit
+and pass the documented release explicitly. For example, after merging a
+documentation-only change while v0.9.2 is stable:
+
+```sh
+make hew-native
+docs_hew="$(python3 scripts/cargo-output-dir.py --native)/debug/hew"
+mkdir -p build
+docs_out="$(mktemp -d build/docs-v0.9.2.XXXXXX)"
+make build-docs-site \
+  DOCS_HEW="$docs_hew" \
+  DOCS_SITE_DIR="$docs_out" \
+  DOCS_VERSION=0.9.2 \
+  DOCS_LAST_MODIFIED="$(git show -s --format=%cs HEAD)"
+npx --yes wrangler@4.147.0 pages deploy "$docs_out" --project-name hew-docs
+```
+
+`--site-version` keeps every generated page on the explicitly documented
+release even when a newer `hew doc` binary provides the renderer. Use this path
+only for content and generator maintenance whose language surface has been
+checked against that stable release. A normal language release continues to use
+the tagged packaged compiler through `release.yml`.
+
+The first maintenance deployment leaves the AI UI disabled and makes the new
+sitemap available to the paused AI Search instance. After the instance is in
+Sitemap mode, its initial crawl has been reviewed, and the guarded Worker is
+enabled as described in `docs/ai-search/README.md`, build and deploy the same
+stable content again with:
+
+```sh
+ai_docs_out="$(mktemp -d build/docs-v0.9.2-ai.XXXXXX)"
+make build-docs-site \
+  DOCS_HEW="$docs_hew" \
+  DOCS_SITE_DIR="$ai_docs_out" \
+  DOCS_VERSION=0.9.2 \
+  DOCS_LAST_MODIFIED="$(git show -s --format=%cs HEAD)" \
+  DOCS_AI_SEARCH_ENDPOINT=/api/docs-search
+npx --yes wrangler@4.147.0 pages deploy "$ai_docs_out" --project-name hew-docs
+```
+
 ## Prerequisites
 
 Use the repository's protected merge queue for integration. A conflicted pull

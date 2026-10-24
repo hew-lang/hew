@@ -961,6 +961,7 @@ DOCS_HEW ?= $(RELEASE_DIR)/hew
 DOCS_SITE_DIR ?= $(CARGO_TARGET_ROOT)/doc
 DOCS_VERSION ?=
 DOCS_LAST_MODIFIED ?=
+DOCS_AI_SEARCH_ENDPOINT ?=
 
 build-docs-site: ## Release: generate, assemble and index the complete docs site
 	@test -f "$(DOCS_HEW)" \
@@ -978,11 +979,13 @@ build-docs-site: ## Release: generate, assemble and index the complete docs site
 	[ -n "$$last_modified" ] || { echo "Error: could not determine the source revision date" >&2; exit 1; }; \
 	"$(DOCS_HEW)" doc std/ docs/language/ \
 		--site-config docs/docs-site.toml \
+		--site-version "$$version" \
 		--output-dir "$(DOCS_SITE_DIR)"; \
 	$(PYTHON) scripts/assemble-docs-site.py "$(DOCS_SITE_DIR)" \
 		--base-url https://docs.hew.sh/ \
 		--version "$$version" \
-		--last-modified "$$last_modified"; \
+		--last-modified "$$last_modified" \
+		$(if $(DOCS_AI_SEARCH_ENDPOINT),--ai-search-endpoint "$(DOCS_AI_SEARCH_ENDPOINT)",); \
 	npx --yes pagefind@1.5.2 \
 		--site "$(DOCS_SITE_DIR)" \
 		--output-subdir pagefind

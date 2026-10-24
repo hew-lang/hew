@@ -16,9 +16,9 @@ Cloudflare setup and the runtime switch are both required before activation:
    transactional hard cap: enforcement can lag, and AI Search ingestion,
    storage, and retrieval have their own allowances and billing. The Worker
    limits below provide an independent bound on public use.
-3. After the site containing `sitemap.xml` is live, create the website-backed
-   instance from that sitemap and restrict indexed items to the documentation
-   root and generated HTML pages:
+3. Use the website-backed `docs-hew-sh` instance. If it must be recreated,
+   create it only after the site containing `sitemap.xml` is live, and restrict
+   indexed items to the documentation root and generated HTML pages:
 
    ```sh
    wrangler ai-search create docs-hew-sh \
@@ -30,18 +30,21 @@ Cloudflare setup and the runtime switch are both required before activation:
      --max-num-results 5
    ```
 
-4. Configure the website source for sitemap-only discovery, a 24-hour sync,
-   265-token chunks with 10% overlap, and no image indexing, OCR, or browser
-   rendering. The generated sitemap contains at most 500 canonical HTML URLs
-   and gives each one the tagged source revision date in `lastmod`. Leave the
-   source paused until its settings and initial crawl have been reviewed.
-   Leave the AI Search public endpoint disabled; the bound Worker is the only
-   public query path.
-5. Copy `wrangler.toml.example` to the deployment configuration. Keep
-   `AI_SEARCH_ENABLED = "false"` while validating the instance and Worker. The
-   Worker retrieves five excerpts through the `DOCS_AI_SEARCH` instance
-   binding, then calls `@cf/meta/llama-3.2-1b-instruct` through the `AI` binding
-   with `gateway.id = "docs-hew-sh"` and Gateway caching disabled. Generation
+4. Keep the source paused while the live site lacks the generated sitemap.
+   After the static documentation is published, change the parse type from any
+   temporary discovery setting to **Sitemap**, then verify a 24-hour sync,
+   256-token chunks with 10% overlap, and no image indexing, OCR, or browser
+   rendering before resuming it. The generated sitemap contains at most 500
+   canonical HTML URLs and gives each one the source revision date in
+   `lastmod`. Review the initial crawl before enabling the Worker. Leave the AI
+   Search public endpoint disabled; the bound Worker is the only public query
+   path.
+5. Review `wrangler.toml` before deployment. Its committed
+   `AI_SEARCH_ENABLED = "false"` keeps an ordinary deployment fail-closed. The
+   Worker retrieves five excerpts through the
+   `DOCS_AI_SEARCH` instance binding, then calls
+   `@cf/meta/llama-3.2-1b-instruct` through the `AI` binding with
+   `gateway.id = "docs-hew-sh"` and Gateway caching disabled. Generation
    therefore cannot silently bypass the dedicated Gateway.
 6. Deploy the Worker on the same origin at `/api/docs-search`. Its single
    Durable Object serializes reservations and enforces 500 queries per UTC
@@ -52,11 +55,19 @@ Cloudflare setup and the runtime switch are both required before activation:
    12,000 characters, retrieval is capped at five chunks, query rewriting,
    reranking, and similarity caching are off, and generation is capped at 512
    tokens. Returned answers are capped at 4,096 characters. Raising any of
-   these limits requires a code change.
-7. After the runtime flag is enabled, pass
-   `--ai-search-endpoint /api/docs-search` to
-   `scripts/assemble-docs-site.py` to include the optional UI. Ordinary local
-   search keystrokes use Pagefind only and are never sent to this endpoint.
+   these limits requires a code change. After the initial crawl and a disabled
+   Worker dry run pass, enable the runtime route explicitly:
+
+   ```sh
+   npx --yes wrangler@4.147.0 deploy \
+     --config docs/ai-search/wrangler.toml \
+     --var AI_SEARCH_ENABLED:true
+   ```
+
+7. Rebuild the stable site with
+   `DOCS_AI_SEARCH_ENDPOINT=/api/docs-search` and deploy that artifact to add
+   the optional UI. Ordinary local search keystrokes use Pagefind only and are
+   never sent to the AI endpoint.
 
 The public Worker exposes no instance-management, crawling, upload, history,
 model-provider, or arbitrary-URL operation. It hashes the connecting address

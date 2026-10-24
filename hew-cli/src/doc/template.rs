@@ -172,7 +172,7 @@ pub fn wrap_page(
         let _ = write!(
             header,
             "<span class=\"site-brand-tag\">{}</span>",
-            html_escape(&DocSiteConfig::expand_version(&config.brand_tag))
+            html_escape(&config.expand_version(&config.brand_tag))
         );
     }
     header.push_str("</a>\n<nav class=\"site-nav\" aria-label=\"Documentation\">\n");
@@ -192,7 +192,7 @@ pub fn wrap_page(
 
     let mut footer = format!(
         "<span>{}</span>",
-        html_escape(&DocSiteConfig::expand_version(&config.footer_text))
+        html_escape(&config.expand_version(&config.footer_text))
     );
     if let (Some(label), Some(url)) = (&config.footer_link_label, &config.footer_link_url) {
         let _ = write!(

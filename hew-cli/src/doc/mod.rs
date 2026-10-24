@@ -82,17 +82,25 @@ pub fn cmd_doc(args: &crate::args::DocArgs) {
         args.format,
         crate::args::DocFormat::Markdown | crate::args::DocFormat::Md
     );
-    let site_config = match args.site_config.as_deref() {
+    let mut site_config = match args.site_config.as_deref() {
         Some(path) => config::DocSiteConfig::load(path).unwrap_or_else(|error| {
             eprintln!("Error: {error}");
             std::process::exit(1);
         }),
         None => config::DocSiteConfig::default(),
     };
+    if let Some(version) = args.site_version.as_deref() {
+        let version = version.trim();
+        if version.is_empty() {
+            eprintln!("Error: --site-version cannot be empty");
+            std::process::exit(1);
+        }
+        site_config.display_version = version.to_string();
+    }
 
     if input_paths.is_empty() {
         eprintln!(
-            "Usage: hew doc <file_or_dir> [--output-dir <dir>] [--format html|markdown] [--site-config <file>] [--open]"
+            "Usage: hew doc <file_or_dir> [--output-dir <dir>] [--format html|markdown] [--site-config <file>] [--site-version <version>] [--open]"
         );
         std::process::exit(1);
     }

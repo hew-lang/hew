@@ -91,6 +91,11 @@ pub enum RuntimeCallFamily {
     CancelTokenRelease,
     CancelTokenRetain,
 
+    // --- Actor execution-context readers ------------------------------------
+    ContextActorId,
+    ContextSupervisor,
+    ContextTraceSpan,
+
     ActorRequestRelease,
     ActorCallFree,
     ActorRequestTake,

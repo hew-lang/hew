@@ -4776,6 +4776,21 @@
         "native",
         "wasm32-wasip1"
       ],
+      "classification": "stable",
+      "extent": "not-applicable",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
+        "native": "fn hew_context_actor_id() -> u64",
+        "wasm32-wasip1": "fn hew_context_actor_id() -> u64"
+      },
+      "symbol": "hew_context_actor_id"
+    },
+    {
+      "availability": [
+        "native",
+        "wasm32-wasip1"
+      ],
       "classification": "non-declarable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
@@ -4830,6 +4845,36 @@
         "wasm32-wasip1": "fn hew_context_restore( *mut c_void)"
       },
       "symbol": "hew_context_restore"
+    },
+    {
+      "availability": [
+        "native",
+        "wasm32-wasip1"
+      ],
+      "classification": "stable",
+      "extent": "no-in-signature-extent",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
+        "native": "fn hew_context_supervisor() -> *mut c_void",
+        "wasm32-wasip1": "fn hew_context_supervisor() -> *mut c_void"
+      },
+      "symbol": "hew_context_supervisor"
+    },
+    {
+      "availability": [
+        "native",
+        "wasm32-wasip1"
+      ],
+      "classification": "stable",
+      "extent": "not-applicable",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
+        "native": "fn hew_context_trace_span() -> u64",
+        "wasm32-wasip1": "fn hew_context_trace_span() -> u64"
+      },
+      "symbol": "hew_context_trace_span"
     },
     {
       "availability": [

@@ -1794,6 +1794,27 @@ class ExecutorV1 {
             `runtime family ${registration.capability} was refused after admission`,
           );
         switch (registration.handler) {
+          case "context_actor_id":
+            this.completeShim(act, term, {
+              kind: "i64",
+              value: act.context.actor?.identity ?? 0n,
+            });
+            return;
+          case "context_supervisor": {
+            const parent = act.context.actor?.supervisor?.owner;
+            this.completeShim(
+              act,
+              term,
+              parent
+                ? { kind: "supervisor", id: parent.id }
+                : { kind: "i64", value: 0n },
+            );
+            return;
+          }
+          case "context_trace_span":
+            // The sandbox installs no external tracing span in actor turns.
+            this.completeShim(act, term, { kind: "i64", value: 0n });
+            return;
           case "actor_caller": {
             const caller = act.context.caller ?? { kind: "Task" };
             const payload: VmValue[] = [];

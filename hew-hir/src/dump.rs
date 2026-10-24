@@ -746,30 +746,6 @@ fn dump_expr(defs: &hew_types::DefTable, out: &mut String, expr: &HirExpr, inden
                     .expect("write to string");
             }
         }
-        HirExprKind::SpawnLambdaActor {
-            params,
-            reply_ty,
-            body,
-            captures,
-        } => {
-            writeln!(
-                out,
-                "{pad}  spawn-lambda-actor params={} reply_ty={} captures={}",
-                params.len(),
-                reply_ty.user_facing(),
-                captures.len()
-            )
-            .expect("write to string");
-            for capture in captures {
-                writeln!(
-                    out,
-                    "{pad}    capture {} ({}) {:?}",
-                    capture.name, capture.binding, capture.kind
-                )
-                .expect("write to string");
-            }
-            dump_expr(defs, out, body, indent + 4);
-        }
         HirExprKind::Closure {
             params,
             ret_ty,
@@ -996,10 +972,6 @@ fn dump_expr(defs: &hew_types::DefTable, out: &mut String, expr: &HirExpr, inden
             for arg in args {
                 dump_expr(defs, out, arg, indent + 4);
             }
-        }
-        HirExprKind::CancellationTokenIsCancelled { receiver } => {
-            writeln!(out, "{pad}  cancellation-token-is-cancelled").expect("write to string");
-            dump_expr(defs, out, receiver, indent + 4);
         }
         HirExprKind::GeneratorNext { receiver, yield_ty } => {
             writeln!(out, "{pad}  generator-next yield_ty={yield_ty:?}").expect("write to string");

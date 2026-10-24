@@ -809,28 +809,6 @@ impl Verifier {
                     self.expr(&arm.body);
                 }
             }
-            HirExprKind::SpawnLambdaActor { body, captures, .. } => {
-                // The lambda body is a child expression — recurse for
-                // node/site/diagnostic coverage. The capture set is
-                // metadata produced by the resolver; verify each
-                // captured binding id was declared somewhere in the
-                // HIR (catches a resolver bug that records a freed
-                // binding id).
-
-                self.expr(body);
-
-                for capture in captures {
-                    if !self.bindings.contains(&capture.binding) {
-                        self.diagnostics.push(self.diagnostic(
-                            HirDiagnosticKind::DanglingRef {
-                                resolved: ResolvedRef::Binding(capture.binding),
-                            },
-                            expr.span.clone(),
-                            "lambda-actor capture references a binding not declared in resolved HIR",
-                        ));
-                    }
-                }
-            }
             HirExprKind::Closure {
                 params,
                 body,
@@ -995,8 +973,7 @@ impl Verifier {
             HirExprKind::CoerceToDynTrait { value, .. } => {
                 self.expr(value);
             }
-            HirExprKind::CancellationTokenIsCancelled { receiver }
-            | HirExprKind::GeneratorNext { receiver, .. }
+            HirExprKind::GeneratorNext { receiver, .. }
             | HirExprKind::RecordCloneCall { src: receiver, .. } => {
                 self.expr(receiver);
             }
@@ -1165,7 +1142,9 @@ impl Verifier {
             (HirLiteral::Float(_), ResolvedTy::F32 | ResolvedTy::F64)
             | (HirLiteral::Bool(_), ResolvedTy::Bool)
             | (HirLiteral::Char(_), ResolvedTy::Char)
-            | (HirLiteral::String(_), ResolvedTy::String) => true,
+            | (HirLiteral::String(_), ResolvedTy::String)
+            | (HirLiteral::Duration(_), ResolvedTy::Duration)
+            | (HirLiteral::Unit, ResolvedTy::Unit) => true,
             _ => false,
         };
         if !valid {

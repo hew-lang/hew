@@ -345,7 +345,6 @@ impl LowerCtx {
             }
             HirExprKind::FieldAccess { object, .. }
             | HirExprKind::TupleIndex { tuple: object, .. }
-            | HirExprKind::CancellationTokenIsCancelled { receiver: object }
             | HirExprKind::GeneratorNext {
                 receiver: object, ..
             }
@@ -446,8 +445,7 @@ impl LowerCtx {
                     self.wrap_var_self_explicit_expr_returns(arg, receiver, abi_return_ty);
                 }
             }
-            HirExprKind::SpawnLambdaActor { .. }
-            | HirExprKind::Closure { .. }
+            HirExprKind::Closure { .. }
             | HirExprKind::GenBlock { .. }
             | HirExprKind::Literal(_)
             | HirExprKind::RegexLiteralRef { .. }

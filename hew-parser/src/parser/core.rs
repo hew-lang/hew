@@ -1056,13 +1056,15 @@ impl<'src> Parser<'src> {
         match self.peek() {
             Some(Token::Minus) => matches!(
                 self.peek_at(self.pos + 1),
-                Some(Token::Integer(_) | Token::Float(_))
+                Some(Token::Integer(_) | Token::Float(_) | Token::Duration(_))
             ),
             Some(Token::Dot) => matches!(self.peek_at(self.pos + 1), Some(Token::Identifier(_))),
             Some(
                 Token::Identifier(_)
                 | Token::LeftParen
                 | Token::Integer(_)
+                | Token::Float(_)
+                | Token::Duration(_)
                 | Token::StringLit(_)
                 | Token::CharLit(_)
                 | Token::RawString(_)
@@ -1124,7 +1126,7 @@ impl<'src> Parser<'src> {
             Token::Minus
                 if matches!(
                     self.peek_at(cursor + 1),
-                    Some(Token::Integer(_) | Token::Float(_))
+                    Some(Token::Integer(_) | Token::Float(_) | Token::Duration(_))
                 ) =>
             {
                 cursor += 2;

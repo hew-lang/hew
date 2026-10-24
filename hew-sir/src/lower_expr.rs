@@ -70,6 +70,21 @@ impl Builder<'_, '_> {
             return self.lower_pool_accessor(expr, kind);
         }
         match &expr.kind {
+            HirExprKind::ContextReader { reader } => {
+                let family = match reader {
+                    hew_types::ExecutionContextReader::ActorId => {
+                        hew_types::RuntimeCallFamily::ContextActorId
+                    }
+                    hew_types::ExecutionContextReader::Supervisor => {
+                        hew_types::RuntimeCallFamily::ContextSupervisor
+                    }
+                    hew_types::ExecutionContextReader::TraceSpan => {
+                        hew_types::RuntimeCallFamily::ContextTraceSpan
+                    }
+                };
+                self.lower_runtime_operation(expr, family, &[], true)?
+                    .ok_or_else(|| SirLoweringError::from("context reader must produce a value"))
+            }
             HirExprKind::Literal(literal) => self.lower_literal(expr, literal),
             HirExprKind::RcIntrinsic {
                 op,
@@ -796,14 +811,42 @@ impl Builder<'_, '_> {
             } => self.lower_if(expr, condition, then_expr, else_expr),
             HirExprKind::Match { scrutinee, arms } => self.lower_match(expr, scrutinee, arms),
             HirExprKind::If {
-                else_expr: None, ..
-            } => Err(SirLoweringError::Unavailable(
-                "one-armed if expressions are deferred until unit values are modeled".to_string(),
-            )),
-            _ => Err(SirLoweringError::Unavailable(format!(
-                "unsupported HIR expression kind `{}` in the initial SIR subset",
+                condition,
+                then_expr,
+                else_expr: None,
+            } => {
+                if self.ty(&expr.ty) != ResolvedTy::Unit {
+                    return Err("an if without an else must have the checked unit type".into());
+                }
+                self.lower_unit_if(condition, then_expr, None)?;
+                self.emit(expr, SemOpKind::ConstUnit)
+            }
+            HirExprKind::While { .. }
+            | HirExprKind::ForRange { .. }
+            | HirExprKind::Loop { .. }
+            | HirExprKind::Break { .. }
+            | HirExprKind::Continue { .. }
+            | HirExprKind::Return { .. }
+            | HirExprKind::Unsupported(_) => Err(SirLoweringError::Internal(format!(
+                "control-flow HIR `{}` reached a value-only lowering route",
                 hir_expr_kind_name(&expr.kind)
             ))),
+            HirExprKind::BindingRef {
+                resolved: ResolvedRef::Builtin(_),
+                ..
+            } => Err(SirLoweringError::Unavailable(
+                "a runtime builtin used as a function value requires a callable adapter".into(),
+            )),
+            HirExprKind::BindingRef {
+                resolved: ResolvedRef::Unresolved,
+                ..
+            } => Err("unresolved binding reference crossed checked HIR".into()),
+            HirExprKind::Index { .. } => Err(SirLoweringError::Unavailable(
+                "indexed receiver has no executable collection contract".into(),
+            )),
+            HirExprKind::ResolvedImplCall { .. } => {
+                Err("collection normalization left a non-clone resolved impl call".into())
+            }
         }
     }
 
@@ -875,7 +918,7 @@ impl Builder<'_, '_> {
             HirLiteral::Duration(value) if self.ty(&expr.ty) == ResolvedTy::Duration => {
                 self.emit(expr, SemOpKind::ConstDuration(*value))
             }
-            _ => Err("unsupported HIR literal kind in the initial SIR subset"
+            _ => Err("HIR literal does not agree with its checked type"
                 .to_string()
                 .into()),
         }

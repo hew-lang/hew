@@ -1050,33 +1050,6 @@ impl LowerCtx {
                 );
                 (call_kind, ret_ty)
             }
-            Some(MethodCallRewrite::DeferToLowering) => {
-                // `DeferToLowering` belonged to the legacy codegen pipeline and is
-                // not consumed by the Rust MIR pipeline.  Fail-closed.
-                self.diagnostics.push(HirDiagnostic::new(
-                    HirDiagnosticKind::NotYetImplemented {
-                        construct: format!("method-call rewrite variant for `.{method}`"),
-                        owning_pass: "mir-pipeline".to_string(),
-                    },
-                    span,
-                    "this method-call rewrite variant is not supported in the Rust MIR pipeline",
-                ));
-                (
-                    HirExprKind::Unsupported(format!(
-                        "unsupported rewrite variant for method `{method}`"
-                    )),
-                    ResolvedTy::Unit,
-                )
-            }
-            Some(MethodCallRewrite::CancellationTokenIsCancelled) => {
-                let lowered_receiver = self.lower_expr(receiver, IntentKind::Read);
-                (
-                    HirExprKind::CancellationTokenIsCancelled {
-                        receiver: Box::new(lowered_receiver),
-                    },
-                    ResolvedTy::Bool,
-                )
-            }
             Some(MethodCallRewrite::GeneratorNext { yield_ty }) => {
                 // The result is `Option<yield_ty>`; register its layout so MIR /
                 // codegen can size the enum slot the unbox writes into.

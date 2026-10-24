@@ -1,0 +1,16 @@
+actor Observer {
+    receive fn inspect() -> bool {
+        let identity = @actor_id;
+        let _parent = @supervisor;
+        let span = @trace_span;
+        identity > 0 && identity == @actor_id && span == @trace_span
+    }
+}
+
+fn main() {
+    let observer = spawn Observer;
+    match observer.inspect() {
+        .Ok(value) => println(value),
+        .Err(_) => println("failed"),
+    }
+}

@@ -1999,16 +1999,7 @@ pub enum MethodCallRewrite {
     },
     /// Rewrite a generic `math.abs/min/max` call to the concrete intrinsic
     /// selected from the lowered argument type in HIR.
-    GenericMathIntrinsic {
-        op: MathGenericOp,
-    },
-    DeferToLowering,
-    /// Checker-authoritative `CancellationToken.is_cancelled()` intrinsic.
-    ///
-    /// HIR/MIR consume this structured marker without re-checking the
-    /// receiver type; codegen lowers it to the borrowing
-    /// `hew_cancel_token_is_requested` runtime call.
-    CancellationTokenIsCancelled,
+    GenericMathIntrinsic { op: MathGenericOp },
     /// Builtin `Generator<Y, R>::next()` consumption. HIR emits a dedicated
     /// `HirExprKind::GeneratorNext`; MIR lowers it to `Instr::GeneratorNext`,
     /// which codegen turns into a `hew_gen_next(ctx, &out_size)` runtime call
@@ -2064,9 +2055,7 @@ pub enum MethodCallRewrite {
     /// `__hew_record_clone_inplace_<record_name>` thunk (non-consuming read of
     /// the source). `record_name` is the canonical (unqualified) name used by
     /// the codegen thunk naming convention.
-    RecordCloneInplace {
-        record_name: String,
-    },
+    RecordCloneInplace { record_name: String },
     /// `clone x` or `x.clone()` where `x` has a Copy/BitCopy type (`i64`,
     /// `bool`, `char`, etc.). The checker emits a non-fatal `RedundantClone`
     /// warning and returns the operand type unchanged. HIR lowers this as a

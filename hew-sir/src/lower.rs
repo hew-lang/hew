@@ -1479,7 +1479,7 @@ fn is_initial_call_value(ty: &ResolvedTy) -> bool {
         || is_initial_scalar(ty)
         || matches!(
             ty,
-            ResolvedTy::Borrow { .. } | ResolvedTy::String
+            ResolvedTy::Pointer { .. } | ResolvedTy::Borrow { .. } | ResolvedTy::String
                 | ResolvedTy::Task(_)
                 | ResolvedTy::Bytes
                 | ResolvedTy::Array(_, _)

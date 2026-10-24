@@ -16,10 +16,10 @@ struct hew_cabi_manifest_row {
   enum hew_cabi_manifest_ownership ownership;
 };
 
-#define HEW_CABI_MANIFEST_FUNCTION_COUNT 1665u
+#define HEW_CABI_MANIFEST_FUNCTION_COUNT 1668u
 #define HEW_CABI_MANIFEST_STATIC_COUNT 24u
 
-static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1665] = {
+static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1668] = {
     {"hew_actor_abort_construction",
      "{\"native\": \"fn hew_actor_abort_construction( HewLocalPidId, *mut "
      "HewCoroState, )\", \"wasm32-wasip1\": \"fn hew_actor_abort_construction( "
@@ -1900,6 +1900,11 @@ static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1665] = {
      "\"fn hew_cont_resume( *mut c_void)\"}",
      "native,wasm32-wasip1", "non-declarable", "not-applicable",
      "no-in-signature-extent", HEW_CABI_OWNERSHIP_UNMEASURED},
+    {"hew_context_actor_id",
+     "{\"native\": \"fn hew_context_actor_id() -> u64\", \"wasm32-wasip1\": "
+     "\"fn hew_context_actor_id() -> u64\"}",
+     "native,wasm32-wasip1", "stable", "not-applicable", "not-applicable",
+     HEW_CABI_OWNERSHIP_UNMEASURED},
     {"hew_context_install",
      "{\"native\": \"fn hew_context_install( *mut c_void) -> *mut c_void\", "
      "\"wasm32-wasip1\": \"fn hew_context_install( *mut c_void) -> *mut "
@@ -1922,6 +1927,16 @@ static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1665] = {
      "\"wasm32-wasip1\": \"fn hew_context_restore( *mut c_void)\"}",
      "native,wasm32-wasip1", "non-declarable", "not-applicable",
      "no-in-signature-extent", HEW_CABI_OWNERSHIP_UNMEASURED},
+    {"hew_context_supervisor",
+     "{\"native\": \"fn hew_context_supervisor() -> *mut c_void\", "
+     "\"wasm32-wasip1\": \"fn hew_context_supervisor() -> *mut c_void\"}",
+     "native,wasm32-wasip1", "stable", "not-applicable",
+     "no-in-signature-extent", HEW_CABI_OWNERSHIP_UNMEASURED},
+    {"hew_context_trace_span",
+     "{\"native\": \"fn hew_context_trace_span() -> u64\", \"wasm32-wasip1\": "
+     "\"fn hew_context_trace_span() -> u64\"}",
+     "native,wasm32-wasip1", "stable", "not-applicable", "not-applicable",
+     HEW_CABI_OWNERSHIP_UNMEASURED},
     {"hew_coro_run_callable",
      "{\"native\": \"fn hew_coro_run_callable( "
      "hew_cabi::callable::HewCallableInvoke, *mut c_void, *const *mut c_void, "

@@ -245,6 +245,9 @@ pub(super) fn collect_match_payload_predicates(
             Ok(predicates)
         }
         Pattern::Tuple(patterns) => {
+            if patterns.is_empty() && *scrutinee_ty == ResolvedTy::Unit {
+                return Ok(Vec::new());
+            }
             let ResolvedTy::Tuple(field_tys) = scrutinee_ty else {
                 return Err(format!(
                     "tuple literal predicates require a tuple scrutinee, got {scrutinee_ty:?}"
@@ -1282,16 +1285,7 @@ impl LowerCtx {
                         (HirLiteral::String(_), ResolvedTy::String) => ResolvedTy::String,
                         (HirLiteral::Float(_), ResolvedTy::F32) => ResolvedTy::F32,
                         (HirLiteral::Float(_), ResolvedTy::F64) => ResolvedTy::F64,
-                        (HirLiteral::Duration(_) | HirLiteral::Unit, _) => {
-                            self.walk_pattern_arm_body(&arm.body);
-                            self.unsupported(
-                                pattern_span.clone(),
-                                format!("unsupported literal pattern in match arm ({lit:?})"),
-                                "match-literal-stage2",
-                            );
-                            rejected = true;
-                            continue;
-                        }
+                        (HirLiteral::Duration(_), ResolvedTy::Duration) => ResolvedTy::Duration,
                         _ => {
                             self.walk_pattern_arm_body(&arm.body);
                             self.unsupported(
@@ -1326,6 +1320,12 @@ impl LowerCtx {
                     };
                     HirMatchArmPredicate::RecordProject {
                         ty: scrutinee_hir.ty.clone(),
+                    }
+                }
+                PatternKind::TuplePattern if scrutinee_hir.ty == ResolvedTy::Unit => {
+                    HirMatchArmPredicate::Literal {
+                        lit: HirLiteral::Unit,
+                        ty: ResolvedTy::Unit,
                     }
                 }
                 PatternKind::TuplePattern => {

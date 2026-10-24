@@ -1085,6 +1085,14 @@ fn frontend_completion_forms_match_native() {
     ensure_parity_runner_built();
     for case in [
         ParityCase {
+            test_name: "execution-context-readers",
+            source_rel: "tests/core-acceptance/cases/execution-context-readers.hew",
+        },
+        ParityCase {
+            test_name: "scalar-pattern-composition",
+            source_rel: "tests/core-acceptance/cases/scalar-pattern-composition.hew",
+        },
+        ParityCase {
             test_name: "associated-record-constructor",
             source_rel: "tests/core-acceptance/cases/associated-record-constructor.hew",
         },

@@ -1423,29 +1423,6 @@ pub enum HirExprKind {
     /// other surface shape is rejected with `SelectArmNotSealedForm`
     /// during lowering.
     Select(HirSelect),
-    /// `actor |params| { body }` — a lambda-actor literal. Produces a
-    /// `Duplex<Msg, Reply>` handle at runtime that addresses the
-    /// spawned actor's message queue (the surface call syntax dispatches
-    /// through this Duplex). The HIR shape carries the parameter
-    /// bindings, the optional reply-type annotation, the lambda body,
-    /// and the resolved capture set with per-capture strength
-    /// (Strong vs Weak).
-    ///
-    /// Capture-strength discipline (§5.9 ratification 2): each free
-    /// variable in the body that resolves to a binding from the
-    /// enclosing scope is recorded as a capture. When the captured
-    /// binding is the lambda's own let-binding name (the forward-bind
-    /// recursive case `let fib = actor |n| { fib(n - 1) }`), the
-    /// capture is `Weak` — the body must NOT keep the actor alive
-    /// past external refcount zero. Every other capture is `Strong`.
-    /// MIR's `LambdaCapture` side-table is populated directly from
-    /// this list at lowering.
-    SpawnLambdaActor {
-        params: Vec<HirBinding>,
-        reply_ty: ResolvedTy,
-        body: Box<HirExpr>,
-        captures: Vec<HirLambdaCapture>,
-    },
     /// General closure literal (`|...| ...` / `move |...| ...`).
     ///
     /// The checker owns capture legality and records binding-accurate capture
@@ -1733,14 +1710,6 @@ pub enum HirExprKind {
         /// `TypeCheckOutput::expr_types` at lowering time; carried here so
         /// downstream consumers do not have to plumb `expr_types` separately.
         ret_ty: ResolvedTy,
-    },
-    /// `CancellationToken.is_cancelled() -> bool`.
-    ///
-    /// The checker records this as a structured intrinsic so frontend lowering
-    /// carries the token value; codegen consumes the variant directly and emits
-    /// the borrowing `hew_cancel_token_is_requested` runtime call.
-    CancellationTokenIsCancelled {
-        receiver: Box<HirExpr>,
     },
     /// `Generator<Y, R>.next() -> Option<Y>`.
     ///
@@ -2209,18 +2178,9 @@ pub struct HirMatchArmBinding {
     pub ty: ResolvedTy,
 }
 
-/// One captured binding inside an `HirExprKind::SpawnLambdaActor`
-/// body. The `kind` discriminator selects the runtime refcount
-/// strength: `Strong` bumps the captured value's refcount so the
-/// actor body keeps the captured handle alive; `Weak` is the
-/// self-binding-name recursive case (§5.9 ratification 2) and does
-/// NOT bump the refcount.
-///
-/// The HIR `captures` field is the producer for the MIR
-/// `LambdaCapture` side-table; the structural fail-closed checker in
-/// `hew-mir` rejects malformed shapes (Weak on a non-lambda-actor
-/// handle, multiple Weak captures on the same handle) that would
-/// otherwise reach codegen.
+/// One checker-resolved capture used to synthesize an ordinary lambda actor.
+/// Strong captures become owning state fields; the recursive self capture is
+/// weak so the actor does not retain itself.
 #[derive(Debug, Clone, PartialEq)]
 pub struct HirLambdaCapture {
     /// The captured binding's id in the enclosing scope.

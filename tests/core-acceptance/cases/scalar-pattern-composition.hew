@@ -1,0 +1,19 @@
+enum Timed { At(duration); Empty; }
+
+fn label(value: duration) -> string {
+    match value { 5ms => "five", -5ms => "negative", _ => "other" }
+}
+
+fn event(value: Timed) -> string {
+    match value { .At(5ms) => "timed five", .At(_) => "timed other", .Empty => "empty" }
+}
+
+fn main() {
+    println(label(5ms));
+    println(label(6ms));
+    println(label(-5ms));
+    println(event(.At(5ms)));
+    println(event(.At(6ms)));
+    match () { () => println("unit") }
+    println((if true { println("effect"); }) == ());
+}

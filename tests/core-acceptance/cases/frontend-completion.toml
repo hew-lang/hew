@@ -1,4 +1,26 @@
 [[case]]
+id = "scalar-pattern-composition"
+intent = "Duration and unit patterns compose at match roots and inside enum payloads, and unit conditionals preserve their effects."
+source = "cases/scalar-pattern-composition.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.expected]
+stdout = "five\nother\nnegative\ntimed five\ntimed other\nunit\neffect\ntrue\n"
+exit = 0
+
+[[case]]
+id = "execution-context-readers"
+intent = "An actor handler reads its installed actor, supervisor and trace context through checked semantic operations."
+source = "cases/execution-context-readers.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.expected]
+stdout = "true\n"
+exit = 0
+
+[[case]]
 id = "associated-record-constructor"
 intent = "An associated type projecting to a generic record uses ordinary field and functional-update semantics."
 source = "cases/associated-record-constructor.hew"

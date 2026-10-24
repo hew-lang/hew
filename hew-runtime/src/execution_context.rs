@@ -617,6 +617,39 @@ pub unsafe extern "C" fn hew_require_execution_context() -> *mut HewExecutionCon
     require_current_context()
 }
 
+/// Read the actor identity from the handler's installed execution context.
+#[no_mangle]
+pub extern "C" fn hew_context_actor_id() -> u64 {
+    let ctx = require_current_context();
+    if ctx.is_null() {
+        return 0;
+    }
+    // SAFETY: the scheduler-installed context is live during this handler.
+    unsafe { (*ctx).actor_id }
+}
+
+/// Read the handler's parent supervisor, or null for an unsupervised actor.
+#[no_mangle]
+pub extern "C" fn hew_context_supervisor() -> *mut c_void {
+    let ctx = require_current_context();
+    if ctx.is_null() {
+        return ptr::null_mut();
+    }
+    // SAFETY: the scheduler-installed context is live during this handler.
+    unsafe { (*ctx).parent_supervisor }
+}
+
+/// Read the active trace span without changing the handler's trace context.
+#[no_mangle]
+pub extern "C" fn hew_context_trace_span() -> u64 {
+    let ctx = require_current_context();
+    if ctx.is_null() {
+        return 0;
+    }
+    // SAFETY: the scheduler-installed context is live during this handler.
+    unsafe { (*ctx).trace.span_id }
+}
+
 #[cfg(test)]
 pub(crate) struct TestExecutionContext {
     ctx: *mut HewExecutionContext,
@@ -690,13 +723,25 @@ mod tests {
     fn install_restore_round_trip() {
         let _runtime_guard = crate::runtime_test_guard();
         let _context_guard = ContextResetGuard::new();
-        let mut ctx_a = HewExecutionContext::default();
+        let parent = ptr::dangling_mut::<u8>().cast();
+        let mut ctx_a = HewExecutionContext {
+            actor_id: 42,
+            parent_supervisor: parent,
+            ..HewExecutionContext::default()
+        };
+        ctx_a.trace.span_id = 7;
         let ctx_a_ptr = (&raw mut ctx_a);
 
         assert!(set_current_context(ctx_a_ptr).is_null());
         assert_eq!(current_context(), ctx_a_ptr);
+        assert_eq!(hew_context_actor_id(), 42);
+        assert_eq!(hew_context_supervisor(), parent);
+        assert_eq!(hew_context_trace_span(), 7);
         assert_eq!(set_current_context(ptr::null_mut()), ctx_a_ptr);
         assert!(current_context().is_null());
+        assert_eq!(hew_context_actor_id(), 0);
+        assert!(hew_context_supervisor().is_null());
+        assert_eq!(hew_context_trace_span(), 0);
     }
 
     #[test]

@@ -49,7 +49,6 @@ pub(super) fn collect_general_closure_captures_walk(
         | HirExprKind::ContextReader { .. }
         | HirExprKind::Literal(_)
         | HirExprKind::RegexLiteralRef { .. }
-        | HirExprKind::SpawnLambdaActor { .. }
         | HirExprKind::Continue { .. }
         | HirExprKind::ActorSelf
         | HirExprKind::Unsupported(_) => {}
@@ -200,8 +199,7 @@ pub(super) fn collect_general_closure_captures_walk(
                 collect_general_closure_captures_walk(e, outer_bindings, seen, captures);
             }
         }
-        HirExprKind::CancellationTokenIsCancelled { receiver }
-        | HirExprKind::GeneratorNext { receiver, .. }
+        HirExprKind::GeneratorNext { receiver, .. }
         | HirExprKind::RecordCloneCall { src: receiver, .. }
         | HirExprKind::CallableSpecialize {
             source: receiver, ..

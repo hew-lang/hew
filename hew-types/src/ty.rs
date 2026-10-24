@@ -22,10 +22,10 @@ fn builtin_named_type_from_builtin(builtin: Option<BuiltinType>) -> Option<Built
     match builtin {
         Some(BuiltinType::Stream) => Some(BuiltinNamedType::Stream),
         Some(BuiltinType::Sink) => Some(BuiltinNamedType::Sink),
-        Some(BuiltinType::CancellationToken) => Some(BuiltinNamedType::CancellationToken),
 
         Some(
-            BuiltinType::Option
+            BuiltinType::CancellationToken
+            | BuiltinType::Option
             | BuiltinType::Result
             | BuiltinType::Vec
             | BuiltinType::HashMap

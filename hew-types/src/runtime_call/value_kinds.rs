@@ -99,6 +99,8 @@ pub enum RuntimeValueKind {
     ActorHandle,
     /// An immutable raw pointer, including compiler-generated ingress adapters.
     ConstBytePointer,
+    /// The opaque supervisor context pointer exposed inside actor handlers.
+    MutableUnitPointer,
     Unit,
     Bool,
     I8,
@@ -394,6 +396,10 @@ fn resolve_fixed_type(kind: RuntimeValueKind) -> ResolvedTy {
         RuntimeValueKind::ConstBytePointer => ResolvedTy::Pointer {
             is_mutable: false,
             pointee: Box::new(ResolvedTy::U8),
+        },
+        RuntimeValueKind::MutableUnitPointer => ResolvedTy::Pointer {
+            is_mutable: true,
+            pointee: Box::new(ResolvedTy::Unit),
         },
         RuntimeValueKind::Unit => ResolvedTy::Unit,
         RuntimeValueKind::Bool => ResolvedTy::Bool,

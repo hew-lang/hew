@@ -786,28 +786,6 @@ impl Checker {
                 );
                 Ty::I64
             }
-            (Ty::CancellationToken, "is_cancelled") => {
-                self.check_arity(args, 0, "`CancellationToken.is_cancelled`", span);
-                self.record_method_call_rewrite(
-                    span,
-                    MethodCallRewrite::CancellationTokenIsCancelled,
-                );
-                Ty::Bool
-            }
-            (Ty::CancellationToken, _) => {
-                for arg in args {
-                    let (expr, sp) = arg.expr();
-                    self.synthesize(expr, sp);
-                }
-                self.report_error_with_suggestions_at(
-                    TypeErrorKind::UndefinedMethod,
-                    span,
-                    method_span,
-                    format!("no method `{method}` on `CancellationToken`"),
-                    self.similar_methods(&resolved, method),
-                );
-                Ty::Error
-            }
             // A borrowed trait-object snapshot has no clone operation. The
             // authored consuming constructor remains available.
             (

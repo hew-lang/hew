@@ -10,6 +10,11 @@ fn completed_source_forms_execute_at_both_optimization_levels() {
     let dir = support::tempdir();
     for (name, expected) in [
         ("associated-record-constructor", "ready 42\n"),
+        ("execution-context-readers", "true\n"),
+        (
+            "scalar-pattern-composition",
+            "five\nother\nnegative\ntimed five\ntimed other\nunit\neffect\ntrue\n",
+        ),
         (
             "generic-numeric-bounds",
             "9 24\n9 24\n9 24\n0 1\n43\nfirst\nsecond\n",

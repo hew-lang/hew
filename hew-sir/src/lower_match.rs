@@ -766,7 +766,11 @@ impl Builder<'_, '_> {
             || scrutinee_ty.is_float()
             || matches!(
                 scrutinee_ty,
-                ResolvedTy::Bool | ResolvedTy::Char | ResolvedTy::String
+                ResolvedTy::Bool
+                    | ResolvedTy::Char
+                    | ResolvedTy::String
+                    | ResolvedTy::Duration
+                    | ResolvedTy::Unit
             )
         {
             self.check_scalar_arms(scrutinee_ty, arms)?;
@@ -1201,20 +1205,30 @@ impl Builder<'_, '_> {
         literal: &HirLiteral,
     ) -> Result<ValueId, SirLoweringError> {
         let ty = &plan.scrutinee_ty;
-        let constant =
-            match literal {
-                HirLiteral::Integer(value) if ty.is_integer() => SemOpKind::ConstInteger(*value),
-                HirLiteral::Float(value) if ty.is_float() => SemOpKind::ConstFloat(*value),
-                HirLiteral::Bool(value) if *ty == ResolvedTy::Bool => SemOpKind::ConstBool(*value),
-                HirLiteral::Char(value) if *ty == ResolvedTy::Char => SemOpKind::ConstChar(*value),
-                HirLiteral::String(value) if *ty == ResolvedTy::String => {
-                    SemOpKind::ConstStr(self.service.intern_string(value))
-                }
-                _ => return Err(
-                    "literal match requires an exact integer, float, boolean, character or string literal"
-                        .into(),
-                ),
-            };
+        if matches!((literal, ty), (HirLiteral::Unit, ResolvedTy::Unit)) {
+            return self.emit_typed(
+                plan.provenance.clone(),
+                &ResolvedTy::Bool,
+                SemOpKind::ConstBool(true),
+            );
+        }
+        let constant = match literal {
+            HirLiteral::Integer(value) if ty.is_integer() => SemOpKind::ConstInteger(*value),
+            HirLiteral::Float(value) if ty.is_float() => SemOpKind::ConstFloat(*value),
+            HirLiteral::Duration(value) if *ty == ResolvedTy::Duration => {
+                SemOpKind::ConstDuration(*value)
+            }
+            HirLiteral::Bool(value) if *ty == ResolvedTy::Bool => SemOpKind::ConstBool(*value),
+            HirLiteral::Char(value) if *ty == ResolvedTy::Char => SemOpKind::ConstChar(*value),
+            HirLiteral::String(value) if *ty == ResolvedTy::String => {
+                SemOpKind::ConstStr(self.service.intern_string(value))
+            }
+            _ => {
+                return Err(
+                    "literal match predicate does not agree with its checked scalar type".into(),
+                )
+            }
+        };
         let value = self.emit_typed(plan.provenance.clone(), ty, constant)?;
         if *ty == ResolvedTy::String {
             let equals = self.lower_string_equals_values(plan.scrutinee()?, value)?;
@@ -1391,43 +1405,42 @@ impl Builder<'_, '_> {
             )
             .into());
         }
-        let literal =
-            match &predicate.literal {
-                HirLiteral::Integer(value) if ty.is_integer() => self.emit_typed(
+        let literal = match &predicate.literal {
+            HirLiteral::Integer(value) if ty.is_integer() => self.emit_typed(
+                Provenance::Synthesized,
+                &ty,
+                SemOpKind::ConstInteger(*value),
+            )?,
+            HirLiteral::Bool(value) if ty == ResolvedTy::Bool => {
+                self.emit_typed(Provenance::Synthesized, &ty, SemOpKind::ConstBool(*value))?
+            }
+            HirLiteral::Float(value) if ty.is_float() => {
+                self.emit_typed(Provenance::Synthesized, &ty, SemOpKind::ConstFloat(*value))?
+            }
+            HirLiteral::Char(value) if ty == ResolvedTy::Char => {
+                self.emit_typed(Provenance::Synthesized, &ty, SemOpKind::ConstChar(*value))?
+            }
+            HirLiteral::String(value) if ty == ResolvedTy::String => {
+                let literal = self.service.intern_string(value);
+                self.emit_typed(
                     Provenance::Synthesized,
-                    &ty,
-                    SemOpKind::ConstInteger(*value),
-                )?,
-                HirLiteral::Bool(value) if ty == ResolvedTy::Bool => {
-                    self.emit_typed(Provenance::Synthesized, &ty, SemOpKind::ConstBool(*value))?
-                }
-                HirLiteral::Float(value) if ty.is_float() => {
-                    self.emit_typed(Provenance::Synthesized, &ty, SemOpKind::ConstFloat(*value))?
-                }
-                HirLiteral::Char(value) if ty == ResolvedTy::Char => {
-                    self.emit_typed(Provenance::Synthesized, &ty, SemOpKind::ConstChar(*value))?
-                }
-                HirLiteral::String(value) if ty == ResolvedTy::String => {
-                    let literal = self.service.intern_string(value);
-                    self.emit_typed(
-                        Provenance::Synthesized,
-                        &ResolvedTy::String,
-                        SemOpKind::ConstStr(literal),
-                    )?
-                }
-                HirLiteral::Bytes(_) => {
-                    return Err(
-                    "bytes payload literal matching awaits an audited BytesEquals runtime contract"
-                        .to_string().into(),);
-                }
-                _ => {
-                    return Err(format!(
-                        "payload literal has no verified equality operation for `{}`",
-                        ty.user_facing()
-                    )
-                    .into());
-                }
-            };
+                    &ResolvedTy::String,
+                    SemOpKind::ConstStr(literal),
+                )?
+            }
+            HirLiteral::Duration(value) if ty == ResolvedTy::Duration => self.emit_typed(
+                Provenance::Synthesized,
+                &ty,
+                SemOpKind::ConstDuration(*value),
+            )?,
+            _ => {
+                return Err(format!(
+                    "payload literal has no verified equality operation for `{}`",
+                    ty.user_facing()
+                )
+                .into());
+            }
+        };
         if ty == ResolvedTy::String {
             let equals = self.lower_string_equals_values(field.value, literal)?;
             self.emit_destroy(literal)?;

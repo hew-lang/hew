@@ -3236,7 +3236,7 @@ fn is_initial_call_value(ty: &ResolvedTy) -> bool {
         || ty.is_builtin(hew_types::BuiltinType::Location)
         || matches!(
             ty,
-            ResolvedTy::Borrow { .. } | ResolvedTy::String | ResolvedTy::Bytes | ResolvedTy::Task(_) | ResolvedTy::Array(_, _)
+            ResolvedTy::Pointer { .. } | ResolvedTy::Borrow { .. } | ResolvedTy::String | ResolvedTy::Bytes | ResolvedTy::Task(_) | ResolvedTy::Array(_, _)
         )
 }
 

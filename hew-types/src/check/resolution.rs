@@ -2706,6 +2706,14 @@ impl Checker {
                 // and projections resolve through `Scope`, this render goes.
                 // WHAT: `Self` and `T.Item` as `Scope` resolutions.
                 let name = &named_path.to_string();
+                if name == "CancellationToken" {
+                    self.report_error(
+                        TypeErrorKind::InvalidOperation,
+                        &te.1,
+                        "public cancellation tokens are unavailable; use scope, fork and race for structured cancellation".to_string(),
+                    );
+                    return Ty::Error;
+                }
                 // Handle `Self` type
                 if name == "Self" {
                     if let Some((_, self_ty)) = &self.current_self_type {

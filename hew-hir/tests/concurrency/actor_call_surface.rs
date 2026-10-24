@@ -120,7 +120,7 @@ fn visit_expr<'a>(expr: &'a HirExpr, out: &mut Vec<&'a HirExpr>) {
             visit_expr(duration, out);
             visit_block(body, out);
         }
-        HirExprKind::SpawnLambdaActor { body, .. } | HirExprKind::Closure { body, .. } => {
+        HirExprKind::Closure { body, .. } => {
             visit_expr(body, out);
         }
         HirExprKind::TupleIndex { tuple, .. } => visit_expr(tuple, out),
@@ -150,8 +150,7 @@ fn visit_expr<'a>(expr: &'a HirExpr, out: &mut Vec<&'a HirExpr>) {
         | HirExprKind::TryWidthCast { value, .. } => {
             visit_expr(value, out);
         }
-        HirExprKind::CancellationTokenIsCancelled { receiver }
-        | HirExprKind::GeneratorNext { receiver, .. } => {
+        HirExprKind::GeneratorNext { receiver, .. } => {
             visit_expr(receiver, out);
         }
         HirExprKind::MachineVariantCtor { payload, .. } => {

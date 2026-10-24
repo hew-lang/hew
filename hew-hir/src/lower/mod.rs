@@ -218,7 +218,9 @@ fn literal_match_supported(lit: &HirLiteral, ty: &ResolvedTy) -> bool {
         (HirLiteral::Float(_), ResolvedTy::F32 | ResolvedTy::F64)
         | (HirLiteral::Bool(_), ResolvedTy::Bool)
         | (HirLiteral::Char(_), ResolvedTy::Char)
-        | (HirLiteral::String(_), ResolvedTy::String) => true,
+        | (HirLiteral::String(_), ResolvedTy::String)
+        | (HirLiteral::Duration(_), ResolvedTy::Duration)
+        | (HirLiteral::Unit, ResolvedTy::Unit) => true,
         _ => false,
     }
 }

@@ -444,7 +444,7 @@ pub(super) fn scan_expr_for_call_shape(
                 scan_expr_for_call_shape(&arm.body, callable, diagnostics);
             }
         }
-        HirExprKind::SpawnLambdaActor { body, .. } | HirExprKind::Closure { body, .. } => {
+        HirExprKind::Closure { body, .. } => {
             scan_expr_for_call_shape(body, callable, diagnostics);
         }
         HirExprKind::Yield { value: Some(v), .. } => {
@@ -488,8 +488,7 @@ pub(super) fn scan_expr_for_call_shape(
                 scan_expr_for_call_shape(operand, callable, diagnostics);
             }
         }
-        HirExprKind::CancellationTokenIsCancelled { receiver }
-        | HirExprKind::GeneratorNext { receiver, .. }
+        HirExprKind::GeneratorNext { receiver, .. }
         | HirExprKind::RecordCloneCall { src: receiver, .. }
         | HirExprKind::CallableSpecialize {
             source: receiver, ..

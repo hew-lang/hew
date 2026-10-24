@@ -792,9 +792,7 @@ fn primitive_repr(
         // such as Generator<Never, T> and Option<Never>. This does not create
         // a value or a returning call edge for the semantic Never type.
         ResolvedTy::Unit | ResolvedTy::Never => PhysicalRepr::Unit,
-        callback if *callback == hew_mir::physical::ActorIngressAdapter::pointer_type() => {
-            PhysicalRepr::Pointer
-        }
+        ResolvedTy::Pointer { .. } => PhysicalRepr::Pointer,
         // An `#[opaque]` nominal with no resource descriptor is a bit-copied
         // FFI id of pointer width; its lifecycle belongs to whatever owns it.
         ResolvedTy::Named {

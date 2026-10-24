@@ -126,6 +126,9 @@ export type RuntimeContinuation =
   | {
       handler:
         | "actor_caller"
+        | "context_actor_id"
+        | "context_supervisor"
+        | "context_trace_span"
         | "actor_refusal_log"
         | "structural_format"
         | "utf8_decode"
@@ -762,6 +765,9 @@ const UNIT_FAMILIES = {
   ActorLink: refused("ActorLink"),
   ActorMonitor: refused("ActorMonitor"),
   ActorCaller: resumable({ handler: "actor_caller" }),
+  ContextActorId: resumable({ handler: "context_actor_id" }),
+  ContextSupervisor: resumable({ handler: "context_supervisor" }),
+  ContextTraceSpan: resumable({ handler: "context_trace_span" }),
   ActorRefusalLog: resumable({ handler: "actor_refusal_log" }),
   ActorUnlink: refused("ActorUnlink"),
   AutoMutexAlloc: refused("AutoMutexAlloc"),

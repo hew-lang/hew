@@ -35,6 +35,18 @@ fn constants_reject_runtime_work_at_the_checker_boundary() {
 }
 
 #[test]
+fn constants_admit_checked_variant_constructors() {
+    let output = check_source(
+        "enum Mode { Local; Tcp(string, u16); } \
+         const MAYBE: Option<u8> = .Some(7); \
+         const RESULT: Result<i64, string> = .Ok(9); \
+         const DIRECT: Option<u8> = Option.Some(8); \
+         const MODE: Mode = .Tcp(\"local\", 80); fn main() {}",
+    );
+    assert!(output.errors.is_empty(), "{:#?}", output.errors);
+}
+
+#[test]
 fn constant_scalar_arithmetic_keeps_declared_integer_failures() {
     for source in [
         "const VALUE: u8 = 255 + 1; fn main() {}",

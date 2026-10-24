@@ -102,9 +102,10 @@ impl Checker {
     }
 
     fn constant_constructor(&self, expr: &Expr, span: &Span) -> bool {
-        if self
-            .variant_constructor_plans
-            .contains_key(&super::SpanKey::in_module(span, self.current_module_idx))
+        if self.is_construct_call(span)
+            || self
+                .variant_constructor_plans
+                .contains_key(&super::SpanKey::in_module(span, self.current_module_idx))
         {
             return true;
         }

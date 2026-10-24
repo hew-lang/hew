@@ -215,7 +215,7 @@ fn warn_http_server_accept_inside_receive_fn() {
         fn main() {}
         ",
     );
-    assert_single_blocking_warning(&output, "http.Server.accept");
+    assert_single_blocking_warning(&output, "Server.accept");
 }
 
 // ---------------------------------------------------------------------------

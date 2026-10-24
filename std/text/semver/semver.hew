@@ -96,7 +96,7 @@ impl VersionMethods for Version {
 // narrow an oversized component, fail observably rather than fabricating a
 // sentinel. `to_string`, `compare`, and `matches` never narrow.
 fn component_as_i64(name: string, digits: string) -> i64 {
-    match string.to_int(digits) {
+    match digits.to_int() {
         .Ok(value) => value,
         .Err(_) => {
             panic(f"semver.Version.{name}: component does not fit in i64");
@@ -395,8 +395,8 @@ fn compare_pre(a: string, b: string) -> i64 {
 
 /// Compare two individual pre-release identifiers (numeric or alphanumeric).
 fn compare_pre_id(a: string, b: string) -> i64 {
-    let a_num = string.is_numeric(a);
-    let b_num = string.is_numeric(b);
+    let a_num = a.is_numeric();
+    let b_num = b.is_numeric();
     if a_num && b_num {
         // Numeric identifiers compare numerically at any length, so this must
         // not route through an i64: SemVer 2.0 puts no bound on the number of

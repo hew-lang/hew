@@ -12,13 +12,13 @@ fn float_parsing_reuses_inputs_and_closes_early_return_temporaries() {
 import std.string;
 
 fn valid(text: string, expected: f64) {
-    match string.to_float(text) {
+    match (text).to_float() {
         .Ok(value) => { if value != expected { panic("wrong float value"); } }
         .Err(_) => panic("valid float refused"),
     }
 }
 fn invalid(text: string) {
-    match string.to_float(text) {
+    match (text).to_float() {
         .Ok(_) => panic("invalid float accepted"),
         .Err(error) => {
             if f"{error}" != f"invalid number literal: `{text}`" { panic("wrong float error"); }

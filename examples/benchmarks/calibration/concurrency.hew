@@ -131,8 +131,8 @@ fn main() {
         panic("usage: concurrency WORKLOAD ITERATIONS SIZE");
     }
     let workload = arguments[1];
-    let iterations = string.to_int(arguments[2]).expect("positive iteration count");
-    let size = string.to_int(arguments[3]).expect("positive size");
+    let iterations = (arguments[2]).to_int().expect("positive iteration count");
+    let size = (arguments[3]).to_int().expect("positive size");
     if iterations <= 0 || size <= 0 {
         panic("iterations and size must be positive");
     }

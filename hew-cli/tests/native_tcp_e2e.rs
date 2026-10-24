@@ -168,9 +168,9 @@ fn main() {
     println(text.contains("Ω"));
     println(text.contains("no"));
     println(text);
-    match string.to_int("-9223372036854775808") { .Ok(value) => println(value), .Err(_) => panic("minimum rejected"), }
-    match string.to_int("9223372036854775808") { .Ok(_) => panic("overflow accepted"), .Err(_) => println("overflow"), }
-    match string.to_int("1雪") { .Ok(_) => panic("nondigit accepted"), .Err(_) => println("nondigit"), }
+    match ("-9223372036854775808").to_int() { .Ok(value) => println(value), .Err(_) => panic("minimum rejected"), }
+    match ("9223372036854775808").to_int() { .Ok(_) => panic("overflow accepted"), .Err(_) => println("overflow"), }
+    match ("1雪").to_int() { .Ok(_) => panic("nondigit accepted"), .Err(_) => println("nondigit"), }
 }
 "#,
         "5\nabsent\n0\nélan\ntrue\ntrue\ntrue\nfalse\n雪ÉLAN:Ω\n-9223372036854775808\noverflow\nnondigit\n",

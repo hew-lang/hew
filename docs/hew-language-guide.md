@@ -146,7 +146,7 @@ use an explicit Display implementation to choose the user-facing text.
 Each pair of braces holds one expression, optionally followed by `:?`.
 Anything else after the expression is an error, including width, alignment and
 precision specifiers such as `{x:<8}` or `{f:.2}`. Format the value first, for
-example with `fmt.pad_left`, `fmt.pad_right` or `fmt.to_hex` from `std.fmt`.
+example with string `.pad_left` and `.pad_right`, or `fmt.to_hex` from `std.fmt`.
 
 ### Structural rendering with `:?`
 
@@ -560,7 +560,7 @@ fn port(raw: Option<string>) -> Result<i64, string> {
     let .Some(text) = raw else {
         return .Err("port missing");
     };
-    let .Ok(value) = string.to_int(text) else {
+    let .Ok(value) = (text).to_int() else {
         return .Err("port is not a number");
     };
     .Ok(value)
@@ -3847,14 +3847,14 @@ fn main() {
 import std.string;
 fn main() {
     println(f"{42}");            // 42
-    let n = match string.to_int("42") {
+    let n = match ("42").to_int() {
         .Ok(v) => v,
         .Err(_) => 0,
     };
     println(f"n={n}");                        // 42
-    println(string.pad_left("7", 3, "0"));   // 007
+    println(("7").pad_left(3, '0'));   // 007
     println(["a", "b", "c"].join(", "));  // a, b, c
-    let c = string.count("abcabc", "abc");
+    let c = ("abcabc").count("abc");
     println(f"count={c}");                    // 2
 }
 ```
@@ -4176,9 +4176,9 @@ Use `?` to short-circuit a failure and propagate it; the enclosing fn declares i
 import std.string;
 fn main() {
     println(f"{42}");            // 42
-    println(string.to_int("100") handle _ { 0 });  // 100
+    println(("100").to_int() handle _ { 0 });  // 100
     println("*".repeat(3));          // ***
-    println(string.pad_left("7", 3, "0"));   // 007
+    println(("7").pad_left(3, '0'));   // 007
 }
 ```
 

@@ -18,7 +18,6 @@
 
 /// Structured JWT errors surfaced by the native C ABI.
 pub enum JwtError {
-    None;
     AlgorithmUnsupported;
     InvalidKey;
     TokenMalformed;
@@ -28,24 +27,25 @@ pub enum JwtError {
     ClaimsInvalid;
 }
 
-fn jwt_error_from_i32(code: i32) -> JwtError { // INTERNAL-ABI: C ABI error tag is i32 repr(C)
+fn jwt_error_from_i32(code: i32) -> Option<JwtError> { // INTERNAL-ABI: C ABI error tag is i32 repr(C)
     match code {
-        0 => JwtError.None,
-        1 => JwtError.AlgorithmUnsupported,
-        2 => JwtError.InvalidKey,
-        3 => JwtError.TokenMalformed,
-        4 => JwtError.SignatureInvalid,
-        5 => JwtError.ClaimsExpired,
-        6 => JwtError.AllocationFailure,
-        7 => JwtError.ClaimsInvalid,
-        _ => JwtError.TokenMalformed,
+        0 => .None,
+        1 => .Some(JwtError.AlgorithmUnsupported),
+        2 => .Some(JwtError.InvalidKey),
+        3 => .Some(JwtError.TokenMalformed),
+        4 => .Some(JwtError.SignatureInvalid),
+        5 => .Some(JwtError.ClaimsExpired),
+        6 => .Some(JwtError.AllocationFailure),
+        7 => .Some(JwtError.ClaimsInvalid),
+        _ => .Some(JwtError.TokenMalformed),
     }
 }
+
+impl Error for JwtError {}
 
 impl Display for JwtError {
     fn fmt(self) -> string {
         match self {
-            JwtError.None => "no error",
             JwtError.AlgorithmUnsupported => "JWT algorithm is not supported",
             JwtError.InvalidKey => "JWT key input is invalid",
             JwtError.TokenMalformed => "JWT payload or token is malformed",
@@ -69,7 +69,7 @@ fn algo_to_i32(algorithm: string) -> i32 { // INTERNAL-ABI: C ABI algorithm code
 }
 
 /// Return the last JWT error observed on this thread.
-pub fn last_error() -> JwtError {
+fn last_error() -> Option<JwtError> {
     jwt_error_from_i32(unsafe {
         hew_jwt_last_error_code()
     })
@@ -85,8 +85,8 @@ pub fn encode(payload: string, secret: string, algorithm: string) -> Result<stri
         hew_jwt_encode_hew(payload, secret, algo)
     };
     match last_error() {
-        JwtError.None => .Ok(token),
-        err => .Err(err),
+        .None => .Ok(token),
+        .Some(err) => .Err(err),
     }
 }
 
@@ -104,8 +104,8 @@ pub fn decode(token: string, secret: string, algorithm: string) -> Result<string
         hew_jwt_decode_hew(token, secret, algo)
     };
     match last_error() {
-        JwtError.None => .Ok(payload),
-        err => .Err(err),
+        .None => .Ok(payload),
+        .Some(err) => .Err(err),
     }
 }
 
@@ -121,8 +121,8 @@ pub fn decode_with_policy(token: string, secret: string, algorithm: string, issu
         hew_jwt_decode_with_policy_hew(token, secret, algo, issuer, audience)
     };
     match last_error() {
-        JwtError.None => .Ok(payload),
-        err => .Err(err),
+        .None => .Ok(payload),
+        .Some(err) => .Err(err),
     }
 }
 
@@ -141,13 +141,17 @@ pub fn decode_with_policy(token: string, secret: string, algorithm: string, issu
 ///         println(f"operation failed: {error}");
 ///         return;
 ///     };
-///     let payload = jwt.decode_insecure(token);
+///     let payload = jwt.decode_insecure(token).expect("encoded token");
 ///     println(payload);
 /// }
 /// ```
-pub fn decode_insecure(token: string) -> string {
-    unsafe {
+pub fn decode_insecure(token: string) -> string fails JwtError {
+    let payload = unsafe {
         hew_jwt_decode_insecure(token)
+    };
+    match last_error() {
+        .None => payload,
+        .Some(err) => return error err,
     }
 }
 

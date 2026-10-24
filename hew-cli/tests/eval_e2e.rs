@@ -3202,7 +3202,7 @@ fn repl_fragment_no_unused_lints_for_stdlib_chunk() {
         "import std.string;\n",
         "import std.iter;\n",
         "fn stdlib_demo() -> string {\n",
-        "    let s = string.pad_left(f\"{42}\", 2, \"0\");\n",
+        "    let s = f\"{42}\".pad_left(2, '0');\n",
         "    let opt = Option.Some(20).map(|v: i64| v + 22);\n",
         "    let v: Vec<string> = [\"a\", \"bb\"];\n",
         "    let mapped = iter.map(v.into_iter(), |x: string| f\"{x.len()}\");\n",

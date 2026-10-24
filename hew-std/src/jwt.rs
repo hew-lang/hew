@@ -513,8 +513,19 @@ pub unsafe extern "C" fn hew_jwt_decode_insecure(token: *const HewString) -> *mu
     };
 
     match decode_inner() {
-        Some(json) => string_from_str(&json),
-        None => std::ptr::null_mut(),
+        Some(json) => {
+            let result = string_from_str(&json);
+            set_last_jwt_error(if result.is_null() {
+                HewJwtError::AllocationFailure
+            } else {
+                HewJwtError::None
+            });
+            result
+        }
+        None => {
+            set_last_jwt_error(HewJwtError::TokenMalformed);
+            std::ptr::null_mut()
+        }
     }
 }
 

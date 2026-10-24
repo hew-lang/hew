@@ -1,7 +1,7 @@
-//! Number formatting and string padding utilities.
+//! Integer formatting utilities.
 //!
 //! Provides integer-to-string conversions for hexadecimal, binary, and octal
-//! bases, plus helpers for padding and repeating strings.
+//! bases.
 //!
 //! # Examples
 //!
@@ -12,11 +12,9 @@
 //!     println(fmt.to_hex(255));         // "ff"
 //!     println(fmt.to_binary(10));       // "1010"
 //!     println(fmt.to_octal(8));         // "10"
-//!     println(fmt.pad_left("7", 3, "0"));  // "007"
+//!     println("7".pad_left(3, '0'));  // "007"
 //! }
 //! ```
-
-import std.string;
 
 // ── Number-to-string conversions ─────────────────────────────────────
 /// Convert an integer to its lowercase hexadecimal string representation.
@@ -163,60 +161,4 @@ fn hex_digit(d: i64) -> string {
         15 => "f",
         _ => "?",
     }
-}
-
-// ── string padding and repetition ────────────────────────────────────
-/// Pad a string on the left to reach the given width.
-///
-/// If `s` is already at least `width` characters, returns `s` unchanged.
-/// Delegates to `string.pad_left` — prefer that form when importing `std.string`
-/// directly; `fmt.pad_left` is a convenience for code that already imports `fmt`.
-///
-/// # Examples
-///
-/// ```
-/// import std.fmt;
-///
-/// fn main() {
-///     println(fmt.pad_left("42", 5, " "));   // "   42"
-///     println(fmt.pad_left("42", 5, "0"));   // "00042"
-/// }
-/// ```
-pub fn pad_left(s: string, width: i64, fill: string) -> string {
-    string.pad_left(s, width, fill)
-}
-
-/// Pad a string on the right to reach the given width.
-///
-/// If `s` is already at least `width` characters, returns `s` unchanged.
-/// Delegates to `string.pad_right` — prefer that form when importing `std.string`
-/// directly; `fmt.pad_right` is a convenience for code that already imports `fmt`.
-///
-/// # Examples
-///
-/// ```
-/// import std.fmt;
-///
-/// fn main() {
-///     println(fmt.pad_right("hi", 5, "."));   // "hi..."
-/// }
-/// ```
-pub fn pad_right(s: string, width: i64, fill: string) -> string {
-    string.pad_right(s, width, fill)
-}
-
-/// Repeat a string `count` times.
-///
-/// # Examples
-///
-/// ```
-/// import std.fmt;
-///
-/// fn main() {
-///     println(fmt.repeat("ab", 3));   // "ababab"
-///     println(fmt.repeat("*", 5));   // "*****"
-/// }
-/// ```
-pub fn repeat(s: string, count: i64) -> string {
-    s.repeat(count)
 }

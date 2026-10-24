@@ -1,6 +1,6 @@
 //! Tests for std::fmt — base-conversion formatters and string padding helpers.
 //!
-//! `to_hex`, `to_binary`, `to_octal`, `pad_left`, `pad_right`, and `repeat`
+//! `to_hex`, `to_binary`, `to_octal`, and composition with string methods
 //! are all pure, allocation-only functions with no I/O or handles.
 
 import std.fmt;
@@ -99,76 +99,11 @@ fn test_base_conversions_at_16() {
     assert(fmt.to_octal(16) == "20");
 }
 
-// ── pad_left ──────────────────────────────────────────────────────────
-#[test]
-fn test_pad_left_adds_leading_zeros() {
-    assert(fmt.pad_left("7", 3, "0") == "007");
-    assert(fmt.pad_left("42", 5, "0") == "00042");
-}
-
-#[test]
-fn test_pad_left_already_at_width() {
-    assert(fmt.pad_left("hello", 5, "0") == "hello");
-}
-
-#[test]
-fn test_pad_left_wider_than_width() {
-    assert(fmt.pad_left("toolong", 3, "*") == "toolong");
-}
-
-#[test]
-fn test_pad_left_space_fill() {
-    assert(fmt.pad_left("x", 4, " ") == "   x");
-}
-
-#[test]
-fn test_pad_left_empty_string() {
-    assert(fmt.pad_left("", 3, "-") == "---");
-}
-
-// ── pad_right ─────────────────────────────────────────────────────────
-#[test]
-fn test_pad_right_adds_trailing_dots() {
-    assert(fmt.pad_right("hi", 5, ".") == "hi...");
-}
-
-#[test]
-fn test_pad_right_already_at_width() {
-    assert(fmt.pad_right("hello", 5, ".") == "hello");
-}
-
-#[test]
-fn test_pad_right_wider_than_width() {
-    assert(fmt.pad_right("toolong", 3, ".") == "toolong");
-}
-
-#[test]
-fn test_pad_right_empty_string() {
-    assert(fmt.pad_right("", 3, "x") == "xxx");
-}
-
-// ── repeat ────────────────────────────────────────────────────────────
-#[test]
-fn test_repeat_zero_times_returns_empty() {
-    assert(fmt.repeat("abc", 0) == "");
-}
-
-#[test]
-fn test_repeat_once_returns_original() {
-    assert(fmt.repeat("ab", 1) == "ab");
-}
-
-#[test]
-fn test_repeat_multiple_times() {
-    assert(fmt.repeat("ab", 3) == "ababab");
-    assert(fmt.repeat("*", 5) == "*****");
-}
-
 // ── combined usage: zero-pad hex with pad_left ────────────────────────
 #[test]
 fn test_zero_padded_hex_byte_representation() {
     // to_hex(10) = "a"; padded to 2 digits → "0a"
-    assert(fmt.pad_left(fmt.to_hex(10), 2, "0") == "0a");
+    assert((fmt.to_hex(10)).pad_left(2, '0') == "0a");
     // to_hex(255) = "ff"; already 2 digits
-    assert(fmt.pad_left(fmt.to_hex(255), 2, "0") == "ff");
+    assert((fmt.to_hex(255)).pad_left(2, '0') == "ff");
 }

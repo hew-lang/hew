@@ -477,7 +477,7 @@ fn contains(values: Vec<string>, wanted: string) -> bool {
 }
 
 fn valid_name(name: string) -> bool {
-    if name.is_empty() || !string.is_ascii(name) || name.starts_with("-") {
+    if name.is_empty() || !name.is_ascii() || name.starts_with("-") {
         return false;
     }
     for index in 0..name.len() {
@@ -496,7 +496,7 @@ fn next_value(argument: Argument, args: Vec<string>, index: i64) -> string fails
     };
     if raw.starts_with("-") && raw != "-" {
         if let .Integer(_) = argument.kind {
-            if string.to_int(raw).is_ok() {
+            if raw.to_int().is_ok() {
                 return raw;
             }
         }
@@ -511,7 +511,7 @@ fn checked_value(argument: Argument, raw: string) -> Value fails ParseError {
             return error .UnexpectedValue(argument.name);
         }
         .Text(_) => .Text(raw),
-        .Integer(_) => match string.to_int(raw) {
+        .Integer(_) => match raw.to_int() {
             .Ok(value) => .Integer(value),
             .Err(_) => {
                 return error .InvalidValue(argument.name, raw, "an integer");

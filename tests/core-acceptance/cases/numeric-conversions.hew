@@ -1,27 +1,25 @@
-import std.string;
-
 fn main() -> i64 {
     let n: i64 = -4200;
     let n_text = f"{n}";
     println(n_text);
-    match string.to_int(n_text) {
+    match n_text.to_int() {
         .Ok(back) => println(back == n),
         .Err(_) => println(false),
     }
     let f: f64 = 3.5;
     let f_text = f"{f}";
     println(f_text);
-    match string.to_float(f_text) {
+    match f_text.to_float() {
         .Ok(back) => println(back == f),
         .Err(_) => println(false),
     }
     let b: u8 = 250;
     println(f"{b}");
-    match string.to_int("not-a-number") {
+    match "not-a-number".to_int() {
         .Ok(_) => println("unexpected ok"),
         .Err(error) => println(f"{error}"),
     }
-    match string.to_float("not-a-number") {
+    match "not-a-number".to_float() {
         .Ok(_) => println("unexpected ok"),
         .Err(error) => println(f"{error}"),
     }

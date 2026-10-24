@@ -31,7 +31,7 @@ fn main() -> i64 {
     if host != "x.com" {
         return 4;
     }
-    let expr = cron.parse("* * * * *");
-    assert(expr.next(timestamp.from_unix_secs(0)) == timestamp.from_unix_secs(60));
+    let expr = cron.parse("* * * * *").expect("valid schedule");
+    assert(expr.next(timestamp.from_unix_secs(0)).expect("future occurrence") == timestamp.from_unix_secs(60));
     0
 }

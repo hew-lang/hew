@@ -2,8 +2,8 @@ import std.string;
 
 fn main() -> i64 {
     var failures: i64 = 0;
-    for i in 0 .. 50 {
-        match string.to_int("123456x") {
+    for i in 0..50 {
+        match "123456x".to_int() {
             .Ok(_) => {
                 return 93;
             }

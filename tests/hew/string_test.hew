@@ -91,123 +91,119 @@ fn test_from_char_rejects_i64_max_instead_of_narrowing() {
 
 #[test]
 fn test_to_int_parses_signed_decimal_strings() {
-    assert((string.to_int("12345") handle _ { -1 }) == 12345);
-    assert((string.to_int("-19") handle _ { 0 }) == -19);
-    assert((string.to_int("+8") handle _ { -1 }) == 8);
+    assert(("12345".to_int() handle _ { -1 }) == 12345);
+    assert(("-19".to_int() handle _ { 0 }) == -19);
+    assert(("+8".to_int() handle _ { -1 }) == 8);
 }
 
 #[test]
 fn test_to_int_parses_real_zero_as_ok() {
     // `Ok(0)` proves a genuine zero is distinguishable from a failed parse.
-    let z = string.to_int("0");
+    let z = "0".to_int();
     assert(z.is_ok());
     assert((z handle _ { -1 }) == 0);
 }
 
 #[test]
 fn test_to_int_returns_error_for_invalid_and_partial_inputs() {
-    assert(string.to_int("").is_err());
-    assert(string.to_int("+").is_err());
-    assert(string.to_int("42abc").is_err());
+    assert("".to_int().is_err());
+    assert("+".to_int().is_err());
+    assert("42abc".to_int().is_err());
 }
 
 #[test]
 fn test_to_int_accepts_i64_bounds() {
-    assert_int_result_eq(string.to_int("9223372036854775807"), 9223372036854775807);
-    assert_int_result_string_eq(string.to_int("-9223372036854775808"), "-9223372036854775808");
+    assert_int_result_eq("9223372036854775807".to_int(), 9223372036854775807);
+    assert_int_result_string_eq("-9223372036854775808".to_int(), "-9223372036854775808");
 }
 
 #[test]
 fn test_to_int_rejects_overflow() {
-    assert_int_result_err(string.to_int("9223372036854775808"), "integer literal outside the i64 range: `9223372036854775808`");
-    assert_int_result_err(string.to_int("-9223372036854775809"), "integer literal outside the i64 range: `-9223372036854775809`");
+    assert_int_result_err("9223372036854775808".to_int(), "integer literal outside the i64 range: `9223372036854775808`");
+    assert_int_result_err("-9223372036854775809".to_int(), "integer literal outside the i64 range: `-9223372036854775809`");
 }
 
 #[test]
 fn test_to_int_rejects_sign_only_and_partial_parse_inputs() {
-    assert_int_result_err(string.to_int("-"), "invalid number literal: `-`");
-    assert_int_result_err(string.to_int("12x"), "invalid number literal: `12x`");
+    assert_int_result_err("-".to_int(), "invalid number literal: `-`");
+    assert_int_result_err("12x".to_int(), "invalid number literal: `12x`");
 }
 
 #[test]
 fn test_to_float_parses_decimal_and_scientific_literals() {
-    assert_float_result_eq(string.to_float("3.125"), 3.125);
-    assert_float_result_eq(string.to_float("1.25e3"), 1250.0);
-    assert_float_result_eq(string.to_float("-2E-2"), -0.02);
+    assert_float_result_eq("3.125".to_float(), 3.125);
+    assert_float_result_eq("1.25e3".to_float(), 1250.0);
+    assert_float_result_eq("-2E-2".to_float(), -0.02);
 }
 
 #[test]
 fn test_to_float_accepts_leading_and_trailing_decimal_forms() {
-    assert_float_result_eq(string.to_float(".5"), 0.5);
-    assert_float_result_eq(string.to_float("1."), 1.0);
-    assert_float_result_eq(string.to_float("+.75"), 0.75);
+    assert_float_result_eq(".5".to_float(), 0.5);
+    assert_float_result_eq("1.".to_float(), 1.0);
+    assert_float_result_eq("+.75".to_float(), 0.75);
 }
 
 #[test]
 fn test_to_float_returns_error_for_invalid_literals() {
-    assert_float_result_err(string.to_float("4.5x"), "invalid number literal: `4.5x`");
-    assert_float_result_err(string.to_float("+"), "invalid number literal: `+`");
+    assert_float_result_err("4.5x".to_float(), "invalid number literal: `4.5x`");
+    assert_float_result_err("+".to_float(), "invalid number literal: `+`");
 }
 
 #[test]
 fn test_to_float_accepts_decimal_and_scientific_literals() {
-    assert_float_result_eq(string.to_float("0.5"), 0.5);
-    assert_float_result_eq(string.to_float("6e2"), 600.0);
-    assert_float_result_eq(string.to_float("7E-1"), 0.7);
+    assert_float_result_eq("0.5".to_float(), 0.5);
+    assert_float_result_eq("6e2".to_float(), 600.0);
+    assert_float_result_eq("7E-1".to_float(), 0.7);
 }
 
 #[test]
 fn test_try_to_float_round_trips_from_float_output() {
     let positive = f"{3.5}";
     let negative = f"{-0.25}";
-    assert_float_result_eq(string.to_float(positive), 3.5);
-    assert_float_result_eq(string.to_float(negative), -0.25);
+    assert_float_result_eq(positive.to_float(), 3.5);
+    assert_float_result_eq(negative.to_float(), -0.25);
 }
 
 #[test]
 fn test_to_float_rejects_invalid_literals() {
-    assert_float_result_err(string.to_float("1.2.3"), "invalid number literal: `1.2.3`");
-    assert_float_result_err(string.to_float("9e2ms"), "invalid number literal: `9e2ms`");
-    assert_float_result_err(string.to_float("-"), "invalid number literal: `-`");
+    assert_float_result_err("1.2.3".to_float(), "invalid number literal: `1.2.3`");
+    assert_float_result_err("9e2ms".to_float(), "invalid number literal: `9e2ms`");
+    assert_float_result_err("-".to_float(), "invalid number literal: `-`");
 }
 
 #[test]
 fn test_pad_left_adds_padding_until_width() {
-    assert(string.pad_left("7", 3, "0") == "007");
-    assert(string.pad_left("hello", 3, "0") == "hello");
+    assert("7".pad_left(3, '0') == "007");
+    assert("hello".pad_left(3, '0') == "hello");
 }
 
 #[test]
 fn test_pad_right_adds_padding_until_width() {
-    assert(string.pad_right("7", 3, "0") == "700");
-    assert(string.pad_right("hello", 3, "0") == "hello");
+    assert("7".pad_right(3, '0') == "700");
+    assert("hello".pad_right(3, '0') == "hello");
 }
 
 #[test]
 fn test_padding_counts_unicode_characters_not_utf8_bytes() {
-    assert(string.pad_left("é", 3, "0") == "00é");
-    assert(string.pad_right("é", 3, "0") == "é00");
-}
-
-#[test]
-#[should_panic]
-fn test_padding_rejects_multi_character_pad() {
-    string.pad_left("x", 3, "ab");
+    assert("é".pad_left(3, '0') == "00é");
+    assert("é".pad_right(3, '0') == "é00");
+    assert("hi".pad_left(4, '雪') == "雪雪hi");
+    assert("".pad_right(2, '雪') == "雪雪");
 }
 
 #[test]
 fn test_is_numeric_requires_only_ascii_digits() {
-    assert(string.is_numeric("012345"));
-    assert(!string.is_numeric("12a3"));
-    assert(!string.is_numeric(""));
-    assert(!string.is_numeric("-12"));
+    assert("012345".is_numeric());
+    assert(!"12a3".is_numeric());
+    assert(!"".is_numeric());
+    assert(!"-12".is_numeric());
 }
 
 #[test]
 fn test_count_counts_non_overlapping_occurrences() {
-    assert(string.count("aaaa", "aa") == 2);
-    assert(string.count("banana", "na") == 2);
-    assert(string.count("hello", "") == 0);
+    assert("aaaa".count("aa") == 2);
+    assert("banana".count("na") == 2);
+    assert("hello".count("") == 0);
 }
 
 #[test]
@@ -276,24 +272,24 @@ fn test_join_inserts_separator_between_elements() {
 #[test]
 fn test_is_ascii_accepts_del_127_and_below() {
     // Empty string and pure-ASCII strings are accepted.
-    assert(string.is_ascii(""));
-    assert(string.is_ascii("hello"));
+    assert("".is_ascii());
+    assert("hello".is_ascii());
     // NUL (0) is within the ASCII range.
-    assert(string.is_ascii(f"{(0).try_to_char().expect("valid Unicode scalar")}"));
+    assert((f"{(0).try_to_char().expect("valid Unicode scalar")}").is_ascii());
     // Tilde (126) is the last printable ASCII character.
-    assert(string.is_ascii(f"{(126).try_to_char().expect("valid Unicode scalar")}"));
+    assert((f"{(126).try_to_char().expect("valid Unicode scalar")}").is_ascii());
     // DEL (127) is the last 7-bit ASCII codepoint; must be accepted.
     // Before PR #2081 the condition was `ch > 126`, which wrongly rejected
     // DEL.  This assertion locks that fix in place.
-    assert(string.is_ascii(f"{(127).try_to_char().expect("valid Unicode scalar")}"));
+    assert((f"{(127).try_to_char().expect("valid Unicode scalar")}").is_ascii());
 }
 
 #[test]
 fn test_is_ascii_rejects_128_and_above() {
     // 128 (0x80) is the first codepoint outside the 7-bit ASCII range.
-    assert(!string.is_ascii(f"{(128).try_to_char().expect("valid Unicode scalar")}"));
+    assert(!(f"{(128).try_to_char().expect("valid Unicode scalar")}").is_ascii());
     // A string containing a non-ASCII multibyte sequence is also rejected.
-    assert(!string.is_ascii("héllo"));
+    assert(!"héllo".is_ascii());
 }
 
 // ── from_char multi-byte round-trip (regression lock for A195 fix) ───────────

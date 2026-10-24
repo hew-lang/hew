@@ -351,7 +351,7 @@ fn parse_status_code(status_line: string) -> i64 {
         return -1;
     }
     let code_str = parts[1];
-    if !string.is_numeric(code_str) {
+    if !code_str.is_numeric() {
         return -1;
     }
     if code_str.len() != 3 {
@@ -360,7 +360,7 @@ fn parse_status_code(status_line: string) -> i64 {
     // Guarded by is_numeric + len == 3 above: the parse cannot fail; a
     // defensive None maps to the transport-failure convention (-1) via the
     // range gate below.
-    let code = string.to_int(code_str) handle _ { -1 };
+    let code = code_str.to_int() handle _ { -1 };
     if code < 100 || code > 599 {
         return -1;
     }
@@ -433,10 +433,10 @@ fn declared_content_length(header_section: string) -> i64 {
     if (value).is_empty() {
         return 0;
     }
-    if !string.is_numeric(value) {
+    if !value.is_numeric() {
         return 0;
     }
-    match string.to_int(value) {
+    match value.to_int() {
         .Ok(n) => n,
         .Err(_) => CLIENT_MAX_BODY_BYTES + 1,
     }

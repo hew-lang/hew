@@ -3010,11 +3010,12 @@ fn add_prelude_std_modules(
 /// compiled into the host. A build resolves each through the std search path
 /// instead ([`resolve_prelude_std_source`]); only an analysis with no search
 /// path uses this text.
-const COMPILED_PRELUDE_STD_SOURCES: [(&str, &str); 4] = [
+const COMPILED_PRELUDE_STD_SOURCES: [(&str, &str); 5] = [
     ("builtins", include_str!("../../std/builtins.hew")),
     ("option", include_str!("../../std/option.hew")),
     ("result", include_str!("../../std/result.hew")),
     ("iter", include_str!("../../std/iter.hew")),
+    ("string", include_str!("../../std/string.hew")),
 ];
 
 /// Resolve the prelude source `std/<name>.hew` from the standard-library
@@ -7883,7 +7884,7 @@ extern "C" { fn hew_tcp_read(foo: Foo); }
             "link_monitor.hew",
             "// prelude module marker\n",
         );
-        for prelude in ["option.hew", "result.hew", "iter.hew"] {
+        for prelude in ["option.hew", "result.hew", "iter.hew", "string.hew"] {
             write_source(&stdlib_dir, prelude, "// prelude impl marker\n");
         }
         let expected = Path::new(&write_source(

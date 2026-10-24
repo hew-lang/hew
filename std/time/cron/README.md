@@ -1,8 +1,8 @@
 # std.time.cron
 
 Cron expressions are ordinary Hew values with automatic value cleanup.
-`parse` panics on malformed input; `try_parse` returns a checked error.
-`expr.next(after)` and `expr.try_next(after)` use typed timestamps and find a
+`parse` returns a checked error for malformed input.
+`expr.next(after)` returns a checked result and uses typed timestamps to find a
 whole-second occurrence strictly after `after`.
 
 ```hew
@@ -10,8 +10,8 @@ import std.time.cron;
 import std.time.datetime;
 
 fn main() {
-    let schedule = cron.try_parse("0 9 * * Mon-Fri").expect("valid schedule");
-    let next = schedule.try_next(timestamp.now()).expect("future occurrence");
+    let schedule = cron.parse("0 9 * * Mon-Fri").expect("valid schedule");
+    let next = schedule.next(timestamp.now()).expect("future occurrence");
     println(datetime.to_iso8601(next).expect("calendar range"));
 }
 ```

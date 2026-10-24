@@ -180,7 +180,7 @@ impl<T> RouteMatch<T> {
     /// Read a signed decimal integer, rejecting invalid text and overflow.
     fn param_i64(self, name: string) -> i64 fails ExtractError {
         let text = self.param(name)?;
-        match string.to_int(text) {
+        match text.to_int() {
             .Ok(value) => value,
             .Err(error) => return error .Number(name, error),
         }

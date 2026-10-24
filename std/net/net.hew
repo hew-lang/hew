@@ -226,7 +226,7 @@ fn try_endpoint_port(context: string, addr: string, text: string) -> Result<i64,
     if text == "" {
         return .Err(endpoint_reject(context, addr, "empty port"));
     }
-    match string.to_int(text) {
+    match text.to_int() {
         .Ok(port) => port_arg(context, port),
         .Err(_) => .Err(endpoint_reject(context, addr, f"port '{text}' is not a number")),
     }

@@ -8656,7 +8656,7 @@ fn port(config: HashMap<string, string>) -> Result<i64, string> {
     let .Some(raw) = config.get("port") else {
         return .Err("port missing");
     };
-    let .Ok(port) = string.to_int(raw) else {
+    let .Ok(port) = (raw).to_int() else {
         return .Err(f"port is not a number: {raw}");
     };
     .Ok(port)

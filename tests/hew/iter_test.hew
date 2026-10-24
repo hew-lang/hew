@@ -175,20 +175,20 @@ fn test_all_f64_false_when_one_fails() {
     assert(!iter.all(v.into_iter(), |x: f64| x > 0.0));
 }
 
-// ── sum / sum_f64 ──────────────────────────────────────────────────────────
+// ── Generic numeric sum ──────────────────────────────────────────────────────────
 #[test]
 fn test_sum_f64_three_elements() {
     var v: Vec<f64> = Vec.new();
     v.push(1.0);
     v.push(2.5);
     v.push(3.0);
-    assert(iter.sum_f64(v.into_iter()) == 6.5);
+    assert(iter.sum(v.into_iter()) == 6.5);
 }
 
 #[test]
 fn test_sum_f64_empty_vec_returns_zero() {
     let v: Vec<f64> = Vec.new();
-    assert(iter.sum_f64(v.into_iter()) == 0.0);
+    assert(iter.sum(v.into_iter()) == 0.0);
 }
 
 // ── take ───────────────────────────────────────────────────────────────────
@@ -335,7 +335,7 @@ fn test_count_of_filter_f64_positives() {
     assert(matched == 2);
 }
 
-// ── product / product_f64 ─────────────────────────────────────────────────
+// ── Generic numeric product ─────────────────────────────────────────────────
 #[test]
 fn test_product_three_elements() {
     var v: Vec<i64> = Vec.new();
@@ -357,13 +357,13 @@ fn test_product_f64_three_elements() {
     v.push(2.0);
     v.push(0.5);
     v.push(4.0);
-    assert(iter.product_f64(v.into_iter()) == 4.0);
+    assert(iter.product(v.into_iter()) == 4.0);
 }
 
 #[test]
 fn test_product_f64_empty_vec_returns_one() {
     let v: Vec<f64> = Vec.new();
-    assert(iter.product_f64(v.into_iter()) == 1.0);
+    assert(iter.product(v.into_iter()) == 1.0);
 }
 
 // ── VecIter fluent surface ────────────────────────────────────────────────
@@ -573,7 +573,7 @@ fn test_fully_fluent_chain_across_statements() {
 #[test]
 fn test_fully_fluent_skip_take_map_chain() {
     var values: Vec<i64> = Vec.new();
-    for i in 0 .. 10 {
+    for i in 0..10 {
         values.push(i);
     }
     // Negative control: indices 0-1 (skipped) and 5-9 (past take(3)) must not

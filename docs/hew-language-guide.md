@@ -4233,7 +4233,7 @@ fn main() {
 }
 ```
 
-`std.iter` builds lazy adapters (`map`, `filter`, `take`, `skip`) over any `Iterator`; terminal helpers (`fold`, `count`, `collect`, `any`, `all`, `sum`, `sum_f64`, `product`, `product_f64`) drive an adapter chain to completion. Drive a `Vec<T>` through the lazy surface via `v.iter()` (clones elements out, `v` stays live) or `v.into_iter()` (accepts ownership, copying an ordinary `v` if it is reused).
+`std.iter` builds lazy adapters (`map`, `filter`, `take`, `skip`) over any `Iterator`; terminal helpers (`fold`, `count`, `collect`, `any`, `all`, `sum`, `product`) drive an adapter chain to completion. Drive a `Vec<T>` through the lazy surface via `v.iter()` (clones elements out, `v` stays live) or `v.into_iter()` (accepts ownership, copying an ordinary `v` if it is reused).
 
 `v.iter()` creates an independent snapshot, while `v.into_iter()` owns the
 supplied vector. `VecIter` keeps untaken elements in order and releases that

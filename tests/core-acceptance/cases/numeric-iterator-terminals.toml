@@ -1,0 +1,10 @@
+[[case]]
+id = "numeric-iterator-terminals"
+intent = "Generic sum and product preserve narrow, wide unsigned and floating-point item types, empty identities and lazy adapter composition."
+source = "cases/numeric-iterator-terminals.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 20
+
+[case.expected]
+stdout = "numeric iterators ok\n"
+exit = 0

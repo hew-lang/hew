@@ -36,7 +36,7 @@
 //! | `Skip<I,A>`   | `skip(it, n)`        | inner's `Item` (`A`)           |
 //!
 //! Terminal helpers (`fold`, `count`, `collect`, `any`, `all`, `sum`,
-//! `sum_f64`, `product`, `product_f64`) consume any `Iterator`. Callers
+//! `product`) consume any `Iterator`. Callers
 //! drive a `Vec<T>` through the lazy surface via `Vec.into_iter()`, e.g.
 //! `iter.collect(iter.map(v.into_iter(), f))`.
 
@@ -658,24 +658,16 @@ impl<I, A> Enumerate<I, A> where I: Iterator<Item = A> {
     }
 }
 
-/// Return the sum of every `i64` item produced by `it`.
-pub fn sum<I>(consume it: I) -> i64 where I: Iterator<Item = i64> {
-    fold(it, 0, |acc: i64, x: i64| acc + x)
+/// Return the sum of every numeric item produced by `it`.
+/// Returns zero in the iterator's item type when it is empty.
+pub fn sum<I, T: Num>(consume it: I) -> T where I: Iterator<Item = T> {
+    let zero: T = 0;
+    fold(it, zero, |acc: T, x: T| acc + x)
 }
 
-/// Return the sum of every `f64` item produced by `it`.
-pub fn sum_f64<I>(consume it: I) -> f64 where I: Iterator<Item = f64> {
-    fold(it, 0.0, |acc: f64, x: f64| acc + x)
-}
-
-/// Return the product of every `i64` item produced by `it`. Returns `1`
-/// for an empty iterator (the multiplicative identity).
-pub fn product<I>(consume it: I) -> i64 where I: Iterator<Item = i64> {
-    fold(it, 1, |acc: i64, x: i64| acc * x)
-}
-
-/// Return the product of every `f64` item produced by `it`. Returns `1.0`
-/// for an empty iterator (the multiplicative identity).
-pub fn product_f64<I>(consume it: I) -> f64 where I: Iterator<Item = f64> {
-    fold(it, 1.0, |acc: f64, x: f64| acc * x)
+/// Return the product of every numeric item produced by `it`.
+/// Returns one in the iterator's item type when it is empty.
+pub fn product<I, T: Num>(consume it: I) -> T where I: Iterator<Item = T> {
+    let one: T = 1;
+    fold(it, one, |acc: T, x: T| acc * x)
 }

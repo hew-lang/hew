@@ -1,0 +1,25 @@
+import std.iter;
+
+fn main() {
+    let small: Vec<u8> = [2, 3, 4];
+    let total: u8 = iter.sum(small.iter());
+    let product: u8 = iter.product(small.into_iter());
+    assert(total == 9 && product == 24);
+    let signed: Vec<i16> = [-2, 3];
+    let sum: i16 = iter.sum(signed.iter());
+    let multiplied: i16 = iter.product(signed.into_iter());
+    assert(sum == 1 && multiplied == -6);
+    let wide: Vec<u64> = [9223372036854775808, 1];
+    let wide_sum: u64 = iter.sum(wide.into_iter());
+    assert(wide_sum == 9223372036854775809);
+    let fractions = [1.5, 2.0];
+    assert(iter.sum(fractions.iter()) == 3.5);
+    assert(iter.product(fractions.into_iter()) == 3.0);
+    let empty: Vec<u32> = Vec.new();
+    let zero: u32 = iter.sum(empty.iter());
+    let one: u32 = iter.product(empty.into_iter());
+    assert(zero == 0 && one == 1);
+    let mapped = [1, 2, 3].into_iter().map(|n: i64| n as f64).filter(|n: f64| n > 1.0);
+    assert(iter.sum(mapped) == 5.0);
+    println("numeric iterators ok");
+}

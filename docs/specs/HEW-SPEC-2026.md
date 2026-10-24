@@ -4669,7 +4669,7 @@ Important current details:
   `Hash`, and `Eq` requirements
 - `std.iter` exposes lazy adapters (`map`, `filter`, `take`, `skip`) over
   any `Iterator`, driven by terminal helpers (`fold`, `count`, `collect`,
-  `any`, `all`, `sum`, `sum_f64`, `product`, `product_f64`); drive a
+  `any`, `all`, `sum`, `product`); drive a
   `Vec<T>` through it via `.iter()` or `.into_iter()`. These adapters and
   terminal helpers consume the iterator: constructors store it, and terminal
   operations finish or release it. Ordinary iterator values copy when reused;

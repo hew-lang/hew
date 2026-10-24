@@ -1232,7 +1232,7 @@ pub fn add(a: i32, b: i32) -> i32 {
         assert!(html.contains("Variants"));
         assert!(html.contains("First variant."));
         assert!(html.contains("Second variant with payload."));
-        assert!(html.contains("B"));
+        assert!(html.contains('B'));
         assert!(html.contains("i64"));
     }
 

@@ -1119,11 +1119,11 @@ package const PKG_C: i32 = 1;
 
     #[test]
     fn extracts_documented_inherent_methods() {
-        let source = r#"impl<T> Option<T> {
+        let source = r"impl<T> Option<T> {
     /// Return the contained value.
     pub fn expect(consume self, reason: string) -> T { panic(reason) }
 }
-"#;
+";
         let result = hew_parser::parse(source);
         assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
         let module = extract_docs(&result.program, "test");

@@ -141,8 +141,10 @@ url = "https://example.com"
 
     #[test]
     fn expands_an_explicit_site_version() {
-        let mut config = DocSiteConfig::default();
-        config.display_version = "1.2.3".to_string();
+        let config = DocSiteConfig {
+            display_version: "1.2.3".to_string(),
+            ..DocSiteConfig::default()
+        };
         assert_eq!(config.expand_version("Hew {version}"), "Hew 1.2.3");
     }
 }

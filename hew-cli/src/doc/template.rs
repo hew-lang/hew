@@ -362,17 +362,6 @@ if (outline && outlineList && headings.length > 1) {
 }
 ";
 
-/// Wrap HTML body content in a full page with the documentation stylesheet.
-#[must_use]
-pub fn wrap_page(
-    config: &DocSiteConfig,
-    title: &str,
-    body: &str,
-    breadcrumb: Option<&str>,
-) -> String {
-    wrap_page_with_sidebar(config, title, body, breadcrumb, "")
-}
-
 /// Wrap HTML body content with the full documentation shell and sidebar.
 #[must_use]
 pub fn wrap_page_with_sidebar(
@@ -551,7 +540,7 @@ mod tests {
     #[test]
     fn wrap_page_contains_title() {
         let config = DocSiteConfig::default();
-        let html = wrap_page(&config, "TestMod", "<p>hello</p>", None);
+        let html = wrap_page_with_sidebar(&config, "TestMod", "<p>hello</p>", None, "");
         assert!(html.contains("<title>TestMod — Documentation</title>"));
         assert!(html.contains("<main id=\"main-content\">"));
         assert!(html.contains("<p>hello</p>"));
@@ -563,7 +552,8 @@ mod tests {
     fn child_page_does_not_mark_reference_as_current() {
         let config = DocSiteConfig::default();
         let breadcrumb = "<a href=\"index.html\">Index</a><a aria-current=\"page\">std.example</a>";
-        let html = wrap_page(&config, "std.example", "<p>hello</p>", Some(breadcrumb));
+        let html =
+            wrap_page_with_sidebar(&config, "std.example", "<p>hello</p>", Some(breadcrumb), "");
         assert!(html.contains("<a href=\"index.html\">Reference</a>"));
         assert!(!html.contains("href=\"index.html\" aria-current=\"page\">Reference"));
         assert!(html.contains("<a aria-current=\"page\">std.example</a>"));
@@ -580,7 +570,7 @@ mod tests {
             }],
             ..DocSiteConfig::default()
         };
-        let html = wrap_page(&config, "Index", "", None);
+        let html = wrap_page_with_sidebar(&config, "Index", "", None, "");
         assert!(html.contains("<title>Index — Example API</title>"));
         assert!(html.contains("https://example.com"));
         assert!(!html.contains("hew.sh"));

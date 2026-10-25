@@ -682,7 +682,7 @@ impl ChannelCore {
     /// Close admission, then await the one unpublished sender without holding
     /// the queue lock across provider abort, cleanup or scheduler notification.
     pub(crate) fn prepare_typed_close(&self, waker: Option<OwnedWaker>) -> bool {
-        let (ready, writers) = {
+        let (ready, writers, actor_stream_cancellation) = {
             let mut inner = self.locked();
             inner.stream_closed = true;
             let state = inner.typed.as_mut().expect("typed Pipe close");
@@ -692,8 +692,15 @@ impl ChannelCore {
                     state.transfer_wakes.push(waker);
                 }
             }
-            (ready, std::mem::take(&mut inner.native_producers))
+            (
+                ready,
+                std::mem::take(&mut inner.native_producers),
+                inner.actor_stream_cancellation.take(),
+            )
         };
+        if let Some(cancellation) = actor_stream_cancellation {
+            cancellation.close_reader();
+        }
         Self::wake_native(writers);
         self.cv.notify_all();
         ready

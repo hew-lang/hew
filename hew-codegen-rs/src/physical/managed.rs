@@ -3,7 +3,7 @@
 use super::*;
 use hew_cabi::value::HewTypeOwnershipKind;
 use hew_mir::physical::StorageOrigin;
-use hew_sir::{ManagedProviderKind as Provider, ManagedStorageShape as Shape};
+use hew_mir::physical::{ManagedProviderKind as Provider, ManagedStorageShape as Shape};
 
 #[expect(
     clippy::too_many_arguments,
@@ -16,7 +16,7 @@ pub(super) fn bind_frame_roots<'ctx>(
     frame: &coro::Frame<'ctx>,
     slots: &[PointerValue<'ctx>],
     flags: &BTreeMap<StorageId, PointerValue<'ctx>>,
-    scopes: &BTreeMap<hew_sir::TaskScopeId, PointerValue<'ctx>>,
+    scopes: &BTreeMap<hew_mir::physical::TaskScopeId, PointerValue<'ctx>>,
 ) -> CodegenResult<()> {
     let pointer = module.ctx.ptr_type(AddressSpace::default());
     let size_ty = module

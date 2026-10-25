@@ -881,6 +881,7 @@ pub(crate) fn terminator_successors(
                     && !matches!(
                         slot.origin,
                         StorageOrigin::Capture { .. }
+                            | StorageOrigin::Session { .. }
                             | StorageOrigin::ActorState {
                                 initialized: true,
                                 ..

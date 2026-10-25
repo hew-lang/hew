@@ -16,6 +16,7 @@ mod coverage;
 mod host_admission;
 pub use coverage::{SourceCoverageCounter, SourceCoverageMap};
 mod host;
+pub mod live;
 mod source_paths;
 pub use source_paths::{
     display_source_path, register_source_path, source_path_policy, SourcePathPolicy,
@@ -60,6 +61,8 @@ fn require_host_typecheck(options: &FrontendOptions) -> Result<(), FrontendFailu
               per-flag matches at every read site"
 )]
 pub struct FrontendOptions {
+    /// Compiler-owned retained types for an interactive submission.
+    pub session_type_seed: Option<Arc<hew_types::session::SessionTypeSeed>>,
     pub no_typecheck: bool,
     pub enable_wasm_target: bool,
     pub pkg_path: Option<PathBuf>,
@@ -2059,6 +2062,9 @@ fn typecheck_program_with_dependency_cache(
     }
 
     let mut checker = hew_types::Checker::new(module_registry);
+    if let Some(seed) = &options.session_type_seed {
+        checker.set_session_type_seed(seed.clone());
+    }
     checker.set_input_provider(Arc::new(compile_time::Inputs::new(
         input,
         options.documents.clone(),

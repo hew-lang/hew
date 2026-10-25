@@ -7,10 +7,11 @@
 
 pub use hew_sir::{
     ActorId, ActorIngressAdapter, ActorOperation, CallableInstance, CallableTargets,
-    LifecycleTarget, LocalObservationKind, SemActor, SemActorCoalesce, SemActorField,
-    SemActorHandler, SemActorOverflow, SemCoalesceFallback, SemCoalesceKey, SemFailureDisplay,
-    SemRestartPolicy, SemRestartStrategy, SemStopDeadline, SemSupervisedRole, SemSupervisor,
-    SemVariantKind, SupervisorId, TaskScopeJoinMode, TaskSelectionOrder,
+    LifecycleTarget, LocalObservationKind, ManagedProviderKind, ManagedStorageShape, SemActor,
+    SemActorCoalesce, SemActorField, SemActorHandler, SemActorOverflow, SemCoalesceFallback,
+    SemCoalesceKey, SemFailureDisplay, SemRestartPolicy, SemRestartStrategy, SemStopDeadline,
+    SemSupervisedRole, SemSupervisor, SemVariantKind, SupervisorId, TaskScopeId, TaskScopeJoinMode,
+    TaskSelectionOrder,
 };
 use hew_types::runtime_call::{sequence_element_type, ArrayValueOp};
 

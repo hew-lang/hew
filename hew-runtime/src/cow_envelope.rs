@@ -46,6 +46,9 @@ pub struct HewMsgEnvelope {
     pub(crate) ingress_drop: Option<IngressDrop>,
     /// The same immutable request state retained by its optional reply owner.
     pub(crate) request: Option<std::sync::Arc<crate::request_state::RequestState>>,
+    /// Canonical typed wrapper metadata, when supplied by a checked producer.
+    pub(crate) layout: *const hew_cabi::value::HewValueLayout,
+    code: Option<crate::code_owner::CodeRoot>,
 }
 
 impl std::fmt::Debug for HewMsgEnvelope {
@@ -101,8 +104,45 @@ pub unsafe fn new(
         ptr::write(&raw mut (*env).timer, None);
         (*env).ingress_drop = None;
         ptr::write(&raw mut (*env).request, None);
+        (*env).layout = ptr::null();
+        ptr::write(&raw mut (*env).code, None);
     }
     env
+}
+
+/// Attach the checked producer's canonical metadata before publication.
+/// # Safety
+/// The envelope is unpublished and the layout remains live through acquisition.
+pub(crate) unsafe fn set_layout(
+    env: *mut HewMsgEnvelope,
+    layout: *const hew_cabi::value::HewValueLayout,
+) {
+    // SAFETY: the fresh envelope is uniquely owned; null denotes a static foreign producer.
+    unsafe {
+        if let Some(layout_ref) = layout.as_ref() {
+            assert_eq!((*env).payload_size, layout_ref.size);
+            assert!((*env).layout.is_null());
+            (*env).code = Some(crate::code_owner::CodeRoot::acquire(layout_ref.code_owner));
+            (*env).layout = layout;
+            (*env).release_start = layout_ref.release_start;
+        }
+    }
+}
+
+/// Transfer code ownership with detached cleanup, after all generated callbacks.
+unsafe fn transfer_code(
+    env: *mut HewMsgEnvelope,
+    cursor: *mut crate::release_walker::HewReleaseCursor,
+) {
+    // SAFETY: the unique envelope transfers its root to its fresh consuming cursor.
+    unsafe {
+        if let Some(code) = (*env).code.take() {
+            crate::release_walker::HewReleaseCursor::after(
+                cursor,
+                crate::release_walker::ReleaseItem::CodeRoot(code),
+            );
+        }
+    }
 }
 
 /// Free envelope storage after its payload and timer owners have been settled.
@@ -152,6 +192,7 @@ pub unsafe fn release(env: *mut HewMsgEnvelope) {
                     start,
                     true,
                 );
+                transfer_code(env, cursor);
                 if !(*env).release_reply.is_null() {
                     unsafe fn retire_reply(reply: *mut c_void) {
                         // SAFETY: the cursor owns the queued sender reference.
@@ -194,9 +235,13 @@ pub unsafe fn release(env: *mut HewMsgEnvelope) {
             if let Some(drop) = (*env).ingress_drop.take() {
                 (drop.callback)(drop.message, (*env).payload, (*env).payload_size);
             }
-            if let Some(drop_fn) = (*env).drop_glue {
-                if !(*env).payload.is_null() {
-                    drop_fn((*env).payload);
+            if !(*env).payload.is_null() {
+                if let Some(layout) = (*env).layout.as_ref() {
+                    if let Some(drop) = layout.drop_fn {
+                        drop((*env).payload);
+                    }
+                } else if let Some(drop) = (*env).drop_glue {
+                    drop((*env).payload);
                 }
             }
             if !(*env).payload.is_null() {
@@ -235,6 +280,7 @@ pub(crate) unsafe fn release_cursor(
                 start,
                 true,
             );
+            transfer_code(env, cursor);
             free_allocation(env);
             cursor
         } else {

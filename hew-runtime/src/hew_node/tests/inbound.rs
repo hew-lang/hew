@@ -947,6 +947,8 @@ fn service_revocation_refuses_an_already_queued_dispatch_claim() {
             crate::actor_caller::HewCallerStamp::peer(peer_id.into()),
             ptr::null(),
             Some(admission),
+            core::ptr::null(),
+            core::ptr::null(),
         )
     };
     drop(export);
@@ -1068,6 +1070,8 @@ fn mailbox_admission_precedes_dispatch_and_preserves_queued_authority() {
                     crate::actor_caller::HewCallerStamp::peer(peer_id.into()),
                     ptr::null(),
                     Some(admission),
+                    core::ptr::null(),
+                    core::ptr::null(),
                 )
             };
             // SAFETY: admission is ready while no actor worker has claimed the message.

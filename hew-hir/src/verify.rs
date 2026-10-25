@@ -1334,6 +1334,7 @@ mod tests {
 
     fn module(items: Vec<HirItem>) -> HirModule {
         HirModule {
+            session_entry: None,
             source_origins: Arc::default(),
             checked_sites: HashMap::new(),
             indexed_place_operations: HashMap::new(),

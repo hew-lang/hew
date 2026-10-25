@@ -2121,6 +2121,7 @@ fn settle_after_activation(actor: *mut HewActor, msgs_processed: u32) {
 /// authority to discard the last runnable entry.
 pub(crate) struct ActivationOwnership<'a> {
     pub(crate) actor: &'a HewActor,
+    pub(crate) _code: Option<crate::code_owner::CodeRoot>,
 }
 impl<'a> ActivationOwnership<'a> {
     /// Mark the activation owned. Call BEFORE the `Runnable -> Running` CAS so
@@ -2130,7 +2131,13 @@ impl<'a> ActivationOwnership<'a> {
             .dispatch_active
             .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
             .ok()
-            .map(|_| Self { actor })
+            .map(|_| Self {
+                actor,
+                _code: actor
+                    .native_completion
+                    .as_ref()
+                    .and_then(|completion| completion.cleanup.code.clone()),
+            })
     }
 
     /// Transfer a popped `Runnable` queue entry to exclusive activation

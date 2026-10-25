@@ -1175,6 +1175,16 @@ pub(crate) fn lower_function(
                 OwnKind::of_ty(&place.ty, &module.type_facts).map_err(PhysicalError::new)?
             },
             origin: match place.origin {
+                hew_sir::PlaceOrigin::Session {
+                    context,
+                    slot,
+                    initialized,
+                } => StorageOrigin::Session {
+                    context: lowerer.value(context)?,
+                    slot,
+                    initialized,
+                    recipe: Box::new(physical_value_recipe(module, glue_ids, &place.ty)?),
+                },
                 hew_sir::PlaceOrigin::ActorState {
                     state,
                     field,
@@ -1377,6 +1387,9 @@ pub(crate) fn function_attribution(
     let mut locals = BTreeMap::new();
     for entry in storage {
         let binding = match entry.origin {
+            StorageOrigin::Session { slot, .. } => function.places.iter()
+                .find(|place| matches!(place.origin, hew_sir::PlaceOrigin::Session { slot: candidate, .. } if candidate == slot))
+                .and_then(|place| function.binding_rooting(place.id)),
             StorageOrigin::Local(place) | StorageOrigin::Aggregate(place) => {
                 function.binding_rooting(place)
             }

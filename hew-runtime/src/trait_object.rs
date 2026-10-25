@@ -414,6 +414,23 @@ pub unsafe extern "C" fn hew_dyn_box_free(ptr: *mut u8, size: usize, align: usiz
     unsafe { alloc::dealloc(ptr, layout) };
 }
 
+/// Release an already-consumed erased box and its defining-code owner.
+/// # Safety
+/// `data` is an allocation from `hew_dyn_box_alloc` whose concrete value has
+/// been consumed. `vtable` is its exact table and carries one code root.
+#[no_mangle]
+pub unsafe extern "C" fn hew_dyn_box_release(data: *mut u8, vtable: *const HewVtable) {
+    // SAFETY: the caller retains the table through the transferred carrier root.
+    let table = unsafe { &*vtable };
+    // SAFETY: generated descriptors are valid, or null for static foreign tables.
+    let _code = unsafe { table.value_layout.as_ref() }.map(|layout| {
+        // SAFETY: the consumed carrier transfers exactly one descriptor root.
+        unsafe { crate::code_owner::CodeRoot::take(layout.code_owner) }
+    });
+    // SAFETY: the table carries this exact allocation's geometry.
+    unsafe { hew_dyn_box_free(data, table.size_of, table.align_of) };
+}
+
 /// Consume a trait object's concrete value using its authoritative descriptor.
 /// # Safety
 /// `slot` is null or a unique live carrier. `free_storage` is one for heap
@@ -436,6 +453,13 @@ pub unsafe extern "C" fn hew_trait_object_release_begin(
         if !value.data.is_null() {
             // SAFETY: a live data pointer retains its exact immutable vtable.
             let table = unsafe { &*value.vtable };
+            // SAFETY: the unique carrier transfers its defining-code root.
+            if let Some(layout) = unsafe { table.value_layout.as_ref() } {
+                // SAFETY: the retained descriptor root moves to the walk's tail.
+                pending.push(ReleaseItem::CodeRoot(unsafe {
+                    crate::code_owner::CodeRoot::take(layout.code_owner)
+                }));
+            }
             if free_storage != 0 {
                 pending.push(ReleaseItem::Allocation {
                     pointer: value.data.cast(),
@@ -493,7 +517,7 @@ pub unsafe extern "C" fn hew_dyn_trait_drop_boxed_in_place(slot: *mut c_void) {
     // SAFETY: slot 0 was synthesized for the concrete type in this box.
     unsafe { (vtable.drop_in_place)(object.data) };
     // SAFETY: the vtable prefix carries the allocation's original layout.
-    unsafe { hew_dyn_box_free(object.data, vtable.size_of, vtable.align_of) };
+    unsafe { hew_dyn_box_release(object.data, object.vtable) };
     object.data = core::ptr::null_mut();
     object.vtable = core::ptr::null();
 }

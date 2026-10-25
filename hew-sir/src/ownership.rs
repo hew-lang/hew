@@ -310,6 +310,7 @@ pub enum PlaceBase {
 pub enum OwnerRoot {
     Value(ValueId),
     Local(PlaceId),
+    Session(PlaceId),
 }
 
 /// The semantic owner of a memory place, without a physical field offset.
@@ -317,6 +318,13 @@ pub enum OwnerRoot {
 pub enum PlaceOrigin {
     Local,
     Runtime,
+    /// A typed binding owned by the surrounding interactive session. Its
+    /// initialized state survives the entry's normal and failure exits.
+    Session {
+        context: ValueId,
+        slot: u32,
+        initialized: bool,
+    },
     /// State protected by the enclosing strict actor turn. `initialized`
     /// is false only in the actor's `init` body for a field init owns
     /// (D447): that seat holds no value until init's first store.

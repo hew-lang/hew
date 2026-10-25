@@ -496,6 +496,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
         &self,
         request: &[BasicMetadataValueEnum<'ctx>],
         payload_release: PointerValue<'ctx>,
+        payload_layout: PointerValue<'ctx>,
         source: StorageId,
         unwind: Option<&PhysicalEdge>,
         policy: hew_types::actor_delivery::SendPolicy,
@@ -536,6 +537,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
                     ptr.into(),
                     ptr.into(),
                     self.ctx.bool_type().into(),
+                    ptr.into(),
                 ],
                 false,
             ),
@@ -561,6 +563,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
                 .const_int(u64::from(owns_target), false)
                 .into(),
         ]);
+        args.push(payload_layout.into());
         let operation =
             call_value(&self.builder, new, &args, "submission.operation")?.into_pointer_value();
         let missing = self
@@ -728,6 +731,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
         &self,
         request: &[BasicMetadataValueEnum<'ctx>],
         release: PointerValue<'ctx>,
+        payload_layout: PointerValue<'ctx>,
         source: StorageId,
         unwind: Option<&PhysicalEdge>,
         obligated: bool,
@@ -758,6 +762,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
                     ptr.into(),
                     self.ctx.i32_type().into(),
                     ptr.into(),
+                    ptr.into(),
                 ],
                 false,
             ),
@@ -774,6 +779,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
                 .into(),
         );
         args.push(self.sender_stamp()?.into());
+        args.push(payload_layout.into());
         let wait = call_value(&self.builder, new, &args, "send.wait")?.into_pointer_value();
         let poll = self.ctx.append_basic_block(self.value, "send.poll");
         let inspect = self.ctx.append_basic_block(self.value, "send.inspect");

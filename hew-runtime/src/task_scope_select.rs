@@ -147,7 +147,7 @@ pub unsafe extern "C" fn hew_checked_task_select_add_task(
     unsafe {
         let selection = &mut *selection;
         retain(task);
-        let wait = HewCheckedTaskWait::new(task, selection.waker);
+        let wait = HewCheckedTaskWait::new(task, selection.waker, false);
         selection.sources.push(SelectSource::Task(wait));
     }
 }

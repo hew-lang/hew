@@ -103,6 +103,24 @@ pub(super) fn message_symbol(actor: ActorId, message: u32) -> String {
     symbol(actor, &format!("message_{message}_drop"))
 }
 
+pub(super) fn message_layout_symbol(actor: ActorId, message: u32) -> String {
+    format!("{}_layout", message_symbol(actor, message))
+}
+
+pub(super) fn reply_layout_symbol(actor: ActorId, message: u32) -> String {
+    format!("{}_layout", reply_symbol(actor, message))
+}
+
+pub(super) fn message_layout<'ctx>(
+    llvm: &Module<'ctx>,
+    actor: ActorId,
+    message: u32,
+) -> CodegenResult<PointerValue<'ctx>> {
+    llvm.get_global(&message_layout_symbol(actor, message))
+        .map(|global| global.as_pointer_value())
+        .ok_or_else(|| CodegenError::FailClosed("actor request lacks its value descriptor".into()))
+}
+
 fn message_release_symbol(actor: ActorId, message: u32) -> String {
     symbol(actor, &format!("message_{message}_release"))
 }
@@ -672,6 +690,10 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
             for handler in &actor.handlers {
                 self.emit_actor_message_drop(actor, handler)?;
                 if let Some(recipe) = self.module.actor_recipes.get(&handler.return_ty) {
+                    self.emit_value_descriptor(
+                        &reply_layout_symbol(actor.id, handler.message_id),
+                        recipe,
+                    )?;
                     if let Some(action) = recipe.destroy {
                         let layout =
                             self.module
@@ -861,6 +883,38 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
         }) {
             self.emit_actor_state_release(actor, layout)?;
         }
+        // The descriptor describes source payload fields. Initialization bytes
+        // remain runtime wrapper storage; these existing callbacks consume only
+        // present fields and are also used by terminal actor cleanup.
+        let target = TargetData::create(&self.module.target.data_layout);
+        let size_ty = self.ctx.ptr_sized_int_type(&target, None);
+        let descriptor_ty = value_descriptor_type(self.ctx, &target);
+        let descriptor =
+            self.llvm
+                .add_global(descriptor_ty, None, &symbol(actor.id, "state_layout"));
+        descriptor.set_linkage(Linkage::Internal);
+        descriptor.set_constant(true);
+        let release = self
+            .llvm
+            .get_function(&symbol(actor.id, "state_release"))
+            .map_or(ptr.const_null(), |function| {
+                function.as_global_value().as_pointer_value()
+            });
+        descriptor.set_initializer(
+            &descriptor_ty.const_named_struct(&[
+                size_ty.const_int(layout.size, false).into(),
+                size_ty.const_int(u64::from(layout.align), false).into(),
+                self.ctx
+                    .i8_type()
+                    .const_int(HewTypeOwnershipKind::LayoutManaged as u64, false)
+                    .into(),
+                ptr.const_null().into(),
+                drop.as_global_value().as_pointer_value().into(),
+                release.into(),
+                self.code_owner().into(),
+                ptr.const_null().into(),
+            ]),
+        );
         let clone = self.llvm.add_function(
             &symbol(actor.id, "state_clone"),
             ptr.fn_type(&[ptr.into()], false),
@@ -1102,6 +1156,33 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
         builder
             .build_return(None)
             .llvm_ctx("return from queued message drop")?;
+        let target = TargetData::create(&self.module.target.data_layout);
+        let size = self.ctx.ptr_sized_int_type(&target, None);
+        let descriptor_ty = value_descriptor_type(self.ctx, &target);
+        let descriptor = self.llvm.add_global(
+            descriptor_ty,
+            None,
+            &message_layout_symbol(actor.id, handler.message_id),
+        );
+        descriptor.set_linkage(Linkage::Internal);
+        descriptor.set_constant(true);
+        descriptor.set_initializer(
+            &descriptor_ty.const_named_struct(&[
+                size.const_int(target.get_abi_size(&message_ty), false)
+                    .into(),
+                size.const_int(u64::from(target.get_abi_alignment(&message_ty)), false)
+                    .into(),
+                self.ctx
+                    .i8_type()
+                    .const_int(HewTypeOwnershipKind::LayoutManaged as u64, false)
+                    .into(),
+                ptr.const_null().into(),
+                function.as_global_value().as_pointer_value().into(),
+                message_release(&self.llvm, self.ctx, actor.id, handler.message_id).into(),
+                self.code_owner().into(),
+                ptr.const_null().into(),
+            ]),
+        );
         Ok(())
     }
 
@@ -2215,6 +2296,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
                     ptr.into(),
                     ptr.into(),
                     ptr.into(),
+                    ptr.into(),
                 ],
                 false,
             ),
@@ -2308,6 +2390,15 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
                             )
                         })?
                         .state
+                        .into(),
+                    self.llvm
+                        .get_global(&symbol(actor.id, "state_layout"))
+                        .ok_or_else(|| {
+                            CodegenError::FailClosed(
+                                "actor state descriptor was not emitted".into(),
+                            )
+                        })?
+                        .as_pointer_value()
                         .into(),
                 ],
                 "spawn.token",
@@ -2574,6 +2665,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
         let status = self.emit_actor_send_wait(
             &request,
             message_release(self.llvm, self.ctx, actor.id, message),
+            message_layout(self.llvm, actor.id, message)?,
             *payload,
             unwind,
             true,
@@ -2710,6 +2802,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
                     self.ctx.i64_type().into(),
                     self.ctx.bool_type().into(),
                     ptr.into(),
+                    ptr.into(),
                 ],
                 false,
             ),
@@ -2739,6 +2832,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
                     .ok_or_else(|| CodegenError::FailClosed("timer lacks its invocation".into()))?
                     .state
                     .into(),
+                message_layout(self.llvm, actor.id, message)?.into(),
             ],
             "timer.handle",
         )?
@@ -2902,6 +2996,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
         let (status, refused, discarded) = self.emit_owned_actor_submission(
             &request,
             message_release(self.llvm, self.ctx, actor.id, handler.message_id),
+            message_layout(self.llvm, actor.id, handler.message_id)?,
             source,
             unwind,
             policy,

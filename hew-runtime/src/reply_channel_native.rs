@@ -24,13 +24,20 @@ pub unsafe extern "C" fn hew_reply_channel_new_native(
     waker: *const HewWaker,
     drop_reply: Option<HewReplyDropFn>,
     reply_release: Option<HewValueReleaseStart>,
+    layout: *const hew_cabi::value::HewValueLayout,
 ) -> *mut HewReplyChannel {
     let channel = hew_reply_channel_new();
     // SAFETY: the new channel is exclusively owned and the descriptor is live.
     unsafe {
         *(*channel).native_waker.lock_or_recover() = Some(OwnedWaker::retain(&*waker));
         hew_reply_channel_set_reply_drop_fn(channel, drop_reply);
-        (*channel).native_reply_release = reply_release;
+        (*channel).native_reply_release = layout
+            .as_ref()
+            .map_or(reply_release, |layout| layout.release_start);
+        (*channel).native_layout = layout;
+        (*channel).native_code = layout
+            .as_ref()
+            .map(|layout| crate::code_owner::CodeRoot::acquire(layout.code_owner));
     }
     channel
 }
@@ -247,7 +254,14 @@ pub(crate) unsafe fn cancel_take_release(channel: *mut HewReplyChannel) -> *mut 
             return ptr::null_mut();
         }
         if let Some(start) = start {
-            HewReleaseCursor::payload(value, size, start, true)
+            let cursor = HewReleaseCursor::payload(value, size, start, true);
+            if let Some(code) = &(*channel).native_code {
+                HewReleaseCursor::after(
+                    cursor,
+                    crate::release_walker::ReleaseItem::CodeRoot(code.clone()),
+                );
+            }
+            cursor
         } else {
             super::run_registered_reply_drop_on_value(channel, value);
             crate::mem::buf_free(value);
@@ -345,7 +359,12 @@ mod tests {
         let drops = Arc::new(AtomicUsize::new(0));
         // SAFETY: descriptor and typed destructor meet the channel contract.
         unsafe {
-            let channel = hew_reply_channel_new_native(waker.descriptor(), Some(drop_reply), None);
+            let channel = hew_reply_channel_new_native(
+                waker.descriptor(),
+                Some(drop_reply),
+                None,
+                core::ptr::null(),
+            );
             hew_reply_channel_retain(channel);
             drop(waker);
             let mut output = std::mem::MaybeUninit::<Reply>::uninit();
@@ -392,7 +411,12 @@ mod tests {
         let drops = Arc::new(AtomicUsize::new(0));
         // SAFETY: the sender retains the channel after its receiver abandons it.
         unsafe {
-            let channel = hew_reply_channel_new_native(waker.descriptor(), Some(drop_reply), None);
+            let channel = hew_reply_channel_new_native(
+                waker.descriptor(),
+                Some(drop_reply),
+                None,
+                core::ptr::null(),
+            );
             hew_reply_channel_retain(channel);
             drop(waker);
             hew_reply_channel_cancel(channel);
@@ -415,7 +439,12 @@ mod tests {
         let drops = Arc::new(AtomicUsize::new(0));
         // SAFETY: the expected size is deliberately wrong but output is never read.
         unsafe {
-            let channel = hew_reply_channel_new_native(waker.descriptor(), Some(drop_reply), None);
+            let channel = hew_reply_channel_new_native(
+                waker.descriptor(),
+                Some(drop_reply),
+                None,
+                core::ptr::null(),
+            );
             hew_reply_channel_retain(channel);
             let mut value = reply(&drops);
             assert!(hew_reply(
@@ -439,7 +468,12 @@ mod tests {
         let drops = Arc::new(AtomicUsize::new(0));
         // SAFETY: the unpublished malloc wrapper holds one initialized Reply.
         unsafe {
-            let channel = hew_reply_channel_new_native(waker.descriptor(), Some(drop_reply), None);
+            let channel = hew_reply_channel_new_native(
+                waker.descriptor(),
+                Some(drop_reply),
+                None,
+                core::ptr::null(),
+            );
             let payload = crate::mem::buf_try_alloc(size_of::<Reply>()).cast::<Reply>();
             assert!(!payload.is_null());
             payload.write(reply(&drops));
@@ -481,8 +515,12 @@ mod tests {
                     ),
                     0
                 );
-                let channel =
-                    hew_reply_channel_new_native(waker.descriptor(), Some(drop_reply), None);
+                let channel = hew_reply_channel_new_native(
+                    waker.descriptor(),
+                    Some(drop_reply),
+                    None,
+                    core::ptr::null(),
+                );
                 hew_reply_channel_retain(channel);
                 let payload = crate::mem::buf_try_alloc(size_of::<Reply>()).cast::<Reply>();
                 assert!(!payload.is_null());
@@ -528,7 +566,8 @@ mod tests {
         // SAFETY: each branch retains exactly one sender reference for publication.
         unsafe {
             for orphan in [false, true] {
-                let channel = hew_reply_channel_new_native(waker.descriptor(), None, None);
+                let channel =
+                    hew_reply_channel_new_native(waker.descriptor(), None, None, core::ptr::null());
                 hew_reply_channel_retain(channel);
                 if orphan {
                     hew_reply_channel_retire_orphaned_ask_sender_ref(channel);

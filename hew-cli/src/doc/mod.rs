@@ -12,8 +12,10 @@ mod template;
 
 pub use extract::extract_docs;
 pub use highlight::highlight;
-pub use render::{build_reference_index, page_title, render_index, render_module_with_index};
-pub use template::{not_found_page, wrap_page};
+pub use render::{
+    build_reference_index, page_title, render_index, render_module_with_index, render_sidebar,
+};
+pub use template::{not_found_page, wrap_page_with_sidebar};
 
 /// Derive a module name from a file path relative to a root directory.
 ///
@@ -210,7 +212,9 @@ pub fn cmd_doc(args: &crate::args::DocArgs) {
         // Render HTML
         let reference_index = build_reference_index(&modules);
         let index_body = render_index(&modules, &site_config);
-        let index_html = wrap_page(&site_config, "Index", &index_body, None);
+        let index_sidebar = render_sidebar(&modules, &site_config, None);
+        let index_html =
+            wrap_page_with_sidebar(&site_config, "Index", &index_body, None, &index_sidebar);
         if let Err(e) = std::fs::write(out.join("index.html"), &index_html) {
             eprintln!("Error writing index.html: {e}");
             std::process::exit(1);
@@ -229,7 +233,14 @@ pub fn cmd_doc(args: &crate::args::DocArgs) {
             let breadcrumb = format!(
                 "<a href=\"index.html\">Index</a><a href=\"{filename}\" aria-current=\"page\">{escaped_name}</a>"
             );
-            let html = wrap_page(&site_config, &display_name, &body, Some(&breadcrumb));
+            let sidebar = render_sidebar(&modules, &site_config, Some(&module.name));
+            let html = wrap_page_with_sidebar(
+                &site_config,
+                &display_name,
+                &body,
+                Some(&breadcrumb),
+                &sidebar,
+            );
             if let Err(e) = std::fs::write(out.join(&filename), &html) {
                 eprintln!("Error writing {filename}: {e}");
                 had_errors = true;

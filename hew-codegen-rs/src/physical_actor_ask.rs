@@ -311,6 +311,20 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             .get_function(&symbol(actor.id, "dispatch"))
             .ok_or_else(|| CodegenError::FailClosed("actor call lacks its dispatch key".into()))?;
         arguments.push(dispatch.as_global_value().as_pointer_value().into());
+        if !sealed {
+            types.push(ptr.into());
+            arguments.push(message_layout(self.llvm, actor.id, message)?.into());
+        }
+        types.push(ptr.into());
+        arguments.push(
+            self.llvm
+                .get_global(&reply_layout_symbol(actor.id, message))
+                .ok_or_else(|| {
+                    CodegenError::FailClosed("actor reply lacks its value descriptor".into())
+                })?
+                .as_pointer_value()
+                .into(),
+        );
         let start = get_or_declare_external(
             self.llvm,
             if sealed {

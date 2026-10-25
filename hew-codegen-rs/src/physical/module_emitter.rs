@@ -50,6 +50,11 @@ pub(super) fn build_module_with_host<'ctx>(
         value_callbacks: BTreeMap::new(),
         debug,
     };
+    if host.is_some_and(|export| export.live_code_ownership) {
+        let pointer = ctx.ptr_type(AddressSpace::default());
+        let owner = emitter.llvm.add_global(pointer, None, "HewLiveCodeOwner");
+        owner.set_initializer(&pointer.const_null());
+    }
     emitter.declare_functions()?;
     emitter.emit_managed_descriptors()?;
     emitter.emit_regex_lifecycle()?;
@@ -449,6 +454,13 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
         Ok(())
     }
 
+    pub(super) fn code_owner(&self) -> PointerValue<'ctx> {
+        self.llvm.get_global("HewLiveCodeOwner").map_or_else(
+            || self.ctx.ptr_type(AddressSpace::default()).const_null(),
+            |owner| owner.as_pointer_value(),
+        )
+    }
+
     pub(super) fn emit_value_descriptor(
         &self,
         name: &str,
@@ -515,7 +527,7 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
                 _ => pointer.const_null(),
             }
             .into(),
-            pointer.const_null().into(),
+            self.code_owner().into(),
             self.managed_descriptor(&recipe.ty)?.into(),
         ]))
     }

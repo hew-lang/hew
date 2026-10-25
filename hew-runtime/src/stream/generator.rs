@@ -14,6 +14,7 @@ pub(super) struct GeneratorStream {
     polling: *mut HewCoroState,
     released: bool,
     done: bool,
+    _code: crate::code_owner::CodeRoot,
 }
 
 // SAFETY: source admission proves Send for every captured value; polling is exclusive.
@@ -121,6 +122,8 @@ pub unsafe extern "C" fn hew_stream_from_generator(
     // SAFETY: this new polling invocation owns a retained readiness target and independent token.
     let polling = unsafe { coro_state::hew_coro_state_new(waker.descriptor(), ptr::null_mut()) };
     super::into_stream_ptr(GeneratorStream {
+        // SAFETY: the caller retains this exact layout during construction.
+        _code: unsafe { crate::code_owner::CodeRoot::acquire((*layout).code_owner) },
         generator,
         // SAFETY: the compiler provides the exact static generator descriptor.
         layout: unsafe { *layout },

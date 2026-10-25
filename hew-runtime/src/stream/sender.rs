@@ -34,6 +34,7 @@ pub(crate) struct SharedSender {
     busy: AtomicBool,
     waiters: ReadinessRegistrations,
     endpoints: AtomicUsize,
+    _code: [crate::code_owner::CodeRoot; 2],
 }
 
 // SAFETY: admission proves Send for the encoder; the gate serializes every access.
@@ -500,6 +501,13 @@ pub unsafe extern "C" fn hew_sink_from_encoder(
     let channel = unsafe { channel(sink) };
     endpoint(
         Arc::new(SharedSender {
+            // SAFETY: both transferred owners retain their checked descriptors.
+            _code: unsafe {
+                [
+                    crate::code_owner::CodeRoot::acquire((*sink_layout).code_owner),
+                    crate::code_owner::CodeRoot::acquire((*encoder_layout).code_owner),
+                ]
+            },
             sink,
             channel,
             encoder: Some(encoder),
@@ -543,6 +551,10 @@ pub(super) unsafe fn retain(
                 let closed = original.is_closed();
                 let channel = original.channel_core_ptr().cast();
                 let owner = Arc::new(SharedSender {
+                    _code: [
+                        crate::code_owner::CodeRoot::acquire((*layout).code_owner),
+                        crate::code_owner::CodeRoot::acquire(std::ptr::null()),
+                    ],
                     sink: Box::into_raw(Box::new(original)),
                     channel,
                     encoder: None,

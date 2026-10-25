@@ -607,6 +607,7 @@ pub mod iter;
 pub mod path;
 pub mod stdio;
 
+mod code_owner;
 /// Target-neutral COW mailbox payload envelope lifecycle.
 pub mod cow_envelope;
 pub mod crash;
@@ -618,6 +619,8 @@ pub mod host_api;
 pub mod host_call;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod host_value;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod live_session;
 pub mod mailbox;
 /// Mailbox envelope payload classification and cross-node send guards.
 pub mod mailbox_envelope;

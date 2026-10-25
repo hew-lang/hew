@@ -1022,7 +1022,11 @@ impl<'m> Walker<'m> {
             name: function.name.clone(),
             params: function.params.iter().map(block_arg).collect(),
             entry: function.entry.0,
-            places: function.places.iter().map(place_decl).collect(),
+            places: function
+                .places
+                .iter()
+                .map(place_decl)
+                .collect::<Result<_, _>>()?,
             blocks: function
                 .blocks
                 .iter()
@@ -2026,9 +2030,14 @@ fn structural_enum(shape: &hew_sir::SemVariantShape, members: &[u32]) -> Structu
     StructuralRecipe::Enum { cases }
 }
 
-fn place_decl(place: &hew_sir::PlaceDecl) -> Place {
+fn place_decl(place: &hew_sir::PlaceDecl) -> Result<Place, EmitError> {
     let id = place.id.0;
-    match &place.origin {
+    Ok(match &place.origin {
+        hew_sir::PlaceOrigin::Session { .. } => {
+            return Err(EmitError::new(
+                "persistent session places are not yet supported by sandbox packages",
+            ))
+        }
         hew_sir::PlaceOrigin::Local => Place::Local { id },
         hew_sir::PlaceOrigin::Runtime => Place::Runtime { id },
         hew_sir::PlaceOrigin::Aggregate { base, shape, field } => Place::Aggregate {
@@ -2056,7 +2065,7 @@ fn place_decl(place: &hew_sir::PlaceDecl) -> Place {
             field: *field,
             initialized: *initialized,
         },
-    }
+    })
 }
 
 /// A table position as the package's id type.

@@ -64,7 +64,7 @@
 //! edge `E`; calling it produces `Result<T, E>`. Leave through the failure edge
 //! with `return error value` or `?` on a compatible `Result`. Handle a result
 //! with `match`, `?`, or `handle error { ... }`. A dropped `Result` is a compile
-//! error; write `let _ = operation();` only when discarding it is deliberate.
+//! error; write `_ = operation();` only when discarding it is deliberate.
 //!
 //! `Option<T>` represents presence or absence. `?` on an `Option` propagates
 //! absence only from a function returning `Option`; it does not invent an

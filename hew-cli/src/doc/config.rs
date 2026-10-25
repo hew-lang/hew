@@ -12,6 +12,23 @@ pub struct NavLink {
     pub url: String,
 }
 
+/// A guide link as it appears in the documentation index.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct GuideEntry {
+    pub module: String,
+    pub label: String,
+    pub summary: String,
+}
+
+/// A reader-oriented group of guides in the documentation index.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct GuideGroup {
+    pub title: String,
+    pub guides: Vec<GuideEntry>,
+}
+
 /// Presentation and collection settings for `hew doc` HTML and Markdown output.
 ///
 /// The defaults produce a self-contained package reference. Projects can pass
@@ -30,6 +47,7 @@ pub struct DocSiteConfig {
     pub guide_title: String,
     pub guide_description: String,
     pub guide_start: Option<String>,
+    pub guide_groups: Vec<GuideGroup>,
     pub module_title: String,
     pub module_description: String,
     pub module_filter: bool,
@@ -53,6 +71,7 @@ impl Default for DocSiteConfig {
             guide_title: "Guides".to_string(),
             guide_description: "Conceptual and task-oriented documentation.".to_string(),
             guide_start: None,
+            guide_groups: Vec::new(),
             module_title: "Modules".to_string(),
             module_description: "Public declarations and methods by module.".to_string(),
             module_filter: true,
@@ -85,6 +104,14 @@ impl DocSiteConfig {
 
     #[must_use]
     pub fn guide_rank(&self, module_name: &str) -> usize {
+        if let Some(position) = self
+            .guide_groups
+            .iter()
+            .flat_map(|group| &group.guides)
+            .position(|guide| guide.module == module_name)
+        {
+            return position;
+        }
         self.guide_order
             .iter()
             .position(|name| name == module_name)
@@ -93,7 +120,19 @@ impl DocSiteConfig {
 
     #[must_use]
     pub fn is_guide(&self, module_name: &str) -> bool {
-        self.guide_order.iter().any(|name| name == module_name)
+        self.guide_groups
+            .iter()
+            .flat_map(|group| &group.guides)
+            .any(|guide| guide.module == module_name)
+            || self.guide_order.iter().any(|name| name == module_name)
+    }
+
+    #[must_use]
+    pub fn guide_entry(&self, module_name: &str) -> Option<&GuideEntry> {
+        self.guide_groups
+            .iter()
+            .flat_map(|group| &group.guides)
+            .find(|guide| guide.module == module_name)
     }
 
     #[must_use]
@@ -116,6 +155,7 @@ mod tests {
         assert_eq!(config.site_title, "Documentation");
         assert!(config.nav_links.is_empty());
         assert!(config.exclude_modules.is_empty());
+        assert!(config.guide_groups.is_empty());
     }
 
     #[test]
@@ -123,8 +163,13 @@ mod tests {
         let config: DocSiteConfig = toml::from_str(
             r#"
 site_title = "Example API"
-guide_order = ["guide::start"]
 exclude_modules = ["internal::fixture"]
+
+[[guide_groups]]
+title = "Start here"
+guides = [
+  { module = "guide::start", label = "Start", summary = "Begin using the project." },
+]
 
 [[nav_links]]
 label = "Project"
@@ -134,6 +179,8 @@ url = "https://example.com"
         .expect("config parses");
         assert_eq!(config.site_title, "Example API");
         assert_eq!(config.guide_rank("guide::start"), 0);
+        assert_eq!(config.guide_entry("guide::start").unwrap().label, "Start");
+        assert!(config.is_guide("guide::start"));
         assert!(!config.includes("internal::fixture"));
         assert_eq!(config.nav_links[0].label, "Project");
         assert_eq!(config.display_version, env!("CARGO_PKG_VERSION"));
@@ -146,5 +193,25 @@ url = "https://example.com"
             ..DocSiteConfig::default()
         };
         assert_eq!(config.expand_version("Hew {version}"), "Hew 1.2.3");
+    }
+
+    #[test]
+    fn grouped_and_ordered_guides_both_remain_guides() {
+        let config = DocSiteConfig {
+            guide_order: vec!["guide::advanced".to_string()],
+            guide_groups: vec![GuideGroup {
+                title: "Start here".to_string(),
+                guides: vec![GuideEntry {
+                    module: "guide::start".to_string(),
+                    label: "Start".to_string(),
+                    summary: "Begin using the project.".to_string(),
+                }],
+            }],
+            ..DocSiteConfig::default()
+        };
+
+        assert!(config.is_guide("guide::start"));
+        assert!(config.is_guide("guide::advanced"));
+        assert!(config.guide_entry("guide::advanced").is_none());
     }
 }

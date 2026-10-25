@@ -493,6 +493,7 @@ pub unsafe extern "C" fn hew_actor_submit_native(
     payload_release: Option<hew_cabi::value::HewValueReleaseStart>,
     discarded_release_out: *mut *mut crate::release_walker::HewReleaseCursor,
     caller: *const crate::actor_caller::HewCallerStamp,
+    payload_layout: *const hew_cabi::value::HewValueLayout,
 ) -> i32 {
     // SAFETY: forwards the unpublished wrapper and typed ownership contract.
     unsafe {
@@ -507,6 +508,7 @@ pub unsafe extern "C" fn hew_actor_submit_native(
             payload_release,
             discarded_release_out,
             *caller,
+            payload_layout,
         )
     }
 }
@@ -526,6 +528,7 @@ pub unsafe extern "C" fn hew_actor_submit_native_terminal(
     payload_release: Option<hew_cabi::value::HewValueReleaseStart>,
     discarded_release_out: *mut *mut crate::release_walker::HewReleaseCursor,
     caller: *const crate::actor_caller::HewCallerStamp,
+    payload_layout: *const hew_cabi::value::HewValueLayout,
 ) -> i32 {
     // SAFETY: forwards the unpublished wrapper and typed ownership contract.
     unsafe {
@@ -540,6 +543,7 @@ pub unsafe extern "C" fn hew_actor_submit_native_terminal(
             payload_release,
             discarded_release_out,
             *caller,
+            payload_layout,
         )
     }
 }
@@ -559,6 +563,7 @@ pub(crate) unsafe fn submit_native(
     payload_release: Option<hew_cabi::value::HewValueReleaseStart>,
     discarded_release_out: *mut *mut crate::release_walker::HewReleaseCursor,
     caller: crate::actor_caller::HewCallerStamp,
+    payload_layout: *const hew_cabi::value::HewValueLayout,
 ) -> i32 {
     // SAFETY: the generated caller supplies its writable cursor output.
     if !discarded_release_out.is_null() {
@@ -579,7 +584,10 @@ pub(crate) unsafe fn submit_native(
         return HewSubmitStatus::Oom as i32;
     }
     // SAFETY: attach the selected consuming callback before publication.
-    unsafe { (*envelope).release_start = payload_release };
+    unsafe {
+        (*envelope).release_start = payload_release;
+        crate::cow_envelope::set_layout(envelope, payload_layout);
+    };
     // SAFETY: the envelope is unpublished and transfers only on admission.
     let outcome = unsafe {
         if terminal {

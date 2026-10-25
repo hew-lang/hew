@@ -129,7 +129,9 @@ impl FunctionLowerer<'_> {
     fn owner_storage(&self, owner: hew_sir::OwnerRoot) -> Result<StorageId, PhysicalError> {
         match owner {
             hew_sir::OwnerRoot::Value(value) => self.value(value),
-            hew_sir::OwnerRoot::Local(place) => self.place(place),
+            hew_sir::OwnerRoot::Local(place) | hew_sir::OwnerRoot::Session(place) => {
+                self.place(place)
+            }
         }
     }
 
@@ -226,7 +228,10 @@ pub(super) fn verify_storage(
     for (&id, entry) in entries {
         let slot = storage(function, id)?;
         let root = storage(function, entry.root)?;
-        if (!matches!(root.origin, StorageOrigin::Local(_)) && root.own != OwnKind::Owned)
+        if (!matches!(
+            root.origin,
+            StorageOrigin::Local(_) | StorageOrigin::Session { .. }
+        ) && root.own != OwnKind::Owned)
             || matches!(
                 root.origin,
                 StorageOrigin::Aggregate(_) | StorageOrigin::Capture { .. }
@@ -271,7 +276,7 @@ pub(super) fn verify_storage(
     for slot in &function.storage {
         if matches!(
             slot.origin,
-            StorageOrigin::Aggregate(_) | StorageOrigin::Local(_)
+            StorageOrigin::Aggregate(_) | StorageOrigin::Local(_) | StorageOrigin::Session { .. }
         ) && !entries.contains_key(&slot.id)
         {
             return Err(PhysicalError::new(
@@ -370,7 +375,9 @@ fn verify_partitions(
             let slot = storage(function, leaf.storage)?;
             if !matches!(
                 slot.origin,
-                StorageOrigin::Aggregate(_) | StorageOrigin::Local(_)
+                StorageOrigin::Aggregate(_)
+                    | StorageOrigin::Local(_)
+                    | StorageOrigin::Session { .. }
             ) {
                 return Err(PhysicalError::new(
                     "place partition leaf must be a local or projection",
@@ -408,7 +415,9 @@ pub(super) fn verify_edge(
         if [source, dest].into_iter().any(|id| {
             matches!(
                 function.storage[id.0 as usize].origin,
-                StorageOrigin::Local(_) | StorageOrigin::Aggregate(_)
+                StorageOrigin::Local(_)
+                    | StorageOrigin::Aggregate(_)
+                    | StorageOrigin::Session { .. }
             )
         }) {
             return Err(PhysicalError::new(
@@ -482,6 +491,12 @@ pub(super) fn require_root(
         .place_storage
         .get(&id)
         .map_or(id, |entry| entry.root);
+    if matches!(
+        storage(function, root)?.origin,
+        StorageOrigin::Session { .. }
+    ) {
+        return Ok(());
+    }
     if matches!(storage(function, root)?.origin, StorageOrigin::Local(_)) {
         if state.active[root.0 as usize] != InitState::Initialized {
             return Err(PhysicalError::new(format!(

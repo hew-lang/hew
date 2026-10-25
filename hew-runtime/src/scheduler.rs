@@ -1669,7 +1669,13 @@ pub(crate) unsafe fn release_terminal_activation_ownership_for_test(actor: *mut 
             a.dispatch_active.load(Ordering::Acquire),
             "test activation ownership is neither claimable nor already held"
         );
-        ActivationOwnership { actor: a }
+        ActivationOwnership {
+            actor: a,
+            _code: a
+                .native_completion
+                .as_ref()
+                .and_then(|completion| completion.cleanup.code.clone()),
+        }
     });
     drop(guard);
 }

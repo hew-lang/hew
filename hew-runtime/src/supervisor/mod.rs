@@ -1160,6 +1160,7 @@ pub(crate) struct SupervisorRoster {
     config_buf: *mut c_void,
     config_size: usize,
     config_drop_fn: Option<unsafe extern "C" fn(*mut c_void)>,
+    native_code: Option<crate::code_owner::CodeRoot>,
 }
 
 // SAFETY: raw roster pointers are allocation identities, not transferable

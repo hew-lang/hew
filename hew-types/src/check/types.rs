@@ -4037,6 +4037,7 @@ pub struct Checker {
     /// The table the next `check_program` mints into instead of a fresh one;
     /// set only by [`crate::Checker::check_embedded_builtins`].
     pub(super) seed_defs: Option<crate::DefTable>,
+    pub(super) session_type_seed: Option<std::sync::Arc<crate::session::SessionTypeSeed>>,
     /// The compile's single-owner extern contract table (rc1-F1 stage B).
     /// The ONE authority for extern symbol identity and `unsafe` gating:
     /// contracts are minted at `register_extern_block`, contract-less extern
@@ -4659,6 +4660,7 @@ impl Checker {
             scopes: super::scope::Scopes::new(),
             registering_embedded_source: false,
             seed_defs: None,
+            session_type_seed: None,
             extern_table: crate::extern_table::ExternTable::new(),
             contractless_extern_occurrences: std::collections::HashMap::new(),
             reported_declaration_collisions: std::collections::HashSet::new(),

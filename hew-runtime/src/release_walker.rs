@@ -30,6 +30,8 @@ use crate::hashmap::HewLayoutHashMap;
 /// sinks remain thread-local.
 #[derive(Debug)]
 pub(crate) enum ReleaseItem {
+    /// Defining code retained until all preceding value and storage work finishes.
+    CodeRoot(crate::code_owner::CodeRoot),
     /// Prepare and consume one actor-owned Rc survivor wave incrementally.
     RcSurvivors(Box<crate::rc::RcSurvivors>),
     /// Expand endpoint owners after its final I/O operation is quiescent.
@@ -276,6 +278,8 @@ unsafe fn run(item: ReleaseItem) {
             std::process::abort();
         }
         if let Some(drop) = layout.drop_fn {
+            // SAFETY: the walk's value owner pins the canonical descriptor.
+            let _code = unsafe { crate::code_owner::CodeRoot::acquire(layout.code_owner) };
             // SAFETY: this walk owns the initialized slot and exact descriptor.
             unsafe { drop(slot) };
         }
@@ -295,6 +299,7 @@ unsafe fn expand(
     // SAFETY: the caller owns the item and retains queued storage until release.
     unsafe {
         match item {
+            ReleaseItem::CodeRoot(root) => drop(root),
             ReleaseItem::RcSurvivors(wave) => return wave.step(pending),
             ReleaseItem::Sink { sink } => crate::stream::expand_sink(sink, pending),
             ReleaseItem::Value { .. } => pending.push(item),
@@ -496,6 +501,7 @@ pub(crate) struct ReleaseDriver {
     done: bool,
     rc_sweep: Option<hew_observe_protocol::RcSweep>,
     value_owner: Option<crate::owned_value_budget::ValueOwner>,
+    active_code: Option<crate::code_owner::CodeRoot>,
 }
 
 impl ReleaseDriver {
@@ -534,6 +540,7 @@ impl ReleaseDriver {
             done: cursor.is_null(),
             rc_sweep: None,
             value_owner,
+            active_code: None,
         })
     }
 
@@ -598,6 +605,9 @@ impl ReleaseDriver {
                     }
                     hew_coro_state_free(self.state);
                     self.state = ptr::null_mut();
+                    // The callback frame is gone; releasing its last carrier
+                    // could not retire the code while that frame was active.
+                    self.active_code = None;
                     self.fault = crate::fault::hew_fault_combine(
                         self.fault,
                         std::mem::take(&mut self.child_fault),
@@ -617,6 +627,8 @@ impl ReleaseDriver {
                 }
                 let layout = *hew_release_layout(self.cursor);
                 if let Some(start) = layout.release_start {
+                    self.active_code =
+                        Some(crate::code_owner::CodeRoot::acquire(layout.code_owner));
                     if !self.fault.is_null() {
                         hew_coro_state_set_cleanup_fault(parent, self.fault);
                     }
@@ -636,6 +648,7 @@ impl ReleaseDriver {
                         return false;
                     }
                 } else if let Some(drop) = layout.drop_fn {
+                    let _code = crate::code_owner::CodeRoot::acquire(layout.code_owner);
                     arm_release_sink();
                     drop(slot);
                     if let Some((_, fault)) = disarm_release_sink() {

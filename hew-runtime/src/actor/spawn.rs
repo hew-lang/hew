@@ -748,6 +748,7 @@ pub unsafe extern "C" fn hew_actor_construct_native(
     state_release: Option<hew_cabi::value::HewValueReleaseStart>,
     rejected_state_release: *mut *mut crate::release_walker::HewReleaseCursor,
     construction: *mut crate::coro_state::HewCoroState,
+    state_layout: *const hew_cabi::value::HewValueLayout,
 ) -> crate::lifetime::local_handles::HewLocalPidId {
     // SAFETY: generated code supplies an empty cursor output.
     if !rejected_state_release.is_null() {
@@ -795,6 +796,12 @@ pub unsafe extern "C" fn hew_actor_construct_native(
         }
     }
     let mut completion = crate::actor_native::NativeActorCompletion::with_crash(native_crash);
+    // SAFETY: generated code retains the source descriptor during construction;
+    // acquire its independent actor owner before any scheduler publication.
+    completion.cleanup.code = unsafe { state_layout.as_ref() }.map(|layout| {
+        // SAFETY: the constructing invocation retains the defining generation.
+        unsafe { crate::code_owner::CodeRoot::acquire(layout.code_owner) }
+    });
     if let Some(owner) =
         // SAFETY: construction remains live through publication.
         unsafe { construction.as_ref() }.and_then(|state| state.execution().rc_owner.clone())

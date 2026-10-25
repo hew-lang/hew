@@ -10,6 +10,7 @@ members = [
   "hew-pkg",
   "hew-lexer",
   "hew-lib",
+  "hew-live",
   "hew-lsp",
   "hew-parser",
   "hew-runtime",

@@ -1,0 +1,14 @@
+[[case]]
+id = "actor-owned-budget-cleanup-transfer"
+intent = "A suspended authored close transfers its live child invocation and cleanup payloads to the receiving actor."
+source = "cases/actor-owned-budget-cleanup-transfer.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 30
+
+[case.env]
+HEW_WORKERS = "2"
+
+[case.expected]
+stdout = "cleanup transfer limit\n"
+stderr = "hew: failure: HeapExceeded (200)\nhew: actor crash in Drain.total (actor 1): HeapExceeded\n"
+exit = 1

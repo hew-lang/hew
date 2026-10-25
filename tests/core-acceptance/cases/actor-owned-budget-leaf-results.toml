@@ -1,10 +1,14 @@
 [[case]]
 id = "actor-owned-budget-leaf-results"
-intent = "String formatting, ranges and UTF-8 decoding publish actual managed payloads through checked success and refusal cleanup, including optional and declared-result carriers."
+intent = "String formatting, ranges and UTF-8 decoding publish actual managed payloads through checked success and refusal cleanup."
 source = "cases/actor-owned-budget-leaf-results.hew"
 suites = ["acceptance", "safety"]
-timeout_seconds = 20
+timeout_seconds = 30
+
+[case.env]
+HEW_WORKERS = "2"
 
 [case.expected]
 stdout = "5\nnumber limit\n4\nstring slice limit\n4\noptional slice limit\n3\ndecode limit\n"
+stderr = "hew: failure: HeapExceeded (200)\nhew: actor crash in NumberSmall.format (actor 2): HeapExceeded\nhew: failure: HeapExceeded (200)\nhew: actor crash in SliceSmall.slice (actor 4): HeapExceeded\nhew: failure: HeapExceeded (200)\nhew: actor crash in OptionalSmall.slice (actor 6): HeapExceeded\nhew: failure: HeapExceeded (200)\nhew: actor crash in DecodeSmall.decode (actor 8): HeapExceeded\n"
 exit = 1

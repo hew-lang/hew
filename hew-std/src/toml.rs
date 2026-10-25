@@ -506,6 +506,9 @@ pub unsafe extern "C" fn hew_toml_object_set(
         // SAFETY: this wrapper preserves the checked operation's input contract.
         unsafe { checked::hew_toml_object_set_checked(tbl, key, val, &raw mut status) };
     });
+    if status != 0 {
+        std::process::abort();
+    }
 }
 
 /// Create a new empty TOML array.
@@ -535,6 +538,9 @@ pub unsafe extern "C" fn hew_toml_array_push(arr: *mut HewTomlValue, val: *mut H
         // SAFETY: this wrapper preserves the checked operation's input contract.
         unsafe { checked::hew_toml_array_push_checked(arr, val, &raw mut status) };
     });
+    if status != 0 {
+        std::process::abort();
+    }
 }
 
 // ---------------------------------------------------------------------------

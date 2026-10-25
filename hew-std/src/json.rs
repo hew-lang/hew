@@ -685,6 +685,9 @@ pub unsafe extern "C" fn hew_json_object_set_bool(
         // SAFETY: this wrapper preserves the checked operation's input contract.
         unsafe { checked::hew_json_object_set_bool_checked(obj, key, val, &raw mut status) };
     });
+    if status != 0 {
+        std::process::abort();
+    }
 }
 
 /// Set an integer field on a JSON object.
@@ -703,6 +706,9 @@ pub unsafe extern "C" fn hew_json_object_set_int(
         // SAFETY: this wrapper preserves the checked operation's input contract.
         unsafe { checked::hew_json_object_set_int_checked(obj, key, val, &raw mut status) };
     });
+    if status != 0 {
+        std::process::abort();
+    }
 }
 
 /// Set a float field on a JSON object.
@@ -721,6 +727,9 @@ pub unsafe extern "C" fn hew_json_object_set_float(
         // SAFETY: this wrapper preserves the checked operation's input contract.
         unsafe { checked::hew_json_object_set_float_checked(obj, key, val, &raw mut status) };
     });
+    if status != 0 {
+        std::process::abort();
+    }
 }
 
 /// Set a string field on a JSON object. The string value is copied.
@@ -739,6 +748,9 @@ pub unsafe extern "C" fn hew_json_object_set_string(
         // SAFETY: this wrapper preserves the checked operation's input contract.
         unsafe { checked::hew_json_object_set_string_checked(obj, key, val, &raw mut status) };
     });
+    if status != 0 {
+        std::process::abort();
+    }
 }
 
 /// Set a `char` (Unicode codepoint) field on a JSON object as an integer.
@@ -760,6 +772,9 @@ pub unsafe extern "C" fn hew_json_object_set_char(
         // SAFETY: this wrapper preserves the checked operation's input contract.
         unsafe { checked::hew_json_object_set_char_checked(obj, key, val, &raw mut status) };
     });
+    if status != 0 {
+        std::process::abort();
+    }
 }
 
 /// Set a `duration` (nanoseconds as i64) field on a JSON object as an integer.
@@ -781,6 +796,9 @@ pub unsafe extern "C" fn hew_json_object_set_duration(
         // SAFETY: this wrapper preserves the checked operation's input contract.
         unsafe { checked::hew_json_object_set_duration_checked(obj, key, val, &raw mut status) };
     });
+    if status != 0 {
+        std::process::abort();
+    }
 }
 
 /// Get the `char` (Unicode codepoint) from a [`HewJsonValue`] integer field.
@@ -830,6 +848,9 @@ pub unsafe extern "C" fn hew_json_object_set_null(obj: *mut HewJsonValue, key: *
         // SAFETY: this wrapper preserves the checked operation's input contract.
         unsafe { checked::hew_json_object_set_null_checked(obj, key, &raw mut status) };
     });
+    if status != 0 {
+        std::process::abort();
+    }
 }
 
 /// Set a [`HewJsonValue`] child on a JSON object. Takes ownership of `val`
@@ -854,6 +875,9 @@ pub unsafe extern "C" fn hew_json_object_set(
         // SAFETY: this wrapper preserves the checked operation's input contract.
         unsafe { checked::hew_json_object_set_checked(obj, key, val, &raw mut status) };
     });
+    if status != 0 {
+        std::process::abort();
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -883,6 +907,9 @@ pub unsafe extern "C" fn hew_json_array_push_bool(arr: *mut HewJsonValue, val: i
         // SAFETY: this wrapper preserves the checked operation's input contract.
         unsafe { checked::hew_json_array_push_bool_checked(arr, val, &raw mut status) };
     });
+    if status != 0 {
+        std::process::abort();
+    }
 }
 
 /// Push an integer onto a JSON array.
@@ -899,6 +926,9 @@ pub unsafe extern "C" fn hew_json_array_push_int(arr: *mut HewJsonValue, val: i6
         // SAFETY: this wrapper preserves the checked operation's input contract.
         unsafe { checked::hew_json_array_push_int_checked(arr, val, &raw mut status) };
     });
+    if status != 0 {
+        std::process::abort();
+    }
 }
 
 /// Push a float onto a JSON array.
@@ -915,6 +945,9 @@ pub unsafe extern "C" fn hew_json_array_push_float(arr: *mut HewJsonValue, val: 
         // SAFETY: this wrapper preserves the checked operation's input contract.
         unsafe { checked::hew_json_array_push_float_checked(arr, val, &raw mut status) };
     });
+    if status != 0 {
+        std::process::abort();
+    }
 }
 
 /// Push a string onto a JSON array. The string value is copied.
@@ -932,6 +965,9 @@ pub unsafe extern "C" fn hew_json_array_push_string(arr: *mut HewJsonValue, val:
         // SAFETY: this wrapper preserves the checked operation's input contract.
         unsafe { checked::hew_json_array_push_string_checked(arr, val, &raw mut status) };
     });
+    if status != 0 {
+        std::process::abort();
+    }
 }
 
 /// Push null onto a JSON array.
@@ -948,6 +984,9 @@ pub unsafe extern "C" fn hew_json_array_push_null(arr: *mut HewJsonValue) {
         // SAFETY: this wrapper preserves the checked operation's input contract.
         unsafe { checked::hew_json_array_push_null_checked(arr, &raw mut status) };
     });
+    if status != 0 {
+        std::process::abort();
+    }
 }
 
 /// Push a [`HewJsonValue`] child onto a JSON array. Takes ownership of `val`
@@ -968,6 +1007,9 @@ pub unsafe extern "C" fn hew_json_array_push(arr: *mut HewJsonValue, val: *mut H
         // SAFETY: this wrapper preserves the checked operation's input contract.
         unsafe { checked::hew_json_array_push_checked(arr, val, &raw mut status) };
     });
+    if status != 0 {
+        std::process::abort();
+    }
 }
 
 // ---------------------------------------------------------------------------

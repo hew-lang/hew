@@ -142,10 +142,12 @@ impl HewYamlValue {
         self.inner.as_ref()
     }
 
+    #[cfg(test)]
     fn value_mut(&mut self) -> &mut serde_yaml::Value {
         Arc::make_mut(&mut self.inner)
     }
 
+    #[cfg(test)]
     fn sequence_mut(&mut self) -> Option<&mut Vec<serde_yaml::Value>> {
         if !matches!(self.value(), serde_yaml::Value::Sequence(_)) {
             return None;
@@ -750,6 +752,9 @@ pub unsafe extern "C" fn hew_yaml_object_set_bool(
         // SAFETY: this wrapper preserves the checked operation's input contract.
         unsafe { checked::hew_yaml_object_set_bool_checked(obj, key, val, &raw mut status) };
     });
+    if status != 0 {
+        std::process::abort();
+    }
 }
 
 /// Set an integer field on a YAML mapping.
@@ -768,6 +773,9 @@ pub unsafe extern "C" fn hew_yaml_object_set_int(
         // SAFETY: this wrapper preserves the checked operation's input contract.
         unsafe { checked::hew_yaml_object_set_int_checked(obj, key, val, &raw mut status) };
     });
+    if status != 0 {
+        std::process::abort();
+    }
 }
 
 /// Set a float field on a YAML mapping.
@@ -786,6 +794,9 @@ pub unsafe extern "C" fn hew_yaml_object_set_float(
         // SAFETY: this wrapper preserves the checked operation's input contract.
         unsafe { checked::hew_yaml_object_set_float_checked(obj, key, val, &raw mut status) };
     });
+    if status != 0 {
+        std::process::abort();
+    }
 }
 
 /// Set a string field on a YAML mapping. The string value is copied.
@@ -804,6 +815,9 @@ pub unsafe extern "C" fn hew_yaml_object_set_string(
         // SAFETY: this wrapper preserves the checked operation's input contract.
         unsafe { checked::hew_yaml_object_set_string_checked(obj, key, val, &raw mut status) };
     });
+    if status != 0 {
+        std::process::abort();
+    }
 }
 
 /// Set a `char` (Unicode codepoint) field on a YAML mapping as an integer.
@@ -825,6 +839,9 @@ pub unsafe extern "C" fn hew_yaml_object_set_char(
         // SAFETY: this wrapper preserves the checked operation's input contract.
         unsafe { checked::hew_yaml_object_set_char_checked(obj, key, val, &raw mut status) };
     });
+    if status != 0 {
+        std::process::abort();
+    }
 }
 
 /// Set a `duration` (nanoseconds as i64) field on a YAML mapping as an integer.
@@ -846,6 +863,9 @@ pub unsafe extern "C" fn hew_yaml_object_set_duration(
         // SAFETY: this wrapper preserves the checked operation's input contract.
         unsafe { checked::hew_yaml_object_set_duration_checked(obj, key, val, &raw mut status) };
     });
+    if status != 0 {
+        std::process::abort();
+    }
 }
 
 /// Get the `char` (Unicode codepoint) from a [`HewYamlValue`] integer field.
@@ -900,6 +920,9 @@ pub unsafe extern "C" fn hew_yaml_object_set(
         // SAFETY: this wrapper preserves the checked operation's input contract.
         unsafe { checked::hew_yaml_object_set_checked(obj, key, val, &raw mut status) };
     });
+    if status != 0 {
+        std::process::abort();
+    }
 }
 
 /// Set a null field on a YAML mapping.
@@ -916,6 +939,9 @@ pub unsafe extern "C" fn hew_yaml_object_set_null(obj: *mut HewYamlValue, key: *
         // SAFETY: this wrapper preserves the checked operation's input contract.
         unsafe { checked::hew_yaml_object_set_null_checked(obj, key, &raw mut status) };
     });
+    if status != 0 {
+        std::process::abort();
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -945,6 +971,9 @@ pub unsafe extern "C" fn hew_yaml_array_push_bool(arr: *mut HewYamlValue, val: i
         // SAFETY: this wrapper preserves the checked operation's input contract.
         unsafe { checked::hew_yaml_array_push_bool_checked(arr, val, &raw mut status) };
     });
+    if status != 0 {
+        std::process::abort();
+    }
 }
 
 /// Push an integer onto a YAML sequence.
@@ -961,6 +990,9 @@ pub unsafe extern "C" fn hew_yaml_array_push_int(arr: *mut HewYamlValue, val: i6
         // SAFETY: this wrapper preserves the checked operation's input contract.
         unsafe { checked::hew_yaml_array_push_int_checked(arr, val, &raw mut status) };
     });
+    if status != 0 {
+        std::process::abort();
+    }
 }
 
 /// Push a float onto a YAML sequence.
@@ -977,6 +1009,9 @@ pub unsafe extern "C" fn hew_yaml_array_push_float(arr: *mut HewYamlValue, val: 
         // SAFETY: this wrapper preserves the checked operation's input contract.
         unsafe { checked::hew_yaml_array_push_float_checked(arr, val, &raw mut status) };
     });
+    if status != 0 {
+        std::process::abort();
+    }
 }
 
 /// Push a string onto a YAML sequence. The string value is copied.
@@ -994,6 +1029,9 @@ pub unsafe extern "C" fn hew_yaml_array_push_string(arr: *mut HewYamlValue, val:
         // SAFETY: this wrapper preserves the checked operation's input contract.
         unsafe { checked::hew_yaml_array_push_string_checked(arr, val, &raw mut status) };
     });
+    if status != 0 {
+        std::process::abort();
+    }
 }
 
 /// Push a null onto a YAML sequence.
@@ -1010,6 +1048,9 @@ pub unsafe extern "C" fn hew_yaml_array_push_null(arr: *mut HewYamlValue) {
         // SAFETY: this wrapper preserves the checked operation's input contract.
         unsafe { checked::hew_yaml_array_push_null_checked(arr, &raw mut status) };
     });
+    if status != 0 {
+        std::process::abort();
+    }
 }
 
 /// Push a [`HewYamlValue`] child onto a YAML sequence, taking ownership.
@@ -1030,6 +1071,9 @@ pub unsafe extern "C" fn hew_yaml_array_push(arr: *mut HewYamlValue, val: *mut H
         // SAFETY: this wrapper preserves the checked operation's input contract.
         unsafe { checked::hew_yaml_array_push_checked(arr, val, &raw mut status) };
     });
+    if status != 0 {
+        std::process::abort();
+    }
 }
 
 // ---------------------------------------------------------------------------

@@ -90,6 +90,9 @@ impl TaskExecution {
         if self.phase.notify() {
             enqueue(self.clone());
         }
+        // A nested provider may become quiescent while this task's frame is
+        // frozen. Its ordinary notification must also retry the transfer walk.
+        self.wake_frozen_owner();
     }
 
     pub(super) fn freeze(self: &Arc<Self>, identity: usize, wake: Option<OwnedWaker>) -> bool {

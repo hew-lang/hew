@@ -349,7 +349,7 @@ impl Bindings<'_> {
             c_params.push("void *ok".into());
         }
         c_params.push("void *error".into());
-        writeln!(c, "void {bridge}({}) {{\n    Task *task = router_context_get_0();\n    assert(task != NULL && task->pending == NULL);\n    {pending} *pending = calloc(1, sizeof(*pending));\n    assert(pending != NULL);\n    pending->base.status = status;\n    pending->base.error = error;\n    pending->base.settle = settle_{name};", c_params.join(", "))?;
+        writeln!(c, "void {bridge}({}) {{\n    Task *task = router_context_get_0();\n    assert(task != NULL);\n    {pending} *pending = calloc(1, sizeof(*pending));\n    assert(pending != NULL);\n    pending->base.status = status;\n    pending->base.error = error;\n    pending->base.settle = settle_{name};", c_params.join(", "))?;
         if value.is_some() {
             c.push_str("    pending->base.ok = ok;\n");
         }
@@ -369,7 +369,7 @@ impl Bindings<'_> {
         args.push("&pending->result".into());
         writeln!(
             c,
-            "    task->pending = &pending->base;\n    await_pending(task, {c_function}({}));\n}}\n",
+            "    pending->base.next = task->pending;\n    task->pending = &pending->base;\n    await_pending(task, &pending->base, {c_function}({}));\n}}\n",
             args.join(", ")
         )?;
         Ok(())

@@ -128,9 +128,13 @@ withdraws the attempt and resumes the old instance; commit enables the candidate
 and returns a separate retirement handle for old-instance cleanup. A caller
 cancelled after admission does not release its running guest call's lease.
 `Deployment::dispose` consumes the deployment and retains its cleanup task.
-These operations run inside a Tokio runtime.
+The host also requests SDK driver turns between calls. Each turn uses the guest's
+existing scheduler and reports its next timer delay; the host waits for that
+deadline or new ingress. A drive turn retains imported service calls through
+completion, including calls made by autonomous actors. These operations run
+inside a Tokio runtime.
 
 The host oracle exercises admission drain, caller cancellation, snapshot expiry,
 non-terminating candidate initialization, retained-state recovery, predecessor
-fencing and disposal. Fenced network deployment, idle guest driving and durable
-artefact caching remain active implementation work.
+fencing, autonomous service calls without ingress and disposal. Fenced network
+deployment and durable artefact caching remain active implementation work.

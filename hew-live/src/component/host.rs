@@ -136,7 +136,7 @@ impl Host {
     ) -> Result<Deployment, Error> {
         let instance = self.instantiate(prepared).await?;
         instance.initialize(state).await?;
-        instance.granted.store(true, Ordering::Release);
+        instance.activate();
         Ok(Deployment {
             host: Arc::clone(self),
             active: Arc::new(RwLock::new(Arc::new(Activation { epoch: 1, instance }))),
@@ -150,13 +150,15 @@ impl Host {
         let engine = self.engine.clone();
         let services = Arc::clone(&self.services);
         let worker_grant = Arc::clone(&granted);
+        let wake = Arc::new(tokio::sync::Notify::new());
+        let worker_wake = Arc::clone(&wake);
         let worker = tokio::spawn(async move {
             match guest(&engine, &prepared.component, services, worker_grant).await {
                 Ok((mut store, router)) => {
                     let _ = ready.send(Ok(()));
                     let _ = store
                         .run_concurrent(async |accessor| {
-                            serve(accessor, Arc::new(router), receiver).await
+                            serve(accessor, Arc::new(router), receiver, worker_wake).await
                         })
                         .await;
                 }
@@ -171,6 +173,7 @@ impl Host {
             worker,
             digest: prepared.digest,
             snapshot_gate: Arc::default(),
+            wake,
         });
         initialized.await.map_err(|_| Error::Closed)??;
         Ok(instance)
@@ -251,13 +254,13 @@ impl Deployment {
             if Instant::now() >= deadline {
                 return Err(Error::Expired(stage));
             }
-            candidate.granted.store(true, Ordering::Release);
             old.granted.store(false, Ordering::Release);
             *fence.active = Arc::new(Activation {
                 epoch,
                 instance: Arc::clone(&candidate),
             });
             fence.committed = true;
+            candidate.activate();
             let retirement = tokio::spawn(async move { old.dispose().await });
             Ok(Committed {
                 epoch,
@@ -308,6 +311,7 @@ struct Instance {
     worker: JoinHandle<()>,
     digest: [u8; 32],
     snapshot_gate: Arc<tokio::sync::Mutex<()>>,
+    wake: Arc<tokio::sync::Notify>,
 }
 
 impl Drop for Instance {
@@ -317,6 +321,11 @@ impl Drop for Instance {
 }
 
 impl Instance {
+    fn activate(&self) {
+        self.granted.store(true, Ordering::Release);
+        self.wake.notify_one();
+    }
+
     async fn initialize(&self, state: Snapshot) -> Result<(), Error> {
         let (reply, result) = oneshot::channel();
         self.commands
@@ -461,12 +470,61 @@ async fn guest(
     Ok((store, router))
 }
 
+#[allow(
+    clippy::too_many_lines,
+    reason = "one Store owner coordinates request admission and idle driver wakeups"
+)]
 async fn serve(
     accessor: &Accessor<Context>,
     router: Arc<bindings::Router>,
     mut commands: mpsc::Receiver<Command>,
+    wake: Arc<tokio::sync::Notify>,
 ) -> wasmtime::Result<()> {
-    while let Some(command) = commands.recv().await {
+    let (driven, mut results) = mpsc::channel(1);
+    let mut enabled = false;
+    let mut driving = false;
+    let mut redrive = false;
+    let mut deadline = None;
+    loop {
+        let command = tokio::select! {
+            command = commands.recv() => {
+                let Some(command) = command else { break };
+                if enabled {
+                    redrive |= driving;
+                    deadline = Some(Instant::now());
+                }
+                command
+            }
+            () = wake.notified() => {
+                enabled = true;
+                redrive |= driving;
+                deadline = Some(Instant::now());
+                continue;
+            }
+            result = results.recv(), if driving => {
+                let delay: Option<u64> = result.ok_or_else(|| wasmtime::Error::msg("guest driver closed"))??;
+                driving = false;
+                deadline = if redrive {
+                    redrive = false;
+                    Some(Instant::now())
+                } else {
+                    delay.and_then(|delay| Instant::now().checked_add(Duration::from_millis(delay)))
+                };
+                continue;
+            }
+            () = async {
+                if let Some(deadline) = deadline {
+                    tokio::time::sleep_until(deadline).await;
+                } else {
+                    std::future::pending::<()>().await;
+                }
+            }, if enabled && !driving => {
+                driving = true;
+                deadline = None;
+                accessor.spawn(Drive { router: Arc::clone(&router), reply: driven.clone() })?;
+                continue;
+            }
+        };
         match command {
             Command::Route {
                 event,
@@ -478,6 +536,7 @@ async fn serve(
                     event,
                     reply,
                     _lease: lease,
+                    wake: Arc::clone(&wake),
                 })?;
             }
             Command::Snapshot {
@@ -524,11 +583,29 @@ async fn serve(
     Ok(())
 }
 
+struct Drive {
+    router: Arc<bindings::Router>,
+    reply: mpsc::Sender<wasmtime::Result<Option<u64>>>,
+}
+
+impl AccessorTask<Context> for Drive {
+    async fn run(self, accessor: &Accessor<Context>) -> wasmtime::Result<()> {
+        let result = self
+            .router
+            .hew_live_router_handler()
+            .call_drive(accessor)
+            .await;
+        let _ = self.reply.send(result).await;
+        Ok(())
+    }
+}
+
 struct Route {
     router: Arc<bindings::Router>,
     event: Event,
     reply: oneshot::Sender<Result<bool, Error>>,
     _lease: OwnedRwLockReadGuard<Arc<Activation>>,
+    wake: Arc<tokio::sync::Notify>,
 }
 
 impl AccessorTask<Context> for Route {
@@ -538,6 +615,7 @@ impl AccessorTask<Context> for Route {
             .hew_live_router_handler()
             .call_route(accessor, self.event)
             .await;
+        self.wake.notify_one();
         let _ = self.reply.send(
             result
                 .map_err(Error::Engine)

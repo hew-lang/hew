@@ -27,6 +27,8 @@ interface handler {
     use events.{event, snapshot};
 
     initialize: func(state: snapshot) -> result<_, string>;
+    /// Run ready autonomous work and report the next timer delay in milliseconds.
+    drive: async func() -> option<u64>;
     route: async func(message: event) -> result<bool, string>;
     quiesce: async func() -> result<snapshot, string>;
     /// Reopen a paused instance or withdraw an in-progress quiescence attempt.

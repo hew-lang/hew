@@ -8307,6 +8307,19 @@
       "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
+        "wasm32-wasip1": "fn hew_guest_next_timer_ms() -> i64"
+      },
+      "symbol": "hew_guest_next_timer_ms"
+    },
+    {
+      "availability": [
+        "wasm32-wasip1"
+      ],
+      "classification": "non-declarable",
+      "extent": "not-applicable",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
         "wasm32-wasip1": "fn hew_guest_resume()"
       },
       "symbol": "hew_guest_resume"

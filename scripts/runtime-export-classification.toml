@@ -2076,6 +2076,7 @@ non-declarable = [
   "hew_host_call_new",
   "hew_host_call_new_guest",
   "hew_guest_step",
+  "hew_guest_next_timer_ms",
   "hew_guest_begin_drain",
   "hew_guest_is_drained",
   "hew_guest_resume",

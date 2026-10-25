@@ -15,10 +15,12 @@ actor Counter {
 actor Background {
     var ticks: u64 = 0;
 
-    #[every(1ms)]
+    // Leave room for the sleeping turn and its imported service call.
+    #[every(20ms)]
     receive fn tick() {
         sleep(2ms);
         ticks += 1;
+        router_services.destination("idle").expect("background service");
     }
 
     receive fn count() -> u64 {

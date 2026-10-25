@@ -29,6 +29,7 @@
 mod error;
 mod formats;
 mod json;
+pub mod managed_tree;
 pub mod property;
 mod sink;
 mod source;

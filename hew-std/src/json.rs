@@ -21,38 +21,6 @@ pub struct HewJsonValue {
     inner: serde_json::Value,
 }
 
-fn managed_payload(value: &serde_json::Value, copy: bool) -> crate::managed_tree::Payload {
-    use crate::managed_tree::{add, slots, text, HANDLE_BYTES, JSON_NODE_BYTES};
-    match value {
-        serde_json::Value::String(value) => text(value, copy),
-        serde_json::Value::Array(values) => {
-            let mut bytes = slots(
-                if copy {
-                    values.len()
-                } else {
-                    values.capacity()
-                },
-                JSON_NODE_BYTES,
-            )?;
-            for value in values {
-                bytes = add(bytes, managed_payload(value, copy)?)?;
-            }
-            Ok(bytes)
-        }
-        serde_json::Value::Object(values) => {
-            let mut bytes = slots(values.len(), HANDLE_BYTES + JSON_NODE_BYTES)?;
-            for (key, value) in values {
-                bytes = add(bytes, text(key, copy)?)?;
-                bytes = add(bytes, managed_payload(value, copy)?)?;
-            }
-            Ok(bytes)
-        }
-        serde_json::Value::Null | serde_json::Value::Bool(_) | serde_json::Value::Number(_) => {
-            Ok(0)
-        }
-    }
-}
-
 /// Visit the canonical payload of a JSON value without copying or mutating it.
 ///
 /// # Safety
@@ -70,10 +38,8 @@ pub unsafe extern "C" fn hew_managed_visit_json(
     // SAFETY: the borrowed tree and visitor remain live throughout traversal.
     unsafe {
         crate::managed_tree::tree(visitor, core::ptr::from_ref(value).cast(), false, |copy| {
-            crate::managed_tree::add(
-                crate::managed_tree::JSON_NODE_BYTES,
-                managed_payload(&value.inner, copy)?,
-            )
+            hew_codec::managed_tree::json_payload_bytes(&value.inner, copy)
+                .ok_or(hew_cabi::managed::HEAP_EXCEEDED)
         })
     }
 }

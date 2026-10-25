@@ -47,6 +47,7 @@ function newStorage(bytes: Uint8Array, capacity = bytes.length): StringStorage {
 
 export class IndexedString {
   readonly kind = "string";
+  prepareGrowth?: (capacity: number, detached: boolean) => void;
   private storage: StringStorage | null;
 
   private constructor(storage: StringStorage) {
@@ -72,6 +73,12 @@ export class IndexedString {
 
   get byteLength(): number {
     return this.live().byteLength;
+  }
+
+  /** The same UTF-8 backing retained by clones; indexing metadata is excluded. */
+  managedStorage(): { identity: object; capacity: number } {
+    const storage = this.live();
+    return { identity: storage, capacity: storage.bytes.length };
   }
 
   encoded(): Uint8Array {
@@ -183,6 +190,8 @@ export class IndexedString {
       newLength > storage.bytes.length
         ? Math.max(newLength, storage.bytes.length * 2, 16)
         : storage.bytes.length;
+    if (storage.owners !== 1 || capacity !== storage.bytes.length)
+      this.prepareGrowth?.(capacity, storage.owners !== 1);
     if (storage.owners !== 1) {
       storage.owners--;
       storage = newStorage(this.encoded(), capacity);

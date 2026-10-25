@@ -13,6 +13,7 @@ import type {
 } from "./package.js";
 import type { CodecShape, CodecNode } from "./instructions.generated.js";
 import { validCodecShape } from "./package-validator.generated.js";
+import { staticOperations } from "./package.js";
 
 function require(condition: unknown, message: string): asserts condition {
   if (!condition) throw new Error(message);
@@ -44,6 +45,69 @@ export function validatePackageGraph(pkg: PackageV1): void {
   const supervisors = pkg.supervisors ?? [];
   const resources = pkg.resources ?? [];
   const recipes = pkg.structural_render ?? [];
+  const managed = pkg.managed_types ?? [];
+  indexed(managed, "managed type");
+  const managedType = (id: number | null | undefined) =>
+    id == null ? null : at(managed, id, "managed type");
+  const width = (value: string) => {
+    require(/^(0|[1-9][0-9]*)$/.test(
+      value,
+    ), "managed width is not decimal u64");
+    require(BigInt(value) <= 0xffffffffffffffffn, "managed width exceeds u64");
+  };
+  for (const row of managed) {
+    width(row.slot_bytes);
+    switch (row.kind) {
+      case "scalar":
+      case "handle":
+      case "string":
+      case "bytes":
+      case "dynamic":
+        break;
+      case "array":
+        width(row.length);
+        managedType(row.element);
+        break;
+      case "vector":
+      case "slice":
+      case "set":
+        managedType(row.element);
+        break;
+      case "map":
+        managedType(row.key);
+        managedType(row.value);
+        break;
+      case "aggregate":
+        row.fields.forEach(managedType);
+        break;
+      case "variant":
+        width(row.payload_bytes);
+        at(pkg.variants, row.shape, "managed variant shape");
+        row.cases.forEach((fields) => fields.forEach(managedType));
+        break;
+      case "callable":
+        row.captures?.forEach(managedType);
+        break;
+      case "provider":
+        if (row.invocation_slot_bytes != null) width(row.invocation_slot_bytes);
+        row.children.forEach(managedType);
+        break;
+      case "actor_call":
+        managedType(row.completion);
+        managedType(row.reply);
+        break;
+      case "generator":
+        width(row.payload_bytes);
+        managedType(row.yielded);
+        managedType(row.returned);
+        break;
+      case "shared":
+        managedType(row.payload);
+        break;
+      default:
+        exhaustive(row);
+    }
+  }
   indexed(pkg.functions, "function");
   indexed(pkg.aggregates, "aggregate");
   indexed(pkg.variants, "variant");
@@ -179,6 +243,8 @@ export function validatePackageGraph(pkg: PackageV1): void {
     }
   }
   for (const actor of actors) {
+    if (actor.max_heap_bytes != null) width(actor.max_heap_bytes);
+    managedType(actor.state_type);
     for (const id of [
       actor.init,
       actor.start,
@@ -341,13 +407,17 @@ export function validatePackageGraph(pkg: PackageV1): void {
           .length, `edge to block ${edge.to} has ${edge.args.length} arguments, expected ${target.params.length}`);
       edge.args.forEach(value);
     };
-    const result = (def: ValueDef) => define(def.value);
+    const result = (def: ValueDef) => {
+      managedType(def.managed_type);
+      define(def.value);
+    };
     fn.params.forEach(result);
     // Results exist on authored successor edges. This pass checks identity,
     // not dominance or whether a particular path owns the referenced value.
     for (const block of fn.blocks) {
       block.params.forEach(result);
-      for (const op of block.ops) {
+      for (const op of staticOperations(block)) {
+        op.definitions?.forEach((def) => managedType(def.managed_type));
         if ("dst" in op && op.dst != null) define(op.dst);
         if (op.op === "destructure" || op.op === "variant.destructure")
           op.results.forEach(define);
@@ -367,6 +437,7 @@ export function validatePackageGraph(pkg: PackageV1): void {
         term.arms.forEach((arm) => arm.fields.forEach(result));
     }
     for (const declaration of fn.places) {
+      managedType(declaration.managed_type);
       switch (declaration.origin) {
         case "local":
         case "runtime":
@@ -561,6 +632,7 @@ export function validatePackageGraph(pkg: PackageV1): void {
           break;
         case "task.race":
           scope(op.scope);
+          width(op.member_slot_bytes);
           op.members.forEach(value);
           break;
         case "task.spawn":
@@ -589,6 +661,10 @@ export function validatePackageGraph(pkg: PackageV1): void {
       if ("unwind" in term) edge(term.unwind);
       if ("request_shapes" in term) requestShapes(term.request_shapes);
       switch (term.op) {
+        case "materialize":
+          operation(term.operation);
+          edge(term.failure);
+          break;
         case "return":
           if (term.value) boundary(term.value);
           break;

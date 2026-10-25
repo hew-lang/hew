@@ -5,12 +5,18 @@ actor Buffer {
     var values: Vec<i64> = Vec.new();
 
     receive fn fill() -> i64 {
-        for i in 0..4 { values.push(i); }
+        for i in 0..4 {
+            values.push(i);
+        }
         values.len()
     }
 
-    receive fn exceed() { values.push(4); }
-    receive fn retained() -> i64 { values.len() }
+    receive fn exceed() {
+        values.push(4);
+    }
+    receive fn retained() -> i64 {
+        values.len()
+    }
 }
 
 supervisor Group {

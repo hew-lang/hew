@@ -1,6 +1,7 @@
 import type { RuntimeContinuation } from "./shims.js";
 import {
   UNIT,
+  mutableVector,
   cloneValue,
   compareUtf8,
   type VmValue,
@@ -17,7 +18,12 @@ import { actorIdentical } from "./actor-identity.js";
 export type ValueRequest =
   | { kind: "fault"; message: string }
   | { kind: "call"; callee: number; args: VmValue[] }
-  | { kind: "release"; value: VmValue; onFault?: VmValue };
+  | {
+      kind: "release";
+      value: VmValue;
+      onFault?: VmValue;
+      retained?: readonly VmValue[];
+    };
 export type ValueProgram = Generator<ValueRequest, VmValue, VmValue>;
 
 const OFFSET = 0xcbf29ce484222325n;
@@ -390,10 +396,12 @@ export function* collectionOperation(
     if (receiver?.kind !== "vector")
       throw new Error("vector operation has no vector");
     if (operation === "Clear") {
+      mutableVector(receiver);
       const items = receiver.items.splice(0);
       yield {
         kind: "release",
         value: { kind: "vector", elementType: receiver.elementType, items },
+        retained: items,
       };
       return receiver;
     }
@@ -404,6 +412,7 @@ export function* collectionOperation(
       const at = Number(index.value);
       if (at < 0 || at >= receiver.items.length)
         throw new ShimFault("vector_bounds", "vector index out of bounds");
+      mutableVector(receiver);
       const old = receiver.items[at]!;
       receiver.items[at] = args[2]!;
       yield { kind: "release", value: old };
@@ -434,6 +443,7 @@ export function* collectionOperation(
     receiver.tombstones = new Set();
     yield {
       kind: "release",
+      retained: entries.flatMap((entry) => [entry.key, entry.value]),
       value: {
         kind: "vector",
         elementType: "",
@@ -500,6 +510,13 @@ export function* collectionOperation(
     return cloneValue(entry.value);
   }
   if (operation === "Insert") {
+    receiver.prepareInsert?.(
+      staged,
+      result.slot,
+      entry?.key ?? args[1]!,
+      family === "Set" ? UNIT : args[2]!,
+      family !== "Set" && !entry,
+    );
     receiver.entries = staged.entries;
     receiver.capacity = staged.capacity;
     receiver.tombstones = staged.tombstones;

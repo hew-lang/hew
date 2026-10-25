@@ -1,0 +1,38 @@
+import std.stream;
+
+fn wait_for_budget_gate(consume gate: stream.Stream<i64>) -> i64 {
+    let value = gate.recv().expect("gate");
+    gate.close();
+    value
+}
+
+gen fn producer(consume gate: stream.Stream<i64>) -> i64 {
+    scope {
+        let child = fork wait_for_budget_gate(gate);
+        yield 1;
+        yield await child;
+    }
+}
+
+#[max_heap(128)]
+actor Drain {
+    receive fn total(consume input: Generator<i64, ()>, consume release: stream.Sink<i64>) -> i64 {
+        release.send(7).expect("release child");
+        release.close();
+        var total = 0;
+        for value in input {
+            total += value;
+        }
+        total
+    }
+}
+
+fn main() {
+    let drain = spawn Drain;
+    let (release, gate): (stream.Sink<i64>, stream.Stream<i64>) = stream.pipe(1).expect("pipe");
+    let values = producer(gate);
+    assert(values.next() == .Some(1));
+    println(drain.total(values, release).expect("drain"));
+    stop(drain);
+    stopped(drain);
+}

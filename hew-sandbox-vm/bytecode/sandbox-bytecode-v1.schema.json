@@ -75,9 +75,7 @@
           "type": ["integer", "null"]
         },
         "max_heap_bytes": {
-          "format": "uint64",
-          "minimum": 0,
-          "type": ["integer", "null"]
+          "type": ["string", "null"]
         },
         "name": {
           "type": "string"
@@ -96,6 +94,12 @@
             "$ref": "#/$defs/ActorField"
           },
           "type": "array"
+        },
+        "state_type": {
+          "format": "uint32",
+          "maximum": 4294967295,
+          "minimum": 0,
+          "type": ["integer", "null"]
         },
         "stop": {
           "items": {
@@ -1207,6 +1211,350 @@
       "required": ["name", "flags"],
       "type": "object"
     },
+    "ManagedHandle": {
+      "enum": ["actor", "pointer", "borrow", "cancellation"],
+      "type": "string"
+    },
+    "ManagedProvider": {
+      "enum": ["task", "stream", "sink", "json", "yaml", "toml", "opaque"],
+      "type": "string"
+    },
+    "ManagedType": {
+      "description": "Exact semantic children supplied by SIR's physical type inventory.",
+      "oneOf": [
+        {
+          "properties": {
+            "kind": {
+              "const": "scalar",
+              "type": "string"
+            }
+          },
+          "required": ["kind"],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "category": {
+              "$ref": "#/$defs/ManagedHandle"
+            },
+            "kind": {
+              "const": "handle",
+              "type": "string"
+            }
+          },
+          "required": ["kind", "category"],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "kind": {
+              "const": "string",
+              "type": "string"
+            }
+          },
+          "required": ["kind"],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "kind": {
+              "const": "bytes",
+              "type": "string"
+            }
+          },
+          "required": ["kind"],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "element": {
+              "format": "uint32",
+              "maximum": 4294967295,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "kind": {
+              "const": "vector",
+              "type": "string"
+            },
+            "share_on_copy": {
+              "type": "boolean"
+            }
+          },
+          "required": ["kind", "element", "share_on_copy"],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "element": {
+              "format": "uint32",
+              "maximum": 4294967295,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "kind": {
+              "const": "array",
+              "type": "string"
+            },
+            "length": {
+              "type": "string"
+            },
+            "share_on_copy": {
+              "type": "boolean"
+            }
+          },
+          "required": ["kind", "element", "length", "share_on_copy"],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "element": {
+              "format": "uint32",
+              "maximum": 4294967295,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "kind": {
+              "const": "slice",
+              "type": "string"
+            },
+            "share_on_copy": {
+              "type": "boolean"
+            }
+          },
+          "required": ["kind", "element", "share_on_copy"],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "key": {
+              "format": "uint32",
+              "maximum": 4294967295,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "kind": {
+              "const": "map",
+              "type": "string"
+            },
+            "value": {
+              "format": "uint32",
+              "maximum": 4294967295,
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "required": ["kind", "key", "value"],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "element": {
+              "format": "uint32",
+              "maximum": 4294967295,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "kind": {
+              "const": "set",
+              "type": "string"
+            }
+          },
+          "required": ["kind", "element"],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "fields": {
+              "items": {
+                "format": "uint32",
+                "maximum": 4294967295,
+                "minimum": 0,
+                "type": "integer"
+              },
+              "type": "array"
+            },
+            "kind": {
+              "const": "aggregate",
+              "type": "string"
+            }
+          },
+          "required": ["kind", "fields"],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "cases": {
+              "items": {
+                "items": {
+                  "format": "uint32",
+                  "maximum": 4294967295,
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "type": "array"
+              },
+              "type": "array"
+            },
+            "indirect": {
+              "type": "boolean"
+            },
+            "kind": {
+              "const": "variant",
+              "type": "string"
+            },
+            "payload_bytes": {
+              "type": "string"
+            },
+            "shape": {
+              "format": "uint32",
+              "maximum": 4294967295,
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "required": ["kind", "shape", "indirect", "payload_bytes", "cases"],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "captures": {
+              "items": {
+                "format": "uint32",
+                "maximum": 4294967295,
+                "minimum": 0,
+                "type": "integer"
+              },
+              "type": ["array", "null"]
+            },
+            "kind": {
+              "const": "callable",
+              "type": "string"
+            }
+          },
+          "required": ["kind"],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "kind": {
+              "const": "generator",
+              "type": "string"
+            },
+            "payload_bytes": {
+              "type": "string"
+            },
+            "returned": {
+              "format": "uint32",
+              "maximum": 4294967295,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "yielded": {
+              "format": "uint32",
+              "maximum": 4294967295,
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "required": ["kind", "yielded", "returned", "payload_bytes"],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "kind": {
+              "const": "shared",
+              "type": "string"
+            },
+            "payload": {
+              "format": "uint32",
+              "maximum": 4294967295,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "weak": {
+              "type": "boolean"
+            }
+          },
+          "required": ["kind", "payload", "weak"],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "kind": {
+              "const": "dynamic",
+              "type": "string"
+            }
+          },
+          "required": ["kind"],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "completion": {
+              "format": "uint32",
+              "maximum": 4294967295,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "declared_failure": {
+              "type": "boolean"
+            },
+            "kind": {
+              "const": "actor_call",
+              "type": "string"
+            },
+            "reply": {
+              "format": "uint32",
+              "maximum": 4294967295,
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "required": ["kind", "completion", "reply", "declared_failure"],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "children": {
+              "items": {
+                "format": "uint32",
+                "maximum": 4294967295,
+                "minimum": 0,
+                "type": "integer"
+              },
+              "type": "array"
+            },
+            "invocation_slot_bytes": {
+              "type": ["string", "null"]
+            },
+            "kind": {
+              "const": "provider",
+              "type": "string"
+            },
+            "provider": {
+              "$ref": "#/$defs/ManagedProvider"
+            }
+          },
+          "required": ["kind", "provider", "children"],
+          "type": "object"
+        }
+      ],
+      "properties": {
+        "id": {
+          "format": "uint32",
+          "maximum": 4294967295,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "slot_bytes": {
+          "description": "Canonical width of a slot holding this value, encoded without JS rounding.",
+          "type": "string"
+        }
+      },
+      "required": ["id", "slot_bytes"],
+      "type": "object"
+    },
     "MapValueOp": {
       "description": "Ordinary map operations with independently owned keys and values.",
       "oneOf": [
@@ -2278,12 +2626,6 @@
         },
         {
           "properties": {
-            "count": {
-              "format": "uint32",
-              "maximum": 4294967295,
-              "minimum": 0,
-              "type": ["integer", "null"]
-            },
             "dst": {
               "format": "uint32",
               "maximum": 4294967295,
@@ -2938,6 +3280,9 @@
               "minimum": 0,
               "type": "integer"
             },
+            "member_slot_bytes": {
+              "type": "string"
+            },
             "members": {
               "items": {
                 "format": "uint32",
@@ -2958,7 +3303,7 @@
               "type": "integer"
             }
           },
-          "required": ["op", "dst", "scope", "members"],
+          "required": ["op", "dst", "scope", "members", "member_slot_bytes"],
           "type": "object"
         },
         {
@@ -3022,6 +3367,12 @@
         }
       ],
       "properties": {
+        "definitions": {
+          "items": {
+            "$ref": "#/$defs/ValueDef"
+          },
+          "type": "array"
+        },
         "own": {
           "anyOf": [
             {
@@ -3060,6 +3411,12 @@
               "minimum": 0,
               "type": "integer"
             },
+            "managed_type": {
+              "format": "uint32",
+              "maximum": 4294967295,
+              "minimum": 0,
+              "type": ["integer", "null"]
+            },
             "origin": {
               "const": "local",
               "type": "string"
@@ -3075,6 +3432,12 @@
               "maximum": 4294967295,
               "minimum": 0,
               "type": "integer"
+            },
+            "managed_type": {
+              "format": "uint32",
+              "maximum": 4294967295,
+              "minimum": 0,
+              "type": ["integer", "null"]
             },
             "origin": {
               "const": "runtime",
@@ -3100,6 +3463,12 @@
               "maximum": 4294967295,
               "minimum": 0,
               "type": "integer"
+            },
+            "managed_type": {
+              "format": "uint32",
+              "maximum": 4294967295,
+              "minimum": 0,
+              "type": ["integer", "null"]
             },
             "origin": {
               "const": "aggregate",
@@ -3135,6 +3504,12 @@
               "minimum": 0,
               "type": "integer"
             },
+            "managed_type": {
+              "format": "uint32",
+              "maximum": 4294967295,
+              "minimum": 0,
+              "type": ["integer", "null"]
+            },
             "origin": {
               "const": "capture",
               "type": "string"
@@ -3165,6 +3540,12 @@
             },
             "initialized": {
               "type": "boolean"
+            },
+            "managed_type": {
+              "format": "uint32",
+              "maximum": 4294967295,
+              "minimum": 0,
+              "type": ["integer", "null"]
             },
             "origin": {
               "const": "actor_state",
@@ -6579,6 +6960,25 @@
       "oneOf": [
         {
           "properties": {
+            "failure": {
+              "$ref": "#/$defs/Edge"
+            },
+            "normal": {
+              "$ref": "#/$defs/Edge"
+            },
+            "op": {
+              "const": "materialize",
+              "type": "string"
+            },
+            "operation": {
+              "$ref": "#/$defs/OpV1"
+            }
+          },
+          "required": ["op", "operation", "normal", "failure"],
+          "type": "object"
+        },
+        {
+          "properties": {
             "op": {
               "const": "return",
               "type": "string"
@@ -7938,6 +8338,7 @@
     },
     "TrapName": {
       "enum": [
+        "heap_exceeded",
         "integer_overflow",
         "divide_by_zero",
         "shift_out_of_range",
@@ -8011,6 +8412,12 @@
     },
     "ValueDef": {
       "properties": {
+        "managed_type": {
+          "format": "uint32",
+          "maximum": 4294967295,
+          "minimum": 0,
+          "type": ["integer", "null"]
+        },
         "own": {
           "$ref": "#/$defs/Own"
         },
@@ -8610,6 +9017,13 @@
     },
     "hew_version": {
       "type": "string"
+    },
+    "managed_types": {
+      "description": "Compiler-authored language accounting layouts; widths are never host sizes.",
+      "items": {
+        "$ref": "#/$defs/ManagedType"
+      },
+      "type": "array"
     },
     "profile": {
       "type": "string"

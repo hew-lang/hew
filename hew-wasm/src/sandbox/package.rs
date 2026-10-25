@@ -9,6 +9,10 @@ use ts_rs::TS;
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema, TS)]
 #[ts(rename = "PackageV1")]
 pub struct Package {
+    /// Compiler-authored language accounting layouts; widths are never host sizes.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[ts(optional, as = "Option<_>")]
+    pub managed_types: Vec<ManagedType>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub codecs: Vec<String>,
     #[serde(default)]
@@ -46,6 +50,102 @@ pub struct Package {
     #[ts(type = "Array<Extract<TermV1, { op: \"suspend\" }>[\"kind\"]>")]
     pub suspend_kinds: Vec<String>,
     pub functions: Vec<Function>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema, TS)]
+pub struct ManagedType {
+    pub id: u32,
+    /// Canonical width of a slot holding this value, encoded without JS rounding.
+    pub slot_bytes: String,
+    #[serde(flatten)]
+    pub layout: ManagedLayout,
+}
+
+/// Exact semantic children supplied by SIR's physical type inventory.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema, TS)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum ManagedLayout {
+    Scalar,
+    Handle {
+        category: ManagedHandle,
+    },
+    String,
+    Bytes,
+    Vector {
+        element: u32,
+        share_on_copy: bool,
+    },
+    Array {
+        element: u32,
+        length: String,
+        share_on_copy: bool,
+    },
+    Slice {
+        element: u32,
+        share_on_copy: bool,
+    },
+    Map {
+        key: u32,
+        value: u32,
+    },
+    Set {
+        element: u32,
+    },
+    Aggregate {
+        fields: Vec<u32>,
+    },
+    Variant {
+        shape: u32,
+        indirect: bool,
+        payload_bytes: String,
+        cases: Vec<Vec<u32>>,
+    },
+    Callable {
+        captures: Option<Vec<u32>>,
+    },
+    Generator {
+        yielded: u32,
+        returned: u32,
+        payload_bytes: String,
+    },
+    Shared {
+        payload: u32,
+        weak: bool,
+    },
+    Dynamic,
+    ActorCall {
+        completion: u32,
+        reply: u32,
+        declared_failure: bool,
+    },
+    Provider {
+        provider: ManagedProvider,
+        children: Vec<u32>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
+        invocation_slot_bytes: Option<String>,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema, TS)]
+#[serde(rename_all = "snake_case")]
+pub enum ManagedHandle {
+    Actor,
+    Pointer,
+    Borrow,
+    Cancellation,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema, TS)]
+#[serde(rename_all = "snake_case")]
+pub enum ManagedProvider {
+    Task,
+    Stream,
+    Sink,
+    Json,
+    Yaml,
+    Toml,
+    Opaque,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema, TS)]
@@ -110,6 +210,8 @@ pub struct Actor {
     pub name: String,
     pub state_fields: Vec<ActorField>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub state_type: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub init: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub start: Option<u32>,
@@ -133,8 +235,7 @@ pub struct Actor {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub coalesce: Option<Coalesce>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[ts(type = "number | null")]
-    pub max_heap_bytes: Option<u64>,
+    pub max_heap_bytes: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
@@ -329,12 +430,18 @@ pub struct Function {
 pub enum Place {
     Local {
         id: u32,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        managed_type: Option<u32>,
     },
     Runtime {
         id: u32,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        managed_type: Option<u32>,
     },
     Aggregate {
         id: u32,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        managed_type: Option<u32>,
         base: PlaceBase,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         shape: Option<u32>,
@@ -342,11 +449,15 @@ pub enum Place {
     },
     Capture {
         id: u32,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        managed_type: Option<u32>,
         environment: u32,
         field: u32,
     },
     ActorState {
         id: u32,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        managed_type: Option<u32>,
         environment: u32,
         field: u32,
         initialized: bool,

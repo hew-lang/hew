@@ -16,6 +16,11 @@ fn persistent_native_authoring_keeps_actor_identity_and_clears_bindings() {
         "libhew.so"
     });
     let project = tempfile::tempdir().unwrap();
+    std::fs::write(
+        project.path().join("helpers.hew"),
+        "fn loaded_value() -> i64 { 9 }\n",
+    )
+    .unwrap();
     let mut process = Command::new(compiler)
         .args(["tool", "live", "--runtime"])
         .arg(runtime)
@@ -32,6 +37,8 @@ fn persistent_native_authoring_keeps_actor_identity_and_clears_bindings() {
         .unwrap()
         .write_all(
             br#"
+:load helpers.hew
+loaded_value()
 actor Counter { var value: i64 = 40; receive fn next() -> i64 { value += 1; value } }
 let counter = spawn Counter;
 counter.next().expect("counter")
@@ -55,7 +62,7 @@ count
     assert!(output.status.success(), "{stderr}");
     assert_eq!(
         String::from_utf8(output.stdout).unwrap(),
-        "41\n42\n42\ni64\n7\n"
+        "9\n41\n42\n42\ni64\n7\n"
     );
     assert!(stderr.contains("stop"), "{stderr}");
     assert!(stderr.contains("unknown_name"), "{stderr}");

@@ -102,6 +102,7 @@ struct Authoring {
     worker: Worker,
     artefacts: tempfile::TempDir,
     runtime: PathBuf,
+    project: PathBuf,
     target: String,
     opt_level: hew_codegen_rs::OptLevel,
     next_generation: u64,
@@ -141,11 +142,12 @@ impl Authoring {
         let target = target.linker_triple();
         let timeout = crate::util::parse_timeout(&args.timeout)?;
         Ok(Self {
-            frontend: LiveFrontend::new(directory, options),
+            frontend: LiveFrontend::new(directory.clone(), options),
             compiler,
             worker: Worker::start(&executable, &runtime, &target, timeout)?,
             artefacts: tempfile::Builder::new().prefix("hew-live-").tempdir()?,
             runtime,
+            project: directory,
             target,
             opt_level: if args.release {
                 hew_codegen_rs::OptLevel::O2
@@ -359,7 +361,7 @@ fn handle_command(authoring: &mut Authoring, command: ReplCommand) -> Result<boo
             }
         }
         ReplCommand::Load(path) => {
-            let source = std::fs::read_to_string(path)?;
+            let source = std::fs::read_to_string(authoring.project.join(path))?;
             let kind = if classify::classify(&source) == classify::InputKind::Item {
                 InputKind::Declarations
             } else {

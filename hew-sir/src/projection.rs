@@ -134,6 +134,7 @@ pub(crate) fn place_path(
                         .ok_or_else(|| "aggregate place has an unknown parent".to_string())?;
                     match place.origin {
                         PlaceOrigin::Local => break OwnerRoot::Local(id),
+                        PlaceOrigin::Session { .. } => break OwnerRoot::Session(id),
                         PlaceOrigin::Aggregate { base, shape, field } => {
                             fields.push(AggregateProjectionStep { shape, field });
                             next = base;
@@ -188,6 +189,7 @@ pub fn place_plan(
     let mut plan = PlacePlan::default();
     let mut ids = BTreeSet::new();
     let mut paths = BTreeSet::new();
+    let mut session_slots = BTreeSet::new();
     for place in &function.places {
         if !ids.insert(place.id) {
             return Err("projected places have duplicate identities".into());
@@ -204,6 +206,23 @@ pub fn place_plan(
                 return Err("runtime places have no admitted lifetime contract".into());
             }
             PlaceOrigin::Local => {}
+            PlaceOrigin::Session { context, slot, .. } => {
+                if !session_slots.insert((context, slot))
+                    || !function.params.iter().any(|parameter| {
+                        parameter.value == context
+                            && parameter.own == OwnKind::None
+                            && parameter.ty
+                                == (ResolvedTy::Pointer {
+                                    is_mutable: true,
+                                    pointee: Box::new(ResolvedTy::Unit),
+                                })
+                    })
+                {
+                    return Err(
+                        "session places require distinct slots of a live context parameter".into(),
+                    );
+                }
+            }
             PlaceOrigin::Aggregate { base, .. } => {
                 plan.bases.insert(place.id, base);
             }
@@ -293,7 +312,7 @@ fn resolve_projection(
             }
             ty
         }
-        OwnerRoot::Local(id) => {
+        OwnerRoot::Local(id) | OwnerRoot::Session(id) => {
             &declaration(&function.places, id)
                 .ok_or_else(|| "local root has no declaration".to_string())?
                 .ty
@@ -418,7 +437,9 @@ pub(crate) fn verify_operation(
         _ => return None,
     };
     let place = declaration(&function.places, id)?;
-    let (PlaceOrigin::Aggregate { .. } | PlaceOrigin::Local) = place.origin else {
+    let (PlaceOrigin::Aggregate { .. } | PlaceOrigin::Local | PlaceOrigin::Session { .. }) =
+        place.origin
+    else {
         return None;
     };
     Some((|| {

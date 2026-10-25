@@ -1658,9 +1658,9 @@ fn check_function_with_context(
                                 Some(crate::OwnerRoot::Value(value)) => {
                                     function.binding_naming(value)
                                 }
-                                Some(crate::OwnerRoot::Local(root)) => {
-                                    function.binding_rooting(root)
-                                }
+                                Some(
+                                    crate::OwnerRoot::Local(root) | crate::OwnerRoot::Session(root),
+                                ) => function.binding_rooting(root),
                                 None => function.binding_rooting(place),
                             }
                         })
@@ -2664,7 +2664,7 @@ fn callable_mutation_permitted(
                         value = root;
                         continue;
                     }
-                    crate::OwnerRoot::Local(_) => return true,
+                    crate::OwnerRoot::Local(_) | crate::OwnerRoot::Session(_) => return true,
                 }
             }
             return closure_for_body(function, context)

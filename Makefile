@@ -420,6 +420,9 @@ test-live-native: hew-native ## Test: load native generations sharing one runtim
 	HEW_LIVE_RUNTIME_DIR="$(abspath $(DEBUG_DIR))" \
 		$(TEST_RUN_ENV) cargo nextest run --profile ci -p hew-live $(CARGO_TARGET_FLAG) --test native
 
+test-live-places: hew-native ## Test: preserve compiler-owned slots across native submissions
+	$(TEST_RUN_ENV) cargo nextest run --profile ci -p hew-codegen-rs -p hew-compile --lib -E 'test(native_session_places) | test(live_retained_type)'
+
 # Human-facing compiler alias. The shared host transaction is also the
 # inventory builder for the CLI, libhew and runtime archives, preventing Cargo
 # feature-set churn between separate package invocations.

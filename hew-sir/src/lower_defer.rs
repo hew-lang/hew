@@ -433,6 +433,9 @@ impl Builder<'_, '_> {
             }
             let (root, _) = crate::projection::place_path(&self.places, place)?;
             match root {
+                crate::OwnerRoot::Session(_) => {
+                    dependencies.insert(place);
+                }
                 crate::OwnerRoot::Local(local) if (local.0 as usize) < place_floor => {
                     dependencies.insert(place);
                 }

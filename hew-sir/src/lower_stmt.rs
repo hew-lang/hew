@@ -30,6 +30,9 @@ impl Builder<'_, '_> {
             return Ok(());
         }
         if value.is_none() {
+            if let Some(&place) = self.session_places.get(&binding.id) {
+                return self.bind_source_target(binding, BindingTarget::Place(place));
+            }
             let place = self.allocate_local(self.ty(&binding.ty))?;
             return self.bind_source_target(binding, BindingTarget::Place(place));
         }

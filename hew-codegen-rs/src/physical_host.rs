@@ -286,6 +286,7 @@ fn scalar(ty: &ResolvedTy) -> Option<&'static str> {
         ResolvedTy::Usize => "uintptr_t",
         ResolvedTy::F32 => "float",
         ResolvedTy::F64 => "double",
+        ResolvedTy::Pointer { .. } => "void *",
         _ => return None,
     })
 }

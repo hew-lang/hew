@@ -16,10 +16,10 @@ struct hew_cabi_manifest_row {
   enum hew_cabi_manifest_ownership ownership;
 };
 
-#define HEW_CABI_MANIFEST_FUNCTION_COUNT 1674u
+#define HEW_CABI_MANIFEST_FUNCTION_COUNT 1679u
 #define HEW_CABI_MANIFEST_STATIC_COUNT 24u
 
-static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1674] = {
+static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1679] = {
     {"hew_actor_abort_construction",
      "{\"native\": \"fn hew_actor_abort_construction( HewLocalPidId, *mut "
      "HewCoroState, )\", \"wasm32-wasip1\": \"fn hew_actor_abort_construction( "
@@ -4238,6 +4238,31 @@ static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1674] = {
     {"hew_listener_is_valid",
      "{\"native\": \"fn hew_listener_is_valid( c_int) -> bool\"}", "native",
      "stable", "not-applicable", "not-applicable",
+     HEW_CABI_OWNERSHIP_UNMEASURED},
+    {"hew_live_slot_initialized",
+     "{\"native\": \"fn hew_live_slot_initialized( *const HewLiveSession, "
+     "usize, ) -> bool\"}",
+     "native", "non-declarable", "not-applicable", "no-in-signature-extent",
+     HEW_CABI_OWNERSHIP_UNMEASURED},
+    {"hew_live_slot_release",
+     "{\"native\": \"fn hew_live_slot_release( *mut HewLiveSession, usize, "
+     "*mut *mut HewError, ) -> i32\"}",
+     "native", "non-declarable", "not-applicable", "no-in-signature-extent",
+     HEW_CABI_OWNERSHIP_UNMEASURED},
+    {"hew_live_slot_revision",
+     "{\"native\": \"fn hew_live_slot_revision( *const HewLiveSession, usize, "
+     ") -> u64\"}",
+     "native", "non-declarable", "not-applicable", "no-in-signature-extent",
+     HEW_CABI_OWNERSHIP_UNMEASURED},
+    {"hew_live_slot_set_initialized",
+     "{\"native\": \"fn hew_live_slot_set_initialized( *mut HewLiveSession, "
+     "usize, bool, )\"}",
+     "native", "non-declarable", "not-applicable", "no-in-signature-extent",
+     HEW_CABI_OWNERSHIP_UNMEASURED},
+    {"hew_live_slot_storage",
+     "{\"native\": \"fn hew_live_slot_storage( *mut HewLiveSession, usize, "
+     "*const HewValueLayout, ) -> *mut c_void\"}",
+     "native", "non-declarable", "not-applicable", "no-in-signature-extent",
      HEW_CABI_OWNERSHIP_UNMEASURED},
     {"hew_local_pid_actor_id",
      "{\"native\": \"fn hew_local_pid_actor_id( HewLocalPidId, *mut u64, ) -> "

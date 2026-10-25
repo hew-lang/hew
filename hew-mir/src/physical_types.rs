@@ -244,6 +244,12 @@ impl PhysicalTarget {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum StorageOrigin {
+    Session {
+        context: StorageId,
+        slot: u32,
+        initialized: bool,
+        recipe: Box<PhysicalValueRecipe>,
+    },
     /// A field of the actor state receiver. `initialized` is false only in
     /// init for a field init owns (D447): the slot starts uninitialized,
     /// must be initialized at every return and uninitialized at every fault

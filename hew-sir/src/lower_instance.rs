@@ -1305,7 +1305,14 @@ impl<'a> InstanceService<'a> {
             function: Cow::Borrowed(function),
             callable: callable_meta,
             substitution,
-            source: BodySource::Function,
+            source: self
+                .module
+                .session_entry
+                .as_ref()
+                .filter(|entry| entry.declaration == function.declaration)
+                .map_or(BodySource::Function, |entry| {
+                    BodySource::Session(entry.clone())
+                }),
         })
     }
 

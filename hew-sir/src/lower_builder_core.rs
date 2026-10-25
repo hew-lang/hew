@@ -26,13 +26,16 @@ impl<'hir, 'service> Builder<'hir, 'service> {
         let source_params = source.parameters(&function)?.to_vec();
         let receiver_count = usize::from(matches!(
             source,
-            BodySource::Closure(_) | BodySource::Actor { .. }
+            BodySource::Closure(_) | BodySource::Actor { .. } | BodySource::Session(_)
         ));
         // A stream producer owns the caller's sink as an implicit trailing
         // parameter with no source binding.
         let stream = match source {
             BodySource::Actor { stream, .. } => stream.clone(),
-            BodySource::Function | BodySource::Closure(_) | BodySource::EntryAdapter(_) => None,
+            BodySource::Function
+            | BodySource::Closure(_)
+            | BodySource::EntryAdapter(_)
+            | BodySource::Session(_) => None,
         };
         if source_params.len() + receiver_count + usize::from(stream.is_some())
             != callable.signature.params.len()
@@ -129,6 +132,7 @@ impl<'hir, 'service> Builder<'hir, 'service> {
             loops: Vec::new(),
             places: Vec::new(),
             capture_places: HashMap::new(),
+            session_places: HashMap::new(),
             argument_receiver_loans: Vec::new(),
             defers: Vec::new(),
             defer_bodies: Vec::new(),
@@ -146,6 +150,7 @@ impl<'hir, 'service> Builder<'hir, 'service> {
         };
         builder.bind_captures(source)?;
         builder.bind_actor_state(source)?;
+        builder.bind_session_places(source)?;
         builder.bind_private_value_parameters(&source_params)?;
         for parameter in &source_params {
             if let BindingTarget::Value(value) = builder.binding_target(parameter.id)? {
@@ -419,7 +424,7 @@ impl<'hir, 'service> Builder<'hir, 'service> {
                 self.lower_intercept_entry(actor, handler, interceptor)?;
                 Ok(None)
             }
-            BodySource::Function | BodySource::Actor { .. } => {
+            BodySource::Function | BodySource::Actor { .. } | BodySource::Session(_) => {
                 let body = self.function.body.clone();
                 self.lower_block(&body, OwnedBindingUse::Return)
             }
@@ -944,6 +949,17 @@ impl<'hir, 'service> Builder<'hir, 'service> {
         binding: &HirBinding,
         value: ValueId,
     ) -> Result<(), SirLoweringError> {
+        if let Some(&place) = self.session_places.get(&binding.id) {
+            self.emit_place_operation(
+                SemOpKind::StoreInit {
+                    place,
+                    value: Operand { value },
+                },
+                Provenance::Synthesized,
+            )?;
+            self.owned_live.remove(&value);
+            return self.bind_source_target(binding, BindingTarget::Place(place));
+        }
         if binding.mutable && self.value_own_kind(value) == Some(OwnKind::Guaranteed) {
             // Like an affine borrowed parameter, the incoming loan remains the
             // readable value; only a replacement initializes this local owner.

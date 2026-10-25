@@ -10935,6 +10935,71 @@
     },
     {
       "availability": [
+        "native"
+      ],
+      "classification": "non-declarable",
+      "extent": "no-in-signature-extent",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
+        "native": "fn hew_live_slot_initialized( *const HewLiveSession, usize, ) -> bool"
+      },
+      "symbol": "hew_live_slot_initialized"
+    },
+    {
+      "availability": [
+        "native"
+      ],
+      "classification": "non-declarable",
+      "extent": "no-in-signature-extent",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
+        "native": "fn hew_live_slot_release( *mut HewLiveSession, usize, *mut *mut HewError, ) -> i32"
+      },
+      "symbol": "hew_live_slot_release"
+    },
+    {
+      "availability": [
+        "native"
+      ],
+      "classification": "non-declarable",
+      "extent": "no-in-signature-extent",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
+        "native": "fn hew_live_slot_revision( *const HewLiveSession, usize, ) -> u64"
+      },
+      "symbol": "hew_live_slot_revision"
+    },
+    {
+      "availability": [
+        "native"
+      ],
+      "classification": "non-declarable",
+      "extent": "no-in-signature-extent",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
+        "native": "fn hew_live_slot_set_initialized( *mut HewLiveSession, usize, bool, )"
+      },
+      "symbol": "hew_live_slot_set_initialized"
+    },
+    {
+      "availability": [
+        "native"
+      ],
+      "classification": "non-declarable",
+      "extent": "no-in-signature-extent",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
+        "native": "fn hew_live_slot_storage( *mut HewLiveSession, usize, *const HewValueLayout, ) -> *mut c_void"
+      },
+      "symbol": "hew_live_slot_storage"
+    },
+    {
+      "availability": [
         "native",
         "wasm32-wasip1"
       ],

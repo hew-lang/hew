@@ -596,12 +596,17 @@ pub(crate) fn verify_initialization(
         if matches!(
             slot.origin,
             StorageOrigin::Capture { .. }
+                | StorageOrigin::Session {
+                    initialized: true,
+                    ..
+                }
                 | StorageOrigin::ActorState {
                     initialized: true,
                     ..
                 }
         ) {
             entry.slots[slot.id.0 as usize] = InitState::Initialized;
+            partial::set_leaves(function, &mut entry, slot.id, InitState::Initialized);
         }
     }
     let borrows = &BorrowDependents::of(function);
@@ -781,7 +786,7 @@ pub(crate) fn define(
         entry.root != id
             || matches!(
                 function.storage[id.0 as usize].origin,
-                StorageOrigin::Local(_)
+                StorageOrigin::Local(_) | StorageOrigin::Session { .. }
             )
     }) {
         partial::require_root(function, state, id, block, context)?;
@@ -949,6 +954,7 @@ pub(crate) fn consume_if_owned(
     if !matches!(
         storage(function, id)?.origin,
         StorageOrigin::Local(_)
+            | StorageOrigin::Session { .. }
             | StorageOrigin::Aggregate(_)
             | StorageOrigin::ActorState { .. }
             | StorageOrigin::Capture { .. }

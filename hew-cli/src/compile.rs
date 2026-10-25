@@ -61,6 +61,7 @@ pub struct CompileOptions {
 
 pub(crate) fn frontend_options(target: &TargetSpec, options: &CompileOptions) -> FrontendOptions {
     FrontendOptions {
+        session_type_seed: None,
         no_typecheck: options.no_typecheck,
         warnings_as_errors: options.werror,
         enable_wasm_target: target.is_wasm(),
@@ -86,6 +87,7 @@ pub(crate) fn frontend_options(target: &TargetSpec, options: &CompileOptions) ->
 /// directly to retain access to the source string and stack-hint side table.
 pub(crate) fn frontend_options_for_check(options: &CompileOptions) -> FrontendOptions {
     FrontendOptions {
+        session_type_seed: None,
         no_typecheck: options.no_typecheck,
         warnings_as_errors: options.werror,
         enable_wasm_target: false,

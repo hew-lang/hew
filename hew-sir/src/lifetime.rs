@@ -243,8 +243,25 @@ pub(crate) fn verify(
         places: flow
             .places
             .iter()
-            .map(|(id, _)| {
-                if flow.projections.projection(*id).is_some() || flow.deferred_places.contains(id) {
+            .map(|(id, owner)| {
+                if let OwnerRoot::Session(root) = owner {
+                    if function.places.iter().any(|place| {
+                        place.id == *root
+                            && matches!(
+                                place.origin,
+                                crate::PlaceOrigin::Session {
+                                    initialized: true,
+                                    ..
+                                }
+                            )
+                    }) {
+                        LIVE
+                    } else {
+                        DEAD
+                    }
+                } else if flow.projections.projection(*id).is_some()
+                    || flow.deferred_places.contains(id)
+                {
                     DEAD
                 } else {
                     LIVE
@@ -1712,6 +1729,7 @@ impl<'a> Flow<'a> {
         if let Some(projection) = self.projections.projection(place) {
             match projection.root {
                 OwnerRoot::Local(root) => self.require_active(block, root, state, emit),
+                OwnerRoot::Session(_) => {}
                 OwnerRoot::Value(root) => {
                     if self
                         .indices
@@ -1963,6 +1981,10 @@ impl<'a> Flow<'a> {
         }
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one ownership transfer handles local, session, actor and capture places"
+    )]
     fn projected_operation(
         &self,
         block: BlockId,
@@ -1991,6 +2013,7 @@ impl<'a> Flow<'a> {
                     self.require_active(block, root, state, emit);
                     None
                 }
+                OwnerRoot::Session(_) => None,
             };
             if matches!(kind, SemOpKind::StoreAssign { .. }) {
                 self.require_droppable_places(

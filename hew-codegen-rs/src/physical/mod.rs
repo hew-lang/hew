@@ -50,6 +50,8 @@ mod stream;
 #[path = "../physical_suspend.rs"]
 mod suspend;
 
+#[path = "../physical_session.rs"]
+mod session;
 #[path = "../physical_tasks.rs"]
 mod tasks;
 
@@ -951,6 +953,10 @@ mod test_runtime;
 #[cfg(test)]
 #[path = "../physical_resource_tests.rs"]
 mod resource_tests;
+
+#[cfg(all(test, target_os = "linux"))]
+#[path = "../physical_session_tests.rs"]
+mod session_tests;
 
 #[cfg(test)]
 mod tests;

@@ -5503,6 +5503,7 @@ mod vec_owned_tests {
             clone_fn: None,
             drop_fn: None,
             release_start: None,
+            code_owner: ptr::null(),
         };
         // SAFETY: initialized i64 values match the plain descriptor.
         unsafe {

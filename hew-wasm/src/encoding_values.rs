@@ -548,6 +548,51 @@ mod tests {
     }
 
     #[test]
+    fn retained_yaml_mapping_uses_the_native_growth_and_detach_policy() {
+        let mut native = serde_yaml::Value::Mapping(serde_yaml::Mapping::new());
+        let mut bridged =
+            execute(&json!({"format": "Yaml", "operation": "parse", "text": "{}"})).unwrap();
+        for key in ["a", "b", "c", "d", "e", "f", "g", "h", "a"] {
+            let mapping = native.as_mapping_mut().unwrap();
+            let native_key = serde_yaml::Value::String(key.to_owned());
+            let growth = managed_tree::yaml_mapping_growth(mapping, &native_key);
+            managed_tree::yaml_mapping_insert(
+                mapping,
+                growth,
+                native_key,
+                serde_yaml::Value::from(7),
+            );
+            bridged = execute(&json!({"format": "Yaml", "operation": "object_set", "value": bridged["value"], "capacities": bridged["managed"]["capacities"], "key": key, "child": ["integer", "7"]})).unwrap();
+            assert_eq!(
+                bridged["managed"]["bytes"],
+                managed_tree::yaml_payload_bytes(&native)
+                    .unwrap()
+                    .to_string(),
+                "insert {key}"
+            );
+        }
+        let retained = native;
+        let mut native = retained.clone();
+        let mapping = native.as_mapping_mut().unwrap();
+        let key = serde_yaml::Value::String("detached".to_owned());
+        let growth = managed_tree::yaml_mapping_growth(mapping, &key);
+        managed_tree::yaml_mapping_insert(mapping, growth, key, serde_yaml::Value::from(8));
+        let detached = execute(&json!({"format": "Yaml", "operation": "object_set", "detach": true, "value": bridged["value"], "capacities": bridged["managed"]["capacities"], "key": "detached", "child": ["integer", "8"]})).unwrap();
+        assert_eq!(
+            detached["managed"]["bytes"],
+            managed_tree::yaml_payload_bytes(&native)
+                .unwrap()
+                .to_string()
+        );
+        assert_eq!(
+            bridged["managed"]["bytes"],
+            managed_tree::yaml_payload_bytes(&retained)
+                .unwrap()
+                .to_string()
+        );
+    }
+
+    #[test]
     fn json_value_bridge_retains_native_numbers_and_duplicate_policy() {
         let parsed = execute(&json!({"format": "Json", "operation": "parse", "text":
             r#"{"n":0,"u":18446744073709551615,"n":-9223372036854775808,"f":1.0,"z":-0.0}"#

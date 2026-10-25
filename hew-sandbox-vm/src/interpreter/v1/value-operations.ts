@@ -473,7 +473,7 @@ export function* collectionOperation(
     // Native snapshots push into an initially empty Vec, retaining its normal
     // growth capacity. A later semantic clone may use exact live length.
     mutableVector(result, items.length);
-    result.items.push(...items);
+    for (const item of items) result.items.push(item);
     return result;
   }
   let staged = receiver;

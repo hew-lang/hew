@@ -304,6 +304,19 @@ fn main() -> i64 {
   assert.equal(result.exit_code, 1, JSON.stringify(result));
 });
 
+test("actor-owned JSON mutation follows native retained capacity", async () => {
+  const source = fs.readFileSync(
+    path.join(
+      repoRoot,
+      "tests/core-acceptance/cases/actor-owned-budget-encoding.hew",
+    ),
+    "utf8",
+  );
+  const result = await runProgram(source, "");
+  assert.equal(result.stdout, "32\nencoding limit\n", JSON.stringify(result));
+  assert.equal(result.exit_code, 1, JSON.stringify(result));
+});
+
 test("actor-owned generator adoption transfers a live gated task scope", async () => {
   const source = fs.readFileSync(
     path.join(

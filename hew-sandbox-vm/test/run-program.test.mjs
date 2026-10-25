@@ -206,6 +206,20 @@ test("actor-owned mailbox refusal rolls back the recipient and preserves caller 
   assert.equal(result.exit_code, 1, JSON.stringify(result));
 });
 
+for (const [name, file, stdout] of [
+  ["String", "actor-owned-budget-pipe.hew", "6\n6\npipe limit\nsender retained\n"],
+  ["Bytes slice", "actor-owned-budget-pipe-bytes.hew", "1\nretained slice capacity\nsender retained\n"],
+]) {
+  test(`actor-owned Pipe ${name} retains capacity and preserves a refused sender`, async () => {
+    const source = fs.readFileSync(
+      path.join(repoRoot, "tests/core-acceptance/cases", file), "utf8",
+    );
+    const result = await runProgram(source, "");
+    assert.equal(result.stdout, stdout, JSON.stringify(result));
+    assert.equal(result.exit_code, 1, JSON.stringify(result));
+  });
+}
+
 test("actor-owned map and set snapshots retain native Vec capacity", async () => {
   const source = fs.readFileSync(
     path.join(

@@ -1,8 +1,8 @@
 import std.stream;
 
 // A one-byte slice retains the complete 32-byte backing. The receiver owns
-// a Stream state slot8 and one queued bytes slot16, for a total of 56.
-#[max_heap(56)]
+// a Stream state slot8 and one queued bytes slot8, for a total of 48.
+#[max_heap(48)]
 actor Reader {
     var input: stream.Stream<bytes>;
     receive fn read() -> i64 {
@@ -13,7 +13,7 @@ actor Reader {
     }
 }
 
-#[max_heap(55)]
+#[max_heap(47)]
 actor Small {
     var input: stream.Stream<bytes>;
 }

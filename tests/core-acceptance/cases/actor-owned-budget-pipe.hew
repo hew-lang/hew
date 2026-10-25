@@ -29,6 +29,17 @@ fn main() -> i64 {
     stop(reader);
     stopped(reader);
 
+    // Moving a prefilled receiving Stream transfers the same retained graph.
+    let (queued_sink, queued_input): (stream.Sink<string>, stream.Stream<string>) = stream.pipe(1).expect("queued pipe");
+    queued_sink.send(retained).expect("queued item");
+    let queued = spawn Reader { input: queued_input };
+    match queued.read() {
+        .Ok(n) => println(n),
+        _ => return 4,
+    }
+    stop(queued);
+    stopped(queued);
+
     let (small_sink, small_input): (stream.Sink<string>, stream.Stream<string>) = stream.pipe(1).expect("small pipe");
     let small = spawn Small { input: small_input };
     match small_sink.send(retained) {

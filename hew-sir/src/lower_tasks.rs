@@ -41,7 +41,7 @@ pub(super) fn remove_empty_scopes(function: &mut SemFunction) {
     if function
         .blocks
         .iter()
-        .flat_map(|block| &block.ops)
+        .flat_map(|block| block.operations())
         .any(|op| {
             matches!(
                 op.kind,
@@ -192,8 +192,12 @@ impl Builder<'_, '_> {
         let mut inputs = Vec::new();
         for member in members {
             let value = self.lower_consuming_value(member)?;
-            self.owned_live.remove(&value);
             inputs.push(Operand { value });
+        }
+        // Earlier members remain cleanup roots while later members can fail.
+        // The race acquires them together at its checked publication boundary.
+        for input in &inputs {
+            self.owned_live.remove(&input.value);
         }
         self.emit(
             expression,

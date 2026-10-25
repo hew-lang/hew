@@ -1,0 +1,32 @@
+// A one-byte slice retains its complete 32-byte backing. Mutating that
+// slice needs a private minimum-capacity 16-byte buffer while state retains
+// the original. Charging visible length would incorrectly admit the detach.
+#[max_heap(48)]
+actor Packet {
+    var payload: bytes;
+
+    receive fn check_slice() -> i64 {
+        let alias = payload[0..1];
+        alias.len()
+    }
+
+    receive fn detach_slice() -> i64 {
+        var alias = payload[0..1];
+        alias.push(120);
+        alias.len()
+    }
+}
+
+fn main() -> i64 {
+    let packet = spawn Packet { payload: b"0123456789abcdef0123456789abcdef" };
+    match packet.check_slice() {
+        .Ok(n) => println(n),
+        .Err(_) => return 1,
+    }
+    match packet.detach_slice() {
+        .Err(.Trapped) => println("slice capacity"),
+        _ => return 2,
+    }
+    stopped(packet);
+    0
+}

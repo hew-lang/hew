@@ -319,7 +319,7 @@ unsafe fn expand(
                 crate::stream::expand_stream_release(stream, pending);
             }
             ReleaseItem::Value { .. } => pending.push(item),
-            ReleaseItem::String { value } => hew_cabi::string::string_release(value),
+            ReleaseItem::String { value } => crate::string::hew_string_drop_managed(value),
             ReleaseItem::Storage { owner, free } => free(owner),
             ReleaseItem::ManagedBacking {
                 pointer,

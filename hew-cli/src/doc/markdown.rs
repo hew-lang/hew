@@ -306,6 +306,17 @@ pub fn render_index(modules: &[DocModule], config: &DocSiteConfig) -> String {
                 }
                 out.push('\n');
             }
+            let remaining_guides: Vec<&&DocModule> = language_mods
+                .iter()
+                .filter(|module| config.guide_entry(&module.name).is_none())
+                .collect();
+            if !remaining_guides.is_empty() {
+                out.push_str("### More guides\n\n");
+                for module in remaining_guides {
+                    render_index_entry_md(&mut out, module, true, config);
+                }
+                out.push('\n');
+            }
         }
         out.push('\n');
     }

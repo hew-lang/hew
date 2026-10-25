@@ -1093,6 +1093,19 @@ pub fn render_index(modules: &[DocModule], config: &DocSiteConfig) -> String {
                 }
                 body.push_str("</ul></section>\n");
             }
+            let remaining_guides: Vec<&&DocModule> = language_mods
+                .iter()
+                .filter(|module| config.guide_entry(&module.name).is_none())
+                .collect();
+            if !remaining_guides.is_empty() {
+                body.push_str(
+                    "<section class=\"guide-group\"><h3>More guides</h3>\n<ul class=\"module-list\">\n",
+                );
+                for module in remaining_guides {
+                    render_index_entry(&mut body, module, true, config);
+                }
+                body.push_str("</ul></section>\n");
+            }
         }
         body.push_str("</section>\n");
     }
@@ -1263,8 +1276,21 @@ pub fn add(a: i32, b: i32) -> i32 {
             consts: vec![],
             type_aliases: vec![],
         };
+        let advanced = DocModule {
+            name: "language::advanced".to_string(),
+            doc: Some("# Advanced topics\n\nExplore advanced behavior.".to_string()),
+            functions: vec![],
+            types: vec![],
+            actors: vec![],
+            machines: vec![],
+            traits: vec![],
+            impls: vec![],
+            consts: vec![],
+            type_aliases: vec![],
+        };
         let config = DocSiteConfig {
             guide_title: "Learn Hew".to_string(),
+            guide_order: vec!["language::advanced".to_string()],
             guide_groups: vec![GuideGroup {
                 title: "Start here".to_string(),
                 guides: vec![GuideEntry {
@@ -1276,11 +1302,14 @@ pub fn add(a: i32, b: i32) -> i32 {
             ..DocSiteConfig::default()
         };
 
-        let html = render_index(&[module], &config);
+        let html = render_index(&[module, advanced], &config);
         assert!(html.contains("<h2>Learn Hew</h2>"));
         assert!(html.contains("<h3>Start here</h3>"));
         assert!(html.contains(">Basics</a>"));
         assert!(html.contains(">Write a first program.</span>"));
+        assert!(html.contains("<h3>More guides</h3>"));
+        assert!(html.contains(">Advanced topics</a>"));
+        assert!(html.contains(">Explore advanced behavior.</span>"));
         assert!(!html.contains("A long technical introduction."));
         assert!(!html.contains("module-desc\"> —"));
     }

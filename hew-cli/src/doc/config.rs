@@ -194,4 +194,24 @@ url = "https://example.com"
         };
         assert_eq!(config.expand_version("Hew {version}"), "Hew 1.2.3");
     }
+
+    #[test]
+    fn grouped_and_ordered_guides_both_remain_guides() {
+        let config = DocSiteConfig {
+            guide_order: vec!["guide::advanced".to_string()],
+            guide_groups: vec![GuideGroup {
+                title: "Start here".to_string(),
+                guides: vec![GuideEntry {
+                    module: "guide::start".to_string(),
+                    label: "Start".to_string(),
+                    summary: "Begin using the project.".to_string(),
+                }],
+            }],
+            ..DocSiteConfig::default()
+        };
+
+        assert!(config.is_guide("guide::start"));
+        assert!(config.is_guide("guide::advanced"));
+        assert!(config.guide_entry("guide::advanced").is_none());
+    }
 }

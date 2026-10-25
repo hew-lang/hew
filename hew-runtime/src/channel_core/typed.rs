@@ -929,12 +929,211 @@ mod tests {
         assert_eq!(source.live_bytes(), 0);
     }
 
+    unsafe extern "C-unwind" fn drop_bytes(slot: *mut c_void) {
+        unsafe {
+            crate::bytes::hew_bytes_drop_managed((*slot.cast::<crate::bytes::BytesTriple>()).ptr)
+        };
+    }
+    #[test]
+    fn typed_bytes_slice_keeps_original_backing_and_uses_canonical_handle_width() {
+        static BYTES: HewManagedValueDescriptor = HewManagedValueDescriptor {
+            slot_bytes: 8,
+            visit: Some(crate::owned_value_budget::visit::hew_managed_visit_bytes),
+        };
+        let layout = HewValueLayout {
+            code_owner: core::ptr::null(),
+            managed: &BYTES,
+            release_start: None,
+            size: size_of::<crate::bytes::BytesTriple>(),
+            align: align_of::<crate::bytes::BytesTriple>(),
+            ownership_kind: HewTypeOwnershipKind::Bytes,
+            clone_fn: None,
+            drop_fn: Some(drop_bytes),
+        };
+        let source = ValueOwner::new(Some(32));
+        let receiver = ValueOwner::new(Some(40));
+        let core = core(&receiver, 1, layout);
+        let full = unsafe {
+            crate::bytes::hew_bytes_from_static(b"0123456789abcdef0123456789abcdef".as_ptr(), 32)
+        };
+        let mut slice =
+            unsafe { crate::bytes::hew_bytes_slice(full.ptr, full.offset, full.len, 0, 1) };
+        for slot in [(&raw const full).cast(), (&raw const slice).cast()] {
+            unsafe { source.acquire_value(&layout, slot).unwrap().commit() };
+        }
+        let mut write = send(core.clone(), (&raw mut slice).cast(), layout);
+        assert_eq!(with_value_owner(&Some(source.clone()), || write.poll()), 1);
+        assert_eq!(
+            source.live_bytes(),
+            32,
+            "the sender still owns its distinct original alias"
+        );
+        assert_eq!(
+            receiver.live_bytes(),
+            40,
+            "canonical handle8 plus full retained backing32"
+        );
+        let mut read = TypedRead::new(core.clone(), waker());
+        assert_eq!(read.poll(), 1);
+        let mut out = crate::bytes::BytesTriple {
+            ptr: core::ptr::null_mut(),
+            offset: 0,
+            len: 0,
+        };
+        assert!(unsafe { read.take((&raw mut out).cast()) });
+        assert_eq!(out.ptr, full.ptr);
+        assert_eq!(out.len, 1);
+        assert_eq!(receiver.live_bytes(), 32);
+        with_value_owner(&Some(receiver.clone()), || unsafe {
+            crate::bytes::hew_bytes_drop_managed(out.ptr)
+        });
+        assert_eq!(receiver.live_bytes(), 0);
+        assert_eq!(unsafe { *full.ptr }, b'0');
+        with_value_owner(&Some(source.clone()), || unsafe {
+            crate::bytes::hew_bytes_drop_managed(full.ptr)
+        });
+        core.close_typed_sync();
+        assert_eq!(source.live_bytes(), 0);
+    }
+
     unsafe extern "C" fn visit_stream(
         slot: *const c_void,
         visitor: *const HewManagedStorageVisitor,
     ) -> i32 {
         unsafe { (&**slot.cast::<*const ChannelCore>()).visit_typed(visitor) }
     }
+    struct ProtocolProbe {
+        core: Arc<ChannelCore>,
+        ready: bool,
+        close_on_commit: bool,
+        aborted: Arc<std::sync::atomic::AtomicBool>,
+        resumed: Arc<std::sync::atomic::AtomicBool>,
+    }
+    unsafe extern "C" fn visit_probe(
+        slot: *const c_void,
+        visitor: *const HewManagedStorageVisitor,
+    ) -> i32 {
+        use std::sync::atomic::Ordering;
+        let probe = unsafe { &**slot.cast::<*mut ProtocolProbe>() };
+        let identity = (probe as *const ProtocolProbe).cast();
+        match unsafe { ((*visitor).storage)((*visitor).context, identity, 0) } {
+            SKIP_DESCENDANTS => return 0,
+            DESCEND => {}
+            error => return error,
+        }
+        match unsafe { (*visitor).kind } {
+            HewManagedWalkKind::PrepareTransfer if !probe.ready => TRANSFER_PENDING,
+            HewManagedWalkKind::CommitTransfer if probe.close_on_commit => {
+                assert!(!probe.core.prepare_typed_close(None));
+                0
+            }
+            HewManagedWalkKind::ResumeTransfer => {
+                assert!(
+                    probe.core.locked().queue.is_empty(),
+                    "resume precedes publication"
+                );
+                probe.resumed.store(true, Ordering::SeqCst);
+                0
+            }
+            HewManagedWalkKind::AbortTransfer => {
+                probe.aborted.store(true, Ordering::SeqCst);
+                0
+            }
+            _ => 0,
+        }
+    }
+    unsafe extern "C-unwind" fn drop_probe(slot: *mut c_void) {
+        let probe = unsafe { *slot.cast::<*mut ProtocolProbe>() };
+        if let Some(owner) = current_owner() {
+            owner.release_backing(probe.cast(), 0);
+        }
+        unsafe { drop(Box::from_raw(probe)) };
+    }
+    fn probe_layout() -> HewValueLayout {
+        static PROBE: HewManagedValueDescriptor = HewManagedValueDescriptor {
+            slot_bytes: 8,
+            visit: Some(visit_probe),
+        };
+        let mut layout = layout(false);
+        layout.managed = &PROBE;
+        layout.drop_fn = Some(drop_probe);
+        layout.ownership_kind = HewTypeOwnershipKind::LayoutManaged;
+        layout
+    }
+    fn probe(core: Arc<ChannelCore>, ready: bool, close_on_commit: bool) -> *mut ProtocolProbe {
+        Box::into_raw(Box::new(ProtocolProbe {
+            core,
+            ready,
+            close_on_commit,
+            aborted: Arc::default(),
+            resumed: Arc::default(),
+        }))
+    }
+
+    #[test]
+    fn receiver_close_aborts_unpublished_pending_provider_and_reserved_capacity() {
+        use std::sync::atomic::Ordering;
+        let source = ValueOwner::new(Some(0));
+        let receiver = ValueOwner::new(Some(8));
+        let layout = probe_layout();
+        let core = core(&receiver, 1, layout);
+        let mut value = probe(core.clone(), false, false);
+        let aborted = unsafe { (*value).aborted.clone() };
+        unsafe {
+            source
+                .acquire_value(&layout, (&raw const value).cast())
+                .unwrap()
+                .commit()
+        };
+        let mut write = send(core.clone(), (&raw mut value).cast(), layout);
+        assert_eq!(with_value_owner(&Some(source.clone()), || write.poll()), 0);
+        assert!(core.locked().queue.is_empty());
+        assert!(!core.prepare_typed_close(Some((*waker()).clone())));
+        assert_eq!(write.poll(), 2);
+        assert!(aborted.load(Ordering::SeqCst));
+        assert!(core.prepare_typed_close(None));
+        // The rolled-back reservation leaves all eight bytes available.
+        let reservation = receiver
+            .acquire(&[ManagedStorage {
+                identity: 123,
+                bytes: 8,
+            }])
+            .unwrap();
+        drop(reservation);
+        with_value_owner(&Some(source), || unsafe {
+            drop_probe((&raw mut value).cast())
+        });
+        core.close_typed_sync();
+        assert_eq!(receiver.live_bytes(), 0);
+    }
+
+    #[test]
+    fn late_close_drains_only_after_graph_commit_and_final_resume() {
+        use std::sync::atomic::Ordering;
+        let source = ValueOwner::new(Some(0));
+        let receiver = ValueOwner::new(Some(8));
+        let layout = probe_layout();
+        let core = core(&receiver, 1, layout);
+        let mut value = probe(core.clone(), true, true);
+        let resumed = unsafe { (*value).resumed.clone() };
+        let aborted = unsafe { (*value).aborted.clone() };
+        unsafe {
+            source
+                .acquire_value(&layout, (&raw const value).cast())
+                .unwrap()
+                .commit()
+        };
+        let mut write = send(core.clone(), (&raw mut value).cast(), layout);
+        assert_eq!(with_value_owner(&Some(source.clone()), || write.poll()), 1);
+        assert!(resumed.load(Ordering::SeqCst));
+        assert!(!aborted.load(Ordering::SeqCst));
+        assert_eq!(core.locked().queue.len(), 1);
+        assert_eq!(receiver.live_bytes(), 8);
+        assert!(core.prepare_typed_close(None));
+        core.close_typed_sync();
+        assert_eq!(receiver.live_bytes(), 0);
+    }
+
     static STREAM: HewManagedValueDescriptor = HewManagedValueDescriptor {
         slot_bytes: 8,
         visit: Some(visit_stream),

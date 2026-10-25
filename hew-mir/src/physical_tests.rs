@@ -3641,7 +3641,7 @@ fn scalar_loop_chunks_leave_checked_failures_and_calls_in_the_caller() {
                 module.defs.path(callable.declaration) == name
             })
             .unwrap()
-            .loop_chunks()
+            .loop_chunks(module)
     };
     let scalar = chunks("scalar");
     assert_eq!(scalar.len(), 1);
@@ -3676,5 +3676,251 @@ fn scalar_loop_chunks_leave_checked_failures_and_calls_in_the_caller() {
         chunks("nested").len(),
         1,
         "only the innermost scheduling boundary is batched"
+    );
+}
+
+#[test]
+fn vector_loop_chunks_borrow_only_invariant_scalar_receivers() {
+    let semantic = lower_source(
+        r#"
+        fn scan(values: Vec<i64>, limit: i64) -> i64 {
+            var sum: i64 = 0;
+            for index in 0..limit { sum += values[index]; }
+            sum
+        }
+        fn mutating(limit: i64) -> i64 {
+            var values: Vec<i64> = Vec.new();
+            values.push(1);
+            var sum: i64 = 0;
+            for index in 0..limit {
+                values.set(0, index);
+                sum += values[0];
+            }
+            sum
+        }
+        fn owned(values: Vec<string>, limit: i64) -> string {
+            var last = "";
+            for index in 0..limit { last = values[index]; }
+            last
+        }
+        fn main() -> i64 {
+            var values: Vec<i64> = Vec.new();
+            values.push(1);
+            var strings: Vec<string> = Vec.new();
+            strings.push("one");
+            let last = owned(strings, 1);
+            scan(values, 1) + mutating(1) + last.len()
+        }
+        "#,
+    );
+    let verified = lower_physical_module(&semantic, target_for_inventory(&semantic)).unwrap();
+    let module = verified.module();
+    let function = |name: &str| {
+        module
+            .functions
+            .iter()
+            .find(|function| {
+                let callable = &module.callables[function.callable.0 as usize];
+                module.defs.path(callable.declaration) == name
+            })
+            .unwrap()
+    };
+    let scan = function("scan");
+    let chunks = scan.loop_chunks(module);
+    assert_eq!(chunks.len(), 1);
+    let chunk = &chunks[0];
+    let read = scan
+        .blocks
+        .iter()
+        .find(|block| {
+            matches!(
+                block.terminator,
+                PhysicalTerminator::RuntimeCall {
+                    action: PhysicalRuntimeAction {
+                        carrier: PhysicalRuntimeCarrier::Vector {
+                            operation: PhysicalVectorOp::Index,
+                            ..
+                        },
+                        ..
+                    },
+                    ..
+                }
+            )
+        })
+        .unwrap();
+    assert!(chunk.blocks.contains(&read.id));
+    let PhysicalTerminator::RuntimeCall {
+        failure: Some(failure),
+        ..
+    } = &read.terminator
+    else {
+        panic!("indexed read must preserve its bounds failure");
+    };
+    assert!(chunk.exits.contains_key(&failure.target));
+    assert!(function("mutating").loop_chunks(module).is_empty());
+    assert!(function("owned").loop_chunks(module).is_empty());
+}
+
+#[test]
+fn loop_chunks_retain_immutable_aggregate_constants_without_freezing_mutable_fields() {
+    let semantic = lower_source(
+        r"
+        type Facts { increment: i64; }
+        fn fixed(limit: i64) -> i64 {
+            let facts = Facts { increment: 7 };
+            let step = facts.increment;
+            var sum: i64 = 0;
+            for index in 0..limit { sum += step; }
+            sum
+        }
+        fn dynamic(limit: i64, increment: i64) -> i64 {
+            let facts = Facts { increment: increment };
+            let step = facts.increment;
+            var sum: i64 = 0;
+            for index in 0..limit { sum += step; }
+            sum
+        }
+        fn changed(limit: i64, increment: i64) -> i64 {
+            var facts = Facts { increment: 7 };
+            facts.increment = increment;
+            let step = facts.increment;
+            var sum: i64 = 0;
+            for index in 0..limit { sum += step; }
+            sum
+        }
+        fn main() -> i64 { fixed(2) + dynamic(2, 3) + changed(2, 3) }
+        ",
+    );
+    let verified = lower_physical_module(&semantic, target_for_inventory(&semantic)).unwrap();
+    let module = verified.module();
+    for (name, constant) in [("fixed", true), ("dynamic", false), ("changed", false)] {
+        let function = module
+            .functions
+            .iter()
+            .find(|function| {
+                let callable = &module.callables[function.callable.0 as usize];
+                module.defs.path(callable.declaration) == name
+            })
+            .unwrap();
+        let chunks = function.loop_chunks(module);
+        assert_eq!(chunks.len(), 1, "{name}");
+        assert_eq!(
+            chunks[0].constants.iter().any(|op| matches!(
+                op,
+                PhysicalOp::Const {
+                    value: PhysicalConst::IntegerBits(7),
+                    ..
+                }
+            )),
+            constant,
+            "{name}"
+        );
+        // Every ascending source range also carries immutable direction and
+        // step fields; they must remain facts inside the outlined recurrence.
+        assert!(
+            chunks[0].constants.iter().any(|op| matches!(
+                op,
+                PhysicalOp::Const {
+                    value: PhysicalConst::Bool(false),
+                    ..
+                }
+            )),
+            "{name}: ascending direction"
+        );
+        assert!(
+            chunks[0].constants.iter().any(|op| matches!(
+                op,
+                PhysicalOp::Const {
+                    value: PhysicalConst::IntegerBits(1),
+                    ..
+                }
+            )),
+            "{name}: unit step"
+        );
+    }
+}
+
+#[test]
+fn loop_constants_respect_accepted_physical_terminator_overwrites() {
+    let semantic = lower_source(
+        r"
+        fn probe(first: i64, limit: i64) -> i64 {
+            let increment: i64 = 7;
+            let computed = first + 1;
+            var sum: i64 = computed;
+            for index in 0..limit { sum += increment; }
+            sum
+        }
+        fn main() -> i64 { probe(4, 3) }
+        ",
+    );
+    let mut module = lower_physical_module(&semantic, target_for_inventory(&semantic))
+        .unwrap()
+        .into_unverified();
+    let callable = module
+        .callables
+        .iter()
+        .find(|callable| module.defs.path(callable.declaration) == "probe")
+        .unwrap()
+        .id;
+    let function = module
+        .functions
+        .iter_mut()
+        .find(|function| function.callable == callable)
+        .unwrap();
+    let constant = function
+        .blocks
+        .iter()
+        .flat_map(|block| &block.ops)
+        .find_map(|op| {
+            if let PhysicalOp::Const {
+                dest,
+                value: PhysicalConst::IntegerBits(7),
+            } = op
+            {
+                Some(*dest)
+            } else {
+                None
+            }
+        })
+        .unwrap();
+    let checked = function
+        .blocks
+        .iter_mut()
+        .find_map(|block| {
+            if let PhysicalTerminator::CheckedBinary { result, normal, .. } = &mut block.terminator
+            {
+                Some((result, normal))
+            } else {
+                None
+            }
+        })
+        .unwrap();
+    let previous = *checked.0;
+    *checked.0 = constant;
+    for (source, _) in &mut checked.1.transfers {
+        if *source == previous {
+            *source = constant;
+        }
+    }
+    // Physical scalar storage may be reused even though source lowering gives
+    // every expression a fresh ID. The verifier permits this overwrite.
+    verify_physical_module(&module).unwrap();
+    let function = module
+        .functions
+        .iter()
+        .find(|function| function.callable == callable)
+        .unwrap();
+    let chunks = function.loop_chunks(&module);
+    assert_eq!(chunks.len(), 1);
+    assert!(
+        !chunks[0].constants.iter().any(|op| matches!(
+            op,
+            PhysicalOp::Const {
+                value: PhysicalConst::IntegerBits(7),
+                ..
+            }
+        )),
+        "a checked result must supersede the earlier constant fact"
     );
 }

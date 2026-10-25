@@ -251,7 +251,8 @@ pub(crate) fn set_current_worker_shard(worker_id: usize) {
 // `current_shard`/`shard_add` carry no target gate and no `profiler` gate:
 // `record_actor_turn` reaches them on every target whenever the hot tier is on,
 // so they need no allow of their own — they die only if that recorder does.
-fn current_shard() -> usize {
+#[inline]
+pub(crate) fn current_shard() -> usize {
     WORKER_SHARD.with(Cell::get)
 }
 

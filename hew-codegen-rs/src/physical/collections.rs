@@ -349,13 +349,7 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
         let element_layout = self.module.target.layout(&glue.element.ty).ok_or_else(|| {
             CodegenError::FailClosed("vector element lacks its target layout".into())
         })?;
-        let scalar = glue.element.own == OwnKind::None
-            && glue.element.clone == Some(CloneAction::Bitwise)
-            && glue.element.destroy.is_none()
-            && matches!(
-                element_layout.repr,
-                PhysicalRepr::Integer { .. } | PhysicalRepr::Float { .. }
-            );
+        let scalar = glue.has_inline_scalar_access(element_layout);
         if operation == PhysicalVectorOp::New {
             let descriptor = self
                 .llvm

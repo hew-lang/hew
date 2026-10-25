@@ -548,6 +548,21 @@ pub struct PhysicalVectorGlue {
     pub element: PhysicalValueRecipe,
 }
 
+impl PhysicalVectorGlue {
+    /// Whether element access needs only a checked scalar load or store,
+    /// without invoking cloning or destruction glue.
+    #[must_use]
+    pub fn has_inline_scalar_access(&self, layout: &PhysicalLayout) -> bool {
+        self.element.own == OwnKind::None
+            && self.element.clone == Some(CloneAction::Bitwise)
+            && self.element.destroy.is_none()
+            && matches!(
+                layout.repr,
+                PhysicalRepr::Integer { .. } | PhysicalRepr::Float { .. }
+            )
+    }
+}
+
 /// Key and value recipes shared by map operations and ordinary copy/drop.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PhysicalMapGlue {

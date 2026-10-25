@@ -6,8 +6,7 @@
 //! when `HEW_OBSERVE` enables them.
 
 use std::alloc::{GlobalAlloc, Layout, System};
-use std::cell::Cell;
-use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 // ── Counters ────────────────────────────────────────────────────────────
 
@@ -18,8 +17,8 @@ static BYTES_LIVE: AtomicU64 = AtomicU64::new(0);
 static PEAK_BYTES_LIVE: AtomicU64 = AtomicU64::new(0);
 
 // Fixed storage survives thread exit and never allocates on the allocator path.
-// Each thread normally writes its own cache lines. Threads beyond the shard
-// count share a shard safely through atomic updates.
+// Workers use the existing observe shard identity; non-worker threads share
+// shard 0 safely through atomic updates.
 const SHARD_COUNT: usize = crate::actor::HEW_MAX_WORKERS + 1;
 
 #[repr(align(128))]
@@ -43,24 +42,8 @@ impl CumulativeCounters {
 
 static CUMULATIVE: [CumulativeCounters; SHARD_COUNT] =
     [const { CumulativeCounters::new() }; SHARD_COUNT];
-static NEXT_SHARD: AtomicUsize = AtomicUsize::new(0);
-
-thread_local! {
-    // Const initialization and no destructor keep this safe during allocation
-    // and during other thread-local values' destructors.
-    static COUNTER_SHARD: Cell<usize> = const { Cell::new(usize::MAX) };
-}
-
 fn cumulative_counters() -> &'static CumulativeCounters {
-    let index = COUNTER_SHARD.with(|slot| {
-        let mut index = slot.get();
-        if index == usize::MAX {
-            index = NEXT_SHARD.fetch_add(1, Ordering::Relaxed) % SHARD_COUNT;
-            slot.set(index);
-        }
-        index
-    });
-    &CUMULATIVE[index]
+    &CUMULATIVE[crate::observe::current_shard()]
 }
 
 // ── Allocator wrapper ───────────────────────────────────────────────────

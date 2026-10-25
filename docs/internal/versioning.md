@@ -46,7 +46,7 @@ untagged builds, where `X` counts commits since the nearest reachable Hew
 release tag. Unrelated tags do not affect that count. A dirty checkout also
 appends `.dirty`; a clean build at the matching tag reports the plain version.
 
-After publishing v0.9.2, main uses base `0.9.3` for subsequent development.
+After publishing v0.9.3, main uses base `0.9.4` for subsequent development.
 Keep edition 2026 unchanged. The
 post-release bump is separate from the qualified release commit and its tag. The
 [post-release checklist](../release-runbook.md#phase-6--post-release-verification)

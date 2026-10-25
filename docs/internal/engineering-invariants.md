@@ -23,6 +23,18 @@ specifications.
 - When two representations disagree, reject the ambiguity or resolve it at the
   owning layer before crossing the boundary.
 
+## Ownership proofs and runtime work
+
+- Settle ownership legality, transfers and cleanup selection in the compiler.
+  Lower the remaining physical operations; eliminate bookkeeping whose outcome
+  is already known instead of relying on LLVM to rediscover the proof.
+- Derive suspended-frame visibility from verified initialization and the
+  canonical suspension facts. Expose only owners that can survive a quiescent
+  boundary, retaining the structural roots of active operations and cleanup.
+- Runtime occupancy, sharing and budget accounting represent genuinely dynamic
+  state. Preserve the required release, COW and cancellation behaviour while
+  removing redundant metadata and checks.
+
 ## Declaration and type identity
 
 - Resolve source names in the checker. Later stages consume declaration,

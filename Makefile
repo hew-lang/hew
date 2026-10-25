@@ -443,6 +443,20 @@ live-component-bindings: ## Generate: C guest bindings for the portable referenc
 live-node: ## Build: typed node adapter for the portable component host
 	cargo build -p hew-live --features component --bin hew-live-node
 
+LIVE_SDK_DEST ?= $(DEBUG_DIR)/live-sdk
+LIVE_SDK_RUNTIME ?= $(DEBUG_DIR)/$(if $(filter Windows_NT,$(OS)),hew.dll,$(if $(findstring apple-darwin,$(HOST_TRIPLE)),libhew.dylib,libhew.so))
+.PHONY: live-sdk
+live-sdk: require-host-cargo-target wasm-runtime-debug ## Build: stage a matched experimental live execution SDK
+	cargo build -p hew-runtime -p hew-lib -p hew-cli -p hew-live --features hew-live/component $(CARGO_TARGET_FLAG)
+	@sh "$(MAKEFILE_ROOT)/scripts/stage-release-package.sh" \
+		--source-dir "$(CURDIR)" --bin-dir "$(DEBUG_DIR)" \
+		--bin-suffix "$(if $(filter Windows_NT,$(OS)),.exe,)" \
+		--native-lib "$(LIBHEW)" --native-triple "$(HOST_TRIPLE)" \
+		--native-lib-name "$(LIBHEW_NAME)" --wasi-lib-dir "$(WASM_DEBUG_DIR)" \
+		--live-runtime "$(LIVE_SDK_RUNTIME)" --destination "$(LIVE_SDK_DEST)" \
+		--completion-shells bash
+	@printf 'Live SDK: %s\nSet HEW_WASI_SDK to your installed WASI SDK for component source builds.\n' "$(LIVE_SDK_DEST)"
+
 .PHONY: test-live-network
 test-live-network: hew-native live-node wasm-runtime-debug ## Test: source replacement through authenticated QUIC nodes
 	HEW_LIVE_COMPILER="$(abspath $(DEBUG_HEW))" \

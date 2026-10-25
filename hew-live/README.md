@@ -1,5 +1,25 @@
 # Experimental native live execution
 
+Stage the compiler, standard library, shared runtime, both live companions and
+the prepared native node module together:
+
+```sh
+make live-sdk LIVE_SDK_DEST=/path/to/new/hew-live-sdk
+export PATH=/path/to/new/hew-live-sdk/bin:$PATH
+export HEW_WASI_SDK=/path/to/wasi-sdk
+```
+
+The destination must be new. The SDK uses the ordinary release layout and can
+be moved after staging. The companions find their matching compiler, runtime,
+portable libraries and node module relative to their executable. Build inputs
+stay in the selected Cargo target; `make clean` cleans that target after its
+consumers finish. Native preparation is implemented for ELF and Mach-O; the
+end-to-end SDK controls currently run on Linux.
+
+The staged reference source is `share/hew/live/router.hew`. For the persistent
+source prompt, run `hew tool live --runtime /path/to/new/hew-live-sdk/lib/hew/libhew.so`
+(use `libhew.dylib` on macOS).
+
 `hew-live` prepares and loads native Hew host exports in a persistent process.
 It imports one shared `libhew` runtime and retains code generations through
 explicit executable roots and dependency edges. The native boundary is trusted
@@ -151,7 +171,8 @@ transport is ordinary Hew source using `Node`, authenticated peer sessions and a
 runtime; each portable deployment keeps its own component Store and guest runtime.
 Only the explicitly authorized peer receives the control actor grant.
 
-Prepare the same-build transport once in an unused output directory:
+The staged SDK includes its same-build transport. With individually built
+companions, prepare it once in an unused output directory:
 
 ```sh
 hew-live-node prepare-transport --compiler /path/to/hew \

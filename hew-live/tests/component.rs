@@ -143,7 +143,12 @@ async fn hew_and_foreign_components_share_services_and_snapshot_contracts() {
     let engine = Engine::new(&config).unwrap();
     // Preparation compiles the immutable component before any service is granted.
     let component = Component::new(&engine, bytes).unwrap();
-    exercise_router(&engine, &component).await;
+    tokio::time::timeout(
+        std::time::Duration::from_secs(30),
+        exercise_router(&engine, &component),
+    )
+    .await
+    .expect("Hew component lifecycle must make progress");
     let core = std::fs::read(environment("HEW_LIVE_FOREIGN_COMPONENT")).unwrap();
     let foreign = Component::new(&engine, component_bytes(&core)).unwrap();
     exercise_router(&engine, &foreign).await;

@@ -54,8 +54,15 @@ admission refusal while paused, retained-state resume, disposal and snapshot
 activation with different instance grants. Guest C bindings can be generated
 with `make live-component-bindings COMPONENT_BINDINGS_DIR=output`.
 
-The reference router has one counter actor and no autonomous background work.
-Its quiescence contract drains admitted calls and retains the old actor so an
-unsuccessful replacement can resume it. General subtree quiescence with timers
-and child tasks, fenced network deployment and durable artefact caching remain
-separate implementation work; this is not yet the complete live-execution host.
+The Hew reference also runs a sleeping periodic actor. The adapter fences host
+calls before pausing periodic admission, then drains existing actor turns, child
+tasks and one-shot actor requests through the guest's ordinary driver. Suspended
+frames block that drain. Periodic registrations and actor state remain owned by
+the old instance, so an unsuccessful replacement can resume them. The oracle
+checks periodic progress after resume and unchanged state during a sleeping
+snapshot. A host must drain every exported call and its release before using the
+runtime drain API; an empty ready queue alone does not establish quiescence.
+
+Independent replacement deadlines, fenced network deployment and durable
+artefact caching remain separate implementation work; this is not yet the
+complete live-execution host.

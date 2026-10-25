@@ -128,6 +128,10 @@ impl NativeRegistration {
 )]
 struct Inner {
     queue: VecDeque<Vec<u8>>,
+    /// Foreign callers between their predicate check and return from a condvar
+    /// wait. Registration and notification decisions share this predicate lock,
+    /// so native-only transfers can skip kernel notifications without a gap.
+    foreign_waiters: usize,
     capacity: usize,
     /// The producer signalled EOF: every sink handle finished or closed.
     sink_closed: bool,
@@ -210,6 +214,7 @@ impl ChannelCore {
         Self {
             inner: Mutex::new(Inner {
                 queue: VecDeque::new(),
+                foreign_waiters: 0,
                 capacity: capacity.max(1),
                 sink_closed: false,
                 sink_handles: 1,
@@ -410,6 +415,7 @@ impl ChannelCore {
         &self,
         registration: Option<NativeRegistration>,
     ) -> (i32, Option<Vec<u8>>) {
+        let notify_foreign;
         let item;
         let producer_wake;
         let native_producers;
@@ -432,13 +438,16 @@ impl ChannelCore {
                     return (0, None);
                 }
             }
+            notify_foreign = inner.foreign_waiters != 0;
         }
         if let Some(w) = producer_wake {
             // SAFETY: removed under the lock; we own its in-flight ref.
             unsafe { Self::wake(w) };
         }
         Self::wake_native(native_producers);
-        self.cv.notify_all();
+        if notify_foreign {
+            self.cv.notify_all();
+        }
         (1, Some(item))
     }
 
@@ -509,6 +518,7 @@ impl ChannelCore {
         registration: NativeRegistration,
         envelope: Vec<u8>,
     ) -> (i32, Option<Vec<u8>>) {
+        let notify_foreign;
         let consumer_wake;
         let native_consumer;
         {
@@ -529,6 +539,7 @@ impl ChannelCore {
                 .native_consumer
                 .take()
                 .and_then(NativeRegistration::into_waker);
+            notify_foreign = inner.foreign_waiters != 0;
         }
         if let Some(w) = consumer_wake {
             // SAFETY: removed under the lock; we own its in-flight ref.
@@ -537,7 +548,9 @@ impl ChannelCore {
         if let Some(consumer) = native_consumer {
             consumer.wake();
         }
-        self.cv.notify_all();
+        if notify_foreign {
+            self.cv.notify_all();
+        }
         (1, None)
     }
 
@@ -587,6 +600,7 @@ impl ChannelCore {
     /// pipe (spurious — the caller maps both to "no item").
     #[must_use]
     pub fn pop(&self) -> Option<Vec<u8>> {
+        let notify_foreign;
         let producer_wake;
         let native_producers;
         let item;
@@ -609,6 +623,7 @@ impl ChannelCore {
             } else {
                 SmallVec::new()
             };
+            notify_foreign = inner.foreign_waiters != 0;
         }
         if let Some(w) = producer_wake {
             // SAFETY: the waiter was removed from `producers` under the lock; we
@@ -616,7 +631,7 @@ impl ChannelCore {
             unsafe { Self::wake(w) };
         }
         Self::wake_native(native_producers);
-        if item.is_some() {
+        if item.is_some() && notify_foreign {
             self.cv.notify_all();
         }
         if let Some(actor_id) = fault_actor_id {
@@ -629,6 +644,7 @@ impl ChannelCore {
     /// FOREIGN thread on the condvar — never a scheduler worker's coroutine.
     #[must_use]
     pub fn blocking_recv(&self) -> Option<Vec<u8>> {
+        let notify_foreign;
         let producer_wake;
         let native_producers;
         let item;
@@ -649,12 +665,14 @@ impl ChannelCore {
                     item = None;
                     break;
                 }
+                inner.foreign_waiters += 1;
                 #[cfg(test)]
                 self.rendezvous_before_wait();
                 inner = self
                     .cv
                     .wait(inner)
                     .unwrap_or_else(std::sync::PoisonError::into_inner);
+                inner.foreign_waiters -= 1;
             }
             producer_wake = if item.is_some() {
                 Self::drain_one_producer(&mut inner)
@@ -666,13 +684,14 @@ impl ChannelCore {
             } else {
                 SmallVec::new()
             };
+            notify_foreign = inner.foreign_waiters != 0;
         }
         if let Some(w) = producer_wake {
             // SAFETY: removed under the lock; we own its in-flight ref.
             unsafe { Self::wake(w) };
         }
         Self::wake_native(native_producers);
-        if item.is_some() {
+        if item.is_some() && notify_foreign {
             self.cv.notify_all();
         }
         if let Some(actor_id) = fault_actor_id {
@@ -706,12 +725,14 @@ impl ChannelCore {
             if !inner.queue.is_empty() || inner.sink_closed || inner.sink_fault {
                 return true;
             }
+            inner.foreign_waiters += 1;
             #[cfg(test)]
             self.rendezvous_before_wait();
             inner = self
                 .cv
                 .wait(inner)
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
+            inner.foreign_waiters -= 1;
         }
     }
 
@@ -728,9 +749,11 @@ impl ChannelCore {
     /// `notify_all` reaches the already-parked waiter. The cancel wake can never
     /// be lost.
     pub fn cancel_wait(&self, cancelled: &std::sync::atomic::AtomicBool) {
-        let _inner = self.locked();
+        let inner = self.locked();
         cancelled.store(true, std::sync::atomic::Ordering::Release);
-        self.cv.notify_all();
+        if inner.foreign_waiters != 0 {
+            self.cv.notify_all();
+        }
     }
 
     /// Detach an abandoned consumer registration (the codegen abandon edge).
@@ -772,6 +795,7 @@ impl ChannelCore {
         slot: *mut HewReadSlot,
         item: Vec<u8>,
     ) -> i32 {
+        let notify_foreign;
         let consumer_wake;
         let native_consumer;
         {
@@ -808,6 +832,7 @@ impl ChannelCore {
                 });
                 return STREAM_AWAIT_SUSPEND;
             }
+            notify_foreign = inner.foreign_waiters != 0;
         }
         if let Some(w) = consumer_wake {
             // SAFETY: removed under the lock; we own its in-flight ref.
@@ -816,7 +841,9 @@ impl ChannelCore {
         if let Some(consumer) = native_consumer {
             consumer.wake();
         }
-        self.cv.notify_all();
+        if notify_foreign {
+            self.cv.notify_all();
+        }
         STREAM_AWAIT_READY
     }
 
@@ -836,6 +863,7 @@ impl ChannelCore {
     /// reached before the deadline instead of after it. Backpressure while the
     /// runtime is running or quiescing is untouched.
     pub fn blocking_send(&self, item: Vec<u8>) {
+        let notify_foreign;
         let consumer_wake;
         let native_consumer;
         {
@@ -869,6 +897,8 @@ impl ChannelCore {
                     Self::drop_envelope(layout.as_ref(), item);
                     Self::abort_send_abandoned_at_shutdown(capacity, queued);
                 }
+                let foreign_waiter = usize::from(!crate::driver::active());
+                inner.foreign_waiters += foreign_waiter;
                 #[cfg(test)]
                 self.rendezvous_before_wait();
                 // SHORTCUT: poll the shutdown phase instead of being woken by
@@ -889,7 +919,9 @@ impl ChannelCore {
                     inner,
                     SHUTDOWN_PHASE_POLL_INTERVAL,
                 );
+                inner.foreign_waiters -= foreign_waiter;
             }
+            notify_foreign = inner.foreign_waiters != 0;
         }
         if let Some(w) = consumer_wake {
             // SAFETY: removed under the lock; we own its in-flight ref.
@@ -898,7 +930,9 @@ impl ChannelCore {
         if let Some(consumer) = native_consumer {
             consumer.wake();
         }
-        self.cv.notify_all();
+        if notify_foreign {
+            self.cv.notify_all();
+        }
     }
 
     /// Non-blocking producer send (`try_send`).
@@ -914,6 +948,7 @@ impl ChannelCore {
     /// Try admission without executing release callbacks. The caller owns any
     /// rejected envelope and must consume it using the stamped descriptor.
     pub(crate) fn try_send_owned(&self, item: Vec<u8>) -> (TrySendResult, Option<Vec<u8>>) {
+        let notify_foreign;
         let consumer_wake;
         let native_consumer;
         {
@@ -930,6 +965,7 @@ impl ChannelCore {
                 .native_consumer
                 .take()
                 .and_then(NativeRegistration::into_waker);
+            notify_foreign = inner.foreign_waiters != 0;
         }
         if let Some(w) = consumer_wake {
             // SAFETY: removed under the lock; we own its in-flight ref.
@@ -938,7 +974,9 @@ impl ChannelCore {
         if let Some(consumer) = native_consumer {
             consumer.wake();
         }
-        self.cv.notify_all();
+        if notify_foreign {
+            self.cv.notify_all();
+        }
         (TrySendResult::Accepted, None)
     }
 
@@ -974,6 +1012,7 @@ impl ChannelCore {
     /// One sink handle finished or closed. The last one publishes EOF and
     /// wakes a parked consumer so its `await_next` resume binds `None`.
     pub fn close_sink(&self) {
+        let notify_foreign;
         let consumer_wake;
         let native_consumer;
         {
@@ -988,6 +1027,7 @@ impl ChannelCore {
                 .native_consumer
                 .take()
                 .and_then(NativeRegistration::into_waker);
+            notify_foreign = inner.foreign_waiters != 0;
         }
         if let Some(w) = consumer_wake {
             // SAFETY: removed under the lock; we own its in-flight ref.
@@ -996,7 +1036,9 @@ impl ChannelCore {
         if let Some(consumer) = native_consumer {
             consumer.wake();
         }
-        self.cv.notify_all();
+        if notify_foreign {
+            self.cv.notify_all();
+        }
     }
 
     /// The consumer closed (local cancel/discard). Wakes every parked producer
@@ -1012,6 +1054,7 @@ impl ChannelCore {
     /// Close reader admission and transfer every discarded value to its
     /// consuming cleanup owner, without invoking authored code under the lock.
     pub(crate) fn close_stream_take(&self) -> (Option<HewValueLayout>, Vec<Vec<u8>>) {
+        let notify_foreign;
         let mut wakes: Vec<Waiter> = Vec::new();
         let mut discarded: Vec<Vec<u8>> = Vec::new();
         let layout;
@@ -1030,6 +1073,7 @@ impl ChannelCore {
                 }
                 wakes.push(w);
             }
+            notify_foreign = inner.foreign_waiters != 0;
         }
         if let Some(cancellation) = actor_stream_cancellation {
             cancellation.close_reader();
@@ -1041,7 +1085,9 @@ impl ChannelCore {
             // it exactly once.
             unsafe { Self::wake(w) };
         }
-        self.cv.notify_all();
+        if notify_foreign {
+            self.cv.notify_all();
+        }
         (layout, discarded)
     }
 
@@ -1068,6 +1114,7 @@ impl ChannelCore {
     /// Publish a producer fault while transferring unaccepted values for
     /// cleanup. Already accepted items remain readable before the fault.
     pub(crate) fn fault_close_take(&self, actor_id: u64) -> (Option<HewValueLayout>, Vec<Vec<u8>>) {
+        let notify_foreign;
         let consumer_wake;
         let mut producer_wakes = Vec::new();
         let mut discarded = Vec::new();
@@ -1098,6 +1145,7 @@ impl ChannelCore {
                         .filter_map(NativeRegistration::into_waker),
                 )
                 .collect::<Vec<_>>();
+            notify_foreign = inner.foreign_waiters != 0;
         }
         for peer in native_wakes {
             peer.wake();
@@ -1107,7 +1155,9 @@ impl ChannelCore {
         // thunks: either may be slow or re-enter unrelated runtime machinery,
         // but cannot strand a waiter behind an already-published terminal
         // state.
-        self.cv.notify_all();
+        if notify_foreign {
+            self.cv.notify_all();
+        }
         if let Some(w) = consumer_wake {
             // SAFETY: removed under the lock; we own its in-flight ref.
             unsafe { Self::wake(w) };
@@ -1400,6 +1450,83 @@ mod tests {
         assert!(last_ready.take_ready());
         assert!(!cancelled_ready.take_ready());
         assert!(core.pop().is_none());
+    }
+
+    #[test]
+    fn native_transfers_wake_foreign_receivers_and_producers() {
+        let core = Arc::new(ChannelCore::new(1));
+        let probe = Arc::new(std::sync::Barrier::new(2));
+        core.install_wait_probe(Arc::clone(&probe));
+        let (done, completed) = std::sync::mpsc::channel();
+        let receiving = Arc::clone(&core);
+        let receiver = std::thread::spawn(move || {
+            done.send(receiving.blocking_recv()).unwrap();
+        });
+        probe.wait();
+        assert_eq!(core.locked().foreign_waiters, 1);
+        let (_ready, waker) = crate::wake::blocking::Readiness::new();
+        let waker = Arc::new(waker);
+        assert_eq!(core.poll_send_observed(&waker, vec![1]), (1, None));
+        let delivery = completed.recv_timeout(Duration::from_secs(2));
+        if delivery.is_err() {
+            // Unblock a regressing notification path before asserting.
+            core.close_sink();
+            core.cv.notify_all();
+        }
+        receiver.join().unwrap();
+        assert_eq!(delivery.unwrap(), Some(vec![1]));
+        assert_eq!(core.locked().foreign_waiters, 0);
+
+        assert_eq!(core.try_send(vec![2]), TrySendResult::Accepted);
+        let probe = Arc::new(std::sync::Barrier::new(2));
+        core.install_wait_probe(Arc::clone(&probe));
+        let (done, completed) = std::sync::mpsc::channel();
+        let sending = Arc::clone(&core);
+        let producer = std::thread::spawn(move || {
+            sending.blocking_send(vec![3]);
+            done.send(()).unwrap();
+        });
+        probe.wait();
+        assert_eq!(core.locked().foreign_waiters, 1);
+        assert_eq!(core.try_recv_native(), (1, Some(vec![2])));
+        let sent = completed.recv_timeout(Duration::from_secs(2));
+        if sent.is_err() {
+            core.close_stream();
+            core.cv.notify_all();
+        }
+        producer.join().unwrap();
+        sent.unwrap();
+        assert_eq!(core.try_recv_native(), (1, Some(vec![3])));
+        assert_eq!(core.locked().foreign_waiters, 0);
+    }
+
+    #[test]
+    fn foreign_readiness_cancellation_unregisters_before_a_later_native_transfer() {
+        let core = Arc::new(ChannelCore::new(1));
+        let cancelled = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let probe = Arc::new(std::sync::Barrier::new(2));
+        core.install_wait_probe(Arc::clone(&probe));
+        let (done, completed) = std::sync::mpsc::channel();
+        let waiting = Arc::clone(&core);
+        let cancellation = Arc::clone(&cancelled);
+        let waiter = std::thread::spawn(move || {
+            done.send(waiting.wait_ready(&cancellation)).unwrap();
+        });
+        // The probe runs with the predicate lock held, before cv.wait releases
+        // it. Cancellation must therefore observe the registered waiter.
+        probe.wait();
+        core.cancel_wait(&cancelled);
+        let ready = completed.recv_timeout(Duration::from_secs(2));
+        if ready.is_err() {
+            core.cv.notify_all();
+        }
+        waiter.join().unwrap();
+        assert!(!ready.unwrap());
+        assert_eq!(core.locked().foreign_waiters, 0);
+        let (_ready, waker) = crate::wake::blocking::Readiness::new();
+        let waker = Arc::new(waker);
+        assert_eq!(core.poll_send_observed(&waker, vec![7]), (1, None));
+        assert_eq!(core.try_recv_native(), (1, Some(vec![7])));
     }
 
     #[test]

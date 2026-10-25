@@ -464,6 +464,12 @@ impl NativeHost {
 }
 
 impl Generation {
+    /// Host-local identity returned by this host's retirement receipts.
+    #[must_use]
+    pub const fn id(&self) -> u64 {
+        self.id
+    }
+
     /// The defining-code lease used by this generation's typed descriptors.
     /// The returned record stays valid while this handle or an acquired lease
     /// root lives. Descriptor publication must precede executing module code.

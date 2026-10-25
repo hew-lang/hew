@@ -11,6 +11,7 @@ Build and exercise the native execution path with:
 ```sh
 make test-live-native
 make test-live-host
+make test-live-authoring
 ```
 
 The test compiles ordinary Hew into a native module, retains a resource owning
@@ -55,5 +56,28 @@ fault, and release the superseded slots it returns. Earlier values and closures
 keep their original declarations when a later input replaces a same-name type
 or function. Expanded syntax retains macro hygiene and source spans.
 
-Portable components, deployment migration and interactive authoring integration
+An experimental source prompt is available with the matching compiler, worker
+and shared runtime:
+
+```sh
+make hew-native live-host
+target/debug/hew tool live --runtime target/debug/libhew.so
+```
+
+On macOS the library is `libhew.dylib`. Enter declarations, statements or
+expressions using ordinary Hew syntax. Values persist between inputs;
+initializers execute once. `:type expression` checks without execution,
+`:session` lists retained bindings, and `:clear` completes cleanup before
+forgetting them. Logical failures preserve completed mutations and actual field
+ownership. If the worker disconnects or an operation times out, the prompt ends
+with an uncertain-outcome diagnostic and never replays the input. Retired code
+artefacts are removed when the worker reports them unloaded; active artefacts
+live in the session's scoped temporary directory.
+
+Source snippets and `:load` resolve imports relative to `--project` (the current
+directory by default). Ordinary Hew imports retain each imported file's own
+resolution context. The worker owns program stdout and stderr; the prompt owns
+stdin.
+
+Portable components, deployment migration and editor integration
 remain in progress.

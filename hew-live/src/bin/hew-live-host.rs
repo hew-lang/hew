@@ -85,8 +85,8 @@ fn run(args: &Args) -> Result<()> {
                     };
                     // SAFETY: only the trusted compiler controls this channel;
                     // native loading is not an isolation boundary.
-                    entry.insert(unsafe { host.load(&module, &manifest)? });
-                    json!({ "prepared": id })
+                    let generation = entry.insert(unsafe { host.load(&module, &manifest)? });
+                    json!({ "prepared": id, "generation": generation.id() })
                 }
                 Request::Execute {
                     id,

@@ -424,9 +424,12 @@ test-live-native: hew-native ## Test: load native generations sharing one runtim
 live-host: ## Build: isolated persistent native execution worker
 	cargo build -p hew-lib -p hew-live --lib --bin hew-live-host $(CARGO_TARGET_FLAG)
 
-.PHONY: test-live-host
+.PHONY: test-live-host test-live-authoring
 test-live-host: live-host ## Test: execute persistent submissions through the native worker
 	$(TEST_RUN_ENV) cargo nextest run --profile ci -p hew-codegen-rs -p hew-compile --lib -E 'test(native_session_places_host) | test(live_frontend)'
+
+test-live-authoring: hew-native live-host ## Test: exercise persistent source authoring and recovery
+	$(TEST_RUN_ENV) cargo nextest run --profile ci -p hew-cli --test live
 
 test-live-places: hew-native live-host ## Test: preserve compiler-owned slots across native submissions
 	$(TEST_RUN_ENV) cargo nextest run --profile ci -p hew-codegen-rs -p hew-compile --lib -E 'test(native_session_places) | test(live_retained_type)'

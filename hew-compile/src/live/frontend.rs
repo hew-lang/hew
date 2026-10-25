@@ -7,7 +7,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use hew_parser::ast::{Item, Program, Visibility};
-use hew_types::{DefTable, TypeCheckOutput};
+use hew_types::{session::SessionContents, DefTable, TypeCheckOutput};
 
 use super::LiveSubmission;
 use crate::{FrontendFailure, FrontendOptions, Session, SessionError};
@@ -24,6 +24,7 @@ pub enum InputKind {
 pub struct SourceView {
     pub source: String,
     pub input_span: Range<usize>,
+    pub kind: InputKind,
 }
 
 #[derive(Debug)]
@@ -63,6 +64,7 @@ pub struct Binding {
     pub name: String,
     pub ty: hew_types::ResolvedTy,
     pub mutable: bool,
+    pub contents: SessionContents,
 }
 
 #[derive(Debug, Clone)]
@@ -75,6 +77,21 @@ struct State {
     bindings: Vec<Binding>,
     next_slot: u32,
     views: BTreeMap<PathBuf, SourceView>,
+}
+
+impl State {
+    fn new(options: FrontendOptions) -> Self {
+        Self {
+            options,
+            definitions: Arc::new(DefTable::default()),
+            visible: BTreeMap::new(),
+            snapshots: Vec::new(),
+            imports: BTreeSet::new(),
+            bindings: Vec::new(),
+            next_slot: 0,
+            views: BTreeMap::new(),
+        }
+    }
 }
 
 /// A checked candidate. Preparation neither changes the active frontend nor
@@ -103,6 +120,7 @@ pub struct LiveFrontend {
     directory: PathBuf,
     revision: u64,
     next_input: u64,
+    initial_options: FrontendOptions,
     state: State,
 }
 
@@ -116,16 +134,8 @@ impl LiveFrontend {
             directory,
             revision: 0,
             next_input: 0,
-            state: State {
-                options,
-                definitions: Arc::new(DefTable::default()),
-                visible: BTreeMap::new(),
-                snapshots: Vec::new(),
-                imports: BTreeSet::new(),
-                bindings: Vec::new(),
-                next_slot: 0,
-                views: BTreeMap::new(),
-            },
+            initial_options: options.clone(),
+            state: State::new(options),
         }
     }
 
@@ -137,6 +147,20 @@ impl LiveFrontend {
     #[must_use]
     pub fn source_views(&self) -> &BTreeMap<PathBuf, SourceView> {
         &self.state.views
+    }
+
+    /// Forget the authoring environment after the worker has released its
+    /// places. Input identities stay monotonic and old candidates become stale.
+    ///
+    /// # Errors
+    /// Refuses an exhausted session revision counter.
+    pub fn clear(&mut self) -> Result<(), Error> {
+        self.revision = self
+            .revision
+            .checked_add(1)
+            .ok_or(Error::State("live revisions exhausted"))?;
+        self.state = State::new(self.initial_options.clone());
+        Ok(())
     }
 
     /// Check and lower a candidate using original declaration identities and
@@ -194,6 +218,7 @@ impl LiveFrontend {
             SourceView {
                 source: input.to_owned(),
                 input_span,
+                kind,
             },
         );
         let front = crate::run_program_frontend_to_typecheck(
@@ -210,12 +235,16 @@ impl LiveFrontend {
         let [entry] = roots.as_slice() else {
             return Err(Error::State("live input requires one submission entry"));
         };
-        let slots: Vec<_> = next.bindings.iter().map(|binding| binding.slot).collect();
-        let live = compiler.lower_live_program(
+        let inputs: Vec<_> = next
+            .bindings
+            .iter()
+            .map(|binding| (binding.slot, binding.contents.clone()))
+            .collect();
+        let live = compiler.lower_live_program_with_contents(
             &front.program,
             &checked,
             *entry,
-            &slots,
+            &inputs,
             next.next_slot,
         )?;
         next.definitions = checked.defs.clone();
@@ -228,6 +257,7 @@ impl LiveFrontend {
                 name: binding.binding.name.clone(),
                 ty: binding.binding.ty.clone(),
                 mutable: binding.binding.mutable,
+                contents: binding.contents.clone(),
             })
             .collect();
         Ok(PreparedInput {
@@ -249,14 +279,14 @@ impl LiveFrontend {
     pub fn commit(
         &mut self,
         prepared: PreparedInput,
-        initialized: &[bool],
+        contents: &[SessionContents],
     ) -> Result<Vec<u32>, Error> {
         if prepared.base_revision != self.revision {
             return Err(Error::State(
                 "live candidate no longer matches the active frontend",
             ));
         }
-        if initialized.len() != prepared.next.next_slot as usize {
+        if contents.len() != prepared.next.next_slot as usize {
             return Err(Error::State(
                 "live occupancy differs from the prepared slot inventory",
             ));
@@ -268,8 +298,9 @@ impl LiveFrontend {
         let mut next = prepared.next;
         let mut latest = BTreeMap::new();
         let mut retired = Vec::new();
-        for binding in next.bindings.drain(..) {
-            if initialized[binding.slot as usize] {
+        for mut binding in next.bindings.drain(..) {
+            binding.contents = contents[binding.slot as usize].clone();
+            if binding.contents != SessionContents::Empty {
                 if let Some(previous) = latest.insert(binding.name.clone(), binding) {
                     retired.push(previous.slot);
                 }
@@ -315,6 +346,7 @@ impl LiveFrontend {
             SourceView {
                 source: input.to_owned(),
                 input_span: prefix.len()..prefix.len() + input.len(),
+                kind: InputKind::Declarations,
             },
         );
         Ok(())
@@ -411,13 +443,13 @@ mod tests {
             .unwrap();
         assert!(frontend.bindings().is_empty());
         assert_eq!(first.slot_count(), 1);
-        frontend.commit(first, &[true]).unwrap();
+        frontend.commit(first, &[SessionContents::Full]).unwrap();
         let next = frontend
             .prepare(&compiler(), "count += 2;", InputKind::Statements)
             .unwrap();
         assert_eq!(next.live.bindings[0].slot, 0);
         assert_eq!(next.slot_count(), 1);
-        frontend.commit(next, &[false]).unwrap();
+        frontend.commit(next, &[SessionContents::Empty]).unwrap();
         assert!(frontend.bindings().is_empty());
         assert!(frontend
             .prepare(&compiler(), "count", InputKind::Expression)
@@ -444,7 +476,7 @@ mod tests {
                 InputKind::Statements,
             )
             .unwrap();
-        frontend.commit(old, &[true]).unwrap();
+        frontend.commit(old, &[SessionContents::Full]).unwrap();
         let old_ty = frontend.bindings()[0].ty.clone();
         let replacement = frontend
             .prepare(
@@ -453,7 +485,9 @@ mod tests {
                 InputKind::Declarations,
             )
             .unwrap();
-        frontend.commit(replacement, &[true]).unwrap();
+        frontend
+            .commit(replacement, &[SessionContents::Full])
+            .unwrap();
         assert_eq!(frontend.bindings()[0].ty, old_ty);
         let next = frontend
             .prepare(
@@ -464,5 +498,25 @@ mod tests {
             .unwrap();
         assert_eq!(next.live.bindings[0].binding.ty, old_ty);
         assert_ne!(next.live.bindings[1].binding.ty, old_ty);
+    }
+
+    #[test]
+    fn live_frontend_clear_invalidates_prepared_inputs() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut frontend =
+            LiveFrontend::new(directory.path().to_path_buf(), FrontendOptions::default());
+        let pending = frontend
+            .prepare(&compiler(), "let before = 1;", InputKind::Statements)
+            .unwrap();
+        frontend.clear().unwrap();
+        assert!(frontend.commit(pending, &[SessionContents::Full]).is_err());
+        assert!(frontend
+            .prepare(&compiler(), "before", InputKind::Expression)
+            .is_err());
+        let fresh = frontend
+            .prepare(&compiler(), "let after = 2;", InputKind::Statements)
+            .unwrap();
+        frontend.commit(fresh, &[SessionContents::Full]).unwrap();
+        assert_eq!(frontend.bindings()[0].name, "after");
     }
 }

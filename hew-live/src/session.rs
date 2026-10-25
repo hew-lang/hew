@@ -4,7 +4,7 @@ use std::ffi::{c_void, CStr};
 use std::ptr;
 
 use hew_cabi::{host_error::HewError, live::HewLiveSession};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::native::{Generation, NativeHost};
 
@@ -13,26 +13,31 @@ type RuntimeNew = unsafe extern "C" fn() -> *mut c_void;
 type RuntimeRelease = unsafe extern "C" fn(*mut c_void);
 type SlotInitialized = unsafe extern "C" fn(*const HewLiveSession, usize) -> bool;
 type SlotRevision = unsafe extern "C" fn(*const HewLiveSession, usize) -> u64;
+type SlotLeafCount = unsafe extern "C" fn(*const HewLiveSession, usize) -> usize;
+type SlotLeaf =
+    unsafe extern "C" fn(*const HewLiveSession, usize, usize, *mut usize, *mut bool) -> *const u32;
 type SlotRelease = unsafe extern "C" fn(*mut HewLiveSession, usize, *mut *mut HewError) -> i32;
 type ErrorRelease = unsafe extern "C" fn(*mut HewError);
 type Entry = unsafe extern "C" fn(*mut HewLiveSession, *mut *mut HewError) -> i32;
 
 /// A copied diagnostic; its runtime-owned error has already been released.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Fault {
     pub code: i32,
     pub message: String,
 }
 
 /// Actual ownership after execution, including execution that ended in a fault.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SlotState {
     pub initialized: bool,
     pub revision: u64,
+    /// Canonical declaration-order field paths and their actual occupancy.
+    pub leaves: Vec<(Vec<u32>, bool)>,
 }
 
 /// One submission's outcome. Mutations completed before a fault remain visible.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Execution {
     pub fault: Option<Fault>,
     pub slots: Vec<SlotState>,
@@ -43,6 +48,8 @@ struct RuntimeApi {
     release: RuntimeRelease,
     initialized: SlotInitialized,
     revision: SlotRevision,
+    leaf_count: SlotLeafCount,
+    leaf: SlotLeaf,
     release_slot: SlotRelease,
     release_error: ErrorRelease,
 }
@@ -75,6 +82,8 @@ impl NativeSession {
                     release: *host.runtime_symbol(b"hew_runtime_release")?,
                     initialized: *host.runtime_symbol(b"hew_live_slot_initialized")?,
                     revision: *host.runtime_symbol(b"hew_live_slot_revision")?,
+                    leaf_count: *host.runtime_symbol(b"hew_live_slot_leaf_count")?,
+                    leaf: *host.runtime_symbol(b"hew_live_slot_leaf")?,
                     release_slot: *host.runtime_symbol(b"hew_live_slot_release")?,
                     release_error: *host.runtime_symbol(b"hew_host_error_release")?,
                 },
@@ -153,6 +162,27 @@ impl NativeSession {
                     SlotState {
                         initialized: (self.api.initialized)(&raw const context, index),
                         revision: (self.api.revision)(&raw const context, index),
+                        leaves: (0..(self.api.leaf_count)(&raw const context, index))
+                            .map(|leaf| {
+                                let mut length = 0;
+                                let mut initialized = false;
+                                let path = (self.api.leaf)(
+                                    &raw const context,
+                                    index,
+                                    leaf,
+                                    &raw mut length,
+                                    &raw mut initialized,
+                                );
+                                // The runtime retains the registered metadata
+                                // through this exclusive, stopped inspection.
+                                let path = if length == 0 {
+                                    Vec::new()
+                                } else {
+                                    std::slice::from_raw_parts(path, length).to_vec()
+                                };
+                                (path, initialized)
+                            })
+                            .collect(),
                     }
                 }
             })

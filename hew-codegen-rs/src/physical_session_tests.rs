@@ -9,6 +9,7 @@ fn native_session_places_host_retains_mutations_and_fault_occupancy() {
     use std::process::{Command, Stdio};
 
     use hew_compile::live::frontend::{InputKind, LiveFrontend};
+    use hew_types::session::SessionContents;
     use serde_json::{json, Value};
 
     struct Worker(Option<std::process::Child>);
@@ -81,6 +82,10 @@ fn native_session_places_host_retains_mutations_and_fault_occupancy() {
             (InputKind::Statements, "let recent = Token { value: \"new\" }; assert(count == 42); assert(text == \"retained\"); assert(old.value == 7); assert(read() == 7); assert(read_token(recent) == \"new\"); count += 1;"),
             (InputKind::Statements, "assert(count == 43); assert(recent.value == \"new\"); let handle = Handle { value: 12 };"),
             (InputKind::Expression, "count"),
+            (InputKind::Declarations, "type Pair { left: Handle; right: Handle; marker: i64; }"),
+            (InputKind::Statements, "var pair = Pair { left: Handle { value: 13 }, right: Handle { value: 14 }, marker: 40 };"),
+            (InputKind::Statements, "pair.marker += 2; let moved = pair.left; moved.close(); panic(\"stop\");"),
+            (InputKind::Statements, "assert(pair.marker == 42); assert(pair.right.value == 14); pair.left = Handle { value: 15 };"),
         ].into_iter().enumerate() {
             let prepared = frontend.prepare(&compiler, input, kind).unwrap();
             let name = format!("input_{id}");
@@ -97,8 +102,8 @@ fn native_session_places_host_retains_mutations_and_fault_occupancy() {
             let request =
                 json!({ "op": "prepare", "id": id, "module": module, "manifest": manifest });
             assert_eq!(
-                exchange(&mut connection, request.clone()),
-                json!({ "prepared": id })
+                exchange(&mut connection, request.clone())["prepared"],
+                json!(id)
             );
             if id == 0 {
                 assert!(exchange(&mut connection, request)["error"]
@@ -108,14 +113,24 @@ fn native_session_places_host_retains_mutations_and_fault_occupancy() {
             }
             let result = exchange(&mut connection, json!({ "op": "execute", "id": id, "entry": name, "slot_count": prepared.slot_count() }));
             let execution = &result["execution"];
-            if id == 2 {
+            if id == 2 || id == 9 {
                 assert!(execution["fault"]["message"].as_str().unwrap().contains("stop"), "{result}");
             } else {
                 assert!(execution["fault"].is_null(), "{id}: {result}");
             }
-            let initialized: Vec<_> = execution["slots"].as_array().unwrap().iter().map(|slot| slot["initialized"].as_bool().unwrap()).collect();
+            let contents: Vec<_> = execution["slots"].as_array().unwrap().iter().map(|slot| {
+                if slot["initialized"].as_bool().unwrap() {
+                    SessionContents::Full
+                } else {
+                    SessionContents::from_leaves(&serde_json::from_value::<Vec<(Vec<u32>, bool)>>(slot["leaves"].clone()).unwrap())
+                }
+            }).collect();
             assert_eq!(exchange(&mut connection, json!({ "op": "inspect" }))["slots"], execution["slots"]);
-            let retired = frontend.commit(prepared, &initialized).unwrap();
+            let retired = frontend.commit(prepared, &contents).unwrap();
+            if id == 9 {
+                assert_eq!(frontend.bindings().iter().find(|binding| binding.name == "pair").unwrap().contents, SessionContents::Partial(vec![vec![1], vec![2]]));
+                assert!(frontend.prepare(&compiler, "pair.left.value", InputKind::Expression).is_err());
+            }
             if id == 5 {
                 assert_eq!(retired.len(), 1);
                 let before = exchange(&mut connection, json!({ "op": "inspect" }));
@@ -162,10 +177,11 @@ fn native_session_places_host_retains_mutations_and_fault_occupancy() {
             json!({ "cleanup_faults": [] })
         );
         let output = child.0.take().unwrap().wait_with_output().unwrap();
-        assert_eq!(
-            String::from_utf8_lossy(&output.stdout),
-            "initialize\n11\n43\n12\n"
-        );
+        let stdout = String::from_utf8(output.stdout).unwrap();
+        assert!(stdout.starts_with("initialize\n11\n43\n13\n"), "{stdout}");
+        let mut final_cleanup: Vec<_> = stdout.lines().skip(4).collect();
+        final_cleanup.sort_unstable();
+        assert_eq!(final_cleanup, ["12", "14", "15"]);
         assert!(
             output.status.success(),
             "{}",

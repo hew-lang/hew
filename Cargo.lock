@@ -1881,6 +1881,7 @@ dependencies = [
  "hew-compile",
  "hew-hir",
  "hew-lexer",
+ "hew-live",
  "hew-lsp",
  "hew-mir",
  "hew-observe",

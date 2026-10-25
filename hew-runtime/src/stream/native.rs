@@ -235,11 +235,21 @@ pub unsafe extern "C" fn hew_stream_write_start_native(
     parent: *const crate::coro_state::HewCoroState,
     park: bool,
     sink_layout: *const HewValueLayout,
+    out_status: *mut i32,
 ) -> *mut HewNativeStream {
     // SAFETY: the source read loan pins the endpoint and its exact descriptor.
     unsafe { super::sender::retain(sink, sink_layout, false) };
     // SAFETY: the installed owner serializes every underlying write through terminal cleanup.
-    unsafe { start_underlying(sink, waker, data, layout, parent, park) }
+    unsafe {
+        out_status.write(0);
+        match start_underlying(sink, waker, data, layout, parent, park) {
+            Ok(operation) => operation,
+            Err(status) => {
+                out_status.write(status);
+                std::ptr::null_mut()
+            }
+        }
+    }
 }
 
 /// # Safety
@@ -298,25 +308,25 @@ pub(super) unsafe fn start_underlying(
     layout: *const HewValueLayout,
     parent: *const crate::coro_state::HewCoroState,
     park: bool,
-) -> *mut HewNativeStream {
+) -> Result<*mut HewNativeStream, i32> {
     // SAFETY: the compiler provides a static descriptor and a live owned value.
     let layout = unsafe { *move_elem_layout_witness(layout, "native stream write") };
     // SAFETY: this operation pins the endpoint while inspecting its shared backing.
     let owner = unsafe { super::sender::shared(sink) };
     if !park && owner.is_none() {
         // SAFETY: the shared gate lends this raw backing for one nonparking capacity attempt.
-        return unsafe { try_underlying(sink, waker, data, layout) };
+        return Ok(unsafe { try_underlying(sink, waker, data, layout) });
     }
     // SAFETY: an adapter endpoint pins its shared sender through this exclusive loan.
     if let Some(owner) = owner {
-        return Box::into_raw(Box::new(HewNativeStream {
+        return Ok(Box::into_raw(Box::new(HewNativeStream {
             // SAFETY: the caller retains this descriptor until the operation owns it.
             _code: unsafe { crate::code_owner::CodeRoot::acquire(layout.code_owner) },
             layout,
             // SAFETY: the caller retains this descriptor during operation construction.
             waker: Arc::new(unsafe { OwnedWaker::retain(&*waker) }),
             backing: Backing::Shared(Box::new(unsafe {
-                super::sender::SharedWrite::new(owner, sink, parent, park, data, &layout)
+                super::sender::SharedWrite::new(owner, sink, parent, park, data, &layout)?
             })),
             #[cfg(not(target_arch = "wasm32"))]
             yields: ReadYield::Content,
@@ -324,7 +334,7 @@ pub(super) unsafe fn start_underlying(
             read_stream: None,
             #[cfg(not(target_arch = "wasm32"))]
             write_prefix: 0,
-        }));
+        })));
     }
     // SAFETY: the source value transfers exactly once at operation construction.
     let envelope = unsafe { move_elem_envelope(data, &layout, "native stream write") };
@@ -333,7 +343,7 @@ pub(super) unsafe fn start_underlying(
     // poll already carries; `Drop` releases the element this operation took.
     // SAFETY: sink is a live exclusive loan.
     if unsafe { (*sink).is_closed() } {
-        return Box::into_raw(Box::new(HewNativeStream {
+        return Ok(Box::into_raw(Box::new(HewNativeStream {
             // SAFETY: the caller retains this descriptor until the operation owns it.
             _code: unsafe { crate::code_owner::CodeRoot::acquire(layout.code_owner) },
             layout,
@@ -346,7 +356,7 @@ pub(super) unsafe fn start_underlying(
             read_stream: None,
             #[cfg(not(target_arch = "wasm32"))]
             write_prefix: 0,
-        }));
+        })));
     }
     // SAFETY: sink is a live exclusive loan.
     let raw = unsafe { (*sink).channel_core_ptr().cast::<ChannelCore>() };
@@ -385,7 +395,7 @@ pub(super) unsafe fn start_underlying(
         #[cfg(target_arch = "wasm32")]
         None => reactor_backing_unreachable("write"),
     };
-    Box::into_raw(Box::new(HewNativeStream {
+    Ok(Box::into_raw(Box::new(HewNativeStream {
         // SAFETY: the caller's descriptor owner remains live during construction.
         _code: unsafe { crate::code_owner::CodeRoot::acquire(layout.code_owner) },
         layout,
@@ -398,7 +408,7 @@ pub(super) unsafe fn start_underlying(
         read_stream: None,
         #[cfg(not(target_arch = "wasm32"))]
         write_prefix,
-    }))
+    })))
 }
 
 /// Poll a receive: 0 pending, 1 value, 2 EOF, 3 failure.
@@ -686,6 +696,11 @@ pub unsafe extern "C" fn hew_stream_operation_release_begin(
     let value = unsafe { (*operation).envelope.take() };
     // SAFETY: the operation retains its exact descriptor through this transfer.
     let layout = unsafe { (*operation).layout };
+    // A shared write owns the input account independently of the caller driving cleanup.
+    let owner = match unsafe { &(*operation).backing } {
+        Backing::Shared(write) => Some(write.value_owner()),
+        _ => None,
+    };
     let envelope = HewReleaseCursor::envelopes(
         value.into_iter().collect(),
         Some(layout),
@@ -706,7 +721,13 @@ pub unsafe extern "C" fn hew_stream_operation_release_begin(
         _ => std::ptr::null_mut(),
     };
     // SAFETY: the owner storage remains pinned until its child/input cursors finish.
-    unsafe { HewReleaseCursor::join(vec![shared, envelope]) }
+    unsafe {
+        let cursor = HewReleaseCursor::join(vec![shared, envelope]);
+        if let (Some(cursor), Some(owner)) = (cursor.as_mut(), owner) {
+            cursor.set_value_owner(owner);
+        }
+        cursor
+    }
 }
 
 /// A stream with no queue core is a file or a socket, and both are manifest
@@ -879,7 +900,8 @@ mod tests {
                 &raw const layout,
                 std::ptr::null(),
                 true,
-            );
+            )
+            .unwrap();
             assert_eq!(hew_stream_write_poll_native(first_op), 1);
             hew_stream_operation_free_native(first_op);
             let mut second = Box::into_raw(Box::new(Arc::clone(&drops)));
@@ -890,7 +912,8 @@ mod tests {
                 &raw const layout,
                 std::ptr::null(),
                 true,
-            );
+            )
+            .unwrap();
             assert_eq!(hew_stream_write_poll_native(second_op), 0);
             hew_stream_cancel_native(second_op);
             assert_eq!(
@@ -934,6 +957,7 @@ mod tests {
                 std::ptr::null(),
                 true,
                 &sink_layout,
+                &mut 0,
             );
             hew_stream_cancel_native(operation);
             assert_eq!(hew_stream_cleanup_status_native(operation, &wake), 1);
@@ -941,6 +965,75 @@ mod tests {
             assert_eq!(drops.load(Ordering::SeqCst), 1);
             super::super::hew_sink_close(sink);
             super::super::hew_stream_close(stream);
+        }
+    }
+
+    #[test]
+    fn shared_write_reserves_its_input_before_consuming_and_refunds_on_cancel() {
+        let (signal, _) = mpsc::channel();
+        let signal = Arc::new(signal);
+        let wake = waker(&signal);
+        let drops = Arc::new(AtomicUsize::new(0));
+        let managed = hew_cabi::managed::HewManagedValueDescriptor {
+            slot_bytes: 8,
+            visit: None,
+        };
+        let layout = HewValueLayout {
+            managed: &managed,
+            ..owned_layout()
+        };
+        let sink_layout = HewValueLayout {
+            drop_fn: None,
+            ..layout
+        };
+        // SAFETY: all descriptors, slots and endpoints remain live through cancellation.
+        unsafe {
+            let state = crate::coro_state::hew_coro_state_new(&wake, std::ptr::null_mut());
+            let owner = crate::owned_value_budget::ValueOwner::new(Some(7));
+            (*state).execution_mut().value_owner = Some(owner.clone());
+            let mut sink = std::ptr::null_mut();
+            let stream = super::super::hew_stream_pipe_native(1, &layout, &mut sink);
+            let mut value = Box::into_raw(Box::new(Arc::clone(&drops)));
+            let original = value;
+            let mut status = 0;
+            let refused = hew_stream_write_start_native(
+                sink,
+                &wake,
+                (&raw mut value).cast(),
+                &layout,
+                state,
+                true,
+                &sink_layout,
+                &mut status,
+            );
+            assert!(refused.is_null());
+            assert_eq!(status, hew_cabi::managed::HEAP_EXCEEDED);
+            assert_eq!(value, original);
+            assert_eq!(drops.load(Ordering::SeqCst), 0);
+            assert_eq!(owner.live_bytes(), 0);
+            let owner = crate::owned_value_budget::ValueOwner::new(Some(8));
+            (*state).execution_mut().value_owner = Some(owner.clone());
+            let operation = hew_stream_write_start_native(
+                sink,
+                &wake,
+                (&raw mut value).cast(),
+                &layout,
+                state,
+                true,
+                &sink_layout,
+                &mut status,
+            );
+            assert!(!operation.is_null());
+            assert_eq!(status, 0);
+            assert_eq!(owner.live_bytes(), 8);
+            hew_stream_cancel_native(operation);
+            assert_eq!(hew_stream_cleanup_status_native(operation, &wake), 1);
+            crate::release_walker::hew_release_sync(hew_stream_operation_release_begin(operation));
+            assert_eq!(drops.load(Ordering::SeqCst), 1);
+            assert_eq!(owner.live_bytes(), 0);
+            super::super::hew_sink_close(sink);
+            super::super::hew_stream_close(stream);
+            crate::coro_state::hew_coro_state_free(state);
         }
     }
 

@@ -75,6 +75,8 @@ pub(super) struct SharedWrite {
     claimed: bool,
     observed: bool,
     input: Option<(*mut c_void, std::alloc::Layout, bool)>,
+    value_owner: Option<crate::owned_value_budget::ValueOwner>,
+    input_slot_bytes: u64,
     fault: *mut crate::fault::HewFault,
     source: *mut HewSink,
     parent: *const crate::coro_state::HewCoroState,
@@ -87,6 +89,10 @@ pub(super) struct SharedWrite {
 }
 
 impl SharedWrite {
+    pub(super) fn value_owner(&self) -> Option<crate::owned_value_budget::ValueOwner> {
+        self.value_owner.clone()
+    }
+
     pub(super) unsafe fn new(
         owner: Arc<SharedSender>,
         source: *mut HewSink,
@@ -94,7 +100,24 @@ impl SharedWrite {
         park: bool,
         data: *const c_void,
         layout: &HewValueLayout,
-    ) -> Self {
+    ) -> Result<Self, i32> {
+        // SAFETY: the caller retains the optional parent invocation.
+        let value_owner =
+            unsafe { crate::owned_value_budget::materialize::invocation_owner(parent) };
+        // Unbounded foreign descriptors may lack metadata; a bounded caller must describe its input.
+        let input_slot_bytes = unsafe { crate::owned_value_budget::visit::slot_bytes(layout) }
+            .or_else(|failure| {
+                if value_owner.is_none() {
+                    Ok(0)
+                } else {
+                    Err(failure)
+                }
+            })?;
+        let reservation = value_owner
+            .as_ref()
+            .map(|owner| owner.reserve_new(input_slot_bytes))
+            .transpose()
+            .map_err(|_| hew_cabi::managed::HEAP_EXCEEDED)?;
         let allocation = std::alloc::Layout::from_size_align(layout.size.max(1), layout.align)
             .unwrap_or_else(|_| std::process::abort());
         // SAFETY: this operation takes the initialized source into aligned storage.
@@ -106,7 +129,15 @@ impl SharedWrite {
         unsafe {
             std::ptr::copy_nonoverlapping(data.cast::<u8>(), slot.cast(), layout.size);
         }
-        Self {
+        if let Some(reservation) = reservation {
+            reservation.commit(&[crate::owned_value_budget::ManagedStorage {
+                identity: slot as usize,
+                bytes: input_slot_bytes,
+            }]);
+        }
+        Ok(Self {
+            value_owner,
+            input_slot_bytes,
             owner,
             child: std::ptr::null_mut(),
             claimed: false,
@@ -121,7 +152,7 @@ impl SharedWrite {
             encoded: std::mem::MaybeUninit::uninit(),
             encoded_live: false,
             cancelled: false,
-        }
+        })
     }
 
     pub(super) unsafe fn poll(&mut self, layout: &HewValueLayout, waker: &Arc<OwnedWaker>) -> i32 {
@@ -182,7 +213,7 @@ impl SharedWrite {
                 (self.argument, layout)
             };
             // SAFETY: the admission gate exclusively lends the backing; the child takes its input.
-            self.child = unsafe {
+            let child = unsafe {
                 super::native::start_underlying(
                     self.owner.sink,
                     waker.descriptor(),
@@ -191,6 +222,19 @@ impl SharedWrite {
                     self.parent,
                     self.park,
                 )
+            };
+            self.child = match child {
+                Ok(child) => child,
+                Err(status) => {
+                    self.fault = crate::fault::hew_fault_new(
+                        if status == hew_cabi::managed::HEAP_EXCEEDED {
+                            crate::internal::types::HEW_TRAP_HEAP_EXCEEDED
+                        } else {
+                            crate::internal::types::HEW_TRAP_USER_PANIC
+                        },
+                    );
+                    return 3;
+                }
             };
             if self.owner.encoder.is_none() {
                 self.input.as_mut().expect("shared write input").2 = false;
@@ -289,10 +333,23 @@ impl SharedWrite {
                     size: allocation.size(),
                     align: allocation.align(),
                 }];
+                if self.value_owner.is_some() {
+                    unsafe fn keep_allocation(_pointer: *mut c_void) {}
+                    pending.push(ReleaseItem::ManagedBacking {
+                        pointer: slot,
+                        bytes: self.input_slot_bytes,
+                        free: keep_allocation,
+                    });
+                }
                 if owned {
                     pending.push(ReleaseItem::Value { slot, layout });
                 }
-                HewReleaseCursor::new(pending)
+                let cursor = HewReleaseCursor::new(pending);
+                // SAFETY: this fresh cursor owns the retained input and its allocation.
+                if let Some(cursor) = unsafe { cursor.as_mut() } {
+                    cursor.set_value_owner(self.value_owner.clone());
+                }
+                cursor
             });
         let encoded = if std::mem::take(&mut self.encoded_live) {
             // SAFETY: a completed but abandoned callback result transfers once before boxed storage frees.

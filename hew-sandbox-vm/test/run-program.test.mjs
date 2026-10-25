@@ -273,6 +273,18 @@ for (const [name, file, stdout, exit] of [
     1,
   ],
   [
+    "Rc cells",
+    "actor-owned-budget-rc.hew",
+    "6\n6\nrc limit\n9\nscalar limit\n",
+    1,
+  ],
+  [
+    "indirect variants",
+    "actor-owned-budget-variant.hew",
+    "40\nvariant limit\n",
+    1,
+  ],
+  [
     "encoding messages",
     "actor-owned-budget-encoding-message.hew",
     "40\n41\n42\n",
@@ -431,6 +443,19 @@ test("actor-owned generator transfer rehomes cells in a live task", async () => 
   const result = await runProgram(source, "");
   assert.equal(result.stdout, "9\n", JSON.stringify(result));
   assert.equal(result.exit_code, 0, JSON.stringify(result));
+});
+
+test("borrowed variant payload survives a failed pattern guard", async () => {
+  const source = fs.readFileSync(
+    path.join(
+      repoRoot,
+      "tests/core-acceptance/cases/match-payload-reassign-borrow-only-guard-fallthrough.hew",
+    ),
+    "utf8",
+  );
+  const result = await runProgram(source, "");
+  assert.equal(result.exit_code, 3, JSON.stringify(result));
+  assert.deepEqual(result.diagnostics, []);
 });
 
 test("actor-owned generator adoption rebinds suspended authored cleanup", async () => {

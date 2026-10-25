@@ -2319,6 +2319,11 @@ class ExecutorV1 {
           throw new Error(`switch.variant has no arm for tag ${tag}`);
         }
         this.spread(act, payloadOf(scrutinee), arm.fields);
+        if (act.owned.has(term.scrutinee)) {
+          this.invalidate(act, term.scrutinee);
+          this.managed.retire(scrutinee);
+          act.context.actor?.budget?.changed();
+        }
         this.takeEdge(act, arm.edge);
         return;
       }

@@ -133,9 +133,5 @@ fn main() -> i32 {
     print("Passed: ");
     print(passed);
     println(f"/{total}");
-    if passed == total {
-        0
-    } else {
-        1
-    }
+    if passed == total { 0 } else { 1 }
 }

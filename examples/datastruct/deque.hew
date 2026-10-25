@@ -16,11 +16,7 @@ fn deque_size(d: Vec<i64>) -> i64 {
 }
 
 fn deque_is_empty(d: Vec<i64>) -> i64 {
-    if deque_size(d) == 0 {
-        1
-    } else {
-        0
-    }
+    if deque_size(d) == 0 { 1 } else { 0 }
 }
 
 fn deque_push_back(var d: Vec<i64>, val: i64) -> Vec<i64> {
@@ -86,11 +82,7 @@ fn main() {
     // Test 1: new deque is empty
     total = total + 1;
     var d = deque_new();
-    let r1 = if deque_is_empty(d) == 1 {
-        1
-    } else {
-        0
-    };
+    let r1 = if deque_is_empty(d) == 1 { 1 } else { 0 };
     passed = passed + run_test("new deque is empty", r1);
 
     // Test 2: push_back and size
@@ -98,11 +90,7 @@ fn main() {
     d = deque_push_back(d, 10);
     d = deque_push_back(d, 20);
     d = deque_push_back(d, 30);
-    let r2 = if deque_size(d) == 3 {
-        1
-    } else {
-        0
-    };
+    let r2 = if deque_size(d) == 3 { 1 } else { 0 };
     passed = passed + run_test("push_back and size", r2);
 
     // Test 3: peek front and back
@@ -119,22 +107,14 @@ fn main() {
     total = total + 1;
     let (after_f1, f1) = deque_pop_front(d);
     d = after_f1;
-    let r4 = if f1 == 10 {
-        1
-    } else {
-        0
-    };
+    let r4 = if f1 == 10 { 1 } else { 0 };
     passed = passed + run_test("pop_front returns front", r4);
 
     // Test 5: pop_back LIFO
     total = total + 1;
     let (after_b1, b1) = deque_pop_back(d);
     d = after_b1;
-    let r5 = if b1 == 30 {
-        1
-    } else {
-        0
-    };
+    let r5 = if b1 == 30 { 1 } else { 0 };
     passed = passed + run_test("pop_back returns back", r5);
 
     // Test 6: remaining element

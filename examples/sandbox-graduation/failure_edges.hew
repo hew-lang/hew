@@ -11,11 +11,7 @@ fn parse(text: string) -> i64 fails string {
 
 // A value return: the body builds the Result itself.
 fn lookup(key: string) -> Result<i64, string> {
-    if key == "port" {
-        .Ok(8080)
-    } else {
-        .Err(f"no setting {key}")
-    }
+    if key == "port" { .Ok(8080) } else { .Err(f"no setting {key}") }
 }
 
 // Both forms nest: the success value of this edge is itself a Result.
@@ -23,11 +19,7 @@ fn checked(x: i64) -> Result<i64, string> fails string {
     if x < 0 {
         return error "refused";
     }
-    if x == 0 {
-        .Err("zero")
-    } else {
-        .Ok(x)
-    }
+    if x == 0 { .Err("zero") } else { .Ok(x) }
 }
 
 trait Source {

@@ -16,11 +16,7 @@
 //
 // This is the "scatter/gather" pattern that every backend service uses.
 fn fib(n: i64) -> i64 {
-    if n <= 1 {
-        n
-    } else {
-        fib(n - 1) + fib(n - 2)
-    }
+    if n <= 1 { n } else { fib(n - 1) + fib(n - 2) }
 }
 
 actor Worker {

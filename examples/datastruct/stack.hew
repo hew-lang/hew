@@ -26,11 +26,7 @@ fn stack_size(s: Vec<i64>) -> i64 {
 }
 
 fn stack_is_empty(s: Vec<i64>) -> i64 {
-    if s.is_empty() {
-        1
-    } else {
-        0
-    }
+    if s.is_empty() { 1 } else { 0 }
 }
 
 fn run_test(name: string, passed: i64) -> i64 {
@@ -48,11 +44,7 @@ fn main() {
     // Test 1: new stack is empty
     total = total + 1;
     var s = stack_new();
-    let r1 = if stack_is_empty(s) == 1 {
-        1
-    } else {
-        0
-    };
+    let r1 = if stack_is_empty(s) == 1 { 1 } else { 0 };
     passed = passed + run_test("new stack is empty", r1);
 
     // Test 2: push and size
@@ -60,20 +52,12 @@ fn main() {
     s = stack_push(s, 10);
     s = stack_push(s, 20);
     s = stack_push(s, 30);
-    let r2 = if stack_size(s) == 3 {
-        1
-    } else {
-        0
-    };
+    let r2 = if stack_size(s) == 3 { 1 } else { 0 };
     passed = passed + run_test("push and size", r2);
 
     // Test 3: peek returns top
     total = total + 1;
-    let r3 = if stack_peek(s) == 30 {
-        1
-    } else {
-        0
-    };
+    let r3 = if stack_peek(s) == 30 { 1 } else { 0 };
     passed = passed + run_test("peek returns top", r3);
 
     // Test 4: pop returns LIFO order
@@ -94,11 +78,7 @@ fn main() {
 
     // Test 5: stack empty after popping all
     total = total + 1;
-    let r5 = if stack_is_empty(s) == 1 {
-        1
-    } else {
-        0
-    };
+    let r5 = if stack_is_empty(s) == 1 { 1 } else { 0 };
     passed = passed + run_test("empty after pop all", r5);
 
     // Test 6: push after empty

@@ -50,11 +50,7 @@ pub enum DecodeError {
 }
 
 fn at(path: string) -> string {
-    if path.is_empty() {
-        ""
-    } else {
-        f"{path}: "
-    }
+    if path.is_empty() { "" } else { f"{path}: " }
 }
 
 impl Display for DecodeError {

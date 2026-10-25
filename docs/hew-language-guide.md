@@ -339,6 +339,8 @@ fn grade(n: i64) -> string {
 
 Use if/else as an expression to produce a value; the last expression of each block is its value. An `if` used as an expression needs an `else`, and every branch must produce the same type.
 
+Short conditional values use the same spelling on one line: `let sign = if x < 0 { -1 } else { 1 };`. Only the selected branch runs. The formatter keeps short, comment-free expression branches compact; statements, comments and longer expressions use expanded blocks. Hew uses this expression form instead of a separate `?:` operator.
+
 A block-like form that starts a statement — a block, `unsafe { }`, `scope`, `select`, `race`, `fork { }`, `gen { }`, `if`, `match`, a loop or `defer` — ends the statement at its closing `}`. A `.Ok(value)` on the next line is therefore the function's tail, not a method call on the block. To use such a block as an operand at the start of a statement, parenthesize it: `(unsafe { f() }) != 0`; without the parentheses the compiler reports `E_BLOCK_STATEMENT_OPERAND`. A block statement that is not the tail and has no `;` must produce `()`: a value it would drop is `E_BLOCK_STATEMENT_VALUE`, so `unsafe { f() }` followed by `- 1` on the next line fails instead of quietly returning `-1`.
 
 ### match on literals with wildcard

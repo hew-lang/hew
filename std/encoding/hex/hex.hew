@@ -84,11 +84,7 @@ fn nibble_to_char(n: i32, upper: bool) -> i32 { // INTERNAL-ABI: byte-level nibb
     if n < 10 {
         48 + n
     } else {
-        if upper {
-            55 + n
-        } else {
-            87 + n
-        }
+        if upper { 55 + n } else { 87 + n }
     }
 }
 

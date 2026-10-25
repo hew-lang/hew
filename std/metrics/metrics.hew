@@ -200,11 +200,7 @@ pub fn counter(name: string) -> Result<Counter, MetricsError> {
     let id = unsafe {
         hew_metric_counter_register(name)
     };
-    if id < 0 {
-        .Err(MetricsError.Rejected(name))
-    } else {
-        .Ok(Counter { id: id })
-    }
+    if id < 0 { .Err(MetricsError.Rejected(name)) } else { .Ok(Counter { id: id }) }
 }
 
 /// Register (or get) a gauge named `name`.
@@ -214,11 +210,7 @@ pub fn gauge(name: string) -> Result<Gauge, MetricsError> {
     let id = unsafe {
         hew_metric_gauge_register(name)
     };
-    if id < 0 {
-        .Err(MetricsError.Rejected(name))
-    } else {
-        .Ok(Gauge { id: id })
-    }
+    if id < 0 { .Err(MetricsError.Rejected(name)) } else { .Ok(Gauge { id: id }) }
 }
 
 /// Register (or get) a histogram named `name`.
@@ -231,11 +223,7 @@ pub fn histogram(name: string) -> Result<Histogram, MetricsError> {
     let id = unsafe {
         hew_metric_histogram_register_simple(name)
     };
-    if id < 0 {
-        .Err(MetricsError.Rejected(name))
-    } else {
-        .Ok(Histogram { id: id })
-    }
+    if id < 0 { .Err(MetricsError.Rejected(name)) } else { .Ok(Histogram { id: id }) }
 }
 
 // ── FFI bindings ──────────────────────────────────────────────────────

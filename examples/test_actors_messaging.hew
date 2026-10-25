@@ -138,9 +138,5 @@ fn main() -> i64 {
     passed = passed + test_complex_lambda();
     println("");
     println(f"Passed: {passed}/{total}");
-    if passed == total {
-        0
-    } else {
-        1
-    }
+    if passed == total { 0 } else { 1 }
 }

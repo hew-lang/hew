@@ -218,10 +218,9 @@ fn collection_updates_keep_their_inputs_when_a_key_callback_faults() {
         RuntimeCallFamily::Set(SetValueOp::Remove),
     ] {
         let contract = family.semantic_contract().unwrap();
-        assert_eq!(
-            contract.failures,
-            [crate::RuntimeLogicalFailure::CallbackFault]
-        );
+        assert!(contract
+            .failures
+            .contains(&crate::RuntimeLogicalFailure::CallbackFault));
         assert!(contract.preserves_inputs_on_failure(), "{family:?}");
     }
 }

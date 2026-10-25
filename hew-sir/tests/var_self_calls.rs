@@ -212,7 +212,7 @@ fn main() -> i64 {
             .any(|block| matches!(block.terminator, SemTerminator::ResumeUnwind { .. })));
         assert!(!cleanup
             .iter()
-            .flat_map(|block| &block.ops)
+            .flat_map(|block| block.operations())
             .any(|op| matches!(op.kind, SemOpKind::StoreAssign { .. })));
     }
     assert_eq!(
@@ -416,7 +416,7 @@ fn main() {
             .functions
             .iter_mut()
             .flat_map(|f| &mut f.blocks)
-            .flat_map(|block| &mut block.ops)
+            .flat_map(|block| block.operations_mut())
             .find(|op| matches!(op.kind, SemOpKind::ConstUnit))
             .unwrap();
         let id = operation.id;
@@ -792,7 +792,7 @@ fn main() -> i64 {
     else {
         panic!("a resource binding has canonical local storage")
     };
-    let ops = || main.blocks.iter().flat_map(|block| &block.ops);
+    let ops = || main.blocks.iter().flat_map(|block| block.operations());
     // The owner is taken and re-initialized around each mutation; neither it
     // nor the mutated field is ever copied.
     assert!(!ops().any(|op| matches!(op.kind, SemOpKind::LoadCopy { place } if place == pool)));
@@ -876,7 +876,7 @@ fn main() -> i64 {
     let copies: Vec<_> = function
         .blocks
         .iter()
-        .flat_map(|block| &block.ops)
+        .flat_map(|block| block.operations())
         .filter(|op| matches!(op.kind, SemOpKind::LoadCopy { place } if place == receiver))
         .map(|op| op.results[0].id)
         .collect();
@@ -893,7 +893,7 @@ fn main() -> i64 {
     let returned: Vec<_> = function
         .blocks
         .iter()
-        .flat_map(|block| &block.ops)
+        .flat_map(|block| block.operations())
         .filter(|op| matches!(op.kind, SemOpKind::Destructure { .. }))
         .flat_map(|op| op.results.iter().map(|result| result.id))
         .collect();
@@ -904,7 +904,7 @@ fn main() -> i64 {
     assert!(!function
         .blocks
         .iter()
-        .flat_map(|block| &block.ops)
+        .flat_map(|block| block.operations())
         .any(|op| matches!(op.kind, SemOpKind::LoadTake { place } if place == receiver)));
 
     // Taking the receiver there instead leaves the defer an empty place.
@@ -912,7 +912,7 @@ fn main() -> i64 {
     for op in taken.functions[method]
         .blocks
         .iter_mut()
-        .flat_map(|block| &mut block.ops)
+        .flat_map(|block| block.operations_mut())
     {
         if matches!(op.kind, SemOpKind::LoadCopy { place } if place == receiver)
             && handbacks.contains(&op.results[0].id)
@@ -971,7 +971,7 @@ fn main() -> i64 {
             })
             .map(|place| place.id)
             .collect();
-        let ops = || function.blocks.iter().flat_map(|block| &block.ops);
+        let ops = || function.blocks.iter().flat_map(|block| block.operations());
         // Taking the collection field avoids an extra owner, permitting an
         // in-place update when no actual snapshot shares the buffer.
         assert!(!ops()

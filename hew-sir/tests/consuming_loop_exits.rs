@@ -44,7 +44,7 @@ fn assert_local_source(source: &str) {
                         function
                             .blocks
                             .iter()
-                            .flat_map(|block| &block.ops)
+                            .flat_map(|block| block.operations())
                             .flat_map(|op| &op.results)
                             .find(|result| result.id == value)
                             .map(|result| result.own)

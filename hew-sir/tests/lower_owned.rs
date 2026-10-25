@@ -46,7 +46,7 @@ fn cleanup_path(
 
 fn cleanup_has_lifetime(path: &[&hew_sir::SemBlock], place: hew_sir::PlaceId) -> bool {
     path.iter()
-        .flat_map(|block| &block.ops)
+        .flat_map(|block| block.operations())
         .any(|op| matches!(op.kind, SemOpKind::EndLifetime { place: found } if found == place))
 }
 
@@ -215,7 +215,7 @@ fn constant_owned_branch_that_needs_cleanup_remains_executable() {
     assert!(main_after
         .blocks
         .iter()
-        .flat_map(|block| &block.ops)
+        .flat_map(|block| block.operations())
         .any(|op| matches!(op.kind, SemOpKind::EndLifetime { .. })));
     assert!(verify_module(&lowered.module).is_empty());
 }
@@ -390,7 +390,7 @@ fn owned_string_and_bytes_calls_copy_borrows_and_clean_both_exits() {
         assert!(function
             .blocks
             .iter()
-            .flat_map(|block| &block.ops)
+            .flat_map(|block| block.operations())
             .any(|op| { matches!(op.kind, SemOpKind::CopyValue { .. }) }));
     }
     for function in &lowered.module.functions {
@@ -419,7 +419,7 @@ fn owned_string_and_bytes_calls_copy_borrows_and_clean_both_exits() {
     assert!(use_values
         .blocks
         .iter()
-        .flat_map(|block| &block.ops)
+        .flat_map(|block| block.operations())
         .any(|op| matches!(op.kind, SemOpKind::EndLifetime { .. })));
     assert!(
         verify_module(&lowered.module).is_empty(),
@@ -477,7 +477,7 @@ fn owned_binding_aliases_copy_and_preserve_source() {
     assert_eq!(
         main.blocks
             .iter()
-            .flat_map(|block| &block.ops)
+            .flat_map(|block| block.operations())
             .filter(|op| matches!(op.kind, SemOpKind::LoadCopy { .. }))
             .count(),
         2,
@@ -768,7 +768,7 @@ fn owned_string_reassignment_loop_and_early_return_verify() {
         choose
             .blocks
             .iter()
-            .flat_map(|block| &block.ops)
+            .flat_map(|block| block.operations())
             .filter(
                 |op| matches!(op.kind, SemOpKind::StoreAssign { place, .. } if place == selected)
             )

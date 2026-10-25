@@ -296,7 +296,7 @@ fn equality_snapshots_a_whole_binding_before_later_mutation() {
         let snapshot = main
             .blocks
             .iter()
-            .flat_map(|block| &block.ops)
+            .flat_map(|block| block.operations())
             .find(|op| op.results.iter().any(|result| result.id == argument))
             .unwrap();
         assert_eq!(snapshot.results[0].own, hew_sir::OwnKind::Owned);
@@ -395,7 +395,7 @@ fn main() -> i64 {
         assert_eq!(
             cleanup_blocks
                 .iter()
-                .flat_map(|block| &block.ops)
+                .flat_map(|block| block.operations())
                 .filter(|op| matches!(op.kind, hew_sir::SemOpKind::EndLifetime { place } if place == owner))
                 .count(),
             1

@@ -66,7 +66,7 @@ fn assert_once_field_transfer(source: &str) {
     let moved = main
         .blocks
         .iter()
-        .flat_map(|block| &block.ops)
+        .flat_map(|block| block.operations())
         .find(|op| op.results.iter().any(|result| result.id == callee))
         .unwrap();
     let SemOpKind::Move { source } = &moved.kind else {
@@ -75,7 +75,7 @@ fn assert_once_field_transfer(source: &str) {
     let taken = main
         .blocks
         .iter()
-        .flat_map(|block| &block.ops)
+        .flat_map(|block| block.operations())
         .find(|op| op.results.iter().any(|result| result.id == source.value))
         .expect("once field must transfer from its existing owner");
     let SemOpKind::LoadTake { place } = taken.kind else {

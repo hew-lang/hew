@@ -113,14 +113,14 @@ fn ordinary_vector_values_share_one_operation_family() {
         let copied = main
             .blocks
             .iter()
-            .flat_map(|block| &block.ops)
+            .flat_map(|block| block.operations())
             .find_map(|op| match &op.kind {
                 SemOpKind::StoreInit { place, value } if *place == independent => Some(value.value),
                 _ => None,
             })
             .unwrap();
         assert!(
-            main.blocks.iter().flat_map(|block| &block.ops).any(
+            main.blocks.iter().flat_map(|block| block.operations()).any(
                 |op| matches!(op.kind, SemOpKind::LoadCopy { place } if place == source)
                     && op.results[0].id == copied
             ),
@@ -154,7 +154,7 @@ fn optional_get_and_mutations_keep_receiver_writeback_explicit() {
         .functions
         .iter()
         .flat_map(|function| &function.blocks)
-        .flat_map(|block| &block.ops)
+        .flat_map(|block| block.operations())
         .any(|op| matches!(op.kind, SemOpKind::Destructure { .. })));
 }
 
@@ -275,7 +275,7 @@ fn verifier_rejects_a_wrong_element_even_with_the_right_arity() {
     let wrong = function
         .blocks
         .iter()
-        .flat_map(|block| &block.ops)
+        .flat_map(|block| block.operations())
         .find(|op| matches!(op.kind, SemOpKind::ConstInteger(7)))
         .unwrap()
         .results[0]

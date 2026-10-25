@@ -379,7 +379,7 @@ fn main() -> i64 {
     assert_eq!(
         cleanup
             .iter()
-            .flat_map(|block| &block.ops)
+            .flat_map(|block| block.operations())
             .filter(
                 |op| matches!(&op.kind, SemOpKind::EndLifetime { place } if hew_sir::OwnerRoot::Local(*place) == parent)
             )

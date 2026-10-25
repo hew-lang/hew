@@ -79,7 +79,7 @@ fn main() {
     let borrowed = main
         .blocks
         .iter()
-        .flat_map(|block| &block.ops)
+        .flat_map(|block| block.operations())
         .find_map(|op| match op.kind {
             SemOpKind::LoadBorrow { place } => Some(place),
             _ => None,
@@ -88,7 +88,7 @@ fn main() {
     let replacement = main
         .blocks
         .iter_mut()
-        .flat_map(|block| &mut block.ops)
+        .flat_map(|block| block.operations_mut())
         .find_map(|op| match &mut op.kind {
             SemOpKind::StoreAssign { place, .. } => Some(place),
             _ => None,
@@ -132,15 +132,19 @@ fn owned_tuple_construction_and_repeated_borrows_are_explicit() {
         .iter()
         .find(|function| lowered.module.defs.path(function.declaration) == "main")
         .expect("main must have a body");
-    assert!(main.blocks.iter().flat_map(|block| &block.ops).any(|op| {
-        matches!(
-            op.kind,
-            SemOpKind::AggregateMake {
-                shape: AggregateShapeRef::Tuple,
-                ..
-            }
-        )
-    }));
+    assert!(main
+        .blocks
+        .iter()
+        .flat_map(|block| block.operations())
+        .any(|op| {
+            matches!(
+                op.kind,
+                SemOpKind::AggregateMake {
+                    shape: AggregateShapeRef::Tuple,
+                    ..
+                }
+            )
+        }));
     let plan = hew_sir::place_plan(
         &lowered.module.defs,
         main,
@@ -271,7 +275,7 @@ fn main() {
             function
                 .blocks
                 .iter()
-                .flat_map(|block| &block.ops)
+                .flat_map(|block| block.operations())
                 .any(|op| {
                     matches!(op.kind, SemOpKind::LoadCopy { .. })
                         && op.results.first().is_some_and(|result| {
@@ -304,7 +308,7 @@ fn main() {
         .functions
         .iter()
         .flat_map(|function| &function.blocks)
-        .flat_map(|block| &block.ops)
+        .flat_map(|block| block.operations())
         .find(|op| matches!(op.kind, SemOpKind::LoadCopy { .. }))
         .expect("source must produce an aggregate projection")
         .id;
@@ -372,7 +376,7 @@ fn main() {
     assert!(echo_body
         .blocks
         .iter()
-        .flat_map(|block| &block.ops)
+        .flat_map(|block| block.operations())
         .any(|op| {
             matches!(op.kind, SemOpKind::CopyValue { .. })
                 && op.results.first().is_some_and(|result| {
@@ -467,7 +471,7 @@ fn main() {
     let field_reads = main
         .blocks
         .iter()
-        .flat_map(|block| &block.ops)
+        .flat_map(|block| block.operations())
         .filter(|operation| match operation.kind {
             SemOpKind::LoadCopy { place } => matches!(
                 main.places[place.0 as usize].origin,
@@ -483,7 +487,7 @@ fn main() {
     assert!(
         main.blocks
             .iter()
-            .flat_map(|block| &block.ops)
+            .flat_map(|block| block.operations())
             .all(|operation| !matches!(operation.kind, SemOpKind::Destructure { .. })),
         "a place destructure must preserve independently readable fields"
     );
@@ -507,7 +511,7 @@ fn main() {
         .functions
         .iter_mut()
         .flat_map(|function| &mut function.blocks)
-        .flat_map(|block| &mut block.ops)
+        .flat_map(|block| block.operations_mut())
         .find(|operation| matches!(operation.kind, SemOpKind::Destructure { .. }))
         .expect("source must produce an aggregate destructure");
     let operation = destructure.id;
@@ -858,7 +862,7 @@ fn count_ops(function: &hew_sir::SemFunction, matches: impl Fn(&SemOpKind) -> bo
     function
         .blocks
         .iter()
-        .flat_map(|block| &block.ops)
+        .flat_map(|block| block.operations())
         .filter(|op| matches(&op.kind))
         .count()
 }

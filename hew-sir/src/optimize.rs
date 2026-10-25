@@ -118,6 +118,7 @@ fn canonicalize_verified_function(
                 }
             }),
             SemTerminator::Return { .. }
+            | SemTerminator::Materialize { .. }
             | SemTerminator::CheckedBinary { .. }
             | SemTerminator::SwitchVariant { .. }
             | SemTerminator::Call { .. }
@@ -204,7 +205,7 @@ fn canonicalize_verified_function(
 
 fn direct_bool_constants(function: &SemFunction) -> BTreeMap<ValueId, bool> {
     let mut constants = BTreeMap::new();
-    for operation in function.blocks.iter().flat_map(|block| &block.ops) {
+    for operation in function.blocks.iter().flat_map(|block| block.operations()) {
         if let (SemOpKind::ConstBool(value), [result]) =
             (&operation.kind, operation.results.as_slice())
         {
@@ -418,7 +419,7 @@ fn transferable_roots(
     let mut open_borrows: BTreeSet<crate::PlaceId> = BTreeSet::new();
     let mut closed = BTreeSet::new();
     let mut borrow_roots = BTreeMap::new();
-    for operation in function.blocks.iter().flat_map(|block| &block.ops) {
+    for operation in function.blocks.iter().flat_map(|block| block.operations()) {
         match (&operation.kind, operation.results.as_slice()) {
             (SemOpKind::LoadBorrow { place }, results) => {
                 let Some(root) = local_root(*place) else {
@@ -491,7 +492,7 @@ impl<'a> PlaceFlow<'a> {
             }
         }
         let mut borrow_root = BTreeMap::new();
-        for operation in function.blocks.iter().flat_map(|block| &block.ops) {
+        for operation in function.blocks.iter().flat_map(|block| block.operations()) {
             if let (SemOpKind::LoadBorrow { place }, [result]) =
                 (&operation.kind, operation.results.as_slice())
             {

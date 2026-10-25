@@ -571,7 +571,7 @@ impl<'a> Flow<'a> {
         let mut parents = BTreeMap::new();
         let mut local_borrows = BTreeSet::new();
         let mut exclusive_borrows = BTreeSet::new();
-        for op in function.blocks.iter().flat_map(|block| &block.ops) {
+        for op in function.blocks.iter().flat_map(|block| block.operations()) {
             if let SemOpKind::TaskInvoke { callee, args, .. } = &op.kind {
                 exclusive_borrows.extend(
                     callee
@@ -1143,6 +1143,26 @@ impl<'a> Flow<'a> {
         }
         let mut successors = Vec::new();
         match &block.terminator {
+            SemTerminator::Materialize {
+                operation,
+                normal,
+                failure,
+            } => {
+                Self::require_fault(id, DEAD, &state, emit);
+                let mut acquired = state.clone();
+                self.operations(
+                    id,
+                    std::slice::from_ref(operation.as_ref()),
+                    &mut acquired,
+                    cleanup_exit,
+                    emit,
+                    lifetimes,
+                );
+                successors.extend(self.edge(id, normal, acquired, emit));
+                // The failure block raises HeapExceeded before cleanup. No
+                // input ownership or initialized place has changed here.
+                successors.extend(self.edge(id, failure, state, emit));
+            }
             SemTerminator::EnterDefer { defer, park, body } => {
                 if let Some(registration) = self.defers.registrations.get(defer) {
                     for place in &registration.dependencies {

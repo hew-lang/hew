@@ -356,6 +356,7 @@ pub struct BytesLiteralId(pub u32);
 /// panic traps arrive with the `Index`/`Slice` rows they come from.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum TrapKind {
+    HeapExceeded,
     /// Private delivery completion, normalized before actor fault reporting.
     ActorRefused,
     IntegerOverflow,

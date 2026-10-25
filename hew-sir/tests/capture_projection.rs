@@ -69,7 +69,7 @@ fn captured_vector_projection_keeps_its_environment_loan_live() {
     let capture_loan = function
         .blocks
         .iter()
-        .flat_map(|block| &block.ops)
+        .flat_map(|block| block.operations())
         .find_map(|op| match op.kind {
             SemOpKind::LoadBorrow { place }
                 if matches!(
@@ -85,7 +85,7 @@ fn captured_vector_projection_keeps_its_environment_loan_live() {
     assert!(function
         .blocks
         .iter()
-        .flat_map(|block| &block.ops)
+        .flat_map(|block| block.operations())
         .any(|op| matches!(&op.kind,
         SemOpKind::AggregateProjectBorrow { aggregate, .. } if aggregate.value == capture_loan)));
     let mut removed = false;

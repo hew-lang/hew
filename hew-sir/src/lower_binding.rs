@@ -44,6 +44,9 @@ impl Builder<'_, '_> {
         kind: SemOpKind,
         provenance: Provenance,
     ) -> Result<(), SirLoweringError> {
+        if let SemOpKind::EndBorrow { borrow } = &kind {
+            self.live_loans.remove(&borrow.value);
+        }
         let operation = SemOp {
             id: crate::OpId(self.ops),
             results: Vec::new(),

@@ -103,7 +103,7 @@ fn main() -> i64 {
     for operation in main
         .blocks
         .iter()
-        .flat_map(|block| &block.ops)
+        .flat_map(|block| block.operations())
         .skip_while(|operation| !matches!(operation.kind, SemOpKind::StoreInit { place, .. } if place == initial))
         .skip(1)
     {

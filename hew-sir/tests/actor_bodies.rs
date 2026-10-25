@@ -336,7 +336,7 @@ fn stream_producers_yield_into_the_request_sink_and_update_live_state() {
     assert!(body
         .blocks
         .iter()
-        .flat_map(|block| &block.ops)
+        .flat_map(|block| block.operations())
         .any(|op| matches!(
             op.kind,
             hew_sir::SemOpKind::StoreAssign { place, .. }
@@ -351,7 +351,7 @@ fn stream_producers_yield_into_the_request_sink_and_update_live_state() {
     assert!(main
         .blocks
         .iter()
-        .flat_map(|block| &block.ops)
+        .flat_map(|block| block.operations())
         .any(|op| matches!(op.kind, hew_sir::SemOpKind::StreamPipe { .. })));
     assert!(main.blocks.iter().any(|block| matches!(
         block.terminator,

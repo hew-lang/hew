@@ -66,7 +66,7 @@ fn producer(module: &SemModule, value: ValueId) -> SemOpKind {
             .functions
             .iter()
             .flat_map(|function| &function.blocks)
-            .flat_map(|block| &block.ops)
+            .flat_map(|block| block.operations())
             .find(|op| op.results.iter().any(|result| result.id == value))
             .map(|op| op.kind.clone())
             .expect("operand has a defining operation")

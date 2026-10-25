@@ -1,0 +1,44 @@
+actor Count {
+    var total: i64;
+
+    receive fn add(value: i64) -> i64 {
+        total += value;
+        total
+    }
+
+    receive fn current() -> i64 {
+        total
+    }
+}
+
+#[resource]
+pub type Session {
+    counter: Count;
+    next: fn[var]() -> i64;
+}
+
+impl Session {
+    fn close(consume self) {
+        stop(self.counter);
+        stopped(self.counter);
+    }
+}
+
+pub fn create() -> Session {
+    let count: i64 = 0;
+    Session { counter: spawn Count { total: 40 }, next: || {
+        count += 1;
+        count
+    } }
+}
+
+pub fn step(consume value: Session) -> Session {
+    var owned = value;
+    let amount = owned.next();
+    let _ = owned.counter.add(amount).expect("counter reply");
+    owned
+}
+
+pub fn read(value: Session) -> i64 {
+    value.counter.current().expect("counter reply")
+}

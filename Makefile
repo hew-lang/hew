@@ -414,6 +414,12 @@ test-debugger: require-host-cargo-target ## Test: run live debugger fixtures wit
 shared-host-debug:
 	cargo build -p hew-runtime -p hew-lib -p hew-cli $(CARGO_TARGET_FLAG)
 
+.PHONY: test-live-native
+test-live-native: hew-native ## Test: load native generations sharing one runtime
+	HEW_LIVE_COMPILER="$(abspath $(DEBUG_HEW))" \
+	HEW_LIVE_RUNTIME_DIR="$(abspath $(DEBUG_DIR))" \
+		$(TEST_RUN_ENV) cargo nextest run --profile ci -p hew-live $(CARGO_TARGET_FLAG) --test native
+
 # Human-facing compiler alias. The shared host transaction is also the
 # inventory builder for the CLI, libhew and runtime archives, preventing Cargo
 # feature-set churn between separate package invocations.

@@ -7934,7 +7934,12 @@ added in later editions without growing the annotation vocabulary.
 deliver link and monitor notifications and their payload types are not
 specified in this section.
 
-Unknown hook kinds (e.g. `#[on(restart)]`, `#[on(upgrade)]`) are rejected with a diagnostic listing the valid set. `upgrade` is not among them: hot code upgrade is refused permanently, so the hook list holds no place for it.
+Unknown hook kinds (e.g. `#[on(restart)]`, `#[on(upgrade)]`) are rejected with a
+diagnostic listing the valid set. There is no actor `upgrade` hook. Experimental
+live execution prepares a separate code generation and targets explicit
+deployment-owned subtree quiescence, snapshot migration and conditional
+activation; it does not replace code underneath an active stack. That host
+lifecycle is distinct from the actor hooks defined here.
 
 `#[on(crash)]` runs on the crashing incarnation's last valid state, before
 that state's cleanup. Completed changes from earlier turns and valid changes

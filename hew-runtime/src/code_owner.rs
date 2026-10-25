@@ -12,6 +12,24 @@ pub(crate) struct CodeRoot {
 unsafe impl Send for CodeRoot {}
 
 impl CodeRoot {
+    /// Transfer a root into a carrier whose descriptor records its lease.
+    /// # Safety
+    /// The slot obeys `acquire`; the carrier must later transfer that root back
+    /// through `take` exactly once, after its final use of descriptor code.
+    pub(crate) unsafe fn retain_for_carrier(slot: *const HewCodeLeaseSlot) {
+        // SAFETY: forwarded slot and caller-root obligations.
+        std::mem::forget(unsafe { Self::acquire(slot) });
+    }
+
+    /// Take an existing carrier root without incrementing its reference count.
+    /// # Safety
+    /// The caller transfers exactly one retained carrier root for this slot.
+    pub(crate) unsafe fn take(slot: *const HewCodeLeaseSlot) -> Self {
+        // SAFETY: the transferred root retains the slot and its published lease.
+        let lease = unsafe { slot.as_ref() }.map_or(std::ptr::null(), |slot| slot.lease);
+        Self { lease }
+    }
+
     /// Acquire an independent executable root before invoking descriptor code.
     /// # Safety
     /// A non-null slot and its published lease are valid and immutable. A caller
@@ -116,5 +134,63 @@ mod tests {
         unsafe { crate::release_walker::hew_release_sync(cursor) };
         assert_eq!(fixture.observed.load(Ordering::SeqCst), 1);
         assert_eq!(fixture.roots.load(Ordering::SeqCst), 0);
+    }
+    #[test]
+    fn code_owner_collection_snapshots_and_rc_weak_metadata_retain_code() {
+        let fixture = Fixture {
+            roots: AtomicUsize::new(0),
+            carrier: Mutex::new(None),
+            observed: AtomicUsize::new(0),
+        };
+        let lease = HewCodeLease {
+            context: (&raw const fixture).cast(),
+            retain,
+            release,
+        };
+        let slot = HewCodeLeaseSlot {
+            lease: &raw const lease,
+        };
+        let layout = HewValueLayout {
+            size: 8,
+            align: 8,
+            ownership_kind: HewTypeOwnershipKind::Plain,
+            clone_fn: None,
+            drop_fn: None,
+            release_start: None,
+            code_owner: &raw const slot,
+        };
+        // SAFETY: all carriers use this exact descriptor and are released before
+        // its stack-backed fixture and lease go out of scope.
+        unsafe {
+            let vector = crate::vec::hew_vec_new_with_elem_layout(&raw const layout);
+            let snapshot = crate::vec::hew_vec_clone_owned(vector);
+            crate::vec::hew_vec_free_owned(vector);
+            assert_eq!(fixture.roots.load(Ordering::SeqCst), 1);
+            crate::vec::hew_vec_free_owned(snapshot);
+            assert_eq!(fixture.roots.load(Ordering::SeqCst), 0);
+
+            let mut key = hew_cabi::map::hew_layout_key_i64;
+            key.value = layout;
+            let map =
+                crate::hashmap::hew_hashmap_new_with_layout(&raw const key, &raw const layout);
+            let snapshot = crate::hashmap::hew_hashmap_clone_layout(map);
+            crate::hashmap::hew_hashmap_free_layout(map);
+            assert_eq!(fixture.roots.load(Ordering::SeqCst), 2);
+            crate::hashmap::hew_hashmap_free_layout(snapshot);
+            assert_eq!(fixture.roots.load(Ordering::SeqCst), 0);
+
+            let value = 42_u64;
+            let rc = crate::rc::hew_rc_new(
+                (&raw const value).cast(),
+                &raw const layout,
+                c"retained".as_ptr(),
+                std::ptr::null(),
+            );
+            let weak = crate::rc::hew_rc_downgrade(rc);
+            crate::rc::hew_rc_drop(rc);
+            assert_eq!(fixture.roots.load(Ordering::SeqCst), 1);
+            crate::rc::hew_weak_drop_rc(weak);
+            assert_eq!(fixture.roots.load(Ordering::SeqCst), 0);
+        }
     }
 }

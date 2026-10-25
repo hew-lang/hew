@@ -677,6 +677,8 @@ pub unsafe extern "C" fn hew_hashmap_new_with_layout(
     }
     // SAFETY: raw is a fresh allocation of HewLayoutHashMap size.
     unsafe {
+        crate::code_owner::CodeRoot::retain_for_carrier(key_layout_snapshot.value.code_owner);
+        crate::code_owner::CodeRoot::retain_for_carrier(val_layout_snapshot.code_owner);
         ptr::write(
             raw,
             HewLayoutHashMap {
@@ -759,6 +761,8 @@ pub unsafe extern "C" fn hew_hashmap_clone_layout(
     }
     // SAFETY: cloned is a fresh allocation of HewLayoutHashMap size.
     unsafe {
+        crate::code_owner::CodeRoot::retain_for_carrier(src.key_layout.value.code_owner);
+        crate::code_owner::CodeRoot::retain_for_carrier(src.val_layout.code_owner);
         ptr::write(
             cloned,
             HewLayoutHashMap {
@@ -1394,6 +1398,11 @@ pub(crate) unsafe fn release_slot_chunk(
 pub(crate) unsafe fn free_map_storage(m: *mut HewLayoutHashMap) {
     // SAFETY: caller guarantees the allocation contract.
     let map_ref = unsafe { &*m };
+    // SAFETY: final storage release transfers both retained descriptor roots.
+    let _key_code =
+        unsafe { crate::code_owner::CodeRoot::take(map_ref.key_layout.value.code_owner) };
+    // SAFETY: the value descriptor has its own independent root.
+    let _value_code = unsafe { crate::code_owner::CodeRoot::take(map_ref.val_layout.code_owner) };
     let entries_align = core::cmp::max(map_ref.key_layout.value.align, map_ref.val_layout.align);
     // SAFETY: entries allocated by alloc_layout_entries with these exact params.
     unsafe { dealloc_layout_entries(map_ref.entries, map_ref.cap, map_ref.stride, entries_align) };

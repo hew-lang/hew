@@ -1613,6 +1613,10 @@ pub(crate) unsafe fn release_element_chunk(
 pub(crate) unsafe fn free_vector_storage(v: *mut HewVec) {
     // SAFETY: caller guarantees the allocation contract.
     unsafe {
+        let _code = (*v)
+            .layout
+            .as_ref()
+            .map(|layout| crate::code_owner::CodeRoot::take(layout.code_owner));
         if !(*v).data.is_null() {
             release_buffer(v);
         }
@@ -2806,6 +2810,7 @@ pub unsafe extern "C" fn hew_vec_new_with_elem_layout(
         // Owned elements use the Plain bulk-buffer kind; ownership is driven by
         // the descriptor thunks, not the legacy `elem_kind` string path.
         (*v).elem_kind = ElemKind::Plain;
+        crate::code_owner::CodeRoot::retain_for_carrier(descriptor.code_owner);
         (*v).layout_storage = *descriptor;
         (*v).layout = core::ptr::addr_of!((*v).layout_storage);
         v

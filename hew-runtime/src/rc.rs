@@ -358,6 +358,7 @@ pub unsafe extern "C" fn hew_rc_new(
     let header = ptr.cast::<HewRcInner>();
     // SAFETY: ptr is freshly allocated with correct alignment.
     unsafe {
+        crate::code_owner::CodeRoot::retain_for_carrier(value_layout.code_owner);
         header.write(HewRcInner {
             strong: Cell::new(1),
             weak: Cell::new(0),
@@ -796,6 +797,10 @@ pub unsafe extern "C" fn hew_weak_drop_rc(weak_ptr: *mut u8) {
             let label = unsafe { std::ffi::CStr::from_ptr(inner.type_name) }.to_string_lossy();
             crate::observe::record_rc_free(&label);
         }
+        // Keep immutable code metadata, including the type label, alive until
+        // the final weak header disappears after payload cleanup.
+        // SAFETY: this final header free transfers its retained descriptor root.
+        let _code = unsafe { crate::code_owner::CodeRoot::take(inner.layout.code_owner) };
         // SAFETY: header was allocated with this layout.
         unsafe { dealloc(header.cast(), layout) };
     }

@@ -39,9 +39,8 @@ fn encoding_c_declarations_preserve_scalar_widths_and_void_mutation_across_targe
         {
             let physical = physical_fixture(&fixture::operation(family), triple);
             let llvm = llvm(&ctx, &physical);
-            let function = llvm.get_function(family.c_symbol()).unwrap();
             use EncodingOp as Op;
-            let (params, result): (Vec<BasicMetadataTypeEnum<'_>>, Option<BasicTypeEnum<'_>>) =
+            let (mut params, result): (Vec<BasicMetadataTypeEnum<'_>>, Option<BasicTypeEnum<'_>>) =
                 match family {
                     RuntimeCallFamily::Encoding { op, .. } => match op {
                         Op::LastError | Op::ObjectNew | Op::ArrayNew | Op::FromNull => {
@@ -71,6 +70,17 @@ fn encoding_c_declarations_preserve_scalar_widths_and_void_mutation_across_targe
                     },
                     _ => unreachable!(),
                 };
+            let contract = family.semantic_contract().unwrap();
+            let symbol = if contract.failures.is_empty() {
+                family.c_symbol().to_owned()
+            } else {
+                if result.is_some() {
+                    params.push(ptr); // Result layout precedes the status slot.
+                }
+                params.push(ptr);
+                format!("{}_checked", family.c_symbol())
+            };
+            let function = llvm.get_function(&symbol).unwrap();
             assert_eq!(
                 function.get_type().get_param_types(),
                 params,

@@ -12,6 +12,43 @@ struct Trace {
 }
 thread_local! { static TRACE: RefCell<Trace> = RefCell::default(); }
 
+fn bind_runtime(llvm: &Module<'_>, engine: &ExecutionEngine<'_>) {
+    macro_rules! bind {
+        ($($op:ident => $function:ident),* $(,)?) => {$(
+            if let Some(function) = llvm.get_function(EncodingOp::$op.c_symbol(FORMAT)) {
+                engine.add_global_mapping(&function, $function as *const () as usize);
+            }
+        )*};
+    }
+    macro_rules! bind_checked {
+        ($($op:ident => $function:ident),* $(,)?) => {$(
+            if let Some(function) = llvm.get_function(&format!("{}_checked", EncodingOp::$op.c_symbol(FORMAT))) {
+                engine.add_global_mapping(&function, $function as *const () as usize);
+            }
+        )*};
+    }
+    bind!(
+        Clone => trace_clone, Free => trace_free, Eq => raw_eq,
+        Type => raw_type, GetInt => raw_get_int, GetU64 => raw_get_u64,
+        GetFloat => raw_get_float, GetBool => raw_get_bool, ArrayLen => raw_array_len,
+    );
+    bind_checked!(
+        Clone => trace_checked_clone, Parse => checked_parse,
+        LastError => checked_last_error, Stringify => checked_stringify,
+        GetString => checked_get_string, GetField => checked_get_field,
+        ArrayGet => checked_array_get, ObjectKeys => checked_object_keys,
+        ObjectNew => checked_object_new, ArrayNew => checked_array_new,
+        FromBool => checked_from_bool, FromInt => checked_from_int,
+        FromU64 => checked_from_u64, FromFloat => checked_from_float,
+        FromString => checked_from_string, FromNull => checked_from_null,
+        ObjectSet => trace_object_set, ArrayPush => trace_array_push,
+    );
+    let managed_free_symbol = format!("{}_managed", EncodingOp::Free.c_symbol(FORMAT));
+    if let Some(function) = llvm.get_function(&managed_free_symbol) {
+        engine.add_global_mapping(&function, trace_free as *const () as usize);
+    }
+}
+
 fn register(value: *mut Value) -> *mut Value {
     if !value.is_null() {
         TRACE.with_borrow_mut(|trace| assert!(trace.live.insert(value as usize)));
@@ -34,21 +71,45 @@ unsafe extern "C" fn trace_free(value: *mut Value) {
     TRACE.with_borrow_mut(|trace| trace.drops.push(value as usize));
     if remove(value) {
         // SAFETY: remove establishes the one remaining owner, or a safe null.
-        unsafe { raw_free(value) };
+        unsafe { managed_free(value.cast()) };
     }
 }
-unsafe extern "C" fn trace_object_set(value: *mut Value, key: *const HewString, child: *mut Value) {
-    TRACE.with_borrow_mut(|trace| trace.children.push(child as usize));
-    if remove(child) {
-        // SAFETY: the mutation receives a live receiver/key and consumes child.
-        unsafe { raw_object_set(value, key.cast(), child) };
+unsafe extern "C" fn trace_checked_clone(
+    value: *const Value,
+    layout: *const hew_cabi::value::HewValueLayout,
+    status: *mut i32,
+) -> *mut Value {
+    TRACE.with_borrow_mut(|trace| trace.clones += 1);
+    // SAFETY: the generated call provides a borrowed value, layout and status slot.
+    let cloned = unsafe { checked_clone(value.cast(), layout, status) }.cast::<Value>();
+    // SAFETY: status remains live through this synchronous provider call.
+    if unsafe { *status } == 0 {
+        register(cloned)
+    } else {
+        cloned
     }
 }
-unsafe extern "C" fn trace_array_push(value: *mut Value, child: *mut Value) {
-    TRACE.with_borrow_mut(|trace| trace.children.push(child as usize));
-    if remove(child) {
-        // SAFETY: the mutation receives a live receiver and consumes child.
-        unsafe { raw_array_push(value, child) };
+unsafe extern "C" fn trace_object_set(
+    value: *mut Value,
+    key: *const HewString,
+    child: *mut Value,
+    status: *mut i32,
+) {
+    // SAFETY: the generated call retains all inputs through the checked mutation.
+    unsafe { checked_object_set(value.cast(), key.cast(), child.cast(), status) };
+    // SAFETY: status is the generated caller's live output slot.
+    if unsafe { *status } == 0 {
+        TRACE.with_borrow_mut(|trace| trace.children.push(child as usize));
+        assert!(remove(child));
+    }
+}
+unsafe extern "C" fn trace_array_push(value: *mut Value, child: *mut Value, status: *mut i32) {
+    // SAFETY: the generated call retains both inputs through the checked mutation.
+    unsafe { checked_array_push(value.cast(), child.cast(), status) };
+    // SAFETY: status is the generated caller's live output slot.
+    if unsafe { *status } == 0 {
+        TRACE.with_borrow_mut(|trace| trace.children.push(child as usize));
+        assert!(remove(child));
     }
 }
 fn finish() {

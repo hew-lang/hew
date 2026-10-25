@@ -38,6 +38,9 @@ use hew_cabi::string::HewString;
 use std::alloc::{alloc, dealloc, realloc, Layout};
 use std::sync::atomic::{fence, AtomicUsize, Ordering};
 
+mod managed;
+pub use managed::*;
+
 // ---------------------------------------------------------------------------
 // Internal helpers
 // ---------------------------------------------------------------------------

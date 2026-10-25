@@ -18,7 +18,11 @@ pub(super) fn vector_header_type<'ctx>(
 }
 
 impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
-    fn make_vector_unique(&self, vector: PointerValue<'ctx>) -> CodegenResult<()> {
+    fn make_vector_unique(
+        &self,
+        vector: PointerValue<'ctx>,
+        failure: &PhysicalEdge,
+    ) -> CodegenResult<()> {
         let target = TargetData::create(&self.module.target.data_layout);
         let word = self.ctx.ptr_sized_int_type(&target, None);
         let data = self
@@ -71,12 +75,23 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
         self.builder.position_at_end(detach);
         let function = get_or_declare_external(
             self.llvm,
-            "hew_vec_make_unique",
+            "hew_vec_make_unique_managed",
             self.ctx
-                .void_type()
-                .fn_type(&[vector.get_type().into()], false),
+                .i32_type()
+                .fn_type(&[vector.get_type().into(), vector.get_type().into()], false),
         )?;
-        self.runtime_call_void(function, &[vector.into()], "vector.make_unique")?;
+        let state = self
+            .frame
+            .as_ref()
+            .map_or(vector.get_type().const_null(), |frame| frame.state);
+        let status = self
+            .runtime_call_value(
+                function,
+                &[vector.into(), state.into()],
+                "vector.detach.status",
+            )?
+            .into_int_value();
+        self.check_budget_status(status, failure)?;
         self.builder
             .build_unconditional_branch(ready)
             .llvm_ctx("continue with unique vector storage")?;
@@ -321,6 +336,7 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
             .build_conditional_branch(in_bounds, safe, failed)
             .llvm_ctx("select vector mutation outcome")?;
         self.builder.position_at_end(failed);
+        self.initialize_active_fault(hew_runtime::internal::types::HEW_TRAP_INDEX_OUT_OF_BOUNDS)?;
         self.emit_edge(failure)?;
         self.builder.position_at_end(safe);
         Ok(())
@@ -471,6 +487,7 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                 let right = self.load(source(2)?, "vector.swap.right")?.into_int_value();
                 self.emit_vector_index_guard(vector, left, failure()?)?;
                 self.emit_vector_index_guard(vector, right, failure()?)?;
+                self.make_vector_unique(vector, failure()?)?;
                 let function = get_or_declare_external(
                     self.llvm,
                     "hew_vec_swap",
@@ -490,39 +507,48 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                 let index = self.load(source(1)?, "vector.set.index")?.into_int_value();
                 self.emit_vector_index_guard(vector, index, failure()?)?;
                 let moved = matches!(transfers.get(2), Some(ArgumentTransfer::Move(_)));
-                if scalar {
-                    self.make_vector_unique(vector)?;
-                    let element = llvm_type(self.ctx, &element_layout.repr)?;
-                    let slot = self.vector_element_slot(vector, index, element)?;
-                    let replacement = self.load(source(2)?, "vector.replacement")?;
-                    self.builder
-                        .build_store(slot, replacement)
-                        .llvm_ctx("replace scalar vector element")?;
-                    if moved {
-                        self.clear_owned(source(2)?)?;
-                    }
-                    self.clear_owned(receiver)?;
-                    self.store(result, vector.into())?;
-                    return self.emit_result_edge(Some(result), normal);
-                }
+                let cleanup = values.entry_scratch(pointer.into(), "vector.set.cleanup")?;
                 let function = get_or_declare_external(
                     self.llvm,
-                    if moved {
-                        "hew_vec_set_owned_move_release"
-                    } else {
-                        "hew_vec_set_owned_release"
-                    },
-                    pointer.fn_type(&[pointer.into(), i64_ty.into(), pointer.into()], false),
+                    "hew_vec_set_managed",
+                    self.ctx.i32_type().fn_type(
+                        &[
+                            pointer.into(),
+                            i64_ty.into(),
+                            pointer.into(),
+                            self.ctx.i32_type().into(),
+                            pointer.into(),
+                            pointer.into(),
+                        ],
+                        false,
+                    ),
                 )?;
-                // The set releases the element it displaces, so a `close` that
-                // fails inside it reaches this frame's fault record.
-                let replacement = self.slots[source(2)?.0 as usize];
-                let cursor = self
+                let state = self
+                    .frame
+                    .as_ref()
+                    .map_or(pointer.const_null(), |frame| frame.state);
+                let status = self
                     .runtime_call_value(
                         function,
-                        &[vector.into(), index.into(), replacement.into()],
-                        "vector.set",
+                        &[
+                            vector.into(),
+                            index.into(),
+                            self.slots[source(2)?.0 as usize].into(),
+                            self.ctx
+                                .i32_type()
+                                .const_int(u64::from(moved), false)
+                                .into(),
+                            state.into(),
+                            cleanup.into(),
+                        ],
+                        "vector.set.status",
                     )?
+                    .into_int_value();
+                self.check_budget_status(status, failure()?)?;
+                let cursor = self
+                    .builder
+                    .build_load(pointer, cleanup, "vector.set.cleanup")
+                    .llvm_ctx("take displaced vector element")?
                     .into_pointer_value();
                 if moved {
                     self.clear_owned(source(2)?)?;
@@ -557,26 +583,50 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                         )
                         .llvm_ctx("check scalar vector read bounds")?
                 } else {
+                    let borrowed = matches!(
+                        operation,
+                        PhysicalVectorOp::GetBorrow { .. } | PhysicalVectorOp::IndexBorrow
+                    );
+                    let state = self
+                        .frame
+                        .as_ref()
+                        .map_or(pointer.const_null(), |frame| frame.state);
+                    let mut arguments = vec![vector.into(), index.into(), output.into()];
+                    let status = if borrowed {
+                        None
+                    } else {
+                        let status = values
+                            .entry_scratch(self.ctx.i32_type().into(), "vector.get.status")?;
+                        arguments.push(state.into());
+                        arguments.push(status.into());
+                        Some(status)
+                    };
+                    let mut types = vec![pointer.into(), i64_ty.into(), pointer.into()];
+                    if !borrowed {
+                        types.push(pointer.into());
+                        types.push(pointer.into());
+                    }
                     let function = get_or_declare_external(
                         self.llvm,
-                        if matches!(
-                            operation,
-                            PhysicalVectorOp::GetBorrow { .. } | PhysicalVectorOp::IndexBorrow
-                        ) {
+                        if borrowed {
                             "hew_vec_borrow_owned"
                         } else {
-                            "hew_vec_get_clone"
+                            "hew_vec_get_clone_managed"
                         },
-                        self.ctx
-                            .bool_type()
-                            .fn_type(&[pointer.into(), i64_ty.into(), pointer.into()], false),
+                        self.ctx.bool_type().fn_type(&types, false),
                     )?;
-                    self.runtime_call_value(
-                        function,
-                        &[vector.into(), index.into(), output.into()],
-                        "vector.found",
-                    )?
-                    .into_int_value()
+                    let found = self
+                        .runtime_call_value(function, &arguments, "vector.found")?
+                        .into_int_value();
+                    if let Some(status) = status {
+                        let status = self
+                            .builder
+                            .build_load(self.ctx.i32_type(), status, "vector.get.status")
+                            .llvm_ctx("read copied vector element status")?
+                            .into_int_value();
+                        self.check_budget_status(status, failure()?)?;
+                    }
+                    found
                 };
                 let present = self
                     .ctx
@@ -597,6 +647,9 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                     self.write_variant_value(self.slots[result.0 as usize], 1, &[], option)?;
                     self.emit_result_edge(Some(result), normal)?;
                 } else {
+                    self.initialize_active_fault(
+                        hew_runtime::internal::types::HEW_TRAP_INDEX_OUT_OF_BOUNDS,
+                    )?;
                     self.emit_edge(failure()?)?;
                 }
                 self.builder.position_at_end(present);
@@ -621,19 +674,24 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
             PhysicalVectorOp::Append => {
                 let function = get_or_declare_external(
                     self.llvm,
-                    "hew_vec_append",
-                    self.ctx
-                        .void_type()
-                        .fn_type(&[pointer.into(), pointer.into()], false),
+                    "hew_vec_append_managed",
+                    self.ctx.i32_type().fn_type(&[pointer.into(); 3], false),
                 )?;
                 let source_vector = self
                     .load(source(1)?, "vector.append.source")?
                     .into_pointer_value();
-                self.runtime_call_void(
-                    function,
-                    &[vector.into(), source_vector.into()],
-                    "vector.append",
-                )?;
+                let state = self
+                    .frame
+                    .as_ref()
+                    .map_or(pointer.const_null(), |frame| frame.state);
+                let status = self
+                    .runtime_call_value(
+                        function,
+                        &[vector.into(), source_vector.into(), state.into()],
+                        "vector.append.status",
+                    )?
+                    .into_int_value();
+                self.check_budget_status(status, failure()?)?;
                 self.clear_owned(receiver)?;
                 self.store(result, vector.into())?;
             }
@@ -714,6 +772,9 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                     .build_conditional_branch(out_of_bounds, failed, safe)
                     .llvm_ctx("branch around fallible vector slice call")?;
                 self.builder.position_at_end(failed);
+                self.initialize_active_fault(
+                    hew_runtime::internal::types::HEW_TRAP_INDEX_OUT_OF_BOUNDS,
+                )?;
                 self.emit_edge(failure()?)?;
                 self.builder.position_at_end(safe);
                 let function = get_or_declare_external(
@@ -727,6 +788,7 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                     "vector.slice",
                 )?;
                 self.store(result, sliced)?;
+                self.publish_managed_result(result, failure()?)?;
             }
             PhysicalVectorOp::Pop { result: tuple }
             | PhysicalVectorOp::Remove { result: tuple }
@@ -751,6 +813,10 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                     _ => None,
                 };
                 let status = if let Some(index) = index {
+                    if matches!(operation, PhysicalVectorOp::TakeFirst { .. }) {
+                        self.emit_vector_index_guard(vector, index, failure()?)?;
+                    }
+                    self.make_vector_unique(vector, failure()?)?;
                     let function = get_or_declare_external(
                         self.llvm,
                         "hew_vec_remove_at_owned",

@@ -1,0 +1,14 @@
+[[case]]
+id = "actor-owned-budget-race"
+intent = "Task Race reserves actual member carrier capacity and releases it at terminal group drain."
+source = "cases/actor-owned-budget-race.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 30
+
+[case.env]
+HEW_WORKERS = "2"
+
+[case.expected]
+stdout = "7\nrace limit\n"
+stderr = "hew: failure: HeapExceeded (200)\nhew: actor crash in Small.run (actor 2): HeapExceeded\n"
+exit = 1

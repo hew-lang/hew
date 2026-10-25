@@ -9,20 +9,11 @@ use std::ffi::c_void;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
 
-unsafe extern "C-unwind" fn drop_bytes(slot: *mut c_void) {
-    // SAFETY: this callback consumes the one bytes slot described below.
-    unsafe { crate::bytes::hew_bytes_drop((*slot.cast::<crate::bytes::BytesTriple>()).ptr) };
-}
-
-pub(super) const BYTES: HewValueLayout = HewValueLayout {
-    code_owner: core::ptr::null(),
-    managed: core::ptr::null(),
-    size: size_of::<crate::bytes::BytesTriple>(),
-    align: align_of::<crate::bytes::BytesTriple>(),
+// Content encoding uses the Bytes envelope mode while retaining the canonical
+// Bytes ownership and accounting descriptor used by runtime collections.
+pub(super) static BYTES: HewValueLayout = HewValueLayout {
     ownership_kind: crate::vec::HewTypeOwnershipKind::Bytes,
-    clone_fn: None,
-    drop_fn: Some(drop_bytes),
-    release_start: None,
+    ..crate::layout_intrinsics::hew_layout_val_bytes
 };
 
 pub(crate) struct SharedSender {

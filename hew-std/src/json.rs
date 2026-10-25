@@ -21,6 +21,127 @@ pub struct HewJsonValue {
     inner: serde_json::Value,
 }
 
+fn managed_payload(value: &serde_json::Value, copy: bool) -> crate::managed_tree::Payload {
+    use crate::managed_tree::{add, slots, text, HANDLE_BYTES, JSON_NODE_BYTES};
+    match value {
+        serde_json::Value::String(value) => text(value, copy),
+        serde_json::Value::Array(values) => {
+            let mut bytes = slots(
+                if copy {
+                    values.len()
+                } else {
+                    values.capacity()
+                },
+                JSON_NODE_BYTES,
+            )?;
+            for value in values {
+                bytes = add(bytes, managed_payload(value, copy)?)?;
+            }
+            Ok(bytes)
+        }
+        serde_json::Value::Object(values) => {
+            let mut bytes = slots(values.len(), HANDLE_BYTES + JSON_NODE_BYTES)?;
+            for (key, value) in values {
+                bytes = add(bytes, text(key, copy)?)?;
+                bytes = add(bytes, managed_payload(value, copy)?)?;
+            }
+            Ok(bytes)
+        }
+        serde_json::Value::Null | serde_json::Value::Bool(_) | serde_json::Value::Number(_) => {
+            Ok(0)
+        }
+    }
+}
+
+/// Visit the canonical payload of a JSON value without copying or mutating it.
+///
+/// # Safety
+/// `slot` contains a live JSON handle (or null); visitor/context remain live.
+#[no_mangle]
+pub unsafe extern "C" fn hew_managed_visit_json(
+    slot: *const core::ffi::c_void,
+    visitor: *const hew_cabi::managed::HewManagedStorageVisitor,
+) -> i32 {
+    // SAFETY: the compiler's descriptor supplies this concrete handle slot.
+    let value = unsafe { slot.cast::<*const HewJsonValue>().read().as_ref() };
+    let Some(value) = value else {
+        return 0;
+    };
+    // SAFETY: the borrowed tree and visitor remain live throughout traversal.
+    unsafe {
+        crate::managed_tree::tree(visitor, core::ptr::from_ref(value).cast(), false, |copy| {
+            crate::managed_tree::add(
+                crate::managed_tree::JSON_NODE_BYTES,
+                managed_payload(&value.inner, copy)?,
+            )
+        })
+    }
+}
+
+#[cfg(test)]
+mod managed_tests {
+    use super::*;
+    use crate::managed_tree::tests::Capture;
+    use hew_cabi::managed::{HewManagedWalkKind, HEAP_EXCEEDED};
+
+    #[test]
+    fn managed_json_capacity_and_copy_plan_match_actual_clone() {
+        let mut text = String::with_capacity(64);
+        text.push_str("hew");
+        let mut values = Vec::with_capacity(8);
+        values.push(serde_json::Value::String(text));
+        let value = boxed_value(serde_json::Value::Array(values));
+        // SAFETY: both handle slots and all visitors remain live until free.
+        unsafe {
+            let mut retained = Capture::default();
+            assert_eq!(
+                hew_managed_visit_json(
+                    (&raw const value).cast(),
+                    &retained.visitor(HewManagedWalkKind::Retain)
+                ),
+                0
+            );
+            assert_eq!(retained.entries, vec![(value as usize, 12 + 8 * 12 + 64)]);
+
+            let mut plan = Capture::default();
+            assert_eq!(
+                hew_managed_visit_json(
+                    (&raw const value).cast(),
+                    &plan.visitor(HewManagedWalkKind::ClonePlan)
+                ),
+                0
+            );
+            assert_eq!(plan.entries, vec![(0, 12 + 12 + 3)]);
+            let copy = hew_json_clone(value);
+            let mut copied = Capture::default();
+            assert_eq!(
+                hew_managed_visit_json(
+                    (&raw const copy).cast(),
+                    &copied.visitor(HewManagedWalkKind::Retain)
+                ),
+                0
+            );
+            assert_eq!(copied.entries, vec![(copy as usize, plan.entries[0].1)]);
+            assert_ne!(value, copy);
+
+            let mut refused = Capture {
+                status: HEAP_EXCEEDED,
+                ..Capture::default()
+            };
+            assert_eq!(
+                hew_managed_visit_json(
+                    (&raw const value).cast(),
+                    &refused.visitor(HewManagedWalkKind::Retain)
+                ),
+                HEAP_EXCEEDED
+            );
+            assert_eq!((*value).inner, serde_json::json!(["hew"]));
+            hew_json_free(copy);
+            hew_json_free(value);
+        }
+    }
+}
+
 #[cfg(test)]
 std::thread_local! {
     /// Test-only oracle for live outer `HewJsonValue` boxes. Nested serde

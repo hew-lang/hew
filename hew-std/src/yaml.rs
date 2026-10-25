@@ -21,6 +21,208 @@ pub struct HewYamlValue {
     inner: Arc<serde_yaml::Value>,
 }
 
+fn normalize_tags(value: &mut serde_yaml::Value) {
+    use serde_yaml::Value;
+    match value {
+        Value::Tagged(tagged) => {
+            // Tag exposes its canonical text but keeps its String private.
+            // Own exactly that text, so its retained UTF-8 capacity is known
+            // without inspecting serde's private representation.
+            tagged.tag =
+                serde_yaml::value::Tag::new(tagged.tag.to_string().into_boxed_str().into_string());
+            normalize_tags(&mut tagged.value);
+        }
+        Value::Sequence(values) => values.iter_mut().for_each(normalize_tags),
+        Value::Mapping(values) => {
+            if values.keys().any(contains_tag) {
+                let mut normalized = serde_yaml::Mapping::with_capacity(values.capacity());
+                for (mut key, mut value) in std::mem::take(values) {
+                    normalize_tags(&mut key);
+                    normalize_tags(&mut value);
+                    normalized.insert(key, value);
+                }
+                *values = normalized;
+            } else {
+                values.values_mut().for_each(normalize_tags);
+            }
+        }
+        Value::Null | Value::Bool(_) | Value::Number(_) | Value::String(_) => {}
+    }
+}
+
+fn contains_tag(value: &serde_yaml::Value) -> bool {
+    match value {
+        serde_yaml::Value::Tagged(_) => true,
+        serde_yaml::Value::Sequence(values) => values.iter().any(contains_tag),
+        serde_yaml::Value::Mapping(values) => values
+            .iter()
+            .any(|(key, value)| contains_tag(key) || contains_tag(value)),
+        _ => false,
+    }
+}
+
+fn tag_bytes(tag: &serde_yaml::value::Tag) -> crate::managed_tree::Payload {
+    use std::fmt::Write as _;
+    struct Counter(u64);
+    impl std::fmt::Write for Counter {
+        fn write_str(&mut self, value: &str) -> std::fmt::Result {
+            self.0 = self
+                .0
+                .checked_add(value.len() as u64)
+                .ok_or(std::fmt::Error)?;
+            Ok(())
+        }
+    }
+    let mut counter = Counter(0);
+    write!(counter, "{tag}").map_err(|_| hew_cabi::managed::HEAP_EXCEEDED)?;
+    Ok(counter.0)
+}
+
+fn managed_payload(value: &serde_yaml::Value) -> crate::managed_tree::Payload {
+    use crate::managed_tree::{add, slots, text, YAML_LAYOUT, YAML_NODE_BYTES};
+    match value {
+        serde_yaml::Value::String(value) => text(value, false),
+        serde_yaml::Value::Sequence(values) => {
+            let mut bytes = slots(values.capacity(), YAML_NODE_BYTES)?;
+            for value in values {
+                bytes = add(bytes, managed_payload(value)?)?;
+            }
+            Ok(bytes)
+        }
+        serde_yaml::Value::Mapping(values) => {
+            let mut bytes = slots(values.capacity(), 2 * YAML_NODE_BYTES)?;
+            for (key, value) in values {
+                bytes = add(bytes, managed_payload(key)?)?;
+                bytes = add(bytes, managed_payload(value)?)?;
+            }
+            Ok(bytes)
+        }
+        serde_yaml::Value::Tagged(tagged) => {
+            let bytes = add(YAML_LAYOUT.tagged_bytes, tag_bytes(&tagged.tag)?)?;
+            add(bytes, managed_payload(&tagged.value)?)
+        }
+        serde_yaml::Value::Null | serde_yaml::Value::Bool(_) | serde_yaml::Value::Number(_) => {
+            Ok(0)
+        }
+    }
+}
+
+/// Visit one shared immutable YAML tree's canonical payload.
+///
+/// # Safety
+/// `slot` contains a live YAML handle (or null); visitor/context remain live.
+#[no_mangle]
+pub unsafe extern "C" fn hew_managed_visit_yaml(
+    slot: *const core::ffi::c_void,
+    visitor: *const hew_cabi::managed::HewManagedStorageVisitor,
+) -> i32 {
+    // SAFETY: the compiler's descriptor supplies this concrete handle slot.
+    let value = unsafe { slot.cast::<*const HewYamlValue>().read().as_ref() };
+    let Some(value) = value else {
+        return 0;
+    };
+    // SAFETY: the Arc keeps its complete immutable tree and visitor live.
+    unsafe {
+        crate::managed_tree::tree(visitor, Arc::as_ptr(&value.inner).cast(), true, |_| {
+            crate::managed_tree::add(
+                crate::managed_tree::YAML_NODE_BYTES,
+                managed_payload(value.value())?,
+            )
+        })
+    }
+}
+
+#[cfg(test)]
+mod managed_tests {
+    use super::*;
+    use crate::managed_tree::tests::Capture;
+    use hew_cabi::managed::HewManagedWalkKind;
+
+    #[test]
+    fn managed_yaml_shared_copy_and_detachment_keep_distinct_roots() {
+        let mut values = Vec::with_capacity(8);
+        values.push(serde_yaml::Value::Bool(true));
+        let value = boxed_value(serde_yaml::Value::Sequence(values));
+        // SAFETY: the handles and visitors remain live; mutation is exclusive.
+        unsafe {
+            let mut retained = Capture::default();
+            assert_eq!(
+                hew_managed_visit_yaml(
+                    (&raw const value).cast(),
+                    &retained.visitor(HewManagedWalkKind::Retain)
+                ),
+                0
+            );
+            assert_eq!(retained.entries[0].1, 12 + 8 * 12);
+            let copy = hew_yaml_clone(value);
+            let mut plan = Capture::default();
+            assert_eq!(
+                hew_managed_visit_yaml(
+                    (&raw const copy).cast(),
+                    &plan.visitor(HewManagedWalkKind::ClonePlan)
+                ),
+                0
+            );
+            assert_eq!(plan.entries, retained.entries);
+            (*copy)
+                .sequence_mut()
+                .unwrap()
+                .push(serde_yaml::Value::Bool(false));
+            let mut detached = Capture::default();
+            assert_eq!(
+                hew_managed_visit_yaml(
+                    (&raw const copy).cast(),
+                    &detached.visitor(HewManagedWalkKind::Retain)
+                ),
+                0
+            );
+            assert_ne!(detached.entries[0].0, retained.entries[0].0);
+            assert_eq!((*value).value().as_sequence().unwrap().len(), 1);
+            assert_eq!((*copy).value().as_sequence().unwrap().len(), 2);
+            hew_yaml_free(copy);
+            hew_yaml_free(value);
+        }
+    }
+
+    #[test]
+    fn managed_yaml_retains_tags_and_mapping_capacity() {
+        let tag = serde_yaml::value::TaggedValue {
+            tag: serde_yaml::value::Tag::new("Kind"),
+            value: serde_yaml::Value::String("x".to_owned()),
+        };
+        let mut tagged = serde_yaml::Value::Tagged(Box::new(tag));
+        normalize_tags(&mut tagged);
+        let value = boxed_value(tagged);
+        let mut mapping = serde_yaml::Mapping::with_capacity(32);
+        mapping.insert(serde_yaml::Value::Bool(true), serde_yaml::Value::Null);
+        let capacity = mapping.capacity() as u64;
+        let map = boxed_value(serde_yaml::Value::Mapping(mapping));
+        // SAFETY: handle slots, providers and visitors are live until free.
+        unsafe {
+            let mut tags = Capture::default();
+            assert_eq!(
+                hew_managed_visit_yaml(
+                    (&raw const value).cast(),
+                    &tags.visitor(HewManagedWalkKind::Retain)
+                ),
+                0
+            );
+            assert_eq!(tags.entries[0].1, 12 + 8 + 12 + 5 + 1);
+            let mut entries = Capture::default();
+            assert_eq!(
+                hew_managed_visit_yaml(
+                    (&raw const map).cast(),
+                    &entries.visitor(HewManagedWalkKind::Retain)
+                ),
+                0
+            );
+            assert_eq!(entries.entries[0].1, 12 + capacity * 24);
+            hew_yaml_free(map);
+            hew_yaml_free(value);
+        }
+    }
+}
+
 impl HewYamlValue {
     fn value(&self) -> &serde_yaml::Value {
         self.inner.as_ref()
@@ -162,7 +364,8 @@ pub unsafe extern "C" fn hew_yaml_parse(yaml_str: *const HewString) -> *mut HewY
     // SAFETY: the caller borrows a live managed string or canonical empty handle.
     let s = unsafe { string_as_str(yaml_str) };
     match hew_codec::yaml_value::parse(s) {
-        Ok(val) => {
+        Ok(mut val) => {
+            normalize_tags(&mut val);
             clear_parse_last_error();
             boxed_value(val)
         }

@@ -405,10 +405,14 @@ fn collect_named_method_sigs(
     if let Some(type_def) = type_def_with_builtin(user, type_name) {
         for (method_name, sig) in type_def.methods {
             if seen.insert(method_name.clone()) {
-                methods.push((
-                    method_name,
-                    instantiate_named_method_sig(sig, &type_def.type_params, type_args),
-                ));
+                // A source declaration and its builtin methods have distinct
+                // generic parameter identities. Instantiate builtin signatures
+                // through their own receiver contract, as lookup_method_sig does.
+                let sig =
+                    lookup_builtin_method_sig(&receiver_ty, &method_name).unwrap_or_else(|| {
+                        instantiate_named_method_sig(sig, &type_def.type_params, type_args)
+                    });
+                methods.push((method_name, sig));
             }
         }
     }

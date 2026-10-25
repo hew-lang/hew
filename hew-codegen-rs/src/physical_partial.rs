@@ -327,7 +327,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             if held == LeafContents::Absent {
                 continue;
             }
-            let Some(action) = leaf.destroy else {
+            let Some(action) = leaf.recipe.destroy else {
                 self.set_place_initialized(leaf.storage, false)?;
                 continue;
             };

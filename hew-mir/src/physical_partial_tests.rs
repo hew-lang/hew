@@ -38,7 +38,7 @@ fn aggregate_alias_paths_preserve_zero_sized_leaf_identity() {
         .find(|leaf| function.storage[leaf.storage.0 as usize].ty == ResolvedTy::Unit)
         .unwrap();
     assert_eq!(function.storage[zero.storage.0 as usize].layout.size, 0);
-    assert!(zero.destroy.is_none());
+    assert!(zero.recipe.destroy.is_none());
     let alias = &function.place_storage[&zero.storage];
     assert_eq!(alias.root, function.parameters[0]);
     assert_eq!(alias.path[0].field, 2);
@@ -57,7 +57,11 @@ fn verifier_rejects_changed_paths_partitions_and_leaf_cleanup() {
             1 => {
                 function.place_storage.get_mut(&root).unwrap().leaves.pop();
             }
-            2 => function.place_storage.get_mut(&root).unwrap().leaves[0].destroy = None,
+            2 => {
+                function.place_storage.get_mut(&root).unwrap().leaves[0]
+                    .recipe
+                    .destroy = None
+            }
             3 => {
                 function.place_storage.remove(&leaf);
             }

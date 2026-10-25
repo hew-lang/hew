@@ -31,6 +31,68 @@ fn lower_source_with_registry(source: &str, registry: ModuleRegistry) -> hew_sir
     lower_module(&hir.module, &facts)
 }
 
+#[test]
+fn allocation_failure_drains_machine_watch_borrows() {
+    let lowered = lower_source(
+        r#"
+        type Notice { text: string; revision: i64; }
+        type State { notices: Vec<Notice>; }
+        type Cursor { id: i64; last_seen: i64; }
+        actor Core {
+            var committed: State;
+            var cursors: Vec<Cursor>;
+            receive fn read(id: i64) -> Notice {
+                for i in 0..cursors.len() {
+                    if cursors[i].id == id {
+                        let notice = committed.notices[id + 1];
+                        var cursor = cursors.remove(i);
+                        cursor.last_seen = notice.revision;
+                        cursors.push(cursor);
+                        return notice;
+                    }
+                }
+                panic("missing cursor")
+            }
+        }
+        fn main() {
+            let core = spawn Core {
+                committed: State { notices: [Notice { text: "retained", revision: 1 }] },
+                cursors: [Cursor { id: 0, last_seen: 0 }]
+            };
+            let _ = core.read(0);
+        }
+        "#,
+    );
+    let diagnostics = verify_module(&lowered.module);
+    assert!(
+        diagnostics.is_empty(),
+        "{diagnostics:?}\n{}",
+        hew_sir::dump_sir(&lowered.module)
+    );
+}
+
+#[test]
+fn later_parameter_copy_failure_closes_earlier_private_storage() {
+    let lowered = lower_source(
+        r#"
+        fn put(var counts: HashMap<string, i64>, var key: string) {
+            key = "replacement";
+            counts.insert(key, 1);
+        }
+        fn main() {
+            let counts: HashMap<string, i64> = HashMap.new();
+            put(counts, "caller");
+        }
+        "#,
+    );
+    let diagnostics = verify_module(&lowered.module);
+    assert!(
+        diagnostics.is_empty(),
+        "{diagnostics:?}\n{}",
+        hew_sir::dump_sir(&lowered.module)
+    );
+}
+
 fn cleanup_path(
     function: &hew_sir::SemFunction,
     mut target: hew_sir::BlockId,
@@ -295,7 +357,7 @@ fn bytes_runtime_transform_and_failure_edges_are_explicit_and_checked() {
                 args,
                 result: hew_sir::CallResult::Value(result),
                 normal,
-                unwind: hew_sir::CallUnwind::NotApplicable,
+                unwind: hew_sir::CallUnwind::Cleanup(_),
                 ..
             } => {
                 assert_eq!(args.len(), 2);

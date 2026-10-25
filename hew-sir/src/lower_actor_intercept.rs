@@ -298,7 +298,8 @@ impl Builder<'_, '_> {
         )
     }
 
-    /// A synthesized runtime query with an already-checked, non-failing contract.
+    /// A synthesized runtime operation with the same checked failure boundary
+    /// as an ordinary source call.
     fn intercept_runtime(
         &mut self,
         family: hew_types::RuntimeCallFamily,
@@ -308,8 +309,8 @@ impl Builder<'_, '_> {
         let contract = family.semantic_contract().ok_or(SirLoweringError::from(
             "interceptor runtime contract is absent",
         ))?;
-        if !contract.failures.is_empty() {
-            return Err("interceptor runtime query unexpectedly fails".into());
+        if contract.failures.len() > 1 {
+            return Err("interceptor runtime operation has multiple failure outcomes".into());
         }
         let types = values
             .iter()
@@ -368,14 +369,31 @@ impl Builder<'_, '_> {
         let id = OpId(self.ops);
         self.ops += 1;
         let target = normal.target;
+        let failure = contract.failures.first().copied();
+        let failure_block = failure.map(|_| self.new_block(Vec::new()));
         self.set_terminator(SemTerminator::RtCall {
             id,
             family,
             args: arguments,
             result,
             normal,
-            unwind: CallUnwind::NotApplicable,
+            unwind: failure_block.map_or(CallUnwind::NotApplicable, |target| {
+                CallUnwind::Cleanup(Edge {
+                    target,
+                    args: Vec::new(),
+                })
+            }),
         })?;
+        if let (Some(failure), Some(block)) = (failure, failure_block) {
+            self.current = block;
+            if contract.propagates_fault() {
+                self.finish_fault_exit()?;
+            } else {
+                self.finish_checked_fault(crate::runtime_failure_trap_kind(failure).ok_or_else(
+                    || SirLoweringError::from("interceptor runtime failure has no trap kind"),
+                )?)?;
+            }
+        }
         self.current = target;
         if let Some(value) = output {
             if self.value_own_kind(value) == Some(OwnKind::Owned) {

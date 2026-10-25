@@ -152,8 +152,8 @@ impl<'hir, 'service> Builder<'hir, 'service> {
         builder.bind_captures(source)?;
         builder.bind_actor_state(source)?;
         builder.bind_session_places(source)?;
-        builder.bind_private_value_parameters(&source_params)?;
         for parameter in &source_params {
+            builder.bind_private_value_parameter(parameter)?;
             if let BindingTarget::Value(value) = builder.binding_target(parameter.id)? {
                 if (parameter.mutable && builder.value_own_kind(value) == Some(OwnKind::None))
                     || builder.value_own_kind(value) == Some(OwnKind::Owned)
@@ -176,44 +176,42 @@ impl<'hir, 'service> Builder<'hir, 'service> {
     /// Mutable value parameters operate on private values. Use the canonical
     /// copy contract for both direct callables and their aggregate containers;
     /// the incoming borrowed ABI keeps the caller's value intact.
-    pub(super) fn bind_private_value_parameters(
+    pub(super) fn bind_private_value_parameter(
         &mut self,
-        parameters: &[HirBinding],
+        parameter: &HirBinding,
     ) -> Result<(), SirLoweringError> {
-        for parameter in parameters {
-            if !parameter.mutable || parameter.is_consume {
-                continue;
-            }
-            let ty = self.ty(&parameter.ty);
-            let BindingTarget::Value(source) = self.binding_target(parameter.id)? else {
-                continue;
-            };
-            if self.value_own_kind(source) != Some(OwnKind::Guaranteed) {
-                continue;
-            }
-            self.service.require_type_facts(&ty)?;
-            if self.service.checked_facts.rows()[&hew_types::TypeInstanceKey(ty.clone())].clone
-                == hew_types::CloneKind::None
-            {
-                // Replacements own one parameter-scope slot. The incoming
-                // borrow remains the readable value until this path assigns.
-                let place = self.allocate_local(ty)?;
-                let declaration = self.binding_declarations[&parameter.id];
-                self.source_bindings[declaration].target = BindingTarget::Place(place);
-                continue;
-            }
-            let copied = self.emit_typed(
-                Provenance::Synthesized,
-                &ty,
-                SemOpKind::CopyValue {
-                    source: Operand { value: source },
-                },
-            )?;
-            let target = self.acquire_binding_target(copied)?;
-            self.bindings.insert(parameter.id, target);
-            let declaration = self.binding_declarations[&parameter.id];
-            self.source_bindings[declaration].target = target;
+        if !parameter.mutable || parameter.is_consume {
+            return Ok(());
         }
+        let ty = self.ty(&parameter.ty);
+        let BindingTarget::Value(source) = self.binding_target(parameter.id)? else {
+            return Ok(());
+        };
+        if self.value_own_kind(source) != Some(OwnKind::Guaranteed) {
+            return Ok(());
+        }
+        self.service.require_type_facts(&ty)?;
+        if self.service.checked_facts.rows()[&hew_types::TypeInstanceKey(ty.clone())].clone
+            == hew_types::CloneKind::None
+        {
+            // Replacements own one parameter-scope slot. The incoming
+            // borrow remains the readable value until this path assigns.
+            let place = self.allocate_local(ty)?;
+            let declaration = self.binding_declarations[&parameter.id];
+            self.source_bindings[declaration].target = BindingTarget::Place(place);
+            return Ok(());
+        }
+        let copied = self.emit_typed(
+            Provenance::Synthesized,
+            &ty,
+            SemOpKind::CopyValue {
+                source: Operand { value: source },
+            },
+        )?;
+        let target = self.acquire_binding_target(copied)?;
+        self.bindings.insert(parameter.id, target);
+        let declaration = self.binding_declarations[&parameter.id];
+        self.source_bindings[declaration].target = target;
         Ok(())
     }
 

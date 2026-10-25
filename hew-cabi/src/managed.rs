@@ -26,6 +26,12 @@ pub enum HewManagedWalkKind {
     /// Preflight a semantic copy. A null storage identity describes fresh
     /// private capacity, while an existing identity describes a shared retain.
     ClonePlan,
+    /// Freeze provider admission/mutation before an ownership transfer.
+    PrepareTransfer,
+    /// Rebind provider ownership and resume admission after checked adoption.
+    CommitTransfer,
+    /// Resume the original provider owner after refused adoption.
+    AbortTransfer,
 }
 
 /// Called once for each encountered backing ownership edge. The callback
@@ -41,8 +47,9 @@ pub struct HewManagedStorageVisitor {
     pub kind: HewManagedWalkKind,
 }
 
-/// Traverse a live concrete value slot without transferring or modifying it.
-/// Returns zero on success; a nonzero failure leaves the value untouched.
+/// Traverse a live concrete value slot. Ordinary retain/release/copy walks only
+/// inspect payloads; explicit transfer phases update provider admission gates
+/// and ownership bindings. A nonzero acquisition failure preserves the value.
 pub type HewManagedValueVisit =
     unsafe extern "C" fn(slot: *const c_void, visitor: *const HewManagedStorageVisitor) -> i32;
 

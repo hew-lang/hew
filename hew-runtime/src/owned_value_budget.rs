@@ -13,6 +13,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex, MutexGuard};
 
 pub mod materialize;
+pub mod transfer;
 pub mod visit;
 mod walk;
 
@@ -48,6 +49,7 @@ struct Ledger {
 struct Account {
     limit: Option<u64>,
     ledger: Mutex<Ledger>,
+    incarnation: std::sync::OnceLock<crate::lifetime::live_actors::ActorIncarnation>,
 }
 
 /// Stable actor-incarnation identity, independent of its current worker.
@@ -56,9 +58,19 @@ struct Account {
 #[derive(Clone, Debug)]
 pub struct ValueOwner(Arc<Account>);
 
-/// Borrow the current actor incarnation's account. Independently scheduled
-/// tasks use their retained invocation account directly instead of this lookup.
+/// Borrow the current invocation's retained account, including independently
+/// scheduled scoped tasks, before falling back to its actor incarnation.
 pub(crate) fn current_owner() -> Option<ValueOwner> {
+    let context = crate::execution_context::current_context();
+    if !context.is_null() {
+        // SAFETY: the canonical execution context pins its active task scope.
+        let scope = unsafe { (*context).task_scope };
+        if !scope.is_null() {
+            // An unbounded scope is authoritative too; do not substitute a
+            // different actor merely because its account is disabled.
+            return unsafe { (*scope).value_owner.clone() };
+        }
+    }
     let actor = crate::actor::hew_actor_self();
     if actor.is_null() {
         return None;
@@ -76,7 +88,48 @@ impl ValueOwner {
         Self(Arc::new(Account {
             limit,
             ledger: Mutex::new(Ledger::default()),
+            incarnation: std::sync::OnceLock::new(),
         }))
+    }
+
+    /// Bind once to the actual incarnation after its identity is reserved.
+    /// A restarted role receives a different account and cannot retarget this one.
+    pub(crate) unsafe fn bind_incarnation(&self, actor: *mut crate::actor::HewActor) {
+        // SAFETY: construction owns the newly reserved actor allocation.
+        let identity = unsafe { crate::lifetime::live_actors::ActorIncarnation::of(actor) };
+        if let Some(previous) = self.0.incarnation.get() {
+            assert_eq!(
+                *previous, identity,
+                "managed account retargeted across incarnations"
+            );
+        } else {
+            self.0
+                .incarnation
+                .set(identity)
+                .expect("managed incarnation bound concurrently");
+        }
+    }
+
+    /// A provider's asynchronous acquisition refusal belongs to the retaining
+    /// actor, using its existing external-fault latch and checked terminal drain.
+    pub(crate) fn heap_exceeded(&self) {
+        let Some(identity) = self.0.incarnation.get().copied() else {
+            return;
+        };
+        let _ = crate::lifetime::live_actors::with_live_incarnation(identity, |pin| {
+            // SAFETY: the exact-incarnation pin outlives the external trap request.
+            unsafe {
+                crate::actor::hew_actor_trap(
+                    pin.as_ptr(),
+                    crate::internal::types::HEW_TRAP_HEAP_EXCEEDED,
+                )
+            };
+        });
+    }
+
+    #[must_use]
+    pub(crate) fn same_account(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.0, &other.0)
     }
 
     fn ledger(&self) -> MutexGuard<'_, Ledger> {

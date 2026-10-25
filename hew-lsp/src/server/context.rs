@@ -44,7 +44,12 @@ impl HewLanguageServer {
 
     pub(super) fn suspend_context_source(&self, uri: &Uri) {
         if let Some((generated, _)) = self.context_source(uri) {
-            if generated != *uri {
+            if generated != *uri
+                && self
+                    .open_documents
+                    .read()
+                    .is_ok_and(|open| !open.contains_key(&generated))
+            {
                 self.documents.remove(&generated);
             }
         }

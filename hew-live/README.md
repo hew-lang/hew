@@ -34,9 +34,28 @@ roots are reclaimed together. The unsafe symbol API requires the generated
 header's exact signature and ownership contract. A native runtime lifetime token
 still follows the existing `hew_runtime_new` / `hew_runtime_release` contract.
 
-Current preparation supports ELF and Mach-O linker drivers; the execution oracle
-has been run on Linux. Windows module linking, automatic session roots, retained
-compiler declaration identities, portable components, deployment migration and
-authoring integration are not implemented here yet. This crate is an
-experimental native execution foundation, not the completed live-execution
-product.
+Native preparation supports ELF and Mach-O linker drivers; the execution oracle
+has been run on Linux. Windows module linking remains unimplemented.
+
+The optional `component` feature provides typed bindings for the portable
+reference router in `wit/router.wit`. Its Hew implementation uses ordinary
+typed pipes to await imported services and retains its accepted-event count in
+a guest actor. Each component instance contains its own Hew runtime. The same
+WIT contract also has an independent Rust implementation.
+
+With an installed WASI SDK, run both implementations through the shared oracle:
+
+```sh
+HEW_WASI_SDK=/path/to/wasi-sdk make test-live-component
+```
+
+The oracle checks concurrent calls, service errors, Unicode and embedded NULs,
+admission refusal while paused, retained-state resume, disposal and snapshot
+activation with different instance grants. Guest C bindings can be generated
+with `make live-component-bindings COMPONENT_BINDINGS_DIR=output`.
+
+The reference router has one counter actor and no autonomous background work.
+Its quiescence contract drains admitted calls and retains the old actor so an
+unsuccessful replacement can resume it. General subtree quiescence with timers
+and child tasks, fenced network deployment and durable artefact caching remain
+separate implementation work; this is not yet the complete live-execution host.

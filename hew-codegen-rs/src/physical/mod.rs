@@ -545,6 +545,11 @@ pub fn emit_host_object(
     export: &HostExport<'_>,
     options: &PhysicalEmitOptions<'_>,
 ) -> Result<EmitArtefacts, CodegenError> {
+    if export.live_code_ownership && export.verified.module().target.triple.starts_with("wasm") {
+        return Err(CodegenError::FailClosed(
+            "portable exports retain code through their instance, not native loader leases".into(),
+        ));
+    }
     emit_physical_object_with_host(export.verified, options, Some(export))
 }
 

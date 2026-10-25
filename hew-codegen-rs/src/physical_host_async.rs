@@ -239,7 +239,9 @@ fn emit_start<'ctx>(
     let ctx = emitter.ctx;
     let pointer = ctx.ptr_type(AddressSpace::default());
     let inputs = public_input_types(emitter, body)?;
-    let mut params: Vec<BasicMetadataTypeEnum<'ctx>> = vec![pointer.into()];
+    let guest = emitter.module.target.triple.starts_with("wasm");
+    let offset = usize::from(!guest);
+    let mut params: Vec<BasicMetadataTypeEnum<'ctx>> = vec![pointer.into(); offset];
     params.extend(inputs.iter().copied().map(BasicMetadataTypeEnum::from));
     params.extend([BasicMetadataTypeEnum::from(pointer); 3]);
     let wrapper = emitter.llvm.add_function(
@@ -250,27 +252,27 @@ fn emit_start<'ctx>(
     let builder = ctx.create_builder();
     builder.position_at_end(ctx.append_basic_block(wrapper, "entry"));
     let arguments = wrapper.get_params();
-    let output = arguments[inputs.len() + 2].into_pointer_value();
-    let error = arguments[inputs.len() + 3].into_pointer_value();
+    let output = arguments[inputs.len() + offset + 1].into_pointer_value();
+    let error = arguments[inputs.len() + offset + 2].into_pointer_value();
     builder
         .build_store(output, pointer.const_null())
         .llvm_ctx("initialize host call owner")?;
     let prepare = get_or_declare_external(
         &emitter.llvm,
-        "hew_host_call_new",
-        pointer.fn_type(&[pointer.into(); 3], false),
+        if guest {
+            "hew_host_call_new_guest"
+        } else {
+            "hew_host_call_new"
+        },
+        pointer.fn_type(&vec![pointer.into(); offset + 2], false),
     )?;
-    let call = suspend::call_value(
-        &builder,
-        prepare,
-        &[
-            arguments[0].into(),
-            arguments[inputs.len() + 1].into(),
-            error.into(),
-        ],
-        "call",
-    )?
-    .into_pointer_value();
+    let mut admission = Vec::new();
+    if !guest {
+        admission.push(arguments[0].into());
+    }
+    admission.push(arguments[inputs.len() + offset].into());
+    admission.push(error.into());
+    let call = suspend::call_value(&builder, prepare, &admission, "call")?.into_pointer_value();
     let ready = ctx.append_basic_block(wrapper, "prepared");
     let refused = ctx.append_basic_block(wrapper, "refused");
     let valid = builder
@@ -304,7 +306,7 @@ fn emit_start<'ctx>(
         "call.storage",
     )?
     .into_pointer_value();
-    let public = &arguments[1..inputs.len() + 1];
+    let public = &arguments[offset..inputs.len() + offset];
     let input_storage = storage.field(&builder, owner, 1)?;
     for (index, value) in public.iter().enumerate() {
         let slot = builder

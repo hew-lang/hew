@@ -510,6 +510,20 @@ pub(crate) fn run_to_quiescence() {
     }
 }
 
+/// Run at most one ready guest participant without blocking or advancing time.
+/// Component callbacks use this same driver while external service calls wait.
+#[cfg(target_arch = "wasm32")]
+#[no_mangle]
+pub extern "C" fn hew_guest_step() -> bool {
+    let fired = fire_due_timers();
+    if let Some(participant) = pick() {
+        run_participant(participant);
+        true
+    } else {
+        fired != 0
+    }
+}
+
 /// The shutdown drain's poll: where the threaded runtime sleeps while workers
 /// finish, the driver runs the work itself, moving the clock to the next timer
 /// once nothing is ready so cleanup that sleeps still completes.

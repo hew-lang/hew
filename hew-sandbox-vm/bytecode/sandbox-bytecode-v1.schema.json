@@ -1041,7 +1041,6 @@
         "Close",
         "StreamOpen",
         "StreamIsValid",
-        "StreamCollect",
         "HasError",
         "LastErrorKind",
         "LastErrno",

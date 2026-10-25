@@ -18,6 +18,7 @@ fn main() {
     assert(lines.recv() == .Some("world"));
     assert(lines.recv() == .None);
     lines.close();
+    assert(feed.text().lines().collect() == "helloworld");
     let chunks = feed.data().chunks(2);
     assert(chunks.recv() == .Some(b"ab"));
     assert(chunks.recv() == .Some(b"cd"));

@@ -235,6 +235,19 @@ gen fn decoded_frames<T, C: Codec<T>>(consume input: Stream<bytes>, consume code
     }
 }
 
+impl Stream<string> {
+    /// Drain the stream into one string, joining items without a separator.
+    /// Collection uses the same checked receives and cooperative cleanup as
+    /// ordinary iteration, including streams backed by source generators.
+    fn collect(consume self) -> string {
+        var joined = "";
+        for item in self {
+            joined += item;
+        }
+        joined
+    }
+}
+
 impl Stream<bytes> {
     /// Yield newline-free UTF-8 lines, normalizing CRLF and flushing a final
     /// unterminated line at EOF. Lines longer than one MiB are split into

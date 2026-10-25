@@ -302,24 +302,11 @@ impl Checker {
             );
             return Ty::Error;
         };
-        let resolved_inner = self.subst.resolve(&inner);
         match method {
             // `recv` parks until an item, EOF or a fault is ready; `try_recv`
             // never parks. Both ride the layout-witness entries for every
-            // describable element type. `collect` drains a `Stream<string>`.
-            "recv" | "try_recv" | "close" | "collect" => {
-                if method == "collect" && resolved_inner != Ty::String {
-                    self.report_error(
-                        TypeErrorKind::InvalidOperation,
-                        span,
-                        format!(
-                            "`Stream<{}>.collect` is not supported: `collect` drains a \
-                             `Stream<string>`",
-                            inner.user_facing()
-                        ),
-                    );
-                    return Ty::Error;
-                }
+            // describable element type. Collection is an ordinary source method.
+            "recv" | "try_recv" | "close" => {
                 let Some(c_symbol) = self.require_builtin_runtime_symbol(
                     span,
                     BuiltinNamedType::Stream.canonical_name(),

@@ -849,7 +849,6 @@ const schema19 = {
         "Close",
         "StreamOpen",
         "StreamIsValid",
-        "StreamCollect",
         "HasError",
         "LastErrorKind",
         "LastErrno",
@@ -56363,7 +56362,6 @@ const schema86 = {
     "Close",
     "StreamOpen",
     "StreamIsValid",
-    "StreamCollect",
     "HasError",
     "LastErrorKind",
     "LastErrno",
@@ -56410,7 +56408,6 @@ function validate273(
       data === "Close" ||
       data === "StreamOpen" ||
       data === "StreamIsValid" ||
-      data === "StreamCollect" ||
       data === "HasError" ||
       data === "LastErrorKind" ||
       data === "LastErrno" ||

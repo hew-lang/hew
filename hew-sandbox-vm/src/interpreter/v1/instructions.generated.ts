@@ -219,7 +219,6 @@ export type FileReadOp =
   | "Close"
   | "StreamOpen"
   | "StreamIsValid"
-  | "StreamCollect"
   | "HasError"
   | "LastErrorKind"
   | "LastErrno"

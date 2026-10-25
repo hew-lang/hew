@@ -50,10 +50,6 @@ mod tests {
             resolve_stream_method(STREAM, "take"),
             Some("hew_stream_take")
         );
-        assert_eq!(
-            resolve_stream_method(STREAM, "collect"),
-            Some("hew_stream_collect_string")
-        );
         assert_eq!(resolve_stream_method(STREAM, "next"), None);
     }
 

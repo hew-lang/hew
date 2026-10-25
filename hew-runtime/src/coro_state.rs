@@ -72,9 +72,15 @@ pub(crate) struct InvocationContext {
 pub(crate) unsafe fn rebind_value_owner(
     state: *mut HewCoroState,
     owner: Option<crate::owned_value_budget::ValueOwner>,
+    binding: Option<crate::owned_value_budget::transfer::DestinationBinding>,
 ) {
     // SAFETY: the transferring provider exclusively freezes the live context.
-    unsafe { (*(*state).invocation.context.cast::<InvocationContext>()).value_owner = owner };
+    let execution = unsafe { &mut *(*state).invocation.context.cast::<InvocationContext>() };
+    execution.value_owner = owner;
+    if let Some(binding) = binding {
+        execution.actor_turn = binding.actor_turn;
+        execution.rc_owner = binding.rc_owner;
+    }
 }
 
 /// Retained cancellation token and wake target for an invocation that may be

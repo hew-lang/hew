@@ -5744,6 +5744,22 @@ impl RuntimeCallFamily {
                 physical: RuntimePhysicalForm::Direct,
                 c_return: RuntimeCReturn::Storage,
             },
+            Self::StreamPipe => RuntimeOpRow {
+                authority: RuntimeAuthority::Service,
+                symbol: "hew_stream_pipe_native",
+                contract: Some(RuntimeSemanticContract {
+                    arguments: &[A {
+                        ty: K::I64,
+                        effect: E::Borrow,
+                    }],
+                    result: R::FreshOwned(K::PipePairResult),
+                    failures: &[],
+                }),
+                staging: RuntimeStaging::PreStaged,
+                abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::Direct,
+                c_return: RuntimeCReturn::Storage,
+            },
             Self::StreamPairSink => RuntimeOpRow {
                 authority: RuntimeAuthority::Service,
                 symbol: "hew_stream_pair_sink",

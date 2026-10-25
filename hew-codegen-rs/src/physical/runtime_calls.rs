@@ -252,6 +252,9 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                     result,
                 )?;
             }
+            RuntimeCallFamily::StreamPipe => {
+                self.emit_stream_pipe_pair(source(0)?, required_result()?)?;
+            }
             RuntimeCallFamily::StreamPairSink => {
                 self.emit_direct_runtime_call(
                     hew_types::RuntimeCallFamily::StreamPairSink,

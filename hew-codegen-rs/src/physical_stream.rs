@@ -155,6 +155,78 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
         self.store(result, value)
     }
 
+    pub(super) fn emit_stream_pipe_pair(
+        &self,
+        capacity: StorageId,
+        result: StorageId,
+    ) -> CodegenResult<()> {
+        let ResolvedTy::Tuple(halves) = &self.storage(result)?.ty else {
+            return Err(CodegenError::FailClosed(
+                "pipe result lacks typed endpoints".into(),
+            ));
+        };
+        let [sink, stream, ResolvedTy::Bool] = halves.as_slice() else {
+            return Err(CodegenError::FailClosed(
+                "pipe result lacks two endpoints".into(),
+            ));
+        };
+        let element = hew_mir::physical::pipe_parts(stream, sink).ok_or_else(|| {
+            CodegenError::FailClosed("pipe endpoint element types disagree".into())
+        })?;
+        let witness = self.managed_value_layout(element)?;
+        let pointer = self.ctx.ptr_type(AddressSpace::default());
+        let sink_out = self
+            .value_emitter()
+            .entry_scratch(pointer.into(), "pipe.sink")?;
+        let make = get_or_declare_external(
+            self.llvm,
+            "hew_stream_pipe_native",
+            pointer.fn_type(
+                &[self.ctx.i64_type().into(), pointer.into(), pointer.into()],
+                false,
+            ),
+        )?;
+        let input = suspend::call_value(
+            &self.builder,
+            make,
+            &[
+                self.load(capacity, "pipe.capacity")?.into(),
+                witness.into(),
+                sink_out.into(),
+            ],
+            "pipe.stream",
+        )?;
+        let output = self
+            .builder
+            .build_load(pointer, sink_out, "pipe.sink")
+            .llvm_ctx("load typed pipe sink")?;
+        let pair = llvm_type(self.ctx, &self.storage(result)?.layout.repr)?
+            .into_struct_type()
+            .const_zero();
+        let pair = self
+            .builder
+            .build_insert_value(pair, output, 0, "pipe.sink.field")
+            .llvm_ctx("initialize pipe sink")?
+            .into_struct_value();
+        let pair = self
+            .builder
+            .build_insert_value(pair, input, 1, "pipe.stream.field")
+            .llvm_ctx("initialize pipe stream")?;
+        let valid = self
+            .builder
+            .build_is_not_null(input.into_pointer_value(), "pipe.valid")
+            .llvm_ctx("inspect typed pipe allocation")?;
+        let valid = self
+            .builder
+            .build_int_z_extend(valid, self.ctx.i8_type(), "pipe.valid.byte")
+            .llvm_ctx("materialize source bool representation")?;
+        let pair = self
+            .builder
+            .build_insert_value(pair.into_struct_value(), valid, 2, "pipe.valid.field")
+            .llvm_ctx("initialize pipe allocation status")?;
+        self.store(result, pair.into_struct_value().into())
+    }
+
     pub(super) fn emit_stream_pipe(
         &self,
         capacity: u32,

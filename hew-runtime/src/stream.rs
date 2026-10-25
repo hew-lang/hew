@@ -899,7 +899,14 @@ pub unsafe extern "C" fn hew_stream_pipe_native(
     let layout = unsafe {
         crate::channel_common::move_elem_layout_witness(layout, "hew_stream_pipe_native")
     };
-    let cap = usize::try_from(capacity.max(1)).expect("verified Pipe capacity");
+    // SAFETY: the caller supplies its uninitialized sink result slot.
+    unsafe { *sink_out = ptr::null_mut() };
+    let Ok(cap) = usize::try_from(capacity.max(1)) else {
+        set_last_error(format!(
+            "hew_stream_channel: capacity {capacity} exceeds platform maximum"
+        ));
+        return ptr::null_mut();
+    };
     // SAFETY: no endpoint is exposed before its canonical empty root is bound.
     let core = unsafe { crate::channel_core::ChannelCore::new_typed(cap, *layout) };
     let core_raw = Arc::as_ptr(&core).cast::<c_void>();

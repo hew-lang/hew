@@ -90,6 +90,8 @@ pub enum RuntimeValueKind {
     /// A freshly extracted pipe half named by the operation, not by the
     /// receiver: `hew_stream_pair_sink` borrows a pair and returns a half.
     PipeHalfResult(PipeHalfKind),
+    /// Both typed endpoints of a newly created pipe.
+    PipePairResult,
     /// The paired pipe allocation `stream.pipe` splits. Its nominal identity
     /// comes from the generated `hew_stream_channel` ownership row.
     StreamPair,
@@ -254,7 +256,7 @@ impl RuntimeValueKind {
                 }
                 receiver.clone()
             }
-            Self::ServiceResult(_) | Self::PipeHalfResult(_) => return None,
+            Self::ServiceResult(_) | Self::PipeHalfResult(_) | Self::PipePairResult => return None,
             Self::StreamPair => ResolvedTy::named_opaque(
                 contract(
                     crate::ffi_contracts::extern_owned_resource_result("hew_stream_channel")?
@@ -797,6 +799,7 @@ impl RuntimeSemanticContract {
                 let resolved = if matches!(kind, RuntimeValueKind::IoHandle(handle) if handle.matches(result_hint))
                     || matches!(kind, RuntimeValueKind::ServiceResult(op) if op.matches_result(result_hint))
                     || matches!(kind, RuntimeValueKind::PipeHalfResult(half) if half.matches(result_hint))
+                    || matches!(kind, RuntimeValueKind::PipePairResult if matches!(result_hint, ResolvedTy::Tuple(fields) if matches!(fields.as_slice(), [sink, stream, ResolvedTy::Bool] if pipe_pair_matches(sink, stream))))
                 {
                     Some(result_hint.clone())
                 } else {
@@ -1625,3 +1628,11 @@ pub enum PrintKind {
 }
 
 impl PrintKind {}
+
+/// A pipe pair carries one shared concrete element type in its two halves.
+fn pipe_pair_matches(sink: &ResolvedTy, stream: &ResolvedTy) -> bool {
+    matches!((sink, stream),
+        (ResolvedTy::Named { args: sink_args, .. }, ResolvedTy::Named { args: stream_args, .. })
+        if sink.is_builtin(BuiltinType::Sink) && stream.is_builtin(BuiltinType::Stream)
+            && sink_args.len() == 1 && sink_args == stream_args)
+}

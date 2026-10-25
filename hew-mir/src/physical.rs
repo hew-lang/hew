@@ -6,7 +6,7 @@
 //! exactly once to a physical action and never infers another lifetime.
 
 pub use hew_sir::{
-    ActorId, ActorIngressAdapter, ActorOperation, CallableInstance, CallableTargets,
+    pipe_parts, ActorId, ActorIngressAdapter, ActorOperation, CallableInstance, CallableTargets,
     LifecycleTarget, LocalObservationKind, ManagedProviderKind, ManagedStorageShape, SemActor,
     SemActorCoalesce, SemActorField, SemActorHandler, SemActorOverflow, SemCoalesceFallback,
     SemCoalesceKey, SemFailureDisplay, SemRestartPolicy, SemRestartStrategy, SemStopDeadline,

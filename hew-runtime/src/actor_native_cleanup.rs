@@ -75,6 +75,7 @@ pub(crate) struct Cleanup {
     terminal: AtomicI32,
     pub(crate) rc: std::sync::Arc<crate::rc::RcAllocations>,
     pub(crate) code: Option<crate::code_owner::CodeRoot>,
+    pub(crate) value_owner: Option<crate::owned_value_budget::ValueOwner>,
 }
 
 impl Cleanup {

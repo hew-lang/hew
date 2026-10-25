@@ -131,6 +131,10 @@ unsafe fn new_actor_state(
     unsafe {
         let execution = (*state).execution_mut();
         execution.actor_turn = *target;
+        execution.value_owner = (*actor)
+            .native_completion
+            .as_ref()
+            .and_then(|completion| completion.cleanup.value_owner.clone());
         execution.rc_owner = (*actor)
             .native_completion
             .as_ref()

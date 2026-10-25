@@ -256,8 +256,20 @@ async fn runtime_loop(options: &Options, directory: &Path, timings: &mut Timings
     let prepared = host.prepare(&bytes)?;
     timings.add("component_prepare", start);
     let rss_one_prepared = resident_bytes();
-    cached_calls(options, &host, &prepared, &providers, &pauses, timings).await?;
-    let memory = retained_memory(options, &source, &toolchain, &host, prepared).await?;
+    std::fs::write(&source, ROUTER.replace("skip0", "skip1"))?;
+    let start = Instant::now();
+    let changed_bytes = build::build(&source, &toolchain)?;
+    timings.add("component_source_build", start);
+    let start = Instant::now();
+    let changed = host.prepare(&changed_bytes)?;
+    timings.add("component_prepare", start);
+    drop(changed_bytes);
+    if prepared.digest() == changed.digest() {
+        return Err("edited source did not produce a distinct candidate".into());
+    }
+    let generations = vec![prepared, changed];
+    cached_calls(options, &host, &generations, &providers, &pauses, timings).await?;
+    let memory = retained_memory(options, &source, &toolchain, &host, generations).await?;
     Ok(
         json!({"component_bytes": bytes.len(), "component_sha256": format_digest(Sha256::digest(&bytes).into()), "rss_before_prepare": rss_before_prepare, "rss_one_prepared": rss_one_prepared, "retained_generations": memory}),
     )
@@ -266,11 +278,12 @@ async fn runtime_loop(options: &Options, directory: &Path, timings: &mut Timings
 async fn cached_calls(
     options: &Options,
     host: &Arc<Host>,
-    prepared: &Prepared,
+    generations: &[Prepared],
     providers: &Providers,
     pauses: &Pauses,
     timings: &mut Timings,
 ) -> Result<()> {
+    let prepared = &generations[0];
     // From here through replacement, all calls use Prepared handles: no source
     // build, cache restore or component preparation occurs inside these samples.
     for _ in 0..options.samples {
@@ -331,15 +344,23 @@ async fn cached_calls(
             .or_default()
             .push(routed - direct);
     }
-    for _ in 0..options.samples {
+    for candidate in generations
+        .iter()
+        .cycle()
+        .skip(1)
+        .take(usize::try_from(options.samples)?)
+    {
         let epoch = deployment.epoch().await;
         let start = Instant::now();
         let committed = deployment
-            .replace(prepared.clone(), epoch, Duration::from_secs(10))
+            .replace(candidate.clone(), epoch, Duration::from_secs(10))
             .await?;
         timings.add("prepared_replace_total", start);
         if committed.snapshot.accepted != u64::from(options.samples) {
             return Err("replacement lost accepted state".into());
+        }
+        if committed.digest != candidate.digest() || committed.epoch != epoch + 1 {
+            return Err("replacement did not activate the edited candidate".into());
         }
         committed.retirement.await??;
     }
@@ -359,14 +380,13 @@ async fn retained_memory(
     source: &Path,
     toolchain: &Toolchain,
     host: &Arc<Host>,
-    prepared: Prepared,
+    mut generations: Vec<Prepared>,
 ) -> Result<Value> {
     eprintln!(
         "Measuring RSS with {} retained generations.",
         options.generations
     );
-    let mut generations = vec![prepared];
-    for generation in 1..options.generations {
+    for generation in 2..options.generations {
         std::fs::write(
             source,
             ROUTER.replace("skip0", &format!("skip{generation}")),

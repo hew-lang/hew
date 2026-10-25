@@ -291,6 +291,7 @@ First-process eval and warm-filesystem process runs are separate from two-line
 edits in one retained `hew tool live` session. OS caches are not flushed. Source
 build and component preparation are measured separately; cached activation,
 invocation and replacement consume prepared handles without compiling. The
+replacement samples alternate two distinct prepared code identities. The
 asynchronous comparison includes guest work and scheduling as well as service
 dispatch. Replacement pause covers snapshot through commit with no concurrent
 ingress. Linux RSS is recorded with prepared generations and active instances

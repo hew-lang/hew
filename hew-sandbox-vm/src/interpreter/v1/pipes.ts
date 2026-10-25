@@ -11,7 +11,7 @@ interface PendingRead {
 
 interface Pipe {
   capacity: number;
-  queue: VmValue[];
+  queue: Array<{ value: VmValue }>;
   sinks: number;
   readerOpen: boolean;
   fault: string | null;
@@ -94,7 +94,7 @@ export class Pipes {
       half.pipe.fault ??= fault;
     } else {
       half.pipe.readerOpen = false;
-      discarded.push(...half.pipe.queue.splice(0));
+      discarded.push(...half.pipe.queue.splice(0).map((item) => item.value));
     }
     this.flush(half.pipe);
     return discarded;
@@ -137,7 +137,7 @@ export class Pipes {
       pipe.reading.shift()!.complete(item, null);
       complete(0);
     } else if (pipe.queue.length < pipe.capacity) {
-      pipe.queue.push(item);
+      pipe.queue.push({ value: item });
       complete(0);
     } else if (!park) {
       complete(2);
@@ -161,7 +161,7 @@ export class Pipes {
   ): () => void {
     const pipe = this.get(value).pipe;
     if (pipe.queue.length > 0) {
-      complete(pipe.queue.shift()!, null);
+      complete(pipe.queue.shift()!.value, null);
       this.flush(pipe);
     } else if (pipe.sending.length > 0) {
       const sender = pipe.sending.shift()!;
@@ -197,7 +197,7 @@ export class Pipes {
         const sender = pipe.sending.shift()!;
         const reader = pipe.reading.shift();
         if (reader) reader.complete(sender.value, null);
-        else pipe.queue.push(sender.value);
+        else pipe.queue.push({ value: sender.value });
         sender.complete(0);
       }
     }
@@ -214,5 +214,17 @@ export class Pipes {
 
   private notify(pipe: Pipe): void {
     for (const observer of [...pipe.observers]) observer();
+  }
+
+  /** Only the unique receiving half owns admitted typed envelopes. */
+  managedRetained(value: VmValue): {
+    identity: object;
+    queued: readonly { value: VmValue }[];
+  } {
+    const half = this.get(value);
+    return {
+      identity: half.kind === "stream" ? half.pipe : half,
+      queued: half.open && half.kind === "stream" ? half.pipe.queue : [],
+    };
   }
 }

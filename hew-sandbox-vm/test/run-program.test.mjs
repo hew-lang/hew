@@ -114,6 +114,27 @@ test("runProgram hello_world returns stdout and zero exit code", async () => {
   assert.deepEqual(result.diagnostics, []);
 });
 
+for (const [name, expected] of [
+  ["capacity", "4\n4\nlimit\n"],
+  ["alias", "8\nretained backing\n"],
+  ["bytes-slice", "1\nslice capacity\n"],
+]) {
+  test(`actor-owned budget preserves ${name} accounting through cleanup`, async () => {
+    const source = fs.readFileSync(
+      path.join(
+        repoRoot,
+        `tests/core-acceptance/cases/actor-owned-budget-${name}.hew`,
+      ),
+      "utf8",
+    );
+    const result = await runProgram(source, "");
+    // Handling Trapped preserves the caller. An unsupervised actor crash
+    // still leaves the existing unrecovered process-exit debt.
+    assert.equal(result.exit_code, 1, JSON.stringify(result));
+    assert.equal(result.stdout, expected);
+  });
+}
+
 test("source-defined collection updates preserve ownership and callback recovery", async () => {
   const source = fs.readFileSync(
     path.join(repoRoot, "tests/core-acceptance/cases/collection-update.hew"),
@@ -350,7 +371,9 @@ test("authored close helpers yield without abandoning explicit or implicit relea
     ),
     "utf8",
   );
-  const result = await runProgram(source, "", undefined, { stepBudget: 2000000 });
+  const result = await runProgram(source, "", undefined, {
+    stepBudget: 2000000,
+  });
   assert.equal(result.exit_code, 0, JSON.stringify(result.diagnostics));
   assert.equal(
     result.stdout,

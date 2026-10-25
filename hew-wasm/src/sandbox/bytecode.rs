@@ -528,12 +528,7 @@ pub enum OpKind {
     #[serde(rename = "array.make")]
     ArrayMake { dst: u32, elements: Vec<u32> },
     #[serde(rename = "array.repeat")]
-    ArrayRepeat {
-        dst: u32,
-        value: u32,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        count: Option<u32>,
-    },
+    ArrayRepeat { dst: u32, value: u32 },
     #[serde(rename = "variant.make")]
     VariantMake {
         dst: u32,

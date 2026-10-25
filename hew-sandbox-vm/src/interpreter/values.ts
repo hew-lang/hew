@@ -34,6 +34,7 @@ export interface VmVector {
   storage?: VectorStorage;
   offset?: number;
   closed?: boolean;
+  prepareMutation?: (capacity: number, detached: boolean) => void;
 }
 
 export type VmValue =
@@ -83,7 +84,7 @@ export type VmValue =
   /** A trait object: the vtable the checker selected, and the value it wraps.
    *  A `dyn.call` resolves its method through `vtable`, never through the
    *  wrapped value's shape. */
-  | { kind: "dyn"; vtable: number; value: VmValue }
+  | { kind: "dyn"; vtable: number; value: VmValue; managedPayload?: number }
   /** A first-class function reference materialised by `const.function`.
    *  `id` is the bytecode function id (e.g. `"fn:my_handler"`).
    *  Function values are immutable: `cloneValue` is identity. */
@@ -97,6 +98,7 @@ export type VmValue =
       entries: ReadonlyArray<{ body: number; specialization: number | null }>;
       specialization: number | null;
       environment: VmValue;
+      managedCaptures?: readonly number[];
     };
 
 export const UNIT: VmValue = { kind: "unit" };
@@ -185,6 +187,7 @@ export function cloneValue(value: VmValue): VmValue {
         kind: "dyn",
         vtable: value.vtable,
         value: cloneValue(value.value),
+        managedPayload: value.managedPayload,
       };
     case "closure":
       return {
@@ -192,6 +195,7 @@ export function cloneValue(value: VmValue): VmValue {
         entries: value.entries,
         specialization: value.specialization,
         environment: cloneValue(value.environment),
+        managedCaptures: value.managedCaptures,
       };
     case "map":
       return {
@@ -277,8 +281,23 @@ export function mutableVector(
 ): VmVector {
   let storage = vectorStorage(value);
   let capacity = storage.capacity;
-  if (storage.owners !== 1) {
-    capacity = storage.bytes ? Math.max(value.items.length, 16) : capacity;
+  const detached = storage.owners !== 1;
+  if (detached && storage.bytes) capacity = Math.max(value.items.length, 16);
+  if (needed > capacity) {
+    if (storage.bytes) capacity = Math.max(capacity * 2, needed, 16);
+    else {
+      capacity = capacity || 4;
+      while (capacity < needed) capacity *= 2;
+    }
+  }
+  if (
+    !Number.isSafeInteger(capacity) ||
+    (storage.bytes && capacity > 0xffffffff)
+  )
+    throw new Error("vector capacity overflow");
+  if (detached || capacity !== storage.capacity)
+    value.prepareMutation?.(capacity, detached);
+  if (detached) {
     const items = value.items.map(cloneValue);
     storage.owners--;
     storage = { ...storage, items, capacity, owners: 1 };
@@ -286,14 +305,7 @@ export function mutableVector(
     value.items = items;
     value.offset = 0;
   }
-  if (needed > capacity) {
-    if (storage.bytes) capacity = Math.max(capacity * 2, needed, 16);
-    else {
-      capacity = capacity || 4;
-      while (capacity < needed) capacity *= 2;
-    }
-    if (!Number.isSafeInteger(capacity))
-      throw new Error("vector capacity overflow");
+  if (capacity !== storage.capacity) {
     storage.capacity = capacity;
     value.offset = 0;
   } else if (storage.bytes && (value.offset ?? 0) + needed > capacity) {

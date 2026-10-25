@@ -181,129 +181,108 @@ impl<'m> Walker<'m> {
                 let width = hew_sir::managed_slot(self.module, ty).map_err(|error| {
                     EmitError::new(format!("managed width for {ty:?}: {error:?}"))
                 })?;
-                let layout = match ty {
-                    T::String => ManagedLayout::String,
-                    T::Bytes => ManagedLayout::Bytes,
-                    T::Array(element, length) => ManagedLayout::Array {
-                        element: child(element)?,
-                        share_on_copy: hew_sir::managed_slot_is_plain(self.module, element)
-                            .map_err(|error| {
-                                EmitError::new(format!("managed copy eligibility: {error:?}"))
-                            })?,
+                use hew_sir::{
+                    ManagedHandleKind as H, ManagedProviderKind as P, ManagedStorageShape as S,
+                };
+                let shape = hew_sir::managed_storage_shape(self.module, ty).map_err(|error| {
+                    EmitError::new(format!("managed shape for {ty:?}: {error:?}"))
+                })?;
+                let children = |types: &[T]| types.iter().map(child).collect::<Result<Vec<_>, _>>();
+                let layout = match shape {
+                    S::Scalar => ManagedLayout::Scalar,
+                    S::Handle(kind) => ManagedLayout::Handle {
+                        category: match kind {
+                            H::Actor => ManagedHandle::Actor,
+                            H::Pointer => ManagedHandle::Pointer,
+                            H::Borrow => ManagedHandle::Borrow,
+                            H::Cancellation => ManagedHandle::Cancellation,
+                        },
+                    },
+                    S::String => ManagedLayout::String,
+                    S::Bytes => ManagedLayout::Bytes,
+                    S::Vector {
+                        element,
+                        share_on_copy,
+                    } => ManagedLayout::Vector {
+                        element: child(&element)?,
+                        share_on_copy,
+                    },
+                    S::Array {
+                        element,
+                        length,
+                        share_on_copy,
+                    } => ManagedLayout::Array {
+                        element: child(&element)?,
                         length: length.to_string(),
+                        share_on_copy,
                     },
-                    T::Slice(element) => ManagedLayout::Slice {
-                        element: child(element)?,
-                        share_on_copy: hew_sir::managed_slot_is_plain(self.module, element)
-                            .map_err(|error| {
-                                EmitError::new(format!("managed copy eligibility: {error:?}"))
-                            })?,
+                    S::Slice {
+                        element,
+                        share_on_copy,
+                    } => ManagedLayout::Slice {
+                        element: child(&element)?,
+                        share_on_copy,
                     },
-                    _ => {
-                        if let Some(row) = inventory.vectors().find(|row| &row.ty == ty) {
-                            ManagedLayout::Vector {
-                                element: child(&row.element)?,
-                                share_on_copy: hew_sir::managed_slot_is_plain(
-                                    self.module,
-                                    &row.element,
-                                )
-                                .map_err(|error| {
-                                    EmitError::new(format!("managed copy eligibility: {error:?}"))
-                                })?,
+                    S::Map { key, value } => ManagedLayout::Map {
+                        key: child(&key)?,
+                        value: child(&value)?,
+                    },
+                    S::Set { element } => ManagedLayout::Set {
+                        element: child(&element)?,
+                    },
+                    S::Aggregate { fields } => ManagedLayout::Aggregate {
+                        fields: children(&fields)?,
+                    },
+                    S::Variant {
+                        indirect,
+                        payload_bytes,
+                        cases,
+                    } => ManagedLayout::Variant {
+                        indirect,
+                        payload_bytes: payload_bytes.to_string(),
+                        cases: cases
+                            .iter()
+                            .map(|fields| children(fields))
+                            .collect::<Result<_, _>>()?,
+                    },
+                    S::Callable { captures } => ManagedLayout::Callable {
+                        captures: captures.as_deref().map(children).transpose()?,
+                    },
+                    S::Shared { payload, weak } => ManagedLayout::Shared {
+                        payload: child(&payload)?,
+                        weak,
+                    },
+                    S::Dynamic => ManagedLayout::Dynamic,
+                    S::Generator {
+                        yielded,
+                        returned,
+                        payload_bytes,
+                    } => ManagedLayout::Generator {
+                        yielded: child(&yielded)?,
+                        returned: child(&returned)?,
+                        payload_bytes: payload_bytes.to_string(),
+                    },
+                    S::Provider {
+                        kind,
+                        children: payloads,
+                    } => ManagedLayout::Provider {
+                        provider: match kind {
+                            P::Task => ManagedProvider::Task,
+                            P::ActorCall => ManagedProvider::ActorCall,
+                            P::Stream => ManagedProvider::Stream,
+                            P::Sink => ManagedProvider::Sink,
+                            P::Encoding(hew_types::BuiltinType::JsonValue) => ManagedProvider::Json,
+                            P::Encoding(hew_types::BuiltinType::YamlValue) => ManagedProvider::Yaml,
+                            P::Encoding(hew_types::BuiltinType::TomlValue) => ManagedProvider::Toml,
+                            P::Encoding(other) => {
+                                return Err(EmitError::new(format!(
+                                    "unexpected encoding provider {other:?}"
+                                )))
                             }
-                        } else if let Some(row) = inventory.maps().find(|row| &row.ty == ty) {
-                            ManagedLayout::Map {
-                                key: child(&row.key)?,
-                                value: child(&row.value)?,
-                            }
-                        } else if let Some(row) = inventory.sets().find(|row| &row.ty == ty) {
-                            ManagedLayout::Set {
-                                element: child(&row.element)?,
-                            }
-                        } else if let Some(row) = inventory.shared().find(|row| &row.ty == ty) {
-                            ManagedLayout::Shared {
-                                payload: child(&row.payload)?,
-                                weak: matches!(
-                                    ty,
-                                    T::Named {
-                                        head: hew_types::TypeHead::Builtin(
-                                            hew_types::BuiltinType::Weak
-                                        ),
-                                        ..
-                                    }
-                                ),
-                            }
-                        } else if let Some(row) = inventory.aggregates().find(|row| &row.ty == ty) {
-                            ManagedLayout::Aggregate {
-                                fields: row.fields.iter().map(child).collect::<Result<_, _>>()?,
-                            }
-                        } else if let Some(row) = inventory.variants().find(|row| &row.ty == ty) {
-                            let shape =
-                                self.module.variant_shape_for_type(ty).ok_or_else(|| {
-                                    EmitError::new("managed variant has no canonical SIR shape")
-                                })?;
-                            ManagedLayout::Variant {
-                                indirect: row.is_indirect,
-                                payload_bytes: hew_sir::managed_variant_payload(self.module, shape)
-                                    .map_err(|error| {
-                                        EmitError::new(format!(
-                                            "managed variant payload: {error:?}"
-                                        ))
-                                    })?
-                                    .bytes
-                                    .to_string(),
-                                cases: row
-                                    .variants
-                                    .iter()
-                                    .map(|fields| {
-                                        fields.iter().map(child).collect::<Result<_, _>>()
-                                    })
-                                    .collect::<Result<_, _>>()?,
-                            }
-                        } else if let Some((yielded, returned)) = ty.generator_parts() {
-                            ManagedLayout::Generator {
-                                yielded: child(yielded)?,
-                                returned: child(returned)?,
-                                payload_bytes: hew_sir::managed_generator_payload(self.module, ty)
-                                    .map_err(|error| {
-                                        EmitError::new(format!(
-                                            "managed generator payload: {error:?}"
-                                        ))
-                                    })?
-                                    .bytes
-                                    .to_string(),
-                            }
-                        } else if let T::Closure { captures, .. } = ty.callable_body() {
-                            ManagedLayout::Closure {
-                                captures: captures.iter().map(child).collect::<Result<_, _>>()?,
-                            }
-                        } else if matches!(ty, T::TraitObject { .. }) {
-                            ManagedLayout::Dynamic
-                        } else if matches!(
-                            ty,
-                            T::Unit
-                                | T::Never
-                                | T::Bool
-                                | T::I8
-                                | T::U8
-                                | T::I16
-                                | T::U16
-                                | T::Char
-                                | T::I32
-                                | T::U32
-                                | T::F32
-                                | T::I64
-                                | T::U64
-                                | T::Isize
-                                | T::Usize
-                                | T::F64
-                                | T::Duration
-                        ) {
-                            ManagedLayout::Scalar
-                        } else {
-                            ManagedLayout::Handle
-                        }
-                    }
+                            P::Opaque => ManagedProvider::Opaque,
+                        },
+                        children: children(&payloads)?,
+                    },
                 };
                 Ok(ManagedType {
                     id: child(ty)?,
@@ -1411,14 +1390,6 @@ impl<'m> Walker<'m> {
             SemOpKind::ArrayRepeat { value } => wire::OpKind::ArrayRepeat {
                 dst: output()?,
                 value: operand(value),
-                count: match op.results.first().map(|result| &result.ty) {
-                    Some(hew_types::ResolvedTy::Array(_, length)) => {
-                        Some(u32::try_from(*length).map_err(|_| {
-                            EmitError::new("array repeat length exceeds sandbox capacity")
-                        })?)
-                    }
-                    _ => return Err(EmitError::new("array repeat has no canonical array type")),
-                },
             },
 
             SemOpKind::VariantMake {

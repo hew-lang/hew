@@ -1211,6 +1211,23 @@
       "required": ["name", "flags"],
       "type": "object"
     },
+    "ManagedHandle": {
+      "enum": ["actor", "pointer", "borrow", "cancellation"],
+      "type": "string"
+    },
+    "ManagedProvider": {
+      "enum": [
+        "task",
+        "actor_call",
+        "stream",
+        "sink",
+        "json",
+        "yaml",
+        "toml",
+        "opaque"
+      ],
+      "type": "string"
+    },
     "ManagedType": {
       "description": "Exact semantic children supplied by SIR's physical type inventory.",
       "oneOf": [
@@ -1226,12 +1243,15 @@
         },
         {
           "properties": {
+            "category": {
+              "$ref": "#/$defs/ManagedHandle"
+            },
             "kind": {
               "const": "handle",
               "type": "string"
             }
           },
-          "required": ["kind"],
+          "required": ["kind", "category"],
           "type": "object"
         },
         {
@@ -1408,14 +1428,14 @@
                 "minimum": 0,
                 "type": "integer"
               },
-              "type": "array"
+              "type": ["array", "null"]
             },
             "kind": {
-              "const": "closure",
+              "const": "callable",
               "type": "string"
             }
           },
-          "required": ["kind", "captures"],
+          "required": ["kind"],
           "type": "object"
         },
         {
@@ -1470,6 +1490,28 @@
             }
           },
           "required": ["kind"],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "children": {
+              "items": {
+                "format": "uint32",
+                "maximum": 4294967295,
+                "minimum": 0,
+                "type": "integer"
+              },
+              "type": "array"
+            },
+            "kind": {
+              "const": "provider",
+              "type": "string"
+            },
+            "provider": {
+              "$ref": "#/$defs/ManagedProvider"
+            }
+          },
+          "required": ["kind", "provider", "children"],
           "type": "object"
         }
       ],
@@ -2559,12 +2601,6 @@
         },
         {
           "properties": {
-            "count": {
-              "format": "uint32",
-              "maximum": 4294967295,
-              "minimum": 0,
-              "type": ["integer", "null"]
-            },
             "dst": {
               "format": "uint32",
               "maximum": 4294967295,

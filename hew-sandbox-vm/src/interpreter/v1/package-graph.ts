@@ -84,8 +84,11 @@ export function validatePackageGraph(pkg: PackageV1): void {
         width(row.payload_bytes);
         row.cases.forEach((fields) => fields.forEach(managedType));
         break;
-      case "closure":
-        row.captures.forEach(managedType);
+      case "callable":
+        row.captures?.forEach(managedType);
+        break;
+      case "provider":
+        row.children.forEach(managedType);
         break;
       case "generator":
         width(row.payload_bytes);

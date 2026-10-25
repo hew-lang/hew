@@ -66,7 +66,9 @@ pub struct ManagedType {
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum ManagedLayout {
     Scalar,
-    Handle,
+    Handle {
+        category: ManagedHandle,
+    },
     String,
     Bytes,
     Vector {
@@ -97,8 +99,8 @@ pub enum ManagedLayout {
         payload_bytes: String,
         cases: Vec<Vec<u32>>,
     },
-    Closure {
-        captures: Vec<u32>,
+    Callable {
+        captures: Option<Vec<u32>>,
     },
     Generator {
         yielded: u32,
@@ -110,6 +112,32 @@ pub enum ManagedLayout {
         weak: bool,
     },
     Dynamic,
+    Provider {
+        provider: ManagedProvider,
+        children: Vec<u32>,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema, TS)]
+#[serde(rename_all = "snake_case")]
+pub enum ManagedHandle {
+    Actor,
+    Pointer,
+    Borrow,
+    Cancellation,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema, TS)]
+#[serde(rename_all = "snake_case")]
+pub enum ManagedProvider {
+    Task,
+    ActorCall,
+    Stream,
+    Sink,
+    Json,
+    Yaml,
+    Toml,
+    Opaque,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema, TS)]

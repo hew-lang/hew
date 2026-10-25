@@ -280,6 +280,16 @@ export type InvocationCallee =
   | IndirectInvocation;
 export type JoinDetail = { scope: number; mode: JoinMode };
 export type JoinMode = "wait" | "cancel_losers" | "propagate_fault";
+export type ManagedHandle = "actor" | "pointer" | "borrow" | "cancellation";
+export type ManagedProvider =
+  | "task"
+  | "actor_call"
+  | "stream"
+  | "sink"
+  | "json"
+  | "yaml"
+  | "toml"
+  | "opaque";
 export type ManagedType = {
   id: number;
   /**
@@ -288,7 +298,7 @@ export type ManagedType = {
   slot_bytes: string;
 } & (
   | { kind: "scalar" }
-  | { kind: "handle" }
+  | { kind: "handle"; category: ManagedHandle }
   | { kind: "string" }
   | { kind: "bytes" }
   | { kind: "vector"; element: number; share_on_copy: boolean }
@@ -303,7 +313,7 @@ export type ManagedType = {
       payload_bytes: string;
       cases: Array<Array<number>>;
     }
-  | { kind: "closure"; captures: Array<number> }
+  | { kind: "callable"; captures: Array<number> | null }
   | {
       kind: "generator";
       yielded: number;
@@ -312,6 +322,7 @@ export type ManagedType = {
     }
   | { kind: "shared"; payload: number; weak: boolean }
   | { kind: "dynamic" }
+  | { kind: "provider"; provider: ManagedProvider; children: Array<number> }
 );
 export type MapValueOp =
   | "New"
@@ -444,7 +455,7 @@ export type OpV1 = {
       results: Array<number>;
     }
   | { op: "array.make"; dst: number; elements: Array<number> }
-  | { op: "array.repeat"; dst: number; value: number; count?: number | null }
+  | { op: "array.repeat"; dst: number; value: number }
   | {
       op: "variant.make";
       dst: number;

@@ -986,6 +986,23 @@ const schema19 = {
       required: ["name", "flags"],
       type: "object",
     },
+    ManagedHandle: {
+      enum: ["actor", "pointer", "borrow", "cancellation"],
+      type: "string",
+    },
+    ManagedProvider: {
+      enum: [
+        "task",
+        "actor_call",
+        "stream",
+        "sink",
+        "json",
+        "yaml",
+        "toml",
+        "opaque",
+      ],
+      type: "string",
+    },
     ManagedType: {
       description:
         "Exact semantic children supplied by SIR's physical type inventory.",
@@ -996,8 +1013,11 @@ const schema19 = {
           type: "object",
         },
         {
-          properties: { kind: { const: "handle", type: "string" } },
-          required: ["kind"],
+          properties: {
+            category: { $ref: "#/$defs/ManagedHandle" },
+            kind: { const: "handle", type: "string" },
+          },
+          required: ["kind", "category"],
           type: "object",
         },
         {
@@ -1131,11 +1151,11 @@ const schema19 = {
                 minimum: 0,
                 type: "integer",
               },
-              type: "array",
+              type: ["array", "null"],
             },
-            kind: { const: "closure", type: "string" },
+            kind: { const: "callable", type: "string" },
           },
-          required: ["kind", "captures"],
+          required: ["kind"],
           type: "object",
         },
         {
@@ -1175,6 +1195,23 @@ const schema19 = {
         {
           properties: { kind: { const: "dynamic", type: "string" } },
           required: ["kind"],
+          type: "object",
+        },
+        {
+          properties: {
+            children: {
+              items: {
+                format: "uint32",
+                maximum: 4294967295,
+                minimum: 0,
+                type: "integer",
+              },
+              type: "array",
+            },
+            kind: { const: "provider", type: "string" },
+            provider: { $ref: "#/$defs/ManagedProvider" },
+          },
+          required: ["kind", "provider", "children"],
           type: "object",
         },
       ],
@@ -2092,12 +2129,6 @@ const schema19 = {
         },
         {
           properties: {
-            count: {
-              format: "uint32",
-              maximum: 4294967295,
-              minimum: 0,
-              type: ["integer", "null"],
-            },
             dst: {
               format: "uint32",
               maximum: 4294967295,
@@ -10435,12 +10466,6 @@ const schema36 = {
     },
     {
       properties: {
-        count: {
-          format: "uint32",
-          maximum: 4294967295,
-          minimum: 0,
-          type: ["integer", "null"],
-        },
         dst: {
           format: "uint32",
           maximum: 4294967295,
@@ -19384,8 +19409,8 @@ function validate83(
                       ];
                       return false;
                     } else {
-                      if (data.count !== undefined) {
-                        let data108 = data.count;
+                      if (data.dst !== undefined) {
+                        let data108 = data.dst;
                         const _errs288 = errors;
                         if (
                           !(
@@ -19393,18 +19418,15 @@ function validate83(
                             !(data108 % 1) &&
                             !isNaN(data108) &&
                             isFinite(data108)
-                          ) &&
-                          data108 !== null
+                          )
                         ) {
                           validate83.errors = [
                             {
-                              instancePath: instancePath + "/count",
-                              schemaPath: "#/oneOf/30/properties/count/type",
+                              instancePath: instancePath + "/dst",
+                              schemaPath: "#/oneOf/30/properties/dst/type",
                               keyword: "type",
-                              params: {
-                                type: schema36.oneOf[30].properties.count.type,
-                              },
-                              message: "must be integer,null",
+                              params: { type: "integer" },
+                              message: "must be integer",
                             },
                           ];
                           return false;
@@ -19414,9 +19436,9 @@ function validate83(
                             if (data108 > 4294967295 || isNaN(data108)) {
                               validate83.errors = [
                                 {
-                                  instancePath: instancePath + "/count",
+                                  instancePath: instancePath + "/dst",
                                   schemaPath:
-                                    "#/oneOf/30/properties/count/maximum",
+                                    "#/oneOf/30/properties/dst/maximum",
                                   keyword: "maximum",
                                   params: {
                                     comparison: "<=",
@@ -19430,9 +19452,9 @@ function validate83(
                               if (data108 < 0 || isNaN(data108)) {
                                 validate83.errors = [
                                   {
-                                    instancePath: instancePath + "/count",
+                                    instancePath: instancePath + "/dst",
                                     schemaPath:
-                                      "#/oneOf/30/properties/count/minimum",
+                                      "#/oneOf/30/properties/dst/minimum",
                                     keyword: "minimum",
                                     params: { comparison: ">=", limit: 0 },
                                     message: "must be >= 0",
@@ -19448,169 +19470,101 @@ function validate83(
                         var valid71 = true;
                       }
                       if (valid71) {
-                        if (data.dst !== undefined) {
-                          let data109 = data.dst;
+                        if (data.op !== undefined) {
+                          let data109 = data.op;
                           const _errs290 = errors;
-                          if (
-                            !(
-                              typeof data109 == "number" &&
-                              !(data109 % 1) &&
-                              !isNaN(data109) &&
-                              isFinite(data109)
-                            )
-                          ) {
+                          if (typeof data109 !== "string") {
                             validate83.errors = [
                               {
-                                instancePath: instancePath + "/dst",
-                                schemaPath: "#/oneOf/30/properties/dst/type",
+                                instancePath: instancePath + "/op",
+                                schemaPath: "#/oneOf/30/properties/op/type",
                                 keyword: "type",
-                                params: { type: "integer" },
-                                message: "must be integer",
+                                params: { type: "string" },
+                                message: "must be string",
                               },
                             ];
                             return false;
                           }
-                          if (errors === _errs290) {
-                            if (
-                              typeof data109 == "number" &&
-                              isFinite(data109)
-                            ) {
-                              if (data109 > 4294967295 || isNaN(data109)) {
-                                validate83.errors = [
-                                  {
-                                    instancePath: instancePath + "/dst",
-                                    schemaPath:
-                                      "#/oneOf/30/properties/dst/maximum",
-                                    keyword: "maximum",
-                                    params: {
-                                      comparison: "<=",
-                                      limit: 4294967295,
-                                    },
-                                    message: "must be <= 4294967295",
-                                  },
-                                ];
-                                return false;
-                              } else {
-                                if (data109 < 0 || isNaN(data109)) {
-                                  validate83.errors = [
-                                    {
-                                      instancePath: instancePath + "/dst",
-                                      schemaPath:
-                                        "#/oneOf/30/properties/dst/minimum",
-                                      keyword: "minimum",
-                                      params: { comparison: ">=", limit: 0 },
-                                      message: "must be >= 0",
-                                    },
-                                  ];
-                                  return false;
-                                }
-                              }
-                            }
+                          if ("array.repeat" !== data109) {
+                            validate83.errors = [
+                              {
+                                instancePath: instancePath + "/op",
+                                schemaPath: "#/oneOf/30/properties/op/const",
+                                keyword: "const",
+                                params: { allowedValue: "array.repeat" },
+                                message: "must be equal to constant",
+                              },
+                            ];
+                            return false;
                           }
                           var valid71 = _errs290 === errors;
                         } else {
                           var valid71 = true;
                         }
                         if (valid71) {
-                          if (data.op !== undefined) {
-                            let data110 = data.op;
+                          if (data.value !== undefined) {
+                            let data110 = data.value;
                             const _errs292 = errors;
-                            if (typeof data110 !== "string") {
+                            if (
+                              !(
+                                typeof data110 == "number" &&
+                                !(data110 % 1) &&
+                                !isNaN(data110) &&
+                                isFinite(data110)
+                              )
+                            ) {
                               validate83.errors = [
                                 {
-                                  instancePath: instancePath + "/op",
-                                  schemaPath: "#/oneOf/30/properties/op/type",
+                                  instancePath: instancePath + "/value",
+                                  schemaPath:
+                                    "#/oneOf/30/properties/value/type",
                                   keyword: "type",
-                                  params: { type: "string" },
-                                  message: "must be string",
+                                  params: { type: "integer" },
+                                  message: "must be integer",
                                 },
                               ];
                               return false;
                             }
-                            if ("array.repeat" !== data110) {
-                              validate83.errors = [
-                                {
-                                  instancePath: instancePath + "/op",
-                                  schemaPath: "#/oneOf/30/properties/op/const",
-                                  keyword: "const",
-                                  params: { allowedValue: "array.repeat" },
-                                  message: "must be equal to constant",
-                                },
-                              ];
-                              return false;
-                            }
-                            var valid71 = _errs292 === errors;
-                          } else {
-                            var valid71 = true;
-                          }
-                          if (valid71) {
-                            if (data.value !== undefined) {
-                              let data111 = data.value;
-                              const _errs294 = errors;
+                            if (errors === _errs292) {
                               if (
-                                !(
-                                  typeof data111 == "number" &&
-                                  !(data111 % 1) &&
-                                  !isNaN(data111) &&
-                                  isFinite(data111)
-                                )
+                                typeof data110 == "number" &&
+                                isFinite(data110)
                               ) {
-                                validate83.errors = [
-                                  {
-                                    instancePath: instancePath + "/value",
-                                    schemaPath:
-                                      "#/oneOf/30/properties/value/type",
-                                    keyword: "type",
-                                    params: { type: "integer" },
-                                    message: "must be integer",
-                                  },
-                                ];
-                                return false;
-                              }
-                              if (errors === _errs294) {
-                                if (
-                                  typeof data111 == "number" &&
-                                  isFinite(data111)
-                                ) {
-                                  if (data111 > 4294967295 || isNaN(data111)) {
+                                if (data110 > 4294967295 || isNaN(data110)) {
+                                  validate83.errors = [
+                                    {
+                                      instancePath: instancePath + "/value",
+                                      schemaPath:
+                                        "#/oneOf/30/properties/value/maximum",
+                                      keyword: "maximum",
+                                      params: {
+                                        comparison: "<=",
+                                        limit: 4294967295,
+                                      },
+                                      message: "must be <= 4294967295",
+                                    },
+                                  ];
+                                  return false;
+                                } else {
+                                  if (data110 < 0 || isNaN(data110)) {
                                     validate83.errors = [
                                       {
                                         instancePath: instancePath + "/value",
                                         schemaPath:
-                                          "#/oneOf/30/properties/value/maximum",
-                                        keyword: "maximum",
-                                        params: {
-                                          comparison: "<=",
-                                          limit: 4294967295,
-                                        },
-                                        message: "must be <= 4294967295",
+                                          "#/oneOf/30/properties/value/minimum",
+                                        keyword: "minimum",
+                                        params: { comparison: ">=", limit: 0 },
+                                        message: "must be >= 0",
                                       },
                                     ];
                                     return false;
-                                  } else {
-                                    if (data111 < 0 || isNaN(data111)) {
-                                      validate83.errors = [
-                                        {
-                                          instancePath: instancePath + "/value",
-                                          schemaPath:
-                                            "#/oneOf/30/properties/value/minimum",
-                                          keyword: "minimum",
-                                          params: {
-                                            comparison: ">=",
-                                            limit: 0,
-                                          },
-                                          message: "must be >= 0",
-                                        },
-                                      ];
-                                      return false;
-                                    }
                                   }
                                 }
                               }
-                              var valid71 = _errs294 === errors;
-                            } else {
-                              var valid71 = true;
                             }
+                            var valid71 = _errs292 === errors;
+                          } else {
+                            var valid71 = true;
                           }
                         }
                       }
@@ -19630,14 +19584,13 @@ function validate83(
                 }
                 if (props1 !== true) {
                   props1 = props1 || {};
-                  props1.count = true;
                   props1.dst = true;
                   props1.op = true;
                   props1.value = true;
                 }
               } else if (tag0 === "variant.make") {
-                const _errs296 = errors;
-                if (errors === _errs296) {
+                const _errs294 = errors;
+                if (errors === _errs294) {
                   if (data && typeof data == "object" && !Array.isArray(data)) {
                     let missing31;
                     if (
@@ -19660,14 +19613,14 @@ function validate83(
                       return false;
                     } else {
                       if (data.dst !== undefined) {
-                        let data112 = data.dst;
-                        const _errs298 = errors;
+                        let data111 = data.dst;
+                        const _errs296 = errors;
                         if (
                           !(
-                            typeof data112 == "number" &&
-                            !(data112 % 1) &&
-                            !isNaN(data112) &&
-                            isFinite(data112)
+                            typeof data111 == "number" &&
+                            !(data111 % 1) &&
+                            !isNaN(data111) &&
+                            isFinite(data111)
                           )
                         ) {
                           validate83.errors = [
@@ -19681,9 +19634,9 @@ function validate83(
                           ];
                           return false;
                         }
-                        if (errors === _errs298) {
-                          if (typeof data112 == "number" && isFinite(data112)) {
-                            if (data112 > 4294967295 || isNaN(data112)) {
+                        if (errors === _errs296) {
+                          if (typeof data111 == "number" && isFinite(data111)) {
+                            if (data111 > 4294967295 || isNaN(data111)) {
                               validate83.errors = [
                                 {
                                   instancePath: instancePath + "/dst",
@@ -19699,7 +19652,7 @@ function validate83(
                               ];
                               return false;
                             } else {
-                              if (data112 < 0 || isNaN(data112)) {
+                              if (data111 < 0 || isNaN(data111)) {
                                 validate83.errors = [
                                   {
                                     instancePath: instancePath + "/dst",
@@ -19715,27 +19668,27 @@ function validate83(
                             }
                           }
                         }
-                        var valid73 = _errs298 === errors;
+                        var valid73 = _errs296 === errors;
                       } else {
                         var valid73 = true;
                       }
                       if (valid73) {
                         if (data.fields !== undefined) {
-                          let data113 = data.fields;
-                          const _errs300 = errors;
-                          if (errors === _errs300) {
-                            if (Array.isArray(data113)) {
+                          let data112 = data.fields;
+                          const _errs298 = errors;
+                          if (errors === _errs298) {
+                            if (Array.isArray(data112)) {
                               var valid74 = true;
-                              const len5 = data113.length;
+                              const len5 = data112.length;
                               for (let i5 = 0; i5 < len5; i5++) {
-                                let data114 = data113[i5];
-                                const _errs302 = errors;
+                                let data113 = data112[i5];
+                                const _errs300 = errors;
                                 if (
                                   !(
-                                    typeof data114 == "number" &&
-                                    !(data114 % 1) &&
-                                    !isNaN(data114) &&
-                                    isFinite(data114)
+                                    typeof data113 == "number" &&
+                                    !(data113 % 1) &&
+                                    !isNaN(data113) &&
+                                    isFinite(data113)
                                   )
                                 ) {
                                   validate83.errors = [
@@ -19751,14 +19704,14 @@ function validate83(
                                   ];
                                   return false;
                                 }
-                                if (errors === _errs302) {
+                                if (errors === _errs300) {
                                   if (
-                                    typeof data114 == "number" &&
-                                    isFinite(data114)
+                                    typeof data113 == "number" &&
+                                    isFinite(data113)
                                   ) {
                                     if (
-                                      data114 > 4294967295 ||
-                                      isNaN(data114)
+                                      data113 > 4294967295 ||
+                                      isNaN(data113)
                                     ) {
                                       validate83.errors = [
                                         {
@@ -19776,7 +19729,7 @@ function validate83(
                                       ];
                                       return false;
                                     } else {
-                                      if (data114 < 0 || isNaN(data114)) {
+                                      if (data113 < 0 || isNaN(data113)) {
                                         validate83.errors = [
                                           {
                                             instancePath:
@@ -19796,7 +19749,7 @@ function validate83(
                                     }
                                   }
                                 }
-                                var valid74 = _errs302 === errors;
+                                var valid74 = _errs300 === errors;
                                 if (!valid74) {
                                   break;
                                 }
@@ -19815,15 +19768,15 @@ function validate83(
                               return false;
                             }
                           }
-                          var valid73 = _errs300 === errors;
+                          var valid73 = _errs298 === errors;
                         } else {
                           var valid73 = true;
                         }
                         if (valid73) {
                           if (data.op !== undefined) {
-                            let data115 = data.op;
-                            const _errs304 = errors;
-                            if (typeof data115 !== "string") {
+                            let data114 = data.op;
+                            const _errs302 = errors;
+                            if (typeof data114 !== "string") {
                               validate83.errors = [
                                 {
                                   instancePath: instancePath + "/op",
@@ -19835,7 +19788,7 @@ function validate83(
                               ];
                               return false;
                             }
-                            if ("variant.make" !== data115) {
+                            if ("variant.make" !== data114) {
                               validate83.errors = [
                                 {
                                   instancePath: instancePath + "/op",
@@ -19847,20 +19800,20 @@ function validate83(
                               ];
                               return false;
                             }
-                            var valid73 = _errs304 === errors;
+                            var valid73 = _errs302 === errors;
                           } else {
                             var valid73 = true;
                           }
                           if (valid73) {
                             if (data.shape !== undefined) {
-                              let data116 = data.shape;
-                              const _errs306 = errors;
+                              let data115 = data.shape;
+                              const _errs304 = errors;
                               if (
                                 !(
-                                  typeof data116 == "number" &&
-                                  !(data116 % 1) &&
-                                  !isNaN(data116) &&
-                                  isFinite(data116)
+                                  typeof data115 == "number" &&
+                                  !(data115 % 1) &&
+                                  !isNaN(data115) &&
+                                  isFinite(data115)
                                 )
                               ) {
                                 validate83.errors = [
@@ -19875,12 +19828,12 @@ function validate83(
                                 ];
                                 return false;
                               }
-                              if (errors === _errs306) {
+                              if (errors === _errs304) {
                                 if (
-                                  typeof data116 == "number" &&
-                                  isFinite(data116)
+                                  typeof data115 == "number" &&
+                                  isFinite(data115)
                                 ) {
-                                  if (data116 > 4294967295 || isNaN(data116)) {
+                                  if (data115 > 4294967295 || isNaN(data115)) {
                                     validate83.errors = [
                                       {
                                         instancePath: instancePath + "/shape",
@@ -19896,7 +19849,7 @@ function validate83(
                                     ];
                                     return false;
                                   } else {
-                                    if (data116 < 0 || isNaN(data116)) {
+                                    if (data115 < 0 || isNaN(data115)) {
                                       validate83.errors = [
                                         {
                                           instancePath: instancePath + "/shape",
@@ -19915,20 +19868,20 @@ function validate83(
                                   }
                                 }
                               }
-                              var valid73 = _errs306 === errors;
+                              var valid73 = _errs304 === errors;
                             } else {
                               var valid73 = true;
                             }
                             if (valid73) {
                               if (data.variant !== undefined) {
-                                let data117 = data.variant;
-                                const _errs308 = errors;
+                                let data116 = data.variant;
+                                const _errs306 = errors;
                                 if (
                                   !(
-                                    typeof data117 == "number" &&
-                                    !(data117 % 1) &&
-                                    !isNaN(data117) &&
-                                    isFinite(data117)
+                                    typeof data116 == "number" &&
+                                    !(data116 % 1) &&
+                                    !isNaN(data116) &&
+                                    isFinite(data116)
                                   )
                                 ) {
                                   validate83.errors = [
@@ -19943,14 +19896,14 @@ function validate83(
                                   ];
                                   return false;
                                 }
-                                if (errors === _errs308) {
+                                if (errors === _errs306) {
                                   if (
-                                    typeof data117 == "number" &&
-                                    isFinite(data117)
+                                    typeof data116 == "number" &&
+                                    isFinite(data116)
                                   ) {
                                     if (
-                                      data117 > 4294967295 ||
-                                      isNaN(data117)
+                                      data116 > 4294967295 ||
+                                      isNaN(data116)
                                     ) {
                                       validate83.errors = [
                                         {
@@ -19968,7 +19921,7 @@ function validate83(
                                       ];
                                       return false;
                                     } else {
-                                      if (data117 < 0 || isNaN(data117)) {
+                                      if (data116 < 0 || isNaN(data116)) {
                                         validate83.errors = [
                                           {
                                             instancePath:
@@ -19988,7 +19941,7 @@ function validate83(
                                     }
                                   }
                                 }
-                                var valid73 = _errs308 === errors;
+                                var valid73 = _errs306 === errors;
                               } else {
                                 var valid73 = true;
                               }
@@ -20019,8 +19972,8 @@ function validate83(
                   props1.variant = true;
                 }
               } else if (tag0 === "variant.is") {
-                const _errs310 = errors;
-                if (errors === _errs310) {
+                const _errs308 = errors;
+                if (errors === _errs308) {
                   if (data && typeof data == "object" && !Array.isArray(data)) {
                     let missing32;
                     if (
@@ -20043,14 +19996,14 @@ function validate83(
                       return false;
                     } else {
                       if (data.dst !== undefined) {
-                        let data118 = data.dst;
-                        const _errs312 = errors;
+                        let data117 = data.dst;
+                        const _errs310 = errors;
                         if (
                           !(
-                            typeof data118 == "number" &&
-                            !(data118 % 1) &&
-                            !isNaN(data118) &&
-                            isFinite(data118)
+                            typeof data117 == "number" &&
+                            !(data117 % 1) &&
+                            !isNaN(data117) &&
+                            isFinite(data117)
                           )
                         ) {
                           validate83.errors = [
@@ -20064,9 +20017,9 @@ function validate83(
                           ];
                           return false;
                         }
-                        if (errors === _errs312) {
-                          if (typeof data118 == "number" && isFinite(data118)) {
-                            if (data118 > 4294967295 || isNaN(data118)) {
+                        if (errors === _errs310) {
+                          if (typeof data117 == "number" && isFinite(data117)) {
+                            if (data117 > 4294967295 || isNaN(data117)) {
                               validate83.errors = [
                                 {
                                   instancePath: instancePath + "/dst",
@@ -20082,7 +20035,7 @@ function validate83(
                               ];
                               return false;
                             } else {
-                              if (data118 < 0 || isNaN(data118)) {
+                              if (data117 < 0 || isNaN(data117)) {
                                 validate83.errors = [
                                   {
                                     instancePath: instancePath + "/dst",
@@ -20098,15 +20051,15 @@ function validate83(
                             }
                           }
                         }
-                        var valid76 = _errs312 === errors;
+                        var valid76 = _errs310 === errors;
                       } else {
                         var valid76 = true;
                       }
                       if (valid76) {
                         if (data.op !== undefined) {
-                          let data119 = data.op;
-                          const _errs314 = errors;
-                          if (typeof data119 !== "string") {
+                          let data118 = data.op;
+                          const _errs312 = errors;
+                          if (typeof data118 !== "string") {
                             validate83.errors = [
                               {
                                 instancePath: instancePath + "/op",
@@ -20118,7 +20071,7 @@ function validate83(
                             ];
                             return false;
                           }
-                          if ("variant.is" !== data119) {
+                          if ("variant.is" !== data118) {
                             validate83.errors = [
                               {
                                 instancePath: instancePath + "/op",
@@ -20130,20 +20083,20 @@ function validate83(
                             ];
                             return false;
                           }
-                          var valid76 = _errs314 === errors;
+                          var valid76 = _errs312 === errors;
                         } else {
                           var valid76 = true;
                         }
                         if (valid76) {
                           if (data.shape !== undefined) {
-                            let data120 = data.shape;
-                            const _errs316 = errors;
+                            let data119 = data.shape;
+                            const _errs314 = errors;
                             if (
                               !(
-                                typeof data120 == "number" &&
-                                !(data120 % 1) &&
-                                !isNaN(data120) &&
-                                isFinite(data120)
+                                typeof data119 == "number" &&
+                                !(data119 % 1) &&
+                                !isNaN(data119) &&
+                                isFinite(data119)
                               )
                             ) {
                               validate83.errors = [
@@ -20158,12 +20111,12 @@ function validate83(
                               ];
                               return false;
                             }
-                            if (errors === _errs316) {
+                            if (errors === _errs314) {
                               if (
-                                typeof data120 == "number" &&
-                                isFinite(data120)
+                                typeof data119 == "number" &&
+                                isFinite(data119)
                               ) {
-                                if (data120 > 4294967295 || isNaN(data120)) {
+                                if (data119 > 4294967295 || isNaN(data119)) {
                                   validate83.errors = [
                                     {
                                       instancePath: instancePath + "/shape",
@@ -20179,7 +20132,7 @@ function validate83(
                                   ];
                                   return false;
                                 } else {
-                                  if (data120 < 0 || isNaN(data120)) {
+                                  if (data119 < 0 || isNaN(data119)) {
                                     validate83.errors = [
                                       {
                                         instancePath: instancePath + "/shape",
@@ -20195,20 +20148,20 @@ function validate83(
                                 }
                               }
                             }
-                            var valid76 = _errs316 === errors;
+                            var valid76 = _errs314 === errors;
                           } else {
                             var valid76 = true;
                           }
                           if (valid76) {
                             if (data.source !== undefined) {
-                              let data121 = data.source;
-                              const _errs318 = errors;
+                              let data120 = data.source;
+                              const _errs316 = errors;
                               if (
                                 !(
-                                  typeof data121 == "number" &&
-                                  !(data121 % 1) &&
-                                  !isNaN(data121) &&
-                                  isFinite(data121)
+                                  typeof data120 == "number" &&
+                                  !(data120 % 1) &&
+                                  !isNaN(data120) &&
+                                  isFinite(data120)
                                 )
                               ) {
                                 validate83.errors = [
@@ -20223,12 +20176,12 @@ function validate83(
                                 ];
                                 return false;
                               }
-                              if (errors === _errs318) {
+                              if (errors === _errs316) {
                                 if (
-                                  typeof data121 == "number" &&
-                                  isFinite(data121)
+                                  typeof data120 == "number" &&
+                                  isFinite(data120)
                                 ) {
-                                  if (data121 > 4294967295 || isNaN(data121)) {
+                                  if (data120 > 4294967295 || isNaN(data120)) {
                                     validate83.errors = [
                                       {
                                         instancePath: instancePath + "/source",
@@ -20244,7 +20197,7 @@ function validate83(
                                     ];
                                     return false;
                                   } else {
-                                    if (data121 < 0 || isNaN(data121)) {
+                                    if (data120 < 0 || isNaN(data120)) {
                                       validate83.errors = [
                                         {
                                           instancePath:
@@ -20264,20 +20217,20 @@ function validate83(
                                   }
                                 }
                               }
-                              var valid76 = _errs318 === errors;
+                              var valid76 = _errs316 === errors;
                             } else {
                               var valid76 = true;
                             }
                             if (valid76) {
                               if (data.variant !== undefined) {
-                                let data122 = data.variant;
-                                const _errs320 = errors;
+                                let data121 = data.variant;
+                                const _errs318 = errors;
                                 if (
                                   !(
-                                    typeof data122 == "number" &&
-                                    !(data122 % 1) &&
-                                    !isNaN(data122) &&
-                                    isFinite(data122)
+                                    typeof data121 == "number" &&
+                                    !(data121 % 1) &&
+                                    !isNaN(data121) &&
+                                    isFinite(data121)
                                   )
                                 ) {
                                   validate83.errors = [
@@ -20292,14 +20245,14 @@ function validate83(
                                   ];
                                   return false;
                                 }
-                                if (errors === _errs320) {
+                                if (errors === _errs318) {
                                   if (
-                                    typeof data122 == "number" &&
-                                    isFinite(data122)
+                                    typeof data121 == "number" &&
+                                    isFinite(data121)
                                   ) {
                                     if (
-                                      data122 > 4294967295 ||
-                                      isNaN(data122)
+                                      data121 > 4294967295 ||
+                                      isNaN(data121)
                                     ) {
                                       validate83.errors = [
                                         {
@@ -20317,7 +20270,7 @@ function validate83(
                                       ];
                                       return false;
                                     } else {
-                                      if (data122 < 0 || isNaN(data122)) {
+                                      if (data121 < 0 || isNaN(data121)) {
                                         validate83.errors = [
                                           {
                                             instancePath:
@@ -20337,7 +20290,7 @@ function validate83(
                                     }
                                   }
                                 }
-                                var valid76 = _errs320 === errors;
+                                var valid76 = _errs318 === errors;
                               } else {
                                 var valid76 = true;
                               }
@@ -20368,8 +20321,8 @@ function validate83(
                   props1.variant = true;
                 }
               } else if (tag0 === "variant.project_copy") {
-                const _errs322 = errors;
-                if (errors === _errs322) {
+                const _errs320 = errors;
+                if (errors === _errs320) {
                   if (data && typeof data == "object" && !Array.isArray(data)) {
                     let missing33;
                     if (
@@ -20393,14 +20346,14 @@ function validate83(
                       return false;
                     } else {
                       if (data.dst !== undefined) {
-                        let data123 = data.dst;
-                        const _errs324 = errors;
+                        let data122 = data.dst;
+                        const _errs322 = errors;
                         if (
                           !(
-                            typeof data123 == "number" &&
-                            !(data123 % 1) &&
-                            !isNaN(data123) &&
-                            isFinite(data123)
+                            typeof data122 == "number" &&
+                            !(data122 % 1) &&
+                            !isNaN(data122) &&
+                            isFinite(data122)
                           )
                         ) {
                           validate83.errors = [
@@ -20414,9 +20367,9 @@ function validate83(
                           ];
                           return false;
                         }
-                        if (errors === _errs324) {
-                          if (typeof data123 == "number" && isFinite(data123)) {
-                            if (data123 > 4294967295 || isNaN(data123)) {
+                        if (errors === _errs322) {
+                          if (typeof data122 == "number" && isFinite(data122)) {
+                            if (data122 > 4294967295 || isNaN(data122)) {
                               validate83.errors = [
                                 {
                                   instancePath: instancePath + "/dst",
@@ -20432,7 +20385,7 @@ function validate83(
                               ];
                               return false;
                             } else {
-                              if (data123 < 0 || isNaN(data123)) {
+                              if (data122 < 0 || isNaN(data122)) {
                                 validate83.errors = [
                                   {
                                     instancePath: instancePath + "/dst",
@@ -20448,20 +20401,20 @@ function validate83(
                             }
                           }
                         }
-                        var valid78 = _errs324 === errors;
+                        var valid78 = _errs322 === errors;
                       } else {
                         var valid78 = true;
                       }
                       if (valid78) {
                         if (data.field !== undefined) {
-                          let data124 = data.field;
-                          const _errs326 = errors;
+                          let data123 = data.field;
+                          const _errs324 = errors;
                           if (
                             !(
-                              typeof data124 == "number" &&
-                              !(data124 % 1) &&
-                              !isNaN(data124) &&
-                              isFinite(data124)
+                              typeof data123 == "number" &&
+                              !(data123 % 1) &&
+                              !isNaN(data123) &&
+                              isFinite(data123)
                             )
                           ) {
                             validate83.errors = [
@@ -20475,12 +20428,12 @@ function validate83(
                             ];
                             return false;
                           }
-                          if (errors === _errs326) {
+                          if (errors === _errs324) {
                             if (
-                              typeof data124 == "number" &&
-                              isFinite(data124)
+                              typeof data123 == "number" &&
+                              isFinite(data123)
                             ) {
-                              if (data124 > 4294967295 || isNaN(data124)) {
+                              if (data123 > 4294967295 || isNaN(data123)) {
                                 validate83.errors = [
                                   {
                                     instancePath: instancePath + "/field",
@@ -20496,7 +20449,7 @@ function validate83(
                                 ];
                                 return false;
                               } else {
-                                if (data124 < 0 || isNaN(data124)) {
+                                if (data123 < 0 || isNaN(data123)) {
                                   validate83.errors = [
                                     {
                                       instancePath: instancePath + "/field",
@@ -20512,15 +20465,15 @@ function validate83(
                               }
                             }
                           }
-                          var valid78 = _errs326 === errors;
+                          var valid78 = _errs324 === errors;
                         } else {
                           var valid78 = true;
                         }
                         if (valid78) {
                           if (data.op !== undefined) {
-                            let data125 = data.op;
-                            const _errs328 = errors;
-                            if (typeof data125 !== "string") {
+                            let data124 = data.op;
+                            const _errs326 = errors;
+                            if (typeof data124 !== "string") {
                               validate83.errors = [
                                 {
                                   instancePath: instancePath + "/op",
@@ -20532,7 +20485,7 @@ function validate83(
                               ];
                               return false;
                             }
-                            if ("variant.project_copy" !== data125) {
+                            if ("variant.project_copy" !== data124) {
                               validate83.errors = [
                                 {
                                   instancePath: instancePath + "/op",
@@ -20546,20 +20499,20 @@ function validate83(
                               ];
                               return false;
                             }
-                            var valid78 = _errs328 === errors;
+                            var valid78 = _errs326 === errors;
                           } else {
                             var valid78 = true;
                           }
                           if (valid78) {
                             if (data.shape !== undefined) {
-                              let data126 = data.shape;
-                              const _errs330 = errors;
+                              let data125 = data.shape;
+                              const _errs328 = errors;
                               if (
                                 !(
-                                  typeof data126 == "number" &&
-                                  !(data126 % 1) &&
-                                  !isNaN(data126) &&
-                                  isFinite(data126)
+                                  typeof data125 == "number" &&
+                                  !(data125 % 1) &&
+                                  !isNaN(data125) &&
+                                  isFinite(data125)
                                 )
                               ) {
                                 validate83.errors = [
@@ -20574,12 +20527,12 @@ function validate83(
                                 ];
                                 return false;
                               }
-                              if (errors === _errs330) {
+                              if (errors === _errs328) {
                                 if (
-                                  typeof data126 == "number" &&
-                                  isFinite(data126)
+                                  typeof data125 == "number" &&
+                                  isFinite(data125)
                                 ) {
-                                  if (data126 > 4294967295 || isNaN(data126)) {
+                                  if (data125 > 4294967295 || isNaN(data125)) {
                                     validate83.errors = [
                                       {
                                         instancePath: instancePath + "/shape",
@@ -20595,7 +20548,7 @@ function validate83(
                                     ];
                                     return false;
                                   } else {
-                                    if (data126 < 0 || isNaN(data126)) {
+                                    if (data125 < 0 || isNaN(data125)) {
                                       validate83.errors = [
                                         {
                                           instancePath: instancePath + "/shape",
@@ -20614,20 +20567,20 @@ function validate83(
                                   }
                                 }
                               }
-                              var valid78 = _errs330 === errors;
+                              var valid78 = _errs328 === errors;
                             } else {
                               var valid78 = true;
                             }
                             if (valid78) {
                               if (data.source !== undefined) {
-                                let data127 = data.source;
-                                const _errs332 = errors;
+                                let data126 = data.source;
+                                const _errs330 = errors;
                                 if (
                                   !(
-                                    typeof data127 == "number" &&
-                                    !(data127 % 1) &&
-                                    !isNaN(data127) &&
-                                    isFinite(data127)
+                                    typeof data126 == "number" &&
+                                    !(data126 % 1) &&
+                                    !isNaN(data126) &&
+                                    isFinite(data126)
                                   )
                                 ) {
                                   validate83.errors = [
@@ -20642,14 +20595,14 @@ function validate83(
                                   ];
                                   return false;
                                 }
-                                if (errors === _errs332) {
+                                if (errors === _errs330) {
                                   if (
-                                    typeof data127 == "number" &&
-                                    isFinite(data127)
+                                    typeof data126 == "number" &&
+                                    isFinite(data126)
                                   ) {
                                     if (
-                                      data127 > 4294967295 ||
-                                      isNaN(data127)
+                                      data126 > 4294967295 ||
+                                      isNaN(data126)
                                     ) {
                                       validate83.errors = [
                                         {
@@ -20667,7 +20620,7 @@ function validate83(
                                       ];
                                       return false;
                                     } else {
-                                      if (data127 < 0 || isNaN(data127)) {
+                                      if (data126 < 0 || isNaN(data126)) {
                                         validate83.errors = [
                                           {
                                             instancePath:
@@ -20687,20 +20640,20 @@ function validate83(
                                     }
                                   }
                                 }
-                                var valid78 = _errs332 === errors;
+                                var valid78 = _errs330 === errors;
                               } else {
                                 var valid78 = true;
                               }
                               if (valid78) {
                                 if (data.variant !== undefined) {
-                                  let data128 = data.variant;
-                                  const _errs334 = errors;
+                                  let data127 = data.variant;
+                                  const _errs332 = errors;
                                   if (
                                     !(
-                                      typeof data128 == "number" &&
-                                      !(data128 % 1) &&
-                                      !isNaN(data128) &&
-                                      isFinite(data128)
+                                      typeof data127 == "number" &&
+                                      !(data127 % 1) &&
+                                      !isNaN(data127) &&
+                                      isFinite(data127)
                                     )
                                   ) {
                                     validate83.errors = [
@@ -20715,14 +20668,14 @@ function validate83(
                                     ];
                                     return false;
                                   }
-                                  if (errors === _errs334) {
+                                  if (errors === _errs332) {
                                     if (
-                                      typeof data128 == "number" &&
-                                      isFinite(data128)
+                                      typeof data127 == "number" &&
+                                      isFinite(data127)
                                     ) {
                                       if (
-                                        data128 > 4294967295 ||
-                                        isNaN(data128)
+                                        data127 > 4294967295 ||
+                                        isNaN(data127)
                                       ) {
                                         validate83.errors = [
                                           {
@@ -20740,7 +20693,7 @@ function validate83(
                                         ];
                                         return false;
                                       } else {
-                                        if (data128 < 0 || isNaN(data128)) {
+                                        if (data127 < 0 || isNaN(data127)) {
                                           validate83.errors = [
                                             {
                                               instancePath:
@@ -20760,7 +20713,7 @@ function validate83(
                                       }
                                     }
                                   }
-                                  var valid78 = _errs334 === errors;
+                                  var valid78 = _errs332 === errors;
                                 } else {
                                   var valid78 = true;
                                 }
@@ -20793,8 +20746,8 @@ function validate83(
                   props1.variant = true;
                 }
               } else if (tag0 === "variant.project_borrow") {
-                const _errs336 = errors;
-                if (errors === _errs336) {
+                const _errs334 = errors;
+                if (errors === _errs334) {
                   if (data && typeof data == "object" && !Array.isArray(data)) {
                     let missing34;
                     if (
@@ -20818,14 +20771,14 @@ function validate83(
                       return false;
                     } else {
                       if (data.dst !== undefined) {
-                        let data129 = data.dst;
-                        const _errs338 = errors;
+                        let data128 = data.dst;
+                        const _errs336 = errors;
                         if (
                           !(
-                            typeof data129 == "number" &&
-                            !(data129 % 1) &&
-                            !isNaN(data129) &&
-                            isFinite(data129)
+                            typeof data128 == "number" &&
+                            !(data128 % 1) &&
+                            !isNaN(data128) &&
+                            isFinite(data128)
                           )
                         ) {
                           validate83.errors = [
@@ -20839,9 +20792,9 @@ function validate83(
                           ];
                           return false;
                         }
-                        if (errors === _errs338) {
-                          if (typeof data129 == "number" && isFinite(data129)) {
-                            if (data129 > 4294967295 || isNaN(data129)) {
+                        if (errors === _errs336) {
+                          if (typeof data128 == "number" && isFinite(data128)) {
+                            if (data128 > 4294967295 || isNaN(data128)) {
                               validate83.errors = [
                                 {
                                   instancePath: instancePath + "/dst",
@@ -20857,7 +20810,7 @@ function validate83(
                               ];
                               return false;
                             } else {
-                              if (data129 < 0 || isNaN(data129)) {
+                              if (data128 < 0 || isNaN(data128)) {
                                 validate83.errors = [
                                   {
                                     instancePath: instancePath + "/dst",
@@ -20873,20 +20826,20 @@ function validate83(
                             }
                           }
                         }
-                        var valid80 = _errs338 === errors;
+                        var valid80 = _errs336 === errors;
                       } else {
                         var valid80 = true;
                       }
                       if (valid80) {
                         if (data.field !== undefined) {
-                          let data130 = data.field;
-                          const _errs340 = errors;
+                          let data129 = data.field;
+                          const _errs338 = errors;
                           if (
                             !(
-                              typeof data130 == "number" &&
-                              !(data130 % 1) &&
-                              !isNaN(data130) &&
-                              isFinite(data130)
+                              typeof data129 == "number" &&
+                              !(data129 % 1) &&
+                              !isNaN(data129) &&
+                              isFinite(data129)
                             )
                           ) {
                             validate83.errors = [
@@ -20900,12 +20853,12 @@ function validate83(
                             ];
                             return false;
                           }
-                          if (errors === _errs340) {
+                          if (errors === _errs338) {
                             if (
-                              typeof data130 == "number" &&
-                              isFinite(data130)
+                              typeof data129 == "number" &&
+                              isFinite(data129)
                             ) {
-                              if (data130 > 4294967295 || isNaN(data130)) {
+                              if (data129 > 4294967295 || isNaN(data129)) {
                                 validate83.errors = [
                                   {
                                     instancePath: instancePath + "/field",
@@ -20921,7 +20874,7 @@ function validate83(
                                 ];
                                 return false;
                               } else {
-                                if (data130 < 0 || isNaN(data130)) {
+                                if (data129 < 0 || isNaN(data129)) {
                                   validate83.errors = [
                                     {
                                       instancePath: instancePath + "/field",
@@ -20937,15 +20890,15 @@ function validate83(
                               }
                             }
                           }
-                          var valid80 = _errs340 === errors;
+                          var valid80 = _errs338 === errors;
                         } else {
                           var valid80 = true;
                         }
                         if (valid80) {
                           if (data.op !== undefined) {
-                            let data131 = data.op;
-                            const _errs342 = errors;
-                            if (typeof data131 !== "string") {
+                            let data130 = data.op;
+                            const _errs340 = errors;
+                            if (typeof data130 !== "string") {
                               validate83.errors = [
                                 {
                                   instancePath: instancePath + "/op",
@@ -20957,7 +20910,7 @@ function validate83(
                               ];
                               return false;
                             }
-                            if ("variant.project_borrow" !== data131) {
+                            if ("variant.project_borrow" !== data130) {
                               validate83.errors = [
                                 {
                                   instancePath: instancePath + "/op",
@@ -20971,20 +20924,20 @@ function validate83(
                               ];
                               return false;
                             }
-                            var valid80 = _errs342 === errors;
+                            var valid80 = _errs340 === errors;
                           } else {
                             var valid80 = true;
                           }
                           if (valid80) {
                             if (data.shape !== undefined) {
-                              let data132 = data.shape;
-                              const _errs344 = errors;
+                              let data131 = data.shape;
+                              const _errs342 = errors;
                               if (
                                 !(
-                                  typeof data132 == "number" &&
-                                  !(data132 % 1) &&
-                                  !isNaN(data132) &&
-                                  isFinite(data132)
+                                  typeof data131 == "number" &&
+                                  !(data131 % 1) &&
+                                  !isNaN(data131) &&
+                                  isFinite(data131)
                                 )
                               ) {
                                 validate83.errors = [
@@ -20999,12 +20952,12 @@ function validate83(
                                 ];
                                 return false;
                               }
-                              if (errors === _errs344) {
+                              if (errors === _errs342) {
                                 if (
-                                  typeof data132 == "number" &&
-                                  isFinite(data132)
+                                  typeof data131 == "number" &&
+                                  isFinite(data131)
                                 ) {
-                                  if (data132 > 4294967295 || isNaN(data132)) {
+                                  if (data131 > 4294967295 || isNaN(data131)) {
                                     validate83.errors = [
                                       {
                                         instancePath: instancePath + "/shape",
@@ -21020,7 +20973,7 @@ function validate83(
                                     ];
                                     return false;
                                   } else {
-                                    if (data132 < 0 || isNaN(data132)) {
+                                    if (data131 < 0 || isNaN(data131)) {
                                       validate83.errors = [
                                         {
                                           instancePath: instancePath + "/shape",
@@ -21039,20 +20992,20 @@ function validate83(
                                   }
                                 }
                               }
-                              var valid80 = _errs344 === errors;
+                              var valid80 = _errs342 === errors;
                             } else {
                               var valid80 = true;
                             }
                             if (valid80) {
                               if (data.source !== undefined) {
-                                let data133 = data.source;
-                                const _errs346 = errors;
+                                let data132 = data.source;
+                                const _errs344 = errors;
                                 if (
                                   !(
-                                    typeof data133 == "number" &&
-                                    !(data133 % 1) &&
-                                    !isNaN(data133) &&
-                                    isFinite(data133)
+                                    typeof data132 == "number" &&
+                                    !(data132 % 1) &&
+                                    !isNaN(data132) &&
+                                    isFinite(data132)
                                   )
                                 ) {
                                   validate83.errors = [
@@ -21067,14 +21020,14 @@ function validate83(
                                   ];
                                   return false;
                                 }
-                                if (errors === _errs346) {
+                                if (errors === _errs344) {
                                   if (
-                                    typeof data133 == "number" &&
-                                    isFinite(data133)
+                                    typeof data132 == "number" &&
+                                    isFinite(data132)
                                   ) {
                                     if (
-                                      data133 > 4294967295 ||
-                                      isNaN(data133)
+                                      data132 > 4294967295 ||
+                                      isNaN(data132)
                                     ) {
                                       validate83.errors = [
                                         {
@@ -21092,7 +21045,7 @@ function validate83(
                                       ];
                                       return false;
                                     } else {
-                                      if (data133 < 0 || isNaN(data133)) {
+                                      if (data132 < 0 || isNaN(data132)) {
                                         validate83.errors = [
                                           {
                                             instancePath:
@@ -21112,20 +21065,20 @@ function validate83(
                                     }
                                   }
                                 }
-                                var valid80 = _errs346 === errors;
+                                var valid80 = _errs344 === errors;
                               } else {
                                 var valid80 = true;
                               }
                               if (valid80) {
                                 if (data.variant !== undefined) {
-                                  let data134 = data.variant;
-                                  const _errs348 = errors;
+                                  let data133 = data.variant;
+                                  const _errs346 = errors;
                                   if (
                                     !(
-                                      typeof data134 == "number" &&
-                                      !(data134 % 1) &&
-                                      !isNaN(data134) &&
-                                      isFinite(data134)
+                                      typeof data133 == "number" &&
+                                      !(data133 % 1) &&
+                                      !isNaN(data133) &&
+                                      isFinite(data133)
                                     )
                                   ) {
                                     validate83.errors = [
@@ -21140,14 +21093,14 @@ function validate83(
                                     ];
                                     return false;
                                   }
-                                  if (errors === _errs348) {
+                                  if (errors === _errs346) {
                                     if (
-                                      typeof data134 == "number" &&
-                                      isFinite(data134)
+                                      typeof data133 == "number" &&
+                                      isFinite(data133)
                                     ) {
                                       if (
-                                        data134 > 4294967295 ||
-                                        isNaN(data134)
+                                        data133 > 4294967295 ||
+                                        isNaN(data133)
                                       ) {
                                         validate83.errors = [
                                           {
@@ -21165,7 +21118,7 @@ function validate83(
                                         ];
                                         return false;
                                       } else {
-                                        if (data134 < 0 || isNaN(data134)) {
+                                        if (data133 < 0 || isNaN(data133)) {
                                           validate83.errors = [
                                             {
                                               instancePath:
@@ -21185,7 +21138,7 @@ function validate83(
                                       }
                                     }
                                   }
-                                  var valid80 = _errs348 === errors;
+                                  var valid80 = _errs346 === errors;
                                 } else {
                                   var valid80 = true;
                                 }
@@ -21218,8 +21171,8 @@ function validate83(
                   props1.variant = true;
                 }
               } else if (tag0 === "variant.destructure") {
-                const _errs350 = errors;
-                if (errors === _errs350) {
+                const _errs348 = errors;
+                if (errors === _errs348) {
                   if (data && typeof data == "object" && !Array.isArray(data)) {
                     let missing35;
                     if (
@@ -21242,16 +21195,16 @@ function validate83(
                       return false;
                     } else {
                       if (data.dst !== undefined) {
-                        let data135 = data.dst;
-                        const _errs352 = errors;
+                        let data134 = data.dst;
+                        const _errs350 = errors;
                         if (
                           !(
-                            typeof data135 == "number" &&
-                            !(data135 % 1) &&
-                            !isNaN(data135) &&
-                            isFinite(data135)
+                            typeof data134 == "number" &&
+                            !(data134 % 1) &&
+                            !isNaN(data134) &&
+                            isFinite(data134)
                           ) &&
-                          data135 !== null
+                          data134 !== null
                         ) {
                           validate83.errors = [
                             {
@@ -21266,9 +21219,9 @@ function validate83(
                           ];
                           return false;
                         }
-                        if (errors === _errs352) {
-                          if (typeof data135 == "number" && isFinite(data135)) {
-                            if (data135 > 4294967295 || isNaN(data135)) {
+                        if (errors === _errs350) {
+                          if (typeof data134 == "number" && isFinite(data134)) {
+                            if (data134 > 4294967295 || isNaN(data134)) {
                               validate83.errors = [
                                 {
                                   instancePath: instancePath + "/dst",
@@ -21284,7 +21237,7 @@ function validate83(
                               ];
                               return false;
                             } else {
-                              if (data135 < 0 || isNaN(data135)) {
+                              if (data134 < 0 || isNaN(data134)) {
                                 validate83.errors = [
                                   {
                                     instancePath: instancePath + "/dst",
@@ -21300,15 +21253,15 @@ function validate83(
                             }
                           }
                         }
-                        var valid82 = _errs352 === errors;
+                        var valid82 = _errs350 === errors;
                       } else {
                         var valid82 = true;
                       }
                       if (valid82) {
                         if (data.op !== undefined) {
-                          let data136 = data.op;
-                          const _errs354 = errors;
-                          if (typeof data136 !== "string") {
+                          let data135 = data.op;
+                          const _errs352 = errors;
+                          if (typeof data135 !== "string") {
                             validate83.errors = [
                               {
                                 instancePath: instancePath + "/op",
@@ -21320,7 +21273,7 @@ function validate83(
                             ];
                             return false;
                           }
-                          if ("variant.destructure" !== data136) {
+                          if ("variant.destructure" !== data135) {
                             validate83.errors = [
                               {
                                 instancePath: instancePath + "/op",
@@ -21332,27 +21285,27 @@ function validate83(
                             ];
                             return false;
                           }
-                          var valid82 = _errs354 === errors;
+                          var valid82 = _errs352 === errors;
                         } else {
                           var valid82 = true;
                         }
                         if (valid82) {
                           if (data.results !== undefined) {
-                            let data137 = data.results;
-                            const _errs356 = errors;
-                            if (errors === _errs356) {
-                              if (Array.isArray(data137)) {
+                            let data136 = data.results;
+                            const _errs354 = errors;
+                            if (errors === _errs354) {
+                              if (Array.isArray(data136)) {
                                 var valid83 = true;
-                                const len6 = data137.length;
+                                const len6 = data136.length;
                                 for (let i6 = 0; i6 < len6; i6++) {
-                                  let data138 = data137[i6];
-                                  const _errs358 = errors;
+                                  let data137 = data136[i6];
+                                  const _errs356 = errors;
                                   if (
                                     !(
-                                      typeof data138 == "number" &&
-                                      !(data138 % 1) &&
-                                      !isNaN(data138) &&
-                                      isFinite(data138)
+                                      typeof data137 == "number" &&
+                                      !(data137 % 1) &&
+                                      !isNaN(data137) &&
+                                      isFinite(data137)
                                     )
                                   ) {
                                     validate83.errors = [
@@ -21368,14 +21321,14 @@ function validate83(
                                     ];
                                     return false;
                                   }
-                                  if (errors === _errs358) {
+                                  if (errors === _errs356) {
                                     if (
-                                      typeof data138 == "number" &&
-                                      isFinite(data138)
+                                      typeof data137 == "number" &&
+                                      isFinite(data137)
                                     ) {
                                       if (
-                                        data138 > 4294967295 ||
-                                        isNaN(data138)
+                                        data137 > 4294967295 ||
+                                        isNaN(data137)
                                       ) {
                                         validate83.errors = [
                                           {
@@ -21393,7 +21346,7 @@ function validate83(
                                         ];
                                         return false;
                                       } else {
-                                        if (data138 < 0 || isNaN(data138)) {
+                                        if (data137 < 0 || isNaN(data137)) {
                                           validate83.errors = [
                                             {
                                               instancePath:
@@ -21413,7 +21366,7 @@ function validate83(
                                       }
                                     }
                                   }
-                                  var valid83 = _errs358 === errors;
+                                  var valid83 = _errs356 === errors;
                                   if (!valid83) {
                                     break;
                                   }
@@ -21432,20 +21385,20 @@ function validate83(
                                 return false;
                               }
                             }
-                            var valid82 = _errs356 === errors;
+                            var valid82 = _errs354 === errors;
                           } else {
                             var valid82 = true;
                           }
                           if (valid82) {
                             if (data.shape !== undefined) {
-                              let data139 = data.shape;
-                              const _errs360 = errors;
+                              let data138 = data.shape;
+                              const _errs358 = errors;
                               if (
                                 !(
-                                  typeof data139 == "number" &&
-                                  !(data139 % 1) &&
-                                  !isNaN(data139) &&
-                                  isFinite(data139)
+                                  typeof data138 == "number" &&
+                                  !(data138 % 1) &&
+                                  !isNaN(data138) &&
+                                  isFinite(data138)
                                 )
                               ) {
                                 validate83.errors = [
@@ -21460,12 +21413,12 @@ function validate83(
                                 ];
                                 return false;
                               }
-                              if (errors === _errs360) {
+                              if (errors === _errs358) {
                                 if (
-                                  typeof data139 == "number" &&
-                                  isFinite(data139)
+                                  typeof data138 == "number" &&
+                                  isFinite(data138)
                                 ) {
-                                  if (data139 > 4294967295 || isNaN(data139)) {
+                                  if (data138 > 4294967295 || isNaN(data138)) {
                                     validate83.errors = [
                                       {
                                         instancePath: instancePath + "/shape",
@@ -21481,7 +21434,7 @@ function validate83(
                                     ];
                                     return false;
                                   } else {
-                                    if (data139 < 0 || isNaN(data139)) {
+                                    if (data138 < 0 || isNaN(data138)) {
                                       validate83.errors = [
                                         {
                                           instancePath: instancePath + "/shape",
@@ -21500,20 +21453,20 @@ function validate83(
                                   }
                                 }
                               }
-                              var valid82 = _errs360 === errors;
+                              var valid82 = _errs358 === errors;
                             } else {
                               var valid82 = true;
                             }
                             if (valid82) {
                               if (data.source !== undefined) {
-                                let data140 = data.source;
-                                const _errs362 = errors;
+                                let data139 = data.source;
+                                const _errs360 = errors;
                                 if (
                                   !(
-                                    typeof data140 == "number" &&
-                                    !(data140 % 1) &&
-                                    !isNaN(data140) &&
-                                    isFinite(data140)
+                                    typeof data139 == "number" &&
+                                    !(data139 % 1) &&
+                                    !isNaN(data139) &&
+                                    isFinite(data139)
                                   )
                                 ) {
                                   validate83.errors = [
@@ -21528,14 +21481,14 @@ function validate83(
                                   ];
                                   return false;
                                 }
-                                if (errors === _errs362) {
+                                if (errors === _errs360) {
                                   if (
-                                    typeof data140 == "number" &&
-                                    isFinite(data140)
+                                    typeof data139 == "number" &&
+                                    isFinite(data139)
                                   ) {
                                     if (
-                                      data140 > 4294967295 ||
-                                      isNaN(data140)
+                                      data139 > 4294967295 ||
+                                      isNaN(data139)
                                     ) {
                                       validate83.errors = [
                                         {
@@ -21553,7 +21506,7 @@ function validate83(
                                       ];
                                       return false;
                                     } else {
-                                      if (data140 < 0 || isNaN(data140)) {
+                                      if (data139 < 0 || isNaN(data139)) {
                                         validate83.errors = [
                                           {
                                             instancePath:
@@ -21573,20 +21526,20 @@ function validate83(
                                     }
                                   }
                                 }
-                                var valid82 = _errs362 === errors;
+                                var valid82 = _errs360 === errors;
                               } else {
                                 var valid82 = true;
                               }
                               if (valid82) {
                                 if (data.variant !== undefined) {
-                                  let data141 = data.variant;
-                                  const _errs364 = errors;
+                                  let data140 = data.variant;
+                                  const _errs362 = errors;
                                   if (
                                     !(
-                                      typeof data141 == "number" &&
-                                      !(data141 % 1) &&
-                                      !isNaN(data141) &&
-                                      isFinite(data141)
+                                      typeof data140 == "number" &&
+                                      !(data140 % 1) &&
+                                      !isNaN(data140) &&
+                                      isFinite(data140)
                                     )
                                   ) {
                                     validate83.errors = [
@@ -21601,14 +21554,14 @@ function validate83(
                                     ];
                                     return false;
                                   }
-                                  if (errors === _errs364) {
+                                  if (errors === _errs362) {
                                     if (
-                                      typeof data141 == "number" &&
-                                      isFinite(data141)
+                                      typeof data140 == "number" &&
+                                      isFinite(data140)
                                     ) {
                                       if (
-                                        data141 > 4294967295 ||
-                                        isNaN(data141)
+                                        data140 > 4294967295 ||
+                                        isNaN(data140)
                                       ) {
                                         validate83.errors = [
                                           {
@@ -21626,7 +21579,7 @@ function validate83(
                                         ];
                                         return false;
                                       } else {
-                                        if (data141 < 0 || isNaN(data141)) {
+                                        if (data140 < 0 || isNaN(data140)) {
                                           validate83.errors = [
                                             {
                                               instancePath:
@@ -21646,7 +21599,7 @@ function validate83(
                                       }
                                     }
                                   }
-                                  var valid82 = _errs364 === errors;
+                                  var valid82 = _errs362 === errors;
                                 } else {
                                   var valid82 = true;
                                 }
@@ -21679,8 +21632,8 @@ function validate83(
                   props1.variant = true;
                 }
               } else if (tag0 === "unary") {
-                const _errs366 = errors;
-                if (errors === _errs366) {
+                const _errs364 = errors;
+                if (errors === _errs364) {
                   if (data && typeof data == "object" && !Array.isArray(data)) {
                     let missing36;
                     if (
@@ -21704,14 +21657,14 @@ function validate83(
                       return false;
                     } else {
                       if (data.dst !== undefined) {
-                        let data142 = data.dst;
-                        const _errs368 = errors;
+                        let data141 = data.dst;
+                        const _errs366 = errors;
                         if (
                           !(
-                            typeof data142 == "number" &&
-                            !(data142 % 1) &&
-                            !isNaN(data142) &&
-                            isFinite(data142)
+                            typeof data141 == "number" &&
+                            !(data141 % 1) &&
+                            !isNaN(data141) &&
+                            isFinite(data141)
                           )
                         ) {
                           validate83.errors = [
@@ -21725,9 +21678,9 @@ function validate83(
                           ];
                           return false;
                         }
-                        if (errors === _errs368) {
-                          if (typeof data142 == "number" && isFinite(data142)) {
-                            if (data142 > 4294967295 || isNaN(data142)) {
+                        if (errors === _errs366) {
+                          if (typeof data141 == "number" && isFinite(data141)) {
+                            if (data141 > 4294967295 || isNaN(data141)) {
                               validate83.errors = [
                                 {
                                   instancePath: instancePath + "/dst",
@@ -21743,7 +21696,7 @@ function validate83(
                               ];
                               return false;
                             } else {
-                              if (data142 < 0 || isNaN(data142)) {
+                              if (data141 < 0 || isNaN(data141)) {
                                 validate83.errors = [
                                   {
                                     instancePath: instancePath + "/dst",
@@ -21759,15 +21712,15 @@ function validate83(
                             }
                           }
                         }
-                        var valid85 = _errs368 === errors;
+                        var valid85 = _errs366 === errors;
                       } else {
                         var valid85 = true;
                       }
                       if (valid85) {
                         if (data.op !== undefined) {
-                          let data143 = data.op;
-                          const _errs370 = errors;
-                          if (typeof data143 !== "string") {
+                          let data142 = data.op;
+                          const _errs368 = errors;
+                          if (typeof data142 !== "string") {
                             validate83.errors = [
                               {
                                 instancePath: instancePath + "/op",
@@ -21779,7 +21732,7 @@ function validate83(
                             ];
                             return false;
                           }
-                          if ("unary" !== data143) {
+                          if ("unary" !== data142) {
                             validate83.errors = [
                               {
                                 instancePath: instancePath + "/op",
@@ -21791,13 +21744,13 @@ function validate83(
                             ];
                             return false;
                           }
-                          var valid85 = _errs370 === errors;
+                          var valid85 = _errs368 === errors;
                         } else {
                           var valid85 = true;
                         }
                         if (valid85) {
                           if (data.ty !== undefined) {
-                            const _errs372 = errors;
+                            const _errs370 = errors;
                             if (typeof data.ty !== "string") {
                               validate83.errors = [
                                 {
@@ -21810,13 +21763,13 @@ function validate83(
                               ];
                               return false;
                             }
-                            var valid85 = _errs372 === errors;
+                            var valid85 = _errs370 === errors;
                           } else {
                             var valid85 = true;
                           }
                           if (valid85) {
                             if (data.unary_op !== undefined) {
-                              const _errs374 = errors;
+                              const _errs372 = errors;
                               if (typeof data.unary_op !== "string") {
                                 validate83.errors = [
                                   {
@@ -21830,20 +21783,20 @@ function validate83(
                                 ];
                                 return false;
                               }
-                              var valid85 = _errs374 === errors;
+                              var valid85 = _errs372 === errors;
                             } else {
                               var valid85 = true;
                             }
                             if (valid85) {
                               if (data.value !== undefined) {
-                                let data146 = data.value;
-                                const _errs376 = errors;
+                                let data145 = data.value;
+                                const _errs374 = errors;
                                 if (
                                   !(
-                                    typeof data146 == "number" &&
-                                    !(data146 % 1) &&
-                                    !isNaN(data146) &&
-                                    isFinite(data146)
+                                    typeof data145 == "number" &&
+                                    !(data145 % 1) &&
+                                    !isNaN(data145) &&
+                                    isFinite(data145)
                                   )
                                 ) {
                                   validate83.errors = [
@@ -21858,14 +21811,14 @@ function validate83(
                                   ];
                                   return false;
                                 }
-                                if (errors === _errs376) {
+                                if (errors === _errs374) {
                                   if (
-                                    typeof data146 == "number" &&
-                                    isFinite(data146)
+                                    typeof data145 == "number" &&
+                                    isFinite(data145)
                                   ) {
                                     if (
-                                      data146 > 4294967295 ||
-                                      isNaN(data146)
+                                      data145 > 4294967295 ||
+                                      isNaN(data145)
                                     ) {
                                       validate83.errors = [
                                         {
@@ -21882,7 +21835,7 @@ function validate83(
                                       ];
                                       return false;
                                     } else {
-                                      if (data146 < 0 || isNaN(data146)) {
+                                      if (data145 < 0 || isNaN(data145)) {
                                         validate83.errors = [
                                           {
                                             instancePath:
@@ -21902,7 +21855,7 @@ function validate83(
                                     }
                                   }
                                 }
-                                var valid85 = _errs376 === errors;
+                                var valid85 = _errs374 === errors;
                               } else {
                                 var valid85 = true;
                               }
@@ -21933,8 +21886,8 @@ function validate83(
                   props1.value = true;
                 }
               } else if (tag0 === "binary") {
-                const _errs378 = errors;
-                if (errors === _errs378) {
+                const _errs376 = errors;
+                if (errors === _errs376) {
                   if (data && typeof data == "object" && !Array.isArray(data)) {
                     let missing37;
                     if (
@@ -21959,7 +21912,7 @@ function validate83(
                       return false;
                     } else {
                       if (data.binary_op !== undefined) {
-                        const _errs380 = errors;
+                        const _errs378 = errors;
                         if (typeof data.binary_op !== "string") {
                           validate83.errors = [
                             {
@@ -21973,20 +21926,20 @@ function validate83(
                           ];
                           return false;
                         }
-                        var valid87 = _errs380 === errors;
+                        var valid87 = _errs378 === errors;
                       } else {
                         var valid87 = true;
                       }
                       if (valid87) {
                         if (data.dst !== undefined) {
-                          let data148 = data.dst;
-                          const _errs382 = errors;
+                          let data147 = data.dst;
+                          const _errs380 = errors;
                           if (
                             !(
-                              typeof data148 == "number" &&
-                              !(data148 % 1) &&
-                              !isNaN(data148) &&
-                              isFinite(data148)
+                              typeof data147 == "number" &&
+                              !(data147 % 1) &&
+                              !isNaN(data147) &&
+                              isFinite(data147)
                             )
                           ) {
                             validate83.errors = [
@@ -22000,12 +21953,12 @@ function validate83(
                             ];
                             return false;
                           }
-                          if (errors === _errs382) {
+                          if (errors === _errs380) {
                             if (
-                              typeof data148 == "number" &&
-                              isFinite(data148)
+                              typeof data147 == "number" &&
+                              isFinite(data147)
                             ) {
-                              if (data148 > 4294967295 || isNaN(data148)) {
+                              if (data147 > 4294967295 || isNaN(data147)) {
                                 validate83.errors = [
                                   {
                                     instancePath: instancePath + "/dst",
@@ -22021,7 +21974,7 @@ function validate83(
                                 ];
                                 return false;
                               } else {
-                                if (data148 < 0 || isNaN(data148)) {
+                                if (data147 < 0 || isNaN(data147)) {
                                   validate83.errors = [
                                     {
                                       instancePath: instancePath + "/dst",
@@ -22037,20 +21990,20 @@ function validate83(
                               }
                             }
                           }
-                          var valid87 = _errs382 === errors;
+                          var valid87 = _errs380 === errors;
                         } else {
                           var valid87 = true;
                         }
                         if (valid87) {
                           if (data.lhs !== undefined) {
-                            let data149 = data.lhs;
-                            const _errs384 = errors;
+                            let data148 = data.lhs;
+                            const _errs382 = errors;
                             if (
                               !(
-                                typeof data149 == "number" &&
-                                !(data149 % 1) &&
-                                !isNaN(data149) &&
-                                isFinite(data149)
+                                typeof data148 == "number" &&
+                                !(data148 % 1) &&
+                                !isNaN(data148) &&
+                                isFinite(data148)
                               )
                             ) {
                               validate83.errors = [
@@ -22064,12 +22017,12 @@ function validate83(
                               ];
                               return false;
                             }
-                            if (errors === _errs384) {
+                            if (errors === _errs382) {
                               if (
-                                typeof data149 == "number" &&
-                                isFinite(data149)
+                                typeof data148 == "number" &&
+                                isFinite(data148)
                               ) {
-                                if (data149 > 4294967295 || isNaN(data149)) {
+                                if (data148 > 4294967295 || isNaN(data148)) {
                                   validate83.errors = [
                                     {
                                       instancePath: instancePath + "/lhs",
@@ -22085,7 +22038,7 @@ function validate83(
                                   ];
                                   return false;
                                 } else {
-                                  if (data149 < 0 || isNaN(data149)) {
+                                  if (data148 < 0 || isNaN(data148)) {
                                     validate83.errors = [
                                       {
                                         instancePath: instancePath + "/lhs",
@@ -22101,15 +22054,15 @@ function validate83(
                                 }
                               }
                             }
-                            var valid87 = _errs384 === errors;
+                            var valid87 = _errs382 === errors;
                           } else {
                             var valid87 = true;
                           }
                           if (valid87) {
                             if (data.op !== undefined) {
-                              let data150 = data.op;
-                              const _errs386 = errors;
-                              if (typeof data150 !== "string") {
+                              let data149 = data.op;
+                              const _errs384 = errors;
+                              if (typeof data149 !== "string") {
                                 validate83.errors = [
                                   {
                                     instancePath: instancePath + "/op",
@@ -22121,7 +22074,7 @@ function validate83(
                                 ];
                                 return false;
                               }
-                              if ("binary" !== data150) {
+                              if ("binary" !== data149) {
                                 validate83.errors = [
                                   {
                                     instancePath: instancePath + "/op",
@@ -22134,20 +22087,20 @@ function validate83(
                                 ];
                                 return false;
                               }
-                              var valid87 = _errs386 === errors;
+                              var valid87 = _errs384 === errors;
                             } else {
                               var valid87 = true;
                             }
                             if (valid87) {
                               if (data.rhs !== undefined) {
-                                let data151 = data.rhs;
-                                const _errs388 = errors;
+                                let data150 = data.rhs;
+                                const _errs386 = errors;
                                 if (
                                   !(
-                                    typeof data151 == "number" &&
-                                    !(data151 % 1) &&
-                                    !isNaN(data151) &&
-                                    isFinite(data151)
+                                    typeof data150 == "number" &&
+                                    !(data150 % 1) &&
+                                    !isNaN(data150) &&
+                                    isFinite(data150)
                                   )
                                 ) {
                                   validate83.errors = [
@@ -22162,14 +22115,14 @@ function validate83(
                                   ];
                                   return false;
                                 }
-                                if (errors === _errs388) {
+                                if (errors === _errs386) {
                                   if (
-                                    typeof data151 == "number" &&
-                                    isFinite(data151)
+                                    typeof data150 == "number" &&
+                                    isFinite(data150)
                                   ) {
                                     if (
-                                      data151 > 4294967295 ||
-                                      isNaN(data151)
+                                      data150 > 4294967295 ||
+                                      isNaN(data150)
                                     ) {
                                       validate83.errors = [
                                         {
@@ -22186,7 +22139,7 @@ function validate83(
                                       ];
                                       return false;
                                     } else {
-                                      if (data151 < 0 || isNaN(data151)) {
+                                      if (data150 < 0 || isNaN(data150)) {
                                         validate83.errors = [
                                           {
                                             instancePath: instancePath + "/rhs",
@@ -22205,13 +22158,13 @@ function validate83(
                                     }
                                   }
                                 }
-                                var valid87 = _errs388 === errors;
+                                var valid87 = _errs386 === errors;
                               } else {
                                 var valid87 = true;
                               }
                               if (valid87) {
                                 if (data.ty !== undefined) {
-                                  const _errs390 = errors;
+                                  const _errs388 = errors;
                                   if (typeof data.ty !== "string") {
                                     validate83.errors = [
                                       {
@@ -22225,7 +22178,7 @@ function validate83(
                                     ];
                                     return false;
                                   }
-                                  var valid87 = _errs390 === errors;
+                                  var valid87 = _errs388 === errors;
                                 } else {
                                   var valid87 = true;
                                 }
@@ -22258,8 +22211,8 @@ function validate83(
                   props1.ty = true;
                 }
               } else if (tag0 === "cast") {
-                const _errs392 = errors;
-                if (errors === _errs392) {
+                const _errs390 = errors;
+                if (errors === _errs390) {
                   if (data && typeof data == "object" && !Array.isArray(data)) {
                     let missing38;
                     if (
@@ -22282,14 +22235,14 @@ function validate83(
                       return false;
                     } else {
                       if (data.dst !== undefined) {
-                        let data153 = data.dst;
-                        const _errs394 = errors;
+                        let data152 = data.dst;
+                        const _errs392 = errors;
                         if (
                           !(
-                            typeof data153 == "number" &&
-                            !(data153 % 1) &&
-                            !isNaN(data153) &&
-                            isFinite(data153)
+                            typeof data152 == "number" &&
+                            !(data152 % 1) &&
+                            !isNaN(data152) &&
+                            isFinite(data152)
                           )
                         ) {
                           validate83.errors = [
@@ -22303,9 +22256,9 @@ function validate83(
                           ];
                           return false;
                         }
-                        if (errors === _errs394) {
-                          if (typeof data153 == "number" && isFinite(data153)) {
-                            if (data153 > 4294967295 || isNaN(data153)) {
+                        if (errors === _errs392) {
+                          if (typeof data152 == "number" && isFinite(data152)) {
+                            if (data152 > 4294967295 || isNaN(data152)) {
                               validate83.errors = [
                                 {
                                   instancePath: instancePath + "/dst",
@@ -22321,7 +22274,7 @@ function validate83(
                               ];
                               return false;
                             } else {
-                              if (data153 < 0 || isNaN(data153)) {
+                              if (data152 < 0 || isNaN(data152)) {
                                 validate83.errors = [
                                   {
                                     instancePath: instancePath + "/dst",
@@ -22337,13 +22290,13 @@ function validate83(
                             }
                           }
                         }
-                        var valid89 = _errs394 === errors;
+                        var valid89 = _errs392 === errors;
                       } else {
                         var valid89 = true;
                       }
                       if (valid89) {
                         if (data.from !== undefined) {
-                          const _errs396 = errors;
+                          const _errs394 = errors;
                           if (typeof data.from !== "string") {
                             validate83.errors = [
                               {
@@ -22356,15 +22309,15 @@ function validate83(
                             ];
                             return false;
                           }
-                          var valid89 = _errs396 === errors;
+                          var valid89 = _errs394 === errors;
                         } else {
                           var valid89 = true;
                         }
                         if (valid89) {
                           if (data.op !== undefined) {
-                            let data155 = data.op;
-                            const _errs398 = errors;
-                            if (typeof data155 !== "string") {
+                            let data154 = data.op;
+                            const _errs396 = errors;
+                            if (typeof data154 !== "string") {
                               validate83.errors = [
                                 {
                                   instancePath: instancePath + "/op",
@@ -22376,7 +22329,7 @@ function validate83(
                               ];
                               return false;
                             }
-                            if ("cast" !== data155) {
+                            if ("cast" !== data154) {
                               validate83.errors = [
                                 {
                                   instancePath: instancePath + "/op",
@@ -22388,13 +22341,13 @@ function validate83(
                               ];
                               return false;
                             }
-                            var valid89 = _errs398 === errors;
+                            var valid89 = _errs396 === errors;
                           } else {
                             var valid89 = true;
                           }
                           if (valid89) {
                             if (data.to !== undefined) {
-                              const _errs400 = errors;
+                              const _errs398 = errors;
                               if (typeof data.to !== "string") {
                                 validate83.errors = [
                                   {
@@ -22407,20 +22360,20 @@ function validate83(
                                 ];
                                 return false;
                               }
-                              var valid89 = _errs400 === errors;
+                              var valid89 = _errs398 === errors;
                             } else {
                               var valid89 = true;
                             }
                             if (valid89) {
                               if (data.value !== undefined) {
-                                let data157 = data.value;
-                                const _errs402 = errors;
+                                let data156 = data.value;
+                                const _errs400 = errors;
                                 if (
                                   !(
-                                    typeof data157 == "number" &&
-                                    !(data157 % 1) &&
-                                    !isNaN(data157) &&
-                                    isFinite(data157)
+                                    typeof data156 == "number" &&
+                                    !(data156 % 1) &&
+                                    !isNaN(data156) &&
+                                    isFinite(data156)
                                   )
                                 ) {
                                   validate83.errors = [
@@ -22435,14 +22388,14 @@ function validate83(
                                   ];
                                   return false;
                                 }
-                                if (errors === _errs402) {
+                                if (errors === _errs400) {
                                   if (
-                                    typeof data157 == "number" &&
-                                    isFinite(data157)
+                                    typeof data156 == "number" &&
+                                    isFinite(data156)
                                   ) {
                                     if (
-                                      data157 > 4294967295 ||
-                                      isNaN(data157)
+                                      data156 > 4294967295 ||
+                                      isNaN(data156)
                                     ) {
                                       validate83.errors = [
                                         {
@@ -22459,7 +22412,7 @@ function validate83(
                                       ];
                                       return false;
                                     } else {
-                                      if (data157 < 0 || isNaN(data157)) {
+                                      if (data156 < 0 || isNaN(data156)) {
                                         validate83.errors = [
                                           {
                                             instancePath:
@@ -22479,7 +22432,7 @@ function validate83(
                                     }
                                   }
                                 }
-                                var valid89 = _errs402 === errors;
+                                var valid89 = _errs400 === errors;
                               } else {
                                 var valid89 = true;
                               }
@@ -22510,8 +22463,8 @@ function validate83(
                   props1.value = true;
                 }
               } else if (tag0 === "str.eq") {
-                const _errs404 = errors;
-                if (errors === _errs404) {
+                const _errs402 = errors;
+                if (errors === _errs402) {
                   if (data && typeof data == "object" && !Array.isArray(data)) {
                     let missing39;
                     if (
@@ -22533,14 +22486,14 @@ function validate83(
                       return false;
                     } else {
                       if (data.dst !== undefined) {
-                        let data158 = data.dst;
-                        const _errs406 = errors;
+                        let data157 = data.dst;
+                        const _errs404 = errors;
                         if (
                           !(
-                            typeof data158 == "number" &&
-                            !(data158 % 1) &&
-                            !isNaN(data158) &&
-                            isFinite(data158)
+                            typeof data157 == "number" &&
+                            !(data157 % 1) &&
+                            !isNaN(data157) &&
+                            isFinite(data157)
                           )
                         ) {
                           validate83.errors = [
@@ -22554,9 +22507,9 @@ function validate83(
                           ];
                           return false;
                         }
-                        if (errors === _errs406) {
-                          if (typeof data158 == "number" && isFinite(data158)) {
-                            if (data158 > 4294967295 || isNaN(data158)) {
+                        if (errors === _errs404) {
+                          if (typeof data157 == "number" && isFinite(data157)) {
+                            if (data157 > 4294967295 || isNaN(data157)) {
                               validate83.errors = [
                                 {
                                   instancePath: instancePath + "/dst",
@@ -22572,7 +22525,7 @@ function validate83(
                               ];
                               return false;
                             } else {
-                              if (data158 < 0 || isNaN(data158)) {
+                              if (data157 < 0 || isNaN(data157)) {
                                 validate83.errors = [
                                   {
                                     instancePath: instancePath + "/dst",
@@ -22588,20 +22541,20 @@ function validate83(
                             }
                           }
                         }
-                        var valid91 = _errs406 === errors;
+                        var valid91 = _errs404 === errors;
                       } else {
                         var valid91 = true;
                       }
                       if (valid91) {
                         if (data.lhs !== undefined) {
-                          let data159 = data.lhs;
-                          const _errs408 = errors;
+                          let data158 = data.lhs;
+                          const _errs406 = errors;
                           if (
                             !(
-                              typeof data159 == "number" &&
-                              !(data159 % 1) &&
-                              !isNaN(data159) &&
-                              isFinite(data159)
+                              typeof data158 == "number" &&
+                              !(data158 % 1) &&
+                              !isNaN(data158) &&
+                              isFinite(data158)
                             )
                           ) {
                             validate83.errors = [
@@ -22615,12 +22568,12 @@ function validate83(
                             ];
                             return false;
                           }
-                          if (errors === _errs408) {
+                          if (errors === _errs406) {
                             if (
-                              typeof data159 == "number" &&
-                              isFinite(data159)
+                              typeof data158 == "number" &&
+                              isFinite(data158)
                             ) {
-                              if (data159 > 4294967295 || isNaN(data159)) {
+                              if (data158 > 4294967295 || isNaN(data158)) {
                                 validate83.errors = [
                                   {
                                     instancePath: instancePath + "/lhs",
@@ -22636,7 +22589,7 @@ function validate83(
                                 ];
                                 return false;
                               } else {
-                                if (data159 < 0 || isNaN(data159)) {
+                                if (data158 < 0 || isNaN(data158)) {
                                   validate83.errors = [
                                     {
                                       instancePath: instancePath + "/lhs",
@@ -22652,15 +22605,15 @@ function validate83(
                               }
                             }
                           }
-                          var valid91 = _errs408 === errors;
+                          var valid91 = _errs406 === errors;
                         } else {
                           var valid91 = true;
                         }
                         if (valid91) {
                           if (data.op !== undefined) {
-                            let data160 = data.op;
-                            const _errs410 = errors;
-                            if (typeof data160 !== "string") {
+                            let data159 = data.op;
+                            const _errs408 = errors;
+                            if (typeof data159 !== "string") {
                               validate83.errors = [
                                 {
                                   instancePath: instancePath + "/op",
@@ -22672,7 +22625,7 @@ function validate83(
                               ];
                               return false;
                             }
-                            if ("str.eq" !== data160) {
+                            if ("str.eq" !== data159) {
                               validate83.errors = [
                                 {
                                   instancePath: instancePath + "/op",
@@ -22684,20 +22637,20 @@ function validate83(
                               ];
                               return false;
                             }
-                            var valid91 = _errs410 === errors;
+                            var valid91 = _errs408 === errors;
                           } else {
                             var valid91 = true;
                           }
                           if (valid91) {
                             if (data.rhs !== undefined) {
-                              let data161 = data.rhs;
-                              const _errs412 = errors;
+                              let data160 = data.rhs;
+                              const _errs410 = errors;
                               if (
                                 !(
-                                  typeof data161 == "number" &&
-                                  !(data161 % 1) &&
-                                  !isNaN(data161) &&
-                                  isFinite(data161)
+                                  typeof data160 == "number" &&
+                                  !(data160 % 1) &&
+                                  !isNaN(data160) &&
+                                  isFinite(data160)
                                 )
                               ) {
                                 validate83.errors = [
@@ -22712,12 +22665,12 @@ function validate83(
                                 ];
                                 return false;
                               }
-                              if (errors === _errs412) {
+                              if (errors === _errs410) {
                                 if (
-                                  typeof data161 == "number" &&
-                                  isFinite(data161)
+                                  typeof data160 == "number" &&
+                                  isFinite(data160)
                                 ) {
-                                  if (data161 > 4294967295 || isNaN(data161)) {
+                                  if (data160 > 4294967295 || isNaN(data160)) {
                                     validate83.errors = [
                                       {
                                         instancePath: instancePath + "/rhs",
@@ -22733,7 +22686,7 @@ function validate83(
                                     ];
                                     return false;
                                   } else {
-                                    if (data161 < 0 || isNaN(data161)) {
+                                    if (data160 < 0 || isNaN(data160)) {
                                       validate83.errors = [
                                         {
                                           instancePath: instancePath + "/rhs",
@@ -22752,7 +22705,7 @@ function validate83(
                                   }
                                 }
                               }
-                              var valid91 = _errs412 === errors;
+                              var valid91 = _errs410 === errors;
                             } else {
                               var valid91 = true;
                             }
@@ -22781,8 +22734,8 @@ function validate83(
                   props1.rhs = true;
                 }
               } else if (tag0 === "bytes.eq") {
-                const _errs414 = errors;
-                if (errors === _errs414) {
+                const _errs412 = errors;
+                if (errors === _errs412) {
                   if (data && typeof data == "object" && !Array.isArray(data)) {
                     let missing40;
                     if (
@@ -22804,14 +22757,14 @@ function validate83(
                       return false;
                     } else {
                       if (data.dst !== undefined) {
-                        let data162 = data.dst;
-                        const _errs416 = errors;
+                        let data161 = data.dst;
+                        const _errs414 = errors;
                         if (
                           !(
-                            typeof data162 == "number" &&
-                            !(data162 % 1) &&
-                            !isNaN(data162) &&
-                            isFinite(data162)
+                            typeof data161 == "number" &&
+                            !(data161 % 1) &&
+                            !isNaN(data161) &&
+                            isFinite(data161)
                           )
                         ) {
                           validate83.errors = [
@@ -22825,9 +22778,9 @@ function validate83(
                           ];
                           return false;
                         }
-                        if (errors === _errs416) {
-                          if (typeof data162 == "number" && isFinite(data162)) {
-                            if (data162 > 4294967295 || isNaN(data162)) {
+                        if (errors === _errs414) {
+                          if (typeof data161 == "number" && isFinite(data161)) {
+                            if (data161 > 4294967295 || isNaN(data161)) {
                               validate83.errors = [
                                 {
                                   instancePath: instancePath + "/dst",
@@ -22843,7 +22796,7 @@ function validate83(
                               ];
                               return false;
                             } else {
-                              if (data162 < 0 || isNaN(data162)) {
+                              if (data161 < 0 || isNaN(data161)) {
                                 validate83.errors = [
                                   {
                                     instancePath: instancePath + "/dst",
@@ -22859,20 +22812,20 @@ function validate83(
                             }
                           }
                         }
-                        var valid93 = _errs416 === errors;
+                        var valid93 = _errs414 === errors;
                       } else {
                         var valid93 = true;
                       }
                       if (valid93) {
                         if (data.lhs !== undefined) {
-                          let data163 = data.lhs;
-                          const _errs418 = errors;
+                          let data162 = data.lhs;
+                          const _errs416 = errors;
                           if (
                             !(
-                              typeof data163 == "number" &&
-                              !(data163 % 1) &&
-                              !isNaN(data163) &&
-                              isFinite(data163)
+                              typeof data162 == "number" &&
+                              !(data162 % 1) &&
+                              !isNaN(data162) &&
+                              isFinite(data162)
                             )
                           ) {
                             validate83.errors = [
@@ -22886,12 +22839,12 @@ function validate83(
                             ];
                             return false;
                           }
-                          if (errors === _errs418) {
+                          if (errors === _errs416) {
                             if (
-                              typeof data163 == "number" &&
-                              isFinite(data163)
+                              typeof data162 == "number" &&
+                              isFinite(data162)
                             ) {
-                              if (data163 > 4294967295 || isNaN(data163)) {
+                              if (data162 > 4294967295 || isNaN(data162)) {
                                 validate83.errors = [
                                   {
                                     instancePath: instancePath + "/lhs",
@@ -22907,7 +22860,7 @@ function validate83(
                                 ];
                                 return false;
                               } else {
-                                if (data163 < 0 || isNaN(data163)) {
+                                if (data162 < 0 || isNaN(data162)) {
                                   validate83.errors = [
                                     {
                                       instancePath: instancePath + "/lhs",
@@ -22923,15 +22876,15 @@ function validate83(
                               }
                             }
                           }
-                          var valid93 = _errs418 === errors;
+                          var valid93 = _errs416 === errors;
                         } else {
                           var valid93 = true;
                         }
                         if (valid93) {
                           if (data.op !== undefined) {
-                            let data164 = data.op;
-                            const _errs420 = errors;
-                            if (typeof data164 !== "string") {
+                            let data163 = data.op;
+                            const _errs418 = errors;
+                            if (typeof data163 !== "string") {
                               validate83.errors = [
                                 {
                                   instancePath: instancePath + "/op",
@@ -22943,7 +22896,7 @@ function validate83(
                               ];
                               return false;
                             }
-                            if ("bytes.eq" !== data164) {
+                            if ("bytes.eq" !== data163) {
                               validate83.errors = [
                                 {
                                   instancePath: instancePath + "/op",
@@ -22955,20 +22908,20 @@ function validate83(
                               ];
                               return false;
                             }
-                            var valid93 = _errs420 === errors;
+                            var valid93 = _errs418 === errors;
                           } else {
                             var valid93 = true;
                           }
                           if (valid93) {
                             if (data.rhs !== undefined) {
-                              let data165 = data.rhs;
-                              const _errs422 = errors;
+                              let data164 = data.rhs;
+                              const _errs420 = errors;
                               if (
                                 !(
-                                  typeof data165 == "number" &&
-                                  !(data165 % 1) &&
-                                  !isNaN(data165) &&
-                                  isFinite(data165)
+                                  typeof data164 == "number" &&
+                                  !(data164 % 1) &&
+                                  !isNaN(data164) &&
+                                  isFinite(data164)
                                 )
                               ) {
                                 validate83.errors = [
@@ -22983,12 +22936,12 @@ function validate83(
                                 ];
                                 return false;
                               }
-                              if (errors === _errs422) {
+                              if (errors === _errs420) {
                                 if (
-                                  typeof data165 == "number" &&
-                                  isFinite(data165)
+                                  typeof data164 == "number" &&
+                                  isFinite(data164)
                                 ) {
-                                  if (data165 > 4294967295 || isNaN(data165)) {
+                                  if (data164 > 4294967295 || isNaN(data164)) {
                                     validate83.errors = [
                                       {
                                         instancePath: instancePath + "/rhs",
@@ -23004,7 +22957,7 @@ function validate83(
                                     ];
                                     return false;
                                   } else {
-                                    if (data165 < 0 || isNaN(data165)) {
+                                    if (data164 < 0 || isNaN(data164)) {
                                       validate83.errors = [
                                         {
                                           instancePath: instancePath + "/rhs",
@@ -23023,7 +22976,7 @@ function validate83(
                                   }
                                 }
                               }
-                              var valid93 = _errs422 === errors;
+                              var valid93 = _errs420 === errors;
                             } else {
                               var valid93 = true;
                             }
@@ -23052,8 +23005,8 @@ function validate83(
                   props1.rhs = true;
                 }
               } else if (tag0 === "function.make") {
-                const _errs424 = errors;
-                if (errors === _errs424) {
+                const _errs422 = errors;
+                if (errors === _errs422) {
                   if (data && typeof data == "object" && !Array.isArray(data)) {
                     let missing41;
                     if (
@@ -23074,14 +23027,14 @@ function validate83(
                       return false;
                     } else {
                       if (data.callable !== undefined) {
-                        let data166 = data.callable;
-                        const _errs426 = errors;
+                        let data165 = data.callable;
+                        const _errs424 = errors;
                         if (
                           !(
-                            typeof data166 == "number" &&
-                            !(data166 % 1) &&
-                            !isNaN(data166) &&
-                            isFinite(data166)
+                            typeof data165 == "number" &&
+                            !(data165 % 1) &&
+                            !isNaN(data165) &&
+                            isFinite(data165)
                           )
                         ) {
                           validate83.errors = [
@@ -23095,9 +23048,9 @@ function validate83(
                           ];
                           return false;
                         }
-                        if (errors === _errs426) {
-                          if (typeof data166 == "number" && isFinite(data166)) {
-                            if (data166 > 4294967295 || isNaN(data166)) {
+                        if (errors === _errs424) {
+                          if (typeof data165 == "number" && isFinite(data165)) {
+                            if (data165 > 4294967295 || isNaN(data165)) {
                               validate83.errors = [
                                 {
                                   instancePath: instancePath + "/callable",
@@ -23113,7 +23066,7 @@ function validate83(
                               ];
                               return false;
                             } else {
-                              if (data166 < 0 || isNaN(data166)) {
+                              if (data165 < 0 || isNaN(data165)) {
                                 validate83.errors = [
                                   {
                                     instancePath: instancePath + "/callable",
@@ -23129,20 +23082,20 @@ function validate83(
                             }
                           }
                         }
-                        var valid95 = _errs426 === errors;
+                        var valid95 = _errs424 === errors;
                       } else {
                         var valid95 = true;
                       }
                       if (valid95) {
                         if (data.dst !== undefined) {
-                          let data167 = data.dst;
-                          const _errs428 = errors;
+                          let data166 = data.dst;
+                          const _errs426 = errors;
                           if (
                             !(
-                              typeof data167 == "number" &&
-                              !(data167 % 1) &&
-                              !isNaN(data167) &&
-                              isFinite(data167)
+                              typeof data166 == "number" &&
+                              !(data166 % 1) &&
+                              !isNaN(data166) &&
+                              isFinite(data166)
                             )
                           ) {
                             validate83.errors = [
@@ -23156,12 +23109,12 @@ function validate83(
                             ];
                             return false;
                           }
-                          if (errors === _errs428) {
+                          if (errors === _errs426) {
                             if (
-                              typeof data167 == "number" &&
-                              isFinite(data167)
+                              typeof data166 == "number" &&
+                              isFinite(data166)
                             ) {
-                              if (data167 > 4294967295 || isNaN(data167)) {
+                              if (data166 > 4294967295 || isNaN(data166)) {
                                 validate83.errors = [
                                   {
                                     instancePath: instancePath + "/dst",
@@ -23177,7 +23130,7 @@ function validate83(
                                 ];
                                 return false;
                               } else {
-                                if (data167 < 0 || isNaN(data167)) {
+                                if (data166 < 0 || isNaN(data166)) {
                                   validate83.errors = [
                                     {
                                       instancePath: instancePath + "/dst",
@@ -23193,15 +23146,15 @@ function validate83(
                               }
                             }
                           }
-                          var valid95 = _errs428 === errors;
+                          var valid95 = _errs426 === errors;
                         } else {
                           var valid95 = true;
                         }
                         if (valid95) {
                           if (data.op !== undefined) {
-                            let data168 = data.op;
-                            const _errs430 = errors;
-                            if (typeof data168 !== "string") {
+                            let data167 = data.op;
+                            const _errs428 = errors;
+                            if (typeof data167 !== "string") {
                               validate83.errors = [
                                 {
                                   instancePath: instancePath + "/op",
@@ -23213,7 +23166,7 @@ function validate83(
                               ];
                               return false;
                             }
-                            if ("function.make" !== data168) {
+                            if ("function.make" !== data167) {
                               validate83.errors = [
                                 {
                                   instancePath: instancePath + "/op",
@@ -23225,7 +23178,7 @@ function validate83(
                               ];
                               return false;
                             }
-                            var valid95 = _errs430 === errors;
+                            var valid95 = _errs428 === errors;
                           } else {
                             var valid95 = true;
                           }
@@ -23252,8 +23205,8 @@ function validate83(
                   props1.op = true;
                 }
               } else if (tag0 === "closure.make") {
-                const _errs432 = errors;
-                if (errors === _errs432) {
+                const _errs430 = errors;
+                if (errors === _errs430) {
                   if (data && typeof data == "object" && !Array.isArray(data)) {
                     let missing42;
                     if (
@@ -23275,14 +23228,14 @@ function validate83(
                       return false;
                     } else {
                       if (data.closure !== undefined) {
-                        let data169 = data.closure;
-                        const _errs434 = errors;
+                        let data168 = data.closure;
+                        const _errs432 = errors;
                         if (
                           !(
-                            typeof data169 == "number" &&
-                            !(data169 % 1) &&
-                            !isNaN(data169) &&
-                            isFinite(data169)
+                            typeof data168 == "number" &&
+                            !(data168 % 1) &&
+                            !isNaN(data168) &&
+                            isFinite(data168)
                           )
                         ) {
                           validate83.errors = [
@@ -23296,9 +23249,9 @@ function validate83(
                           ];
                           return false;
                         }
-                        if (errors === _errs434) {
-                          if (typeof data169 == "number" && isFinite(data169)) {
-                            if (data169 > 4294967295 || isNaN(data169)) {
+                        if (errors === _errs432) {
+                          if (typeof data168 == "number" && isFinite(data168)) {
+                            if (data168 > 4294967295 || isNaN(data168)) {
                               validate83.errors = [
                                 {
                                   instancePath: instancePath + "/closure",
@@ -23314,7 +23267,7 @@ function validate83(
                               ];
                               return false;
                             } else {
-                              if (data169 < 0 || isNaN(data169)) {
+                              if (data168 < 0 || isNaN(data168)) {
                                 validate83.errors = [
                                   {
                                     instancePath: instancePath + "/closure",
@@ -23330,20 +23283,20 @@ function validate83(
                             }
                           }
                         }
-                        var valid97 = _errs434 === errors;
+                        var valid97 = _errs432 === errors;
                       } else {
                         var valid97 = true;
                       }
                       if (valid97) {
                         if (data.dst !== undefined) {
-                          let data170 = data.dst;
-                          const _errs436 = errors;
+                          let data169 = data.dst;
+                          const _errs434 = errors;
                           if (
                             !(
-                              typeof data170 == "number" &&
-                              !(data170 % 1) &&
-                              !isNaN(data170) &&
-                              isFinite(data170)
+                              typeof data169 == "number" &&
+                              !(data169 % 1) &&
+                              !isNaN(data169) &&
+                              isFinite(data169)
                             )
                           ) {
                             validate83.errors = [
@@ -23357,12 +23310,12 @@ function validate83(
                             ];
                             return false;
                           }
-                          if (errors === _errs436) {
+                          if (errors === _errs434) {
                             if (
-                              typeof data170 == "number" &&
-                              isFinite(data170)
+                              typeof data169 == "number" &&
+                              isFinite(data169)
                             ) {
-                              if (data170 > 4294967295 || isNaN(data170)) {
+                              if (data169 > 4294967295 || isNaN(data169)) {
                                 validate83.errors = [
                                   {
                                     instancePath: instancePath + "/dst",
@@ -23378,7 +23331,7 @@ function validate83(
                                 ];
                                 return false;
                               } else {
-                                if (data170 < 0 || isNaN(data170)) {
+                                if (data169 < 0 || isNaN(data169)) {
                                   validate83.errors = [
                                     {
                                       instancePath: instancePath + "/dst",
@@ -23394,27 +23347,27 @@ function validate83(
                               }
                             }
                           }
-                          var valid97 = _errs436 === errors;
+                          var valid97 = _errs434 === errors;
                         } else {
                           var valid97 = true;
                         }
                         if (valid97) {
                           if (data.fields !== undefined) {
-                            let data171 = data.fields;
-                            const _errs438 = errors;
-                            if (errors === _errs438) {
-                              if (Array.isArray(data171)) {
+                            let data170 = data.fields;
+                            const _errs436 = errors;
+                            if (errors === _errs436) {
+                              if (Array.isArray(data170)) {
                                 var valid98 = true;
-                                const len7 = data171.length;
+                                const len7 = data170.length;
                                 for (let i7 = 0; i7 < len7; i7++) {
-                                  let data172 = data171[i7];
-                                  const _errs440 = errors;
+                                  let data171 = data170[i7];
+                                  const _errs438 = errors;
                                   if (
                                     !(
-                                      typeof data172 == "number" &&
-                                      !(data172 % 1) &&
-                                      !isNaN(data172) &&
-                                      isFinite(data172)
+                                      typeof data171 == "number" &&
+                                      !(data171 % 1) &&
+                                      !isNaN(data171) &&
+                                      isFinite(data171)
                                     )
                                   ) {
                                     validate83.errors = [
@@ -23430,14 +23383,14 @@ function validate83(
                                     ];
                                     return false;
                                   }
-                                  if (errors === _errs440) {
+                                  if (errors === _errs438) {
                                     if (
-                                      typeof data172 == "number" &&
-                                      isFinite(data172)
+                                      typeof data171 == "number" &&
+                                      isFinite(data171)
                                     ) {
                                       if (
-                                        data172 > 4294967295 ||
-                                        isNaN(data172)
+                                        data171 > 4294967295 ||
+                                        isNaN(data171)
                                       ) {
                                         validate83.errors = [
                                           {
@@ -23455,7 +23408,7 @@ function validate83(
                                         ];
                                         return false;
                                       } else {
-                                        if (data172 < 0 || isNaN(data172)) {
+                                        if (data171 < 0 || isNaN(data171)) {
                                           validate83.errors = [
                                             {
                                               instancePath:
@@ -23475,7 +23428,7 @@ function validate83(
                                       }
                                     }
                                   }
-                                  var valid98 = _errs440 === errors;
+                                  var valid98 = _errs438 === errors;
                                   if (!valid98) {
                                     break;
                                   }
@@ -23494,15 +23447,15 @@ function validate83(
                                 return false;
                               }
                             }
-                            var valid97 = _errs438 === errors;
+                            var valid97 = _errs436 === errors;
                           } else {
                             var valid97 = true;
                           }
                           if (valid97) {
                             if (data.op !== undefined) {
-                              let data173 = data.op;
-                              const _errs442 = errors;
-                              if (typeof data173 !== "string") {
+                              let data172 = data.op;
+                              const _errs440 = errors;
+                              if (typeof data172 !== "string") {
                                 validate83.errors = [
                                   {
                                     instancePath: instancePath + "/op",
@@ -23514,7 +23467,7 @@ function validate83(
                                 ];
                                 return false;
                               }
-                              if ("closure.make" !== data173) {
+                              if ("closure.make" !== data172) {
                                 validate83.errors = [
                                   {
                                     instancePath: instancePath + "/op",
@@ -23527,7 +23480,7 @@ function validate83(
                                 ];
                                 return false;
                               }
-                              var valid97 = _errs442 === errors;
+                              var valid97 = _errs440 === errors;
                             } else {
                               var valid97 = true;
                             }
@@ -23556,8 +23509,8 @@ function validate83(
                   props1.op = true;
                 }
               } else if (tag0 === "callable.coerce") {
-                const _errs444 = errors;
-                if (errors === _errs444) {
+                const _errs442 = errors;
+                if (errors === _errs442) {
                   if (data && typeof data == "object" && !Array.isArray(data)) {
                     let missing43;
                     if (
@@ -23578,14 +23531,14 @@ function validate83(
                       return false;
                     } else {
                       if (data.dst !== undefined) {
-                        let data174 = data.dst;
-                        const _errs446 = errors;
+                        let data173 = data.dst;
+                        const _errs444 = errors;
                         if (
                           !(
-                            typeof data174 == "number" &&
-                            !(data174 % 1) &&
-                            !isNaN(data174) &&
-                            isFinite(data174)
+                            typeof data173 == "number" &&
+                            !(data173 % 1) &&
+                            !isNaN(data173) &&
+                            isFinite(data173)
                           )
                         ) {
                           validate83.errors = [
@@ -23599,9 +23552,9 @@ function validate83(
                           ];
                           return false;
                         }
-                        if (errors === _errs446) {
-                          if (typeof data174 == "number" && isFinite(data174)) {
-                            if (data174 > 4294967295 || isNaN(data174)) {
+                        if (errors === _errs444) {
+                          if (typeof data173 == "number" && isFinite(data173)) {
+                            if (data173 > 4294967295 || isNaN(data173)) {
                               validate83.errors = [
                                 {
                                   instancePath: instancePath + "/dst",
@@ -23617,7 +23570,7 @@ function validate83(
                               ];
                               return false;
                             } else {
-                              if (data174 < 0 || isNaN(data174)) {
+                              if (data173 < 0 || isNaN(data173)) {
                                 validate83.errors = [
                                   {
                                     instancePath: instancePath + "/dst",
@@ -23633,15 +23586,15 @@ function validate83(
                             }
                           }
                         }
-                        var valid100 = _errs446 === errors;
+                        var valid100 = _errs444 === errors;
                       } else {
                         var valid100 = true;
                       }
                       if (valid100) {
                         if (data.op !== undefined) {
-                          let data175 = data.op;
-                          const _errs448 = errors;
-                          if (typeof data175 !== "string") {
+                          let data174 = data.op;
+                          const _errs446 = errors;
+                          if (typeof data174 !== "string") {
                             validate83.errors = [
                               {
                                 instancePath: instancePath + "/op",
@@ -23653,7 +23606,7 @@ function validate83(
                             ];
                             return false;
                           }
-                          if ("callable.coerce" !== data175) {
+                          if ("callable.coerce" !== data174) {
                             validate83.errors = [
                               {
                                 instancePath: instancePath + "/op",
@@ -23665,20 +23618,20 @@ function validate83(
                             ];
                             return false;
                           }
-                          var valid100 = _errs448 === errors;
+                          var valid100 = _errs446 === errors;
                         } else {
                           var valid100 = true;
                         }
                         if (valid100) {
                           if (data.source !== undefined) {
-                            let data176 = data.source;
-                            const _errs450 = errors;
+                            let data175 = data.source;
+                            const _errs448 = errors;
                             if (
                               !(
-                                typeof data176 == "number" &&
-                                !(data176 % 1) &&
-                                !isNaN(data176) &&
-                                isFinite(data176)
+                                typeof data175 == "number" &&
+                                !(data175 % 1) &&
+                                !isNaN(data175) &&
+                                isFinite(data175)
                               )
                             ) {
                               validate83.errors = [
@@ -23693,12 +23646,12 @@ function validate83(
                               ];
                               return false;
                             }
-                            if (errors === _errs450) {
+                            if (errors === _errs448) {
                               if (
-                                typeof data176 == "number" &&
-                                isFinite(data176)
+                                typeof data175 == "number" &&
+                                isFinite(data175)
                               ) {
-                                if (data176 > 4294967295 || isNaN(data176)) {
+                                if (data175 > 4294967295 || isNaN(data175)) {
                                   validate83.errors = [
                                     {
                                       instancePath: instancePath + "/source",
@@ -23714,7 +23667,7 @@ function validate83(
                                   ];
                                   return false;
                                 } else {
-                                  if (data176 < 0 || isNaN(data176)) {
+                                  if (data175 < 0 || isNaN(data175)) {
                                     validate83.errors = [
                                       {
                                         instancePath: instancePath + "/source",
@@ -23730,22 +23683,22 @@ function validate83(
                                 }
                               }
                             }
-                            var valid100 = _errs450 === errors;
+                            var valid100 = _errs448 === errors;
                           } else {
                             var valid100 = true;
                           }
                           if (valid100) {
                             if (data.specialization !== undefined) {
-                              let data177 = data.specialization;
-                              const _errs452 = errors;
+                              let data176 = data.specialization;
+                              const _errs450 = errors;
                               if (
                                 !(
-                                  typeof data177 == "number" &&
-                                  !(data177 % 1) &&
-                                  !isNaN(data177) &&
-                                  isFinite(data177)
+                                  typeof data176 == "number" &&
+                                  !(data176 % 1) &&
+                                  !isNaN(data176) &&
+                                  isFinite(data176)
                                 ) &&
-                                data177 !== null
+                                data176 !== null
                               ) {
                                 validate83.errors = [
                                   {
@@ -23763,12 +23716,12 @@ function validate83(
                                 ];
                                 return false;
                               }
-                              if (errors === _errs452) {
+                              if (errors === _errs450) {
                                 if (
-                                  typeof data177 == "number" &&
-                                  isFinite(data177)
+                                  typeof data176 == "number" &&
+                                  isFinite(data176)
                                 ) {
-                                  if (data177 > 4294967295 || isNaN(data177)) {
+                                  if (data176 > 4294967295 || isNaN(data176)) {
                                     validate83.errors = [
                                       {
                                         instancePath:
@@ -23785,7 +23738,7 @@ function validate83(
                                     ];
                                     return false;
                                   } else {
-                                    if (data177 < 0 || isNaN(data177)) {
+                                    if (data176 < 0 || isNaN(data176)) {
                                       validate83.errors = [
                                         {
                                           instancePath:
@@ -23805,7 +23758,7 @@ function validate83(
                                   }
                                 }
                               }
-                              var valid100 = _errs452 === errors;
+                              var valid100 = _errs450 === errors;
                             } else {
                               var valid100 = true;
                             }
@@ -23834,8 +23787,8 @@ function validate83(
                   props1.specialization = true;
                 }
               } else if (tag0 === "dyn.make") {
-                const _errs454 = errors;
-                if (errors === _errs454) {
+                const _errs452 = errors;
+                if (errors === _errs452) {
                   if (data && typeof data == "object" && !Array.isArray(data)) {
                     let missing44;
                     if (
@@ -23857,14 +23810,14 @@ function validate83(
                       return false;
                     } else {
                       if (data.dst !== undefined) {
-                        let data178 = data.dst;
-                        const _errs456 = errors;
+                        let data177 = data.dst;
+                        const _errs454 = errors;
                         if (
                           !(
-                            typeof data178 == "number" &&
-                            !(data178 % 1) &&
-                            !isNaN(data178) &&
-                            isFinite(data178)
+                            typeof data177 == "number" &&
+                            !(data177 % 1) &&
+                            !isNaN(data177) &&
+                            isFinite(data177)
                           )
                         ) {
                           validate83.errors = [
@@ -23878,9 +23831,9 @@ function validate83(
                           ];
                           return false;
                         }
-                        if (errors === _errs456) {
-                          if (typeof data178 == "number" && isFinite(data178)) {
-                            if (data178 > 4294967295 || isNaN(data178)) {
+                        if (errors === _errs454) {
+                          if (typeof data177 == "number" && isFinite(data177)) {
+                            if (data177 > 4294967295 || isNaN(data177)) {
                               validate83.errors = [
                                 {
                                   instancePath: instancePath + "/dst",
@@ -23896,7 +23849,7 @@ function validate83(
                               ];
                               return false;
                             } else {
-                              if (data178 < 0 || isNaN(data178)) {
+                              if (data177 < 0 || isNaN(data177)) {
                                 validate83.errors = [
                                   {
                                     instancePath: instancePath + "/dst",
@@ -23912,15 +23865,15 @@ function validate83(
                             }
                           }
                         }
-                        var valid102 = _errs456 === errors;
+                        var valid102 = _errs454 === errors;
                       } else {
                         var valid102 = true;
                       }
                       if (valid102) {
                         if (data.op !== undefined) {
-                          let data179 = data.op;
-                          const _errs458 = errors;
-                          if (typeof data179 !== "string") {
+                          let data178 = data.op;
+                          const _errs456 = errors;
+                          if (typeof data178 !== "string") {
                             validate83.errors = [
                               {
                                 instancePath: instancePath + "/op",
@@ -23932,7 +23885,7 @@ function validate83(
                             ];
                             return false;
                           }
-                          if ("dyn.make" !== data179) {
+                          if ("dyn.make" !== data178) {
                             validate83.errors = [
                               {
                                 instancePath: instancePath + "/op",
@@ -23944,20 +23897,20 @@ function validate83(
                             ];
                             return false;
                           }
-                          var valid102 = _errs458 === errors;
+                          var valid102 = _errs456 === errors;
                         } else {
                           var valid102 = true;
                         }
                         if (valid102) {
                           if (data.value !== undefined) {
-                            let data180 = data.value;
-                            const _errs460 = errors;
+                            let data179 = data.value;
+                            const _errs458 = errors;
                             if (
                               !(
-                                typeof data180 == "number" &&
-                                !(data180 % 1) &&
-                                !isNaN(data180) &&
-                                isFinite(data180)
+                                typeof data179 == "number" &&
+                                !(data179 % 1) &&
+                                !isNaN(data179) &&
+                                isFinite(data179)
                               )
                             ) {
                               validate83.errors = [
@@ -23972,12 +23925,12 @@ function validate83(
                               ];
                               return false;
                             }
-                            if (errors === _errs460) {
+                            if (errors === _errs458) {
                               if (
-                                typeof data180 == "number" &&
-                                isFinite(data180)
+                                typeof data179 == "number" &&
+                                isFinite(data179)
                               ) {
-                                if (data180 > 4294967295 || isNaN(data180)) {
+                                if (data179 > 4294967295 || isNaN(data179)) {
                                   validate83.errors = [
                                     {
                                       instancePath: instancePath + "/value",
@@ -23993,7 +23946,7 @@ function validate83(
                                   ];
                                   return false;
                                 } else {
-                                  if (data180 < 0 || isNaN(data180)) {
+                                  if (data179 < 0 || isNaN(data179)) {
                                     validate83.errors = [
                                       {
                                         instancePath: instancePath + "/value",
@@ -24009,20 +23962,20 @@ function validate83(
                                 }
                               }
                             }
-                            var valid102 = _errs460 === errors;
+                            var valid102 = _errs458 === errors;
                           } else {
                             var valid102 = true;
                           }
                           if (valid102) {
                             if (data.vtable !== undefined) {
-                              let data181 = data.vtable;
-                              const _errs462 = errors;
+                              let data180 = data.vtable;
+                              const _errs460 = errors;
                               if (
                                 !(
-                                  typeof data181 == "number" &&
-                                  !(data181 % 1) &&
-                                  !isNaN(data181) &&
-                                  isFinite(data181)
+                                  typeof data180 == "number" &&
+                                  !(data180 % 1) &&
+                                  !isNaN(data180) &&
+                                  isFinite(data180)
                                 )
                               ) {
                                 validate83.errors = [
@@ -24037,12 +23990,12 @@ function validate83(
                                 ];
                                 return false;
                               }
-                              if (errors === _errs462) {
+                              if (errors === _errs460) {
                                 if (
-                                  typeof data181 == "number" &&
-                                  isFinite(data181)
+                                  typeof data180 == "number" &&
+                                  isFinite(data180)
                                 ) {
-                                  if (data181 > 4294967295 || isNaN(data181)) {
+                                  if (data180 > 4294967295 || isNaN(data180)) {
                                     validate83.errors = [
                                       {
                                         instancePath: instancePath + "/vtable",
@@ -24058,7 +24011,7 @@ function validate83(
                                     ];
                                     return false;
                                   } else {
-                                    if (data181 < 0 || isNaN(data181)) {
+                                    if (data180 < 0 || isNaN(data180)) {
                                       validate83.errors = [
                                         {
                                           instancePath:
@@ -24078,7 +24031,7 @@ function validate83(
                                   }
                                 }
                               }
-                              var valid102 = _errs462 === errors;
+                              var valid102 = _errs460 === errors;
                             } else {
                               var valid102 = true;
                             }
@@ -24107,8 +24060,8 @@ function validate83(
                   props1.vtable = true;
                 }
               } else if (tag0 === "register_defer") {
-                const _errs464 = errors;
-                if (errors === _errs464) {
+                const _errs462 = errors;
+                if (errors === _errs462) {
                   if (data && typeof data == "object" && !Array.isArray(data)) {
                     let missing45;
                     if (
@@ -24131,14 +24084,14 @@ function validate83(
                       return false;
                     } else {
                       if (data.defer !== undefined) {
-                        let data182 = data.defer;
-                        const _errs466 = errors;
+                        let data181 = data.defer;
+                        const _errs464 = errors;
                         if (
                           !(
-                            typeof data182 == "number" &&
-                            !(data182 % 1) &&
-                            !isNaN(data182) &&
-                            isFinite(data182)
+                            typeof data181 == "number" &&
+                            !(data181 % 1) &&
+                            !isNaN(data181) &&
+                            isFinite(data181)
                           )
                         ) {
                           validate83.errors = [
@@ -24152,9 +24105,9 @@ function validate83(
                           ];
                           return false;
                         }
-                        if (errors === _errs466) {
-                          if (typeof data182 == "number" && isFinite(data182)) {
-                            if (data182 > 4294967295 || isNaN(data182)) {
+                        if (errors === _errs464) {
+                          if (typeof data181 == "number" && isFinite(data181)) {
+                            if (data181 > 4294967295 || isNaN(data181)) {
                               validate83.errors = [
                                 {
                                   instancePath: instancePath + "/defer",
@@ -24170,7 +24123,7 @@ function validate83(
                               ];
                               return false;
                             } else {
-                              if (data182 < 0 || isNaN(data182)) {
+                              if (data181 < 0 || isNaN(data181)) {
                                 validate83.errors = [
                                   {
                                     instancePath: instancePath + "/defer",
@@ -24186,27 +24139,27 @@ function validate83(
                             }
                           }
                         }
-                        var valid104 = _errs466 === errors;
+                        var valid104 = _errs464 === errors;
                       } else {
                         var valid104 = true;
                       }
                       if (valid104) {
                         if (data.dependencies !== undefined) {
-                          let data183 = data.dependencies;
-                          const _errs468 = errors;
-                          if (errors === _errs468) {
-                            if (Array.isArray(data183)) {
+                          let data182 = data.dependencies;
+                          const _errs466 = errors;
+                          if (errors === _errs466) {
+                            if (Array.isArray(data182)) {
                               var valid105 = true;
-                              const len8 = data183.length;
+                              const len8 = data182.length;
                               for (let i8 = 0; i8 < len8; i8++) {
-                                let data184 = data183[i8];
-                                const _errs470 = errors;
+                                let data183 = data182[i8];
+                                const _errs468 = errors;
                                 if (
                                   !(
-                                    typeof data184 == "number" &&
-                                    !(data184 % 1) &&
-                                    !isNaN(data184) &&
-                                    isFinite(data184)
+                                    typeof data183 == "number" &&
+                                    !(data183 % 1) &&
+                                    !isNaN(data183) &&
+                                    isFinite(data183)
                                   )
                                 ) {
                                   validate83.errors = [
@@ -24222,14 +24175,14 @@ function validate83(
                                   ];
                                   return false;
                                 }
-                                if (errors === _errs470) {
+                                if (errors === _errs468) {
                                   if (
-                                    typeof data184 == "number" &&
-                                    isFinite(data184)
+                                    typeof data183 == "number" &&
+                                    isFinite(data183)
                                   ) {
                                     if (
-                                      data184 > 4294967295 ||
-                                      isNaN(data184)
+                                      data183 > 4294967295 ||
+                                      isNaN(data183)
                                     ) {
                                       validate83.errors = [
                                         {
@@ -24249,7 +24202,7 @@ function validate83(
                                       ];
                                       return false;
                                     } else {
-                                      if (data184 < 0 || isNaN(data184)) {
+                                      if (data183 < 0 || isNaN(data183)) {
                                         validate83.errors = [
                                           {
                                             instancePath:
@@ -24271,7 +24224,7 @@ function validate83(
                                     }
                                   }
                                 }
-                                var valid105 = _errs470 === errors;
+                                var valid105 = _errs468 === errors;
                                 if (!valid105) {
                                   break;
                                 }
@@ -24290,22 +24243,22 @@ function validate83(
                               return false;
                             }
                           }
-                          var valid104 = _errs468 === errors;
+                          var valid104 = _errs466 === errors;
                         } else {
                           var valid104 = true;
                         }
                         if (valid104) {
                           if (data.dst !== undefined) {
-                            let data185 = data.dst;
-                            const _errs472 = errors;
+                            let data184 = data.dst;
+                            const _errs470 = errors;
                             if (
                               !(
-                                typeof data185 == "number" &&
-                                !(data185 % 1) &&
-                                !isNaN(data185) &&
-                                isFinite(data185)
+                                typeof data184 == "number" &&
+                                !(data184 % 1) &&
+                                !isNaN(data184) &&
+                                isFinite(data184)
                               ) &&
-                              data185 !== null
+                              data184 !== null
                             ) {
                               validate83.errors = [
                                 {
@@ -24321,12 +24274,12 @@ function validate83(
                               ];
                               return false;
                             }
-                            if (errors === _errs472) {
+                            if (errors === _errs470) {
                               if (
-                                typeof data185 == "number" &&
-                                isFinite(data185)
+                                typeof data184 == "number" &&
+                                isFinite(data184)
                               ) {
-                                if (data185 > 4294967295 || isNaN(data185)) {
+                                if (data184 > 4294967295 || isNaN(data184)) {
                                   validate83.errors = [
                                     {
                                       instancePath: instancePath + "/dst",
@@ -24342,7 +24295,7 @@ function validate83(
                                   ];
                                   return false;
                                 } else {
-                                  if (data185 < 0 || isNaN(data185)) {
+                                  if (data184 < 0 || isNaN(data184)) {
                                     validate83.errors = [
                                       {
                                         instancePath: instancePath + "/dst",
@@ -24358,15 +24311,15 @@ function validate83(
                                 }
                               }
                             }
-                            var valid104 = _errs472 === errors;
+                            var valid104 = _errs470 === errors;
                           } else {
                             var valid104 = true;
                           }
                           if (valid104) {
                             if (data.op !== undefined) {
-                              let data186 = data.op;
-                              const _errs474 = errors;
-                              if (typeof data186 !== "string") {
+                              let data185 = data.op;
+                              const _errs472 = errors;
+                              if (typeof data185 !== "string") {
                                 validate83.errors = [
                                   {
                                     instancePath: instancePath + "/op",
@@ -24378,7 +24331,7 @@ function validate83(
                                 ];
                                 return false;
                               }
-                              if ("register_defer" !== data186) {
+                              if ("register_defer" !== data185) {
                                 validate83.errors = [
                                   {
                                     instancePath: instancePath + "/op",
@@ -24391,20 +24344,20 @@ function validate83(
                                 ];
                                 return false;
                               }
-                              var valid104 = _errs474 === errors;
+                              var valid104 = _errs472 === errors;
                             } else {
                               var valid104 = true;
                             }
                             if (valid104) {
                               if (data.scope !== undefined) {
-                                let data187 = data.scope;
-                                const _errs476 = errors;
+                                let data186 = data.scope;
+                                const _errs474 = errors;
                                 if (
                                   !(
-                                    typeof data187 == "number" &&
-                                    !(data187 % 1) &&
-                                    !isNaN(data187) &&
-                                    isFinite(data187)
+                                    typeof data186 == "number" &&
+                                    !(data186 % 1) &&
+                                    !isNaN(data186) &&
+                                    isFinite(data186)
                                   )
                                 ) {
                                   validate83.errors = [
@@ -24419,14 +24372,14 @@ function validate83(
                                   ];
                                   return false;
                                 }
-                                if (errors === _errs476) {
+                                if (errors === _errs474) {
                                   if (
-                                    typeof data187 == "number" &&
-                                    isFinite(data187)
+                                    typeof data186 == "number" &&
+                                    isFinite(data186)
                                   ) {
                                     if (
-                                      data187 > 4294967295 ||
-                                      isNaN(data187)
+                                      data186 > 4294967295 ||
+                                      isNaN(data186)
                                     ) {
                                       validate83.errors = [
                                         {
@@ -24443,7 +24396,7 @@ function validate83(
                                       ];
                                       return false;
                                     } else {
-                                      if (data187 < 0 || isNaN(data187)) {
+                                      if (data186 < 0 || isNaN(data186)) {
                                         validate83.errors = [
                                           {
                                             instancePath:
@@ -24463,7 +24416,7 @@ function validate83(
                                     }
                                   }
                                 }
-                                var valid104 = _errs476 === errors;
+                                var valid104 = _errs474 === errors;
                               } else {
                                 var valid104 = true;
                               }
@@ -24494,8 +24447,8 @@ function validate83(
                   props1.scope = true;
                 }
               } else if (tag0 === "generator.make") {
-                const _errs478 = errors;
-                if (errors === _errs478) {
+                const _errs476 = errors;
+                if (errors === _errs476) {
                   if (data && typeof data == "object" && !Array.isArray(data)) {
                     let missing46;
                     if (
@@ -24517,14 +24470,14 @@ function validate83(
                       return false;
                     } else {
                       if (data.callable !== undefined) {
-                        let data188 = data.callable;
-                        const _errs480 = errors;
+                        let data187 = data.callable;
+                        const _errs478 = errors;
                         if (
                           !(
-                            typeof data188 == "number" &&
-                            !(data188 % 1) &&
-                            !isNaN(data188) &&
-                            isFinite(data188)
+                            typeof data187 == "number" &&
+                            !(data187 % 1) &&
+                            !isNaN(data187) &&
+                            isFinite(data187)
                           )
                         ) {
                           validate83.errors = [
@@ -24538,9 +24491,9 @@ function validate83(
                           ];
                           return false;
                         }
-                        if (errors === _errs480) {
-                          if (typeof data188 == "number" && isFinite(data188)) {
-                            if (data188 > 4294967295 || isNaN(data188)) {
+                        if (errors === _errs478) {
+                          if (typeof data187 == "number" && isFinite(data187)) {
+                            if (data187 > 4294967295 || isNaN(data187)) {
                               validate83.errors = [
                                 {
                                   instancePath: instancePath + "/callable",
@@ -24556,7 +24509,7 @@ function validate83(
                               ];
                               return false;
                             } else {
-                              if (data188 < 0 || isNaN(data188)) {
+                              if (data187 < 0 || isNaN(data187)) {
                                 validate83.errors = [
                                   {
                                     instancePath: instancePath + "/callable",
@@ -24572,20 +24525,20 @@ function validate83(
                             }
                           }
                         }
-                        var valid107 = _errs480 === errors;
+                        var valid107 = _errs478 === errors;
                       } else {
                         var valid107 = true;
                       }
                       if (valid107) {
                         if (data.closure !== undefined) {
-                          let data189 = data.closure;
-                          const _errs482 = errors;
+                          let data188 = data.closure;
+                          const _errs480 = errors;
                           if (
                             !(
-                              typeof data189 == "number" &&
-                              !(data189 % 1) &&
-                              !isNaN(data189) &&
-                              isFinite(data189)
+                              typeof data188 == "number" &&
+                              !(data188 % 1) &&
+                              !isNaN(data188) &&
+                              isFinite(data188)
                             )
                           ) {
                             validate83.errors = [
@@ -24600,12 +24553,12 @@ function validate83(
                             ];
                             return false;
                           }
-                          if (errors === _errs482) {
+                          if (errors === _errs480) {
                             if (
-                              typeof data189 == "number" &&
-                              isFinite(data189)
+                              typeof data188 == "number" &&
+                              isFinite(data188)
                             ) {
-                              if (data189 > 4294967295 || isNaN(data189)) {
+                              if (data188 > 4294967295 || isNaN(data188)) {
                                 validate83.errors = [
                                   {
                                     instancePath: instancePath + "/closure",
@@ -24621,7 +24574,7 @@ function validate83(
                                 ];
                                 return false;
                               } else {
-                                if (data189 < 0 || isNaN(data189)) {
+                                if (data188 < 0 || isNaN(data188)) {
                                   validate83.errors = [
                                     {
                                       instancePath: instancePath + "/closure",
@@ -24637,20 +24590,20 @@ function validate83(
                               }
                             }
                           }
-                          var valid107 = _errs482 === errors;
+                          var valid107 = _errs480 === errors;
                         } else {
                           var valid107 = true;
                         }
                         if (valid107) {
                           if (data.dst !== undefined) {
-                            let data190 = data.dst;
-                            const _errs484 = errors;
+                            let data189 = data.dst;
+                            const _errs482 = errors;
                             if (
                               !(
-                                typeof data190 == "number" &&
-                                !(data190 % 1) &&
-                                !isNaN(data190) &&
-                                isFinite(data190)
+                                typeof data189 == "number" &&
+                                !(data189 % 1) &&
+                                !isNaN(data189) &&
+                                isFinite(data189)
                               )
                             ) {
                               validate83.errors = [
@@ -24664,12 +24617,12 @@ function validate83(
                               ];
                               return false;
                             }
-                            if (errors === _errs484) {
+                            if (errors === _errs482) {
                               if (
-                                typeof data190 == "number" &&
-                                isFinite(data190)
+                                typeof data189 == "number" &&
+                                isFinite(data189)
                               ) {
-                                if (data190 > 4294967295 || isNaN(data190)) {
+                                if (data189 > 4294967295 || isNaN(data189)) {
                                   validate83.errors = [
                                     {
                                       instancePath: instancePath + "/dst",
@@ -24685,7 +24638,7 @@ function validate83(
                                   ];
                                   return false;
                                 } else {
-                                  if (data190 < 0 || isNaN(data190)) {
+                                  if (data189 < 0 || isNaN(data189)) {
                                     validate83.errors = [
                                       {
                                         instancePath: instancePath + "/dst",
@@ -24701,15 +24654,15 @@ function validate83(
                                 }
                               }
                             }
-                            var valid107 = _errs484 === errors;
+                            var valid107 = _errs482 === errors;
                           } else {
                             var valid107 = true;
                           }
                           if (valid107) {
                             if (data.op !== undefined) {
-                              let data191 = data.op;
-                              const _errs486 = errors;
-                              if (typeof data191 !== "string") {
+                              let data190 = data.op;
+                              const _errs484 = errors;
+                              if (typeof data190 !== "string") {
                                 validate83.errors = [
                                   {
                                     instancePath: instancePath + "/op",
@@ -24721,7 +24674,7 @@ function validate83(
                                 ];
                                 return false;
                               }
-                              if ("generator.make" !== data191) {
+                              if ("generator.make" !== data190) {
                                 validate83.errors = [
                                   {
                                     instancePath: instancePath + "/op",
@@ -24734,7 +24687,7 @@ function validate83(
                                 ];
                                 return false;
                               }
-                              var valid107 = _errs486 === errors;
+                              var valid107 = _errs484 === errors;
                             } else {
                               var valid107 = true;
                             }
@@ -24763,8 +24716,8 @@ function validate83(
                   props1.op = true;
                 }
               } else if (tag0 === "actor.ingress_adapter") {
-                const _errs488 = errors;
-                if (errors === _errs488) {
+                const _errs486 = errors;
+                if (errors === _errs486) {
                   if (data && typeof data == "object" && !Array.isArray(data)) {
                     let missing47;
                     if (
@@ -24785,14 +24738,14 @@ function validate83(
                       return false;
                     } else {
                       if (data.actor !== undefined) {
-                        let data192 = data.actor;
-                        const _errs490 = errors;
+                        let data191 = data.actor;
+                        const _errs488 = errors;
                         if (
                           !(
-                            typeof data192 == "number" &&
-                            !(data192 % 1) &&
-                            !isNaN(data192) &&
-                            isFinite(data192)
+                            typeof data191 == "number" &&
+                            !(data191 % 1) &&
+                            !isNaN(data191) &&
+                            isFinite(data191)
                           )
                         ) {
                           validate83.errors = [
@@ -24806,9 +24759,9 @@ function validate83(
                           ];
                           return false;
                         }
-                        if (errors === _errs490) {
-                          if (typeof data192 == "number" && isFinite(data192)) {
-                            if (data192 > 4294967295 || isNaN(data192)) {
+                        if (errors === _errs488) {
+                          if (typeof data191 == "number" && isFinite(data191)) {
+                            if (data191 > 4294967295 || isNaN(data191)) {
                               validate83.errors = [
                                 {
                                   instancePath: instancePath + "/actor",
@@ -24824,7 +24777,7 @@ function validate83(
                               ];
                               return false;
                             } else {
-                              if (data192 < 0 || isNaN(data192)) {
+                              if (data191 < 0 || isNaN(data191)) {
                                 validate83.errors = [
                                   {
                                     instancePath: instancePath + "/actor",
@@ -24840,22 +24793,22 @@ function validate83(
                             }
                           }
                         }
-                        var valid109 = _errs490 === errors;
+                        var valid109 = _errs488 === errors;
                       } else {
                         var valid109 = true;
                       }
                       if (valid109) {
                         if (data.dst !== undefined) {
-                          let data193 = data.dst;
-                          const _errs492 = errors;
+                          let data192 = data.dst;
+                          const _errs490 = errors;
                           if (
                             !(
-                              typeof data193 == "number" &&
-                              !(data193 % 1) &&
-                              !isNaN(data193) &&
-                              isFinite(data193)
+                              typeof data192 == "number" &&
+                              !(data192 % 1) &&
+                              !isNaN(data192) &&
+                              isFinite(data192)
                             ) &&
-                            data193 !== null
+                            data192 !== null
                           ) {
                             validate83.errors = [
                               {
@@ -24870,12 +24823,12 @@ function validate83(
                             ];
                             return false;
                           }
-                          if (errors === _errs492) {
+                          if (errors === _errs490) {
                             if (
-                              typeof data193 == "number" &&
-                              isFinite(data193)
+                              typeof data192 == "number" &&
+                              isFinite(data192)
                             ) {
-                              if (data193 > 4294967295 || isNaN(data193)) {
+                              if (data192 > 4294967295 || isNaN(data192)) {
                                 validate83.errors = [
                                   {
                                     instancePath: instancePath + "/dst",
@@ -24891,7 +24844,7 @@ function validate83(
                                 ];
                                 return false;
                               } else {
-                                if (data193 < 0 || isNaN(data193)) {
+                                if (data192 < 0 || isNaN(data192)) {
                                   validate83.errors = [
                                     {
                                       instancePath: instancePath + "/dst",
@@ -24907,20 +24860,20 @@ function validate83(
                               }
                             }
                           }
-                          var valid109 = _errs492 === errors;
+                          var valid109 = _errs490 === errors;
                         } else {
                           var valid109 = true;
                         }
                         if (valid109) {
                           if (data.message !== undefined) {
-                            let data194 = data.message;
-                            const _errs494 = errors;
+                            let data193 = data.message;
+                            const _errs492 = errors;
                             if (
                               !(
-                                typeof data194 == "number" &&
-                                !(data194 % 1) &&
-                                !isNaN(data194) &&
-                                isFinite(data194)
+                                typeof data193 == "number" &&
+                                !(data193 % 1) &&
+                                !isNaN(data193) &&
+                                isFinite(data193)
                               )
                             ) {
                               validate83.errors = [
@@ -24935,12 +24888,12 @@ function validate83(
                               ];
                               return false;
                             }
-                            if (errors === _errs494) {
+                            if (errors === _errs492) {
                               if (
-                                typeof data194 == "number" &&
-                                isFinite(data194)
+                                typeof data193 == "number" &&
+                                isFinite(data193)
                               ) {
-                                if (data194 > 4294967295 || isNaN(data194)) {
+                                if (data193 > 4294967295 || isNaN(data193)) {
                                   validate83.errors = [
                                     {
                                       instancePath: instancePath + "/message",
@@ -24956,7 +24909,7 @@ function validate83(
                                   ];
                                   return false;
                                 } else {
-                                  if (data194 < 0 || isNaN(data194)) {
+                                  if (data193 < 0 || isNaN(data193)) {
                                     validate83.errors = [
                                       {
                                         instancePath: instancePath + "/message",
@@ -24972,15 +24925,15 @@ function validate83(
                                 }
                               }
                             }
-                            var valid109 = _errs494 === errors;
+                            var valid109 = _errs492 === errors;
                           } else {
                             var valid109 = true;
                           }
                           if (valid109) {
                             if (data.op !== undefined) {
-                              let data195 = data.op;
-                              const _errs496 = errors;
-                              if (typeof data195 !== "string") {
+                              let data194 = data.op;
+                              const _errs494 = errors;
+                              if (typeof data194 !== "string") {
                                 validate83.errors = [
                                   {
                                     instancePath: instancePath + "/op",
@@ -24992,7 +24945,7 @@ function validate83(
                                 ];
                                 return false;
                               }
-                              if ("actor.ingress_adapter" !== data195) {
+                              if ("actor.ingress_adapter" !== data194) {
                                 validate83.errors = [
                                   {
                                     instancePath: instancePath + "/op",
@@ -25007,7 +24960,7 @@ function validate83(
                                 ];
                                 return false;
                               }
-                              var valid109 = _errs496 === errors;
+                              var valid109 = _errs494 === errors;
                             } else {
                               var valid109 = true;
                             }
@@ -25036,8 +24989,8 @@ function validate83(
                   props1.op = true;
                 }
               } else if (tag0 === "stream.pipe") {
-                const _errs498 = errors;
-                if (errors === _errs498) {
+                const _errs496 = errors;
+                if (errors === _errs496) {
                   if (data && typeof data == "object" && !Array.isArray(data)) {
                     let missing48;
                     if (
@@ -25059,14 +25012,14 @@ function validate83(
                       return false;
                     } else {
                       if (data.capacity !== undefined) {
-                        let data196 = data.capacity;
-                        const _errs500 = errors;
+                        let data195 = data.capacity;
+                        const _errs498 = errors;
                         if (
                           !(
-                            typeof data196 == "number" &&
-                            !(data196 % 1) &&
-                            !isNaN(data196) &&
-                            isFinite(data196)
+                            typeof data195 == "number" &&
+                            !(data195 % 1) &&
+                            !isNaN(data195) &&
+                            isFinite(data195)
                           )
                         ) {
                           validate83.errors = [
@@ -25080,9 +25033,9 @@ function validate83(
                           ];
                           return false;
                         }
-                        if (errors === _errs500) {
-                          if (typeof data196 == "number" && isFinite(data196)) {
-                            if (data196 > 4294967295 || isNaN(data196)) {
+                        if (errors === _errs498) {
+                          if (typeof data195 == "number" && isFinite(data195)) {
+                            if (data195 > 4294967295 || isNaN(data195)) {
                               validate83.errors = [
                                 {
                                   instancePath: instancePath + "/capacity",
@@ -25098,7 +25051,7 @@ function validate83(
                               ];
                               return false;
                             } else {
-                              if (data196 < 0 || isNaN(data196)) {
+                              if (data195 < 0 || isNaN(data195)) {
                                 validate83.errors = [
                                   {
                                     instancePath: instancePath + "/capacity",
@@ -25114,22 +25067,22 @@ function validate83(
                             }
                           }
                         }
-                        var valid111 = _errs500 === errors;
+                        var valid111 = _errs498 === errors;
                       } else {
                         var valid111 = true;
                       }
                       if (valid111) {
                         if (data.dst !== undefined) {
-                          let data197 = data.dst;
-                          const _errs502 = errors;
+                          let data196 = data.dst;
+                          const _errs500 = errors;
                           if (
                             !(
-                              typeof data197 == "number" &&
-                              !(data197 % 1) &&
-                              !isNaN(data197) &&
-                              isFinite(data197)
+                              typeof data196 == "number" &&
+                              !(data196 % 1) &&
+                              !isNaN(data196) &&
+                              isFinite(data196)
                             ) &&
-                            data197 !== null
+                            data196 !== null
                           ) {
                             validate83.errors = [
                               {
@@ -25144,12 +25097,12 @@ function validate83(
                             ];
                             return false;
                           }
-                          if (errors === _errs502) {
+                          if (errors === _errs500) {
                             if (
-                              typeof data197 == "number" &&
-                              isFinite(data197)
+                              typeof data196 == "number" &&
+                              isFinite(data196)
                             ) {
-                              if (data197 > 4294967295 || isNaN(data197)) {
+                              if (data196 > 4294967295 || isNaN(data196)) {
                                 validate83.errors = [
                                   {
                                     instancePath: instancePath + "/dst",
@@ -25165,7 +25118,7 @@ function validate83(
                                 ];
                                 return false;
                               } else {
-                                if (data197 < 0 || isNaN(data197)) {
+                                if (data196 < 0 || isNaN(data196)) {
                                   validate83.errors = [
                                     {
                                       instancePath: instancePath + "/dst",
@@ -25181,15 +25134,15 @@ function validate83(
                               }
                             }
                           }
-                          var valid111 = _errs502 === errors;
+                          var valid111 = _errs500 === errors;
                         } else {
                           var valid111 = true;
                         }
                         if (valid111) {
                           if (data.op !== undefined) {
-                            let data198 = data.op;
-                            const _errs504 = errors;
-                            if (typeof data198 !== "string") {
+                            let data197 = data.op;
+                            const _errs502 = errors;
+                            if (typeof data197 !== "string") {
                               validate83.errors = [
                                 {
                                   instancePath: instancePath + "/op",
@@ -25201,7 +25154,7 @@ function validate83(
                               ];
                               return false;
                             }
-                            if ("stream.pipe" !== data198) {
+                            if ("stream.pipe" !== data197) {
                               validate83.errors = [
                                 {
                                   instancePath: instancePath + "/op",
@@ -25213,25 +25166,25 @@ function validate83(
                               ];
                               return false;
                             }
-                            var valid111 = _errs504 === errors;
+                            var valid111 = _errs502 === errors;
                           } else {
                             var valid111 = true;
                           }
                           if (valid111) {
                             if (data.results !== undefined) {
-                              let data199 = data.results;
-                              const _errs506 = errors;
-                              if (errors === _errs506) {
-                                if (Array.isArray(data199)) {
+                              let data198 = data.results;
+                              const _errs504 = errors;
+                              if (errors === _errs504) {
+                                if (Array.isArray(data198)) {
                                   var valid112 = true;
-                                  const len9 = data199.length;
+                                  const len9 = data198.length;
                                   for (let i9 = 0; i9 < len9; i9++) {
-                                    const _errs508 = errors;
+                                    const _errs506 = errors;
                                     if (
-                                      !validate84(data199[i9], {
+                                      !validate84(data198[i9], {
                                         instancePath:
                                           instancePath + "/results/" + i9,
-                                        parentData: data199,
+                                        parentData: data198,
                                         parentDataProperty: i9,
                                         rootData,
                                         dynamicAnchors,
@@ -25243,7 +25196,7 @@ function validate83(
                                           : vErrors.concat(validate84.errors);
                                       errors = vErrors.length;
                                     }
-                                    var valid112 = _errs508 === errors;
+                                    var valid112 = _errs506 === errors;
                                     if (!valid112) {
                                       break;
                                     }
@@ -25262,7 +25215,7 @@ function validate83(
                                   return false;
                                 }
                               }
-                              var valid111 = _errs506 === errors;
+                              var valid111 = _errs504 === errors;
                             } else {
                               var valid111 = true;
                             }
@@ -25291,8 +25244,8 @@ function validate83(
                   props1.results = true;
                 }
               } else if (tag0 === "task_scope.enter") {
-                const _errs509 = errors;
-                if (errors === _errs509) {
+                const _errs507 = errors;
+                if (errors === _errs507) {
                   if (data && typeof data == "object" && !Array.isArray(data)) {
                     let missing49;
                     if (
@@ -25312,16 +25265,16 @@ function validate83(
                       return false;
                     } else {
                       if (data.dst !== undefined) {
-                        let data201 = data.dst;
-                        const _errs511 = errors;
+                        let data200 = data.dst;
+                        const _errs509 = errors;
                         if (
                           !(
-                            typeof data201 == "number" &&
-                            !(data201 % 1) &&
-                            !isNaN(data201) &&
-                            isFinite(data201)
+                            typeof data200 == "number" &&
+                            !(data200 % 1) &&
+                            !isNaN(data200) &&
+                            isFinite(data200)
                           ) &&
-                          data201 !== null
+                          data200 !== null
                         ) {
                           validate83.errors = [
                             {
@@ -25336,9 +25289,9 @@ function validate83(
                           ];
                           return false;
                         }
-                        if (errors === _errs511) {
-                          if (typeof data201 == "number" && isFinite(data201)) {
-                            if (data201 > 4294967295 || isNaN(data201)) {
+                        if (errors === _errs509) {
+                          if (typeof data200 == "number" && isFinite(data200)) {
+                            if (data200 > 4294967295 || isNaN(data200)) {
                               validate83.errors = [
                                 {
                                   instancePath: instancePath + "/dst",
@@ -25354,7 +25307,7 @@ function validate83(
                               ];
                               return false;
                             } else {
-                              if (data201 < 0 || isNaN(data201)) {
+                              if (data200 < 0 || isNaN(data200)) {
                                 validate83.errors = [
                                   {
                                     instancePath: instancePath + "/dst",
@@ -25370,22 +25323,22 @@ function validate83(
                             }
                           }
                         }
-                        var valid114 = _errs511 === errors;
+                        var valid114 = _errs509 === errors;
                       } else {
                         var valid114 = true;
                       }
                       if (valid114) {
                         if (data.duration !== undefined) {
-                          let data202 = data.duration;
-                          const _errs513 = errors;
+                          let data201 = data.duration;
+                          const _errs511 = errors;
                           if (
                             !(
-                              typeof data202 == "number" &&
-                              !(data202 % 1) &&
-                              !isNaN(data202) &&
-                              isFinite(data202)
+                              typeof data201 == "number" &&
+                              !(data201 % 1) &&
+                              !isNaN(data201) &&
+                              isFinite(data201)
                             ) &&
-                            data202 !== null
+                            data201 !== null
                           ) {
                             validate83.errors = [
                               {
@@ -25402,12 +25355,12 @@ function validate83(
                             ];
                             return false;
                           }
-                          if (errors === _errs513) {
+                          if (errors === _errs511) {
                             if (
-                              typeof data202 == "number" &&
-                              isFinite(data202)
+                              typeof data201 == "number" &&
+                              isFinite(data201)
                             ) {
-                              if (data202 > 4294967295 || isNaN(data202)) {
+                              if (data201 > 4294967295 || isNaN(data201)) {
                                 validate83.errors = [
                                   {
                                     instancePath: instancePath + "/duration",
@@ -25423,7 +25376,7 @@ function validate83(
                                 ];
                                 return false;
                               } else {
-                                if (data202 < 0 || isNaN(data202)) {
+                                if (data201 < 0 || isNaN(data201)) {
                                   validate83.errors = [
                                     {
                                       instancePath: instancePath + "/duration",
@@ -25439,15 +25392,15 @@ function validate83(
                               }
                             }
                           }
-                          var valid114 = _errs513 === errors;
+                          var valid114 = _errs511 === errors;
                         } else {
                           var valid114 = true;
                         }
                         if (valid114) {
                           if (data.op !== undefined) {
-                            let data203 = data.op;
-                            const _errs515 = errors;
-                            if (typeof data203 !== "string") {
+                            let data202 = data.op;
+                            const _errs513 = errors;
+                            if (typeof data202 !== "string") {
                               validate83.errors = [
                                 {
                                   instancePath: instancePath + "/op",
@@ -25459,7 +25412,7 @@ function validate83(
                               ];
                               return false;
                             }
-                            if ("task_scope.enter" !== data203) {
+                            if ("task_scope.enter" !== data202) {
                               validate83.errors = [
                                 {
                                   instancePath: instancePath + "/op",
@@ -25471,22 +25424,22 @@ function validate83(
                               ];
                               return false;
                             }
-                            var valid114 = _errs515 === errors;
+                            var valid114 = _errs513 === errors;
                           } else {
                             var valid114 = true;
                           }
                           if (valid114) {
                             if (data.parent !== undefined) {
-                              let data204 = data.parent;
-                              const _errs517 = errors;
+                              let data203 = data.parent;
+                              const _errs515 = errors;
                               if (
                                 !(
-                                  typeof data204 == "number" &&
-                                  !(data204 % 1) &&
-                                  !isNaN(data204) &&
-                                  isFinite(data204)
+                                  typeof data203 == "number" &&
+                                  !(data203 % 1) &&
+                                  !isNaN(data203) &&
+                                  isFinite(data203)
                                 ) &&
-                                data204 !== null
+                                data203 !== null
                               ) {
                                 validate83.errors = [
                                   {
@@ -25503,12 +25456,12 @@ function validate83(
                                 ];
                                 return false;
                               }
-                              if (errors === _errs517) {
+                              if (errors === _errs515) {
                                 if (
-                                  typeof data204 == "number" &&
-                                  isFinite(data204)
+                                  typeof data203 == "number" &&
+                                  isFinite(data203)
                                 ) {
-                                  if (data204 > 4294967295 || isNaN(data204)) {
+                                  if (data203 > 4294967295 || isNaN(data203)) {
                                     validate83.errors = [
                                       {
                                         instancePath: instancePath + "/parent",
@@ -25524,7 +25477,7 @@ function validate83(
                                     ];
                                     return false;
                                   } else {
-                                    if (data204 < 0 || isNaN(data204)) {
+                                    if (data203 < 0 || isNaN(data203)) {
                                       validate83.errors = [
                                         {
                                           instancePath:
@@ -25544,20 +25497,20 @@ function validate83(
                                   }
                                 }
                               }
-                              var valid114 = _errs517 === errors;
+                              var valid114 = _errs515 === errors;
                             } else {
                               var valid114 = true;
                             }
                             if (valid114) {
                               if (data.scope !== undefined) {
-                                let data205 = data.scope;
-                                const _errs519 = errors;
+                                let data204 = data.scope;
+                                const _errs517 = errors;
                                 if (
                                   !(
-                                    typeof data205 == "number" &&
-                                    !(data205 % 1) &&
-                                    !isNaN(data205) &&
-                                    isFinite(data205)
+                                    typeof data204 == "number" &&
+                                    !(data204 % 1) &&
+                                    !isNaN(data204) &&
+                                    isFinite(data204)
                                   )
                                 ) {
                                   validate83.errors = [
@@ -25572,14 +25525,14 @@ function validate83(
                                   ];
                                   return false;
                                 }
-                                if (errors === _errs519) {
+                                if (errors === _errs517) {
                                   if (
-                                    typeof data205 == "number" &&
-                                    isFinite(data205)
+                                    typeof data204 == "number" &&
+                                    isFinite(data204)
                                   ) {
                                     if (
-                                      data205 > 4294967295 ||
-                                      isNaN(data205)
+                                      data204 > 4294967295 ||
+                                      isNaN(data204)
                                     ) {
                                       validate83.errors = [
                                         {
@@ -25596,7 +25549,7 @@ function validate83(
                                       ];
                                       return false;
                                     } else {
-                                      if (data205 < 0 || isNaN(data205)) {
+                                      if (data204 < 0 || isNaN(data204)) {
                                         validate83.errors = [
                                           {
                                             instancePath:
@@ -25616,7 +25569,7 @@ function validate83(
                                     }
                                   }
                                 }
-                                var valid114 = _errs519 === errors;
+                                var valid114 = _errs517 === errors;
                               } else {
                                 var valid114 = true;
                               }
@@ -25647,8 +25600,8 @@ function validate83(
                   props1.scope = true;
                 }
               } else if (tag0 === "task_scope.close") {
-                const _errs521 = errors;
-                if (errors === _errs521) {
+                const _errs519 = errors;
+                if (errors === _errs519) {
                   if (data && typeof data == "object" && !Array.isArray(data)) {
                     let missing50;
                     if (
@@ -25668,16 +25621,16 @@ function validate83(
                       return false;
                     } else {
                       if (data.dst !== undefined) {
-                        let data206 = data.dst;
-                        const _errs523 = errors;
+                        let data205 = data.dst;
+                        const _errs521 = errors;
                         if (
                           !(
-                            typeof data206 == "number" &&
-                            !(data206 % 1) &&
-                            !isNaN(data206) &&
-                            isFinite(data206)
+                            typeof data205 == "number" &&
+                            !(data205 % 1) &&
+                            !isNaN(data205) &&
+                            isFinite(data205)
                           ) &&
-                          data206 !== null
+                          data205 !== null
                         ) {
                           validate83.errors = [
                             {
@@ -25692,9 +25645,9 @@ function validate83(
                           ];
                           return false;
                         }
-                        if (errors === _errs523) {
-                          if (typeof data206 == "number" && isFinite(data206)) {
-                            if (data206 > 4294967295 || isNaN(data206)) {
+                        if (errors === _errs521) {
+                          if (typeof data205 == "number" && isFinite(data205)) {
+                            if (data205 > 4294967295 || isNaN(data205)) {
                               validate83.errors = [
                                 {
                                   instancePath: instancePath + "/dst",
@@ -25710,7 +25663,7 @@ function validate83(
                               ];
                               return false;
                             } else {
-                              if (data206 < 0 || isNaN(data206)) {
+                              if (data205 < 0 || isNaN(data205)) {
                                 validate83.errors = [
                                   {
                                     instancePath: instancePath + "/dst",
@@ -25726,15 +25679,15 @@ function validate83(
                             }
                           }
                         }
-                        var valid116 = _errs523 === errors;
+                        var valid116 = _errs521 === errors;
                       } else {
                         var valid116 = true;
                       }
                       if (valid116) {
                         if (data.op !== undefined) {
-                          let data207 = data.op;
-                          const _errs525 = errors;
-                          if (typeof data207 !== "string") {
+                          let data206 = data.op;
+                          const _errs523 = errors;
+                          if (typeof data206 !== "string") {
                             validate83.errors = [
                               {
                                 instancePath: instancePath + "/op",
@@ -25746,7 +25699,7 @@ function validate83(
                             ];
                             return false;
                           }
-                          if ("task_scope.close" !== data207) {
+                          if ("task_scope.close" !== data206) {
                             validate83.errors = [
                               {
                                 instancePath: instancePath + "/op",
@@ -25758,20 +25711,20 @@ function validate83(
                             ];
                             return false;
                           }
-                          var valid116 = _errs525 === errors;
+                          var valid116 = _errs523 === errors;
                         } else {
                           var valid116 = true;
                         }
                         if (valid116) {
                           if (data.scope !== undefined) {
-                            let data208 = data.scope;
-                            const _errs527 = errors;
+                            let data207 = data.scope;
+                            const _errs525 = errors;
                             if (
                               !(
-                                typeof data208 == "number" &&
-                                !(data208 % 1) &&
-                                !isNaN(data208) &&
-                                isFinite(data208)
+                                typeof data207 == "number" &&
+                                !(data207 % 1) &&
+                                !isNaN(data207) &&
+                                isFinite(data207)
                               )
                             ) {
                               validate83.errors = [
@@ -25786,12 +25739,12 @@ function validate83(
                               ];
                               return false;
                             }
-                            if (errors === _errs527) {
+                            if (errors === _errs525) {
                               if (
-                                typeof data208 == "number" &&
-                                isFinite(data208)
+                                typeof data207 == "number" &&
+                                isFinite(data207)
                               ) {
-                                if (data208 > 4294967295 || isNaN(data208)) {
+                                if (data207 > 4294967295 || isNaN(data207)) {
                                   validate83.errors = [
                                     {
                                       instancePath: instancePath + "/scope",
@@ -25807,7 +25760,7 @@ function validate83(
                                   ];
                                   return false;
                                 } else {
-                                  if (data208 < 0 || isNaN(data208)) {
+                                  if (data207 < 0 || isNaN(data207)) {
                                     validate83.errors = [
                                       {
                                         instancePath: instancePath + "/scope",
@@ -25823,7 +25776,7 @@ function validate83(
                                 }
                               }
                             }
-                            var valid116 = _errs527 === errors;
+                            var valid116 = _errs525 === errors;
                           } else {
                             var valid116 = true;
                           }
@@ -25850,8 +25803,8 @@ function validate83(
                   props1.scope = true;
                 }
               } else if (tag0 === "task.race") {
-                const _errs529 = errors;
-                if (errors === _errs529) {
+                const _errs527 = errors;
+                if (errors === _errs527) {
                   if (data && typeof data == "object" && !Array.isArray(data)) {
                     let missing51;
                     if (
@@ -25873,14 +25826,14 @@ function validate83(
                       return false;
                     } else {
                       if (data.dst !== undefined) {
-                        let data209 = data.dst;
-                        const _errs531 = errors;
+                        let data208 = data.dst;
+                        const _errs529 = errors;
                         if (
                           !(
-                            typeof data209 == "number" &&
-                            !(data209 % 1) &&
-                            !isNaN(data209) &&
-                            isFinite(data209)
+                            typeof data208 == "number" &&
+                            !(data208 % 1) &&
+                            !isNaN(data208) &&
+                            isFinite(data208)
                           )
                         ) {
                           validate83.errors = [
@@ -25894,9 +25847,9 @@ function validate83(
                           ];
                           return false;
                         }
-                        if (errors === _errs531) {
-                          if (typeof data209 == "number" && isFinite(data209)) {
-                            if (data209 > 4294967295 || isNaN(data209)) {
+                        if (errors === _errs529) {
+                          if (typeof data208 == "number" && isFinite(data208)) {
+                            if (data208 > 4294967295 || isNaN(data208)) {
                               validate83.errors = [
                                 {
                                   instancePath: instancePath + "/dst",
@@ -25912,7 +25865,7 @@ function validate83(
                               ];
                               return false;
                             } else {
-                              if (data209 < 0 || isNaN(data209)) {
+                              if (data208 < 0 || isNaN(data208)) {
                                 validate83.errors = [
                                   {
                                     instancePath: instancePath + "/dst",
@@ -25928,27 +25881,27 @@ function validate83(
                             }
                           }
                         }
-                        var valid118 = _errs531 === errors;
+                        var valid118 = _errs529 === errors;
                       } else {
                         var valid118 = true;
                       }
                       if (valid118) {
                         if (data.members !== undefined) {
-                          let data210 = data.members;
-                          const _errs533 = errors;
-                          if (errors === _errs533) {
-                            if (Array.isArray(data210)) {
+                          let data209 = data.members;
+                          const _errs531 = errors;
+                          if (errors === _errs531) {
+                            if (Array.isArray(data209)) {
                               var valid119 = true;
-                              const len10 = data210.length;
+                              const len10 = data209.length;
                               for (let i10 = 0; i10 < len10; i10++) {
-                                let data211 = data210[i10];
-                                const _errs535 = errors;
+                                let data210 = data209[i10];
+                                const _errs533 = errors;
                                 if (
                                   !(
-                                    typeof data211 == "number" &&
-                                    !(data211 % 1) &&
-                                    !isNaN(data211) &&
-                                    isFinite(data211)
+                                    typeof data210 == "number" &&
+                                    !(data210 % 1) &&
+                                    !isNaN(data210) &&
+                                    isFinite(data210)
                                   )
                                 ) {
                                   validate83.errors = [
@@ -25964,14 +25917,14 @@ function validate83(
                                   ];
                                   return false;
                                 }
-                                if (errors === _errs535) {
+                                if (errors === _errs533) {
                                   if (
-                                    typeof data211 == "number" &&
-                                    isFinite(data211)
+                                    typeof data210 == "number" &&
+                                    isFinite(data210)
                                   ) {
                                     if (
-                                      data211 > 4294967295 ||
-                                      isNaN(data211)
+                                      data210 > 4294967295 ||
+                                      isNaN(data210)
                                     ) {
                                       validate83.errors = [
                                         {
@@ -25989,7 +25942,7 @@ function validate83(
                                       ];
                                       return false;
                                     } else {
-                                      if (data211 < 0 || isNaN(data211)) {
+                                      if (data210 < 0 || isNaN(data210)) {
                                         validate83.errors = [
                                           {
                                             instancePath:
@@ -26009,7 +25962,7 @@ function validate83(
                                     }
                                   }
                                 }
-                                var valid119 = _errs535 === errors;
+                                var valid119 = _errs533 === errors;
                                 if (!valid119) {
                                   break;
                                 }
@@ -26028,15 +25981,15 @@ function validate83(
                               return false;
                             }
                           }
-                          var valid118 = _errs533 === errors;
+                          var valid118 = _errs531 === errors;
                         } else {
                           var valid118 = true;
                         }
                         if (valid118) {
                           if (data.op !== undefined) {
-                            let data212 = data.op;
-                            const _errs537 = errors;
-                            if (typeof data212 !== "string") {
+                            let data211 = data.op;
+                            const _errs535 = errors;
+                            if (typeof data211 !== "string") {
                               validate83.errors = [
                                 {
                                   instancePath: instancePath + "/op",
@@ -26048,7 +26001,7 @@ function validate83(
                               ];
                               return false;
                             }
-                            if ("task.race" !== data212) {
+                            if ("task.race" !== data211) {
                               validate83.errors = [
                                 {
                                   instancePath: instancePath + "/op",
@@ -26060,20 +26013,20 @@ function validate83(
                               ];
                               return false;
                             }
-                            var valid118 = _errs537 === errors;
+                            var valid118 = _errs535 === errors;
                           } else {
                             var valid118 = true;
                           }
                           if (valid118) {
                             if (data.scope !== undefined) {
-                              let data213 = data.scope;
-                              const _errs539 = errors;
+                              let data212 = data.scope;
+                              const _errs537 = errors;
                               if (
                                 !(
-                                  typeof data213 == "number" &&
-                                  !(data213 % 1) &&
-                                  !isNaN(data213) &&
-                                  isFinite(data213)
+                                  typeof data212 == "number" &&
+                                  !(data212 % 1) &&
+                                  !isNaN(data212) &&
+                                  isFinite(data212)
                                 )
                               ) {
                                 validate83.errors = [
@@ -26088,12 +26041,12 @@ function validate83(
                                 ];
                                 return false;
                               }
-                              if (errors === _errs539) {
+                              if (errors === _errs537) {
                                 if (
-                                  typeof data213 == "number" &&
-                                  isFinite(data213)
+                                  typeof data212 == "number" &&
+                                  isFinite(data212)
                                 ) {
-                                  if (data213 > 4294967295 || isNaN(data213)) {
+                                  if (data212 > 4294967295 || isNaN(data212)) {
                                     validate83.errors = [
                                       {
                                         instancePath: instancePath + "/scope",
@@ -26109,7 +26062,7 @@ function validate83(
                                     ];
                                     return false;
                                   } else {
-                                    if (data213 < 0 || isNaN(data213)) {
+                                    if (data212 < 0 || isNaN(data212)) {
                                       validate83.errors = [
                                         {
                                           instancePath: instancePath + "/scope",
@@ -26128,7 +26081,7 @@ function validate83(
                                   }
                                 }
                               }
-                              var valid118 = _errs539 === errors;
+                              var valid118 = _errs537 === errors;
                             } else {
                               var valid118 = true;
                             }
@@ -26157,8 +26110,8 @@ function validate83(
                   props1.scope = true;
                 }
               } else if (tag0 === "task.spawn") {
-                const _errs541 = errors;
-                if (errors === _errs541) {
+                const _errs539 = errors;
+                if (errors === _errs539) {
                   if (data && typeof data == "object" && !Array.isArray(data)) {
                     let missing52;
                     if (
@@ -26180,14 +26133,14 @@ function validate83(
                       return false;
                     } else {
                       if (data.callable !== undefined) {
-                        let data214 = data.callable;
-                        const _errs543 = errors;
+                        let data213 = data.callable;
+                        const _errs541 = errors;
                         if (
                           !(
-                            typeof data214 == "number" &&
-                            !(data214 % 1) &&
-                            !isNaN(data214) &&
-                            isFinite(data214)
+                            typeof data213 == "number" &&
+                            !(data213 % 1) &&
+                            !isNaN(data213) &&
+                            isFinite(data213)
                           )
                         ) {
                           validate83.errors = [
@@ -26201,9 +26154,9 @@ function validate83(
                           ];
                           return false;
                         }
-                        if (errors === _errs543) {
-                          if (typeof data214 == "number" && isFinite(data214)) {
-                            if (data214 > 4294967295 || isNaN(data214)) {
+                        if (errors === _errs541) {
+                          if (typeof data213 == "number" && isFinite(data213)) {
+                            if (data213 > 4294967295 || isNaN(data213)) {
                               validate83.errors = [
                                 {
                                   instancePath: instancePath + "/callable",
@@ -26219,7 +26172,7 @@ function validate83(
                               ];
                               return false;
                             } else {
-                              if (data214 < 0 || isNaN(data214)) {
+                              if (data213 < 0 || isNaN(data213)) {
                                 validate83.errors = [
                                   {
                                     instancePath: instancePath + "/callable",
@@ -26235,20 +26188,20 @@ function validate83(
                             }
                           }
                         }
-                        var valid121 = _errs543 === errors;
+                        var valid121 = _errs541 === errors;
                       } else {
                         var valid121 = true;
                       }
                       if (valid121) {
                         if (data.dst !== undefined) {
-                          let data215 = data.dst;
-                          const _errs545 = errors;
+                          let data214 = data.dst;
+                          const _errs543 = errors;
                           if (
                             !(
-                              typeof data215 == "number" &&
-                              !(data215 % 1) &&
-                              !isNaN(data215) &&
-                              isFinite(data215)
+                              typeof data214 == "number" &&
+                              !(data214 % 1) &&
+                              !isNaN(data214) &&
+                              isFinite(data214)
                             )
                           ) {
                             validate83.errors = [
@@ -26262,12 +26215,12 @@ function validate83(
                             ];
                             return false;
                           }
-                          if (errors === _errs545) {
+                          if (errors === _errs543) {
                             if (
-                              typeof data215 == "number" &&
-                              isFinite(data215)
+                              typeof data214 == "number" &&
+                              isFinite(data214)
                             ) {
-                              if (data215 > 4294967295 || isNaN(data215)) {
+                              if (data214 > 4294967295 || isNaN(data214)) {
                                 validate83.errors = [
                                   {
                                     instancePath: instancePath + "/dst",
@@ -26283,7 +26236,7 @@ function validate83(
                                 ];
                                 return false;
                               } else {
-                                if (data215 < 0 || isNaN(data215)) {
+                                if (data214 < 0 || isNaN(data214)) {
                                   validate83.errors = [
                                     {
                                       instancePath: instancePath + "/dst",
@@ -26299,15 +26252,15 @@ function validate83(
                               }
                             }
                           }
-                          var valid121 = _errs545 === errors;
+                          var valid121 = _errs543 === errors;
                         } else {
                           var valid121 = true;
                         }
                         if (valid121) {
                           if (data.op !== undefined) {
-                            let data216 = data.op;
-                            const _errs547 = errors;
-                            if (typeof data216 !== "string") {
+                            let data215 = data.op;
+                            const _errs545 = errors;
+                            if (typeof data215 !== "string") {
                               validate83.errors = [
                                 {
                                   instancePath: instancePath + "/op",
@@ -26319,7 +26272,7 @@ function validate83(
                               ];
                               return false;
                             }
-                            if ("task.spawn" !== data216) {
+                            if ("task.spawn" !== data215) {
                               validate83.errors = [
                                 {
                                   instancePath: instancePath + "/op",
@@ -26331,20 +26284,20 @@ function validate83(
                               ];
                               return false;
                             }
-                            var valid121 = _errs547 === errors;
+                            var valid121 = _errs545 === errors;
                           } else {
                             var valid121 = true;
                           }
                           if (valid121) {
                             if (data.scope !== undefined) {
-                              let data217 = data.scope;
-                              const _errs549 = errors;
+                              let data216 = data.scope;
+                              const _errs547 = errors;
                               if (
                                 !(
-                                  typeof data217 == "number" &&
-                                  !(data217 % 1) &&
-                                  !isNaN(data217) &&
-                                  isFinite(data217)
+                                  typeof data216 == "number" &&
+                                  !(data216 % 1) &&
+                                  !isNaN(data216) &&
+                                  isFinite(data216)
                                 )
                               ) {
                                 validate83.errors = [
@@ -26359,12 +26312,12 @@ function validate83(
                                 ];
                                 return false;
                               }
-                              if (errors === _errs549) {
+                              if (errors === _errs547) {
                                 if (
-                                  typeof data217 == "number" &&
-                                  isFinite(data217)
+                                  typeof data216 == "number" &&
+                                  isFinite(data216)
                                 ) {
-                                  if (data217 > 4294967295 || isNaN(data217)) {
+                                  if (data216 > 4294967295 || isNaN(data216)) {
                                     validate83.errors = [
                                       {
                                         instancePath: instancePath + "/scope",
@@ -26380,7 +26333,7 @@ function validate83(
                                     ];
                                     return false;
                                   } else {
-                                    if (data217 < 0 || isNaN(data217)) {
+                                    if (data216 < 0 || isNaN(data216)) {
                                       validate83.errors = [
                                         {
                                           instancePath: instancePath + "/scope",
@@ -26399,7 +26352,7 @@ function validate83(
                                   }
                                 }
                               }
-                              var valid121 = _errs549 === errors;
+                              var valid121 = _errs547 === errors;
                             } else {
                               var valid121 = true;
                             }
@@ -26428,8 +26381,8 @@ function validate83(
                   props1.scope = true;
                 }
               } else if (tag0 === "task.invoke") {
-                const _errs551 = errors;
-                if (errors === _errs551) {
+                const _errs549 = errors;
+                if (errors === _errs549) {
                   if (data && typeof data == "object" && !Array.isArray(data)) {
                     let missing53;
                     if (
@@ -26452,18 +26405,18 @@ function validate83(
                       return false;
                     } else {
                       if (data.args !== undefined) {
-                        let data218 = data.args;
-                        const _errs553 = errors;
-                        if (errors === _errs553) {
-                          if (Array.isArray(data218)) {
+                        let data217 = data.args;
+                        const _errs551 = errors;
+                        if (errors === _errs551) {
+                          if (Array.isArray(data217)) {
                             var valid124 = true;
-                            const len11 = data218.length;
+                            const len11 = data217.length;
                             for (let i11 = 0; i11 < len11; i11++) {
-                              const _errs555 = errors;
+                              const _errs553 = errors;
                               if (
-                                !validate94(data218[i11], {
+                                !validate94(data217[i11], {
                                   instancePath: instancePath + "/args/" + i11,
-                                  parentData: data218,
+                                  parentData: data217,
                                   parentDataProperty: i11,
                                   rootData,
                                   dynamicAnchors,
@@ -26475,7 +26428,7 @@ function validate83(
                                     : vErrors.concat(validate94.errors);
                                 errors = vErrors.length;
                               }
-                              var valid124 = _errs555 === errors;
+                              var valid124 = _errs553 === errors;
                               if (!valid124) {
                                 break;
                               }
@@ -26493,13 +26446,13 @@ function validate83(
                             return false;
                           }
                         }
-                        var valid123 = _errs553 === errors;
+                        var valid123 = _errs551 === errors;
                       } else {
                         var valid123 = true;
                       }
                       if (valid123) {
                         if (data.callee !== undefined) {
-                          const _errs556 = errors;
+                          const _errs554 = errors;
                           if (
                             !validate98(data.callee, {
                               instancePath: instancePath + "/callee",
@@ -26515,20 +26468,20 @@ function validate83(
                                 : vErrors.concat(validate98.errors);
                             errors = vErrors.length;
                           }
-                          var valid123 = _errs556 === errors;
+                          var valid123 = _errs554 === errors;
                         } else {
                           var valid123 = true;
                         }
                         if (valid123) {
                           if (data.dst !== undefined) {
-                            let data221 = data.dst;
-                            const _errs557 = errors;
+                            let data220 = data.dst;
+                            const _errs555 = errors;
                             if (
                               !(
-                                typeof data221 == "number" &&
-                                !(data221 % 1) &&
-                                !isNaN(data221) &&
-                                isFinite(data221)
+                                typeof data220 == "number" &&
+                                !(data220 % 1) &&
+                                !isNaN(data220) &&
+                                isFinite(data220)
                               )
                             ) {
                               validate83.errors = [
@@ -26542,12 +26495,12 @@ function validate83(
                               ];
                               return false;
                             }
-                            if (errors === _errs557) {
+                            if (errors === _errs555) {
                               if (
-                                typeof data221 == "number" &&
-                                isFinite(data221)
+                                typeof data220 == "number" &&
+                                isFinite(data220)
                               ) {
-                                if (data221 > 4294967295 || isNaN(data221)) {
+                                if (data220 > 4294967295 || isNaN(data220)) {
                                   validate83.errors = [
                                     {
                                       instancePath: instancePath + "/dst",
@@ -26563,7 +26516,7 @@ function validate83(
                                   ];
                                   return false;
                                 } else {
-                                  if (data221 < 0 || isNaN(data221)) {
+                                  if (data220 < 0 || isNaN(data220)) {
                                     validate83.errors = [
                                       {
                                         instancePath: instancePath + "/dst",
@@ -26579,15 +26532,15 @@ function validate83(
                                 }
                               }
                             }
-                            var valid123 = _errs557 === errors;
+                            var valid123 = _errs555 === errors;
                           } else {
                             var valid123 = true;
                           }
                           if (valid123) {
                             if (data.op !== undefined) {
-                              let data222 = data.op;
-                              const _errs559 = errors;
-                              if (typeof data222 !== "string") {
+                              let data221 = data.op;
+                              const _errs557 = errors;
+                              if (typeof data221 !== "string") {
                                 validate83.errors = [
                                   {
                                     instancePath: instancePath + "/op",
@@ -26599,7 +26552,7 @@ function validate83(
                                 ];
                                 return false;
                               }
-                              if ("task.invoke" !== data222) {
+                              if ("task.invoke" !== data221) {
                                 validate83.errors = [
                                   {
                                     instancePath: instancePath + "/op",
@@ -26612,20 +26565,20 @@ function validate83(
                                 ];
                                 return false;
                               }
-                              var valid123 = _errs559 === errors;
+                              var valid123 = _errs557 === errors;
                             } else {
                               var valid123 = true;
                             }
                             if (valid123) {
                               if (data.scope !== undefined) {
-                                let data223 = data.scope;
-                                const _errs561 = errors;
+                                let data222 = data.scope;
+                                const _errs559 = errors;
                                 if (
                                   !(
-                                    typeof data223 == "number" &&
-                                    !(data223 % 1) &&
-                                    !isNaN(data223) &&
-                                    isFinite(data223)
+                                    typeof data222 == "number" &&
+                                    !(data222 % 1) &&
+                                    !isNaN(data222) &&
+                                    isFinite(data222)
                                   )
                                 ) {
                                   validate83.errors = [
@@ -26640,14 +26593,14 @@ function validate83(
                                   ];
                                   return false;
                                 }
-                                if (errors === _errs561) {
+                                if (errors === _errs559) {
                                   if (
-                                    typeof data223 == "number" &&
-                                    isFinite(data223)
+                                    typeof data222 == "number" &&
+                                    isFinite(data222)
                                   ) {
                                     if (
-                                      data223 > 4294967295 ||
-                                      isNaN(data223)
+                                      data222 > 4294967295 ||
+                                      isNaN(data222)
                                     ) {
                                       validate83.errors = [
                                         {
@@ -26664,7 +26617,7 @@ function validate83(
                                       ];
                                       return false;
                                     } else {
-                                      if (data223 < 0 || isNaN(data223)) {
+                                      if (data222 < 0 || isNaN(data222)) {
                                         validate83.errors = [
                                           {
                                             instancePath:
@@ -26684,7 +26637,7 @@ function validate83(
                                     }
                                   }
                                 }
-                                var valid123 = _errs561 === errors;
+                                var valid123 = _errs559 === errors;
                               } else {
                                 var valid123 = true;
                               }
@@ -49828,8 +49781,11 @@ const schema81 = {
       type: "object",
     },
     {
-      properties: { kind: { const: "handle", type: "string" } },
-      required: ["kind"],
+      properties: {
+        category: { $ref: "#/$defs/ManagedHandle" },
+        kind: { const: "handle", type: "string" },
+      },
+      required: ["kind", "category"],
       type: "object",
     },
     {
@@ -49963,11 +49919,11 @@ const schema81 = {
             minimum: 0,
             type: "integer",
           },
-          type: "array",
+          type: ["array", "null"],
         },
-        kind: { const: "closure", type: "string" },
+        kind: { const: "callable", type: "string" },
       },
-      required: ["kind", "captures"],
+      required: ["kind"],
       type: "object",
     },
     {
@@ -50009,6 +49965,23 @@ const schema81 = {
       required: ["kind"],
       type: "object",
     },
+    {
+      properties: {
+        children: {
+          items: {
+            format: "uint32",
+            maximum: 4294967295,
+            minimum: 0,
+            type: "integer",
+          },
+          type: "array",
+        },
+        kind: { const: "provider", type: "string" },
+        provider: { $ref: "#/$defs/ManagedProvider" },
+      },
+      required: ["kind", "provider", "children"],
+      type: "object",
+    },
   ],
   properties: {
     id: { format: "uint32", maximum: 4294967295, minimum: 0, type: "integer" },
@@ -50021,6 +49994,135 @@ const schema81 = {
   required: ["id", "slot_bytes"],
   type: "object",
 };
+const schema82 = {
+  enum: ["actor", "pointer", "borrow", "cancellation"],
+  type: "string",
+};
+function validate263(
+  data,
+  {
+    instancePath = "",
+    parentData,
+    parentDataProperty,
+    rootData = data,
+    dynamicAnchors = {},
+  } = {},
+) {
+  let vErrors = null;
+  let errors = 0;
+  const evaluated0 = validate263.evaluated;
+  if (evaluated0.dynamicProps) {
+    evaluated0.props = undefined;
+  }
+  if (evaluated0.dynamicItems) {
+    evaluated0.items = undefined;
+  }
+  if (typeof data !== "string") {
+    validate263.errors = [
+      {
+        instancePath,
+        schemaPath: "#/type",
+        keyword: "type",
+        params: { type: "string" },
+        message: "must be string",
+      },
+    ];
+    return false;
+  }
+  if (
+    !(
+      data === "actor" ||
+      data === "pointer" ||
+      data === "borrow" ||
+      data === "cancellation"
+    )
+  ) {
+    validate263.errors = [
+      {
+        instancePath,
+        schemaPath: "#/enum",
+        keyword: "enum",
+        params: { allowedValues: schema82.enum },
+        message: "must be equal to one of the allowed values",
+      },
+    ];
+    return false;
+  }
+  validate263.errors = vErrors;
+  return errors === 0;
+}
+validate263.evaluated = { dynamicProps: false, dynamicItems: false };
+const schema83 = {
+  enum: [
+    "task",
+    "actor_call",
+    "stream",
+    "sink",
+    "json",
+    "yaml",
+    "toml",
+    "opaque",
+  ],
+  type: "string",
+};
+function validate265(
+  data,
+  {
+    instancePath = "",
+    parentData,
+    parentDataProperty,
+    rootData = data,
+    dynamicAnchors = {},
+  } = {},
+) {
+  let vErrors = null;
+  let errors = 0;
+  const evaluated0 = validate265.evaluated;
+  if (evaluated0.dynamicProps) {
+    evaluated0.props = undefined;
+  }
+  if (evaluated0.dynamicItems) {
+    evaluated0.items = undefined;
+  }
+  if (typeof data !== "string") {
+    validate265.errors = [
+      {
+        instancePath,
+        schemaPath: "#/type",
+        keyword: "type",
+        params: { type: "string" },
+        message: "must be string",
+      },
+    ];
+    return false;
+  }
+  if (
+    !(
+      data === "task" ||
+      data === "actor_call" ||
+      data === "stream" ||
+      data === "sink" ||
+      data === "json" ||
+      data === "yaml" ||
+      data === "toml" ||
+      data === "opaque"
+    )
+  ) {
+    validate265.errors = [
+      {
+        instancePath,
+        schemaPath: "#/enum",
+        keyword: "enum",
+        params: { allowedValues: schema83.enum },
+        message: "must be equal to one of the allowed values",
+      },
+    ];
+    return false;
+  }
+  validate265.errors = vErrors;
+  return errors === 0;
+}
+validate265.evaluated = { dynamicProps: false, dynamicItems: false };
 function validate262(
   data,
   {
@@ -50123,7 +50225,10 @@ function validate262(
   if (errors === _errs6) {
     if (data && typeof data == "object" && !Array.isArray(data)) {
       let missing1;
-      if (data.kind === undefined && (missing1 = "kind")) {
+      if (
+        (data.kind === undefined && (missing1 = "kind")) ||
+        (data.category === undefined && (missing1 = "category"))
+      ) {
         const err4 = {
           instancePath,
           schemaPath: "#/oneOf/1/required",
@@ -50138,37 +50243,64 @@ function validate262(
         }
         errors++;
       } else {
-        if (data.kind !== undefined) {
-          let data1 = data.kind;
-          if (typeof data1 !== "string") {
-            const err5 = {
-              instancePath: instancePath + "/kind",
-              schemaPath: "#/oneOf/1/properties/kind/type",
-              keyword: "type",
-              params: { type: "string" },
-              message: "must be string",
-            };
-            if (vErrors === null) {
-              vErrors = [err5];
-            } else {
-              vErrors.push(err5);
-            }
-            errors++;
+        if (data.category !== undefined) {
+          const _errs8 = errors;
+          if (
+            !validate263(data.category, {
+              instancePath: instancePath + "/category",
+              parentData: data,
+              parentDataProperty: "category",
+              rootData,
+              dynamicAnchors,
+            })
+          ) {
+            vErrors =
+              vErrors === null
+                ? validate263.errors
+                : vErrors.concat(validate263.errors);
+            errors = vErrors.length;
           }
-          if ("handle" !== data1) {
-            const err6 = {
-              instancePath: instancePath + "/kind",
-              schemaPath: "#/oneOf/1/properties/kind/const",
-              keyword: "const",
-              params: { allowedValue: "handle" },
-              message: "must be equal to constant",
-            };
-            if (vErrors === null) {
-              vErrors = [err6];
-            } else {
-              vErrors.push(err6);
+          var valid2 = _errs8 === errors;
+        } else {
+          var valid2 = true;
+        }
+        if (valid2) {
+          if (data.kind !== undefined) {
+            let data2 = data.kind;
+            const _errs9 = errors;
+            if (typeof data2 !== "string") {
+              const err5 = {
+                instancePath: instancePath + "/kind",
+                schemaPath: "#/oneOf/1/properties/kind/type",
+                keyword: "type",
+                params: { type: "string" },
+                message: "must be string",
+              };
+              if (vErrors === null) {
+                vErrors = [err5];
+              } else {
+                vErrors.push(err5);
+              }
+              errors++;
             }
-            errors++;
+            if ("handle" !== data2) {
+              const err6 = {
+                instancePath: instancePath + "/kind",
+                schemaPath: "#/oneOf/1/properties/kind/const",
+                keyword: "const",
+                params: { allowedValue: "handle" },
+                message: "must be equal to constant",
+              };
+              if (vErrors === null) {
+                vErrors = [err6];
+              } else {
+                vErrors.push(err6);
+              }
+              errors++;
+            }
+            var valid2 = _errs9 === errors;
+          } else {
+            var valid2 = true;
           }
         }
       }
@@ -50198,11 +50330,12 @@ function validate262(
       passing0 = 1;
       if (props0 !== true) {
         props0 = props0 || {};
+        props0.category = true;
         props0.kind = true;
       }
     }
-    const _errs10 = errors;
-    if (errors === _errs10) {
+    const _errs11 = errors;
+    if (errors === _errs11) {
       if (data && typeof data == "object" && !Array.isArray(data)) {
         let missing2;
         if (data.kind === undefined && (missing2 = "kind")) {
@@ -50221,8 +50354,8 @@ function validate262(
           errors++;
         } else {
           if (data.kind !== undefined) {
-            let data2 = data.kind;
-            if (typeof data2 !== "string") {
+            let data3 = data.kind;
+            if (typeof data3 !== "string") {
               const err9 = {
                 instancePath: instancePath + "/kind",
                 schemaPath: "#/oneOf/2/properties/kind/type",
@@ -50237,7 +50370,7 @@ function validate262(
               }
               errors++;
             }
-            if ("string" !== data2) {
+            if ("string" !== data3) {
               const err10 = {
                 instancePath: instancePath + "/kind",
                 schemaPath: "#/oneOf/2/properties/kind/const",
@@ -50270,7 +50403,7 @@ function validate262(
         errors++;
       }
     }
-    var _valid0 = _errs10 === errors;
+    var _valid0 = _errs11 === errors;
     if (_valid0 && valid0) {
       valid0 = false;
       passing0 = [passing0, 2];
@@ -50283,8 +50416,8 @@ function validate262(
           props0.kind = true;
         }
       }
-      const _errs14 = errors;
-      if (errors === _errs14) {
+      const _errs15 = errors;
+      if (errors === _errs15) {
         if (data && typeof data == "object" && !Array.isArray(data)) {
           let missing3;
           if (data.kind === undefined && (missing3 = "kind")) {
@@ -50303,8 +50436,8 @@ function validate262(
             errors++;
           } else {
             if (data.kind !== undefined) {
-              let data3 = data.kind;
-              if (typeof data3 !== "string") {
+              let data4 = data.kind;
+              if (typeof data4 !== "string") {
                 const err13 = {
                   instancePath: instancePath + "/kind",
                   schemaPath: "#/oneOf/3/properties/kind/type",
@@ -50319,7 +50452,7 @@ function validate262(
                 }
                 errors++;
               }
-              if ("bytes" !== data3) {
+              if ("bytes" !== data4) {
                 const err14 = {
                   instancePath: instancePath + "/kind",
                   schemaPath: "#/oneOf/3/properties/kind/const",
@@ -50352,7 +50485,7 @@ function validate262(
           errors++;
         }
       }
-      var _valid0 = _errs14 === errors;
+      var _valid0 = _errs15 === errors;
       if (_valid0 && valid0) {
         valid0 = false;
         passing0 = [passing0, 3];
@@ -50365,8 +50498,8 @@ function validate262(
             props0.kind = true;
           }
         }
-        const _errs18 = errors;
-        if (errors === _errs18) {
+        const _errs19 = errors;
+        if (errors === _errs19) {
           if (data && typeof data == "object" && !Array.isArray(data)) {
             let missing4;
             if (
@@ -50389,14 +50522,14 @@ function validate262(
               errors++;
             } else {
               if (data.element !== undefined) {
-                let data4 = data.element;
-                const _errs20 = errors;
+                let data5 = data.element;
+                const _errs21 = errors;
                 if (
                   !(
-                    typeof data4 == "number" &&
-                    !(data4 % 1) &&
-                    !isNaN(data4) &&
-                    isFinite(data4)
+                    typeof data5 == "number" &&
+                    !(data5 % 1) &&
+                    !isNaN(data5) &&
+                    isFinite(data5)
                   )
                 ) {
                   const err17 = {
@@ -50413,9 +50546,9 @@ function validate262(
                   }
                   errors++;
                 }
-                if (errors === _errs20) {
-                  if (typeof data4 == "number" && isFinite(data4)) {
-                    if (data4 > 4294967295 || isNaN(data4)) {
+                if (errors === _errs21) {
+                  if (typeof data5 == "number" && isFinite(data5)) {
+                    if (data5 > 4294967295 || isNaN(data5)) {
                       const err18 = {
                         instancePath: instancePath + "/element",
                         schemaPath: "#/oneOf/4/properties/element/maximum",
@@ -50430,7 +50563,7 @@ function validate262(
                       }
                       errors++;
                     } else {
-                      if (data4 < 0 || isNaN(data4)) {
+                      if (data5 < 0 || isNaN(data5)) {
                         const err19 = {
                           instancePath: instancePath + "/element",
                           schemaPath: "#/oneOf/4/properties/element/minimum",
@@ -50448,15 +50581,15 @@ function validate262(
                     }
                   }
                 }
-                var valid5 = _errs20 === errors;
+                var valid5 = _errs21 === errors;
               } else {
                 var valid5 = true;
               }
               if (valid5) {
                 if (data.kind !== undefined) {
-                  let data5 = data.kind;
-                  const _errs22 = errors;
-                  if (typeof data5 !== "string") {
+                  let data6 = data.kind;
+                  const _errs23 = errors;
+                  if (typeof data6 !== "string") {
                     const err20 = {
                       instancePath: instancePath + "/kind",
                       schemaPath: "#/oneOf/4/properties/kind/type",
@@ -50471,7 +50604,7 @@ function validate262(
                     }
                     errors++;
                   }
-                  if ("vector" !== data5) {
+                  if ("vector" !== data6) {
                     const err21 = {
                       instancePath: instancePath + "/kind",
                       schemaPath: "#/oneOf/4/properties/kind/const",
@@ -50486,13 +50619,13 @@ function validate262(
                     }
                     errors++;
                   }
-                  var valid5 = _errs22 === errors;
+                  var valid5 = _errs23 === errors;
                 } else {
                   var valid5 = true;
                 }
                 if (valid5) {
                   if (data.share_on_copy !== undefined) {
-                    const _errs24 = errors;
+                    const _errs25 = errors;
                     if (typeof data.share_on_copy !== "boolean") {
                       const err22 = {
                         instancePath: instancePath + "/share_on_copy",
@@ -50508,7 +50641,7 @@ function validate262(
                       }
                       errors++;
                     }
-                    var valid5 = _errs24 === errors;
+                    var valid5 = _errs25 === errors;
                   } else {
                     var valid5 = true;
                   }
@@ -50531,7 +50664,7 @@ function validate262(
             errors++;
           }
         }
-        var _valid0 = _errs18 === errors;
+        var _valid0 = _errs19 === errors;
         if (_valid0 && valid0) {
           valid0 = false;
           passing0 = [passing0, 4];
@@ -50546,8 +50679,8 @@ function validate262(
               props0.share_on_copy = true;
             }
           }
-          const _errs26 = errors;
-          if (errors === _errs26) {
+          const _errs27 = errors;
+          if (errors === _errs27) {
             if (data && typeof data == "object" && !Array.isArray(data)) {
               let missing5;
               if (
@@ -50572,14 +50705,14 @@ function validate262(
                 errors++;
               } else {
                 if (data.element !== undefined) {
-                  let data7 = data.element;
-                  const _errs28 = errors;
+                  let data8 = data.element;
+                  const _errs29 = errors;
                   if (
                     !(
-                      typeof data7 == "number" &&
-                      !(data7 % 1) &&
-                      !isNaN(data7) &&
-                      isFinite(data7)
+                      typeof data8 == "number" &&
+                      !(data8 % 1) &&
+                      !isNaN(data8) &&
+                      isFinite(data8)
                     )
                   ) {
                     const err25 = {
@@ -50596,9 +50729,9 @@ function validate262(
                     }
                     errors++;
                   }
-                  if (errors === _errs28) {
-                    if (typeof data7 == "number" && isFinite(data7)) {
-                      if (data7 > 4294967295 || isNaN(data7)) {
+                  if (errors === _errs29) {
+                    if (typeof data8 == "number" && isFinite(data8)) {
+                      if (data8 > 4294967295 || isNaN(data8)) {
                         const err26 = {
                           instancePath: instancePath + "/element",
                           schemaPath: "#/oneOf/5/properties/element/maximum",
@@ -50613,7 +50746,7 @@ function validate262(
                         }
                         errors++;
                       } else {
-                        if (data7 < 0 || isNaN(data7)) {
+                        if (data8 < 0 || isNaN(data8)) {
                           const err27 = {
                             instancePath: instancePath + "/element",
                             schemaPath: "#/oneOf/5/properties/element/minimum",
@@ -50631,15 +50764,15 @@ function validate262(
                       }
                     }
                   }
-                  var valid6 = _errs28 === errors;
+                  var valid6 = _errs29 === errors;
                 } else {
                   var valid6 = true;
                 }
                 if (valid6) {
                   if (data.kind !== undefined) {
-                    let data8 = data.kind;
-                    const _errs30 = errors;
-                    if (typeof data8 !== "string") {
+                    let data9 = data.kind;
+                    const _errs31 = errors;
+                    if (typeof data9 !== "string") {
                       const err28 = {
                         instancePath: instancePath + "/kind",
                         schemaPath: "#/oneOf/5/properties/kind/type",
@@ -50654,7 +50787,7 @@ function validate262(
                       }
                       errors++;
                     }
-                    if ("array" !== data8) {
+                    if ("array" !== data9) {
                       const err29 = {
                         instancePath: instancePath + "/kind",
                         schemaPath: "#/oneOf/5/properties/kind/const",
@@ -50669,13 +50802,13 @@ function validate262(
                       }
                       errors++;
                     }
-                    var valid6 = _errs30 === errors;
+                    var valid6 = _errs31 === errors;
                   } else {
                     var valid6 = true;
                   }
                   if (valid6) {
                     if (data.length !== undefined) {
-                      const _errs32 = errors;
+                      const _errs33 = errors;
                       if (typeof data.length !== "string") {
                         const err30 = {
                           instancePath: instancePath + "/length",
@@ -50691,13 +50824,13 @@ function validate262(
                         }
                         errors++;
                       }
-                      var valid6 = _errs32 === errors;
+                      var valid6 = _errs33 === errors;
                     } else {
                       var valid6 = true;
                     }
                     if (valid6) {
                       if (data.share_on_copy !== undefined) {
-                        const _errs34 = errors;
+                        const _errs35 = errors;
                         if (typeof data.share_on_copy !== "boolean") {
                           const err31 = {
                             instancePath: instancePath + "/share_on_copy",
@@ -50714,7 +50847,7 @@ function validate262(
                           }
                           errors++;
                         }
-                        var valid6 = _errs34 === errors;
+                        var valid6 = _errs35 === errors;
                       } else {
                         var valid6 = true;
                       }
@@ -50738,7 +50871,7 @@ function validate262(
               errors++;
             }
           }
-          var _valid0 = _errs26 === errors;
+          var _valid0 = _errs27 === errors;
           if (_valid0 && valid0) {
             valid0 = false;
             passing0 = [passing0, 5];
@@ -50754,8 +50887,8 @@ function validate262(
                 props0.share_on_copy = true;
               }
             }
-            const _errs36 = errors;
-            if (errors === _errs36) {
+            const _errs37 = errors;
+            if (errors === _errs37) {
               if (data && typeof data == "object" && !Array.isArray(data)) {
                 let missing6;
                 if (
@@ -50779,14 +50912,14 @@ function validate262(
                   errors++;
                 } else {
                   if (data.element !== undefined) {
-                    let data11 = data.element;
-                    const _errs38 = errors;
+                    let data12 = data.element;
+                    const _errs39 = errors;
                     if (
                       !(
-                        typeof data11 == "number" &&
-                        !(data11 % 1) &&
-                        !isNaN(data11) &&
-                        isFinite(data11)
+                        typeof data12 == "number" &&
+                        !(data12 % 1) &&
+                        !isNaN(data12) &&
+                        isFinite(data12)
                       )
                     ) {
                       const err34 = {
@@ -50803,9 +50936,9 @@ function validate262(
                       }
                       errors++;
                     }
-                    if (errors === _errs38) {
-                      if (typeof data11 == "number" && isFinite(data11)) {
-                        if (data11 > 4294967295 || isNaN(data11)) {
+                    if (errors === _errs39) {
+                      if (typeof data12 == "number" && isFinite(data12)) {
+                        if (data12 > 4294967295 || isNaN(data12)) {
                           const err35 = {
                             instancePath: instancePath + "/element",
                             schemaPath: "#/oneOf/6/properties/element/maximum",
@@ -50820,7 +50953,7 @@ function validate262(
                           }
                           errors++;
                         } else {
-                          if (data11 < 0 || isNaN(data11)) {
+                          if (data12 < 0 || isNaN(data12)) {
                             const err36 = {
                               instancePath: instancePath + "/element",
                               schemaPath:
@@ -50839,15 +50972,15 @@ function validate262(
                         }
                       }
                     }
-                    var valid7 = _errs38 === errors;
+                    var valid7 = _errs39 === errors;
                   } else {
                     var valid7 = true;
                   }
                   if (valid7) {
                     if (data.kind !== undefined) {
-                      let data12 = data.kind;
-                      const _errs40 = errors;
-                      if (typeof data12 !== "string") {
+                      let data13 = data.kind;
+                      const _errs41 = errors;
+                      if (typeof data13 !== "string") {
                         const err37 = {
                           instancePath: instancePath + "/kind",
                           schemaPath: "#/oneOf/6/properties/kind/type",
@@ -50862,7 +50995,7 @@ function validate262(
                         }
                         errors++;
                       }
-                      if ("slice" !== data12) {
+                      if ("slice" !== data13) {
                         const err38 = {
                           instancePath: instancePath + "/kind",
                           schemaPath: "#/oneOf/6/properties/kind/const",
@@ -50877,13 +51010,13 @@ function validate262(
                         }
                         errors++;
                       }
-                      var valid7 = _errs40 === errors;
+                      var valid7 = _errs41 === errors;
                     } else {
                       var valid7 = true;
                     }
                     if (valid7) {
                       if (data.share_on_copy !== undefined) {
-                        const _errs42 = errors;
+                        const _errs43 = errors;
                         if (typeof data.share_on_copy !== "boolean") {
                           const err39 = {
                             instancePath: instancePath + "/share_on_copy",
@@ -50900,7 +51033,7 @@ function validate262(
                           }
                           errors++;
                         }
-                        var valid7 = _errs42 === errors;
+                        var valid7 = _errs43 === errors;
                       } else {
                         var valid7 = true;
                       }
@@ -50923,7 +51056,7 @@ function validate262(
                 errors++;
               }
             }
-            var _valid0 = _errs36 === errors;
+            var _valid0 = _errs37 === errors;
             if (_valid0 && valid0) {
               valid0 = false;
               passing0 = [passing0, 6];
@@ -50938,8 +51071,8 @@ function validate262(
                   props0.share_on_copy = true;
                 }
               }
-              const _errs44 = errors;
-              if (errors === _errs44) {
+              const _errs45 = errors;
+              if (errors === _errs45) {
                 if (data && typeof data == "object" && !Array.isArray(data)) {
                   let missing7;
                   if (
@@ -50962,14 +51095,14 @@ function validate262(
                     errors++;
                   } else {
                     if (data.key !== undefined) {
-                      let data14 = data.key;
-                      const _errs46 = errors;
+                      let data15 = data.key;
+                      const _errs47 = errors;
                       if (
                         !(
-                          typeof data14 == "number" &&
-                          !(data14 % 1) &&
-                          !isNaN(data14) &&
-                          isFinite(data14)
+                          typeof data15 == "number" &&
+                          !(data15 % 1) &&
+                          !isNaN(data15) &&
+                          isFinite(data15)
                         )
                       ) {
                         const err42 = {
@@ -50986,9 +51119,9 @@ function validate262(
                         }
                         errors++;
                       }
-                      if (errors === _errs46) {
-                        if (typeof data14 == "number" && isFinite(data14)) {
-                          if (data14 > 4294967295 || isNaN(data14)) {
+                      if (errors === _errs47) {
+                        if (typeof data15 == "number" && isFinite(data15)) {
+                          if (data15 > 4294967295 || isNaN(data15)) {
                             const err43 = {
                               instancePath: instancePath + "/key",
                               schemaPath: "#/oneOf/7/properties/key/maximum",
@@ -51003,7 +51136,7 @@ function validate262(
                             }
                             errors++;
                           } else {
-                            if (data14 < 0 || isNaN(data14)) {
+                            if (data15 < 0 || isNaN(data15)) {
                               const err44 = {
                                 instancePath: instancePath + "/key",
                                 schemaPath: "#/oneOf/7/properties/key/minimum",
@@ -51021,15 +51154,15 @@ function validate262(
                           }
                         }
                       }
-                      var valid8 = _errs46 === errors;
+                      var valid8 = _errs47 === errors;
                     } else {
                       var valid8 = true;
                     }
                     if (valid8) {
                       if (data.kind !== undefined) {
-                        let data15 = data.kind;
-                        const _errs48 = errors;
-                        if (typeof data15 !== "string") {
+                        let data16 = data.kind;
+                        const _errs49 = errors;
+                        if (typeof data16 !== "string") {
                           const err45 = {
                             instancePath: instancePath + "/kind",
                             schemaPath: "#/oneOf/7/properties/kind/type",
@@ -51044,7 +51177,7 @@ function validate262(
                           }
                           errors++;
                         }
-                        if ("map" !== data15) {
+                        if ("map" !== data16) {
                           const err46 = {
                             instancePath: instancePath + "/kind",
                             schemaPath: "#/oneOf/7/properties/kind/const",
@@ -51059,20 +51192,20 @@ function validate262(
                           }
                           errors++;
                         }
-                        var valid8 = _errs48 === errors;
+                        var valid8 = _errs49 === errors;
                       } else {
                         var valid8 = true;
                       }
                       if (valid8) {
                         if (data.value !== undefined) {
-                          let data16 = data.value;
-                          const _errs50 = errors;
+                          let data17 = data.value;
+                          const _errs51 = errors;
                           if (
                             !(
-                              typeof data16 == "number" &&
-                              !(data16 % 1) &&
-                              !isNaN(data16) &&
-                              isFinite(data16)
+                              typeof data17 == "number" &&
+                              !(data17 % 1) &&
+                              !isNaN(data17) &&
+                              isFinite(data17)
                             )
                           ) {
                             const err47 = {
@@ -51089,9 +51222,9 @@ function validate262(
                             }
                             errors++;
                           }
-                          if (errors === _errs50) {
-                            if (typeof data16 == "number" && isFinite(data16)) {
-                              if (data16 > 4294967295 || isNaN(data16)) {
+                          if (errors === _errs51) {
+                            if (typeof data17 == "number" && isFinite(data17)) {
+                              if (data17 > 4294967295 || isNaN(data17)) {
                                 const err48 = {
                                   instancePath: instancePath + "/value",
                                   schemaPath:
@@ -51110,7 +51243,7 @@ function validate262(
                                 }
                                 errors++;
                               } else {
-                                if (data16 < 0 || isNaN(data16)) {
+                                if (data17 < 0 || isNaN(data17)) {
                                   const err49 = {
                                     instancePath: instancePath + "/value",
                                     schemaPath:
@@ -51129,7 +51262,7 @@ function validate262(
                               }
                             }
                           }
-                          var valid8 = _errs50 === errors;
+                          var valid8 = _errs51 === errors;
                         } else {
                           var valid8 = true;
                         }
@@ -51152,7 +51285,7 @@ function validate262(
                   errors++;
                 }
               }
-              var _valid0 = _errs44 === errors;
+              var _valid0 = _errs45 === errors;
               if (_valid0 && valid0) {
                 valid0 = false;
                 passing0 = [passing0, 7];
@@ -51167,8 +51300,8 @@ function validate262(
                     props0.value = true;
                   }
                 }
-                const _errs52 = errors;
-                if (errors === _errs52) {
+                const _errs53 = errors;
+                if (errors === _errs53) {
                   if (data && typeof data == "object" && !Array.isArray(data)) {
                     let missing8;
                     if (
@@ -51191,14 +51324,14 @@ function validate262(
                       errors++;
                     } else {
                       if (data.element !== undefined) {
-                        let data17 = data.element;
-                        const _errs54 = errors;
+                        let data18 = data.element;
+                        const _errs55 = errors;
                         if (
                           !(
-                            typeof data17 == "number" &&
-                            !(data17 % 1) &&
-                            !isNaN(data17) &&
-                            isFinite(data17)
+                            typeof data18 == "number" &&
+                            !(data18 % 1) &&
+                            !isNaN(data18) &&
+                            isFinite(data18)
                           )
                         ) {
                           const err52 = {
@@ -51215,9 +51348,9 @@ function validate262(
                           }
                           errors++;
                         }
-                        if (errors === _errs54) {
-                          if (typeof data17 == "number" && isFinite(data17)) {
-                            if (data17 > 4294967295 || isNaN(data17)) {
+                        if (errors === _errs55) {
+                          if (typeof data18 == "number" && isFinite(data18)) {
+                            if (data18 > 4294967295 || isNaN(data18)) {
                               const err53 = {
                                 instancePath: instancePath + "/element",
                                 schemaPath:
@@ -51233,7 +51366,7 @@ function validate262(
                               }
                               errors++;
                             } else {
-                              if (data17 < 0 || isNaN(data17)) {
+                              if (data18 < 0 || isNaN(data18)) {
                                 const err54 = {
                                   instancePath: instancePath + "/element",
                                   schemaPath:
@@ -51252,15 +51385,15 @@ function validate262(
                             }
                           }
                         }
-                        var valid9 = _errs54 === errors;
+                        var valid9 = _errs55 === errors;
                       } else {
                         var valid9 = true;
                       }
                       if (valid9) {
                         if (data.kind !== undefined) {
-                          let data18 = data.kind;
-                          const _errs56 = errors;
-                          if (typeof data18 !== "string") {
+                          let data19 = data.kind;
+                          const _errs57 = errors;
+                          if (typeof data19 !== "string") {
                             const err55 = {
                               instancePath: instancePath + "/kind",
                               schemaPath: "#/oneOf/8/properties/kind/type",
@@ -51275,7 +51408,7 @@ function validate262(
                             }
                             errors++;
                           }
-                          if ("set" !== data18) {
+                          if ("set" !== data19) {
                             const err56 = {
                               instancePath: instancePath + "/kind",
                               schemaPath: "#/oneOf/8/properties/kind/const",
@@ -51290,7 +51423,7 @@ function validate262(
                             }
                             errors++;
                           }
-                          var valid9 = _errs56 === errors;
+                          var valid9 = _errs57 === errors;
                         } else {
                           var valid9 = true;
                         }
@@ -51312,7 +51445,7 @@ function validate262(
                     errors++;
                   }
                 }
-                var _valid0 = _errs52 === errors;
+                var _valid0 = _errs53 === errors;
                 if (_valid0 && valid0) {
                   valid0 = false;
                   passing0 = [passing0, 8];
@@ -51326,8 +51459,8 @@ function validate262(
                       props0.kind = true;
                     }
                   }
-                  const _errs58 = errors;
-                  if (errors === _errs58) {
+                  const _errs59 = errors;
+                  if (errors === _errs59) {
                     if (
                       data &&
                       typeof data == "object" &&
@@ -51354,21 +51487,21 @@ function validate262(
                         errors++;
                       } else {
                         if (data.fields !== undefined) {
-                          let data19 = data.fields;
-                          const _errs60 = errors;
-                          if (errors === _errs60) {
-                            if (Array.isArray(data19)) {
+                          let data20 = data.fields;
+                          const _errs61 = errors;
+                          if (errors === _errs61) {
+                            if (Array.isArray(data20)) {
                               var valid11 = true;
-                              const len0 = data19.length;
+                              const len0 = data20.length;
                               for (let i0 = 0; i0 < len0; i0++) {
-                                let data20 = data19[i0];
-                                const _errs62 = errors;
+                                let data21 = data20[i0];
+                                const _errs63 = errors;
                                 if (
                                   !(
-                                    typeof data20 == "number" &&
-                                    !(data20 % 1) &&
-                                    !isNaN(data20) &&
-                                    isFinite(data20)
+                                    typeof data21 == "number" &&
+                                    !(data21 % 1) &&
+                                    !isNaN(data21) &&
+                                    isFinite(data21)
                                   )
                                 ) {
                                   const err59 = {
@@ -51387,12 +51520,12 @@ function validate262(
                                   }
                                   errors++;
                                 }
-                                if (errors === _errs62) {
+                                if (errors === _errs63) {
                                   if (
-                                    typeof data20 == "number" &&
-                                    isFinite(data20)
+                                    typeof data21 == "number" &&
+                                    isFinite(data21)
                                   ) {
-                                    if (data20 > 4294967295 || isNaN(data20)) {
+                                    if (data21 > 4294967295 || isNaN(data21)) {
                                       const err60 = {
                                         instancePath:
                                           instancePath + "/fields/" + i0,
@@ -51412,7 +51545,7 @@ function validate262(
                                       }
                                       errors++;
                                     } else {
-                                      if (data20 < 0 || isNaN(data20)) {
+                                      if (data21 < 0 || isNaN(data21)) {
                                         const err61 = {
                                           instancePath:
                                             instancePath + "/fields/" + i0,
@@ -51435,7 +51568,7 @@ function validate262(
                                     }
                                   }
                                 }
-                                var valid11 = _errs62 === errors;
+                                var valid11 = _errs63 === errors;
                                 if (!valid11) {
                                   break;
                                 }
@@ -51456,15 +51589,15 @@ function validate262(
                               errors++;
                             }
                           }
-                          var valid10 = _errs60 === errors;
+                          var valid10 = _errs61 === errors;
                         } else {
                           var valid10 = true;
                         }
                         if (valid10) {
                           if (data.kind !== undefined) {
-                            let data21 = data.kind;
-                            const _errs64 = errors;
-                            if (typeof data21 !== "string") {
+                            let data22 = data.kind;
+                            const _errs65 = errors;
+                            if (typeof data22 !== "string") {
                               const err63 = {
                                 instancePath: instancePath + "/kind",
                                 schemaPath: "#/oneOf/9/properties/kind/type",
@@ -51479,7 +51612,7 @@ function validate262(
                               }
                               errors++;
                             }
-                            if ("aggregate" !== data21) {
+                            if ("aggregate" !== data22) {
                               const err64 = {
                                 instancePath: instancePath + "/kind",
                                 schemaPath: "#/oneOf/9/properties/kind/const",
@@ -51494,7 +51627,7 @@ function validate262(
                               }
                               errors++;
                             }
-                            var valid10 = _errs64 === errors;
+                            var valid10 = _errs65 === errors;
                           } else {
                             var valid10 = true;
                           }
@@ -51516,7 +51649,7 @@ function validate262(
                       errors++;
                     }
                   }
-                  var _valid0 = _errs58 === errors;
+                  var _valid0 = _errs59 === errors;
                   if (_valid0 && valid0) {
                     valid0 = false;
                     passing0 = [passing0, 9];
@@ -51530,8 +51663,8 @@ function validate262(
                         props0.kind = true;
                       }
                     }
-                    const _errs66 = errors;
-                    if (errors === _errs66) {
+                    const _errs67 = errors;
+                    if (errors === _errs67) {
                       if (
                         data &&
                         typeof data == "object" &&
@@ -51562,28 +51695,28 @@ function validate262(
                           errors++;
                         } else {
                           if (data.cases !== undefined) {
-                            let data22 = data.cases;
-                            const _errs68 = errors;
-                            if (errors === _errs68) {
-                              if (Array.isArray(data22)) {
+                            let data23 = data.cases;
+                            const _errs69 = errors;
+                            if (errors === _errs69) {
+                              if (Array.isArray(data23)) {
                                 var valid13 = true;
-                                const len1 = data22.length;
+                                const len1 = data23.length;
                                 for (let i1 = 0; i1 < len1; i1++) {
-                                  let data23 = data22[i1];
-                                  const _errs70 = errors;
-                                  if (errors === _errs70) {
-                                    if (Array.isArray(data23)) {
+                                  let data24 = data23[i1];
+                                  const _errs71 = errors;
+                                  if (errors === _errs71) {
+                                    if (Array.isArray(data24)) {
                                       var valid14 = true;
-                                      const len2 = data23.length;
+                                      const len2 = data24.length;
                                       for (let i2 = 0; i2 < len2; i2++) {
-                                        let data24 = data23[i2];
-                                        const _errs72 = errors;
+                                        let data25 = data24[i2];
+                                        const _errs73 = errors;
                                         if (
                                           !(
-                                            typeof data24 == "number" &&
-                                            !(data24 % 1) &&
-                                            !isNaN(data24) &&
-                                            isFinite(data24)
+                                            typeof data25 == "number" &&
+                                            !(data25 % 1) &&
+                                            !isNaN(data25) &&
+                                            isFinite(data25)
                                           )
                                         ) {
                                           const err67 = {
@@ -51606,14 +51739,14 @@ function validate262(
                                           }
                                           errors++;
                                         }
-                                        if (errors === _errs72) {
+                                        if (errors === _errs73) {
                                           if (
-                                            typeof data24 == "number" &&
-                                            isFinite(data24)
+                                            typeof data25 == "number" &&
+                                            isFinite(data25)
                                           ) {
                                             if (
-                                              data24 > 4294967295 ||
-                                              isNaN(data24)
+                                              data25 > 4294967295 ||
+                                              isNaN(data25)
                                             ) {
                                               const err68 = {
                                                 instancePath:
@@ -51639,7 +51772,7 @@ function validate262(
                                               }
                                               errors++;
                                             } else {
-                                              if (data24 < 0 || isNaN(data24)) {
+                                              if (data25 < 0 || isNaN(data25)) {
                                                 const err69 = {
                                                   instancePath:
                                                     instancePath +
@@ -51666,7 +51799,7 @@ function validate262(
                                             }
                                           }
                                         }
-                                        var valid14 = _errs72 === errors;
+                                        var valid14 = _errs73 === errors;
                                         if (!valid14) {
                                           break;
                                         }
@@ -51689,7 +51822,7 @@ function validate262(
                                       errors++;
                                     }
                                   }
-                                  var valid13 = _errs70 === errors;
+                                  var valid13 = _errs71 === errors;
                                   if (!valid13) {
                                     break;
                                   }
@@ -51711,13 +51844,13 @@ function validate262(
                                 errors++;
                               }
                             }
-                            var valid12 = _errs68 === errors;
+                            var valid12 = _errs69 === errors;
                           } else {
                             var valid12 = true;
                           }
                           if (valid12) {
                             if (data.indirect !== undefined) {
-                              const _errs74 = errors;
+                              const _errs75 = errors;
                               if (typeof data.indirect !== "boolean") {
                                 const err72 = {
                                   instancePath: instancePath + "/indirect",
@@ -51734,15 +51867,15 @@ function validate262(
                                 }
                                 errors++;
                               }
-                              var valid12 = _errs74 === errors;
+                              var valid12 = _errs75 === errors;
                             } else {
                               var valid12 = true;
                             }
                             if (valid12) {
                               if (data.kind !== undefined) {
-                                let data26 = data.kind;
-                                const _errs76 = errors;
-                                if (typeof data26 !== "string") {
+                                let data27 = data.kind;
+                                const _errs77 = errors;
+                                if (typeof data27 !== "string") {
                                   const err73 = {
                                     instancePath: instancePath + "/kind",
                                     schemaPath:
@@ -51758,7 +51891,7 @@ function validate262(
                                   }
                                   errors++;
                                 }
-                                if ("variant" !== data26) {
+                                if ("variant" !== data27) {
                                   const err74 = {
                                     instancePath: instancePath + "/kind",
                                     schemaPath:
@@ -51774,13 +51907,13 @@ function validate262(
                                   }
                                   errors++;
                                 }
-                                var valid12 = _errs76 === errors;
+                                var valid12 = _errs77 === errors;
                               } else {
                                 var valid12 = true;
                               }
                               if (valid12) {
                                 if (data.payload_bytes !== undefined) {
-                                  const _errs78 = errors;
+                                  const _errs79 = errors;
                                   if (typeof data.payload_bytes !== "string") {
                                     const err75 = {
                                       instancePath:
@@ -51798,7 +51931,7 @@ function validate262(
                                     }
                                     errors++;
                                   }
-                                  var valid12 = _errs78 === errors;
+                                  var valid12 = _errs79 === errors;
                                 } else {
                                   var valid12 = true;
                                 }
@@ -51822,7 +51955,7 @@ function validate262(
                         errors++;
                       }
                     }
-                    var _valid0 = _errs66 === errors;
+                    var _valid0 = _errs67 === errors;
                     if (_valid0 && valid0) {
                       valid0 = false;
                       passing0 = [passing0, 10];
@@ -51838,19 +51971,15 @@ function validate262(
                           props0.payload_bytes = true;
                         }
                       }
-                      const _errs80 = errors;
-                      if (errors === _errs80) {
+                      const _errs81 = errors;
+                      if (errors === _errs81) {
                         if (
                           data &&
                           typeof data == "object" &&
                           !Array.isArray(data)
                         ) {
                           let missing11;
-                          if (
-                            (data.kind === undefined && (missing11 = "kind")) ||
-                            (data.captures === undefined &&
-                              (missing11 = "captures"))
-                          ) {
+                          if (data.kind === undefined && (missing11 = "kind")) {
                             const err77 = {
                               instancePath,
                               schemaPath: "#/oneOf/11/required",
@@ -51869,24 +51998,43 @@ function validate262(
                             errors++;
                           } else {
                             if (data.captures !== undefined) {
-                              let data28 = data.captures;
-                              const _errs82 = errors;
-                              if (errors === _errs82) {
-                                if (Array.isArray(data28)) {
+                              let data29 = data.captures;
+                              const _errs83 = errors;
+                              if (!Array.isArray(data29) && data29 !== null) {
+                                const err78 = {
+                                  instancePath: instancePath + "/captures",
+                                  schemaPath:
+                                    "#/oneOf/11/properties/captures/type",
+                                  keyword: "type",
+                                  params: {
+                                    type: schema81.oneOf[11].properties.captures
+                                      .type,
+                                  },
+                                  message: "must be array,null",
+                                };
+                                if (vErrors === null) {
+                                  vErrors = [err78];
+                                } else {
+                                  vErrors.push(err78);
+                                }
+                                errors++;
+                              }
+                              if (errors === _errs83) {
+                                if (Array.isArray(data29)) {
                                   var valid16 = true;
-                                  const len3 = data28.length;
+                                  const len3 = data29.length;
                                   for (let i3 = 0; i3 < len3; i3++) {
-                                    let data29 = data28[i3];
-                                    const _errs84 = errors;
+                                    let data30 = data29[i3];
+                                    const _errs85 = errors;
                                     if (
                                       !(
-                                        typeof data29 == "number" &&
-                                        !(data29 % 1) &&
-                                        !isNaN(data29) &&
-                                        isFinite(data29)
+                                        typeof data30 == "number" &&
+                                        !(data30 % 1) &&
+                                        !isNaN(data30) &&
+                                        isFinite(data30)
                                       )
                                     ) {
-                                      const err78 = {
+                                      const err79 = {
                                         instancePath:
                                           instancePath + "/captures/" + i3,
                                         schemaPath:
@@ -51896,22 +52044,22 @@ function validate262(
                                         message: "must be integer",
                                       };
                                       if (vErrors === null) {
-                                        vErrors = [err78];
+                                        vErrors = [err79];
                                       } else {
-                                        vErrors.push(err78);
+                                        vErrors.push(err79);
                                       }
                                       errors++;
                                     }
-                                    if (errors === _errs84) {
+                                    if (errors === _errs85) {
                                       if (
-                                        typeof data29 == "number" &&
-                                        isFinite(data29)
+                                        typeof data30 == "number" &&
+                                        isFinite(data30)
                                       ) {
                                         if (
-                                          data29 > 4294967295 ||
-                                          isNaN(data29)
+                                          data30 > 4294967295 ||
+                                          isNaN(data30)
                                         ) {
-                                          const err79 = {
+                                          const err80 = {
                                             instancePath:
                                               instancePath + "/captures/" + i3,
                                             schemaPath:
@@ -51924,14 +52072,14 @@ function validate262(
                                             message: "must be <= 4294967295",
                                           };
                                           if (vErrors === null) {
-                                            vErrors = [err79];
+                                            vErrors = [err80];
                                           } else {
-                                            vErrors.push(err79);
+                                            vErrors.push(err80);
                                           }
                                           errors++;
                                         } else {
-                                          if (data29 < 0 || isNaN(data29)) {
-                                            const err80 = {
+                                          if (data30 < 0 || isNaN(data30)) {
+                                            const err81 = {
                                               instancePath:
                                                 instancePath +
                                                 "/captures/" +
@@ -51946,46 +52094,31 @@ function validate262(
                                               message: "must be >= 0",
                                             };
                                             if (vErrors === null) {
-                                              vErrors = [err80];
+                                              vErrors = [err81];
                                             } else {
-                                              vErrors.push(err80);
+                                              vErrors.push(err81);
                                             }
                                             errors++;
                                           }
                                         }
                                       }
                                     }
-                                    var valid16 = _errs84 === errors;
+                                    var valid16 = _errs85 === errors;
                                     if (!valid16) {
                                       break;
                                     }
                                   }
-                                } else {
-                                  const err81 = {
-                                    instancePath: instancePath + "/captures",
-                                    schemaPath:
-                                      "#/oneOf/11/properties/captures/type",
-                                    keyword: "type",
-                                    params: { type: "array" },
-                                    message: "must be array",
-                                  };
-                                  if (vErrors === null) {
-                                    vErrors = [err81];
-                                  } else {
-                                    vErrors.push(err81);
-                                  }
-                                  errors++;
                                 }
                               }
-                              var valid15 = _errs82 === errors;
+                              var valid15 = _errs83 === errors;
                             } else {
                               var valid15 = true;
                             }
                             if (valid15) {
                               if (data.kind !== undefined) {
-                                let data30 = data.kind;
-                                const _errs86 = errors;
-                                if (typeof data30 !== "string") {
+                                let data31 = data.kind;
+                                const _errs87 = errors;
+                                if (typeof data31 !== "string") {
                                   const err82 = {
                                     instancePath: instancePath + "/kind",
                                     schemaPath:
@@ -52001,13 +52134,13 @@ function validate262(
                                   }
                                   errors++;
                                 }
-                                if ("closure" !== data30) {
+                                if ("callable" !== data31) {
                                   const err83 = {
                                     instancePath: instancePath + "/kind",
                                     schemaPath:
                                       "#/oneOf/11/properties/kind/const",
                                     keyword: "const",
-                                    params: { allowedValue: "closure" },
+                                    params: { allowedValue: "callable" },
                                     message: "must be equal to constant",
                                   };
                                   if (vErrors === null) {
@@ -52017,7 +52150,7 @@ function validate262(
                                   }
                                   errors++;
                                 }
-                                var valid15 = _errs86 === errors;
+                                var valid15 = _errs87 === errors;
                               } else {
                                 var valid15 = true;
                               }
@@ -52039,7 +52172,7 @@ function validate262(
                           errors++;
                         }
                       }
-                      var _valid0 = _errs80 === errors;
+                      var _valid0 = _errs81 === errors;
                       if (_valid0 && valid0) {
                         valid0 = false;
                         passing0 = [passing0, 11];
@@ -52053,8 +52186,8 @@ function validate262(
                             props0.kind = true;
                           }
                         }
-                        const _errs88 = errors;
-                        if (errors === _errs88) {
+                        const _errs89 = errors;
+                        if (errors === _errs89) {
                           if (
                             data &&
                             typeof data == "object" &&
@@ -52089,9 +52222,9 @@ function validate262(
                               errors++;
                             } else {
                               if (data.kind !== undefined) {
-                                let data31 = data.kind;
-                                const _errs90 = errors;
-                                if (typeof data31 !== "string") {
+                                let data32 = data.kind;
+                                const _errs91 = errors;
+                                if (typeof data32 !== "string") {
                                   const err86 = {
                                     instancePath: instancePath + "/kind",
                                     schemaPath:
@@ -52107,7 +52240,7 @@ function validate262(
                                   }
                                   errors++;
                                 }
-                                if ("generator" !== data31) {
+                                if ("generator" !== data32) {
                                   const err87 = {
                                     instancePath: instancePath + "/kind",
                                     schemaPath:
@@ -52123,13 +52256,13 @@ function validate262(
                                   }
                                   errors++;
                                 }
-                                var valid17 = _errs90 === errors;
+                                var valid17 = _errs91 === errors;
                               } else {
                                 var valid17 = true;
                               }
                               if (valid17) {
                                 if (data.payload_bytes !== undefined) {
-                                  const _errs92 = errors;
+                                  const _errs93 = errors;
                                   if (typeof data.payload_bytes !== "string") {
                                     const err88 = {
                                       instancePath:
@@ -52147,20 +52280,20 @@ function validate262(
                                     }
                                     errors++;
                                   }
-                                  var valid17 = _errs92 === errors;
+                                  var valid17 = _errs93 === errors;
                                 } else {
                                   var valid17 = true;
                                 }
                                 if (valid17) {
                                   if (data.returned !== undefined) {
-                                    let data33 = data.returned;
-                                    const _errs94 = errors;
+                                    let data34 = data.returned;
+                                    const _errs95 = errors;
                                     if (
                                       !(
-                                        typeof data33 == "number" &&
-                                        !(data33 % 1) &&
-                                        !isNaN(data33) &&
-                                        isFinite(data33)
+                                        typeof data34 == "number" &&
+                                        !(data34 % 1) &&
+                                        !isNaN(data34) &&
+                                        isFinite(data34)
                                       )
                                     ) {
                                       const err89 = {
@@ -52179,14 +52312,14 @@ function validate262(
                                       }
                                       errors++;
                                     }
-                                    if (errors === _errs94) {
+                                    if (errors === _errs95) {
                                       if (
-                                        typeof data33 == "number" &&
-                                        isFinite(data33)
+                                        typeof data34 == "number" &&
+                                        isFinite(data34)
                                       ) {
                                         if (
-                                          data33 > 4294967295 ||
-                                          isNaN(data33)
+                                          data34 > 4294967295 ||
+                                          isNaN(data34)
                                         ) {
                                           const err90 = {
                                             instancePath:
@@ -52207,7 +52340,7 @@ function validate262(
                                           }
                                           errors++;
                                         } else {
-                                          if (data33 < 0 || isNaN(data33)) {
+                                          if (data34 < 0 || isNaN(data34)) {
                                             const err91 = {
                                               instancePath:
                                                 instancePath + "/returned",
@@ -52230,20 +52363,20 @@ function validate262(
                                         }
                                       }
                                     }
-                                    var valid17 = _errs94 === errors;
+                                    var valid17 = _errs95 === errors;
                                   } else {
                                     var valid17 = true;
                                   }
                                   if (valid17) {
                                     if (data.yielded !== undefined) {
-                                      let data34 = data.yielded;
-                                      const _errs96 = errors;
+                                      let data35 = data.yielded;
+                                      const _errs97 = errors;
                                       if (
                                         !(
-                                          typeof data34 == "number" &&
-                                          !(data34 % 1) &&
-                                          !isNaN(data34) &&
-                                          isFinite(data34)
+                                          typeof data35 == "number" &&
+                                          !(data35 % 1) &&
+                                          !isNaN(data35) &&
+                                          isFinite(data35)
                                         )
                                       ) {
                                         const err92 = {
@@ -52262,14 +52395,14 @@ function validate262(
                                         }
                                         errors++;
                                       }
-                                      if (errors === _errs96) {
+                                      if (errors === _errs97) {
                                         if (
-                                          typeof data34 == "number" &&
-                                          isFinite(data34)
+                                          typeof data35 == "number" &&
+                                          isFinite(data35)
                                         ) {
                                           if (
-                                            data34 > 4294967295 ||
-                                            isNaN(data34)
+                                            data35 > 4294967295 ||
+                                            isNaN(data35)
                                           ) {
                                             const err93 = {
                                               instancePath:
@@ -52290,7 +52423,7 @@ function validate262(
                                             }
                                             errors++;
                                           } else {
-                                            if (data34 < 0 || isNaN(data34)) {
+                                            if (data35 < 0 || isNaN(data35)) {
                                               const err94 = {
                                                 instancePath:
                                                   instancePath + "/yielded",
@@ -52313,7 +52446,7 @@ function validate262(
                                           }
                                         }
                                       }
-                                      var valid17 = _errs96 === errors;
+                                      var valid17 = _errs97 === errors;
                                     } else {
                                       var valid17 = true;
                                     }
@@ -52337,7 +52470,7 @@ function validate262(
                             errors++;
                           }
                         }
-                        var _valid0 = _errs88 === errors;
+                        var _valid0 = _errs89 === errors;
                         if (_valid0 && valid0) {
                           valid0 = false;
                           passing0 = [passing0, 12];
@@ -52353,8 +52486,8 @@ function validate262(
                               props0.yielded = true;
                             }
                           }
-                          const _errs98 = errors;
-                          if (errors === _errs98) {
+                          const _errs99 = errors;
+                          if (errors === _errs99) {
                             if (
                               data &&
                               typeof data == "object" &&
@@ -52387,9 +52520,9 @@ function validate262(
                                 errors++;
                               } else {
                                 if (data.kind !== undefined) {
-                                  let data35 = data.kind;
-                                  const _errs100 = errors;
-                                  if (typeof data35 !== "string") {
+                                  let data36 = data.kind;
+                                  const _errs101 = errors;
+                                  if (typeof data36 !== "string") {
                                     const err97 = {
                                       instancePath: instancePath + "/kind",
                                       schemaPath:
@@ -52405,7 +52538,7 @@ function validate262(
                                     }
                                     errors++;
                                   }
-                                  if ("shared" !== data35) {
+                                  if ("shared" !== data36) {
                                     const err98 = {
                                       instancePath: instancePath + "/kind",
                                       schemaPath:
@@ -52421,20 +52554,20 @@ function validate262(
                                     }
                                     errors++;
                                   }
-                                  var valid18 = _errs100 === errors;
+                                  var valid18 = _errs101 === errors;
                                 } else {
                                   var valid18 = true;
                                 }
                                 if (valid18) {
                                   if (data.payload !== undefined) {
-                                    let data36 = data.payload;
-                                    const _errs102 = errors;
+                                    let data37 = data.payload;
+                                    const _errs103 = errors;
                                     if (
                                       !(
-                                        typeof data36 == "number" &&
-                                        !(data36 % 1) &&
-                                        !isNaN(data36) &&
-                                        isFinite(data36)
+                                        typeof data37 == "number" &&
+                                        !(data37 % 1) &&
+                                        !isNaN(data37) &&
+                                        isFinite(data37)
                                       )
                                     ) {
                                       const err99 = {
@@ -52452,14 +52585,14 @@ function validate262(
                                       }
                                       errors++;
                                     }
-                                    if (errors === _errs102) {
+                                    if (errors === _errs103) {
                                       if (
-                                        typeof data36 == "number" &&
-                                        isFinite(data36)
+                                        typeof data37 == "number" &&
+                                        isFinite(data37)
                                       ) {
                                         if (
-                                          data36 > 4294967295 ||
-                                          isNaN(data36)
+                                          data37 > 4294967295 ||
+                                          isNaN(data37)
                                         ) {
                                           const err100 = {
                                             instancePath:
@@ -52480,7 +52613,7 @@ function validate262(
                                           }
                                           errors++;
                                         } else {
-                                          if (data36 < 0 || isNaN(data36)) {
+                                          if (data37 < 0 || isNaN(data37)) {
                                             const err101 = {
                                               instancePath:
                                                 instancePath + "/payload",
@@ -52503,13 +52636,13 @@ function validate262(
                                         }
                                       }
                                     }
-                                    var valid18 = _errs102 === errors;
+                                    var valid18 = _errs103 === errors;
                                   } else {
                                     var valid18 = true;
                                   }
                                   if (valid18) {
                                     if (data.weak !== undefined) {
-                                      const _errs104 = errors;
+                                      const _errs105 = errors;
                                       if (typeof data.weak !== "boolean") {
                                         const err102 = {
                                           instancePath: instancePath + "/weak",
@@ -52526,7 +52659,7 @@ function validate262(
                                         }
                                         errors++;
                                       }
-                                      var valid18 = _errs104 === errors;
+                                      var valid18 = _errs105 === errors;
                                     } else {
                                       var valid18 = true;
                                     }
@@ -52549,7 +52682,7 @@ function validate262(
                               errors++;
                             }
                           }
-                          var _valid0 = _errs98 === errors;
+                          var _valid0 = _errs99 === errors;
                           if (_valid0 && valid0) {
                             valid0 = false;
                             passing0 = [passing0, 13];
@@ -52564,8 +52697,8 @@ function validate262(
                                 props0.weak = true;
                               }
                             }
-                            const _errs106 = errors;
-                            if (errors === _errs106) {
+                            const _errs107 = errors;
+                            if (errors === _errs107) {
                               if (
                                 data &&
                                 typeof data == "object" &&
@@ -52594,8 +52727,8 @@ function validate262(
                                   errors++;
                                 } else {
                                   if (data.kind !== undefined) {
-                                    let data38 = data.kind;
-                                    if (typeof data38 !== "string") {
+                                    let data39 = data.kind;
+                                    if (typeof data39 !== "string") {
                                       const err105 = {
                                         instancePath: instancePath + "/kind",
                                         schemaPath:
@@ -52611,7 +52744,7 @@ function validate262(
                                       }
                                       errors++;
                                     }
-                                    if ("dynamic" !== data38) {
+                                    if ("dynamic" !== data39) {
                                       const err106 = {
                                         instancePath: instancePath + "/kind",
                                         schemaPath:
@@ -52645,7 +52778,7 @@ function validate262(
                                 errors++;
                               }
                             }
-                            var _valid0 = _errs106 === errors;
+                            var _valid0 = _errs107 === errors;
                             if (_valid0 && valid0) {
                               valid0 = false;
                               passing0 = [passing0, 14];
@@ -52656,6 +52789,266 @@ function validate262(
                                 if (props0 !== true) {
                                   props0 = props0 || {};
                                   props0.kind = true;
+                                }
+                              }
+                              const _errs111 = errors;
+                              if (errors === _errs111) {
+                                if (
+                                  data &&
+                                  typeof data == "object" &&
+                                  !Array.isArray(data)
+                                ) {
+                                  let missing15;
+                                  if (
+                                    (data.kind === undefined &&
+                                      (missing15 = "kind")) ||
+                                    (data.provider === undefined &&
+                                      (missing15 = "provider")) ||
+                                    (data.children === undefined &&
+                                      (missing15 = "children"))
+                                  ) {
+                                    const err108 = {
+                                      instancePath,
+                                      schemaPath: "#/oneOf/15/required",
+                                      keyword: "required",
+                                      params: { missingProperty: missing15 },
+                                      message:
+                                        "must have required property '" +
+                                        missing15 +
+                                        "'",
+                                    };
+                                    if (vErrors === null) {
+                                      vErrors = [err108];
+                                    } else {
+                                      vErrors.push(err108);
+                                    }
+                                    errors++;
+                                  } else {
+                                    if (data.children !== undefined) {
+                                      let data40 = data.children;
+                                      const _errs113 = errors;
+                                      if (errors === _errs113) {
+                                        if (Array.isArray(data40)) {
+                                          var valid21 = true;
+                                          const len4 = data40.length;
+                                          for (let i4 = 0; i4 < len4; i4++) {
+                                            let data41 = data40[i4];
+                                            const _errs115 = errors;
+                                            if (
+                                              !(
+                                                typeof data41 == "number" &&
+                                                !(data41 % 1) &&
+                                                !isNaN(data41) &&
+                                                isFinite(data41)
+                                              )
+                                            ) {
+                                              const err109 = {
+                                                instancePath:
+                                                  instancePath +
+                                                  "/children/" +
+                                                  i4,
+                                                schemaPath:
+                                                  "#/oneOf/15/properties/children/items/type",
+                                                keyword: "type",
+                                                params: { type: "integer" },
+                                                message: "must be integer",
+                                              };
+                                              if (vErrors === null) {
+                                                vErrors = [err109];
+                                              } else {
+                                                vErrors.push(err109);
+                                              }
+                                              errors++;
+                                            }
+                                            if (errors === _errs115) {
+                                              if (
+                                                typeof data41 == "number" &&
+                                                isFinite(data41)
+                                              ) {
+                                                if (
+                                                  data41 > 4294967295 ||
+                                                  isNaN(data41)
+                                                ) {
+                                                  const err110 = {
+                                                    instancePath:
+                                                      instancePath +
+                                                      "/children/" +
+                                                      i4,
+                                                    schemaPath:
+                                                      "#/oneOf/15/properties/children/items/maximum",
+                                                    keyword: "maximum",
+                                                    params: {
+                                                      comparison: "<=",
+                                                      limit: 4294967295,
+                                                    },
+                                                    message:
+                                                      "must be <= 4294967295",
+                                                  };
+                                                  if (vErrors === null) {
+                                                    vErrors = [err110];
+                                                  } else {
+                                                    vErrors.push(err110);
+                                                  }
+                                                  errors++;
+                                                } else {
+                                                  if (
+                                                    data41 < 0 ||
+                                                    isNaN(data41)
+                                                  ) {
+                                                    const err111 = {
+                                                      instancePath:
+                                                        instancePath +
+                                                        "/children/" +
+                                                        i4,
+                                                      schemaPath:
+                                                        "#/oneOf/15/properties/children/items/minimum",
+                                                      keyword: "minimum",
+                                                      params: {
+                                                        comparison: ">=",
+                                                        limit: 0,
+                                                      },
+                                                      message: "must be >= 0",
+                                                    };
+                                                    if (vErrors === null) {
+                                                      vErrors = [err111];
+                                                    } else {
+                                                      vErrors.push(err111);
+                                                    }
+                                                    errors++;
+                                                  }
+                                                }
+                                              }
+                                            }
+                                            var valid21 = _errs115 === errors;
+                                            if (!valid21) {
+                                              break;
+                                            }
+                                          }
+                                        } else {
+                                          const err112 = {
+                                            instancePath:
+                                              instancePath + "/children",
+                                            schemaPath:
+                                              "#/oneOf/15/properties/children/type",
+                                            keyword: "type",
+                                            params: { type: "array" },
+                                            message: "must be array",
+                                          };
+                                          if (vErrors === null) {
+                                            vErrors = [err112];
+                                          } else {
+                                            vErrors.push(err112);
+                                          }
+                                          errors++;
+                                        }
+                                      }
+                                      var valid20 = _errs113 === errors;
+                                    } else {
+                                      var valid20 = true;
+                                    }
+                                    if (valid20) {
+                                      if (data.kind !== undefined) {
+                                        let data42 = data.kind;
+                                        const _errs117 = errors;
+                                        if (typeof data42 !== "string") {
+                                          const err113 = {
+                                            instancePath:
+                                              instancePath + "/kind",
+                                            schemaPath:
+                                              "#/oneOf/15/properties/kind/type",
+                                            keyword: "type",
+                                            params: { type: "string" },
+                                            message: "must be string",
+                                          };
+                                          if (vErrors === null) {
+                                            vErrors = [err113];
+                                          } else {
+                                            vErrors.push(err113);
+                                          }
+                                          errors++;
+                                        }
+                                        if ("provider" !== data42) {
+                                          const err114 = {
+                                            instancePath:
+                                              instancePath + "/kind",
+                                            schemaPath:
+                                              "#/oneOf/15/properties/kind/const",
+                                            keyword: "const",
+                                            params: {
+                                              allowedValue: "provider",
+                                            },
+                                            message:
+                                              "must be equal to constant",
+                                          };
+                                          if (vErrors === null) {
+                                            vErrors = [err114];
+                                          } else {
+                                            vErrors.push(err114);
+                                          }
+                                          errors++;
+                                        }
+                                        var valid20 = _errs117 === errors;
+                                      } else {
+                                        var valid20 = true;
+                                      }
+                                      if (valid20) {
+                                        if (data.provider !== undefined) {
+                                          const _errs119 = errors;
+                                          if (
+                                            !validate265(data.provider, {
+                                              instancePath:
+                                                instancePath + "/provider",
+                                              parentData: data,
+                                              parentDataProperty: "provider",
+                                              rootData,
+                                              dynamicAnchors,
+                                            })
+                                          ) {
+                                            vErrors =
+                                              vErrors === null
+                                                ? validate265.errors
+                                                : vErrors.concat(
+                                                    validate265.errors,
+                                                  );
+                                            errors = vErrors.length;
+                                          }
+                                          var valid20 = _errs119 === errors;
+                                        } else {
+                                          var valid20 = true;
+                                        }
+                                      }
+                                    }
+                                  }
+                                } else {
+                                  const err115 = {
+                                    instancePath,
+                                    schemaPath: "#/oneOf/15/type",
+                                    keyword: "type",
+                                    params: { type: "object" },
+                                    message: "must be object",
+                                  };
+                                  if (vErrors === null) {
+                                    vErrors = [err115];
+                                  } else {
+                                    vErrors.push(err115);
+                                  }
+                                  errors++;
+                                }
+                              }
+                              var _valid0 = _errs111 === errors;
+                              if (_valid0 && valid0) {
+                                valid0 = false;
+                                passing0 = [passing0, 15];
+                              } else {
+                                if (_valid0) {
+                                  valid0 = true;
+                                  passing0 = 15;
+                                  if (props0 !== true) {
+                                    props0 = props0 || {};
+                                    props0.children = true;
+                                    props0.kind = true;
+                                    props0.provider = true;
+                                  }
                                 }
                               }
                             }
@@ -52673,7 +53066,7 @@ function validate262(
     }
   }
   if (!valid0) {
-    const err108 = {
+    const err116 = {
       instancePath,
       schemaPath: "#/oneOf",
       keyword: "oneOf",
@@ -52681,9 +53074,9 @@ function validate262(
       message: "must match exactly one schema in oneOf",
     };
     if (vErrors === null) {
-      vErrors = [err108];
+      vErrors = [err116];
     } else {
-      vErrors.push(err108);
+      vErrors.push(err116);
     }
     errors++;
     validate262.errors = vErrors;
@@ -52700,18 +53093,18 @@ function validate262(
   }
   if (errors === 0) {
     if (data && typeof data == "object" && !Array.isArray(data)) {
-      let missing15;
+      let missing16;
       if (
-        (data.id === undefined && (missing15 = "id")) ||
-        (data.slot_bytes === undefined && (missing15 = "slot_bytes"))
+        (data.id === undefined && (missing16 = "id")) ||
+        (data.slot_bytes === undefined && (missing16 = "slot_bytes"))
       ) {
         validate262.errors = [
           {
             instancePath,
             schemaPath: "#/required",
             keyword: "required",
-            params: { missingProperty: missing15 },
-            message: "must have required property '" + missing15 + "'",
+            params: { missingProperty: missing16 },
+            message: "must have required property '" + missing16 + "'",
           },
         ];
         return false;
@@ -52722,14 +53115,14 @@ function validate262(
           props0.slot_bytes = true;
         }
         if (data.id !== undefined) {
-          let data39 = data.id;
-          const _errs110 = errors;
+          let data44 = data.id;
+          const _errs120 = errors;
           if (
             !(
-              typeof data39 == "number" &&
-              !(data39 % 1) &&
-              !isNaN(data39) &&
-              isFinite(data39)
+              typeof data44 == "number" &&
+              !(data44 % 1) &&
+              !isNaN(data44) &&
+              isFinite(data44)
             )
           ) {
             validate262.errors = [
@@ -52743,9 +53136,9 @@ function validate262(
             ];
             return false;
           }
-          if (errors === _errs110) {
-            if (typeof data39 == "number" && isFinite(data39)) {
-              if (data39 > 4294967295 || isNaN(data39)) {
+          if (errors === _errs120) {
+            if (typeof data44 == "number" && isFinite(data44)) {
+              if (data44 > 4294967295 || isNaN(data44)) {
                 validate262.errors = [
                   {
                     instancePath: instancePath + "/id",
@@ -52757,7 +53150,7 @@ function validate262(
                 ];
                 return false;
               } else {
-                if (data39 < 0 || isNaN(data39)) {
+                if (data44 < 0 || isNaN(data44)) {
                   validate262.errors = [
                     {
                       instancePath: instancePath + "/id",
@@ -52772,13 +53165,13 @@ function validate262(
               }
             }
           }
-          var valid20 = _errs110 === errors;
+          var valid22 = _errs120 === errors;
         } else {
-          var valid20 = true;
+          var valid22 = true;
         }
-        if (valid20) {
+        if (valid22) {
           if (data.slot_bytes !== undefined) {
-            const _errs112 = errors;
+            const _errs122 = errors;
             if (typeof data.slot_bytes !== "string") {
               validate262.errors = [
                 {
@@ -52791,9 +53184,9 @@ function validate262(
               ];
               return false;
             }
-            var valid20 = _errs112 === errors;
+            var valid22 = _errs122 === errors;
           } else {
-            var valid20 = true;
+            var valid22 = true;
           }
         }
       }
@@ -52815,7 +53208,7 @@ function validate262(
   return errors === 0;
 }
 validate262.evaluated = { dynamicProps: true, dynamicItems: false };
-const schema82 = {
+const schema84 = {
   description:
     "Resource destruction follows the compiler-authored close contract.",
   oneOf: [
@@ -52894,7 +53287,7 @@ const schema82 = {
     },
   ],
 };
-function validate264(
+function validate268(
   data,
   {
     instancePath = "",
@@ -52906,7 +53299,7 @@ function validate264(
 ) {
   let vErrors = null;
   let errors = 0;
-  const evaluated0 = validate264.evaluated;
+  const evaluated0 = validate268.evaluated;
   if (evaluated0.dynamicProps) {
     evaluated0.props = undefined;
   }
@@ -53115,7 +53508,7 @@ function validate264(
                     instancePath: instancePath + "/ty",
                     schemaPath: "#/oneOf/0/properties/ty/type",
                     keyword: "type",
-                    params: { type: schema82.oneOf[0].properties.ty.type },
+                    params: { type: schema84.oneOf[0].properties.ty.type },
                     message: "must be string,null",
                   };
                   if (vErrors === null) {
@@ -53292,7 +53685,7 @@ function validate264(
                   instancePath: instancePath + "/ty",
                   schemaPath: "#/oneOf/1/properties/ty/type",
                   keyword: "type",
-                  params: { type: schema82.oneOf[1].properties.ty.type },
+                  params: { type: schema84.oneOf[1].properties.ty.type },
                   message: "must be string,null",
                 };
                 if (vErrors === null) {
@@ -53430,7 +53823,7 @@ function validate264(
                     instancePath: instancePath + "/ty",
                     schemaPath: "#/oneOf/2/properties/ty/type",
                     keyword: "type",
-                    params: { type: schema82.oneOf[2].properties.ty.type },
+                    params: { type: schema84.oneOf[2].properties.ty.type },
                     message: "must be string,null",
                   };
                   if (vErrors === null) {
@@ -53993,7 +54386,7 @@ function validate264(
       vErrors.push(err49);
     }
     errors++;
-    validate264.errors = vErrors;
+    validate268.errors = vErrors;
     return false;
   } else {
     errors = _errs0;
@@ -54005,12 +54398,12 @@ function validate264(
       }
     }
   }
-  validate264.errors = vErrors;
+  validate268.errors = vErrors;
   evaluated0.props = props0;
   return errors === 0;
 }
-validate264.evaluated = { dynamicProps: true, dynamicItems: false };
-const schema83 = {
+validate268.evaluated = { dynamicProps: true, dynamicItems: false };
+const schema85 = {
   additionalProperties: false,
   oneOf: [
     {
@@ -55467,7 +55860,7 @@ const schema83 = {
   type: "object",
   discriminator: { propertyName: "family" },
 };
-const schema84 = {
+const schema86 = {
   description:
     "Existing synchronous file adapters and their shared error channel.",
   enum: [
@@ -55482,140 +55875,6 @@ const schema84 = {
     "LastErrorKind",
     "LastErrno",
     "LastError",
-  ],
-  type: "string",
-};
-function validate269(
-  data,
-  {
-    instancePath = "",
-    parentData,
-    parentDataProperty,
-    rootData = data,
-    dynamicAnchors = {},
-  } = {},
-) {
-  let vErrors = null;
-  let errors = 0;
-  const evaluated0 = validate269.evaluated;
-  if (evaluated0.dynamicProps) {
-    evaluated0.props = undefined;
-  }
-  if (evaluated0.dynamicItems) {
-    evaluated0.items = undefined;
-  }
-  if (typeof data !== "string") {
-    validate269.errors = [
-      {
-        instancePath,
-        schemaPath: "#/type",
-        keyword: "type",
-        params: { type: "string" },
-        message: "must be string",
-      },
-    ];
-    return false;
-  }
-  if (
-    !(
-      data === "Open" ||
-      data === "IsValid" ||
-      data === "Collect" ||
-      data === "Close" ||
-      data === "StreamOpen" ||
-      data === "StreamIsValid" ||
-      data === "StreamCollect" ||
-      data === "HasError" ||
-      data === "LastErrorKind" ||
-      data === "LastErrno" ||
-      data === "LastError"
-    )
-  ) {
-    validate269.errors = [
-      {
-        instancePath,
-        schemaPath: "#/enum",
-        keyword: "enum",
-        params: { allowedValues: schema84.enum },
-        message: "must be equal to one of the allowed values",
-      },
-    ];
-    return false;
-  }
-  validate269.errors = vErrors;
-  return errors === 0;
-}
-validate269.evaluated = { dynamicProps: false, dynamicItems: false };
-const schema85 = {
-  enum: ["Peer", "Export", "Receive", "ClosePeer", "CloseExport"],
-  type: "string",
-};
-function validate271(
-  data,
-  {
-    instancePath = "",
-    parentData,
-    parentDataProperty,
-    rootData = data,
-    dynamicAnchors = {},
-  } = {},
-) {
-  let vErrors = null;
-  let errors = 0;
-  const evaluated0 = validate271.evaluated;
-  if (evaluated0.dynamicProps) {
-    evaluated0.props = undefined;
-  }
-  if (evaluated0.dynamicItems) {
-    evaluated0.items = undefined;
-  }
-  if (typeof data !== "string") {
-    validate271.errors = [
-      {
-        instancePath,
-        schemaPath: "#/type",
-        keyword: "type",
-        params: { type: "string" },
-        message: "must be string",
-      },
-    ];
-    return false;
-  }
-  if (
-    !(
-      data === "Peer" ||
-      data === "Export" ||
-      data === "Receive" ||
-      data === "ClosePeer" ||
-      data === "CloseExport"
-    )
-  ) {
-    validate271.errors = [
-      {
-        instancePath,
-        schemaPath: "#/enum",
-        keyword: "enum",
-        params: { allowedValues: schema85.enum },
-        message: "must be equal to one of the allowed values",
-      },
-    ];
-    return false;
-  }
-  validate271.errors = vErrors;
-  return errors === 0;
-}
-validate271.evaluated = { dynamicProps: false, dynamicItems: false };
-const schema86 = {
-  enum: [
-    "Listen",
-    "ListenerValid",
-    "ConnectionValid",
-    "ListenerPort",
-    "ListenerClose",
-    "ConnectionClose",
-    "ReadTimeout",
-    "WriteTimeout",
-    "BroadcastExcept",
   ],
   type: "string",
 };
@@ -55652,15 +55911,17 @@ function validate273(
   }
   if (
     !(
-      data === "Listen" ||
-      data === "ListenerValid" ||
-      data === "ConnectionValid" ||
-      data === "ListenerPort" ||
-      data === "ListenerClose" ||
-      data === "ConnectionClose" ||
-      data === "ReadTimeout" ||
-      data === "WriteTimeout" ||
-      data === "BroadcastExcept"
+      data === "Open" ||
+      data === "IsValid" ||
+      data === "Collect" ||
+      data === "Close" ||
+      data === "StreamOpen" ||
+      data === "StreamIsValid" ||
+      data === "StreamCollect" ||
+      data === "HasError" ||
+      data === "LastErrorKind" ||
+      data === "LastErrno" ||
+      data === "LastError"
     )
   ) {
     validate273.errors = [
@@ -55679,9 +55940,7 @@ function validate273(
 }
 validate273.evaluated = { dynamicProps: false, dynamicItems: false };
 const schema87 = {
-  description:
-    "Distinct owned serde representations; no normalization between formats.",
-  enum: ["Json", "Yaml", "Toml"],
+  enum: ["Peer", "Export", "Receive", "ClosePeer", "CloseExport"],
   type: "string",
 };
 function validate275(
@@ -55715,7 +55974,15 @@ function validate275(
     ];
     return false;
   }
-  if (!(data === "Json" || data === "Yaml" || data === "Toml")) {
+  if (
+    !(
+      data === "Peer" ||
+      data === "Export" ||
+      data === "Receive" ||
+      data === "ClosePeer" ||
+      data === "CloseExport"
+    )
+  ) {
     validate275.errors = [
       {
         instancePath,
@@ -55732,6 +55999,132 @@ function validate275(
 }
 validate275.evaluated = { dynamicProps: false, dynamicItems: false };
 const schema88 = {
+  enum: [
+    "Listen",
+    "ListenerValid",
+    "ConnectionValid",
+    "ListenerPort",
+    "ListenerClose",
+    "ConnectionClose",
+    "ReadTimeout",
+    "WriteTimeout",
+    "BroadcastExcept",
+  ],
+  type: "string",
+};
+function validate277(
+  data,
+  {
+    instancePath = "",
+    parentData,
+    parentDataProperty,
+    rootData = data,
+    dynamicAnchors = {},
+  } = {},
+) {
+  let vErrors = null;
+  let errors = 0;
+  const evaluated0 = validate277.evaluated;
+  if (evaluated0.dynamicProps) {
+    evaluated0.props = undefined;
+  }
+  if (evaluated0.dynamicItems) {
+    evaluated0.items = undefined;
+  }
+  if (typeof data !== "string") {
+    validate277.errors = [
+      {
+        instancePath,
+        schemaPath: "#/type",
+        keyword: "type",
+        params: { type: "string" },
+        message: "must be string",
+      },
+    ];
+    return false;
+  }
+  if (
+    !(
+      data === "Listen" ||
+      data === "ListenerValid" ||
+      data === "ConnectionValid" ||
+      data === "ListenerPort" ||
+      data === "ListenerClose" ||
+      data === "ConnectionClose" ||
+      data === "ReadTimeout" ||
+      data === "WriteTimeout" ||
+      data === "BroadcastExcept"
+    )
+  ) {
+    validate277.errors = [
+      {
+        instancePath,
+        schemaPath: "#/enum",
+        keyword: "enum",
+        params: { allowedValues: schema88.enum },
+        message: "must be equal to one of the allowed values",
+      },
+    ];
+    return false;
+  }
+  validate277.errors = vErrors;
+  return errors === 0;
+}
+validate277.evaluated = { dynamicProps: false, dynamicItems: false };
+const schema89 = {
+  description:
+    "Distinct owned serde representations; no normalization between formats.",
+  enum: ["Json", "Yaml", "Toml"],
+  type: "string",
+};
+function validate279(
+  data,
+  {
+    instancePath = "",
+    parentData,
+    parentDataProperty,
+    rootData = data,
+    dynamicAnchors = {},
+  } = {},
+) {
+  let vErrors = null;
+  let errors = 0;
+  const evaluated0 = validate279.evaluated;
+  if (evaluated0.dynamicProps) {
+    evaluated0.props = undefined;
+  }
+  if (evaluated0.dynamicItems) {
+    evaluated0.items = undefined;
+  }
+  if (typeof data !== "string") {
+    validate279.errors = [
+      {
+        instancePath,
+        schemaPath: "#/type",
+        keyword: "type",
+        params: { type: "string" },
+        message: "must be string",
+      },
+    ];
+    return false;
+  }
+  if (!(data === "Json" || data === "Yaml" || data === "Toml")) {
+    validate279.errors = [
+      {
+        instancePath,
+        schemaPath: "#/enum",
+        keyword: "enum",
+        params: { allowedValues: schema89.enum },
+        message: "must be equal to one of the allowed values",
+      },
+    ];
+    return false;
+  }
+  validate279.errors = vErrors;
+  return errors === 0;
+}
+validate279.evaluated = { dynamicProps: false, dynamicItems: false };
+const schema90 = {
   enum: [
     "Parse",
     "LastError",
@@ -55764,7 +56157,7 @@ const schema88 = {
   ],
   type: "string",
 };
-function validate277(
+function validate281(
   data,
   {
     instancePath = "",
@@ -55776,7 +56169,7 @@ function validate277(
 ) {
   let vErrors = null;
   let errors = 0;
-  const evaluated0 = validate277.evaluated;
+  const evaluated0 = validate281.evaluated;
   if (evaluated0.dynamicProps) {
     evaluated0.props = undefined;
   }
@@ -55784,7 +56177,7 @@ function validate277(
     evaluated0.items = undefined;
   }
   if (typeof data !== "string") {
-    validate277.errors = [
+    validate281.errors = [
       {
         instancePath,
         schemaPath: "#/type",
@@ -55827,22 +56220,22 @@ function validate277(
       data === "Free"
     )
   ) {
-    validate277.errors = [
+    validate281.errors = [
       {
         instancePath,
         schemaPath: "#/enum",
         keyword: "enum",
-        params: { allowedValues: schema88.enum },
+        params: { allowedValues: schema90.enum },
         message: "must be equal to one of the allowed values",
       },
     ];
     return false;
   }
-  validate277.errors = vErrors;
+  validate281.errors = vErrors;
   return errors === 0;
 }
-validate277.evaluated = { dynamicProps: false, dynamicItems: false };
-const schema89 = {
+validate281.evaluated = { dynamicProps: false, dynamicItems: false };
+const schema91 = {
   description:
     'Math-intrinsic family discriminator. HIR resolves the user-visible\nidentifiers (`"sqrt"`, `"sin"`, …) onto\n`RuntimeCallFamily::MathIntrinsic(...)`; MIR carries that family on the\ncall so codegen never re-derives the intrinsic from the callee string.',
   oneOf: [
@@ -55915,7 +56308,7 @@ const schema89 = {
     },
   ],
 };
-function validate279(
+function validate283(
   data,
   {
     instancePath = "",
@@ -55927,7 +56320,7 @@ function validate279(
 ) {
   let vErrors = null;
   let errors = 0;
-  const evaluated0 = validate279.evaluated;
+  const evaluated0 = validate283.evaluated;
   if (evaluated0.dynamicProps) {
     evaluated0.props = undefined;
   }
@@ -55990,7 +56383,7 @@ function validate279(
       instancePath,
       schemaPath: "#/oneOf/0/enum",
       keyword: "enum",
-      params: { allowedValues: schema89.oneOf[0].enum },
+      params: { allowedValues: schema91.oneOf[0].enum },
       message: "must be equal to one of the allowed values",
     };
     if (vErrors === null) {
@@ -56265,7 +56658,7 @@ function validate279(
       vErrors.push(err14);
     }
     errors++;
-    validate279.errors = vErrors;
+    validate283.errors = vErrors;
     return false;
   } else {
     errors = _errs0;
@@ -56277,11 +56670,11 @@ function validate279(
       }
     }
   }
-  validate279.errors = vErrors;
+  validate283.errors = vErrors;
   return errors === 0;
 }
-validate279.evaluated = { dynamicProps: false, dynamicItems: false };
-const schema90 = {
+validate283.evaluated = { dynamicProps: false, dynamicItems: false };
+const schema92 = {
   description:
     "Bit-manipulation method discriminator for `x.count_ones()` and its\nsiblings. Every op maps to one LLVM intrinsic (`ctpop`, `ctlz`, `cttz`,\n`bswap`, `bitreverse`, `fshl`/`fshr`) parameterized on the receiver's\nwidth, carried separately as [`IntMethodWidth`].",
   enum: [
@@ -56293,157 +56686,6 @@ const schema90 = {
     "ReverseBits",
     "RotateLeft",
     "RotateRight",
-  ],
-  type: "string",
-};
-function validate281(
-  data,
-  {
-    instancePath = "",
-    parentData,
-    parentDataProperty,
-    rootData = data,
-    dynamicAnchors = {},
-  } = {},
-) {
-  let vErrors = null;
-  let errors = 0;
-  const evaluated0 = validate281.evaluated;
-  if (evaluated0.dynamicProps) {
-    evaluated0.props = undefined;
-  }
-  if (evaluated0.dynamicItems) {
-    evaluated0.items = undefined;
-  }
-  if (typeof data !== "string") {
-    validate281.errors = [
-      {
-        instancePath,
-        schemaPath: "#/type",
-        keyword: "type",
-        params: { type: "string" },
-        message: "must be string",
-      },
-    ];
-    return false;
-  }
-  if (
-    !(
-      data === "CountOnes" ||
-      data === "CountZeros" ||
-      data === "LeadingZeros" ||
-      data === "TrailingZeros" ||
-      data === "SwapBytes" ||
-      data === "ReverseBits" ||
-      data === "RotateLeft" ||
-      data === "RotateRight"
-    )
-  ) {
-    validate281.errors = [
-      {
-        instancePath,
-        schemaPath: "#/enum",
-        keyword: "enum",
-        params: { allowedValues: schema90.enum },
-        message: "must be equal to one of the allowed values",
-      },
-    ];
-    return false;
-  }
-  validate281.errors = vErrors;
-  return errors === 0;
-}
-validate281.evaluated = { dynamicProps: false, dynamicItems: false };
-const schema91 = {
-  description:
-    "Receiver width for [`IntBitOp`]/[`IntArithKind`] methods, covering every\ninteger width Hew has. Narrow widths (`I8`/`I16`/`U8`/`U16`) and the\npointer-sized widths (`Isize`/`Usize`) share codegen's C ABI convention\nfor `RuntimeValueKind`: they carry their own LLVM width end to end (no\nwidening at a call boundary), so codegen picks the LLVM intrinsic at the\nvalue's own bit width (`llvm.ctpop.i8`, `llvm.sadd.sat.i16`, …) and needs\nno runtime symbol per width.",
-  enum: [
-    "I8",
-    "I16",
-    "I32",
-    "I64",
-    "Isize",
-    "U8",
-    "U16",
-    "U32",
-    "U64",
-    "Usize",
-  ],
-  type: "string",
-};
-function validate283(
-  data,
-  {
-    instancePath = "",
-    parentData,
-    parentDataProperty,
-    rootData = data,
-    dynamicAnchors = {},
-  } = {},
-) {
-  let vErrors = null;
-  let errors = 0;
-  const evaluated0 = validate283.evaluated;
-  if (evaluated0.dynamicProps) {
-    evaluated0.props = undefined;
-  }
-  if (evaluated0.dynamicItems) {
-    evaluated0.items = undefined;
-  }
-  if (typeof data !== "string") {
-    validate283.errors = [
-      {
-        instancePath,
-        schemaPath: "#/type",
-        keyword: "type",
-        params: { type: "string" },
-        message: "must be string",
-      },
-    ];
-    return false;
-  }
-  if (
-    !(
-      data === "I8" ||
-      data === "I16" ||
-      data === "I32" ||
-      data === "I64" ||
-      data === "Isize" ||
-      data === "U8" ||
-      data === "U16" ||
-      data === "U32" ||
-      data === "U64" ||
-      data === "Usize"
-    )
-  ) {
-    validate283.errors = [
-      {
-        instancePath,
-        schemaPath: "#/enum",
-        keyword: "enum",
-        params: { allowedValues: schema91.enum },
-        message: "must be equal to one of the allowed values",
-      },
-    ];
-    return false;
-  }
-  validate283.errors = vErrors;
-  return errors === 0;
-}
-validate283.evaluated = { dynamicProps: false, dynamicItems: false };
-const schema92 = {
-  description:
-    "Non-trapping and overflow-checked integer arithmetic: `x.wrapping_add(y)`\nand its siblings. `SaturatingMul` has no direct LLVM saturating-multiply\nintrinsic; codegen builds it from `llvm.{s,u}mul.with.overflow` plus a\nselect onto the saturated bound. `Checked*` results are `Option<T>`\nthrough the ordinary `VariantResult` physical form (see the row table).",
-  enum: [
-    "WrappingAdd",
-    "WrappingSub",
-    "WrappingMul",
-    "SaturatingAdd",
-    "SaturatingSub",
-    "SaturatingMul",
-    "CheckedAdd",
-    "CheckedSub",
-    "CheckedMul",
   ],
   type: "string",
 };
@@ -56480,15 +56722,14 @@ function validate285(
   }
   if (
     !(
-      data === "WrappingAdd" ||
-      data === "WrappingSub" ||
-      data === "WrappingMul" ||
-      data === "SaturatingAdd" ||
-      data === "SaturatingSub" ||
-      data === "SaturatingMul" ||
-      data === "CheckedAdd" ||
-      data === "CheckedSub" ||
-      data === "CheckedMul"
+      data === "CountOnes" ||
+      data === "CountZeros" ||
+      data === "LeadingZeros" ||
+      data === "TrailingZeros" ||
+      data === "SwapBytes" ||
+      data === "ReverseBits" ||
+      data === "RotateLeft" ||
+      data === "RotateRight"
     )
   ) {
     validate285.errors = [
@@ -56508,11 +56749,22 @@ function validate285(
 validate285.evaluated = { dynamicProps: false, dynamicItems: false };
 const schema93 = {
   description:
-    "`f64` bit/classification methods (`x.to_bits()`, `x.is_nan()`, …).\nScoped to `f64`: `RuntimeValueKind` has no `F32` kind yet, matching the\n`IntMethodWidth` gap for the narrower integer widths.",
-  enum: ["ToBits", "IsNan", "IsFinite", "IsInfinite", "IsSignNegative"],
+    "Receiver width for [`IntBitOp`]/[`IntArithKind`] methods, covering every\ninteger width Hew has. Narrow widths (`I8`/`I16`/`U8`/`U16`) and the\npointer-sized widths (`Isize`/`Usize`) share codegen's C ABI convention\nfor `RuntimeValueKind`: they carry their own LLVM width end to end (no\nwidening at a call boundary), so codegen picks the LLVM intrinsic at the\nvalue's own bit width (`llvm.ctpop.i8`, `llvm.sadd.sat.i16`, …) and needs\nno runtime symbol per width.",
+  enum: [
+    "I8",
+    "I16",
+    "I32",
+    "I64",
+    "Isize",
+    "U8",
+    "U16",
+    "U32",
+    "U64",
+    "Usize",
+  ],
   type: "string",
 };
-function validate288(
+function validate287(
   data,
   {
     instancePath = "",
@@ -56524,7 +56776,7 @@ function validate288(
 ) {
   let vErrors = null;
   let errors = 0;
-  const evaluated0 = validate288.evaluated;
+  const evaluated0 = validate287.evaluated;
   if (evaluated0.dynamicProps) {
     evaluated0.props = undefined;
   }
@@ -56532,7 +56784,148 @@ function validate288(
     evaluated0.items = undefined;
   }
   if (typeof data !== "string") {
-    validate288.errors = [
+    validate287.errors = [
+      {
+        instancePath,
+        schemaPath: "#/type",
+        keyword: "type",
+        params: { type: "string" },
+        message: "must be string",
+      },
+    ];
+    return false;
+  }
+  if (
+    !(
+      data === "I8" ||
+      data === "I16" ||
+      data === "I32" ||
+      data === "I64" ||
+      data === "Isize" ||
+      data === "U8" ||
+      data === "U16" ||
+      data === "U32" ||
+      data === "U64" ||
+      data === "Usize"
+    )
+  ) {
+    validate287.errors = [
+      {
+        instancePath,
+        schemaPath: "#/enum",
+        keyword: "enum",
+        params: { allowedValues: schema93.enum },
+        message: "must be equal to one of the allowed values",
+      },
+    ];
+    return false;
+  }
+  validate287.errors = vErrors;
+  return errors === 0;
+}
+validate287.evaluated = { dynamicProps: false, dynamicItems: false };
+const schema94 = {
+  description:
+    "Non-trapping and overflow-checked integer arithmetic: `x.wrapping_add(y)`\nand its siblings. `SaturatingMul` has no direct LLVM saturating-multiply\nintrinsic; codegen builds it from `llvm.{s,u}mul.with.overflow` plus a\nselect onto the saturated bound. `Checked*` results are `Option<T>`\nthrough the ordinary `VariantResult` physical form (see the row table).",
+  enum: [
+    "WrappingAdd",
+    "WrappingSub",
+    "WrappingMul",
+    "SaturatingAdd",
+    "SaturatingSub",
+    "SaturatingMul",
+    "CheckedAdd",
+    "CheckedSub",
+    "CheckedMul",
+  ],
+  type: "string",
+};
+function validate289(
+  data,
+  {
+    instancePath = "",
+    parentData,
+    parentDataProperty,
+    rootData = data,
+    dynamicAnchors = {},
+  } = {},
+) {
+  let vErrors = null;
+  let errors = 0;
+  const evaluated0 = validate289.evaluated;
+  if (evaluated0.dynamicProps) {
+    evaluated0.props = undefined;
+  }
+  if (evaluated0.dynamicItems) {
+    evaluated0.items = undefined;
+  }
+  if (typeof data !== "string") {
+    validate289.errors = [
+      {
+        instancePath,
+        schemaPath: "#/type",
+        keyword: "type",
+        params: { type: "string" },
+        message: "must be string",
+      },
+    ];
+    return false;
+  }
+  if (
+    !(
+      data === "WrappingAdd" ||
+      data === "WrappingSub" ||
+      data === "WrappingMul" ||
+      data === "SaturatingAdd" ||
+      data === "SaturatingSub" ||
+      data === "SaturatingMul" ||
+      data === "CheckedAdd" ||
+      data === "CheckedSub" ||
+      data === "CheckedMul"
+    )
+  ) {
+    validate289.errors = [
+      {
+        instancePath,
+        schemaPath: "#/enum",
+        keyword: "enum",
+        params: { allowedValues: schema94.enum },
+        message: "must be equal to one of the allowed values",
+      },
+    ];
+    return false;
+  }
+  validate289.errors = vErrors;
+  return errors === 0;
+}
+validate289.evaluated = { dynamicProps: false, dynamicItems: false };
+const schema95 = {
+  description:
+    "`f64` bit/classification methods (`x.to_bits()`, `x.is_nan()`, …).\nScoped to `f64`: `RuntimeValueKind` has no `F32` kind yet, matching the\n`IntMethodWidth` gap for the narrower integer widths.",
+  enum: ["ToBits", "IsNan", "IsFinite", "IsInfinite", "IsSignNegative"],
+  type: "string",
+};
+function validate292(
+  data,
+  {
+    instancePath = "",
+    parentData,
+    parentDataProperty,
+    rootData = data,
+    dynamicAnchors = {},
+  } = {},
+) {
+  let vErrors = null;
+  let errors = 0;
+  const evaluated0 = validate292.evaluated;
+  if (evaluated0.dynamicProps) {
+    evaluated0.props = undefined;
+  }
+  if (evaluated0.dynamicItems) {
+    evaluated0.items = undefined;
+  }
+  if (typeof data !== "string") {
+    validate292.errors = [
       {
         instancePath,
         schemaPath: "#/type",
@@ -56552,28 +56945,28 @@ function validate288(
       data === "IsSignNegative"
     )
   ) {
-    validate288.errors = [
+    validate292.errors = [
       {
         instancePath,
         schemaPath: "#/enum",
         keyword: "enum",
-        params: { allowedValues: schema93.enum },
+        params: { allowedValues: schema95.enum },
         message: "must be equal to one of the allowed values",
       },
     ];
     return false;
   }
-  validate288.errors = vErrors;
+  validate292.errors = vErrors;
   return errors === 0;
 }
-validate288.evaluated = { dynamicProps: false, dynamicItems: false };
-const schema94 = {
+validate292.evaluated = { dynamicProps: false, dynamicItems: false };
+const schema96 = {
   description:
     "Selected primitive print representation. Physical lowering carries this\nchoice and the newline flag to the runtime's tagged print ABI.",
   enum: ["I32", "I64", "U8", "U32", "U64", "F64", "Bool", "Str"],
   type: "string",
 };
-function validate290(
+function validate294(
   data,
   {
     instancePath = "",
@@ -56585,7 +56978,7 @@ function validate290(
 ) {
   let vErrors = null;
   let errors = 0;
-  const evaluated0 = validate290.evaluated;
+  const evaluated0 = validate294.evaluated;
   if (evaluated0.dynamicProps) {
     evaluated0.props = undefined;
   }
@@ -56593,7 +56986,7 @@ function validate290(
     evaluated0.items = undefined;
   }
   if (typeof data !== "string") {
-    validate290.errors = [
+    validate294.errors = [
       {
         instancePath,
         schemaPath: "#/type",
@@ -56616,22 +57009,22 @@ function validate290(
       data === "Str"
     )
   ) {
-    validate290.errors = [
+    validate294.errors = [
       {
         instancePath,
         schemaPath: "#/enum",
         keyword: "enum",
-        params: { allowedValues: schema94.enum },
+        params: { allowedValues: schema96.enum },
         message: "must be equal to one of the allowed values",
       },
     ];
     return false;
   }
-  validate290.errors = vErrors;
+  validate294.errors = vErrors;
   return errors === 0;
 }
-validate290.evaluated = { dynamicProps: false, dynamicItems: false };
-const schema95 = {
+validate294.evaluated = { dynamicProps: false, dynamicItems: false };
+const schema97 = {
   description:
     "Ordinary vector value operations, independent of element representation.",
   oneOf: [
@@ -56695,7 +57088,7 @@ const schema95 = {
     },
   ],
 };
-function validate292(
+function validate296(
   data,
   {
     instancePath = "",
@@ -56707,7 +57100,7 @@ function validate292(
 ) {
   let vErrors = null;
   let errors = 0;
-  const evaluated0 = validate292.evaluated;
+  const evaluated0 = validate296.evaluated;
   if (evaluated0.dynamicProps) {
     evaluated0.props = undefined;
   }
@@ -56752,7 +57145,7 @@ function validate292(
       instancePath,
       schemaPath: "#/oneOf/0/enum",
       keyword: "enum",
-      params: { allowedValues: schema95.oneOf[0].enum },
+      params: { allowedValues: schema97.oneOf[0].enum },
       message: "must be equal to one of the allowed values",
     };
     if (vErrors === null) {
@@ -57068,7 +57461,7 @@ function validate292(
       vErrors.push(err16);
     }
     errors++;
-    validate292.errors = vErrors;
+    validate296.errors = vErrors;
     return false;
   } else {
     errors = _errs0;
@@ -57080,15 +57473,15 @@ function validate292(
       }
     }
   }
-  validate292.errors = vErrors;
+  validate296.errors = vErrors;
   return errors === 0;
 }
-validate292.evaluated = { dynamicProps: false, dynamicItems: false };
-const schema96 = {
+validate296.evaluated = { dynamicProps: false, dynamicItems: false };
+const schema98 = {
   enum: ["Len", "Index", "IndexBorrow", "Set"],
   type: "string",
 };
-function validate294(
+function validate298(
   data,
   {
     instancePath = "",
@@ -57100,7 +57493,7 @@ function validate294(
 ) {
   let vErrors = null;
   let errors = 0;
-  const evaluated0 = validate294.evaluated;
+  const evaluated0 = validate298.evaluated;
   if (evaluated0.dynamicProps) {
     evaluated0.props = undefined;
   }
@@ -57108,7 +57501,7 @@ function validate294(
     evaluated0.items = undefined;
   }
   if (typeof data !== "string") {
-    validate294.errors = [
+    validate298.errors = [
       {
         instancePath,
         schemaPath: "#/type",
@@ -57127,22 +57520,22 @@ function validate294(
       data === "Set"
     )
   ) {
-    validate294.errors = [
+    validate298.errors = [
       {
         instancePath,
         schemaPath: "#/enum",
         keyword: "enum",
-        params: { allowedValues: schema96.enum },
+        params: { allowedValues: schema98.enum },
         message: "must be equal to one of the allowed values",
       },
     ];
     return false;
   }
-  validate294.errors = vErrors;
+  validate298.errors = vErrors;
   return errors === 0;
 }
-validate294.evaluated = { dynamicProps: false, dynamicItems: false };
-const schema97 = {
+validate298.evaluated = { dynamicProps: false, dynamicItems: false };
+const schema99 = {
   oneOf: [
     {
       const: "Len",
@@ -57162,7 +57555,7 @@ const schema97 = {
     },
   ],
 };
-function validate296(
+function validate300(
   data,
   {
     instancePath = "",
@@ -57174,7 +57567,7 @@ function validate296(
 ) {
   let vErrors = null;
   let errors = 0;
-  const evaluated0 = validate296.evaluated;
+  const evaluated0 = validate300.evaluated;
   if (evaluated0.dynamicProps) {
     evaluated0.props = undefined;
   }
@@ -57316,7 +57709,7 @@ function validate296(
       vErrors.push(err6);
     }
     errors++;
-    validate296.errors = vErrors;
+    validate300.errors = vErrors;
     return false;
   } else {
     errors = _errs0;
@@ -57328,11 +57721,11 @@ function validate296(
       }
     }
   }
-  validate296.errors = vErrors;
+  validate300.errors = vErrors;
   return errors === 0;
 }
-validate296.evaluated = { dynamicProps: false, dynamicItems: false };
-const schema98 = {
+validate300.evaluated = { dynamicProps: false, dynamicItems: false };
+const schema100 = {
   description:
     "Ordinary map operations with independently owned keys and values.",
   oneOf: [
@@ -57360,7 +57753,7 @@ const schema98 = {
     },
   ],
 };
-function validate298(
+function validate302(
   data,
   {
     instancePath = "",
@@ -57372,7 +57765,7 @@ function validate298(
 ) {
   let vErrors = null;
   let errors = 0;
-  const evaluated0 = validate298.evaluated;
+  const evaluated0 = validate302.evaluated;
   if (evaluated0.dynamicProps) {
     evaluated0.props = undefined;
   }
@@ -57417,7 +57810,7 @@ function validate298(
       instancePath,
       schemaPath: "#/oneOf/0/enum",
       keyword: "enum",
-      params: { allowedValues: schema98.oneOf[0].enum },
+      params: { allowedValues: schema100.oneOf[0].enum },
       message: "must be equal to one of the allowed values",
     };
     if (vErrors === null) {
@@ -57487,7 +57880,7 @@ function validate298(
       vErrors.push(err4);
     }
     errors++;
-    validate298.errors = vErrors;
+    validate302.errors = vErrors;
     return false;
   } else {
     errors = _errs0;
@@ -57499,17 +57892,17 @@ function validate298(
       }
     }
   }
-  validate298.errors = vErrors;
+  validate302.errors = vErrors;
   return errors === 0;
 }
-validate298.evaluated = { dynamicProps: false, dynamicItems: false };
-const schema99 = {
+validate302.evaluated = { dynamicProps: false, dynamicItems: false };
+const schema101 = {
   description:
     "Ordinary set operations using the same element and receiver type templates.",
   enum: ["New", "Len", "Contains", "Insert", "Remove", "Clear", "Elements"],
   type: "string",
 };
-function validate300(
+function validate304(
   data,
   {
     instancePath = "",
@@ -57521,7 +57914,7 @@ function validate300(
 ) {
   let vErrors = null;
   let errors = 0;
-  const evaluated0 = validate300.evaluated;
+  const evaluated0 = validate304.evaluated;
   if (evaluated0.dynamicProps) {
     evaluated0.props = undefined;
   }
@@ -57529,7 +57922,7 @@ function validate300(
     evaluated0.items = undefined;
   }
   if (typeof data !== "string") {
-    validate300.errors = [
+    validate304.errors = [
       {
         instancePath,
         schemaPath: "#/type",
@@ -57551,28 +57944,28 @@ function validate300(
       data === "Elements"
     )
   ) {
-    validate300.errors = [
+    validate304.errors = [
       {
         instancePath,
         schemaPath: "#/enum",
         keyword: "enum",
-        params: { allowedValues: schema99.enum },
+        params: { allowedValues: schema101.enum },
         message: "must be equal to one of the allowed values",
       },
     ];
     return false;
   }
-  validate300.errors = vErrors;
+  validate304.errors = vErrors;
   return errors === 0;
 }
-validate300.evaluated = { dynamicProps: false, dynamicItems: false };
-const schema100 = {
+validate304.evaluated = { dynamicProps: false, dynamicItems: false };
+const schema102 = {
   description:
     "Element discriminators for the scalar `Vec::contains` ABI entries that\nexist in the runtime. Other element representations use their dedicated\nlayout/owned families.",
   enum: ["F64", "I32", "I64", "Str"],
   type: "string",
 };
-function validate302(
+function validate306(
   data,
   {
     instancePath = "",
@@ -57584,7 +57977,7 @@ function validate302(
 ) {
   let vErrors = null;
   let errors = 0;
-  const evaluated0 = validate302.evaluated;
+  const evaluated0 = validate306.evaluated;
   if (evaluated0.dynamicProps) {
     evaluated0.props = undefined;
   }
@@ -57592,7 +57985,7 @@ function validate302(
     evaluated0.items = undefined;
   }
   if (typeof data !== "string") {
-    validate302.errors = [
+    validate306.errors = [
       {
         instancePath,
         schemaPath: "#/type",
@@ -57604,22 +57997,22 @@ function validate302(
     return false;
   }
   if (!(data === "F64" || data === "I32" || data === "I64" || data === "Str")) {
-    validate302.errors = [
+    validate306.errors = [
       {
         instancePath,
         schemaPath: "#/enum",
         keyword: "enum",
-        params: { allowedValues: schema100.enum },
+        params: { allowedValues: schema102.enum },
         message: "must be equal to one of the allowed values",
       },
     ];
     return false;
   }
-  validate302.errors = vErrors;
+  validate306.errors = vErrors;
   return errors === 0;
 }
-validate302.evaluated = { dynamicProps: false, dynamicItems: false };
-const schema101 = {
+validate306.evaluated = { dynamicProps: false, dynamicItems: false };
+const schema103 = {
   description:
     "Element-type discriminator for `Vec<T>::get` runtime entries\n(`hew_vec_get_*`). One variant per monomorphic-element C-ABI symbol\nemitted today by `hew-runtime/src/vec.rs`.\n\n`Layout` covers the layout-descriptor path for `BitCopy` Named records\nand tuples; `Owned` is the W5.016 borrow-getter for non-Copy owned\nelements. The pending Vec genericisation work will collapse most of\nthese onto a single `Generic` variant that reads the descriptor's\n`elem` field — out of scope here.",
   oneOf: [
@@ -57655,7 +58048,7 @@ const schema101 = {
     },
   ],
 };
-function validate304(
+function validate308(
   data,
   {
     instancePath = "",
@@ -57667,7 +58060,7 @@ function validate304(
 ) {
   let vErrors = null;
   let errors = 0;
-  const evaluated0 = validate304.evaluated;
+  const evaluated0 = validate308.evaluated;
   if (evaluated0.dynamicProps) {
     evaluated0.props = undefined;
   }
@@ -57714,7 +58107,7 @@ function validate304(
       instancePath,
       schemaPath: "#/oneOf/0/enum",
       keyword: "enum",
-      params: { allowedValues: schema101.oneOf[0].enum },
+      params: { allowedValues: schema103.oneOf[0].enum },
       message: "must be equal to one of the allowed values",
     };
     if (vErrors === null) {
@@ -57825,7 +58218,7 @@ function validate304(
       vErrors.push(err6);
     }
     errors++;
-    validate304.errors = vErrors;
+    validate308.errors = vErrors;
     return false;
   } else {
     errors = _errs0;
@@ -57837,140 +58230,14 @@ function validate304(
       }
     }
   }
-  validate304.errors = vErrors;
-  return errors === 0;
-}
-validate304.evaluated = { dynamicProps: false, dynamicItems: false };
-const schema102 = {
-  description:
-    "Scalar element ABI discriminator shared by the direct Vec operation\nmatrix. `bool`, layout-managed, owned, and closure-pair paths remain\ndistinct families because their ABI/ownership contracts differ.",
-  enum: ["F32", "F64", "I8", "I16", "I32", "I64", "Ptr", "Str", "U8", "U16"],
-  type: "string",
-};
-function validate306(
-  data,
-  {
-    instancePath = "",
-    parentData,
-    parentDataProperty,
-    rootData = data,
-    dynamicAnchors = {},
-  } = {},
-) {
-  let vErrors = null;
-  let errors = 0;
-  const evaluated0 = validate306.evaluated;
-  if (evaluated0.dynamicProps) {
-    evaluated0.props = undefined;
-  }
-  if (evaluated0.dynamicItems) {
-    evaluated0.items = undefined;
-  }
-  if (typeof data !== "string") {
-    validate306.errors = [
-      {
-        instancePath,
-        schemaPath: "#/type",
-        keyword: "type",
-        params: { type: "string" },
-        message: "must be string",
-      },
-    ];
-    return false;
-  }
-  if (
-    !(
-      data === "F32" ||
-      data === "F64" ||
-      data === "I8" ||
-      data === "I16" ||
-      data === "I32" ||
-      data === "I64" ||
-      data === "Ptr" ||
-      data === "Str" ||
-      data === "U8" ||
-      data === "U16"
-    )
-  ) {
-    validate306.errors = [
-      {
-        instancePath,
-        schemaPath: "#/enum",
-        keyword: "enum",
-        params: { allowedValues: schema102.enum },
-        message: "must be equal to one of the allowed values",
-      },
-    ];
-    return false;
-  }
-  validate306.errors = vErrors;
-  return errors === 0;
-}
-validate306.evaluated = { dynamicProps: false, dynamicItems: false };
-const schema103 = {
-  description:
-    "The scalar Vec operations that share the same element discriminator.",
-  enum: ["Push", "Pop", "Set", "RemoveAt"],
-  type: "string",
-};
-function validate308(
-  data,
-  {
-    instancePath = "",
-    parentData,
-    parentDataProperty,
-    rootData = data,
-    dynamicAnchors = {},
-  } = {},
-) {
-  let vErrors = null;
-  let errors = 0;
-  const evaluated0 = validate308.evaluated;
-  if (evaluated0.dynamicProps) {
-    evaluated0.props = undefined;
-  }
-  if (evaluated0.dynamicItems) {
-    evaluated0.items = undefined;
-  }
-  if (typeof data !== "string") {
-    validate308.errors = [
-      {
-        instancePath,
-        schemaPath: "#/type",
-        keyword: "type",
-        params: { type: "string" },
-        message: "must be string",
-      },
-    ];
-    return false;
-  }
-  if (
-    !(
-      data === "Push" ||
-      data === "Pop" ||
-      data === "Set" ||
-      data === "RemoveAt"
-    )
-  ) {
-    validate308.errors = [
-      {
-        instancePath,
-        schemaPath: "#/enum",
-        keyword: "enum",
-        params: { allowedValues: schema103.enum },
-        message: "must be equal to one of the allowed values",
-      },
-    ];
-    return false;
-  }
   validate308.errors = vErrors;
   return errors === 0;
 }
 validate308.evaluated = { dynamicProps: false, dynamicItems: false };
 const schema104 = {
   description:
-    "Element-type discriminator for `Vec<T>::slice_range` runtime entries\n(`hew_vec_slice_range_*`). Narrower than [`VecGetElem`] because slice\ndoes not have a bool path today; descriptor-backed record/tuple elements\nroute through the `Layout`/`Owned` substrate variants.",
-  enum: ["Bytesize", "F64", "I32", "I64", "Layout", "Owned", "Ptr", "Str"],
+    "Scalar element ABI discriminator shared by the direct Vec operation\nmatrix. `bool`, layout-managed, owned, and closure-pair paths remain\ndistinct families because their ABI/ownership contracts differ.",
+  enum: ["F32", "F64", "I8", "I16", "I32", "I64", "Ptr", "Str", "U8", "U16"],
   type: "string",
 };
 function validate310(
@@ -58006,14 +58273,16 @@ function validate310(
   }
   if (
     !(
-      data === "Bytesize" ||
+      data === "F32" ||
       data === "F64" ||
+      data === "I8" ||
+      data === "I16" ||
       data === "I32" ||
       data === "I64" ||
-      data === "Layout" ||
-      data === "Owned" ||
       data === "Ptr" ||
-      data === "Str"
+      data === "Str" ||
+      data === "U8" ||
+      data === "U16"
     )
   ) {
     validate310.errors = [
@@ -58031,7 +58300,13 @@ function validate310(
   return errors === 0;
 }
 validate310.evaluated = { dynamicProps: false, dynamicItems: false };
-function validate266(
+const schema105 = {
+  description:
+    "The scalar Vec operations that share the same element discriminator.",
+  enum: ["Push", "Pop", "Set", "RemoveAt"],
+  type: "string",
+};
+function validate312(
   data,
   {
     instancePath = "",
@@ -58043,7 +58318,125 @@ function validate266(
 ) {
   let vErrors = null;
   let errors = 0;
-  const evaluated0 = validate266.evaluated;
+  const evaluated0 = validate312.evaluated;
+  if (evaluated0.dynamicProps) {
+    evaluated0.props = undefined;
+  }
+  if (evaluated0.dynamicItems) {
+    evaluated0.items = undefined;
+  }
+  if (typeof data !== "string") {
+    validate312.errors = [
+      {
+        instancePath,
+        schemaPath: "#/type",
+        keyword: "type",
+        params: { type: "string" },
+        message: "must be string",
+      },
+    ];
+    return false;
+  }
+  if (
+    !(
+      data === "Push" ||
+      data === "Pop" ||
+      data === "Set" ||
+      data === "RemoveAt"
+    )
+  ) {
+    validate312.errors = [
+      {
+        instancePath,
+        schemaPath: "#/enum",
+        keyword: "enum",
+        params: { allowedValues: schema105.enum },
+        message: "must be equal to one of the allowed values",
+      },
+    ];
+    return false;
+  }
+  validate312.errors = vErrors;
+  return errors === 0;
+}
+validate312.evaluated = { dynamicProps: false, dynamicItems: false };
+const schema106 = {
+  description:
+    "Element-type discriminator for `Vec<T>::slice_range` runtime entries\n(`hew_vec_slice_range_*`). Narrower than [`VecGetElem`] because slice\ndoes not have a bool path today; descriptor-backed record/tuple elements\nroute through the `Layout`/`Owned` substrate variants.",
+  enum: ["Bytesize", "F64", "I32", "I64", "Layout", "Owned", "Ptr", "Str"],
+  type: "string",
+};
+function validate314(
+  data,
+  {
+    instancePath = "",
+    parentData,
+    parentDataProperty,
+    rootData = data,
+    dynamicAnchors = {},
+  } = {},
+) {
+  let vErrors = null;
+  let errors = 0;
+  const evaluated0 = validate314.evaluated;
+  if (evaluated0.dynamicProps) {
+    evaluated0.props = undefined;
+  }
+  if (evaluated0.dynamicItems) {
+    evaluated0.items = undefined;
+  }
+  if (typeof data !== "string") {
+    validate314.errors = [
+      {
+        instancePath,
+        schemaPath: "#/type",
+        keyword: "type",
+        params: { type: "string" },
+        message: "must be string",
+      },
+    ];
+    return false;
+  }
+  if (
+    !(
+      data === "Bytesize" ||
+      data === "F64" ||
+      data === "I32" ||
+      data === "I64" ||
+      data === "Layout" ||
+      data === "Owned" ||
+      data === "Ptr" ||
+      data === "Str"
+    )
+  ) {
+    validate314.errors = [
+      {
+        instancePath,
+        schemaPath: "#/enum",
+        keyword: "enum",
+        params: { allowedValues: schema106.enum },
+        message: "must be equal to one of the allowed values",
+      },
+    ];
+    return false;
+  }
+  validate314.errors = vErrors;
+  return errors === 0;
+}
+validate314.evaluated = { dynamicProps: false, dynamicItems: false };
+function validate270(
+  data,
+  {
+    instancePath = "",
+    parentData,
+    parentDataProperty,
+    rootData = data,
+    dynamicAnchors = {},
+  } = {},
+) {
+  let vErrors = null;
+  let errors = 0;
+  const evaluated0 = validate270.evaluated;
   if (evaluated0.dynamicProps) {
     evaluated0.props = undefined;
   }
@@ -58057,7 +58450,7 @@ function validate266(
         (data.id === undefined && (missing0 = "id")) ||
         (data.family === undefined && (missing0 = "family"))
       ) {
-        validate266.errors = [
+        validate270.errors = [
           {
             instancePath,
             schemaPath: "#/required",
@@ -58071,7 +58464,7 @@ function validate266(
         const _errs2 = errors;
         for (const key0 in data) {
           if (!(key0 === "detail" || key0 === "family" || key0 === "id")) {
-            validate266.errors = [
+            validate270.errors = [
               {
                 instancePath,
                 schemaPath: "#/additionalProperties",
@@ -58088,7 +58481,7 @@ function validate266(
           if (data.family !== undefined) {
             const _errs3 = errors;
             if (typeof data.family !== "string") {
-              validate266.errors = [
+              validate270.errors = [
                 {
                   instancePath: instancePath + "/family",
                   schemaPath: "#/properties/family/type",
@@ -58115,7 +58508,7 @@ function validate266(
                   isFinite(data1)
                 )
               ) {
-                validate266.errors = [
+                validate270.errors = [
                   {
                     instancePath: instancePath + "/id",
                     schemaPath: "#/properties/id/type",
@@ -58129,7 +58522,7 @@ function validate266(
               if (errors === _errs5) {
                 if (typeof data1 == "number" && isFinite(data1)) {
                   if (data1 > 4294967295 || isNaN(data1)) {
-                    validate266.errors = [
+                    validate270.errors = [
                       {
                         instancePath: instancePath + "/id",
                         schemaPath: "#/properties/id/maximum",
@@ -58141,7 +58534,7 @@ function validate266(
                     return false;
                   } else {
                     if (data1 < 0 || isNaN(data1)) {
-                      validate266.errors = [
+                      validate270.errors = [
                         {
                           instancePath: instancePath + "/id",
                           schemaPath: "#/properties/id/minimum",
@@ -58167,7 +58560,7 @@ function validate266(
                     if (data.detail !== undefined) {
                       const _errs8 = errors;
                       if (data.detail !== null) {
-                        validate266.errors = [
+                        validate270.errors = [
                           {
                             instancePath: instancePath + "/detail",
                             schemaPath: "#/oneOf/0/properties/detail/type",
@@ -58186,7 +58579,7 @@ function validate266(
                       if (data.family !== undefined) {
                         const _errs10 = errors;
                         if ("ActorLink" !== data.family) {
-                          validate266.errors = [
+                          validate270.errors = [
                             {
                               instancePath: instancePath + "/family",
                               schemaPath: "#/oneOf/0/properties/family/const",
@@ -58208,7 +58601,7 @@ function validate266(
                     if (data.detail !== undefined) {
                       const _errs12 = errors;
                       if (data.detail !== null) {
-                        validate266.errors = [
+                        validate270.errors = [
                           {
                             instancePath: instancePath + "/detail",
                             schemaPath: "#/oneOf/1/properties/detail/type",
@@ -58227,7 +58620,7 @@ function validate266(
                       if (data.family !== undefined) {
                         const _errs14 = errors;
                         if ("ActorMonitor" !== data.family) {
-                          validate266.errors = [
+                          validate270.errors = [
                             {
                               instancePath: instancePath + "/family",
                               schemaPath: "#/oneOf/1/properties/family/const",
@@ -58249,7 +58642,7 @@ function validate266(
                     if (data.detail !== undefined) {
                       const _errs16 = errors;
                       if (data.detail !== null) {
-                        validate266.errors = [
+                        validate270.errors = [
                           {
                             instancePath: instancePath + "/detail",
                             schemaPath: "#/oneOf/2/properties/detail/type",
@@ -58268,7 +58661,7 @@ function validate266(
                       if (data.family !== undefined) {
                         const _errs18 = errors;
                         if ("ActorCaller" !== data.family) {
-                          validate266.errors = [
+                          validate270.errors = [
                             {
                               instancePath: instancePath + "/family",
                               schemaPath: "#/oneOf/2/properties/family/const",
@@ -58290,7 +58683,7 @@ function validate266(
                     if (data.detail !== undefined) {
                       const _errs20 = errors;
                       if (data.detail !== null) {
-                        validate266.errors = [
+                        validate270.errors = [
                           {
                             instancePath: instancePath + "/detail",
                             schemaPath: "#/oneOf/3/properties/detail/type",
@@ -58309,7 +58702,7 @@ function validate266(
                       if (data.family !== undefined) {
                         const _errs22 = errors;
                         if ("ActorRefusalLog" !== data.family) {
-                          validate266.errors = [
+                          validate270.errors = [
                             {
                               instancePath: instancePath + "/family",
                               schemaPath: "#/oneOf/3/properties/family/const",
@@ -58331,7 +58724,7 @@ function validate266(
                     if (data.detail !== undefined) {
                       const _errs24 = errors;
                       if (data.detail !== null) {
-                        validate266.errors = [
+                        validate270.errors = [
                           {
                             instancePath: instancePath + "/detail",
                             schemaPath: "#/oneOf/4/properties/detail/type",
@@ -58350,7 +58743,7 @@ function validate266(
                       if (data.family !== undefined) {
                         const _errs26 = errors;
                         if ("ActorUnlink" !== data.family) {
-                          validate266.errors = [
+                          validate270.errors = [
                             {
                               instancePath: instancePath + "/family",
                               schemaPath: "#/oneOf/4/properties/family/const",
@@ -58372,7 +58765,7 @@ function validate266(
                     if (data.detail !== undefined) {
                       const _errs28 = errors;
                       if (data.detail !== null) {
-                        validate266.errors = [
+                        validate270.errors = [
                           {
                             instancePath: instancePath + "/detail",
                             schemaPath: "#/oneOf/5/properties/detail/type",
@@ -58391,7 +58784,7 @@ function validate266(
                       if (data.family !== undefined) {
                         const _errs30 = errors;
                         if ("AutoMutexAlloc" !== data.family) {
-                          validate266.errors = [
+                          validate270.errors = [
                             {
                               instancePath: instancePath + "/family",
                               schemaPath: "#/oneOf/5/properties/family/const",
@@ -58413,7 +58806,7 @@ function validate266(
                     if (data.detail !== undefined) {
                       const _errs32 = errors;
                       if (data.detail !== null) {
-                        validate266.errors = [
+                        validate270.errors = [
                           {
                             instancePath: instancePath + "/detail",
                             schemaPath: "#/oneOf/6/properties/detail/type",
@@ -58432,7 +58825,7 @@ function validate266(
                       if (data.family !== undefined) {
                         const _errs34 = errors;
                         if ("AutoMutexFree" !== data.family) {
-                          validate266.errors = [
+                          validate270.errors = [
                             {
                               instancePath: instancePath + "/family",
                               schemaPath: "#/oneOf/6/properties/family/const",
@@ -58454,7 +58847,7 @@ function validate266(
                     if (data.detail !== undefined) {
                       const _errs36 = errors;
                       if (data.detail !== null) {
-                        validate266.errors = [
+                        validate270.errors = [
                           {
                             instancePath: instancePath + "/detail",
                             schemaPath: "#/oneOf/7/properties/detail/type",
@@ -58473,7 +58866,7 @@ function validate266(
                       if (data.family !== undefined) {
                         const _errs38 = errors;
                         if ("AutoMutexLock" !== data.family) {
-                          validate266.errors = [
+                          validate270.errors = [
                             {
                               instancePath: instancePath + "/family",
                               schemaPath: "#/oneOf/7/properties/family/const",
@@ -58495,7 +58888,7 @@ function validate266(
                     if (data.detail !== undefined) {
                       const _errs40 = errors;
                       if (data.detail !== null) {
-                        validate266.errors = [
+                        validate270.errors = [
                           {
                             instancePath: instancePath + "/detail",
                             schemaPath: "#/oneOf/8/properties/detail/type",
@@ -58514,7 +58907,7 @@ function validate266(
                       if (data.family !== undefined) {
                         const _errs42 = errors;
                         if ("AutoMutexUnlock" !== data.family) {
-                          validate266.errors = [
+                          validate270.errors = [
                             {
                               instancePath: instancePath + "/family",
                               schemaPath: "#/oneOf/8/properties/family/const",
@@ -58536,7 +58929,7 @@ function validate266(
                     if (data.detail !== undefined) {
                       const _errs44 = errors;
                       if (data.detail !== null) {
-                        validate266.errors = [
+                        validate270.errors = [
                           {
                             instancePath: instancePath + "/detail",
                             schemaPath: "#/oneOf/9/properties/detail/type",
@@ -58555,7 +58948,7 @@ function validate266(
                       if (data.family !== undefined) {
                         const _errs46 = errors;
                         if ("DequePopFront" !== data.family) {
-                          validate266.errors = [
+                          validate270.errors = [
                             {
                               instancePath: instancePath + "/family",
                               schemaPath: "#/oneOf/9/properties/family/const",
@@ -58577,7 +58970,7 @@ function validate266(
                     if (data.detail !== undefined) {
                       const _errs48 = errors;
                       if (data.detail !== null) {
-                        validate266.errors = [
+                        validate270.errors = [
                           {
                             instancePath: instancePath + "/detail",
                             schemaPath: "#/oneOf/10/properties/detail/type",
@@ -58596,7 +58989,7 @@ function validate266(
                       if (data.family !== undefined) {
                         const _errs50 = errors;
                         if ("DequePopBack" !== data.family) {
-                          validate266.errors = [
+                          validate270.errors = [
                             {
                               instancePath: instancePath + "/family",
                               schemaPath: "#/oneOf/10/properties/family/const",
@@ -58618,7 +59011,7 @@ function validate266(
                     if (data.detail !== undefined) {
                       const _errs52 = errors;
                       if (data.detail !== null) {
-                        validate266.errors = [
+                        validate270.errors = [
                           {
                             instancePath: instancePath + "/detail",
                             schemaPath: "#/oneOf/11/properties/detail/type",
@@ -58637,7 +59030,7 @@ function validate266(
                       if (data.family !== undefined) {
                         const _errs54 = errors;
                         if ("BytesAppend" !== data.family) {
-                          validate266.errors = [
+                          validate270.errors = [
                             {
                               instancePath: instancePath + "/family",
                               schemaPath: "#/oneOf/11/properties/family/const",
@@ -58659,7 +59052,7 @@ function validate266(
                     if (data.detail !== undefined) {
                       const _errs56 = errors;
                       if (data.detail !== null) {
-                        validate266.errors = [
+                        validate270.errors = [
                           {
                             instancePath: instancePath + "/detail",
                             schemaPath: "#/oneOf/12/properties/detail/type",
@@ -58678,7 +59071,7 @@ function validate266(
                       if (data.family !== undefined) {
                         const _errs58 = errors;
                         if ("BytesClear" !== data.family) {
-                          validate266.errors = [
+                          validate270.errors = [
                             {
                               instancePath: instancePath + "/family",
                               schemaPath: "#/oneOf/12/properties/family/const",
@@ -58700,7 +59093,7 @@ function validate266(
                     if (data.detail !== undefined) {
                       const _errs60 = errors;
                       if (data.detail !== null) {
-                        validate266.errors = [
+                        validate270.errors = [
                           {
                             instancePath: instancePath + "/detail",
                             schemaPath: "#/oneOf/13/properties/detail/type",
@@ -58719,7 +59112,7 @@ function validate266(
                       if (data.family !== undefined) {
                         const _errs62 = errors;
                         if ("BytesContains" !== data.family) {
-                          validate266.errors = [
+                          validate270.errors = [
                             {
                               instancePath: instancePath + "/family",
                               schemaPath: "#/oneOf/13/properties/family/const",
@@ -58741,7 +59134,7 @@ function validate266(
                     if (data.detail !== undefined) {
                       const _errs64 = errors;
                       if (data.detail !== null) {
-                        validate266.errors = [
+                        validate270.errors = [
                           {
                             instancePath: instancePath + "/detail",
                             schemaPath: "#/oneOf/14/properties/detail/type",
@@ -58760,7 +59153,7 @@ function validate266(
                       if (data.family !== undefined) {
                         const _errs66 = errors;
                         if ("BytesDecodeUtf8" !== data.family) {
-                          validate266.errors = [
+                          validate270.errors = [
                             {
                               instancePath: instancePath + "/family",
                               schemaPath: "#/oneOf/14/properties/family/const",
@@ -58782,7 +59175,7 @@ function validate266(
                     if (data.detail !== undefined) {
                       const _errs68 = errors;
                       if (data.detail !== null) {
-                        validate266.errors = [
+                        validate270.errors = [
                           {
                             instancePath: instancePath + "/detail",
                             schemaPath: "#/oneOf/15/properties/detail/type",
@@ -58801,7 +59194,7 @@ function validate266(
                       if (data.family !== undefined) {
                         const _errs70 = errors;
                         if ("BytesDecodeUtf8Lossy" !== data.family) {
-                          validate266.errors = [
+                          validate270.errors = [
                             {
                               instancePath: instancePath + "/family",
                               schemaPath: "#/oneOf/15/properties/family/const",
@@ -58823,7 +59216,7 @@ function validate266(
                     if (data.detail !== undefined) {
                       const _errs72 = errors;
                       if (data.detail !== null) {
-                        validate266.errors = [
+                        validate270.errors = [
                           {
                             instancePath: instancePath + "/detail",
                             schemaPath: "#/oneOf/16/properties/detail/type",
@@ -58842,7 +59235,7 @@ function validate266(
                       if (data.family !== undefined) {
                         const _errs74 = errors;
                         if ("BytesEndsWith" !== data.family) {
-                          validate266.errors = [
+                          validate270.errors = [
                             {
                               instancePath: instancePath + "/family",
                               schemaPath: "#/oneOf/16/properties/family/const",
@@ -58864,7 +59257,7 @@ function validate266(
                     if (data.detail !== undefined) {
                       const _errs76 = errors;
                       if (data.detail !== null) {
-                        validate266.errors = [
+                        validate270.errors = [
                           {
                             instancePath: instancePath + "/detail",
                             schemaPath: "#/oneOf/17/properties/detail/type",
@@ -58883,7 +59276,7 @@ function validate266(
                       if (data.family !== undefined) {
                         const _errs78 = errors;
                         if ("BytesGet" !== data.family) {
-                          validate266.errors = [
+                          validate270.errors = [
                             {
                               instancePath: instancePath + "/family",
                               schemaPath: "#/oneOf/17/properties/family/const",
@@ -58905,7 +59298,7 @@ function validate266(
                     if (data.detail !== undefined) {
                       const _errs80 = errors;
                       if (data.detail !== null) {
-                        validate266.errors = [
+                        validate270.errors = [
                           {
                             instancePath: instancePath + "/detail",
                             schemaPath: "#/oneOf/18/properties/detail/type",
@@ -58924,7 +59317,7 @@ function validate266(
                       if (data.family !== undefined) {
                         const _errs82 = errors;
                         if ("BytesIndex" !== data.family) {
-                          validate266.errors = [
+                          validate270.errors = [
                             {
                               instancePath: instancePath + "/family",
                               schemaPath: "#/oneOf/18/properties/family/const",
@@ -58946,7 +59339,7 @@ function validate266(
                     if (data.detail !== undefined) {
                       const _errs84 = errors;
                       if (data.detail !== null) {
-                        validate266.errors = [
+                        validate270.errors = [
                           {
                             instancePath: instancePath + "/detail",
                             schemaPath: "#/oneOf/19/properties/detail/type",
@@ -58965,7 +59358,7 @@ function validate266(
                       if (data.family !== undefined) {
                         const _errs86 = errors;
                         if ("BytesIsEmpty" !== data.family) {
-                          validate266.errors = [
+                          validate270.errors = [
                             {
                               instancePath: instancePath + "/family",
                               schemaPath: "#/oneOf/19/properties/family/const",
@@ -58987,7 +59380,7 @@ function validate266(
                     if (data.detail !== undefined) {
                       const _errs88 = errors;
                       if (data.detail !== null) {
-                        validate266.errors = [
+                        validate270.errors = [
                           {
                             instancePath: instancePath + "/detail",
                             schemaPath: "#/oneOf/20/properties/detail/type",
@@ -59006,7 +59399,7 @@ function validate266(
                       if (data.family !== undefined) {
                         const _errs90 = errors;
                         if ("BytesLen" !== data.family) {
-                          validate266.errors = [
+                          validate270.errors = [
                             {
                               instancePath: instancePath + "/family",
                               schemaPath: "#/oneOf/20/properties/family/const",
@@ -59028,7 +59421,7 @@ function validate266(
                     if (data.detail !== undefined) {
                       const _errs92 = errors;
                       if (data.detail !== null) {
-                        validate266.errors = [
+                        validate270.errors = [
                           {
                             instancePath: instancePath + "/detail",
                             schemaPath: "#/oneOf/21/properties/detail/type",
@@ -59047,7 +59440,7 @@ function validate266(
                       if (data.family !== undefined) {
                         const _errs94 = errors;
                         if ("BytesPop" !== data.family) {
-                          validate266.errors = [
+                          validate270.errors = [
                             {
                               instancePath: instancePath + "/family",
                               schemaPath: "#/oneOf/21/properties/family/const",
@@ -59069,7 +59462,7 @@ function validate266(
                     if (data.detail !== undefined) {
                       const _errs96 = errors;
                       if (data.detail !== null) {
-                        validate266.errors = [
+                        validate270.errors = [
                           {
                             instancePath: instancePath + "/detail",
                             schemaPath: "#/oneOf/22/properties/detail/type",
@@ -59088,7 +59481,7 @@ function validate266(
                       if (data.family !== undefined) {
                         const _errs98 = errors;
                         if ("BytesPush" !== data.family) {
-                          validate266.errors = [
+                          validate270.errors = [
                             {
                               instancePath: instancePath + "/family",
                               schemaPath: "#/oneOf/22/properties/family/const",
@@ -59110,7 +59503,7 @@ function validate266(
                     if (data.detail !== undefined) {
                       const _errs100 = errors;
                       if (data.detail !== null) {
-                        validate266.errors = [
+                        validate270.errors = [
                           {
                             instancePath: instancePath + "/detail",
                             schemaPath: "#/oneOf/23/properties/detail/type",
@@ -59129,7 +59522,7 @@ function validate266(
                       if (data.family !== undefined) {
                         const _errs102 = errors;
                         if ("BytesSet" !== data.family) {
-                          validate266.errors = [
+                          validate270.errors = [
                             {
                               instancePath: instancePath + "/family",
                               schemaPath: "#/oneOf/23/properties/family/const",
@@ -59151,7 +59544,7 @@ function validate266(
                     if (data.detail !== undefined) {
                       const _errs104 = errors;
                       if (data.detail !== null) {
-                        validate266.errors = [
+                        validate270.errors = [
                           {
                             instancePath: instancePath + "/detail",
                             schemaPath: "#/oneOf/24/properties/detail/type",
@@ -59170,7 +59563,7 @@ function validate266(
                       if (data.family !== undefined) {
                         const _errs106 = errors;
                         if ("BytesSlice" !== data.family) {
-                          validate266.errors = [
+                          validate270.errors = [
                             {
                               instancePath: instancePath + "/family",
                               schemaPath: "#/oneOf/24/properties/family/const",
@@ -59192,7 +59585,7 @@ function validate266(
                     if (data.detail !== undefined) {
                       const _errs108 = errors;
                       if (data.detail !== null) {
-                        validate266.errors = [
+                        validate270.errors = [
                           {
                             instancePath: instancePath + "/detail",
                             schemaPath: "#/oneOf/25/properties/detail/type",
@@ -59211,7 +59604,7 @@ function validate266(
                       if (data.family !== undefined) {
                         const _errs110 = errors;
                         if ("BytesStartsWith" !== data.family) {
-                          validate266.errors = [
+                          validate270.errors = [
                             {
                               instancePath: instancePath + "/family",
                               schemaPath: "#/oneOf/25/properties/family/const",
@@ -59233,7 +59626,7 @@ function validate266(
                     if (data.detail !== undefined) {
                       const _errs112 = errors;
                       if (data.detail !== null) {
-                        validate266.errors = [
+                        validate270.errors = [
                           {
                             instancePath: instancePath + "/detail",
                             schemaPath: "#/oneOf/26/properties/detail/type",
@@ -59252,7 +59645,7 @@ function validate266(
                       if (data.family !== undefined) {
                         const _errs114 = errors;
                         if ("CancelTokenIsRequested" !== data.family) {
-                          validate266.errors = [
+                          validate270.errors = [
                             {
                               instancePath: instancePath + "/family",
                               schemaPath: "#/oneOf/26/properties/family/const",
@@ -59276,7 +59669,7 @@ function validate266(
                     if (data.detail !== undefined) {
                       const _errs116 = errors;
                       if (data.detail !== null) {
-                        validate266.errors = [
+                        validate270.errors = [
                           {
                             instancePath: instancePath + "/detail",
                             schemaPath: "#/oneOf/27/properties/detail/type",
@@ -59295,7 +59688,7 @@ function validate266(
                       if (data.family !== undefined) {
                         const _errs118 = errors;
                         if ("CancelTokenRelease" !== data.family) {
-                          validate266.errors = [
+                          validate270.errors = [
                             {
                               instancePath: instancePath + "/family",
                               schemaPath: "#/oneOf/27/properties/family/const",
@@ -59317,7 +59710,7 @@ function validate266(
                     if (data.detail !== undefined) {
                       const _errs120 = errors;
                       if (data.detail !== null) {
-                        validate266.errors = [
+                        validate270.errors = [
                           {
                             instancePath: instancePath + "/detail",
                             schemaPath: "#/oneOf/28/properties/detail/type",
@@ -59336,7 +59729,7 @@ function validate266(
                       if (data.family !== undefined) {
                         const _errs122 = errors;
                         if ("CancelTokenRetain" !== data.family) {
-                          validate266.errors = [
+                          validate270.errors = [
                             {
                               instancePath: instancePath + "/family",
                               schemaPath: "#/oneOf/28/properties/family/const",
@@ -59358,7 +59751,7 @@ function validate266(
                     if (data.detail !== undefined) {
                       const _errs124 = errors;
                       if (data.detail !== null) {
-                        validate266.errors = [
+                        validate270.errors = [
                           {
                             instancePath: instancePath + "/detail",
                             schemaPath: "#/oneOf/29/properties/detail/type",
@@ -59377,7 +59770,7 @@ function validate266(
                       if (data.family !== undefined) {
                         const _errs126 = errors;
                         if ("ContextActorId" !== data.family) {
-                          validate266.errors = [
+                          validate270.errors = [
                             {
                               instancePath: instancePath + "/family",
                               schemaPath: "#/oneOf/29/properties/family/const",
@@ -59399,7 +59792,7 @@ function validate266(
                     if (data.detail !== undefined) {
                       const _errs128 = errors;
                       if (data.detail !== null) {
-                        validate266.errors = [
+                        validate270.errors = [
                           {
                             instancePath: instancePath + "/detail",
                             schemaPath: "#/oneOf/30/properties/detail/type",
@@ -59418,7 +59811,7 @@ function validate266(
                       if (data.family !== undefined) {
                         const _errs130 = errors;
                         if ("ContextSupervisor" !== data.family) {
-                          validate266.errors = [
+                          validate270.errors = [
                             {
                               instancePath: instancePath + "/family",
                               schemaPath: "#/oneOf/30/properties/family/const",
@@ -59440,7 +59833,7 @@ function validate266(
                     if (data.detail !== undefined) {
                       const _errs132 = errors;
                       if (data.detail !== null) {
-                        validate266.errors = [
+                        validate270.errors = [
                           {
                             instancePath: instancePath + "/detail",
                             schemaPath: "#/oneOf/31/properties/detail/type",
@@ -59459,7 +59852,7 @@ function validate266(
                       if (data.family !== undefined) {
                         const _errs134 = errors;
                         if ("ContextTraceSpan" !== data.family) {
-                          validate266.errors = [
+                          validate270.errors = [
                             {
                               instancePath: instancePath + "/family",
                               schemaPath: "#/oneOf/31/properties/family/const",
@@ -59481,7 +59874,7 @@ function validate266(
                     if (data.detail !== undefined) {
                       const _errs136 = errors;
                       if (data.detail !== null) {
-                        validate266.errors = [
+                        validate270.errors = [
                           {
                             instancePath: instancePath + "/detail",
                             schemaPath: "#/oneOf/32/properties/detail/type",
@@ -59500,7 +59893,7 @@ function validate266(
                       if (data.family !== undefined) {
                         const _errs138 = errors;
                         if ("ActorRequestRelease" !== data.family) {
-                          validate266.errors = [
+                          validate270.errors = [
                             {
                               instancePath: instancePath + "/family",
                               schemaPath: "#/oneOf/32/properties/family/const",
@@ -59522,7 +59915,7 @@ function validate266(
                     if (data.detail !== undefined) {
                       const _errs140 = errors;
                       if (data.detail !== null) {
-                        validate266.errors = [
+                        validate270.errors = [
                           {
                             instancePath: instancePath + "/detail",
                             schemaPath: "#/oneOf/33/properties/detail/type",
@@ -59541,7 +59934,7 @@ function validate266(
                       if (data.family !== undefined) {
                         const _errs142 = errors;
                         if ("ActorCallFree" !== data.family) {
-                          validate266.errors = [
+                          validate270.errors = [
                             {
                               instancePath: instancePath + "/family",
                               schemaPath: "#/oneOf/33/properties/family/const",
@@ -59563,7 +59956,7 @@ function validate266(
                     if (data.detail !== undefined) {
                       const _errs144 = errors;
                       if (data.detail !== null) {
-                        validate266.errors = [
+                        validate270.errors = [
                           {
                             instancePath: instancePath + "/detail",
                             schemaPath: "#/oneOf/34/properties/detail/type",
@@ -59582,7 +59975,7 @@ function validate266(
                       if (data.family !== undefined) {
                         const _errs146 = errors;
                         if ("ActorRequestTake" !== data.family) {
-                          validate266.errors = [
+                          validate270.errors = [
                             {
                               instancePath: instancePath + "/family",
                               schemaPath: "#/oneOf/34/properties/family/const",
@@ -59604,7 +59997,7 @@ function validate266(
                     if (data.detail !== undefined) {
                       const _errs148 = errors;
                       if (data.detail !== null) {
-                        validate266.errors = [
+                        validate270.errors = [
                           {
                             instancePath: instancePath + "/detail",
                             schemaPath: "#/oneOf/35/properties/detail/type",
@@ -59623,7 +60016,7 @@ function validate266(
                       if (data.family !== undefined) {
                         const _errs150 = errors;
                         if ("DurationAbs" !== data.family) {
-                          validate266.errors = [
+                          validate270.errors = [
                             {
                               instancePath: instancePath + "/family",
                               schemaPath: "#/oneOf/35/properties/family/const",
@@ -59645,7 +60038,7 @@ function validate266(
                     if (data.detail !== undefined) {
                       const _errs152 = errors;
                       if (data.detail !== null) {
-                        validate266.errors = [
+                        validate270.errors = [
                           {
                             instancePath: instancePath + "/detail",
                             schemaPath: "#/oneOf/36/properties/detail/type",
@@ -59664,7 +60057,7 @@ function validate266(
                       if (data.family !== undefined) {
                         const _errs154 = errors;
                         if ("DurationHours" !== data.family) {
-                          validate266.errors = [
+                          validate270.errors = [
                             {
                               instancePath: instancePath + "/family",
                               schemaPath: "#/oneOf/36/properties/family/const",
@@ -59686,7 +60079,7 @@ function validate266(
                     if (data.detail !== undefined) {
                       const _errs156 = errors;
                       if (data.detail !== null) {
-                        validate266.errors = [
+                        validate270.errors = [
                           {
                             instancePath: instancePath + "/detail",
                             schemaPath: "#/oneOf/37/properties/detail/type",
@@ -59705,7 +60098,7 @@ function validate266(
                       if (data.family !== undefined) {
                         const _errs158 = errors;
                         if ("DurationIsZero" !== data.family) {
-                          validate266.errors = [
+                          validate270.errors = [
                             {
                               instancePath: instancePath + "/family",
                               schemaPath: "#/oneOf/37/properties/family/const",
@@ -59727,7 +60120,7 @@ function validate266(
                     if (data.detail !== undefined) {
                       const _errs160 = errors;
                       if (data.detail !== null) {
-                        validate266.errors = [
+                        validate270.errors = [
                           {
                             instancePath: instancePath + "/detail",
                             schemaPath: "#/oneOf/38/properties/detail/type",
@@ -59746,7 +60139,7 @@ function validate266(
                       if (data.family !== undefined) {
                         const _errs162 = errors;
                         if ("DurationMicros" !== data.family) {
-                          validate266.errors = [
+                          validate270.errors = [
                             {
                               instancePath: instancePath + "/family",
                               schemaPath: "#/oneOf/38/properties/family/const",
@@ -59768,7 +60161,7 @@ function validate266(
                     if (data.detail !== undefined) {
                       const _errs164 = errors;
                       if (data.detail !== null) {
-                        validate266.errors = [
+                        validate270.errors = [
                           {
                             instancePath: instancePath + "/detail",
                             schemaPath: "#/oneOf/39/properties/detail/type",
@@ -59787,7 +60180,7 @@ function validate266(
                       if (data.family !== undefined) {
                         const _errs166 = errors;
                         if ("DurationMillis" !== data.family) {
-                          validate266.errors = [
+                          validate270.errors = [
                             {
                               instancePath: instancePath + "/family",
                               schemaPath: "#/oneOf/39/properties/family/const",
@@ -59809,7 +60202,7 @@ function validate266(
                     if (data.detail !== undefined) {
                       const _errs168 = errors;
                       if (data.detail !== null) {
-                        validate266.errors = [
+                        validate270.errors = [
                           {
                             instancePath: instancePath + "/detail",
                             schemaPath: "#/oneOf/40/properties/detail/type",
@@ -59828,7 +60221,7 @@ function validate266(
                       if (data.family !== undefined) {
                         const _errs170 = errors;
                         if ("DurationMins" !== data.family) {
-                          validate266.errors = [
+                          validate270.errors = [
                             {
                               instancePath: instancePath + "/family",
                               schemaPath: "#/oneOf/40/properties/family/const",
@@ -59850,7 +60243,7 @@ function validate266(
                     if (data.detail !== undefined) {
                       const _errs172 = errors;
                       if (data.detail !== null) {
-                        validate266.errors = [
+                        validate270.errors = [
                           {
                             instancePath: instancePath + "/detail",
                             schemaPath: "#/oneOf/41/properties/detail/type",
@@ -59869,7 +60262,7 @@ function validate266(
                       if (data.family !== undefined) {
                         const _errs174 = errors;
                         if ("DurationNanos" !== data.family) {
-                          validate266.errors = [
+                          validate270.errors = [
                             {
                               instancePath: instancePath + "/family",
                               schemaPath: "#/oneOf/41/properties/family/const",
@@ -59891,7 +60284,7 @@ function validate266(
                     if (data.detail !== undefined) {
                       const _errs176 = errors;
                       if (data.detail !== null) {
-                        validate266.errors = [
+                        validate270.errors = [
                           {
                             instancePath: instancePath + "/detail",
                             schemaPath: "#/oneOf/42/properties/detail/type",
@@ -59910,7 +60303,7 @@ function validate266(
                       if (data.family !== undefined) {
                         const _errs178 = errors;
                         if ("DurationSecs" !== data.family) {
-                          validate266.errors = [
+                          validate270.errors = [
                             {
                               instancePath: instancePath + "/family",
                               schemaPath: "#/oneOf/42/properties/family/const",
@@ -59932,7 +60325,7 @@ function validate266(
                     if (data.detail !== undefined) {
                       const _errs180 = errors;
                       if (data.detail !== null) {
-                        validate266.errors = [
+                        validate270.errors = [
                           {
                             instancePath: instancePath + "/detail",
                             schemaPath: "#/oneOf/43/properties/detail/type",
@@ -59951,7 +60344,7 @@ function validate266(
                       if (data.family !== undefined) {
                         const _errs182 = errors;
                         if ("DynBoxAlloc" !== data.family) {
-                          validate266.errors = [
+                          validate270.errors = [
                             {
                               instancePath: instancePath + "/family",
                               schemaPath: "#/oneOf/43/properties/family/const",
@@ -59973,7 +60366,7 @@ function validate266(
                     if (data.detail !== undefined) {
                       const _errs184 = errors;
                       if (data.detail !== null) {
-                        validate266.errors = [
+                        validate270.errors = [
                           {
                             instancePath: instancePath + "/detail",
                             schemaPath: "#/oneOf/44/properties/detail/type",
@@ -59992,7 +60385,7 @@ function validate266(
                       if (data.family !== undefined) {
                         const _errs186 = errors;
                         if ("DynBoxFree" !== data.family) {
-                          validate266.errors = [
+                          validate270.errors = [
                             {
                               instancePath: instancePath + "/family",
                               schemaPath: "#/oneOf/44/properties/family/const",
@@ -60014,7 +60407,7 @@ function validate266(
                     if (data.detail !== undefined) {
                       const _errs188 = errors;
                       if (data.detail !== null) {
-                        validate266.errors = [
+                        validate270.errors = [
                           {
                             instancePath: instancePath + "/detail",
                             schemaPath: "#/oneOf/45/properties/detail/type",
@@ -60033,7 +60426,7 @@ function validate266(
                       if (data.family !== undefined) {
                         const _errs190 = errors;
                         if ("HashMapContainsKeyLayout" !== data.family) {
-                          validate266.errors = [
+                          validate270.errors = [
                             {
                               instancePath: instancePath + "/family",
                               schemaPath: "#/oneOf/45/properties/family/const",
@@ -60057,7 +60450,7 @@ function validate266(
                     if (data.detail !== undefined) {
                       const _errs192 = errors;
                       if (data.detail !== null) {
-                        validate266.errors = [
+                        validate270.errors = [
                           {
                             instancePath: instancePath + "/detail",
                             schemaPath: "#/oneOf/46/properties/detail/type",
@@ -60076,7 +60469,7 @@ function validate266(
                       if (data.family !== undefined) {
                         const _errs194 = errors;
                         if ("HashMapClearLayout" !== data.family) {
-                          validate266.errors = [
+                          validate270.errors = [
                             {
                               instancePath: instancePath + "/family",
                               schemaPath: "#/oneOf/46/properties/family/const",
@@ -60098,7 +60491,7 @@ function validate266(
                     if (data.detail !== undefined) {
                       const _errs196 = errors;
                       if (data.detail !== null) {
-                        validate266.errors = [
+                        validate270.errors = [
                           {
                             instancePath: instancePath + "/detail",
                             schemaPath: "#/oneOf/47/properties/detail/type",
@@ -60117,7 +60510,7 @@ function validate266(
                       if (data.family !== undefined) {
                         const _errs198 = errors;
                         if ("HashMapCloneLayout" !== data.family) {
-                          validate266.errors = [
+                          validate270.errors = [
                             {
                               instancePath: instancePath + "/family",
                               schemaPath: "#/oneOf/47/properties/family/const",
@@ -60139,7 +60532,7 @@ function validate266(
                     if (data.detail !== undefined) {
                       const _errs200 = errors;
                       if (data.detail !== null) {
-                        validate266.errors = [
+                        validate270.errors = [
                           {
                             instancePath: instancePath + "/detail",
                             schemaPath: "#/oneOf/48/properties/detail/type",
@@ -60158,7 +60551,7 @@ function validate266(
                       if (data.family !== undefined) {
                         const _errs202 = errors;
                         if ("HashMapEntriesLayout" !== data.family) {
-                          validate266.errors = [
+                          validate270.errors = [
                             {
                               instancePath: instancePath + "/family",
                               schemaPath: "#/oneOf/48/properties/family/const",
@@ -60180,7 +60573,7 @@ function validate266(
                     if (data.detail !== undefined) {
                       const _errs204 = errors;
                       if (data.detail !== null) {
-                        validate266.errors = [
+                        validate270.errors = [
                           {
                             instancePath: instancePath + "/detail",
                             schemaPath: "#/oneOf/49/properties/detail/type",
@@ -60199,7 +60592,7 @@ function validate266(
                       if (data.family !== undefined) {
                         const _errs206 = errors;
                         if ("HashMapFreeLayout" !== data.family) {
-                          validate266.errors = [
+                          validate270.errors = [
                             {
                               instancePath: instancePath + "/family",
                               schemaPath: "#/oneOf/49/properties/family/const",
@@ -60221,7 +60614,7 @@ function validate266(
                     if (data.detail !== undefined) {
                       const _errs208 = errors;
                       if (data.detail !== null) {
-                        validate266.errors = [
+                        validate270.errors = [
                           {
                             instancePath: instancePath + "/detail",
                             schemaPath: "#/oneOf/50/properties/detail/type",
@@ -60240,7 +60633,7 @@ function validate266(
                       if (data.family !== undefined) {
                         const _errs210 = errors;
                         if ("HashMapGetLayout" !== data.family) {
-                          validate266.errors = [
+                          validate270.errors = [
                             {
                               instancePath: instancePath + "/family",
                               schemaPath: "#/oneOf/50/properties/family/const",
@@ -60262,7 +60655,7 @@ function validate266(
                     if (data.detail !== undefined) {
                       const _errs212 = errors;
                       if (data.detail !== null) {
-                        validate266.errors = [
+                        validate270.errors = [
                           {
                             instancePath: instancePath + "/detail",
                             schemaPath: "#/oneOf/51/properties/detail/type",
@@ -60281,7 +60674,7 @@ function validate266(
                       if (data.family !== undefined) {
                         const _errs214 = errors;
                         if ("HashMapInsertLayout" !== data.family) {
-                          validate266.errors = [
+                          validate270.errors = [
                             {
                               instancePath: instancePath + "/family",
                               schemaPath: "#/oneOf/51/properties/family/const",
@@ -60303,7 +60696,7 @@ function validate266(
                     if (data.detail !== undefined) {
                       const _errs216 = errors;
                       if (data.detail !== null) {
-                        validate266.errors = [
+                        validate270.errors = [
                           {
                             instancePath: instancePath + "/detail",
                             schemaPath: "#/oneOf/52/properties/detail/type",
@@ -60322,7 +60715,7 @@ function validate266(
                       if (data.family !== undefined) {
                         const _errs218 = errors;
                         if ("HashMapLenLayout" !== data.family) {
-                          validate266.errors = [
+                          validate270.errors = [
                             {
                               instancePath: instancePath + "/family",
                               schemaPath: "#/oneOf/52/properties/family/const",
@@ -60344,7 +60737,7 @@ function validate266(
                     if (data.detail !== undefined) {
                       const _errs220 = errors;
                       if (data.detail !== null) {
-                        validate266.errors = [
+                        validate270.errors = [
                           {
                             instancePath: instancePath + "/detail",
                             schemaPath: "#/oneOf/53/properties/detail/type",
@@ -60363,7 +60756,7 @@ function validate266(
                       if (data.family !== undefined) {
                         const _errs222 = errors;
                         if ("HashMapNewWithLayout" !== data.family) {
-                          validate266.errors = [
+                          validate270.errors = [
                             {
                               instancePath: instancePath + "/family",
                               schemaPath: "#/oneOf/53/properties/family/const",
@@ -60385,7 +60778,7 @@ function validate266(
                     if (data.detail !== undefined) {
                       const _errs224 = errors;
                       if (data.detail !== null) {
-                        validate266.errors = [
+                        validate270.errors = [
                           {
                             instancePath: instancePath + "/detail",
                             schemaPath: "#/oneOf/54/properties/detail/type",
@@ -60404,7 +60797,7 @@ function validate266(
                       if (data.family !== undefined) {
                         const _errs226 = errors;
                         if ("HashMapRemoveLayout" !== data.family) {
-                          validate266.errors = [
+                          validate270.errors = [
                             {
                               instancePath: instancePath + "/family",
                               schemaPath: "#/oneOf/54/properties/family/const",
@@ -60426,7 +60819,7 @@ function validate266(
                     if (data.detail !== undefined) {
                       const _errs228 = errors;
                       if (data.detail !== null) {
-                        validate266.errors = [
+                        validate270.errors = [
                           {
                             instancePath: instancePath + "/detail",
                             schemaPath: "#/oneOf/55/properties/detail/type",
@@ -60445,7 +60838,7 @@ function validate266(
                       if (data.family !== undefined) {
                         const _errs230 = errors;
                         if ("HashMapValuesLayout" !== data.family) {
-                          validate266.errors = [
+                          validate270.errors = [
                             {
                               instancePath: instancePath + "/family",
                               schemaPath: "#/oneOf/55/properties/family/const",
@@ -60467,7 +60860,7 @@ function validate266(
                     if (data.detail !== undefined) {
                       const _errs232 = errors;
                       if (data.detail !== null) {
-                        validate266.errors = [
+                        validate270.errors = [
                           {
                             instancePath: instancePath + "/detail",
                             schemaPath: "#/oneOf/56/properties/detail/type",
@@ -60486,7 +60879,7 @@ function validate266(
                       if (data.family !== undefined) {
                         const _errs234 = errors;
                         if ("HashSetContainsLayout" !== data.family) {
-                          validate266.errors = [
+                          validate270.errors = [
                             {
                               instancePath: instancePath + "/family",
                               schemaPath: "#/oneOf/56/properties/family/const",
@@ -60508,7 +60901,7 @@ function validate266(
                     if (data.detail !== undefined) {
                       const _errs236 = errors;
                       if (data.detail !== null) {
-                        validate266.errors = [
+                        validate270.errors = [
                           {
                             instancePath: instancePath + "/detail",
                             schemaPath: "#/oneOf/57/properties/detail/type",
@@ -60527,7 +60920,7 @@ function validate266(
                       if (data.family !== undefined) {
                         const _errs238 = errors;
                         if ("HashSetClearLayout" !== data.family) {
-                          validate266.errors = [
+                          validate270.errors = [
                             {
                               instancePath: instancePath + "/family",
                               schemaPath: "#/oneOf/57/properties/family/const",
@@ -60549,7 +60942,7 @@ function validate266(
                     if (data.detail !== undefined) {
                       const _errs240 = errors;
                       if (data.detail !== null) {
-                        validate266.errors = [
+                        validate270.errors = [
                           {
                             instancePath: instancePath + "/detail",
                             schemaPath: "#/oneOf/58/properties/detail/type",
@@ -60568,7 +60961,7 @@ function validate266(
                       if (data.family !== undefined) {
                         const _errs242 = errors;
                         if ("HashSetCloneLayout" !== data.family) {
-                          validate266.errors = [
+                          validate270.errors = [
                             {
                               instancePath: instancePath + "/family",
                               schemaPath: "#/oneOf/58/properties/family/const",
@@ -60590,7 +60983,7 @@ function validate266(
                     if (data.detail !== undefined) {
                       const _errs244 = errors;
                       if (data.detail !== null) {
-                        validate266.errors = [
+                        validate270.errors = [
                           {
                             instancePath: instancePath + "/detail",
                             schemaPath: "#/oneOf/59/properties/detail/type",
@@ -60609,7 +61002,7 @@ function validate266(
                       if (data.family !== undefined) {
                         const _errs246 = errors;
                         if ("HashSetFreeLayout" !== data.family) {
-                          validate266.errors = [
+                          validate270.errors = [
                             {
                               instancePath: instancePath + "/family",
                               schemaPath: "#/oneOf/59/properties/family/const",
@@ -60631,7 +61024,7 @@ function validate266(
                     if (data.detail !== undefined) {
                       const _errs248 = errors;
                       if (data.detail !== null) {
-                        validate266.errors = [
+                        validate270.errors = [
                           {
                             instancePath: instancePath + "/detail",
                             schemaPath: "#/oneOf/60/properties/detail/type",
@@ -60650,7 +61043,7 @@ function validate266(
                       if (data.family !== undefined) {
                         const _errs250 = errors;
                         if ("HashSetInsertLayout" !== data.family) {
-                          validate266.errors = [
+                          validate270.errors = [
                             {
                               instancePath: instancePath + "/family",
                               schemaPath: "#/oneOf/60/properties/family/const",
@@ -60672,7 +61065,7 @@ function validate266(
                     if (data.detail !== undefined) {
                       const _errs252 = errors;
                       if (data.detail !== null) {
-                        validate266.errors = [
+                        validate270.errors = [
                           {
                             instancePath: instancePath + "/detail",
                             schemaPath: "#/oneOf/61/properties/detail/type",
@@ -60691,7 +61084,7 @@ function validate266(
                       if (data.family !== undefined) {
                         const _errs254 = errors;
                         if ("HashSetIsEmptyLayout" !== data.family) {
-                          validate266.errors = [
+                          validate270.errors = [
                             {
                               instancePath: instancePath + "/family",
                               schemaPath: "#/oneOf/61/properties/family/const",
@@ -60713,7 +61106,7 @@ function validate266(
                     if (data.detail !== undefined) {
                       const _errs256 = errors;
                       if (data.detail !== null) {
-                        validate266.errors = [
+                        validate270.errors = [
                           {
                             instancePath: instancePath + "/detail",
                             schemaPath: "#/oneOf/62/properties/detail/type",
@@ -60732,7 +61125,7 @@ function validate266(
                       if (data.family !== undefined) {
                         const _errs258 = errors;
                         if ("HashSetLenLayout" !== data.family) {
-                          validate266.errors = [
+                          validate270.errors = [
                             {
                               instancePath: instancePath + "/family",
                               schemaPath: "#/oneOf/62/properties/family/const",
@@ -60754,7 +61147,7 @@ function validate266(
                     if (data.detail !== undefined) {
                       const _errs260 = errors;
                       if (data.detail !== null) {
-                        validate266.errors = [
+                        validate270.errors = [
                           {
                             instancePath: instancePath + "/detail",
                             schemaPath: "#/oneOf/63/properties/detail/type",
@@ -60773,7 +61166,7 @@ function validate266(
                       if (data.family !== undefined) {
                         const _errs262 = errors;
                         if ("HashSetNewWithLayout" !== data.family) {
-                          validate266.errors = [
+                          validate270.errors = [
                             {
                               instancePath: instancePath + "/family",
                               schemaPath: "#/oneOf/63/properties/family/const",
@@ -60795,7 +61188,7 @@ function validate266(
                     if (data.detail !== undefined) {
                       const _errs264 = errors;
                       if (data.detail !== null) {
-                        validate266.errors = [
+                        validate270.errors = [
                           {
                             instancePath: instancePath + "/detail",
                             schemaPath: "#/oneOf/64/properties/detail/type",
@@ -60814,7 +61207,7 @@ function validate266(
                       if (data.family !== undefined) {
                         const _errs266 = errors;
                         if ("HashSetRemoveLayout" !== data.family) {
-                          validate266.errors = [
+                          validate270.errors = [
                             {
                               instancePath: instancePath + "/family",
                               schemaPath: "#/oneOf/64/properties/family/const",
@@ -60836,7 +61229,7 @@ function validate266(
                     if (data.detail !== undefined) {
                       const _errs268 = errors;
                       if (data.detail !== null) {
-                        validate266.errors = [
+                        validate270.errors = [
                           {
                             instancePath: instancePath + "/detail",
                             schemaPath: "#/oneOf/65/properties/detail/type",
@@ -60855,7 +61248,7 @@ function validate266(
                       if (data.family !== undefined) {
                         const _errs270 = errors;
                         if ("HashSetToVecLayout" !== data.family) {
-                          validate266.errors = [
+                          validate270.errors = [
                             {
                               instancePath: instancePath + "/family",
                               schemaPath: "#/oneOf/65/properties/family/const",
@@ -60877,7 +61270,7 @@ function validate266(
                     if (data.detail !== undefined) {
                       const _errs272 = errors;
                       if (data.detail !== null) {
-                        validate266.errors = [
+                        validate270.errors = [
                           {
                             instancePath: instancePath + "/detail",
                             schemaPath: "#/oneOf/66/properties/detail/type",
@@ -60896,7 +61289,7 @@ function validate266(
                       if (data.family !== undefined) {
                         const _errs274 = errors;
                         if ("InstantDurationSince" !== data.family) {
-                          validate266.errors = [
+                          validate270.errors = [
                             {
                               instancePath: instancePath + "/family",
                               schemaPath: "#/oneOf/66/properties/family/const",
@@ -60918,7 +61311,7 @@ function validate266(
                     if (data.detail !== undefined) {
                       const _errs276 = errors;
                       if (data.detail !== null) {
-                        validate266.errors = [
+                        validate270.errors = [
                           {
                             instancePath: instancePath + "/detail",
                             schemaPath: "#/oneOf/67/properties/detail/type",
@@ -60937,7 +61330,7 @@ function validate266(
                       if (data.family !== undefined) {
                         const _errs278 = errors;
                         if ("InstantElapsed" !== data.family) {
-                          validate266.errors = [
+                          validate270.errors = [
                             {
                               instancePath: instancePath + "/family",
                               schemaPath: "#/oneOf/67/properties/family/const",
@@ -60959,7 +61352,7 @@ function validate266(
                     if (data.detail !== undefined) {
                       const _errs280 = errors;
                       if (data.detail !== null) {
-                        validate266.errors = [
+                        validate270.errors = [
                           {
                             instancePath: instancePath + "/detail",
                             schemaPath: "#/oneOf/68/properties/detail/type",
@@ -60978,7 +61371,7 @@ function validate266(
                       if (data.family !== undefined) {
                         const _errs282 = errors;
                         if ("InstantNow" !== data.family) {
-                          validate266.errors = [
+                          validate270.errors = [
                             {
                               instancePath: instancePath + "/family",
                               schemaPath: "#/oneOf/68/properties/family/const",
@@ -61000,7 +61393,7 @@ function validate266(
                     if (data.detail !== undefined) {
                       const _errs284 = errors;
                       if (data.detail !== null) {
-                        validate266.errors = [
+                        validate270.errors = [
                           {
                             instancePath: instancePath + "/detail",
                             schemaPath: "#/oneOf/69/properties/detail/type",
@@ -61019,7 +61412,7 @@ function validate266(
                       if (data.family !== undefined) {
                         const _errs286 = errors;
                         if ("TimestampNow" !== data.family) {
-                          validate266.errors = [
+                          validate270.errors = [
                             {
                               instancePath: instancePath + "/family",
                               schemaPath: "#/oneOf/69/properties/family/const",
@@ -61041,7 +61434,7 @@ function validate266(
                     if (data.detail !== undefined) {
                       const _errs288 = errors;
                       if (data.detail !== null) {
-                        validate266.errors = [
+                        validate270.errors = [
                           {
                             instancePath: instancePath + "/detail",
                             schemaPath: "#/oneOf/70/properties/detail/type",
@@ -61060,7 +61453,7 @@ function validate266(
                       if (data.family !== undefined) {
                         const _errs290 = errors;
                         if ("NodeConnect" !== data.family) {
-                          validate266.errors = [
+                          validate270.errors = [
                             {
                               instancePath: instancePath + "/family",
                               schemaPath: "#/oneOf/70/properties/family/const",
@@ -61082,7 +61475,7 @@ function validate266(
                     if (data.detail !== undefined) {
                       const _errs292 = errors;
                       if (data.detail !== null) {
-                        validate266.errors = [
+                        validate270.errors = [
                           {
                             instancePath: instancePath + "/detail",
                             schemaPath: "#/oneOf/71/properties/detail/type",
@@ -61101,7 +61494,7 @@ function validate266(
                       if (data.family !== undefined) {
                         const _errs294 = errors;
                         if ("NodeId" !== data.family) {
-                          validate266.errors = [
+                          validate270.errors = [
                             {
                               instancePath: instancePath + "/family",
                               schemaPath: "#/oneOf/71/properties/family/const",
@@ -61123,7 +61516,7 @@ function validate266(
                     if (data.detail !== undefined) {
                       const _errs296 = errors;
                       if (data.detail !== null) {
-                        validate266.errors = [
+                        validate270.errors = [
                           {
                             instancePath: instancePath + "/detail",
                             schemaPath: "#/oneOf/72/properties/detail/type",
@@ -61142,7 +61535,7 @@ function validate266(
                       if (data.family !== undefined) {
                         const _errs298 = errors;
                         if ("LocationNodeId" !== data.family) {
-                          validate266.errors = [
+                          validate270.errors = [
                             {
                               instancePath: instancePath + "/family",
                               schemaPath: "#/oneOf/72/properties/family/const",
@@ -61164,7 +61557,7 @@ function validate266(
                     if (data.detail !== undefined) {
                       const _errs300 = errors;
                       if (data.detail !== null) {
-                        validate266.errors = [
+                        validate270.errors = [
                           {
                             instancePath: instancePath + "/detail",
                             schemaPath: "#/oneOf/73/properties/detail/type",
@@ -61183,7 +61576,7 @@ function validate266(
                       if (data.family !== undefined) {
                         const _errs302 = errors;
                         if ("LocationIncarnation" !== data.family) {
-                          validate266.errors = [
+                          validate270.errors = [
                             {
                               instancePath: instancePath + "/family",
                               schemaPath: "#/oneOf/73/properties/family/const",
@@ -61205,7 +61598,7 @@ function validate266(
                     if (data.detail !== undefined) {
                       const _errs304 = errors;
                       if (data.detail !== null) {
-                        validate266.errors = [
+                        validate270.errors = [
                           {
                             instancePath: instancePath + "/detail",
                             schemaPath: "#/oneOf/74/properties/detail/type",
@@ -61224,7 +61617,7 @@ function validate266(
                       if (data.family !== undefined) {
                         const _errs306 = errors;
                         if ("LocationDisplay" !== data.family) {
-                          validate266.errors = [
+                          validate270.errors = [
                             {
                               instancePath: instancePath + "/family",
                               schemaPath: "#/oneOf/74/properties/family/const",
@@ -61246,7 +61639,7 @@ function validate266(
                     if (data.detail !== undefined) {
                       const _errs308 = errors;
                       if (data.detail !== null) {
-                        validate266.errors = [
+                        validate270.errors = [
                           {
                             instancePath: instancePath + "/detail",
                             schemaPath: "#/oneOf/75/properties/detail/type",
@@ -61265,7 +61658,7 @@ function validate266(
                       if (data.family !== undefined) {
                         const _errs310 = errors;
                         if ("NodeIdentityKey" !== data.family) {
-                          validate266.errors = [
+                          validate270.errors = [
                             {
                               instancePath: instancePath + "/family",
                               schemaPath: "#/oneOf/75/properties/family/const",
@@ -61287,7 +61680,7 @@ function validate266(
                     if (data.detail !== undefined) {
                       const _errs312 = errors;
                       if (data.detail !== null) {
-                        validate266.errors = [
+                        validate270.errors = [
                           {
                             instancePath: instancePath + "/detail",
                             schemaPath: "#/oneOf/76/properties/detail/type",
@@ -61306,7 +61699,7 @@ function validate266(
                       if (data.family !== undefined) {
                         const _errs314 = errors;
                         if ("NodeLoadKeys" !== data.family) {
-                          validate266.errors = [
+                          validate270.errors = [
                             {
                               instancePath: instancePath + "/family",
                               schemaPath: "#/oneOf/76/properties/family/const",
@@ -61328,7 +61721,7 @@ function validate266(
                     if (data.detail !== undefined) {
                       const _errs316 = errors;
                       if (data.detail !== null) {
-                        validate266.errors = [
+                        validate270.errors = [
                           {
                             instancePath: instancePath + "/detail",
                             schemaPath: "#/oneOf/77/properties/detail/type",
@@ -61347,7 +61740,7 @@ function validate266(
                       if (data.family !== undefined) {
                         const _errs318 = errors;
                         if ("NodeLookup" !== data.family) {
-                          validate266.errors = [
+                          validate270.errors = [
                             {
                               instancePath: instancePath + "/family",
                               schemaPath: "#/oneOf/77/properties/family/const",
@@ -61369,7 +61762,7 @@ function validate266(
                     if (data.detail !== undefined) {
                       const _errs320 = errors;
                       if (data.detail !== null) {
-                        validate266.errors = [
+                        validate270.errors = [
                           {
                             instancePath: instancePath + "/detail",
                             schemaPath: "#/oneOf/78/properties/detail/type",
@@ -61388,7 +61781,7 @@ function validate266(
                       if (data.family !== undefined) {
                         const _errs322 = errors;
                         if ("NodeRegister" !== data.family) {
-                          validate266.errors = [
+                          validate270.errors = [
                             {
                               instancePath: instancePath + "/family",
                               schemaPath: "#/oneOf/78/properties/family/const",
@@ -61410,7 +61803,7 @@ function validate266(
                     if (data.detail !== undefined) {
                       const _errs324 = errors;
                       if (data.detail !== null) {
-                        validate266.errors = [
+                        validate270.errors = [
                           {
                             instancePath: instancePath + "/detail",
                             schemaPath: "#/oneOf/79/properties/detail/type",
@@ -61429,7 +61822,7 @@ function validate266(
                       if (data.family !== undefined) {
                         const _errs326 = errors;
                         if ("NodeSetTransport" !== data.family) {
-                          validate266.errors = [
+                          validate270.errors = [
                             {
                               instancePath: instancePath + "/family",
                               schemaPath: "#/oneOf/79/properties/family/const",
@@ -61451,7 +61844,7 @@ function validate266(
                     if (data.detail !== undefined) {
                       const _errs328 = errors;
                       if (data.detail !== null) {
-                        validate266.errors = [
+                        validate270.errors = [
                           {
                             instancePath: instancePath + "/detail",
                             schemaPath: "#/oneOf/80/properties/detail/type",
@@ -61470,7 +61863,7 @@ function validate266(
                       if (data.family !== undefined) {
                         const _errs330 = errors;
                         if ("NodeShutdown" !== data.family) {
-                          validate266.errors = [
+                          validate270.errors = [
                             {
                               instancePath: instancePath + "/family",
                               schemaPath: "#/oneOf/80/properties/family/const",
@@ -61492,7 +61885,7 @@ function validate266(
                     if (data.detail !== undefined) {
                       const _errs332 = errors;
                       if (data.detail !== null) {
-                        validate266.errors = [
+                        validate270.errors = [
                           {
                             instancePath: instancePath + "/detail",
                             schemaPath: "#/oneOf/81/properties/detail/type",
@@ -61511,7 +61904,7 @@ function validate266(
                       if (data.family !== undefined) {
                         const _errs334 = errors;
                         if ("NodeStart" !== data.family) {
-                          validate266.errors = [
+                          validate270.errors = [
                             {
                               instancePath: instancePath + "/family",
                               schemaPath: "#/oneOf/81/properties/family/const",
@@ -61533,7 +61926,7 @@ function validate266(
                     if (data.detail !== undefined) {
                       const _errs336 = errors;
                       if (data.detail !== null) {
-                        validate266.errors = [
+                        validate270.errors = [
                           {
                             instancePath: instancePath + "/detail",
                             schemaPath: "#/oneOf/82/properties/detail/type",
@@ -61552,7 +61945,7 @@ function validate266(
                       if (data.family !== undefined) {
                         const _errs338 = errors;
                         if ("MetricCounterRegister" !== data.family) {
-                          validate266.errors = [
+                          validate270.errors = [
                             {
                               instancePath: instancePath + "/family",
                               schemaPath: "#/oneOf/82/properties/family/const",
@@ -61574,7 +61967,7 @@ function validate266(
                     if (data.detail !== undefined) {
                       const _errs340 = errors;
                       if (data.detail !== null) {
-                        validate266.errors = [
+                        validate270.errors = [
                           {
                             instancePath: instancePath + "/detail",
                             schemaPath: "#/oneOf/83/properties/detail/type",
@@ -61593,7 +61986,7 @@ function validate266(
                       if (data.family !== undefined) {
                         const _errs342 = errors;
                         if ("MetricCounterInc" !== data.family) {
-                          validate266.errors = [
+                          validate270.errors = [
                             {
                               instancePath: instancePath + "/family",
                               schemaPath: "#/oneOf/83/properties/family/const",
@@ -61615,7 +62008,7 @@ function validate266(
                     if (data.detail !== undefined) {
                       const _errs344 = errors;
                       if (data.detail !== null) {
-                        validate266.errors = [
+                        validate270.errors = [
                           {
                             instancePath: instancePath + "/detail",
                             schemaPath: "#/oneOf/84/properties/detail/type",
@@ -61634,7 +62027,7 @@ function validate266(
                       if (data.family !== undefined) {
                         const _errs346 = errors;
                         if ("MetricCounterAdd" !== data.family) {
-                          validate266.errors = [
+                          validate270.errors = [
                             {
                               instancePath: instancePath + "/family",
                               schemaPath: "#/oneOf/84/properties/family/const",
@@ -61656,7 +62049,7 @@ function validate266(
                     if (data.detail !== undefined) {
                       const _errs348 = errors;
                       if (data.detail !== null) {
-                        validate266.errors = [
+                        validate270.errors = [
                           {
                             instancePath: instancePath + "/detail",
                             schemaPath: "#/oneOf/85/properties/detail/type",
@@ -61675,7 +62068,7 @@ function validate266(
                       if (data.family !== undefined) {
                         const _errs350 = errors;
                         if ("MetricGaugeRegister" !== data.family) {
-                          validate266.errors = [
+                          validate270.errors = [
                             {
                               instancePath: instancePath + "/family",
                               schemaPath: "#/oneOf/85/properties/family/const",
@@ -61697,7 +62090,7 @@ function validate266(
                     if (data.detail !== undefined) {
                       const _errs352 = errors;
                       if (data.detail !== null) {
-                        validate266.errors = [
+                        validate270.errors = [
                           {
                             instancePath: instancePath + "/detail",
                             schemaPath: "#/oneOf/86/properties/detail/type",
@@ -61716,7 +62109,7 @@ function validate266(
                       if (data.family !== undefined) {
                         const _errs354 = errors;
                         if ("MetricGaugeSet" !== data.family) {
-                          validate266.errors = [
+                          validate270.errors = [
                             {
                               instancePath: instancePath + "/family",
                               schemaPath: "#/oneOf/86/properties/family/const",
@@ -61738,7 +62131,7 @@ function validate266(
                     if (data.detail !== undefined) {
                       const _errs356 = errors;
                       if (data.detail !== null) {
-                        validate266.errors = [
+                        validate270.errors = [
                           {
                             instancePath: instancePath + "/detail",
                             schemaPath: "#/oneOf/87/properties/detail/type",
@@ -61757,7 +62150,7 @@ function validate266(
                       if (data.family !== undefined) {
                         const _errs358 = errors;
                         if ("MetricGaugeInc" !== data.family) {
-                          validate266.errors = [
+                          validate270.errors = [
                             {
                               instancePath: instancePath + "/family",
                               schemaPath: "#/oneOf/87/properties/family/const",
@@ -61779,7 +62172,7 @@ function validate266(
                     if (data.detail !== undefined) {
                       const _errs360 = errors;
                       if (data.detail !== null) {
-                        validate266.errors = [
+                        validate270.errors = [
                           {
                             instancePath: instancePath + "/detail",
                             schemaPath: "#/oneOf/88/properties/detail/type",
@@ -61798,7 +62191,7 @@ function validate266(
                       if (data.family !== undefined) {
                         const _errs362 = errors;
                         if ("MetricGaugeDec" !== data.family) {
-                          validate266.errors = [
+                          validate270.errors = [
                             {
                               instancePath: instancePath + "/family",
                               schemaPath: "#/oneOf/88/properties/family/const",
@@ -61820,7 +62213,7 @@ function validate266(
                     if (data.detail !== undefined) {
                       const _errs364 = errors;
                       if (data.detail !== null) {
-                        validate266.errors = [
+                        validate270.errors = [
                           {
                             instancePath: instancePath + "/detail",
                             schemaPath: "#/oneOf/89/properties/detail/type",
@@ -61839,7 +62232,7 @@ function validate266(
                       if (data.family !== undefined) {
                         const _errs366 = errors;
                         if ("MetricGaugeAdd" !== data.family) {
-                          validate266.errors = [
+                          validate270.errors = [
                             {
                               instancePath: instancePath + "/family",
                               schemaPath: "#/oneOf/89/properties/family/const",
@@ -61861,7 +62254,7 @@ function validate266(
                     if (data.detail !== undefined) {
                       const _errs368 = errors;
                       if (data.detail !== null) {
-                        validate266.errors = [
+                        validate270.errors = [
                           {
                             instancePath: instancePath + "/detail",
                             schemaPath: "#/oneOf/90/properties/detail/type",
@@ -61880,7 +62273,7 @@ function validate266(
                       if (data.family !== undefined) {
                         const _errs370 = errors;
                         if ("MetricHistogramRegister" !== data.family) {
-                          validate266.errors = [
+                          validate270.errors = [
                             {
                               instancePath: instancePath + "/family",
                               schemaPath: "#/oneOf/90/properties/family/const",
@@ -61904,7 +62297,7 @@ function validate266(
                     if (data.detail !== undefined) {
                       const _errs372 = errors;
                       if (data.detail !== null) {
-                        validate266.errors = [
+                        validate270.errors = [
                           {
                             instancePath: instancePath + "/detail",
                             schemaPath: "#/oneOf/91/properties/detail/type",
@@ -61923,7 +62316,7 @@ function validate266(
                       if (data.family !== undefined) {
                         const _errs374 = errors;
                         if ("MetricHistogramRecord" !== data.family) {
-                          validate266.errors = [
+                          validate270.errors = [
                             {
                               instancePath: instancePath + "/family",
                               schemaPath: "#/oneOf/91/properties/family/const",
@@ -61945,7 +62338,7 @@ function validate266(
                     if (data.detail !== undefined) {
                       const _errs376 = errors;
                       if (data.detail !== null) {
-                        validate266.errors = [
+                        validate270.errors = [
                           {
                             instancePath: instancePath + "/detail",
                             schemaPath: "#/oneOf/92/properties/detail/type",
@@ -61964,7 +62357,7 @@ function validate266(
                       if (data.family !== undefined) {
                         const _errs378 = errors;
                         if ("MetricVecRegister" !== data.family) {
-                          validate266.errors = [
+                          validate270.errors = [
                             {
                               instancePath: instancePath + "/family",
                               schemaPath: "#/oneOf/92/properties/family/const",
@@ -61986,7 +62379,7 @@ function validate266(
                     if (data.detail !== undefined) {
                       const _errs380 = errors;
                       if (data.detail !== null) {
-                        validate266.errors = [
+                        validate270.errors = [
                           {
                             instancePath: instancePath + "/detail",
                             schemaPath: "#/oneOf/93/properties/detail/type",
@@ -62005,7 +62398,7 @@ function validate266(
                       if (data.family !== undefined) {
                         const _errs382 = errors;
                         if ("MetricVecWith" !== data.family) {
-                          validate266.errors = [
+                          validate270.errors = [
                             {
                               instancePath: instancePath + "/family",
                               schemaPath: "#/oneOf/93/properties/family/const",
@@ -62027,7 +62420,7 @@ function validate266(
                     if (data.detail !== undefined) {
                       const _errs384 = errors;
                       if (data.detail !== null) {
-                        validate266.errors = [
+                        validate270.errors = [
                           {
                             instancePath: instancePath + "/detail",
                             schemaPath: "#/oneOf/94/properties/detail/type",
@@ -62046,7 +62439,7 @@ function validate266(
                       if (data.family !== undefined) {
                         const _errs386 = errors;
                         if ("ObserveReadU64" !== data.family) {
-                          validate266.errors = [
+                          validate270.errors = [
                             {
                               instancePath: instancePath + "/family",
                               schemaPath: "#/oneOf/94/properties/family/const",
@@ -62068,7 +62461,7 @@ function validate266(
                     if (data.detail !== undefined) {
                       const _errs388 = errors;
                       if (data.detail !== null) {
-                        validate266.errors = [
+                        validate270.errors = [
                           {
                             instancePath: instancePath + "/detail",
                             schemaPath: "#/oneOf/95/properties/detail/type",
@@ -62087,7 +62480,7 @@ function validate266(
                       if (data.family !== undefined) {
                         const _errs390 = errors;
                         if ("ObserveScrape" !== data.family) {
-                          validate266.errors = [
+                          validate270.errors = [
                             {
                               instancePath: instancePath + "/family",
                               schemaPath: "#/oneOf/95/properties/family/const",
@@ -62109,7 +62502,7 @@ function validate266(
                     if (data.detail !== undefined) {
                       const _errs392 = errors;
                       if (data.detail !== null) {
-                        validate266.errors = [
+                        validate270.errors = [
                           {
                             instancePath: instancePath + "/detail",
                             schemaPath: "#/oneOf/96/properties/detail/type",
@@ -62128,7 +62521,7 @@ function validate266(
                       if (data.family !== undefined) {
                         const _errs394 = errors;
                         if ("ObserveSeries" !== data.family) {
-                          validate266.errors = [
+                          validate270.errors = [
                             {
                               instancePath: instancePath + "/family",
                               schemaPath: "#/oneOf/96/properties/family/const",
@@ -62150,7 +62543,7 @@ function validate266(
                     if (data.detail !== undefined) {
                       const _errs396 = errors;
                       if (data.detail !== null) {
-                        validate266.errors = [
+                        validate270.errors = [
                           {
                             instancePath: instancePath + "/detail",
                             schemaPath: "#/oneOf/97/properties/detail/type",
@@ -62169,7 +62562,7 @@ function validate266(
                       if (data.family !== undefined) {
                         const _errs398 = errors;
                         if ("ObserveBarrier" !== data.family) {
-                          validate266.errors = [
+                          validate270.errors = [
                             {
                               instancePath: instancePath + "/family",
                               schemaPath: "#/oneOf/97/properties/family/const",
@@ -62191,7 +62584,7 @@ function validate266(
                     if (data.detail !== undefined) {
                       const _errs400 = errors;
                       if (data.detail !== null) {
-                        validate266.errors = [
+                        validate270.errors = [
                           {
                             instancePath: instancePath + "/detail",
                             schemaPath: "#/oneOf/98/properties/detail/type",
@@ -62210,7 +62603,7 @@ function validate266(
                       if (data.family !== undefined) {
                         const _errs402 = errors;
                         if ("RcClone" !== data.family) {
-                          validate266.errors = [
+                          validate270.errors = [
                             {
                               instancePath: instancePath + "/family",
                               schemaPath: "#/oneOf/98/properties/family/const",
@@ -62232,7 +62625,7 @@ function validate266(
                     if (data.detail !== undefined) {
                       const _errs404 = errors;
                       if (data.detail !== null) {
-                        validate266.errors = [
+                        validate270.errors = [
                           {
                             instancePath: instancePath + "/detail",
                             schemaPath: "#/oneOf/99/properties/detail/type",
@@ -62251,7 +62644,7 @@ function validate266(
                       if (data.family !== undefined) {
                         const _errs406 = errors;
                         if ("RcDowngrade" !== data.family) {
-                          validate266.errors = [
+                          validate270.errors = [
                             {
                               instancePath: instancePath + "/family",
                               schemaPath: "#/oneOf/99/properties/family/const",
@@ -62273,7 +62666,7 @@ function validate266(
                     if (data.detail !== undefined) {
                       const _errs408 = errors;
                       if (data.detail !== null) {
-                        validate266.errors = [
+                        validate270.errors = [
                           {
                             instancePath: instancePath + "/detail",
                             schemaPath: "#/oneOf/100/properties/detail/type",
@@ -62292,7 +62685,7 @@ function validate266(
                       if (data.family !== undefined) {
                         const _errs410 = errors;
                         if ("RcDrop" !== data.family) {
-                          validate266.errors = [
+                          validate270.errors = [
                             {
                               instancePath: instancePath + "/family",
                               schemaPath: "#/oneOf/100/properties/family/const",
@@ -62314,7 +62707,7 @@ function validate266(
                     if (data.detail !== undefined) {
                       const _errs412 = errors;
                       if (data.detail !== null) {
-                        validate266.errors = [
+                        validate270.errors = [
                           {
                             instancePath: instancePath + "/detail",
                             schemaPath: "#/oneOf/101/properties/detail/type",
@@ -62333,7 +62726,7 @@ function validate266(
                       if (data.family !== undefined) {
                         const _errs414 = errors;
                         if ("RcGet" !== data.family) {
-                          validate266.errors = [
+                          validate270.errors = [
                             {
                               instancePath: instancePath + "/family",
                               schemaPath: "#/oneOf/101/properties/family/const",
@@ -62355,7 +62748,7 @@ function validate266(
                     if (data.detail !== undefined) {
                       const _errs416 = errors;
                       if (data.detail !== null) {
-                        validate266.errors = [
+                        validate270.errors = [
                           {
                             instancePath: instancePath + "/detail",
                             schemaPath: "#/oneOf/102/properties/detail/type",
@@ -62374,7 +62767,7 @@ function validate266(
                       if (data.family !== undefined) {
                         const _errs418 = errors;
                         if ("RcIsUnique" !== data.family) {
-                          validate266.errors = [
+                          validate270.errors = [
                             {
                               instancePath: instancePath + "/family",
                               schemaPath: "#/oneOf/102/properties/family/const",
@@ -62396,7 +62789,7 @@ function validate266(
                     if (data.detail !== undefined) {
                       const _errs420 = errors;
                       if (data.detail !== null) {
-                        validate266.errors = [
+                        validate270.errors = [
                           {
                             instancePath: instancePath + "/detail",
                             schemaPath: "#/oneOf/103/properties/detail/type",
@@ -62415,7 +62808,7 @@ function validate266(
                       if (data.family !== undefined) {
                         const _errs422 = errors;
                         if ("RcNew" !== data.family) {
-                          validate266.errors = [
+                          validate270.errors = [
                             {
                               instancePath: instancePath + "/family",
                               schemaPath: "#/oneOf/103/properties/family/const",
@@ -62437,7 +62830,7 @@ function validate266(
                     if (data.detail !== undefined) {
                       const _errs424 = errors;
                       if (data.detail !== null) {
-                        validate266.errors = [
+                        validate270.errors = [
                           {
                             instancePath: instancePath + "/detail",
                             schemaPath: "#/oneOf/104/properties/detail/type",
@@ -62456,7 +62849,7 @@ function validate266(
                       if (data.family !== undefined) {
                         const _errs426 = errors;
                         if ("RcSet" !== data.family) {
-                          validate266.errors = [
+                          validate270.errors = [
                             {
                               instancePath: instancePath + "/family",
                               schemaPath: "#/oneOf/104/properties/family/const",
@@ -62478,7 +62871,7 @@ function validate266(
                     if (data.detail !== undefined) {
                       const _errs428 = errors;
                       if (data.detail !== null) {
-                        validate266.errors = [
+                        validate270.errors = [
                           {
                             instancePath: instancePath + "/detail",
                             schemaPath: "#/oneOf/105/properties/detail/type",
@@ -62497,7 +62890,7 @@ function validate266(
                       if (data.family !== undefined) {
                         const _errs430 = errors;
                         if ("RcStrongCount" !== data.family) {
-                          validate266.errors = [
+                          validate270.errors = [
                             {
                               instancePath: instancePath + "/family",
                               schemaPath: "#/oneOf/105/properties/family/const",
@@ -62519,7 +62912,7 @@ function validate266(
                     if (data.detail !== undefined) {
                       const _errs432 = errors;
                       if (data.detail !== null) {
-                        validate266.errors = [
+                        validate270.errors = [
                           {
                             instancePath: instancePath + "/detail",
                             schemaPath: "#/oneOf/106/properties/detail/type",
@@ -62538,7 +62931,7 @@ function validate266(
                       if (data.family !== undefined) {
                         const _errs434 = errors;
                         if ("RcWeakCount" !== data.family) {
-                          validate266.errors = [
+                          validate270.errors = [
                             {
                               instancePath: instancePath + "/family",
                               schemaPath: "#/oneOf/106/properties/family/const",
@@ -62560,7 +62953,7 @@ function validate266(
                     if (data.detail !== undefined) {
                       const _errs436 = errors;
                       if (data.detail !== null) {
-                        validate266.errors = [
+                        validate270.errors = [
                           {
                             instancePath: instancePath + "/detail",
                             schemaPath: "#/oneOf/107/properties/detail/type",
@@ -62579,7 +62972,7 @@ function validate266(
                       if (data.family !== undefined) {
                         const _errs438 = errors;
                         if ("WeakCloneRc" !== data.family) {
-                          validate266.errors = [
+                          validate270.errors = [
                             {
                               instancePath: instancePath + "/family",
                               schemaPath: "#/oneOf/107/properties/family/const",
@@ -62601,7 +62994,7 @@ function validate266(
                     if (data.detail !== undefined) {
                       const _errs440 = errors;
                       if (data.detail !== null) {
-                        validate266.errors = [
+                        validate270.errors = [
                           {
                             instancePath: instancePath + "/detail",
                             schemaPath: "#/oneOf/108/properties/detail/type",
@@ -62620,7 +63013,7 @@ function validate266(
                       if (data.family !== undefined) {
                         const _errs442 = errors;
                         if ("WeakDropRc" !== data.family) {
-                          validate266.errors = [
+                          validate270.errors = [
                             {
                               instancePath: instancePath + "/family",
                               schemaPath: "#/oneOf/108/properties/family/const",
@@ -62642,7 +63035,7 @@ function validate266(
                     if (data.detail !== undefined) {
                       const _errs444 = errors;
                       if (data.detail !== null) {
-                        validate266.errors = [
+                        validate270.errors = [
                           {
                             instancePath: instancePath + "/detail",
                             schemaPath: "#/oneOf/109/properties/detail/type",
@@ -62661,7 +63054,7 @@ function validate266(
                       if (data.family !== undefined) {
                         const _errs446 = errors;
                         if ("WeakUpgradeRc" !== data.family) {
-                          validate266.errors = [
+                          validate270.errors = [
                             {
                               instancePath: instancePath + "/family",
                               schemaPath: "#/oneOf/109/properties/family/const",
@@ -62683,7 +63076,7 @@ function validate266(
                     if (data.detail !== undefined) {
                       const _errs448 = errors;
                       if (data.detail !== null) {
-                        validate266.errors = [
+                        validate270.errors = [
                           {
                             instancePath: instancePath + "/detail",
                             schemaPath: "#/oneOf/110/properties/detail/type",
@@ -62702,7 +63095,7 @@ function validate266(
                       if (data.family !== undefined) {
                         const _errs450 = errors;
                         if ("RegexCapture" !== data.family) {
-                          validate266.errors = [
+                          validate270.errors = [
                             {
                               instancePath: instancePath + "/family",
                               schemaPath: "#/oneOf/110/properties/family/const",
@@ -62724,7 +63117,7 @@ function validate266(
                     if (data.detail !== undefined) {
                       const _errs452 = errors;
                       if (data.detail !== null) {
-                        validate266.errors = [
+                        validate270.errors = [
                           {
                             instancePath: instancePath + "/detail",
                             schemaPath: "#/oneOf/111/properties/detail/type",
@@ -62743,7 +63136,7 @@ function validate266(
                       if (data.family !== undefined) {
                         const _errs454 = errors;
                         if ("RegexCompile" !== data.family) {
-                          validate266.errors = [
+                          validate270.errors = [
                             {
                               instancePath: instancePath + "/family",
                               schemaPath: "#/oneOf/111/properties/family/const",
@@ -62765,7 +63158,7 @@ function validate266(
                     if (data.detail !== undefined) {
                       const _errs456 = errors;
                       if (data.detail !== null) {
-                        validate266.errors = [
+                        validate270.errors = [
                           {
                             instancePath: instancePath + "/detail",
                             schemaPath: "#/oneOf/112/properties/detail/type",
@@ -62784,7 +63177,7 @@ function validate266(
                       if (data.family !== undefined) {
                         const _errs458 = errors;
                         if ("RegexFreeCapture" !== data.family) {
-                          validate266.errors = [
+                          validate270.errors = [
                             {
                               instancePath: instancePath + "/family",
                               schemaPath: "#/oneOf/112/properties/family/const",
@@ -62806,7 +63199,7 @@ function validate266(
                     if (data.detail !== undefined) {
                       const _errs460 = errors;
                       if (data.detail !== null) {
-                        validate266.errors = [
+                        validate270.errors = [
                           {
                             instancePath: instancePath + "/detail",
                             schemaPath: "#/oneOf/113/properties/detail/type",
@@ -62825,7 +63218,7 @@ function validate266(
                       if (data.family !== undefined) {
                         const _errs462 = errors;
                         if ("RegexMatch" !== data.family) {
-                          validate266.errors = [
+                          validate270.errors = [
                             {
                               instancePath: instancePath + "/family",
                               schemaPath: "#/oneOf/113/properties/family/const",
@@ -62847,7 +63240,7 @@ function validate266(
                     if (data.detail !== undefined) {
                       const _errs464 = errors;
                       if (data.detail !== null) {
-                        validate266.errors = [
+                        validate270.errors = [
                           {
                             instancePath: instancePath + "/detail",
                             schemaPath: "#/oneOf/114/properties/detail/type",
@@ -62866,7 +63259,7 @@ function validate266(
                       if (data.family !== undefined) {
                         const _errs466 = errors;
                         if ("ReplyChannelCancel" !== data.family) {
-                          validate266.errors = [
+                          validate270.errors = [
                             {
                               instancePath: instancePath + "/family",
                               schemaPath: "#/oneOf/114/properties/family/const",
@@ -62888,7 +63281,7 @@ function validate266(
                     if (data.detail !== undefined) {
                       const _errs468 = errors;
                       if (data.detail !== null) {
-                        validate266.errors = [
+                        validate270.errors = [
                           {
                             instancePath: instancePath + "/detail",
                             schemaPath: "#/oneOf/115/properties/detail/type",
@@ -62907,7 +63300,7 @@ function validate266(
                       if (data.family !== undefined) {
                         const _errs470 = errors;
                         if ("ReplyChannelFree" !== data.family) {
-                          validate266.errors = [
+                          validate270.errors = [
                             {
                               instancePath: instancePath + "/family",
                               schemaPath: "#/oneOf/115/properties/family/const",
@@ -62929,7 +63322,7 @@ function validate266(
                     if (data.detail !== undefined) {
                       const _errs472 = errors;
                       if (data.detail !== null) {
-                        validate266.errors = [
+                        validate270.errors = [
                           {
                             instancePath: instancePath + "/detail",
                             schemaPath: "#/oneOf/116/properties/detail/type",
@@ -62948,7 +63341,7 @@ function validate266(
                       if (data.family !== undefined) {
                         const _errs474 = errors;
                         if ("ReplyChannelNew" !== data.family) {
-                          validate266.errors = [
+                          validate270.errors = [
                             {
                               instancePath: instancePath + "/family",
                               schemaPath: "#/oneOf/116/properties/family/const",
@@ -62970,7 +63363,7 @@ function validate266(
                     if (data.detail !== undefined) {
                       const _errs476 = errors;
                       if (data.detail !== null) {
-                        validate266.errors = [
+                        validate270.errors = [
                           {
                             instancePath: instancePath + "/detail",
                             schemaPath: "#/oneOf/117/properties/detail/type",
@@ -62989,7 +63382,7 @@ function validate266(
                       if (data.family !== undefined) {
                         const _errs478 = errors;
                         if ("ReplyWait" !== data.family) {
-                          validate266.errors = [
+                          validate270.errors = [
                             {
                               instancePath: instancePath + "/family",
                               schemaPath: "#/oneOf/117/properties/family/const",
@@ -63011,7 +63404,7 @@ function validate266(
                     if (data.detail !== undefined) {
                       const _errs480 = errors;
                       if (data.detail !== null) {
-                        validate266.errors = [
+                        validate270.errors = [
                           {
                             instancePath: instancePath + "/detail",
                             schemaPath: "#/oneOf/118/properties/detail/type",
@@ -63030,7 +63423,7 @@ function validate266(
                       if (data.family !== undefined) {
                         const _errs482 = errors;
                         if ("SelectFirst" !== data.family) {
-                          validate266.errors = [
+                          validate270.errors = [
                             {
                               instancePath: instancePath + "/family",
                               schemaPath: "#/oneOf/118/properties/family/const",
@@ -63052,7 +63445,7 @@ function validate266(
                     if (data.detail !== undefined) {
                       const _errs484 = errors;
                       if (data.detail !== null) {
-                        validate266.errors = [
+                        validate270.errors = [
                           {
                             instancePath: instancePath + "/detail",
                             schemaPath: "#/oneOf/119/properties/detail/type",
@@ -63071,7 +63464,7 @@ function validate266(
                       if (data.family !== undefined) {
                         const _errs486 = errors;
                         if ("SinkClone" !== data.family) {
-                          validate266.errors = [
+                          validate270.errors = [
                             {
                               instancePath: instancePath + "/family",
                               schemaPath: "#/oneOf/119/properties/family/const",
@@ -63093,7 +63486,7 @@ function validate266(
                     if (data.detail !== undefined) {
                       const _errs488 = errors;
                       if (data.detail !== null) {
-                        validate266.errors = [
+                        validate270.errors = [
                           {
                             instancePath: instancePath + "/detail",
                             schemaPath: "#/oneOf/120/properties/detail/type",
@@ -63112,7 +63505,7 @@ function validate266(
                       if (data.family !== undefined) {
                         const _errs490 = errors;
                         if ("SinkClose" !== data.family) {
-                          validate266.errors = [
+                          validate270.errors = [
                             {
                               instancePath: instancePath + "/family",
                               schemaPath: "#/oneOf/120/properties/family/const",
@@ -63134,7 +63527,7 @@ function validate266(
                     if (data.detail !== undefined) {
                       const _errs492 = errors;
                       if (data.detail !== null) {
-                        validate266.errors = [
+                        validate270.errors = [
                           {
                             instancePath: instancePath + "/detail",
                             schemaPath: "#/oneOf/121/properties/detail/type",
@@ -63153,7 +63546,7 @@ function validate266(
                       if (data.family !== undefined) {
                         const _errs494 = errors;
                         if ("StreamClose" !== data.family) {
-                          validate266.errors = [
+                          validate270.errors = [
                             {
                               instancePath: instancePath + "/family",
                               schemaPath: "#/oneOf/121/properties/family/const",
@@ -63175,7 +63568,7 @@ function validate266(
                     if (data.detail !== undefined) {
                       const _errs496 = errors;
                       if (data.detail !== null) {
-                        validate266.errors = [
+                        validate270.errors = [
                           {
                             instancePath: instancePath + "/detail",
                             schemaPath: "#/oneOf/122/properties/detail/type",
@@ -63194,7 +63587,7 @@ function validate266(
                       if (data.family !== undefined) {
                         const _errs498 = errors;
                         if ("StreamFromGenerator" !== data.family) {
-                          validate266.errors = [
+                          validate270.errors = [
                             {
                               instancePath: instancePath + "/family",
                               schemaPath: "#/oneOf/122/properties/family/const",
@@ -63216,7 +63609,7 @@ function validate266(
                     if (data.detail !== undefined) {
                       const _errs500 = errors;
                       if (data.detail !== null) {
-                        validate266.errors = [
+                        validate270.errors = [
                           {
                             instancePath: instancePath + "/detail",
                             schemaPath: "#/oneOf/123/properties/detail/type",
@@ -63235,7 +63628,7 @@ function validate266(
                       if (data.family !== undefined) {
                         const _errs502 = errors;
                         if ("SinkFromEncoder" !== data.family) {
-                          validate266.errors = [
+                          validate270.errors = [
                             {
                               instancePath: instancePath + "/family",
                               schemaPath: "#/oneOf/123/properties/family/const",
@@ -63257,7 +63650,7 @@ function validate266(
                     if (data.detail !== undefined) {
                       const _errs504 = errors;
                       if (data.detail !== null) {
-                        validate266.errors = [
+                        validate270.errors = [
                           {
                             instancePath: instancePath + "/detail",
                             schemaPath: "#/oneOf/124/properties/detail/type",
@@ -63276,7 +63669,7 @@ function validate266(
                       if (data.family !== undefined) {
                         const _errs506 = errors;
                         if ("StreamLines" !== data.family) {
-                          validate266.errors = [
+                          validate270.errors = [
                             {
                               instancePath: instancePath + "/family",
                               schemaPath: "#/oneOf/124/properties/family/const",
@@ -63298,7 +63691,7 @@ function validate266(
                     if (data.detail !== undefined) {
                       const _errs508 = errors;
                       if (data.detail !== null) {
-                        validate266.errors = [
+                        validate270.errors = [
                           {
                             instancePath: instancePath + "/detail",
                             schemaPath: "#/oneOf/125/properties/detail/type",
@@ -63317,7 +63710,7 @@ function validate266(
                       if (data.family !== undefined) {
                         const _errs510 = errors;
                         if ("StreamNextLayout" !== data.family) {
-                          validate266.errors = [
+                          validate270.errors = [
                             {
                               instancePath: instancePath + "/family",
                               schemaPath: "#/oneOf/125/properties/family/const",
@@ -63339,7 +63732,7 @@ function validate266(
                     if (data.detail !== undefined) {
                       const _errs512 = errors;
                       if (data.detail !== null) {
-                        validate266.errors = [
+                        validate270.errors = [
                           {
                             instancePath: instancePath + "/detail",
                             schemaPath: "#/oneOf/126/properties/detail/type",
@@ -63358,7 +63751,7 @@ function validate266(
                       if (data.family !== undefined) {
                         const _errs514 = errors;
                         if ("StreamPairStream" !== data.family) {
-                          validate266.errors = [
+                          validate270.errors = [
                             {
                               instancePath: instancePath + "/family",
                               schemaPath: "#/oneOf/126/properties/family/const",
@@ -63380,7 +63773,7 @@ function validate266(
                     if (data.detail !== undefined) {
                       const _errs516 = errors;
                       if (data.detail !== null) {
-                        validate266.errors = [
+                        validate270.errors = [
                           {
                             instancePath: instancePath + "/detail",
                             schemaPath: "#/oneOf/127/properties/detail/type",
@@ -63399,7 +63792,7 @@ function validate266(
                       if (data.family !== undefined) {
                         const _errs518 = errors;
                         if ("StreamSendLayout" !== data.family) {
-                          validate266.errors = [
+                          validate270.errors = [
                             {
                               instancePath: instancePath + "/family",
                               schemaPath: "#/oneOf/127/properties/family/const",
@@ -63421,7 +63814,7 @@ function validate266(
                     if (data.detail !== undefined) {
                       const _errs520 = errors;
                       if (data.detail !== null) {
-                        validate266.errors = [
+                        validate270.errors = [
                           {
                             instancePath: instancePath + "/detail",
                             schemaPath: "#/oneOf/128/properties/detail/type",
@@ -63440,7 +63833,7 @@ function validate266(
                       if (data.family !== undefined) {
                         const _errs522 = errors;
                         if ("StreamTake" !== data.family) {
-                          validate266.errors = [
+                          validate270.errors = [
                             {
                               instancePath: instancePath + "/family",
                               schemaPath: "#/oneOf/128/properties/family/const",
@@ -63462,7 +63855,7 @@ function validate266(
                     if (data.detail !== undefined) {
                       const _errs524 = errors;
                       if (data.detail !== null) {
-                        validate266.errors = [
+                        validate270.errors = [
                           {
                             instancePath: instancePath + "/detail",
                             schemaPath: "#/oneOf/129/properties/detail/type",
@@ -63481,7 +63874,7 @@ function validate266(
                       if (data.family !== undefined) {
                         const _errs526 = errors;
                         if ("StreamTryNextLayout" !== data.family) {
-                          validate266.errors = [
+                          validate270.errors = [
                             {
                               instancePath: instancePath + "/family",
                               schemaPath: "#/oneOf/129/properties/family/const",
@@ -63503,7 +63896,7 @@ function validate266(
                     if (data.detail !== undefined) {
                       const _errs528 = errors;
                       if (data.detail !== null) {
-                        validate266.errors = [
+                        validate270.errors = [
                           {
                             instancePath: instancePath + "/detail",
                             schemaPath: "#/oneOf/130/properties/detail/type",
@@ -63522,7 +63915,7 @@ function validate266(
                       if (data.family !== undefined) {
                         const _errs530 = errors;
                         if ("StreamTrySendLayout" !== data.family) {
-                          validate266.errors = [
+                          validate270.errors = [
                             {
                               instancePath: instancePath + "/family",
                               schemaPath: "#/oneOf/130/properties/family/const",
@@ -63544,7 +63937,7 @@ function validate266(
                     if (data.detail !== undefined) {
                       const _errs532 = errors;
                       if (data.detail !== null) {
-                        validate266.errors = [
+                        validate270.errors = [
                           {
                             instancePath: instancePath + "/detail",
                             schemaPath: "#/oneOf/131/properties/detail/type",
@@ -63563,7 +63956,7 @@ function validate266(
                       if (data.family !== undefined) {
                         const _errs534 = errors;
                         if ("CharIsDigit" !== data.family) {
-                          validate266.errors = [
+                          validate270.errors = [
                             {
                               instancePath: instancePath + "/family",
                               schemaPath: "#/oneOf/131/properties/family/const",
@@ -63585,7 +63978,7 @@ function validate266(
                     if (data.detail !== undefined) {
                       const _errs536 = errors;
                       if (data.detail !== null) {
-                        validate266.errors = [
+                        validate270.errors = [
                           {
                             instancePath: instancePath + "/detail",
                             schemaPath: "#/oneOf/132/properties/detail/type",
@@ -63604,7 +63997,7 @@ function validate266(
                       if (data.family !== undefined) {
                         const _errs538 = errors;
                         if ("CharIsLetter" !== data.family) {
-                          validate266.errors = [
+                          validate270.errors = [
                             {
                               instancePath: instancePath + "/family",
                               schemaPath: "#/oneOf/132/properties/family/const",
@@ -63626,7 +64019,7 @@ function validate266(
                     if (data.detail !== undefined) {
                       const _errs540 = errors;
                       if (data.detail !== null) {
-                        validate266.errors = [
+                        validate270.errors = [
                           {
                             instancePath: instancePath + "/detail",
                             schemaPath: "#/oneOf/133/properties/detail/type",
@@ -63645,7 +64038,7 @@ function validate266(
                       if (data.family !== undefined) {
                         const _errs542 = errors;
                         if ("CharIsAlphanumeric" !== data.family) {
-                          validate266.errors = [
+                          validate270.errors = [
                             {
                               instancePath: instancePath + "/family",
                               schemaPath: "#/oneOf/133/properties/family/const",
@@ -63667,7 +64060,7 @@ function validate266(
                     if (data.detail !== undefined) {
                       const _errs544 = errors;
                       if (data.detail !== null) {
-                        validate266.errors = [
+                        validate270.errors = [
                           {
                             instancePath: instancePath + "/detail",
                             schemaPath: "#/oneOf/134/properties/detail/type",
@@ -63686,7 +64079,7 @@ function validate266(
                       if (data.family !== undefined) {
                         const _errs546 = errors;
                         if ("CharIsWhitespace" !== data.family) {
-                          validate266.errors = [
+                          validate270.errors = [
                             {
                               instancePath: instancePath + "/family",
                               schemaPath: "#/oneOf/134/properties/family/const",
@@ -63708,7 +64101,7 @@ function validate266(
                     if (data.detail !== undefined) {
                       const _errs548 = errors;
                       if (data.detail !== null) {
-                        validate266.errors = [
+                        validate270.errors = [
                           {
                             instancePath: instancePath + "/detail",
                             schemaPath: "#/oneOf/135/properties/detail/type",
@@ -63727,7 +64120,7 @@ function validate266(
                       if (data.family !== undefined) {
                         const _errs550 = errors;
                         if ("CharIsUpper" !== data.family) {
-                          validate266.errors = [
+                          validate270.errors = [
                             {
                               instancePath: instancePath + "/family",
                               schemaPath: "#/oneOf/135/properties/family/const",
@@ -63749,7 +64142,7 @@ function validate266(
                     if (data.detail !== undefined) {
                       const _errs552 = errors;
                       if (data.detail !== null) {
-                        validate266.errors = [
+                        validate270.errors = [
                           {
                             instancePath: instancePath + "/detail",
                             schemaPath: "#/oneOf/136/properties/detail/type",
@@ -63768,7 +64161,7 @@ function validate266(
                       if (data.family !== undefined) {
                         const _errs554 = errors;
                         if ("CharIsLower" !== data.family) {
-                          validate266.errors = [
+                          validate270.errors = [
                             {
                               instancePath: instancePath + "/family",
                               schemaPath: "#/oneOf/136/properties/family/const",
@@ -63790,7 +64183,7 @@ function validate266(
                     if (data.detail !== undefined) {
                       const _errs556 = errors;
                       if (data.detail !== null) {
-                        validate266.errors = [
+                        validate270.errors = [
                           {
                             instancePath: instancePath + "/detail",
                             schemaPath: "#/oneOf/137/properties/detail/type",
@@ -63809,7 +64202,7 @@ function validate266(
                       if (data.family !== undefined) {
                         const _errs558 = errors;
                         if ("CharIsPunctuation" !== data.family) {
-                          validate266.errors = [
+                          validate270.errors = [
                             {
                               instancePath: instancePath + "/family",
                               schemaPath: "#/oneOf/137/properties/family/const",
@@ -63831,7 +64224,7 @@ function validate266(
                     if (data.detail !== undefined) {
                       const _errs560 = errors;
                       if (data.detail !== null) {
-                        validate266.errors = [
+                        validate270.errors = [
                           {
                             instancePath: instancePath + "/detail",
                             schemaPath: "#/oneOf/138/properties/detail/type",
@@ -63850,7 +64243,7 @@ function validate266(
                       if (data.family !== undefined) {
                         const _errs562 = errors;
                         if ("CharIsControl" !== data.family) {
-                          validate266.errors = [
+                          validate270.errors = [
                             {
                               instancePath: instancePath + "/family",
                               schemaPath: "#/oneOf/138/properties/family/const",
@@ -63872,7 +64265,7 @@ function validate266(
                     if (data.detail !== undefined) {
                       const _errs564 = errors;
                       if (data.detail !== null) {
-                        validate266.errors = [
+                        validate270.errors = [
                           {
                             instancePath: instancePath + "/detail",
                             schemaPath: "#/oneOf/139/properties/detail/type",
@@ -63891,7 +64284,7 @@ function validate266(
                       if (data.family !== undefined) {
                         const _errs566 = errors;
                         if ("CharIsAscii" !== data.family) {
-                          validate266.errors = [
+                          validate270.errors = [
                             {
                               instancePath: instancePath + "/family",
                               schemaPath: "#/oneOf/139/properties/family/const",
@@ -63913,7 +64306,7 @@ function validate266(
                     if (data.detail !== undefined) {
                       const _errs568 = errors;
                       if (data.detail !== null) {
-                        validate266.errors = [
+                        validate270.errors = [
                           {
                             instancePath: instancePath + "/detail",
                             schemaPath: "#/oneOf/140/properties/detail/type",
@@ -63932,7 +64325,7 @@ function validate266(
                       if (data.family !== undefined) {
                         const _errs570 = errors;
                         if ("CharToUpper" !== data.family) {
-                          validate266.errors = [
+                          validate270.errors = [
                             {
                               instancePath: instancePath + "/family",
                               schemaPath: "#/oneOf/140/properties/family/const",
@@ -63954,7 +64347,7 @@ function validate266(
                     if (data.detail !== undefined) {
                       const _errs572 = errors;
                       if (data.detail !== null) {
-                        validate266.errors = [
+                        validate270.errors = [
                           {
                             instancePath: instancePath + "/detail",
                             schemaPath: "#/oneOf/141/properties/detail/type",
@@ -63973,7 +64366,7 @@ function validate266(
                       if (data.family !== undefined) {
                         const _errs574 = errors;
                         if ("CharToLower" !== data.family) {
-                          validate266.errors = [
+                          validate270.errors = [
                             {
                               instancePath: instancePath + "/family",
                               schemaPath: "#/oneOf/141/properties/family/const",
@@ -63995,7 +64388,7 @@ function validate266(
                     if (data.detail !== undefined) {
                       const _errs576 = errors;
                       if (data.detail !== null) {
-                        validate266.errors = [
+                        validate270.errors = [
                           {
                             instancePath: instancePath + "/detail",
                             schemaPath: "#/oneOf/142/properties/detail/type",
@@ -64014,7 +64407,7 @@ function validate266(
                       if (data.family !== undefined) {
                         const _errs578 = errors;
                         if ("CharToTitle" !== data.family) {
-                          validate266.errors = [
+                          validate270.errors = [
                             {
                               instancePath: instancePath + "/family",
                               schemaPath: "#/oneOf/142/properties/family/const",
@@ -64036,7 +64429,7 @@ function validate266(
                     if (data.detail !== undefined) {
                       const _errs580 = errors;
                       if (data.detail !== null) {
-                        validate266.errors = [
+                        validate270.errors = [
                           {
                             instancePath: instancePath + "/detail",
                             schemaPath: "#/oneOf/143/properties/detail/type",
@@ -64055,7 +64448,7 @@ function validate266(
                       if (data.family !== undefined) {
                         const _errs582 = errors;
                         if ("CharLenUtf8" !== data.family) {
-                          validate266.errors = [
+                          validate270.errors = [
                             {
                               instancePath: instancePath + "/family",
                               schemaPath: "#/oneOf/143/properties/family/const",
@@ -64077,7 +64470,7 @@ function validate266(
                     if (data.detail !== undefined) {
                       const _errs584 = errors;
                       if (data.detail !== null) {
-                        validate266.errors = [
+                        validate270.errors = [
                           {
                             instancePath: instancePath + "/detail",
                             schemaPath: "#/oneOf/144/properties/detail/type",
@@ -64096,7 +64489,7 @@ function validate266(
                       if (data.family !== undefined) {
                         const _errs586 = errors;
                         if ("CharToDigit" !== data.family) {
-                          validate266.errors = [
+                          validate270.errors = [
                             {
                               instancePath: instancePath + "/family",
                               schemaPath: "#/oneOf/144/properties/family/const",
@@ -64118,7 +64511,7 @@ function validate266(
                     if (data.detail !== undefined) {
                       const _errs588 = errors;
                       if (data.detail !== null) {
-                        validate266.errors = [
+                        validate270.errors = [
                           {
                             instancePath: instancePath + "/detail",
                             schemaPath: "#/oneOf/145/properties/detail/type",
@@ -64137,7 +64530,7 @@ function validate266(
                       if (data.family !== undefined) {
                         const _errs590 = errors;
                         if ("CharFromI64" !== data.family) {
-                          validate266.errors = [
+                          validate270.errors = [
                             {
                               instancePath: instancePath + "/family",
                               schemaPath: "#/oneOf/145/properties/family/const",
@@ -64159,7 +64552,7 @@ function validate266(
                     if (data.detail !== undefined) {
                       const _errs592 = errors;
                       if (data.detail !== null) {
-                        validate266.errors = [
+                        validate270.errors = [
                           {
                             instancePath: instancePath + "/detail",
                             schemaPath: "#/oneOf/146/properties/detail/type",
@@ -64178,7 +64571,7 @@ function validate266(
                       if (data.family !== undefined) {
                         const _errs594 = errors;
                         if ("CharFromU64" !== data.family) {
-                          validate266.errors = [
+                          validate270.errors = [
                             {
                               instancePath: instancePath + "/family",
                               schemaPath: "#/oneOf/146/properties/family/const",
@@ -64200,7 +64593,7 @@ function validate266(
                     if (data.detail !== undefined) {
                       const _errs596 = errors;
                       if (data.detail !== null) {
-                        validate266.errors = [
+                        validate270.errors = [
                           {
                             instancePath: instancePath + "/detail",
                             schemaPath: "#/oneOf/147/properties/detail/type",
@@ -64219,7 +64612,7 @@ function validate266(
                       if (data.family !== undefined) {
                         const _errs598 = errors;
                         if ("StringGet" !== data.family) {
-                          validate266.errors = [
+                          validate270.errors = [
                             {
                               instancePath: instancePath + "/family",
                               schemaPath: "#/oneOf/147/properties/family/const",
@@ -64241,7 +64634,7 @@ function validate266(
                     if (data.detail !== undefined) {
                       const _errs600 = errors;
                       if (data.detail !== null) {
-                        validate266.errors = [
+                        validate270.errors = [
                           {
                             instancePath: instancePath + "/detail",
                             schemaPath: "#/oneOf/148/properties/detail/type",
@@ -64260,7 +64653,7 @@ function validate266(
                       if (data.family !== undefined) {
                         const _errs602 = errors;
                         if ("StringGetRange" !== data.family) {
-                          validate266.errors = [
+                          validate270.errors = [
                             {
                               instancePath: instancePath + "/family",
                               schemaPath: "#/oneOf/148/properties/family/const",
@@ -64282,7 +64675,7 @@ function validate266(
                     if (data.detail !== undefined) {
                       const _errs604 = errors;
                       if (data.detail !== null) {
-                        validate266.errors = [
+                        validate270.errors = [
                           {
                             instancePath: instancePath + "/detail",
                             schemaPath: "#/oneOf/149/properties/detail/type",
@@ -64301,7 +64694,7 @@ function validate266(
                       if (data.family !== undefined) {
                         const _errs606 = errors;
                         if ("StringSliceRange" !== data.family) {
-                          validate266.errors = [
+                          validate270.errors = [
                             {
                               instancePath: instancePath + "/family",
                               schemaPath: "#/oneOf/149/properties/family/const",
@@ -64323,7 +64716,7 @@ function validate266(
                     if (data.detail !== undefined) {
                       const _errs608 = errors;
                       if (data.detail !== null) {
-                        validate266.errors = [
+                        validate270.errors = [
                           {
                             instancePath: instancePath + "/detail",
                             schemaPath: "#/oneOf/150/properties/detail/type",
@@ -64342,7 +64735,7 @@ function validate266(
                       if (data.family !== undefined) {
                         const _errs610 = errors;
                         if ("StringAppend" !== data.family) {
-                          validate266.errors = [
+                          validate270.errors = [
                             {
                               instancePath: instancePath + "/family",
                               schemaPath: "#/oneOf/150/properties/family/const",
@@ -64364,7 +64757,7 @@ function validate266(
                     if (data.detail !== undefined) {
                       const _errs612 = errors;
                       if (data.detail !== null) {
-                        validate266.errors = [
+                        validate270.errors = [
                           {
                             instancePath: instancePath + "/detail",
                             schemaPath: "#/oneOf/151/properties/detail/type",
@@ -64383,7 +64776,7 @@ function validate266(
                       if (data.family !== undefined) {
                         const _errs614 = errors;
                         if ("StringPush" !== data.family) {
-                          validate266.errors = [
+                          validate270.errors = [
                             {
                               instancePath: instancePath + "/family",
                               schemaPath: "#/oneOf/151/properties/family/const",
@@ -64405,7 +64798,7 @@ function validate266(
                     if (data.detail !== undefined) {
                       const _errs616 = errors;
                       if (data.detail !== null) {
-                        validate266.errors = [
+                        validate270.errors = [
                           {
                             instancePath: instancePath + "/detail",
                             schemaPath: "#/oneOf/152/properties/detail/type",
@@ -64424,7 +64817,7 @@ function validate266(
                       if (data.family !== undefined) {
                         const _errs618 = errors;
                         if ("StringClear" !== data.family) {
-                          validate266.errors = [
+                          validate270.errors = [
                             {
                               instancePath: instancePath + "/family",
                               schemaPath: "#/oneOf/152/properties/family/const",
@@ -64446,7 +64839,7 @@ function validate266(
                     if (data.detail !== undefined) {
                       const _errs620 = errors;
                       if (data.detail !== null) {
-                        validate266.errors = [
+                        validate270.errors = [
                           {
                             instancePath: instancePath + "/detail",
                             schemaPath: "#/oneOf/153/properties/detail/type",
@@ -64465,7 +64858,7 @@ function validate266(
                       if (data.family !== undefined) {
                         const _errs622 = errors;
                         if ("StringFindFrom" !== data.family) {
-                          validate266.errors = [
+                          validate270.errors = [
                             {
                               instancePath: instancePath + "/family",
                               schemaPath: "#/oneOf/153/properties/family/const",
@@ -64487,7 +64880,7 @@ function validate266(
                     if (data.detail !== undefined) {
                       const _errs624 = errors;
                       if (data.detail !== null) {
-                        validate266.errors = [
+                        validate270.errors = [
                           {
                             instancePath: instancePath + "/detail",
                             schemaPath: "#/oneOf/154/properties/detail/type",
@@ -64506,7 +64899,7 @@ function validate266(
                       if (data.family !== undefined) {
                         const _errs626 = errors;
                         if ("StringByteLen" !== data.family) {
-                          validate266.errors = [
+                          validate270.errors = [
                             {
                               instancePath: instancePath + "/family",
                               schemaPath: "#/oneOf/154/properties/family/const",
@@ -64528,7 +64921,7 @@ function validate266(
                     if (data.detail !== undefined) {
                       const _errs628 = errors;
                       if (data.detail !== null) {
-                        validate266.errors = [
+                        validate270.errors = [
                           {
                             instancePath: instancePath + "/detail",
                             schemaPath: "#/oneOf/155/properties/detail/type",
@@ -64547,7 +64940,7 @@ function validate266(
                       if (data.family !== undefined) {
                         const _errs630 = errors;
                         if ("StringConcat" !== data.family) {
-                          validate266.errors = [
+                          validate270.errors = [
                             {
                               instancePath: instancePath + "/family",
                               schemaPath: "#/oneOf/155/properties/family/const",
@@ -64569,7 +64962,7 @@ function validate266(
                     if (data.detail !== undefined) {
                       const _errs632 = errors;
                       if (data.detail !== null) {
-                        validate266.errors = [
+                        validate270.errors = [
                           {
                             instancePath: instancePath + "/detail",
                             schemaPath: "#/oneOf/156/properties/detail/type",
@@ -64588,7 +64981,7 @@ function validate266(
                       if (data.family !== undefined) {
                         const _errs634 = errors;
                         if ("StringEquals" !== data.family) {
-                          validate266.errors = [
+                          validate270.errors = [
                             {
                               instancePath: instancePath + "/family",
                               schemaPath: "#/oneOf/156/properties/family/const",
@@ -64610,7 +65003,7 @@ function validate266(
                     if (data.detail !== undefined) {
                       const _errs636 = errors;
                       if (data.detail !== null) {
-                        validate266.errors = [
+                        validate270.errors = [
                           {
                             instancePath: instancePath + "/detail",
                             schemaPath: "#/oneOf/157/properties/detail/type",
@@ -64629,7 +65022,7 @@ function validate266(
                       if (data.family !== undefined) {
                         const _errs638 = errors;
                         if ("StringCompare" !== data.family) {
-                          validate266.errors = [
+                          validate270.errors = [
                             {
                               instancePath: instancePath + "/family",
                               schemaPath: "#/oneOf/157/properties/family/const",
@@ -64651,7 +65044,7 @@ function validate266(
                     if (data.detail !== undefined) {
                       const _errs640 = errors;
                       if (data.detail !== null) {
-                        validate266.errors = [
+                        validate270.errors = [
                           {
                             instancePath: instancePath + "/detail",
                             schemaPath: "#/oneOf/158/properties/detail/type",
@@ -64670,7 +65063,7 @@ function validate266(
                       if (data.family !== undefined) {
                         const _errs642 = errors;
                         if ("StringStartsWith" !== data.family) {
-                          validate266.errors = [
+                          validate270.errors = [
                             {
                               instancePath: instancePath + "/family",
                               schemaPath: "#/oneOf/158/properties/family/const",
@@ -64692,7 +65085,7 @@ function validate266(
                     if (data.detail !== undefined) {
                       const _errs644 = errors;
                       if (data.detail !== null) {
-                        validate266.errors = [
+                        validate270.errors = [
                           {
                             instancePath: instancePath + "/detail",
                             schemaPath: "#/oneOf/159/properties/detail/type",
@@ -64711,7 +65104,7 @@ function validate266(
                       if (data.family !== undefined) {
                         const _errs646 = errors;
                         if ("StringEndsWith" !== data.family) {
-                          validate266.errors = [
+                          validate270.errors = [
                             {
                               instancePath: instancePath + "/family",
                               schemaPath: "#/oneOf/159/properties/family/const",
@@ -64733,7 +65126,7 @@ function validate266(
                     if (data.detail !== undefined) {
                       const _errs648 = errors;
                       if (data.detail !== null) {
-                        validate266.errors = [
+                        validate270.errors = [
                           {
                             instancePath: instancePath + "/detail",
                             schemaPath: "#/oneOf/160/properties/detail/type",
@@ -64752,7 +65145,7 @@ function validate266(
                       if (data.family !== undefined) {
                         const _errs650 = errors;
                         if ("StringContains" !== data.family) {
-                          validate266.errors = [
+                          validate270.errors = [
                             {
                               instancePath: instancePath + "/family",
                               schemaPath: "#/oneOf/160/properties/family/const",
@@ -64774,7 +65167,7 @@ function validate266(
                     if (data.detail !== undefined) {
                       const _errs652 = errors;
                       if (data.detail !== null) {
-                        validate266.errors = [
+                        validate270.errors = [
                           {
                             instancePath: instancePath + "/detail",
                             schemaPath: "#/oneOf/161/properties/detail/type",
@@ -64793,7 +65186,7 @@ function validate266(
                       if (data.family !== undefined) {
                         const _errs654 = errors;
                         if ("StringIsEmpty" !== data.family) {
-                          validate266.errors = [
+                          validate270.errors = [
                             {
                               instancePath: instancePath + "/family",
                               schemaPath: "#/oneOf/161/properties/family/const",
@@ -64815,7 +65208,7 @@ function validate266(
                     if (data.detail !== undefined) {
                       const _errs656 = errors;
                       if (data.detail !== null) {
-                        validate266.errors = [
+                        validate270.errors = [
                           {
                             instancePath: instancePath + "/detail",
                             schemaPath: "#/oneOf/162/properties/detail/type",
@@ -64834,7 +65227,7 @@ function validate266(
                       if (data.family !== undefined) {
                         const _errs658 = errors;
                         if ("StructuralFormat" !== data.family) {
-                          validate266.errors = [
+                          validate270.errors = [
                             {
                               instancePath: instancePath + "/family",
                               schemaPath: "#/oneOf/162/properties/family/const",
@@ -64856,7 +65249,7 @@ function validate266(
                     if (data.detail !== undefined) {
                       const _errs660 = errors;
                       if (data.detail !== null) {
-                        validate266.errors = [
+                        validate270.errors = [
                           {
                             instancePath: instancePath + "/detail",
                             schemaPath: "#/oneOf/163/properties/detail/type",
@@ -64875,7 +65268,7 @@ function validate266(
                       if (data.family !== undefined) {
                         const _errs662 = errors;
                         if ("StringFind" !== data.family) {
-                          validate266.errors = [
+                          validate270.errors = [
                             {
                               instancePath: instancePath + "/family",
                               schemaPath: "#/oneOf/163/properties/family/const",
@@ -64897,7 +65290,7 @@ function validate266(
                     if (data.detail !== undefined) {
                       const _errs664 = errors;
                       if (data.detail !== null) {
-                        validate266.errors = [
+                        validate270.errors = [
                           {
                             instancePath: instancePath + "/detail",
                             schemaPath: "#/oneOf/164/properties/detail/type",
@@ -64916,7 +65309,7 @@ function validate266(
                       if (data.family !== undefined) {
                         const _errs666 = errors;
                         if ("StringIndex" !== data.family) {
-                          validate266.errors = [
+                          validate270.errors = [
                             {
                               instancePath: instancePath + "/family",
                               schemaPath: "#/oneOf/164/properties/family/const",
@@ -64938,7 +65331,7 @@ function validate266(
                     if (data.detail !== undefined) {
                       const _errs668 = errors;
                       if (data.detail !== null) {
-                        validate266.errors = [
+                        validate270.errors = [
                           {
                             instancePath: instancePath + "/detail",
                             schemaPath: "#/oneOf/165/properties/detail/type",
@@ -64957,7 +65350,7 @@ function validate266(
                       if (data.family !== undefined) {
                         const _errs670 = errors;
                         if ("StringLen" !== data.family) {
-                          validate266.errors = [
+                          validate270.errors = [
                             {
                               instancePath: instancePath + "/family",
                               schemaPath: "#/oneOf/165/properties/family/const",
@@ -64979,7 +65372,7 @@ function validate266(
                     if (data.detail !== undefined) {
                       const _errs672 = errors;
                       if (data.detail !== null) {
-                        validate266.errors = [
+                        validate270.errors = [
                           {
                             instancePath: instancePath + "/detail",
                             schemaPath: "#/oneOf/166/properties/detail/type",
@@ -64998,7 +65391,7 @@ function validate266(
                       if (data.family !== undefined) {
                         const _errs674 = errors;
                         if ("StringReplace" !== data.family) {
-                          validate266.errors = [
+                          validate270.errors = [
                             {
                               instancePath: instancePath + "/family",
                               schemaPath: "#/oneOf/166/properties/family/const",
@@ -65020,7 +65413,7 @@ function validate266(
                     if (data.detail !== undefined) {
                       const _errs676 = errors;
                       if (data.detail !== null) {
-                        validate266.errors = [
+                        validate270.errors = [
                           {
                             instancePath: instancePath + "/detail",
                             schemaPath: "#/oneOf/167/properties/detail/type",
@@ -65039,7 +65432,7 @@ function validate266(
                       if (data.family !== undefined) {
                         const _errs678 = errors;
                         if ("StringClone" !== data.family) {
-                          validate266.errors = [
+                          validate270.errors = [
                             {
                               instancePath: instancePath + "/family",
                               schemaPath: "#/oneOf/167/properties/family/const",
@@ -65061,7 +65454,7 @@ function validate266(
                     if (data.detail !== undefined) {
                       const _errs680 = errors;
                       if (data.detail !== null) {
-                        validate266.errors = [
+                        validate270.errors = [
                           {
                             instancePath: instancePath + "/detail",
                             schemaPath: "#/oneOf/168/properties/detail/type",
@@ -65080,7 +65473,7 @@ function validate266(
                       if (data.family !== undefined) {
                         const _errs682 = errors;
                         if ("StringSliceCodepoints" !== data.family) {
-                          validate266.errors = [
+                          validate270.errors = [
                             {
                               instancePath: instancePath + "/family",
                               schemaPath: "#/oneOf/168/properties/family/const",
@@ -65102,7 +65495,7 @@ function validate266(
                     if (data.detail !== undefined) {
                       const _errs684 = errors;
                       if (data.detail !== null) {
-                        validate266.errors = [
+                        validate270.errors = [
                           {
                             instancePath: instancePath + "/detail",
                             schemaPath: "#/oneOf/169/properties/detail/type",
@@ -65121,7 +65514,7 @@ function validate266(
                       if (data.family !== undefined) {
                         const _errs686 = errors;
                         if ("StringSliceCodepointsFrom" !== data.family) {
-                          validate266.errors = [
+                          validate270.errors = [
                             {
                               instancePath: instancePath + "/family",
                               schemaPath: "#/oneOf/169/properties/family/const",
@@ -65145,7 +65538,7 @@ function validate266(
                     if (data.detail !== undefined) {
                       const _errs688 = errors;
                       if (data.detail !== null) {
-                        validate266.errors = [
+                        validate270.errors = [
                           {
                             instancePath: instancePath + "/detail",
                             schemaPath: "#/oneOf/170/properties/detail/type",
@@ -65164,7 +65557,7 @@ function validate266(
                       if (data.family !== undefined) {
                         const _errs690 = errors;
                         if ("StringToLowercase" !== data.family) {
-                          validate266.errors = [
+                          validate270.errors = [
                             {
                               instancePath: instancePath + "/family",
                               schemaPath: "#/oneOf/170/properties/family/const",
@@ -65186,7 +65579,7 @@ function validate266(
                     if (data.detail !== undefined) {
                       const _errs692 = errors;
                       if (data.detail !== null) {
-                        validate266.errors = [
+                        validate270.errors = [
                           {
                             instancePath: instancePath + "/detail",
                             schemaPath: "#/oneOf/171/properties/detail/type",
@@ -65205,7 +65598,7 @@ function validate266(
                       if (data.family !== undefined) {
                         const _errs694 = errors;
                         if ("StringToBytes" !== data.family) {
-                          validate266.errors = [
+                          validate270.errors = [
                             {
                               instancePath: instancePath + "/family",
                               schemaPath: "#/oneOf/171/properties/family/const",
@@ -65227,7 +65620,7 @@ function validate266(
                     if (data.detail !== undefined) {
                       const _errs696 = errors;
                       if (data.detail !== null) {
-                        validate266.errors = [
+                        validate270.errors = [
                           {
                             instancePath: instancePath + "/detail",
                             schemaPath: "#/oneOf/172/properties/detail/type",
@@ -65246,7 +65639,7 @@ function validate266(
                       if (data.family !== undefined) {
                         const _errs698 = errors;
                         if ("StringToUppercase" !== data.family) {
-                          validate266.errors = [
+                          validate270.errors = [
                             {
                               instancePath: instancePath + "/family",
                               schemaPath: "#/oneOf/172/properties/family/const",
@@ -65268,7 +65661,7 @@ function validate266(
                     if (data.detail !== undefined) {
                       const _errs700 = errors;
                       if (data.detail !== null) {
-                        validate266.errors = [
+                        validate270.errors = [
                           {
                             instancePath: instancePath + "/detail",
                             schemaPath: "#/oneOf/173/properties/detail/type",
@@ -65287,7 +65680,7 @@ function validate266(
                       if (data.family !== undefined) {
                         const _errs702 = errors;
                         if ("StringTrim" !== data.family) {
-                          validate266.errors = [
+                          validate270.errors = [
                             {
                               instancePath: instancePath + "/family",
                               schemaPath: "#/oneOf/173/properties/family/const",
@@ -65309,7 +65702,7 @@ function validate266(
                     if (data.detail !== undefined) {
                       const _errs704 = errors;
                       if (data.detail !== null) {
-                        validate266.errors = [
+                        validate270.errors = [
                           {
                             instancePath: instancePath + "/detail",
                             schemaPath: "#/oneOf/174/properties/detail/type",
@@ -65328,7 +65721,7 @@ function validate266(
                       if (data.family !== undefined) {
                         const _errs706 = errors;
                         if ("U8ToString" !== data.family) {
-                          validate266.errors = [
+                          validate270.errors = [
                             {
                               instancePath: instancePath + "/family",
                               schemaPath: "#/oneOf/174/properties/family/const",
@@ -65350,7 +65743,7 @@ function validate266(
                     if (data.detail !== undefined) {
                       const _errs708 = errors;
                       if (data.detail !== null) {
-                        validate266.errors = [
+                        validate270.errors = [
                           {
                             instancePath: instancePath + "/detail",
                             schemaPath: "#/oneOf/175/properties/detail/type",
@@ -65369,7 +65762,7 @@ function validate266(
                       if (data.family !== undefined) {
                         const _errs710 = errors;
                         if ("I32ToString" !== data.family) {
-                          validate266.errors = [
+                          validate270.errors = [
                             {
                               instancePath: instancePath + "/family",
                               schemaPath: "#/oneOf/175/properties/family/const",
@@ -65391,7 +65784,7 @@ function validate266(
                     if (data.detail !== undefined) {
                       const _errs712 = errors;
                       if (data.detail !== null) {
-                        validate266.errors = [
+                        validate270.errors = [
                           {
                             instancePath: instancePath + "/detail",
                             schemaPath: "#/oneOf/176/properties/detail/type",
@@ -65410,7 +65803,7 @@ function validate266(
                       if (data.family !== undefined) {
                         const _errs714 = errors;
                         if ("I64ToString" !== data.family) {
-                          validate266.errors = [
+                          validate270.errors = [
                             {
                               instancePath: instancePath + "/family",
                               schemaPath: "#/oneOf/176/properties/family/const",
@@ -65432,7 +65825,7 @@ function validate266(
                     if (data.detail !== undefined) {
                       const _errs716 = errors;
                       if (data.detail !== null) {
-                        validate266.errors = [
+                        validate270.errors = [
                           {
                             instancePath: instancePath + "/detail",
                             schemaPath: "#/oneOf/177/properties/detail/type",
@@ -65451,7 +65844,7 @@ function validate266(
                       if (data.family !== undefined) {
                         const _errs718 = errors;
                         if ("U32ToString" !== data.family) {
-                          validate266.errors = [
+                          validate270.errors = [
                             {
                               instancePath: instancePath + "/family",
                               schemaPath: "#/oneOf/177/properties/family/const",
@@ -65473,7 +65866,7 @@ function validate266(
                     if (data.detail !== undefined) {
                       const _errs720 = errors;
                       if (data.detail !== null) {
-                        validate266.errors = [
+                        validate270.errors = [
                           {
                             instancePath: instancePath + "/detail",
                             schemaPath: "#/oneOf/178/properties/detail/type",
@@ -65492,7 +65885,7 @@ function validate266(
                       if (data.family !== undefined) {
                         const _errs722 = errors;
                         if ("U64ToString" !== data.family) {
-                          validate266.errors = [
+                          validate270.errors = [
                             {
                               instancePath: instancePath + "/family",
                               schemaPath: "#/oneOf/178/properties/family/const",
@@ -65514,7 +65907,7 @@ function validate266(
                     if (data.detail !== undefined) {
                       const _errs724 = errors;
                       if (data.detail !== null) {
-                        validate266.errors = [
+                        validate270.errors = [
                           {
                             instancePath: instancePath + "/detail",
                             schemaPath: "#/oneOf/179/properties/detail/type",
@@ -65533,7 +65926,7 @@ function validate266(
                       if (data.family !== undefined) {
                         const _errs726 = errors;
                         if ("F64ToString" !== data.family) {
-                          validate266.errors = [
+                          validate270.errors = [
                             {
                               instancePath: instancePath + "/family",
                               schemaPath: "#/oneOf/179/properties/family/const",
@@ -65555,7 +65948,7 @@ function validate266(
                     if (data.detail !== undefined) {
                       const _errs728 = errors;
                       if (data.detail !== null) {
-                        validate266.errors = [
+                        validate270.errors = [
                           {
                             instancePath: instancePath + "/detail",
                             schemaPath: "#/oneOf/180/properties/detail/type",
@@ -65574,7 +65967,7 @@ function validate266(
                       if (data.family !== undefined) {
                         const _errs730 = errors;
                         if ("CharToString" !== data.family) {
-                          validate266.errors = [
+                          validate270.errors = [
                             {
                               instancePath: instancePath + "/family",
                               schemaPath: "#/oneOf/180/properties/family/const",
@@ -65596,7 +65989,7 @@ function validate266(
                     if (data.detail !== undefined) {
                       const _errs732 = errors;
                       if (data.detail !== null) {
-                        validate266.errors = [
+                        validate270.errors = [
                           {
                             instancePath: instancePath + "/detail",
                             schemaPath: "#/oneOf/181/properties/detail/type",
@@ -65615,7 +66008,7 @@ function validate266(
                       if (data.family !== undefined) {
                         const _errs734 = errors;
                         if ("BoolToString" !== data.family) {
-                          validate266.errors = [
+                          validate270.errors = [
                             {
                               instancePath: instancePath + "/family",
                               schemaPath: "#/oneOf/181/properties/family/const",
@@ -65637,7 +66030,7 @@ function validate266(
                     if (data.detail !== undefined) {
                       const _errs736 = errors;
                       if (data.detail !== null) {
-                        validate266.errors = [
+                        validate270.errors = [
                           {
                             instancePath: instancePath + "/detail",
                             schemaPath: "#/oneOf/182/properties/detail/type",
@@ -65656,7 +66049,7 @@ function validate266(
                       if (data.family !== undefined) {
                         const _errs738 = errors;
                         if ("SupervisorChildGet" !== data.family) {
-                          validate266.errors = [
+                          validate270.errors = [
                             {
                               instancePath: instancePath + "/family",
                               schemaPath: "#/oneOf/182/properties/family/const",
@@ -65678,7 +66071,7 @@ function validate266(
                     if (data.detail !== undefined) {
                       const _errs740 = errors;
                       if (data.detail !== null) {
-                        validate266.errors = [
+                        validate270.errors = [
                           {
                             instancePath: instancePath + "/detail",
                             schemaPath: "#/oneOf/183/properties/detail/type",
@@ -65697,7 +66090,7 @@ function validate266(
                       if (data.family !== undefined) {
                         const _errs742 = errors;
                         if ("SupervisorNestedGet" !== data.family) {
-                          validate266.errors = [
+                          validate270.errors = [
                             {
                               instancePath: instancePath + "/family",
                               schemaPath: "#/oneOf/183/properties/family/const",
@@ -65719,7 +66112,7 @@ function validate266(
                     if (data.detail !== undefined) {
                       const _errs744 = errors;
                       if (data.detail !== null) {
-                        validate266.errors = [
+                        validate270.errors = [
                           {
                             instancePath: instancePath + "/detail",
                             schemaPath: "#/oneOf/184/properties/detail/type",
@@ -65738,7 +66131,7 @@ function validate266(
                       if (data.family !== undefined) {
                         const _errs746 = errors;
                         if ("SupervisorStop" !== data.family) {
-                          validate266.errors = [
+                          validate270.errors = [
                             {
                               instancePath: instancePath + "/family",
                               schemaPath: "#/oneOf/184/properties/family/const",
@@ -65760,7 +66153,7 @@ function validate266(
                     if (data.detail !== undefined) {
                       const _errs748 = errors;
                       if (data.detail !== null) {
-                        validate266.errors = [
+                        validate270.errors = [
                           {
                             instancePath: instancePath + "/detail",
                             schemaPath: "#/oneOf/185/properties/detail/type",
@@ -65779,7 +66172,7 @@ function validate266(
                       if (data.family !== undefined) {
                         const _errs750 = errors;
                         if ("TlsAttachLocal" !== data.family) {
-                          validate266.errors = [
+                          validate270.errors = [
                             {
                               instancePath: instancePath + "/family",
                               schemaPath: "#/oneOf/185/properties/family/const",
@@ -65801,7 +66194,7 @@ function validate266(
                     if (data.detail !== undefined) {
                       const _errs752 = errors;
                       if (data.detail !== null) {
-                        validate266.errors = [
+                        validate270.errors = [
                           {
                             instancePath: instancePath + "/detail",
                             schemaPath: "#/oneOf/186/properties/detail/type",
@@ -65820,7 +66213,7 @@ function validate266(
                       if (data.family !== undefined) {
                         const _errs754 = errors;
                         if ("WebSocketAttachLocal" !== data.family) {
-                          validate266.errors = [
+                          validate270.errors = [
                             {
                               instancePath: instancePath + "/family",
                               schemaPath: "#/oneOf/186/properties/family/const",
@@ -65842,7 +66235,7 @@ function validate266(
                     if (data.detail !== undefined) {
                       const _errs756 = errors;
                       if (data.detail !== null) {
-                        validate266.errors = [
+                        validate270.errors = [
                           {
                             instancePath: instancePath + "/detail",
                             schemaPath: "#/oneOf/187/properties/detail/type",
@@ -65861,7 +66254,7 @@ function validate266(
                       if (data.family !== undefined) {
                         const _errs758 = errors;
                         if ("TaskFree" !== data.family) {
-                          validate266.errors = [
+                          validate270.errors = [
                             {
                               instancePath: instancePath + "/family",
                               schemaPath: "#/oneOf/187/properties/family/const",
@@ -65883,7 +66276,7 @@ function validate266(
                     if (data.detail !== undefined) {
                       const _errs760 = errors;
                       if (data.detail !== null) {
-                        validate266.errors = [
+                        validate270.errors = [
                           {
                             instancePath: instancePath + "/detail",
                             schemaPath: "#/oneOf/188/properties/detail/type",
@@ -65902,7 +66295,7 @@ function validate266(
                       if (data.family !== undefined) {
                         const _errs762 = errors;
                         if ("GeneratorFree" !== data.family) {
-                          validate266.errors = [
+                          validate270.errors = [
                             {
                               instancePath: instancePath + "/family",
                               schemaPath: "#/oneOf/188/properties/family/const",
@@ -65924,7 +66317,7 @@ function validate266(
                     if (data.detail !== undefined) {
                       const _errs764 = errors;
                       if (data.detail !== null) {
-                        validate266.errors = [
+                        validate270.errors = [
                           {
                             instancePath: instancePath + "/detail",
                             schemaPath: "#/oneOf/189/properties/detail/type",
@@ -65943,7 +66336,7 @@ function validate266(
                       if (data.family !== undefined) {
                         const _errs766 = errors;
                         if ("VecAppend" !== data.family) {
-                          validate266.errors = [
+                          validate270.errors = [
                             {
                               instancePath: instancePath + "/family",
                               schemaPath: "#/oneOf/189/properties/family/const",
@@ -65965,7 +66358,7 @@ function validate266(
                     if (data.detail !== undefined) {
                       const _errs768 = errors;
                       if (data.detail !== null) {
-                        validate266.errors = [
+                        validate270.errors = [
                           {
                             instancePath: instancePath + "/detail",
                             schemaPath: "#/oneOf/190/properties/detail/type",
@@ -65984,7 +66377,7 @@ function validate266(
                       if (data.family !== undefined) {
                         const _errs770 = errors;
                         if ("VecClear" !== data.family) {
-                          validate266.errors = [
+                          validate270.errors = [
                             {
                               instancePath: instancePath + "/family",
                               schemaPath: "#/oneOf/190/properties/family/const",
@@ -66006,7 +66399,7 @@ function validate266(
                     if (data.detail !== undefined) {
                       const _errs772 = errors;
                       if (data.detail !== null) {
-                        validate266.errors = [
+                        validate270.errors = [
                           {
                             instancePath: instancePath + "/detail",
                             schemaPath: "#/oneOf/191/properties/detail/type",
@@ -66025,7 +66418,7 @@ function validate266(
                       if (data.family !== undefined) {
                         const _errs774 = errors;
                         if ("VecClone" !== data.family) {
-                          validate266.errors = [
+                          validate270.errors = [
                             {
                               instancePath: instancePath + "/family",
                               schemaPath: "#/oneOf/191/properties/family/const",
@@ -66047,7 +66440,7 @@ function validate266(
                     if (data.detail !== undefined) {
                       const _errs776 = errors;
                       if (data.detail !== null) {
-                        validate266.errors = [
+                        validate270.errors = [
                           {
                             instancePath: instancePath + "/detail",
                             schemaPath: "#/oneOf/192/properties/detail/type",
@@ -66066,7 +66459,7 @@ function validate266(
                       if (data.family !== undefined) {
                         const _errs778 = errors;
                         if ("VecCloneLayout" !== data.family) {
-                          validate266.errors = [
+                          validate270.errors = [
                             {
                               instancePath: instancePath + "/family",
                               schemaPath: "#/oneOf/192/properties/family/const",
@@ -66088,7 +66481,7 @@ function validate266(
                     if (data.detail !== undefined) {
                       const _errs780 = errors;
                       if (data.detail !== null) {
-                        validate266.errors = [
+                        validate270.errors = [
                           {
                             instancePath: instancePath + "/detail",
                             schemaPath: "#/oneOf/193/properties/detail/type",
@@ -66107,7 +66500,7 @@ function validate266(
                       if (data.family !== undefined) {
                         const _errs782 = errors;
                         if ("VecCloneOwned" !== data.family) {
-                          validate266.errors = [
+                          validate270.errors = [
                             {
                               instancePath: instancePath + "/family",
                               schemaPath: "#/oneOf/193/properties/family/const",
@@ -66129,7 +66522,7 @@ function validate266(
                     if (data.detail !== undefined) {
                       const _errs784 = errors;
                       if (data.detail !== null) {
-                        validate266.errors = [
+                        validate270.errors = [
                           {
                             instancePath: instancePath + "/detail",
                             schemaPath: "#/oneOf/194/properties/detail/type",
@@ -66148,7 +66541,7 @@ function validate266(
                       if (data.family !== undefined) {
                         const _errs786 = errors;
                         if ("VecContainsLayout" !== data.family) {
-                          validate266.errors = [
+                          validate270.errors = [
                             {
                               instancePath: instancePath + "/family",
                               schemaPath: "#/oneOf/194/properties/family/const",
@@ -66170,7 +66563,7 @@ function validate266(
                     if (data.detail !== undefined) {
                       const _errs788 = errors;
                       if (data.detail !== null) {
-                        validate266.errors = [
+                        validate270.errors = [
                           {
                             instancePath: instancePath + "/detail",
                             schemaPath: "#/oneOf/195/properties/detail/type",
@@ -66189,7 +66582,7 @@ function validate266(
                       if (data.family !== undefined) {
                         const _errs790 = errors;
                         if ("VecContainsOwned" !== data.family) {
-                          validate266.errors = [
+                          validate270.errors = [
                             {
                               instancePath: instancePath + "/family",
                               schemaPath: "#/oneOf/195/properties/family/const",
@@ -66211,7 +66604,7 @@ function validate266(
                     if (data.detail !== undefined) {
                       const _errs792 = errors;
                       if (data.detail !== null) {
-                        validate266.errors = [
+                        validate270.errors = [
                           {
                             instancePath: instancePath + "/detail",
                             schemaPath: "#/oneOf/196/properties/detail/type",
@@ -66230,7 +66623,7 @@ function validate266(
                       if (data.family !== undefined) {
                         const _errs794 = errors;
                         if ("VecIsEmpty" !== data.family) {
-                          validate266.errors = [
+                          validate270.errors = [
                             {
                               instancePath: instancePath + "/family",
                               schemaPath: "#/oneOf/196/properties/family/const",
@@ -66252,7 +66645,7 @@ function validate266(
                     if (data.detail !== undefined) {
                       const _errs796 = errors;
                       if (data.detail !== null) {
-                        validate266.errors = [
+                        validate270.errors = [
                           {
                             instancePath: instancePath + "/detail",
                             schemaPath: "#/oneOf/197/properties/detail/type",
@@ -66271,7 +66664,7 @@ function validate266(
                       if (data.family !== undefined) {
                         const _errs798 = errors;
                         if ("VecJoinStr" !== data.family) {
-                          validate266.errors = [
+                          validate270.errors = [
                             {
                               instancePath: instancePath + "/family",
                               schemaPath: "#/oneOf/197/properties/family/const",
@@ -66293,7 +66686,7 @@ function validate266(
                     if (data.detail !== undefined) {
                       const _errs800 = errors;
                       if (data.detail !== null) {
-                        validate266.errors = [
+                        validate270.errors = [
                           {
                             instancePath: instancePath + "/detail",
                             schemaPath: "#/oneOf/198/properties/detail/type",
@@ -66312,7 +66705,7 @@ function validate266(
                       if (data.family !== undefined) {
                         const _errs802 = errors;
                         if ("VecLen" !== data.family) {
-                          validate266.errors = [
+                          validate270.errors = [
                             {
                               instancePath: instancePath + "/family",
                               schemaPath: "#/oneOf/198/properties/family/const",
@@ -66334,7 +66727,7 @@ function validate266(
                     if (data.detail !== undefined) {
                       const _errs804 = errors;
                       if (data.detail !== null) {
-                        validate266.errors = [
+                        validate270.errors = [
                           {
                             instancePath: instancePath + "/detail",
                             schemaPath: "#/oneOf/199/properties/detail/type",
@@ -66353,7 +66746,7 @@ function validate266(
                       if (data.family !== undefined) {
                         const _errs806 = errors;
                         if ("VecNew" !== data.family) {
-                          validate266.errors = [
+                          validate270.errors = [
                             {
                               instancePath: instancePath + "/family",
                               schemaPath: "#/oneOf/199/properties/family/const",
@@ -66375,7 +66768,7 @@ function validate266(
                     if (data.detail !== undefined) {
                       const _errs808 = errors;
                       if (data.detail !== null) {
-                        validate266.errors = [
+                        validate270.errors = [
                           {
                             instancePath: instancePath + "/detail",
                             schemaPath: "#/oneOf/200/properties/detail/type",
@@ -66394,7 +66787,7 @@ function validate266(
                       if (data.family !== undefined) {
                         const _errs810 = errors;
                         if ("VecPopBool" !== data.family) {
-                          validate266.errors = [
+                          validate270.errors = [
                             {
                               instancePath: instancePath + "/family",
                               schemaPath: "#/oneOf/200/properties/family/const",
@@ -66416,7 +66809,7 @@ function validate266(
                     if (data.detail !== undefined) {
                       const _errs812 = errors;
                       if (data.detail !== null) {
-                        validate266.errors = [
+                        validate270.errors = [
                           {
                             instancePath: instancePath + "/detail",
                             schemaPath: "#/oneOf/201/properties/detail/type",
@@ -66435,7 +66828,7 @@ function validate266(
                       if (data.family !== undefined) {
                         const _errs814 = errors;
                         if ("VecPopLayout" !== data.family) {
-                          validate266.errors = [
+                          validate270.errors = [
                             {
                               instancePath: instancePath + "/family",
                               schemaPath: "#/oneOf/201/properties/family/const",
@@ -66457,7 +66850,7 @@ function validate266(
                     if (data.detail !== undefined) {
                       const _errs816 = errors;
                       if (data.detail !== null) {
-                        validate266.errors = [
+                        validate270.errors = [
                           {
                             instancePath: instancePath + "/detail",
                             schemaPath: "#/oneOf/202/properties/detail/type",
@@ -66476,7 +66869,7 @@ function validate266(
                       if (data.family !== undefined) {
                         const _errs818 = errors;
                         if ("VecPopOwned" !== data.family) {
-                          validate266.errors = [
+                          validate270.errors = [
                             {
                               instancePath: instancePath + "/family",
                               schemaPath: "#/oneOf/202/properties/family/const",
@@ -66498,7 +66891,7 @@ function validate266(
                     if (data.detail !== undefined) {
                       const _errs820 = errors;
                       if (data.detail !== null) {
-                        validate266.errors = [
+                        validate270.errors = [
                           {
                             instancePath: instancePath + "/detail",
                             schemaPath: "#/oneOf/203/properties/detail/type",
@@ -66517,7 +66910,7 @@ function validate266(
                       if (data.family !== undefined) {
                         const _errs822 = errors;
                         if ("VecPushBool" !== data.family) {
-                          validate266.errors = [
+                          validate270.errors = [
                             {
                               instancePath: instancePath + "/family",
                               schemaPath: "#/oneOf/203/properties/family/const",
@@ -66539,7 +66932,7 @@ function validate266(
                     if (data.detail !== undefined) {
                       const _errs824 = errors;
                       if (data.detail !== null) {
-                        validate266.errors = [
+                        validate270.errors = [
                           {
                             instancePath: instancePath + "/detail",
                             schemaPath: "#/oneOf/204/properties/detail/type",
@@ -66558,7 +66951,7 @@ function validate266(
                       if (data.family !== undefined) {
                         const _errs826 = errors;
                         if ("VecPushLayout" !== data.family) {
-                          validate266.errors = [
+                          validate270.errors = [
                             {
                               instancePath: instancePath + "/family",
                               schemaPath: "#/oneOf/204/properties/family/const",
@@ -66580,7 +66973,7 @@ function validate266(
                     if (data.detail !== undefined) {
                       const _errs828 = errors;
                       if (data.detail !== null) {
-                        validate266.errors = [
+                        validate270.errors = [
                           {
                             instancePath: instancePath + "/detail",
                             schemaPath: "#/oneOf/205/properties/detail/type",
@@ -66599,7 +66992,7 @@ function validate266(
                       if (data.family !== undefined) {
                         const _errs830 = errors;
                         if ("VecPushOwned" !== data.family) {
-                          validate266.errors = [
+                          validate270.errors = [
                             {
                               instancePath: instancePath + "/family",
                               schemaPath: "#/oneOf/205/properties/family/const",
@@ -66621,7 +67014,7 @@ function validate266(
                     if (data.detail !== undefined) {
                       const _errs832 = errors;
                       if (data.detail !== null) {
-                        validate266.errors = [
+                        validate270.errors = [
                           {
                             instancePath: instancePath + "/detail",
                             schemaPath: "#/oneOf/206/properties/detail/type",
@@ -66640,7 +67033,7 @@ function validate266(
                       if (data.family !== undefined) {
                         const _errs834 = errors;
                         if ("VecPushOwnedMove" !== data.family) {
-                          validate266.errors = [
+                          validate270.errors = [
                             {
                               instancePath: instancePath + "/family",
                               schemaPath: "#/oneOf/206/properties/family/const",
@@ -66662,7 +67055,7 @@ function validate266(
                     if (data.detail !== undefined) {
                       const _errs836 = errors;
                       if (data.detail !== null) {
-                        validate266.errors = [
+                        validate270.errors = [
                           {
                             instancePath: instancePath + "/detail",
                             schemaPath: "#/oneOf/207/properties/detail/type",
@@ -66681,7 +67074,7 @@ function validate266(
                       if (data.family !== undefined) {
                         const _errs838 = errors;
                         if ("VecRemoveAtBool" !== data.family) {
-                          validate266.errors = [
+                          validate270.errors = [
                             {
                               instancePath: instancePath + "/family",
                               schemaPath: "#/oneOf/207/properties/family/const",
@@ -66703,7 +67096,7 @@ function validate266(
                     if (data.detail !== undefined) {
                       const _errs840 = errors;
                       if (data.detail !== null) {
-                        validate266.errors = [
+                        validate270.errors = [
                           {
                             instancePath: instancePath + "/detail",
                             schemaPath: "#/oneOf/208/properties/detail/type",
@@ -66722,7 +67115,7 @@ function validate266(
                       if (data.family !== undefined) {
                         const _errs842 = errors;
                         if ("VecRemoveAtLayout" !== data.family) {
-                          validate266.errors = [
+                          validate270.errors = [
                             {
                               instancePath: instancePath + "/family",
                               schemaPath: "#/oneOf/208/properties/family/const",
@@ -66744,7 +67137,7 @@ function validate266(
                     if (data.detail !== undefined) {
                       const _errs844 = errors;
                       if (data.detail !== null) {
-                        validate266.errors = [
+                        validate270.errors = [
                           {
                             instancePath: instancePath + "/detail",
                             schemaPath: "#/oneOf/209/properties/detail/type",
@@ -66763,7 +67156,7 @@ function validate266(
                       if (data.family !== undefined) {
                         const _errs846 = errors;
                         if ("VecRemoveAtOwned" !== data.family) {
-                          validate266.errors = [
+                          validate270.errors = [
                             {
                               instancePath: instancePath + "/family",
                               schemaPath: "#/oneOf/209/properties/family/const",
@@ -66785,7 +67178,7 @@ function validate266(
                     if (data.detail !== undefined) {
                       const _errs848 = errors;
                       if (data.detail !== null) {
-                        validate266.errors = [
+                        validate270.errors = [
                           {
                             instancePath: instancePath + "/detail",
                             schemaPath: "#/oneOf/210/properties/detail/type",
@@ -66804,7 +67197,7 @@ function validate266(
                       if (data.family !== undefined) {
                         const _errs850 = errors;
                         if ("VecSetBool" !== data.family) {
-                          validate266.errors = [
+                          validate270.errors = [
                             {
                               instancePath: instancePath + "/family",
                               schemaPath: "#/oneOf/210/properties/family/const",
@@ -66826,7 +67219,7 @@ function validate266(
                     if (data.detail !== undefined) {
                       const _errs852 = errors;
                       if (data.detail !== null) {
-                        validate266.errors = [
+                        validate270.errors = [
                           {
                             instancePath: instancePath + "/detail",
                             schemaPath: "#/oneOf/211/properties/detail/type",
@@ -66845,7 +67238,7 @@ function validate266(
                       if (data.family !== undefined) {
                         const _errs854 = errors;
                         if ("VecSetLayout" !== data.family) {
-                          validate266.errors = [
+                          validate270.errors = [
                             {
                               instancePath: instancePath + "/family",
                               schemaPath: "#/oneOf/211/properties/family/const",
@@ -66867,7 +67260,7 @@ function validate266(
                     if (data.detail !== undefined) {
                       const _errs856 = errors;
                       if (data.detail !== null) {
-                        validate266.errors = [
+                        validate270.errors = [
                           {
                             instancePath: instancePath + "/detail",
                             schemaPath: "#/oneOf/212/properties/detail/type",
@@ -66886,7 +67279,7 @@ function validate266(
                       if (data.family !== undefined) {
                         const _errs858 = errors;
                         if ("VecSetOwned" !== data.family) {
-                          validate266.errors = [
+                          validate270.errors = [
                             {
                               instancePath: instancePath + "/family",
                               schemaPath: "#/oneOf/212/properties/family/const",
@@ -66908,7 +67301,7 @@ function validate266(
                     if (data.detail !== undefined) {
                       const _errs860 = errors;
                       if (data.detail !== null) {
-                        validate266.errors = [
+                        validate270.errors = [
                           {
                             instancePath: instancePath + "/detail",
                             schemaPath: "#/oneOf/213/properties/detail/type",
@@ -66927,7 +67320,7 @@ function validate266(
                       if (data.family !== undefined) {
                         const _errs862 = errors;
                         if ("VecSetOwnedMove" !== data.family) {
-                          validate266.errors = [
+                          validate270.errors = [
                             {
                               instancePath: instancePath + "/family",
                               schemaPath: "#/oneOf/213/properties/family/const",
@@ -66949,7 +67342,7 @@ function validate266(
                     if (data.detail !== undefined) {
                       const _errs864 = errors;
                       if (data.detail !== null) {
-                        validate266.errors = [
+                        validate270.errors = [
                           {
                             instancePath: instancePath + "/detail",
                             schemaPath: "#/oneOf/214/properties/detail/type",
@@ -66968,7 +67361,7 @@ function validate266(
                       if (data.family !== undefined) {
                         const _errs866 = errors;
                         if ("VtableDispatchPanicOnOob" !== data.family) {
-                          validate266.errors = [
+                          validate270.errors = [
                             {
                               instancePath: instancePath + "/family",
                               schemaPath: "#/oneOf/214/properties/family/const",
@@ -66991,7 +67384,7 @@ function validate266(
                   if (data && typeof data == "object" && !Array.isArray(data)) {
                     let missing1;
                     if (data.detail === undefined && (missing1 = "detail")) {
-                      validate266.errors = [
+                      validate270.errors = [
                         {
                           instancePath,
                           schemaPath: "#/oneOf/215/required",
@@ -67028,7 +67421,7 @@ function validate266(
                         if (data.family !== undefined) {
                           const _errs869 = errors;
                           if ("AsyncIo" !== data.family) {
-                            validate266.errors = [
+                            validate270.errors = [
                               {
                                 instancePath: instancePath + "/family",
                                 schemaPath:
@@ -67051,7 +67444,7 @@ function validate266(
                   if (data && typeof data == "object" && !Array.isArray(data)) {
                     let missing2;
                     if (data.detail === undefined && (missing2 = "detail")) {
-                      validate266.errors = [
+                      validate270.errors = [
                         {
                           instancePath,
                           schemaPath: "#/oneOf/216/required",
@@ -67088,7 +67481,7 @@ function validate266(
                         if (data.family !== undefined) {
                           const _errs872 = errors;
                           if ("Semaphore" !== data.family) {
-                            validate266.errors = [
+                            validate270.errors = [
                               {
                                 instancePath: instancePath + "/family",
                                 schemaPath:
@@ -67111,7 +67504,7 @@ function validate266(
                   if (data && typeof data == "object" && !Array.isArray(data)) {
                     let missing3;
                     if (data.detail === undefined && (missing3 = "detail")) {
-                      validate266.errors = [
+                      validate270.errors = [
                         {
                           instancePath,
                           schemaPath: "#/oneOf/217/required",
@@ -67126,7 +67519,7 @@ function validate266(
                       if (data.detail !== undefined) {
                         const _errs874 = errors;
                         if (
-                          !validate269(data.detail, {
+                          !validate273(data.detail, {
                             instancePath: instancePath + "/detail",
                             parentData: data,
                             parentDataProperty: "detail",
@@ -67136,8 +67529,8 @@ function validate266(
                         ) {
                           vErrors =
                             vErrors === null
-                              ? validate269.errors
-                              : vErrors.concat(validate269.errors);
+                              ? validate273.errors
+                              : vErrors.concat(validate273.errors);
                           errors = vErrors.length;
                         }
                         var valid437 = _errs874 === errors;
@@ -67148,7 +67541,7 @@ function validate266(
                         if (data.family !== undefined) {
                           const _errs875 = errors;
                           if ("FileRead" !== data.family) {
-                            validate266.errors = [
+                            validate270.errors = [
                               {
                                 instancePath: instancePath + "/family",
                                 schemaPath:
@@ -67171,7 +67564,7 @@ function validate266(
                   if (data && typeof data == "object" && !Array.isArray(data)) {
                     let missing4;
                     if (data.detail === undefined && (missing4 = "detail")) {
-                      validate266.errors = [
+                      validate270.errors = [
                         {
                           instancePath,
                           schemaPath: "#/oneOf/218/required",
@@ -67186,7 +67579,7 @@ function validate266(
                       if (data.detail !== undefined) {
                         const _errs877 = errors;
                         if (
-                          !validate271(data.detail, {
+                          !validate275(data.detail, {
                             instancePath: instancePath + "/detail",
                             parentData: data,
                             parentDataProperty: "detail",
@@ -67196,8 +67589,8 @@ function validate266(
                         ) {
                           vErrors =
                             vErrors === null
-                              ? validate271.errors
-                              : vErrors.concat(validate271.errors);
+                              ? validate275.errors
+                              : vErrors.concat(validate275.errors);
                           errors = vErrors.length;
                         }
                         var valid439 = _errs877 === errors;
@@ -67208,7 +67601,7 @@ function validate266(
                         if (data.family !== undefined) {
                           const _errs878 = errors;
                           if ("Service" !== data.family) {
-                            validate266.errors = [
+                            validate270.errors = [
                               {
                                 instancePath: instancePath + "/family",
                                 schemaPath:
@@ -67231,7 +67624,7 @@ function validate266(
                   if (data && typeof data == "object" && !Array.isArray(data)) {
                     let missing5;
                     if (data.detail === undefined && (missing5 = "detail")) {
-                      validate266.errors = [
+                      validate270.errors = [
                         {
                           instancePath,
                           schemaPath: "#/oneOf/219/required",
@@ -67246,7 +67639,7 @@ function validate266(
                       if (data.detail !== undefined) {
                         const _errs880 = errors;
                         if (
-                          !validate273(data.detail, {
+                          !validate277(data.detail, {
                             instancePath: instancePath + "/detail",
                             parentData: data,
                             parentDataProperty: "detail",
@@ -67256,8 +67649,8 @@ function validate266(
                         ) {
                           vErrors =
                             vErrors === null
-                              ? validate273.errors
-                              : vErrors.concat(validate273.errors);
+                              ? validate277.errors
+                              : vErrors.concat(validate277.errors);
                           errors = vErrors.length;
                         }
                         var valid441 = _errs880 === errors;
@@ -67268,7 +67661,7 @@ function validate266(
                         if (data.family !== undefined) {
                           const _errs881 = errors;
                           if ("Tcp" !== data.family) {
-                            validate266.errors = [
+                            validate270.errors = [
                               {
                                 instancePath: instancePath + "/family",
                                 schemaPath:
@@ -67291,7 +67684,7 @@ function validate266(
                   if (data && typeof data == "object" && !Array.isArray(data)) {
                     let missing6;
                     if (data.detail === undefined && (missing6 = "detail")) {
-                      validate266.errors = [
+                      validate270.errors = [
                         {
                           instancePath,
                           schemaPath: "#/oneOf/220/required",
@@ -67318,7 +67711,7 @@ function validate266(
                                 (missing7 = "format")) ||
                               (data442.op === undefined && (missing7 = "op"))
                             ) {
-                              validate266.errors = [
+                              validate270.errors = [
                                 {
                                   instancePath: instancePath + "/detail",
                                   schemaPath:
@@ -67336,7 +67729,7 @@ function validate266(
                               if (data442.format !== undefined) {
                                 const _errs885 = errors;
                                 if (
-                                  !validate275(data442.format, {
+                                  !validate279(data442.format, {
                                     instancePath:
                                       instancePath + "/detail/format",
                                     parentData: data442,
@@ -67347,8 +67740,8 @@ function validate266(
                                 ) {
                                   vErrors =
                                     vErrors === null
-                                      ? validate275.errors
-                                      : vErrors.concat(validate275.errors);
+                                      ? validate279.errors
+                                      : vErrors.concat(validate279.errors);
                                   errors = vErrors.length;
                                 }
                                 var valid444 = _errs885 === errors;
@@ -67359,7 +67752,7 @@ function validate266(
                                 if (data442.op !== undefined) {
                                   const _errs886 = errors;
                                   if (
-                                    !validate277(data442.op, {
+                                    !validate281(data442.op, {
                                       instancePath: instancePath + "/detail/op",
                                       parentData: data442,
                                       parentDataProperty: "op",
@@ -67369,8 +67762,8 @@ function validate266(
                                   ) {
                                     vErrors =
                                       vErrors === null
-                                        ? validate277.errors
-                                        : vErrors.concat(validate277.errors);
+                                        ? validate281.errors
+                                        : vErrors.concat(validate281.errors);
                                     errors = vErrors.length;
                                   }
                                   var valid444 = _errs886 === errors;
@@ -67380,7 +67773,7 @@ function validate266(
                               }
                             }
                           } else {
-                            validate266.errors = [
+                            validate270.errors = [
                               {
                                 instancePath: instancePath + "/detail",
                                 schemaPath:
@@ -67401,7 +67794,7 @@ function validate266(
                         if (data.family !== undefined) {
                           const _errs887 = errors;
                           if ("Encoding" !== data.family) {
-                            validate266.errors = [
+                            validate270.errors = [
                               {
                                 instancePath: instancePath + "/family",
                                 schemaPath:
@@ -67425,7 +67818,7 @@ function validate266(
                     if (data.detail !== undefined) {
                       const _errs889 = errors;
                       if (data.detail !== null) {
-                        validate266.errors = [
+                        validate270.errors = [
                           {
                             instancePath: instancePath + "/detail",
                             schemaPath: "#/oneOf/221/properties/detail/type",
@@ -67444,7 +67837,7 @@ function validate266(
                       if (data.family !== undefined) {
                         const _errs891 = errors;
                         if ("ActorDemonitor" !== data.family) {
-                          validate266.errors = [
+                          validate270.errors = [
                             {
                               instancePath: instancePath + "/family",
                               schemaPath: "#/oneOf/221/properties/family/const",
@@ -67466,7 +67859,7 @@ function validate266(
                     if (data.detail !== undefined) {
                       const _errs893 = errors;
                       if (data.detail !== null) {
-                        validate266.errors = [
+                        validate270.errors = [
                           {
                             instancePath: instancePath + "/detail",
                             schemaPath: "#/oneOf/222/properties/detail/type",
@@ -67485,7 +67878,7 @@ function validate266(
                       if (data.family !== undefined) {
                         const _errs895 = errors;
                         if ("BytesConcat" !== data.family) {
-                          validate266.errors = [
+                          validate270.errors = [
                             {
                               instancePath: instancePath + "/family",
                               schemaPath: "#/oneOf/222/properties/family/const",
@@ -67507,7 +67900,7 @@ function validate266(
                     if (data.detail !== undefined) {
                       const _errs897 = errors;
                       if (data.detail !== null) {
-                        validate266.errors = [
+                        validate270.errors = [
                           {
                             instancePath: instancePath + "/detail",
                             schemaPath: "#/oneOf/223/properties/detail/type",
@@ -67526,7 +67919,7 @@ function validate266(
                       if (data.family !== undefined) {
                         const _errs899 = errors;
                         if ("BytesSliceFrom" !== data.family) {
-                          validate266.errors = [
+                          validate270.errors = [
                             {
                               instancePath: instancePath + "/family",
                               schemaPath: "#/oneOf/223/properties/family/const",
@@ -67548,7 +67941,7 @@ function validate266(
                     if (data.detail !== undefined) {
                       const _errs901 = errors;
                       if (data.detail !== null) {
-                        validate266.errors = [
+                        validate270.errors = [
                           {
                             instancePath: instancePath + "/detail",
                             schemaPath: "#/oneOf/224/properties/detail/type",
@@ -67567,7 +67960,7 @@ function validate266(
                       if (data.family !== undefined) {
                         const _errs903 = errors;
                         if ("BytesNew" !== data.family) {
-                          validate266.errors = [
+                          validate270.errors = [
                             {
                               instancePath: instancePath + "/family",
                               schemaPath: "#/oneOf/224/properties/family/const",
@@ -67589,7 +67982,7 @@ function validate266(
                     if (data.detail !== undefined) {
                       const _errs905 = errors;
                       if (data.detail !== null) {
-                        validate266.errors = [
+                        validate270.errors = [
                           {
                             instancePath: instancePath + "/detail",
                             schemaPath: "#/oneOf/225/properties/detail/type",
@@ -67608,7 +68001,7 @@ function validate266(
                       if (data.family !== undefined) {
                         const _errs907 = errors;
                         if ("HashMapKeysLayout" !== data.family) {
-                          validate266.errors = [
+                          validate270.errors = [
                             {
                               instancePath: instancePath + "/family",
                               schemaPath: "#/oneOf/225/properties/family/const",
@@ -67630,7 +68023,7 @@ function validate266(
                     if (data.detail !== undefined) {
                       const _errs909 = errors;
                       if (data.detail !== null) {
-                        validate266.errors = [
+                        validate270.errors = [
                           {
                             instancePath: instancePath + "/detail",
                             schemaPath: "#/oneOf/226/properties/detail/type",
@@ -67649,7 +68042,7 @@ function validate266(
                       if (data.family !== undefined) {
                         const _errs911 = errors;
                         if ("HashMapNew" !== data.family) {
-                          validate266.errors = [
+                          validate270.errors = [
                             {
                               instancePath: instancePath + "/family",
                               schemaPath: "#/oneOf/226/properties/family/const",
@@ -67671,7 +68064,7 @@ function validate266(
                     if (data.detail !== undefined) {
                       const _errs913 = errors;
                       if (data.detail !== null) {
-                        validate266.errors = [
+                        validate270.errors = [
                           {
                             instancePath: instancePath + "/detail",
                             schemaPath: "#/oneOf/227/properties/detail/type",
@@ -67690,7 +68083,7 @@ function validate266(
                       if (data.family !== undefined) {
                         const _errs915 = errors;
                         if ("HashSetNew" !== data.family) {
-                          validate266.errors = [
+                          validate270.errors = [
                             {
                               instancePath: instancePath + "/family",
                               schemaPath: "#/oneOf/227/properties/family/const",
@@ -67711,7 +68104,7 @@ function validate266(
                   if (data && typeof data == "object" && !Array.isArray(data)) {
                     let missing8;
                     if (data.detail === undefined && (missing8 = "detail")) {
-                      validate266.errors = [
+                      validate270.errors = [
                         {
                           instancePath,
                           schemaPath: "#/oneOf/228/required",
@@ -67726,7 +68119,7 @@ function validate266(
                       if (data.detail !== undefined) {
                         const _errs917 = errors;
                         if (
-                          !validate279(data.detail, {
+                          !validate283(data.detail, {
                             instancePath: instancePath + "/detail",
                             parentData: data,
                             parentDataProperty: "detail",
@@ -67736,8 +68129,8 @@ function validate266(
                         ) {
                           vErrors =
                             vErrors === null
-                              ? validate279.errors
-                              : vErrors.concat(validate279.errors);
+                              ? validate283.errors
+                              : vErrors.concat(validate283.errors);
                           errors = vErrors.length;
                         }
                         var valid460 = _errs917 === errors;
@@ -67748,7 +68141,7 @@ function validate266(
                         if (data.family !== undefined) {
                           const _errs918 = errors;
                           if ("MathIntrinsic" !== data.family) {
-                            validate266.errors = [
+                            validate270.errors = [
                               {
                                 instancePath: instancePath + "/family",
                                 schemaPath:
@@ -67771,7 +68164,7 @@ function validate266(
                   if (data && typeof data == "object" && !Array.isArray(data)) {
                     let missing9;
                     if (data.detail === undefined && (missing9 = "detail")) {
-                      validate266.errors = [
+                      validate270.errors = [
                         {
                           instancePath,
                           schemaPath: "#/oneOf/229/required",
@@ -67789,7 +68182,7 @@ function validate266(
                         if (errors === _errs920) {
                           if (Array.isArray(data462)) {
                             if (data462.length > 2) {
-                              validate266.errors = [
+                              validate270.errors = [
                                 {
                                   instancePath: instancePath + "/detail",
                                   schemaPath:
@@ -67802,7 +68195,7 @@ function validate266(
                               return false;
                             } else {
                               if (data462.length < 2) {
-                                validate266.errors = [
+                                validate270.errors = [
                                   {
                                     instancePath: instancePath + "/detail",
                                     schemaPath:
@@ -67818,7 +68211,7 @@ function validate266(
                                 if (len0 > 0) {
                                   const _errs922 = errors;
                                   if (
-                                    !validate281(data462[0], {
+                                    !validate285(data462[0], {
                                       instancePath: instancePath + "/detail/0",
                                       parentData: data462,
                                       parentDataProperty: 0,
@@ -67828,8 +68221,8 @@ function validate266(
                                   ) {
                                     vErrors =
                                       vErrors === null
-                                        ? validate281.errors
-                                        : vErrors.concat(validate281.errors);
+                                        ? validate285.errors
+                                        : vErrors.concat(validate285.errors);
                                     errors = vErrors.length;
                                   }
                                   var valid463 = _errs922 === errors;
@@ -67838,7 +68231,7 @@ function validate266(
                                   if (len0 > 1) {
                                     const _errs923 = errors;
                                     if (
-                                      !validate283(data462[1], {
+                                      !validate287(data462[1], {
                                         instancePath:
                                           instancePath + "/detail/1",
                                         parentData: data462,
@@ -67849,8 +68242,8 @@ function validate266(
                                     ) {
                                       vErrors =
                                         vErrors === null
-                                          ? validate283.errors
-                                          : vErrors.concat(validate283.errors);
+                                          ? validate287.errors
+                                          : vErrors.concat(validate287.errors);
                                       errors = vErrors.length;
                                     }
                                     var valid463 = _errs923 === errors;
@@ -67859,7 +68252,7 @@ function validate266(
                               }
                             }
                           } else {
-                            validate266.errors = [
+                            validate270.errors = [
                               {
                                 instancePath: instancePath + "/detail",
                                 schemaPath:
@@ -67880,7 +68273,7 @@ function validate266(
                         if (data.family !== undefined) {
                           const _errs924 = errors;
                           if ("IntMethod" !== data.family) {
-                            validate266.errors = [
+                            validate270.errors = [
                               {
                                 instancePath: instancePath + "/family",
                                 schemaPath:
@@ -67903,7 +68296,7 @@ function validate266(
                   if (data && typeof data == "object" && !Array.isArray(data)) {
                     let missing10;
                     if (data.detail === undefined && (missing10 = "detail")) {
-                      validate266.errors = [
+                      validate270.errors = [
                         {
                           instancePath,
                           schemaPath: "#/oneOf/230/required",
@@ -67921,7 +68314,7 @@ function validate266(
                         if (errors === _errs926) {
                           if (Array.isArray(data466)) {
                             if (data466.length > 2) {
-                              validate266.errors = [
+                              validate270.errors = [
                                 {
                                   instancePath: instancePath + "/detail",
                                   schemaPath:
@@ -67934,7 +68327,7 @@ function validate266(
                               return false;
                             } else {
                               if (data466.length < 2) {
-                                validate266.errors = [
+                                validate270.errors = [
                                   {
                                     instancePath: instancePath + "/detail",
                                     schemaPath:
@@ -67950,7 +68343,7 @@ function validate266(
                                 if (len1 > 0) {
                                   const _errs928 = errors;
                                   if (
-                                    !validate285(data466[0], {
+                                    !validate289(data466[0], {
                                       instancePath: instancePath + "/detail/0",
                                       parentData: data466,
                                       parentDataProperty: 0,
@@ -67960,8 +68353,8 @@ function validate266(
                                   ) {
                                     vErrors =
                                       vErrors === null
-                                        ? validate285.errors
-                                        : vErrors.concat(validate285.errors);
+                                        ? validate289.errors
+                                        : vErrors.concat(validate289.errors);
                                     errors = vErrors.length;
                                   }
                                   var valid466 = _errs928 === errors;
@@ -67970,7 +68363,7 @@ function validate266(
                                   if (len1 > 1) {
                                     const _errs929 = errors;
                                     if (
-                                      !validate283(data466[1], {
+                                      !validate287(data466[1], {
                                         instancePath:
                                           instancePath + "/detail/1",
                                         parentData: data466,
@@ -67981,8 +68374,8 @@ function validate266(
                                     ) {
                                       vErrors =
                                         vErrors === null
-                                          ? validate283.errors
-                                          : vErrors.concat(validate283.errors);
+                                          ? validate287.errors
+                                          : vErrors.concat(validate287.errors);
                                       errors = vErrors.length;
                                     }
                                     var valid466 = _errs929 === errors;
@@ -67991,7 +68384,7 @@ function validate266(
                               }
                             }
                           } else {
-                            validate266.errors = [
+                            validate270.errors = [
                               {
                                 instancePath: instancePath + "/detail",
                                 schemaPath:
@@ -68012,7 +68405,7 @@ function validate266(
                         if (data.family !== undefined) {
                           const _errs930 = errors;
                           if ("IntArith" !== data.family) {
-                            validate266.errors = [
+                            validate270.errors = [
                               {
                                 instancePath: instancePath + "/family",
                                 schemaPath:
@@ -68035,7 +68428,7 @@ function validate266(
                   if (data && typeof data == "object" && !Array.isArray(data)) {
                     let missing11;
                     if (data.detail === undefined && (missing11 = "detail")) {
-                      validate266.errors = [
+                      validate270.errors = [
                         {
                           instancePath,
                           schemaPath: "#/oneOf/231/required",
@@ -68050,7 +68443,7 @@ function validate266(
                       if (data.detail !== undefined) {
                         const _errs932 = errors;
                         if (
-                          !validate288(data.detail, {
+                          !validate292(data.detail, {
                             instancePath: instancePath + "/detail",
                             parentData: data,
                             parentDataProperty: "detail",
@@ -68060,8 +68453,8 @@ function validate266(
                         ) {
                           vErrors =
                             vErrors === null
-                              ? validate288.errors
-                              : vErrors.concat(validate288.errors);
+                              ? validate292.errors
+                              : vErrors.concat(validate292.errors);
                           errors = vErrors.length;
                         }
                         var valid468 = _errs932 === errors;
@@ -68072,7 +68465,7 @@ function validate266(
                         if (data.family !== undefined) {
                           const _errs933 = errors;
                           if ("FloatMethod" !== data.family) {
-                            validate266.errors = [
+                            validate270.errors = [
                               {
                                 instancePath: instancePath + "/family",
                                 schemaPath:
@@ -68096,7 +68489,7 @@ function validate266(
                     if (data.detail !== undefined) {
                       const _errs935 = errors;
                       if (data.detail !== null) {
-                        validate266.errors = [
+                        validate270.errors = [
                           {
                             instancePath: instancePath + "/detail",
                             schemaPath: "#/oneOf/232/properties/detail/type",
@@ -68115,7 +68508,7 @@ function validate266(
                       if (data.family !== undefined) {
                         const _errs937 = errors;
                         if ("NodeIdDisplay" !== data.family) {
-                          validate266.errors = [
+                          validate270.errors = [
                             {
                               instancePath: instancePath + "/family",
                               schemaPath: "#/oneOf/232/properties/family/const",
@@ -68137,7 +68530,7 @@ function validate266(
                     if (data.detail !== undefined) {
                       const _errs939 = errors;
                       if (data.detail !== null) {
-                        validate266.errors = [
+                        validate270.errors = [
                           {
                             instancePath: instancePath + "/detail",
                             schemaPath: "#/oneOf/233/properties/detail/type",
@@ -68156,7 +68549,7 @@ function validate266(
                       if (data.family !== undefined) {
                         const _errs941 = errors;
                         if ("MetricHistogramRegisterSimple" !== data.family) {
-                          validate266.errors = [
+                          validate270.errors = [
                             {
                               instancePath: instancePath + "/family",
                               schemaPath: "#/oneOf/233/properties/family/const",
@@ -68180,7 +68573,7 @@ function validate266(
                     if (data.detail !== undefined) {
                       const _errs943 = errors;
                       if (data.detail !== null) {
-                        validate266.errors = [
+                        validate270.errors = [
                           {
                             instancePath: instancePath + "/detail",
                             schemaPath: "#/oneOf/234/properties/detail/type",
@@ -68199,7 +68592,7 @@ function validate266(
                       if (data.family !== undefined) {
                         const _errs945 = errors;
                         if ("RegexHandle" !== data.family) {
-                          validate266.errors = [
+                          validate270.errors = [
                             {
                               instancePath: instancePath + "/family",
                               schemaPath: "#/oneOf/234/properties/family/const",
@@ -68221,7 +68614,7 @@ function validate266(
                     if (data.detail !== undefined) {
                       const _errs947 = errors;
                       if (data.detail !== null) {
-                        validate266.errors = [
+                        validate270.errors = [
                           {
                             instancePath: instancePath + "/detail",
                             schemaPath: "#/oneOf/235/properties/detail/type",
@@ -68240,7 +68633,7 @@ function validate266(
                       if (data.family !== undefined) {
                         const _errs949 = errors;
                         if ("ReplyPayloadFree" !== data.family) {
-                          validate266.errors = [
+                          validate270.errors = [
                             {
                               instancePath: instancePath + "/family",
                               schemaPath: "#/oneOf/235/properties/family/const",
@@ -68262,7 +68655,7 @@ function validate266(
                     if (data.detail !== undefined) {
                       const _errs951 = errors;
                       if (data.detail !== null) {
-                        validate266.errors = [
+                        validate270.errors = [
                           {
                             instancePath: instancePath + "/detail",
                             schemaPath: "#/oneOf/236/properties/detail/type",
@@ -68281,7 +68674,7 @@ function validate266(
                       if (data.family !== undefined) {
                         const _errs953 = errors;
                         if ("StreamChunks" !== data.family) {
-                          validate266.errors = [
+                          validate270.errors = [
                             {
                               instancePath: instancePath + "/family",
                               schemaPath: "#/oneOf/236/properties/family/const",
@@ -68303,7 +68696,7 @@ function validate266(
                     if (data.detail !== undefined) {
                       const _errs955 = errors;
                       if (data.detail !== null) {
-                        validate266.errors = [
+                        validate270.errors = [
                           {
                             instancePath: instancePath + "/detail",
                             schemaPath: "#/oneOf/237/properties/detail/type",
@@ -68322,7 +68715,7 @@ function validate266(
                       if (data.family !== undefined) {
                         const _errs957 = errors;
                         if ("StreamForward" !== data.family) {
-                          validate266.errors = [
+                          validate270.errors = [
                             {
                               instancePath: instancePath + "/family",
                               schemaPath: "#/oneOf/237/properties/family/const",
@@ -68344,7 +68737,7 @@ function validate266(
                     if (data.detail !== undefined) {
                       const _errs959 = errors;
                       if (data.detail !== null) {
-                        validate266.errors = [
+                        validate270.errors = [
                           {
                             instancePath: instancePath + "/detail",
                             schemaPath: "#/oneOf/238/properties/detail/type",
@@ -68363,7 +68756,7 @@ function validate266(
                       if (data.family !== undefined) {
                         const _errs961 = errors;
                         if ("StreamPairSink" !== data.family) {
-                          validate266.errors = [
+                          validate270.errors = [
                             {
                               instancePath: instancePath + "/family",
                               schemaPath: "#/oneOf/238/properties/family/const",
@@ -68385,7 +68778,7 @@ function validate266(
                     if (data.detail !== undefined) {
                       const _errs963 = errors;
                       if (data.detail !== null) {
-                        validate266.errors = [
+                        validate270.errors = [
                           {
                             instancePath: instancePath + "/detail",
                             schemaPath: "#/oneOf/239/properties/detail/type",
@@ -68404,7 +68797,7 @@ function validate266(
                       if (data.family !== undefined) {
                         const _errs965 = errors;
                         if ("StringRepeat" !== data.family) {
-                          validate266.errors = [
+                          validate270.errors = [
                             {
                               instancePath: instancePath + "/family",
                               schemaPath: "#/oneOf/239/properties/family/const",
@@ -68426,7 +68819,7 @@ function validate266(
                     if (data.detail !== undefined) {
                       const _errs967 = errors;
                       if (data.detail !== null) {
-                        validate266.errors = [
+                        validate270.errors = [
                           {
                             instancePath: instancePath + "/detail",
                             schemaPath: "#/oneOf/240/properties/detail/type",
@@ -68445,7 +68838,7 @@ function validate266(
                       if (data.family !== undefined) {
                         const _errs969 = errors;
                         if ("StringSplit" !== data.family) {
-                          validate266.errors = [
+                          validate270.errors = [
                             {
                               instancePath: instancePath + "/family",
                               schemaPath: "#/oneOf/240/properties/family/const",
@@ -68467,7 +68860,7 @@ function validate266(
                     if (data.detail !== undefined) {
                       const _errs971 = errors;
                       if (data.detail !== null) {
-                        validate266.errors = [
+                        validate270.errors = [
                           {
                             instancePath: instancePath + "/detail",
                             schemaPath: "#/oneOf/241/properties/detail/type",
@@ -68486,7 +68879,7 @@ function validate266(
                       if (data.family !== undefined) {
                         const _errs973 = errors;
                         if ("StringLines" !== data.family) {
-                          validate266.errors = [
+                          validate270.errors = [
                             {
                               instancePath: instancePath + "/family",
                               schemaPath: "#/oneOf/241/properties/family/const",
@@ -68507,7 +68900,7 @@ function validate266(
                   if (data && typeof data == "object" && !Array.isArray(data)) {
                     let missing12;
                     if (data.detail === undefined && (missing12 = "detail")) {
-                      validate266.errors = [
+                      validate270.errors = [
                         {
                           instancePath,
                           schemaPath: "#/oneOf/242/required",
@@ -68535,7 +68928,7 @@ function validate266(
                               (data492.newline === undefined &&
                                 (missing13 = "newline"))
                             ) {
-                              validate266.errors = [
+                              validate270.errors = [
                                 {
                                   instancePath: instancePath + "/detail",
                                   schemaPath:
@@ -68553,7 +68946,7 @@ function validate266(
                               if (data492.kind !== undefined) {
                                 const _errs977 = errors;
                                 if (
-                                  !validate290(data492.kind, {
+                                  !validate294(data492.kind, {
                                     instancePath: instancePath + "/detail/kind",
                                     parentData: data492,
                                     parentDataProperty: "kind",
@@ -68563,8 +68956,8 @@ function validate266(
                                 ) {
                                   vErrors =
                                     vErrors === null
-                                      ? validate290.errors
-                                      : vErrors.concat(validate290.errors);
+                                      ? validate294.errors
+                                      : vErrors.concat(validate294.errors);
                                   errors = vErrors.length;
                                 }
                                 var valid491 = _errs977 === errors;
@@ -68575,7 +68968,7 @@ function validate266(
                                 if (data492.newline !== undefined) {
                                   const _errs978 = errors;
                                   if (typeof data492.newline !== "boolean") {
-                                    validate266.errors = [
+                                    validate270.errors = [
                                       {
                                         instancePath:
                                           instancePath + "/detail/newline",
@@ -68595,7 +68988,7 @@ function validate266(
                               }
                             }
                           } else {
-                            validate266.errors = [
+                            validate270.errors = [
                               {
                                 instancePath: instancePath + "/detail",
                                 schemaPath:
@@ -68616,7 +69009,7 @@ function validate266(
                         if (data.family !== undefined) {
                           const _errs980 = errors;
                           if ("Print" !== data.family) {
-                            validate266.errors = [
+                            validate270.errors = [
                               {
                                 instancePath: instancePath + "/family",
                                 schemaPath:
@@ -68640,7 +69033,7 @@ function validate266(
                     if (data.detail !== undefined) {
                       const _errs982 = errors;
                       if (data.detail !== null) {
-                        validate266.errors = [
+                        validate270.errors = [
                           {
                             instancePath: instancePath + "/detail",
                             schemaPath: "#/oneOf/243/properties/detail/type",
@@ -68659,7 +69052,7 @@ function validate266(
                       if (data.family !== undefined) {
                         const _errs984 = errors;
                         if ("ProcessExit" !== data.family) {
-                          validate266.errors = [
+                          validate270.errors = [
                             {
                               instancePath: instancePath + "/family",
                               schemaPath: "#/oneOf/243/properties/family/const",
@@ -68681,7 +69074,7 @@ function validate266(
                     if (data.detail !== undefined) {
                       const _errs986 = errors;
                       if (data.detail !== null) {
-                        validate266.errors = [
+                        validate270.errors = [
                           {
                             instancePath: instancePath + "/detail",
                             schemaPath: "#/oneOf/244/properties/detail/type",
@@ -68700,7 +69093,7 @@ function validate266(
                       if (data.family !== undefined) {
                         const _errs988 = errors;
                         if ("StderrWrite" !== data.family) {
-                          validate266.errors = [
+                          validate270.errors = [
                             {
                               instancePath: instancePath + "/family",
                               schemaPath: "#/oneOf/244/properties/family/const",
@@ -68722,7 +69115,7 @@ function validate266(
                     if (data.detail !== undefined) {
                       const _errs990 = errors;
                       if (data.detail !== null) {
-                        validate266.errors = [
+                        validate270.errors = [
                           {
                             instancePath: instancePath + "/detail",
                             schemaPath: "#/oneOf/245/properties/detail/type",
@@ -68741,7 +69134,7 @@ function validate266(
                       if (data.family !== undefined) {
                         const _errs992 = errors;
                         if ("SupervisorDirectId" !== data.family) {
-                          validate266.errors = [
+                          validate270.errors = [
                             {
                               instancePath: instancePath + "/family",
                               schemaPath: "#/oneOf/245/properties/family/const",
@@ -68763,7 +69156,7 @@ function validate266(
                     if (data.detail !== undefined) {
                       const _errs994 = errors;
                       if (data.detail !== null) {
-                        validate266.errors = [
+                        validate270.errors = [
                           {
                             instancePath: instancePath + "/detail",
                             schemaPath: "#/oneOf/246/properties/detail/type",
@@ -68782,7 +69175,7 @@ function validate266(
                       if (data.family !== undefined) {
                         const _errs996 = errors;
                         if ("LocalPidSupervisorChildGet" !== data.family) {
-                          validate266.errors = [
+                          validate270.errors = [
                             {
                               instancePath: instancePath + "/family",
                               schemaPath: "#/oneOf/246/properties/family/const",
@@ -68806,7 +69199,7 @@ function validate266(
                     if (data.detail !== undefined) {
                       const _errs998 = errors;
                       if (data.detail !== null) {
-                        validate266.errors = [
+                        validate270.errors = [
                           {
                             instancePath: instancePath + "/detail",
                             schemaPath: "#/oneOf/247/properties/detail/type",
@@ -68825,7 +69218,7 @@ function validate266(
                       if (data.family !== undefined) {
                         const _errs1000 = errors;
                         if ("SupervisorPoolChildGet" !== data.family) {
-                          validate266.errors = [
+                          validate270.errors = [
                             {
                               instancePath: instancePath + "/family",
                               schemaPath: "#/oneOf/247/properties/family/const",
@@ -68849,7 +69242,7 @@ function validate266(
                     if (data.detail !== undefined) {
                       const _errs1002 = errors;
                       if (data.detail !== null) {
-                        validate266.errors = [
+                        validate270.errors = [
                           {
                             instancePath: instancePath + "/detail",
                             schemaPath: "#/oneOf/248/properties/detail/type",
@@ -68870,7 +69263,7 @@ function validate266(
                         if (
                           "LocalPidSupervisorPoolChildRefGet" !== data.family
                         ) {
-                          validate266.errors = [
+                          validate270.errors = [
                             {
                               instancePath: instancePath + "/family",
                               schemaPath: "#/oneOf/248/properties/family/const",
@@ -68895,7 +69288,7 @@ function validate266(
                     if (data.detail !== undefined) {
                       const _errs1006 = errors;
                       if (data.detail !== null) {
-                        validate266.errors = [
+                        validate270.errors = [
                           {
                             instancePath: instancePath + "/detail",
                             schemaPath: "#/oneOf/249/properties/detail/type",
@@ -68914,7 +69307,7 @@ function validate266(
                       if (data.family !== undefined) {
                         const _errs1008 = errors;
                         if ("SupervisorPoolLen" !== data.family) {
-                          validate266.errors = [
+                          validate270.errors = [
                             {
                               instancePath: instancePath + "/family",
                               schemaPath: "#/oneOf/249/properties/family/const",
@@ -68935,7 +69328,7 @@ function validate266(
                   if (data && typeof data == "object" && !Array.isArray(data)) {
                     let missing14;
                     if (data.detail === undefined && (missing14 = "detail")) {
-                      validate266.errors = [
+                      validate270.errors = [
                         {
                           instancePath,
                           schemaPath: "#/oneOf/250/required",
@@ -68950,7 +69343,7 @@ function validate266(
                       if (data.detail !== undefined) {
                         const _errs1010 = errors;
                         if (
-                          !validate292(data.detail, {
+                          !validate296(data.detail, {
                             instancePath: instancePath + "/detail",
                             parentData: data,
                             parentDataProperty: "detail",
@@ -68960,8 +69353,8 @@ function validate266(
                         ) {
                           vErrors =
                             vErrors === null
-                              ? validate292.errors
-                              : vErrors.concat(validate292.errors);
+                              ? validate296.errors
+                              : vErrors.concat(validate296.errors);
                           errors = vErrors.length;
                         }
                         var valid507 = _errs1010 === errors;
@@ -68972,7 +69365,7 @@ function validate266(
                         if (data.family !== undefined) {
                           const _errs1011 = errors;
                           if ("Vector" !== data.family) {
-                            validate266.errors = [
+                            validate270.errors = [
                               {
                                 instancePath: instancePath + "/family",
                                 schemaPath:
@@ -68995,7 +69388,7 @@ function validate266(
                   if (data && typeof data == "object" && !Array.isArray(data)) {
                     let missing15;
                     if (data.detail === undefined && (missing15 = "detail")) {
-                      validate266.errors = [
+                      validate270.errors = [
                         {
                           instancePath,
                           schemaPath: "#/oneOf/251/required",
@@ -69010,7 +69403,7 @@ function validate266(
                       if (data.detail !== undefined) {
                         const _errs1013 = errors;
                         if (
-                          !validate294(data.detail, {
+                          !validate298(data.detail, {
                             instancePath: instancePath + "/detail",
                             parentData: data,
                             parentDataProperty: "detail",
@@ -69020,8 +69413,8 @@ function validate266(
                         ) {
                           vErrors =
                             vErrors === null
-                              ? validate294.errors
-                              : vErrors.concat(validate294.errors);
+                              ? validate298.errors
+                              : vErrors.concat(validate298.errors);
                           errors = vErrors.length;
                         }
                         var valid509 = _errs1013 === errors;
@@ -69032,7 +69425,7 @@ function validate266(
                         if (data.family !== undefined) {
                           const _errs1014 = errors;
                           if ("Array" !== data.family) {
-                            validate266.errors = [
+                            validate270.errors = [
                               {
                                 instancePath: instancePath + "/family",
                                 schemaPath:
@@ -69055,7 +69448,7 @@ function validate266(
                   if (data && typeof data == "object" && !Array.isArray(data)) {
                     let missing16;
                     if (data.detail === undefined && (missing16 = "detail")) {
-                      validate266.errors = [
+                      validate270.errors = [
                         {
                           instancePath,
                           schemaPath: "#/oneOf/252/required",
@@ -69070,7 +69463,7 @@ function validate266(
                       if (data.detail !== undefined) {
                         const _errs1016 = errors;
                         if (
-                          !validate296(data.detail, {
+                          !validate300(data.detail, {
                             instancePath: instancePath + "/detail",
                             parentData: data,
                             parentDataProperty: "detail",
@@ -69080,8 +69473,8 @@ function validate266(
                         ) {
                           vErrors =
                             vErrors === null
-                              ? validate296.errors
-                              : vErrors.concat(validate296.errors);
+                              ? validate300.errors
+                              : vErrors.concat(validate300.errors);
                           errors = vErrors.length;
                         }
                         var valid511 = _errs1016 === errors;
@@ -69092,7 +69485,7 @@ function validate266(
                         if (data.family !== undefined) {
                           const _errs1017 = errors;
                           if ("SupervisorPool" !== data.family) {
-                            validate266.errors = [
+                            validate270.errors = [
                               {
                                 instancePath: instancePath + "/family",
                                 schemaPath:
@@ -69115,7 +69508,7 @@ function validate266(
                   if (data && typeof data == "object" && !Array.isArray(data)) {
                     let missing17;
                     if (data.detail === undefined && (missing17 = "detail")) {
-                      validate266.errors = [
+                      validate270.errors = [
                         {
                           instancePath,
                           schemaPath: "#/oneOf/253/required",
@@ -69130,7 +69523,7 @@ function validate266(
                       if (data.detail !== undefined) {
                         const _errs1019 = errors;
                         if (
-                          !validate298(data.detail, {
+                          !validate302(data.detail, {
                             instancePath: instancePath + "/detail",
                             parentData: data,
                             parentDataProperty: "detail",
@@ -69140,8 +69533,8 @@ function validate266(
                         ) {
                           vErrors =
                             vErrors === null
-                              ? validate298.errors
-                              : vErrors.concat(validate298.errors);
+                              ? validate302.errors
+                              : vErrors.concat(validate302.errors);
                           errors = vErrors.length;
                         }
                         var valid513 = _errs1019 === errors;
@@ -69152,7 +69545,7 @@ function validate266(
                         if (data.family !== undefined) {
                           const _errs1020 = errors;
                           if ("Map" !== data.family) {
-                            validate266.errors = [
+                            validate270.errors = [
                               {
                                 instancePath: instancePath + "/family",
                                 schemaPath:
@@ -69175,7 +69568,7 @@ function validate266(
                   if (data && typeof data == "object" && !Array.isArray(data)) {
                     let missing18;
                     if (data.detail === undefined && (missing18 = "detail")) {
-                      validate266.errors = [
+                      validate270.errors = [
                         {
                           instancePath,
                           schemaPath: "#/oneOf/254/required",
@@ -69190,7 +69583,7 @@ function validate266(
                       if (data.detail !== undefined) {
                         const _errs1022 = errors;
                         if (
-                          !validate300(data.detail, {
+                          !validate304(data.detail, {
                             instancePath: instancePath + "/detail",
                             parentData: data,
                             parentDataProperty: "detail",
@@ -69200,8 +69593,8 @@ function validate266(
                         ) {
                           vErrors =
                             vErrors === null
-                              ? validate300.errors
-                              : vErrors.concat(validate300.errors);
+                              ? validate304.errors
+                              : vErrors.concat(validate304.errors);
                           errors = vErrors.length;
                         }
                         var valid515 = _errs1022 === errors;
@@ -69212,7 +69605,7 @@ function validate266(
                         if (data.family !== undefined) {
                           const _errs1023 = errors;
                           if ("Set" !== data.family) {
-                            validate266.errors = [
+                            validate270.errors = [
                               {
                                 instancePath: instancePath + "/family",
                                 schemaPath:
@@ -69235,7 +69628,7 @@ function validate266(
                   if (data && typeof data == "object" && !Array.isArray(data)) {
                     let missing19;
                     if (data.detail === undefined && (missing19 = "detail")) {
-                      validate266.errors = [
+                      validate270.errors = [
                         {
                           instancePath,
                           schemaPath: "#/oneOf/255/required",
@@ -69250,7 +69643,7 @@ function validate266(
                       if (data.detail !== undefined) {
                         const _errs1025 = errors;
                         if (
-                          !validate302(data.detail, {
+                          !validate306(data.detail, {
                             instancePath: instancePath + "/detail",
                             parentData: data,
                             parentDataProperty: "detail",
@@ -69260,8 +69653,8 @@ function validate266(
                         ) {
                           vErrors =
                             vErrors === null
-                              ? validate302.errors
-                              : vErrors.concat(validate302.errors);
+                              ? validate306.errors
+                              : vErrors.concat(validate306.errors);
                           errors = vErrors.length;
                         }
                         var valid517 = _errs1025 === errors;
@@ -69272,7 +69665,7 @@ function validate266(
                         if (data.family !== undefined) {
                           const _errs1026 = errors;
                           if ("VecContainsScalar" !== data.family) {
-                            validate266.errors = [
+                            validate270.errors = [
                               {
                                 instancePath: instancePath + "/family",
                                 schemaPath:
@@ -69295,7 +69688,7 @@ function validate266(
                   if (data && typeof data == "object" && !Array.isArray(data)) {
                     let missing20;
                     if (data.detail === undefined && (missing20 = "detail")) {
-                      validate266.errors = [
+                      validate270.errors = [
                         {
                           instancePath,
                           schemaPath: "#/oneOf/256/required",
@@ -69310,7 +69703,7 @@ function validate266(
                       if (data.detail !== undefined) {
                         const _errs1028 = errors;
                         if (
-                          !validate304(data.detail, {
+                          !validate308(data.detail, {
                             instancePath: instancePath + "/detail",
                             parentData: data,
                             parentDataProperty: "detail",
@@ -69320,8 +69713,8 @@ function validate266(
                         ) {
                           vErrors =
                             vErrors === null
-                              ? validate304.errors
-                              : vErrors.concat(validate304.errors);
+                              ? validate308.errors
+                              : vErrors.concat(validate308.errors);
                           errors = vErrors.length;
                         }
                         var valid519 = _errs1028 === errors;
@@ -69332,7 +69725,7 @@ function validate266(
                         if (data.family !== undefined) {
                           const _errs1029 = errors;
                           if ("VecGet" !== data.family) {
-                            validate266.errors = [
+                            validate270.errors = [
                               {
                                 instancePath: instancePath + "/family",
                                 schemaPath:
@@ -69355,7 +69748,7 @@ function validate266(
                   if (data && typeof data == "object" && !Array.isArray(data)) {
                     let missing21;
                     if (data.detail === undefined && (missing21 = "detail")) {
-                      validate266.errors = [
+                      validate270.errors = [
                         {
                           instancePath,
                           schemaPath: "#/oneOf/257/required",
@@ -69383,7 +69776,7 @@ function validate266(
                               (data524.elem === undefined &&
                                 (missing22 = "elem"))
                             ) {
-                              validate266.errors = [
+                              validate270.errors = [
                                 {
                                   instancePath: instancePath + "/detail",
                                   schemaPath:
@@ -69401,7 +69794,7 @@ function validate266(
                               if (data524.elem !== undefined) {
                                 const _errs1033 = errors;
                                 if (
-                                  !validate306(data524.elem, {
+                                  !validate310(data524.elem, {
                                     instancePath: instancePath + "/detail/elem",
                                     parentData: data524,
                                     parentDataProperty: "elem",
@@ -69411,8 +69804,8 @@ function validate266(
                                 ) {
                                   vErrors =
                                     vErrors === null
-                                      ? validate306.errors
-                                      : vErrors.concat(validate306.errors);
+                                      ? validate310.errors
+                                      : vErrors.concat(validate310.errors);
                                   errors = vErrors.length;
                                 }
                                 var valid522 = _errs1033 === errors;
@@ -69423,7 +69816,7 @@ function validate266(
                                 if (data524.op !== undefined) {
                                   const _errs1034 = errors;
                                   if (
-                                    !validate308(data524.op, {
+                                    !validate312(data524.op, {
                                       instancePath: instancePath + "/detail/op",
                                       parentData: data524,
                                       parentDataProperty: "op",
@@ -69433,8 +69826,8 @@ function validate266(
                                   ) {
                                     vErrors =
                                       vErrors === null
-                                        ? validate308.errors
-                                        : vErrors.concat(validate308.errors);
+                                        ? validate312.errors
+                                        : vErrors.concat(validate312.errors);
                                     errors = vErrors.length;
                                   }
                                   var valid522 = _errs1034 === errors;
@@ -69444,7 +69837,7 @@ function validate266(
                               }
                             }
                           } else {
-                            validate266.errors = [
+                            validate270.errors = [
                               {
                                 instancePath: instancePath + "/detail",
                                 schemaPath:
@@ -69465,7 +69858,7 @@ function validate266(
                         if (data.family !== undefined) {
                           const _errs1035 = errors;
                           if ("VecScalar" !== data.family) {
-                            validate266.errors = [
+                            validate270.errors = [
                               {
                                 instancePath: instancePath + "/family",
                                 schemaPath:
@@ -69488,7 +69881,7 @@ function validate266(
                   if (data && typeof data == "object" && !Array.isArray(data)) {
                     let missing23;
                     if (data.detail === undefined && (missing23 = "detail")) {
-                      validate266.errors = [
+                      validate270.errors = [
                         {
                           instancePath,
                           schemaPath: "#/oneOf/258/required",
@@ -69503,7 +69896,7 @@ function validate266(
                       if (data.detail !== undefined) {
                         const _errs1037 = errors;
                         if (
-                          !validate310(data.detail, {
+                          !validate314(data.detail, {
                             instancePath: instancePath + "/detail",
                             parentData: data,
                             parentDataProperty: "detail",
@@ -69513,8 +69906,8 @@ function validate266(
                         ) {
                           vErrors =
                             vErrors === null
-                              ? validate310.errors
-                              : vErrors.concat(validate310.errors);
+                              ? validate314.errors
+                              : vErrors.concat(validate314.errors);
                           errors = vErrors.length;
                         }
                         var valid524 = _errs1037 === errors;
@@ -69525,7 +69918,7 @@ function validate266(
                         if (data.family !== undefined) {
                           const _errs1038 = errors;
                           if ("VecSliceRange" !== data.family) {
-                            validate266.errors = [
+                            validate270.errors = [
                               {
                                 instancePath: instancePath + "/family",
                                 schemaPath:
@@ -69545,7 +69938,7 @@ function validate266(
                     }
                   }
                 } else {
-                  validate266.errors = [
+                  validate270.errors = [
                     {
                       instancePath,
                       schemaPath: "#/discriminator",
@@ -69561,7 +69954,7 @@ function validate266(
                   return false;
                 }
               } else {
-                validate266.errors = [
+                validate270.errors = [
                   {
                     instancePath,
                     schemaPath: "#/discriminator",
@@ -69577,7 +69970,7 @@ function validate266(
         }
       }
     } else {
-      validate266.errors = [
+      validate270.errors = [
         {
           instancePath,
           schemaPath: "#/type",
@@ -69589,16 +69982,16 @@ function validate266(
       return false;
     }
   }
-  validate266.errors = vErrors;
+  validate270.errors = vErrors;
   return errors === 0;
 }
-validate266.evaluated = {
+validate270.evaluated = {
   props: true,
   dynamicProps: false,
   dynamicItems: false,
 };
-const schema105 = { enum: ["hew.sandbox.bytecode.v1"], type: "string" };
-function validate313(
+const schema107 = { enum: ["hew.sandbox.bytecode.v1"], type: "string" };
+function validate317(
   data,
   {
     instancePath = "",
@@ -69610,7 +70003,7 @@ function validate313(
 ) {
   let vErrors = null;
   let errors = 0;
-  const evaluated0 = validate313.evaluated;
+  const evaluated0 = validate317.evaluated;
   if (evaluated0.dynamicProps) {
     evaluated0.props = undefined;
   }
@@ -69618,7 +70011,7 @@ function validate313(
     evaluated0.items = undefined;
   }
   if (typeof data !== "string") {
-    validate313.errors = [
+    validate317.errors = [
       {
         instancePath,
         schemaPath: "#/type",
@@ -69630,22 +70023,22 @@ function validate313(
     return false;
   }
   if (!(data === "hew.sandbox.bytecode.v1")) {
-    validate313.errors = [
+    validate317.errors = [
       {
         instancePath,
         schemaPath: "#/enum",
         keyword: "enum",
-        params: { allowedValues: schema105.enum },
+        params: { allowedValues: schema107.enum },
         message: "must be equal to one of the allowed values",
       },
     ];
     return false;
   }
-  validate313.errors = vErrors;
+  validate317.errors = vErrors;
   return errors === 0;
 }
-validate313.evaluated = { dynamicProps: false, dynamicItems: false };
-const schema106 = {
+validate317.evaluated = { dynamicProps: false, dynamicItems: false };
+const schema108 = {
   oneOf: [
     {
       properties: { kind: { const: "scalar", type: "string" } },
@@ -69745,7 +70138,7 @@ const schema106 = {
     },
   ],
 };
-const schema107 = {
+const schema109 = {
   properties: {
     name: { type: "string" },
     recipe: {
@@ -69758,7 +70151,7 @@ const schema107 = {
   required: ["name", "recipe"],
   type: "object",
 };
-function validate316(
+function validate320(
   data,
   {
     instancePath = "",
@@ -69770,7 +70163,7 @@ function validate316(
 ) {
   let vErrors = null;
   let errors = 0;
-  const evaluated0 = validate316.evaluated;
+  const evaluated0 = validate320.evaluated;
   if (evaluated0.dynamicProps) {
     evaluated0.props = undefined;
   }
@@ -69784,7 +70177,7 @@ function validate316(
         (data.name === undefined && (missing0 = "name")) ||
         (data.recipe === undefined && (missing0 = "recipe"))
       ) {
-        validate316.errors = [
+        validate320.errors = [
           {
             instancePath,
             schemaPath: "#/required",
@@ -69798,7 +70191,7 @@ function validate316(
         if (data.name !== undefined) {
           const _errs1 = errors;
           if (typeof data.name !== "string") {
-            validate316.errors = [
+            validate320.errors = [
               {
                 instancePath: instancePath + "/name",
                 schemaPath: "#/properties/name/type",
@@ -69825,7 +70218,7 @@ function validate316(
                 isFinite(data1)
               )
             ) {
-              validate316.errors = [
+              validate320.errors = [
                 {
                   instancePath: instancePath + "/recipe",
                   schemaPath: "#/properties/recipe/type",
@@ -69839,7 +70232,7 @@ function validate316(
             if (errors === _errs3) {
               if (typeof data1 == "number" && isFinite(data1)) {
                 if (data1 > 4294967295 || isNaN(data1)) {
-                  validate316.errors = [
+                  validate320.errors = [
                     {
                       instancePath: instancePath + "/recipe",
                       schemaPath: "#/properties/recipe/maximum",
@@ -69851,7 +70244,7 @@ function validate316(
                   return false;
                 } else {
                   if (data1 < 0 || isNaN(data1)) {
-                    validate316.errors = [
+                    validate320.errors = [
                       {
                         instancePath: instancePath + "/recipe",
                         schemaPath: "#/properties/recipe/minimum",
@@ -69872,7 +70265,7 @@ function validate316(
         }
       }
     } else {
-      validate316.errors = [
+      validate320.errors = [
         {
           instancePath,
           schemaPath: "#/type",
@@ -69884,15 +70277,15 @@ function validate316(
       return false;
     }
   }
-  validate316.errors = vErrors;
+  validate320.errors = vErrors;
   return errors === 0;
 }
-validate316.evaluated = {
+validate320.evaluated = {
   props: { name: true, recipe: true },
   dynamicProps: false,
   dynamicItems: false,
 };
-const schema108 = {
+const schema110 = {
   properties: {
     fields: { items: { $ref: "#/$defs/StructuralField" }, type: "array" },
     kind: { $ref: "#/$defs/StructuralCaseKind" },
@@ -69901,8 +70294,8 @@ const schema108 = {
   required: ["name", "kind", "fields"],
   type: "object",
 };
-const schema109 = { enum: ["unit", "tuple", "struct"], type: "string" };
-function validate320(
+const schema111 = { enum: ["unit", "tuple", "struct"], type: "string" };
+function validate324(
   data,
   {
     instancePath = "",
@@ -69914,7 +70307,7 @@ function validate320(
 ) {
   let vErrors = null;
   let errors = 0;
-  const evaluated0 = validate320.evaluated;
+  const evaluated0 = validate324.evaluated;
   if (evaluated0.dynamicProps) {
     evaluated0.props = undefined;
   }
@@ -69922,7 +70315,7 @@ function validate320(
     evaluated0.items = undefined;
   }
   if (typeof data !== "string") {
-    validate320.errors = [
+    validate324.errors = [
       {
         instancePath,
         schemaPath: "#/type",
@@ -69934,22 +70327,22 @@ function validate320(
     return false;
   }
   if (!(data === "unit" || data === "tuple" || data === "struct")) {
-    validate320.errors = [
+    validate324.errors = [
       {
         instancePath,
         schemaPath: "#/enum",
         keyword: "enum",
-        params: { allowedValues: schema109.enum },
+        params: { allowedValues: schema111.enum },
         message: "must be equal to one of the allowed values",
       },
     ];
     return false;
   }
-  validate320.errors = vErrors;
+  validate324.errors = vErrors;
   return errors === 0;
 }
-validate320.evaluated = { dynamicProps: false, dynamicItems: false };
-function validate318(
+validate324.evaluated = { dynamicProps: false, dynamicItems: false };
+function validate322(
   data,
   {
     instancePath = "",
@@ -69961,7 +70354,7 @@ function validate318(
 ) {
   let vErrors = null;
   let errors = 0;
-  const evaluated0 = validate318.evaluated;
+  const evaluated0 = validate322.evaluated;
   if (evaluated0.dynamicProps) {
     evaluated0.props = undefined;
   }
@@ -69976,7 +70369,7 @@ function validate318(
         (data.kind === undefined && (missing0 = "kind")) ||
         (data.fields === undefined && (missing0 = "fields"))
       ) {
-        validate318.errors = [
+        validate322.errors = [
           {
             instancePath,
             schemaPath: "#/required",
@@ -69997,7 +70390,7 @@ function validate318(
               for (let i0 = 0; i0 < len0; i0++) {
                 const _errs3 = errors;
                 if (
-                  !validate316(data0[i0], {
+                  !validate320(data0[i0], {
                     instancePath: instancePath + "/fields/" + i0,
                     parentData: data0,
                     parentDataProperty: i0,
@@ -70007,8 +70400,8 @@ function validate318(
                 ) {
                   vErrors =
                     vErrors === null
-                      ? validate316.errors
-                      : vErrors.concat(validate316.errors);
+                      ? validate320.errors
+                      : vErrors.concat(validate320.errors);
                   errors = vErrors.length;
                 }
                 var valid1 = _errs3 === errors;
@@ -70017,7 +70410,7 @@ function validate318(
                 }
               }
             } else {
-              validate318.errors = [
+              validate322.errors = [
                 {
                   instancePath: instancePath + "/fields",
                   schemaPath: "#/properties/fields/type",
@@ -70037,7 +70430,7 @@ function validate318(
           if (data.kind !== undefined) {
             const _errs4 = errors;
             if (
-              !validate320(data.kind, {
+              !validate324(data.kind, {
                 instancePath: instancePath + "/kind",
                 parentData: data,
                 parentDataProperty: "kind",
@@ -70047,8 +70440,8 @@ function validate318(
             ) {
               vErrors =
                 vErrors === null
-                  ? validate320.errors
-                  : vErrors.concat(validate320.errors);
+                  ? validate324.errors
+                  : vErrors.concat(validate324.errors);
               errors = vErrors.length;
             }
             var valid0 = _errs4 === errors;
@@ -70059,7 +70452,7 @@ function validate318(
             if (data.name !== undefined) {
               const _errs5 = errors;
               if (typeof data.name !== "string") {
-                validate318.errors = [
+                validate322.errors = [
                   {
                     instancePath: instancePath + "/name",
                     schemaPath: "#/properties/name/type",
@@ -70078,7 +70471,7 @@ function validate318(
         }
       }
     } else {
-      validate318.errors = [
+      validate322.errors = [
         {
           instancePath,
           schemaPath: "#/type",
@@ -70090,15 +70483,15 @@ function validate318(
       return false;
     }
   }
-  validate318.errors = vErrors;
+  validate322.errors = vErrors;
   return errors === 0;
 }
-validate318.evaluated = {
+validate322.evaluated = {
   props: { fields: true, kind: true, name: true },
   dynamicProps: false,
   dynamicItems: false,
 };
-function validate315(
+function validate319(
   data,
   {
     instancePath = "",
@@ -70110,7 +70503,7 @@ function validate315(
 ) {
   let vErrors = null;
   let errors = 0;
-  const evaluated0 = validate315.evaluated;
+  const evaluated0 = validate319.evaluated;
   if (evaluated0.dynamicProps) {
     evaluated0.props = undefined;
   }
@@ -71153,7 +71546,7 @@ function validate315(
                           for (let i3 = 0; i3 < len3; i3++) {
                             const _errs49 = errors;
                             if (
-                              !validate316(data15[i3], {
+                              !validate320(data15[i3], {
                                 instancePath: instancePath + "/fields/" + i3,
                                 parentData: data15,
                                 parentDataProperty: i3,
@@ -71163,8 +71556,8 @@ function validate315(
                             ) {
                               vErrors =
                                 vErrors === null
-                                  ? validate316.errors
-                                  : vErrors.concat(validate316.errors);
+                                  ? validate320.errors
+                                  : vErrors.concat(validate320.errors);
                               errors = vErrors.length;
                             }
                             var valid12 = _errs49 === errors;
@@ -71319,7 +71712,7 @@ function validate315(
                             for (let i4 = 0; i4 < len4; i4++) {
                               const _errs58 = errors;
                               if (
-                                !validate318(data19[i4], {
+                                !validate322(data19[i4], {
                                   instancePath: instancePath + "/cases/" + i4,
                                   parentData: data19,
                                   parentDataProperty: i4,
@@ -71329,8 +71722,8 @@ function validate315(
                               ) {
                                 vErrors =
                                   vErrors === null
-                                    ? validate318.errors
-                                    : vErrors.concat(validate318.errors);
+                                    ? validate322.errors
+                                    : vErrors.concat(validate322.errors);
                                 errors = vErrors.length;
                               }
                               var valid14 = _errs58 === errors;
@@ -71450,7 +71843,7 @@ function validate315(
       vErrors.push(err55);
     }
     errors++;
-    validate315.errors = vErrors;
+    validate319.errors = vErrors;
     return false;
   } else {
     errors = _errs0;
@@ -71462,12 +71855,12 @@ function validate315(
       }
     }
   }
-  validate315.errors = vErrors;
+  validate319.errors = vErrors;
   evaluated0.props = props0;
   return errors === 0;
 }
-validate315.evaluated = { dynamicProps: true, dynamicItems: false };
-const schema110 = {
+validate319.evaluated = { dynamicProps: true, dynamicItems: false };
+const schema112 = {
   description:
     "One demanded supervisor: its restart policy and the children it starts.",
   properties: {
@@ -71495,7 +71888,7 @@ const schema110 = {
   required: ["id", "strategy", "max_restarts", "window_secs", "children"],
   type: "object",
 };
-const schema111 = {
+const schema113 = {
   properties: {
     dependencies: {
       items: { format: "uint", minimum: 0, type: "integer" },
@@ -71526,11 +71919,11 @@ const schema111 = {
   required: ["name", "role", "restart", "spawn"],
   type: "object",
 };
-const schema112 = {
+const schema114 = {
   enum: ["permanent", "transient", "temporary"],
   type: "string",
 };
-function validate326(
+function validate330(
   data,
   {
     instancePath = "",
@@ -71542,7 +71935,7 @@ function validate326(
 ) {
   let vErrors = null;
   let errors = 0;
-  const evaluated0 = validate326.evaluated;
+  const evaluated0 = validate330.evaluated;
   if (evaluated0.dynamicProps) {
     evaluated0.props = undefined;
   }
@@ -71550,7 +71943,7 @@ function validate326(
     evaluated0.items = undefined;
   }
   if (typeof data !== "string") {
-    validate326.errors = [
+    validate330.errors = [
       {
         instancePath,
         schemaPath: "#/type",
@@ -71562,22 +71955,22 @@ function validate326(
     return false;
   }
   if (!(data === "permanent" || data === "transient" || data === "temporary")) {
-    validate326.errors = [
+    validate330.errors = [
       {
         instancePath,
         schemaPath: "#/enum",
         keyword: "enum",
-        params: { allowedValues: schema112.enum },
+        params: { allowedValues: schema114.enum },
         message: "must be equal to one of the allowed values",
       },
     ];
     return false;
   }
-  validate326.errors = vErrors;
+  validate330.errors = vErrors;
   return errors === 0;
 }
-validate326.evaluated = { dynamicProps: false, dynamicItems: false };
-const schema113 = {
+validate330.evaluated = { dynamicProps: false, dynamicItems: false };
+const schema115 = {
   oneOf: [
     {
       additionalProperties: false,
@@ -71607,7 +72000,7 @@ const schema113 = {
     },
   ],
 };
-function validate328(
+function validate332(
   data,
   {
     instancePath = "",
@@ -71619,7 +72012,7 @@ function validate328(
 ) {
   let vErrors = null;
   let errors = 0;
-  const evaluated0 = validate328.evaluated;
+  const evaluated0 = validate332.evaluated;
   if (evaluated0.dynamicProps) {
     evaluated0.props = undefined;
   }
@@ -71898,7 +72291,7 @@ function validate328(
       vErrors.push(err12);
     }
     errors++;
-    validate328.errors = vErrors;
+    validate332.errors = vErrors;
     return false;
   } else {
     errors = _errs0;
@@ -71910,12 +72303,12 @@ function validate328(
       }
     }
   }
-  validate328.errors = vErrors;
+  validate332.errors = vErrors;
   evaluated0.props = props0;
   return errors === 0;
 }
-validate328.evaluated = { dynamicProps: true, dynamicItems: false };
-function validate325(
+validate332.evaluated = { dynamicProps: true, dynamicItems: false };
+function validate329(
   data,
   {
     instancePath = "",
@@ -71927,7 +72320,7 @@ function validate325(
 ) {
   let vErrors = null;
   let errors = 0;
-  const evaluated0 = validate325.evaluated;
+  const evaluated0 = validate329.evaluated;
   if (evaluated0.dynamicProps) {
     evaluated0.props = undefined;
   }
@@ -71943,7 +72336,7 @@ function validate325(
         (data.restart === undefined && (missing0 = "restart")) ||
         (data.spawn === undefined && (missing0 = "spawn"))
       ) {
-        validate325.errors = [
+        validate329.errors = [
           {
             instancePath,
             schemaPath: "#/required",
@@ -71972,7 +72365,7 @@ function validate325(
                     isFinite(data1)
                   )
                 ) {
-                  validate325.errors = [
+                  validate329.errors = [
                     {
                       instancePath: instancePath + "/dependencies/" + i0,
                       schemaPath: "#/properties/dependencies/items/type",
@@ -71986,7 +72379,7 @@ function validate325(
                 if (errors === _errs3) {
                   if (typeof data1 == "number" && isFinite(data1)) {
                     if (data1 < 0 || isNaN(data1)) {
-                      validate325.errors = [
+                      validate329.errors = [
                         {
                           instancePath: instancePath + "/dependencies/" + i0,
                           schemaPath: "#/properties/dependencies/items/minimum",
@@ -72005,7 +72398,7 @@ function validate325(
                 }
               }
             } else {
-              validate325.errors = [
+              validate329.errors = [
                 {
                   instancePath: instancePath + "/dependencies",
                   schemaPath: "#/properties/dependencies/type",
@@ -72025,7 +72418,7 @@ function validate325(
           if (data.is_pool !== undefined) {
             const _errs5 = errors;
             if (typeof data.is_pool !== "boolean") {
-              validate325.errors = [
+              validate329.errors = [
                 {
                   instancePath: instancePath + "/is_pool",
                   schemaPath: "#/properties/is_pool/type",
@@ -72044,7 +72437,7 @@ function validate325(
             if (data.name !== undefined) {
               const _errs7 = errors;
               if (typeof data.name !== "string") {
-                validate325.errors = [
+                validate329.errors = [
                   {
                     instancePath: instancePath + "/name",
                     schemaPath: "#/properties/name/type",
@@ -72063,7 +72456,7 @@ function validate325(
               if (data.restart !== undefined) {
                 const _errs9 = errors;
                 if (
-                  !validate326(data.restart, {
+                  !validate330(data.restart, {
                     instancePath: instancePath + "/restart",
                     parentData: data,
                     parentDataProperty: "restart",
@@ -72073,8 +72466,8 @@ function validate325(
                 ) {
                   vErrors =
                     vErrors === null
-                      ? validate326.errors
-                      : vErrors.concat(validate326.errors);
+                      ? validate330.errors
+                      : vErrors.concat(validate330.errors);
                   errors = vErrors.length;
                 }
                 var valid0 = _errs9 === errors;
@@ -72085,7 +72478,7 @@ function validate325(
                 if (data.role !== undefined) {
                   const _errs10 = errors;
                   if (
-                    !validate328(data.role, {
+                    !validate332(data.role, {
                       instancePath: instancePath + "/role",
                       parentData: data,
                       parentDataProperty: "role",
@@ -72095,8 +72488,8 @@ function validate325(
                   ) {
                     vErrors =
                       vErrors === null
-                        ? validate328.errors
-                        : vErrors.concat(validate328.errors);
+                        ? validate332.errors
+                        : vErrors.concat(validate332.errors);
                     errors = vErrors.length;
                   }
                   var valid0 = _errs10 === errors;
@@ -72115,7 +72508,7 @@ function validate325(
                         isFinite(data6)
                       )
                     ) {
-                      validate325.errors = [
+                      validate329.errors = [
                         {
                           instancePath: instancePath + "/spawn",
                           schemaPath: "#/properties/spawn/type",
@@ -72129,7 +72522,7 @@ function validate325(
                     if (errors === _errs11) {
                       if (typeof data6 == "number" && isFinite(data6)) {
                         if (data6 > 4294967295 || isNaN(data6)) {
-                          validate325.errors = [
+                          validate329.errors = [
                             {
                               instancePath: instancePath + "/spawn",
                               schemaPath: "#/properties/spawn/maximum",
@@ -72141,7 +72534,7 @@ function validate325(
                           return false;
                         } else {
                           if (data6 < 0 || isNaN(data6)) {
-                            validate325.errors = [
+                            validate329.errors = [
                               {
                                 instancePath: instancePath + "/spawn",
                                 schemaPath: "#/properties/spawn/minimum",
@@ -72172,13 +72565,13 @@ function validate325(
                         ) &&
                         data7 !== null
                       ) {
-                        validate325.errors = [
+                        validate329.errors = [
                           {
                             instancePath: instancePath + "/stop_config",
                             schemaPath: "#/properties/stop_config/type",
                             keyword: "type",
                             params: {
-                              type: schema111.properties.stop_config.type,
+                              type: schema113.properties.stop_config.type,
                             },
                             message: "must be integer,null",
                           },
@@ -72188,7 +72581,7 @@ function validate325(
                       if (errors === _errs13) {
                         if (typeof data7 == "number" && isFinite(data7)) {
                           if (data7 < 0 || isNaN(data7)) {
-                            validate325.errors = [
+                            validate329.errors = [
                               {
                                 instancePath: instancePath + "/stop_config",
                                 schemaPath: "#/properties/stop_config/minimum",
@@ -72218,13 +72611,13 @@ function validate325(
                           ) &&
                           data8 !== null
                         ) {
-                          validate325.errors = [
+                          validate329.errors = [
                             {
                               instancePath: instancePath + "/stop_ns",
                               schemaPath: "#/properties/stop_ns/type",
                               keyword: "type",
                               params: {
-                                type: schema111.properties.stop_ns.type,
+                                type: schema113.properties.stop_ns.type,
                               },
                               message: "must be integer,null",
                             },
@@ -72234,7 +72627,7 @@ function validate325(
                         if (errors === _errs15) {
                           if (typeof data8 == "number" && isFinite(data8)) {
                             if (data8 > 9223372036854776000 || isNaN(data8)) {
-                              validate325.errors = [
+                              validate329.errors = [
                                 {
                                   instancePath: instancePath + "/stop_ns",
                                   schemaPath: "#/properties/stop_ns/maximum",
@@ -72249,7 +72642,7 @@ function validate325(
                               return false;
                             } else {
                               if (data8 < 0 || isNaN(data8)) {
-                                validate325.errors = [
+                                validate329.errors = [
                                   {
                                     instancePath: instancePath + "/stop_ns",
                                     schemaPath: "#/properties/stop_ns/minimum",
@@ -72276,7 +72669,7 @@ function validate325(
         }
       }
     } else {
-      validate325.errors = [
+      validate329.errors = [
         {
           instancePath,
           schemaPath: "#/type",
@@ -72288,10 +72681,10 @@ function validate325(
       return false;
     }
   }
-  validate325.errors = vErrors;
+  validate329.errors = vErrors;
   return errors === 0;
 }
-validate325.evaluated = {
+validate329.evaluated = {
   props: {
     dependencies: true,
     is_pool: true,
@@ -72305,11 +72698,11 @@ validate325.evaluated = {
   dynamicProps: false,
   dynamicItems: false,
 };
-const schema114 = {
+const schema116 = {
   enum: ["one_for_one", "one_for_all", "rest_for_one", "simple_one_for_one"],
   type: "string",
 };
-function validate331(
+function validate335(
   data,
   {
     instancePath = "",
@@ -72321,7 +72714,7 @@ function validate331(
 ) {
   let vErrors = null;
   let errors = 0;
-  const evaluated0 = validate331.evaluated;
+  const evaluated0 = validate335.evaluated;
   if (evaluated0.dynamicProps) {
     evaluated0.props = undefined;
   }
@@ -72329,7 +72722,7 @@ function validate331(
     evaluated0.items = undefined;
   }
   if (typeof data !== "string") {
-    validate331.errors = [
+    validate335.errors = [
       {
         instancePath,
         schemaPath: "#/type",
@@ -72348,22 +72741,22 @@ function validate331(
       data === "simple_one_for_one"
     )
   ) {
-    validate331.errors = [
+    validate335.errors = [
       {
         instancePath,
         schemaPath: "#/enum",
         keyword: "enum",
-        params: { allowedValues: schema114.enum },
+        params: { allowedValues: schema116.enum },
         message: "must be equal to one of the allowed values",
       },
     ];
     return false;
   }
-  validate331.errors = vErrors;
+  validate335.errors = vErrors;
   return errors === 0;
 }
-validate331.evaluated = { dynamicProps: false, dynamicItems: false };
-function validate324(
+validate335.evaluated = { dynamicProps: false, dynamicItems: false };
+function validate328(
   data,
   {
     instancePath = "",
@@ -72375,7 +72768,7 @@ function validate324(
 ) {
   let vErrors = null;
   let errors = 0;
-  const evaluated0 = validate324.evaluated;
+  const evaluated0 = validate328.evaluated;
   if (evaluated0.dynamicProps) {
     evaluated0.props = undefined;
   }
@@ -72392,7 +72785,7 @@ function validate324(
         (data.window_secs === undefined && (missing0 = "window_secs")) ||
         (data.children === undefined && (missing0 = "children"))
       ) {
-        validate324.errors = [
+        validate328.errors = [
           {
             instancePath,
             schemaPath: "#/required",
@@ -72406,7 +72799,7 @@ function validate324(
         if (data.backoff !== undefined) {
           const _errs1 = errors;
           if (typeof data.backoff !== "boolean") {
-            validate324.errors = [
+            validate328.errors = [
               {
                 instancePath: instancePath + "/backoff",
                 schemaPath: "#/properties/backoff/type",
@@ -72432,7 +72825,7 @@ function validate324(
                 for (let i0 = 0; i0 < len0; i0++) {
                   const _errs5 = errors;
                   if (
-                    !validate325(data1[i0], {
+                    !validate329(data1[i0], {
                       instancePath: instancePath + "/children/" + i0,
                       parentData: data1,
                       parentDataProperty: i0,
@@ -72442,8 +72835,8 @@ function validate324(
                   ) {
                     vErrors =
                       vErrors === null
-                        ? validate325.errors
-                        : vErrors.concat(validate325.errors);
+                        ? validate329.errors
+                        : vErrors.concat(validate329.errors);
                     errors = vErrors.length;
                   }
                   var valid1 = _errs5 === errors;
@@ -72452,7 +72845,7 @@ function validate324(
                   }
                 }
               } else {
-                validate324.errors = [
+                validate328.errors = [
                   {
                     instancePath: instancePath + "/children",
                     schemaPath: "#/properties/children/type",
@@ -72480,7 +72873,7 @@ function validate324(
                   isFinite(data3)
                 )
               ) {
-                validate324.errors = [
+                validate328.errors = [
                   {
                     instancePath: instancePath + "/id",
                     schemaPath: "#/properties/id/type",
@@ -72494,7 +72887,7 @@ function validate324(
               if (errors === _errs6) {
                 if (typeof data3 == "number" && isFinite(data3)) {
                   if (data3 > 4294967295 || isNaN(data3)) {
-                    validate324.errors = [
+                    validate328.errors = [
                       {
                         instancePath: instancePath + "/id",
                         schemaPath: "#/properties/id/maximum",
@@ -72506,7 +72899,7 @@ function validate324(
                     return false;
                   } else {
                     if (data3 < 0 || isNaN(data3)) {
-                      validate324.errors = [
+                      validate328.errors = [
                         {
                           instancePath: instancePath + "/id",
                           schemaPath: "#/properties/id/minimum",
@@ -72536,7 +72929,7 @@ function validate324(
                     isFinite(data4)
                   )
                 ) {
-                  validate324.errors = [
+                  validate328.errors = [
                     {
                       instancePath: instancePath + "/max_restarts",
                       schemaPath: "#/properties/max_restarts/type",
@@ -72550,7 +72943,7 @@ function validate324(
                 if (errors === _errs8) {
                   if (typeof data4 == "number" && isFinite(data4)) {
                     if (data4 > 4294967295 || isNaN(data4)) {
-                      validate324.errors = [
+                      validate328.errors = [
                         {
                           instancePath: instancePath + "/max_restarts",
                           schemaPath: "#/properties/max_restarts/maximum",
@@ -72562,7 +72955,7 @@ function validate324(
                       return false;
                     } else {
                       if (data4 < 0 || isNaN(data4)) {
-                        validate324.errors = [
+                        validate328.errors = [
                           {
                             instancePath: instancePath + "/max_restarts",
                             schemaPath: "#/properties/max_restarts/minimum",
@@ -72599,7 +72992,7 @@ function validate324(
                             isFinite(data6)
                           )
                         ) {
-                          validate324.errors = [
+                          validate328.errors = [
                             {
                               instancePath:
                                 instancePath + "/startup_order/" + i1,
@@ -72615,7 +73008,7 @@ function validate324(
                         if (errors === _errs12) {
                           if (typeof data6 == "number" && isFinite(data6)) {
                             if (data6 < 0 || isNaN(data6)) {
-                              validate324.errors = [
+                              validate328.errors = [
                                 {
                                   instancePath:
                                     instancePath + "/startup_order/" + i1,
@@ -72636,7 +73029,7 @@ function validate324(
                         }
                       }
                     } else {
-                      validate324.errors = [
+                      validate328.errors = [
                         {
                           instancePath: instancePath + "/startup_order",
                           schemaPath: "#/properties/startup_order/type",
@@ -72656,7 +73049,7 @@ function validate324(
                   if (data.strategy !== undefined) {
                     const _errs14 = errors;
                     if (
-                      !validate331(data.strategy, {
+                      !validate335(data.strategy, {
                         instancePath: instancePath + "/strategy",
                         parentData: data,
                         parentDataProperty: "strategy",
@@ -72666,8 +73059,8 @@ function validate324(
                     ) {
                       vErrors =
                         vErrors === null
-                          ? validate331.errors
-                          : vErrors.concat(validate331.errors);
+                          ? validate335.errors
+                          : vErrors.concat(validate335.errors);
                       errors = vErrors.length;
                     }
                     var valid0 = _errs14 === errors;
@@ -72686,7 +73079,7 @@ function validate324(
                           isFinite(data8)
                         )
                       ) {
-                        validate324.errors = [
+                        validate328.errors = [
                           {
                             instancePath: instancePath + "/window_secs",
                             schemaPath: "#/properties/window_secs/type",
@@ -72700,7 +73093,7 @@ function validate324(
                       if (errors === _errs15) {
                         if (typeof data8 == "number" && isFinite(data8)) {
                           if (data8 > 4294967295 || isNaN(data8)) {
-                            validate324.errors = [
+                            validate328.errors = [
                               {
                                 instancePath: instancePath + "/window_secs",
                                 schemaPath: "#/properties/window_secs/maximum",
@@ -72712,7 +73105,7 @@ function validate324(
                             return false;
                           } else {
                             if (data8 < 0 || isNaN(data8)) {
-                              validate324.errors = [
+                              validate328.errors = [
                                 {
                                   instancePath: instancePath + "/window_secs",
                                   schemaPath:
@@ -72739,7 +73132,7 @@ function validate324(
         }
       }
     } else {
-      validate324.errors = [
+      validate328.errors = [
         {
           instancePath,
           schemaPath: "#/type",
@@ -72751,10 +73144,10 @@ function validate324(
       return false;
     }
   }
-  validate324.errors = vErrors;
+  validate328.errors = vErrors;
   return errors === 0;
 }
-validate324.evaluated = {
+validate328.evaluated = {
   props: {
     backoff: true,
     children: true,
@@ -72767,7 +73160,7 @@ validate324.evaluated = {
   dynamicProps: false,
   dynamicItems: false,
 };
-const schema115 = {
+const schema117 = {
   enum: [
     "Sleep",
     "SleepUntil",
@@ -72794,7 +73187,7 @@ const schema115 = {
   ],
   type: "string",
 };
-function validate334(
+function validate338(
   data,
   {
     instancePath = "",
@@ -72806,7 +73199,7 @@ function validate334(
 ) {
   let vErrors = null;
   let errors = 0;
-  const evaluated0 = validate334.evaluated;
+  const evaluated0 = validate338.evaluated;
   if (evaluated0.dynamicProps) {
     evaluated0.props = undefined;
   }
@@ -72814,7 +73207,7 @@ function validate334(
     evaluated0.items = undefined;
   }
   if (typeof data !== "string") {
-    validate334.errors = [
+    validate338.errors = [
       {
         instancePath,
         schemaPath: "#/type",
@@ -72851,22 +73244,22 @@ function validate334(
       data === "Select"
     )
   ) {
-    validate334.errors = [
+    validate338.errors = [
       {
         instancePath,
         schemaPath: "#/enum",
         keyword: "enum",
-        params: { allowedValues: schema115.enum },
+        params: { allowedValues: schema117.enum },
         message: "must be equal to one of the allowed values",
       },
     ];
     return false;
   }
-  validate334.errors = vErrors;
+  validate338.errors = vErrors;
   return errors === 0;
 }
-validate334.evaluated = { dynamicProps: false, dynamicItems: false };
-const schema116 = {
+validate338.evaluated = { dynamicProps: false, dynamicItems: false };
+const schema118 = {
   description:
     "The checker's selection for one `(type, capability)` pair.\n\n`callable` names a user implementation; its absence is the derived\nstructural operation, which the VM performs over its own value\nrepresentation.",
   properties: {
@@ -72895,11 +73288,11 @@ const schema116 = {
   required: ["id", "capability", "ty"],
   type: "object",
 };
-const schema117 = {
+const schema119 = {
   enum: ["Eq", "Hash", "Less", "LessEqual", "Greater", "GreaterEqual"],
   type: "string",
 };
-function validate337(
+function validate341(
   data,
   {
     instancePath = "",
@@ -72911,7 +73304,7 @@ function validate337(
 ) {
   let vErrors = null;
   let errors = 0;
-  const evaluated0 = validate337.evaluated;
+  const evaluated0 = validate341.evaluated;
   if (evaluated0.dynamicProps) {
     evaluated0.props = undefined;
   }
@@ -72919,7 +73312,7 @@ function validate337(
     evaluated0.items = undefined;
   }
   if (typeof data !== "string") {
-    validate337.errors = [
+    validate341.errors = [
       {
         instancePath,
         schemaPath: "#/type",
@@ -72940,22 +73333,22 @@ function validate337(
       data === "GreaterEqual"
     )
   ) {
-    validate337.errors = [
+    validate341.errors = [
       {
         instancePath,
         schemaPath: "#/enum",
         keyword: "enum",
-        params: { allowedValues: schema117.enum },
+        params: { allowedValues: schema119.enum },
         message: "must be equal to one of the allowed values",
       },
     ];
     return false;
   }
-  validate337.errors = vErrors;
+  validate341.errors = vErrors;
   return errors === 0;
 }
-validate337.evaluated = { dynamicProps: false, dynamicItems: false };
-const schema118 = {
+validate341.evaluated = { dynamicProps: false, dynamicItems: false };
+const schema120 = {
   properties: {
     ordering: {
       anyOf: [{ $ref: "#/$defs/ValueOrderingCapabilities" }, { type: "null" }],
@@ -72970,7 +73363,7 @@ const schema118 = {
   required: ["selected"],
   type: "object",
 };
-const schema119 = {
+const schema121 = {
   properties: {
     greater: {
       format: "uint32",
@@ -73000,7 +73393,7 @@ const schema119 = {
   required: ["less", "less_equal", "greater", "greater_equal"],
   type: "object",
 };
-function validate340(
+function validate344(
   data,
   {
     instancePath = "",
@@ -73012,7 +73405,7 @@ function validate340(
 ) {
   let vErrors = null;
   let errors = 0;
-  const evaluated0 = validate340.evaluated;
+  const evaluated0 = validate344.evaluated;
   if (evaluated0.dynamicProps) {
     evaluated0.props = undefined;
   }
@@ -73028,7 +73421,7 @@ function validate340(
         (data.greater === undefined && (missing0 = "greater")) ||
         (data.greater_equal === undefined && (missing0 = "greater_equal"))
       ) {
-        validate340.errors = [
+        validate344.errors = [
           {
             instancePath,
             schemaPath: "#/required",
@@ -73050,7 +73443,7 @@ function validate340(
               isFinite(data0)
             )
           ) {
-            validate340.errors = [
+            validate344.errors = [
               {
                 instancePath: instancePath + "/greater",
                 schemaPath: "#/properties/greater/type",
@@ -73064,7 +73457,7 @@ function validate340(
           if (errors === _errs1) {
             if (typeof data0 == "number" && isFinite(data0)) {
               if (data0 > 4294967295 || isNaN(data0)) {
-                validate340.errors = [
+                validate344.errors = [
                   {
                     instancePath: instancePath + "/greater",
                     schemaPath: "#/properties/greater/maximum",
@@ -73076,7 +73469,7 @@ function validate340(
                 return false;
               } else {
                 if (data0 < 0 || isNaN(data0)) {
-                  validate340.errors = [
+                  validate344.errors = [
                     {
                       instancePath: instancePath + "/greater",
                       schemaPath: "#/properties/greater/minimum",
@@ -73106,7 +73499,7 @@ function validate340(
                 isFinite(data1)
               )
             ) {
-              validate340.errors = [
+              validate344.errors = [
                 {
                   instancePath: instancePath + "/greater_equal",
                   schemaPath: "#/properties/greater_equal/type",
@@ -73120,7 +73513,7 @@ function validate340(
             if (errors === _errs3) {
               if (typeof data1 == "number" && isFinite(data1)) {
                 if (data1 > 4294967295 || isNaN(data1)) {
-                  validate340.errors = [
+                  validate344.errors = [
                     {
                       instancePath: instancePath + "/greater_equal",
                       schemaPath: "#/properties/greater_equal/maximum",
@@ -73132,7 +73525,7 @@ function validate340(
                   return false;
                 } else {
                   if (data1 < 0 || isNaN(data1)) {
-                    validate340.errors = [
+                    validate344.errors = [
                       {
                         instancePath: instancePath + "/greater_equal",
                         schemaPath: "#/properties/greater_equal/minimum",
@@ -73162,7 +73555,7 @@ function validate340(
                   isFinite(data2)
                 )
               ) {
-                validate340.errors = [
+                validate344.errors = [
                   {
                     instancePath: instancePath + "/less",
                     schemaPath: "#/properties/less/type",
@@ -73176,7 +73569,7 @@ function validate340(
               if (errors === _errs5) {
                 if (typeof data2 == "number" && isFinite(data2)) {
                   if (data2 > 4294967295 || isNaN(data2)) {
-                    validate340.errors = [
+                    validate344.errors = [
                       {
                         instancePath: instancePath + "/less",
                         schemaPath: "#/properties/less/maximum",
@@ -73188,7 +73581,7 @@ function validate340(
                     return false;
                   } else {
                     if (data2 < 0 || isNaN(data2)) {
-                      validate340.errors = [
+                      validate344.errors = [
                         {
                           instancePath: instancePath + "/less",
                           schemaPath: "#/properties/less/minimum",
@@ -73218,7 +73611,7 @@ function validate340(
                     isFinite(data3)
                   )
                 ) {
-                  validate340.errors = [
+                  validate344.errors = [
                     {
                       instancePath: instancePath + "/less_equal",
                       schemaPath: "#/properties/less_equal/type",
@@ -73232,7 +73625,7 @@ function validate340(
                 if (errors === _errs7) {
                   if (typeof data3 == "number" && isFinite(data3)) {
                     if (data3 > 4294967295 || isNaN(data3)) {
-                      validate340.errors = [
+                      validate344.errors = [
                         {
                           instancePath: instancePath + "/less_equal",
                           schemaPath: "#/properties/less_equal/maximum",
@@ -73244,7 +73637,7 @@ function validate340(
                       return false;
                     } else {
                       if (data3 < 0 || isNaN(data3)) {
-                        validate340.errors = [
+                        validate344.errors = [
                           {
                             instancePath: instancePath + "/less_equal",
                             schemaPath: "#/properties/less_equal/minimum",
@@ -73267,7 +73660,7 @@ function validate340(
         }
       }
     } else {
-      validate340.errors = [
+      validate344.errors = [
         {
           instancePath,
           schemaPath: "#/type",
@@ -73279,15 +73672,15 @@ function validate340(
       return false;
     }
   }
-  validate340.errors = vErrors;
+  validate344.errors = vErrors;
   return errors === 0;
 }
-validate340.evaluated = {
+validate344.evaluated = {
   props: { greater: true, greater_equal: true, less: true, less_equal: true },
   dynamicProps: false,
   dynamicItems: false,
 };
-function validate339(
+function validate343(
   data,
   {
     instancePath = "",
@@ -73299,7 +73692,7 @@ function validate339(
 ) {
   let vErrors = null;
   let errors = 0;
-  const evaluated0 = validate339.evaluated;
+  const evaluated0 = validate343.evaluated;
   if (evaluated0.dynamicProps) {
     evaluated0.props = undefined;
   }
@@ -73310,7 +73703,7 @@ function validate339(
     if (data && typeof data == "object" && !Array.isArray(data)) {
       let missing0;
       if (data.selected === undefined && (missing0 = "selected")) {
-        validate339.errors = [
+        validate343.errors = [
           {
             instancePath,
             schemaPath: "#/required",
@@ -73328,7 +73721,7 @@ function validate339(
           let valid1 = false;
           const _errs3 = errors;
           if (
-            !validate340(data0, {
+            !validate344(data0, {
               instancePath: instancePath + "/ordering",
               parentData: data,
               parentDataProperty: "ordering",
@@ -73338,8 +73731,8 @@ function validate339(
           ) {
             vErrors =
               vErrors === null
-                ? validate340.errors
-                : vErrors.concat(validate340.errors);
+                ? validate344.errors
+                : vErrors.concat(validate344.errors);
             errors = vErrors.length;
           }
           var _valid0 = _errs3 === errors;
@@ -73383,7 +73776,7 @@ function validate339(
               vErrors.push(err1);
             }
             errors++;
-            validate339.errors = vErrors;
+            validate343.errors = vErrors;
             return false;
           } else {
             errors = _errs2;
@@ -73411,7 +73804,7 @@ function validate339(
                 isFinite(data1)
               )
             ) {
-              validate339.errors = [
+              validate343.errors = [
                 {
                   instancePath: instancePath + "/selected",
                   schemaPath: "#/properties/selected/type",
@@ -73425,7 +73818,7 @@ function validate339(
             if (errors === _errs6) {
               if (typeof data1 == "number" && isFinite(data1)) {
                 if (data1 > 4294967295 || isNaN(data1)) {
-                  validate339.errors = [
+                  validate343.errors = [
                     {
                       instancePath: instancePath + "/selected",
                       schemaPath: "#/properties/selected/maximum",
@@ -73437,7 +73830,7 @@ function validate339(
                   return false;
                 } else {
                   if (data1 < 0 || isNaN(data1)) {
-                    validate339.errors = [
+                    validate343.errors = [
                       {
                         instancePath: instancePath + "/selected",
                         schemaPath: "#/properties/selected/minimum",
@@ -73458,7 +73851,7 @@ function validate339(
         }
       }
     } else {
-      validate339.errors = [
+      validate343.errors = [
         {
           instancePath,
           schemaPath: "#/type",
@@ -73470,15 +73863,15 @@ function validate339(
       return false;
     }
   }
-  validate339.errors = vErrors;
+  validate343.errors = vErrors;
   return errors === 0;
 }
-validate339.evaluated = {
+validate343.evaluated = {
   props: { ordering: true, selected: true },
   dynamicProps: false,
   dynamicItems: false,
 };
-function validate336(
+function validate340(
   data,
   {
     instancePath = "",
@@ -73490,7 +73883,7 @@ function validate336(
 ) {
   let vErrors = null;
   let errors = 0;
-  const evaluated0 = validate336.evaluated;
+  const evaluated0 = validate340.evaluated;
   if (evaluated0.dynamicProps) {
     evaluated0.props = undefined;
   }
@@ -73505,7 +73898,7 @@ function validate336(
         (data.capability === undefined && (missing0 = "capability")) ||
         (data.ty === undefined && (missing0 = "ty"))
       ) {
-        validate336.errors = [
+        validate340.errors = [
           {
             instancePath,
             schemaPath: "#/required",
@@ -73528,12 +73921,12 @@ function validate336(
             ) &&
             data0 !== null
           ) {
-            validate336.errors = [
+            validate340.errors = [
               {
                 instancePath: instancePath + "/callable",
                 schemaPath: "#/properties/callable/type",
                 keyword: "type",
-                params: { type: schema116.properties.callable.type },
+                params: { type: schema118.properties.callable.type },
                 message: "must be integer,null",
               },
             ];
@@ -73542,7 +73935,7 @@ function validate336(
           if (errors === _errs1) {
             if (typeof data0 == "number" && isFinite(data0)) {
               if (data0 > 4294967295 || isNaN(data0)) {
-                validate336.errors = [
+                validate340.errors = [
                   {
                     instancePath: instancePath + "/callable",
                     schemaPath: "#/properties/callable/maximum",
@@ -73554,7 +73947,7 @@ function validate336(
                 return false;
               } else {
                 if (data0 < 0 || isNaN(data0)) {
-                  validate336.errors = [
+                  validate340.errors = [
                     {
                       instancePath: instancePath + "/callable",
                       schemaPath: "#/properties/callable/minimum",
@@ -73576,7 +73969,7 @@ function validate336(
           if (data.capability !== undefined) {
             const _errs3 = errors;
             if (
-              !validate337(data.capability, {
+              !validate341(data.capability, {
                 instancePath: instancePath + "/capability",
                 parentData: data,
                 parentDataProperty: "capability",
@@ -73586,8 +73979,8 @@ function validate336(
             ) {
               vErrors =
                 vErrors === null
-                  ? validate337.errors
-                  : vErrors.concat(validate337.errors);
+                  ? validate341.errors
+                  : vErrors.concat(validate341.errors);
               errors = vErrors.length;
             }
             var valid0 = _errs3 === errors;
@@ -73605,7 +73998,7 @@ function validate336(
                   for (let i0 = 0; i0 < len0; i0++) {
                     const _errs6 = errors;
                     if (
-                      !validate339(data2[i0], {
+                      !validate343(data2[i0], {
                         instancePath: instancePath + "/components/" + i0,
                         parentData: data2,
                         parentDataProperty: i0,
@@ -73615,8 +74008,8 @@ function validate336(
                     ) {
                       vErrors =
                         vErrors === null
-                          ? validate339.errors
-                          : vErrors.concat(validate339.errors);
+                          ? validate343.errors
+                          : vErrors.concat(validate343.errors);
                       errors = vErrors.length;
                     }
                     var valid1 = _errs6 === errors;
@@ -73625,7 +74018,7 @@ function validate336(
                     }
                   }
                 } else {
-                  validate336.errors = [
+                  validate340.errors = [
                     {
                       instancePath: instancePath + "/components",
                       schemaPath: "#/properties/components/type",
@@ -73653,7 +74046,7 @@ function validate336(
                     isFinite(data4)
                   )
                 ) {
-                  validate336.errors = [
+                  validate340.errors = [
                     {
                       instancePath: instancePath + "/id",
                       schemaPath: "#/properties/id/type",
@@ -73667,7 +74060,7 @@ function validate336(
                 if (errors === _errs7) {
                   if (typeof data4 == "number" && isFinite(data4)) {
                     if (data4 > 4294967295 || isNaN(data4)) {
-                      validate336.errors = [
+                      validate340.errors = [
                         {
                           instancePath: instancePath + "/id",
                           schemaPath: "#/properties/id/maximum",
@@ -73679,7 +74072,7 @@ function validate336(
                       return false;
                     } else {
                       if (data4 < 0 || isNaN(data4)) {
-                        validate336.errors = [
+                        validate340.errors = [
                           {
                             instancePath: instancePath + "/id",
                             schemaPath: "#/properties/id/minimum",
@@ -73701,7 +74094,7 @@ function validate336(
                 if (data.ty !== undefined) {
                   const _errs9 = errors;
                   if (typeof data.ty !== "string") {
-                    validate336.errors = [
+                    validate340.errors = [
                       {
                         instancePath: instancePath + "/ty",
                         schemaPath: "#/properties/ty/type",
@@ -73721,12 +74114,12 @@ function validate336(
                     let data6 = data.variants;
                     const _errs11 = errors;
                     if (!Array.isArray(data6) && data6 !== null) {
-                      validate336.errors = [
+                      validate340.errors = [
                         {
                           instancePath: instancePath + "/variants",
                           schemaPath: "#/properties/variants/type",
                           keyword: "type",
-                          params: { type: schema116.properties.variants.type },
+                          params: { type: schema118.properties.variants.type },
                           message: "must be array,null",
                         },
                       ];
@@ -73746,7 +74139,7 @@ function validate336(
                               for (let i2 = 0; i2 < len2; i2++) {
                                 const _errs15 = errors;
                                 if (
-                                  !validate339(data7[i2], {
+                                  !validate343(data7[i2], {
                                     instancePath:
                                       instancePath +
                                       "/variants/" +
@@ -73761,8 +74154,8 @@ function validate336(
                                 ) {
                                   vErrors =
                                     vErrors === null
-                                      ? validate339.errors
-                                      : vErrors.concat(validate339.errors);
+                                      ? validate343.errors
+                                      : vErrors.concat(validate343.errors);
                                   errors = vErrors.length;
                                 }
                                 var valid3 = _errs15 === errors;
@@ -73771,7 +74164,7 @@ function validate336(
                                 }
                               }
                             } else {
-                              validate336.errors = [
+                              validate340.errors = [
                                 {
                                   instancePath:
                                     instancePath + "/variants/" + i1,
@@ -73803,7 +74196,7 @@ function validate336(
         }
       }
     } else {
-      validate336.errors = [
+      validate340.errors = [
         {
           instancePath,
           schemaPath: "#/type",
@@ -73815,10 +74208,10 @@ function validate336(
       return false;
     }
   }
-  validate336.errors = vErrors;
+  validate340.errors = vErrors;
   return errors === 0;
 }
-validate336.evaluated = {
+validate340.evaluated = {
   props: {
     callable: true,
     capability: true,
@@ -73830,7 +74223,7 @@ validate336.evaluated = {
   dynamicProps: false,
   dynamicItems: false,
 };
-const schema120 = {
+const schema122 = {
   properties: {
     cases: { items: { $ref: "#/$defs/VariantCase" }, type: "array" },
     id: { format: "uint32", maximum: 4294967295, minimum: 0, type: "integer" },
@@ -74098,7 +74491,7 @@ const schema120 = {
   required: ["id", "name", "cases"],
   type: "object",
 };
-const schema121 = {
+const schema123 = {
   properties: {
     fields: { items: { type: "string" }, type: "array" },
     name: { type: "string" },
@@ -74106,7 +74499,7 @@ const schema121 = {
   required: ["name", "fields"],
   type: "object",
 };
-function validate346(
+function validate350(
   data,
   {
     instancePath = "",
@@ -74118,7 +74511,7 @@ function validate346(
 ) {
   let vErrors = null;
   let errors = 0;
-  const evaluated0 = validate346.evaluated;
+  const evaluated0 = validate350.evaluated;
   if (evaluated0.dynamicProps) {
     evaluated0.props = undefined;
   }
@@ -74132,7 +74525,7 @@ function validate346(
         (data.name === undefined && (missing0 = "name")) ||
         (data.fields === undefined && (missing0 = "fields"))
       ) {
-        validate346.errors = [
+        validate350.errors = [
           {
             instancePath,
             schemaPath: "#/required",
@@ -74153,7 +74546,7 @@ function validate346(
               for (let i0 = 0; i0 < len0; i0++) {
                 const _errs3 = errors;
                 if (typeof data0[i0] !== "string") {
-                  validate346.errors = [
+                  validate350.errors = [
                     {
                       instancePath: instancePath + "/fields/" + i0,
                       schemaPath: "#/properties/fields/items/type",
@@ -74170,7 +74563,7 @@ function validate346(
                 }
               }
             } else {
-              validate346.errors = [
+              validate350.errors = [
                 {
                   instancePath: instancePath + "/fields",
                   schemaPath: "#/properties/fields/type",
@@ -74190,7 +74583,7 @@ function validate346(
           if (data.name !== undefined) {
             const _errs5 = errors;
             if (typeof data.name !== "string") {
-              validate346.errors = [
+              validate350.errors = [
                 {
                   instancePath: instancePath + "/name",
                   schemaPath: "#/properties/name/type",
@@ -74208,7 +74601,7 @@ function validate346(
         }
       }
     } else {
-      validate346.errors = [
+      validate350.errors = [
         {
           instancePath,
           schemaPath: "#/type",
@@ -74220,16 +74613,16 @@ function validate346(
       return false;
     }
   }
-  validate346.errors = vErrors;
+  validate350.errors = vErrors;
   return errors === 0;
 }
-validate346.evaluated = {
+validate350.evaluated = {
   props: { fields: true, name: true },
   dynamicProps: false,
   dynamicItems: false,
 };
 const func1 = Object.prototype.hasOwnProperty;
-function validate345(
+function validate349(
   data,
   {
     instancePath = "",
@@ -74241,7 +74634,7 @@ function validate345(
 ) {
   let vErrors = null;
   let errors = 0;
-  const evaluated0 = validate345.evaluated;
+  const evaluated0 = validate349.evaluated;
   if (evaluated0.dynamicProps) {
     evaluated0.props = undefined;
   }
@@ -74256,7 +74649,7 @@ function validate345(
         (data.name === undefined && (missing0 = "name")) ||
         (data.cases === undefined && (missing0 = "cases"))
       ) {
-        validate345.errors = [
+        validate349.errors = [
           {
             instancePath,
             schemaPath: "#/required",
@@ -74277,7 +74670,7 @@ function validate345(
               for (let i0 = 0; i0 < len0; i0++) {
                 const _errs3 = errors;
                 if (
-                  !validate346(data0[i0], {
+                  !validate350(data0[i0], {
                     instancePath: instancePath + "/cases/" + i0,
                     parentData: data0,
                     parentDataProperty: i0,
@@ -74287,8 +74680,8 @@ function validate345(
                 ) {
                   vErrors =
                     vErrors === null
-                      ? validate346.errors
-                      : vErrors.concat(validate346.errors);
+                      ? validate350.errors
+                      : vErrors.concat(validate350.errors);
                   errors = vErrors.length;
                 }
                 var valid1 = _errs3 === errors;
@@ -74297,7 +74690,7 @@ function validate345(
                 }
               }
             } else {
-              validate345.errors = [
+              validate349.errors = [
                 {
                   instancePath: instancePath + "/cases",
                   schemaPath: "#/properties/cases/type",
@@ -74325,7 +74718,7 @@ function validate345(
                 isFinite(data2)
               )
             ) {
-              validate345.errors = [
+              validate349.errors = [
                 {
                   instancePath: instancePath + "/id",
                   schemaPath: "#/properties/id/type",
@@ -74339,7 +74732,7 @@ function validate345(
             if (errors === _errs4) {
               if (typeof data2 == "number" && isFinite(data2)) {
                 if (data2 > 4294967295 || isNaN(data2)) {
-                  validate345.errors = [
+                  validate349.errors = [
                     {
                       instancePath: instancePath + "/id",
                       schemaPath: "#/properties/id/maximum",
@@ -74351,7 +74744,7 @@ function validate345(
                   return false;
                 } else {
                   if (data2 < 0 || isNaN(data2)) {
-                    validate345.errors = [
+                    validate349.errors = [
                       {
                         instancePath: instancePath + "/id",
                         schemaPath: "#/properties/id/minimum",
@@ -74373,7 +74766,7 @@ function validate345(
             if (data.name !== undefined) {
               const _errs6 = errors;
               if (typeof data.name !== "string") {
-                validate345.errors = [
+                validate349.errors = [
                   {
                     instancePath: instancePath + "/name",
                     schemaPath: "#/properties/name/type",
@@ -74402,11 +74795,11 @@ function validate345(
                     for (const key0 in data4) {
                       if (
                         !func1.call(
-                          schema120.properties.runtime_tags.properties,
+                          schema122.properties.runtime_tags.properties,
                           key0,
                         )
                       ) {
-                        validate345.errors = [
+                        validate349.errors = [
                           {
                             instancePath: instancePath + "/runtime_tags",
                             schemaPath:
@@ -74432,7 +74825,7 @@ function validate345(
                             isFinite(data5)
                           )
                         ) {
-                          validate345.errors = [
+                          validate349.errors = [
                             {
                               instancePath:
                                 instancePath +
@@ -74449,7 +74842,7 @@ function validate345(
                         if (errors === _errs11) {
                           if (typeof data5 == "number" && isFinite(data5)) {
                             if (data5 > 4294967295 || isNaN(data5)) {
-                              validate345.errors = [
+                              validate349.errors = [
                                 {
                                   instancePath:
                                     instancePath +
@@ -74467,7 +74860,7 @@ function validate345(
                               return false;
                             } else {
                               if (data5 < 0 || isNaN(data5)) {
-                                validate345.errors = [
+                                validate349.errors = [
                                   {
                                     instancePath:
                                       instancePath +
@@ -74500,7 +74893,7 @@ function validate345(
                               isFinite(data6)
                             )
                           ) {
-                            validate345.errors = [
+                            validate349.errors = [
                               {
                                 instancePath:
                                   instancePath + "/runtime_tags/ActorErrorDead",
@@ -74516,7 +74909,7 @@ function validate345(
                           if (errors === _errs13) {
                             if (typeof data6 == "number" && isFinite(data6)) {
                               if (data6 > 4294967295 || isNaN(data6)) {
-                                validate345.errors = [
+                                validate349.errors = [
                                   {
                                     instancePath:
                                       instancePath +
@@ -74534,7 +74927,7 @@ function validate345(
                                 return false;
                               } else {
                                 if (data6 < 0 || isNaN(data6)) {
-                                  validate345.errors = [
+                                  validate349.errors = [
                                     {
                                       instancePath:
                                         instancePath +
@@ -74567,7 +74960,7 @@ function validate345(
                                 isFinite(data7)
                               )
                             ) {
-                              validate345.errors = [
+                              validate349.errors = [
                                 {
                                   instancePath:
                                     instancePath +
@@ -74584,7 +74977,7 @@ function validate345(
                             if (errors === _errs15) {
                               if (typeof data7 == "number" && isFinite(data7)) {
                                 if (data7 > 4294967295 || isNaN(data7)) {
-                                  validate345.errors = [
+                                  validate349.errors = [
                                     {
                                       instancePath:
                                         instancePath +
@@ -74602,7 +74995,7 @@ function validate345(
                                   return false;
                                 } else {
                                   if (data7 < 0 || isNaN(data7)) {
-                                    validate345.errors = [
+                                    validate349.errors = [
                                       {
                                         instancePath:
                                           instancePath +
@@ -74635,7 +75028,7 @@ function validate345(
                                   isFinite(data8)
                                 )
                               ) {
-                                validate345.errors = [
+                                validate349.errors = [
                                   {
                                     instancePath:
                                       instancePath +
@@ -74655,7 +75048,7 @@ function validate345(
                                   isFinite(data8)
                                 ) {
                                   if (data8 > 4294967295 || isNaN(data8)) {
-                                    validate345.errors = [
+                                    validate349.errors = [
                                       {
                                         instancePath:
                                           instancePath +
@@ -74673,7 +75066,7 @@ function validate345(
                                     return false;
                                   } else {
                                     if (data8 < 0 || isNaN(data8)) {
-                                      validate345.errors = [
+                                      validate349.errors = [
                                         {
                                           instancePath:
                                             instancePath +
@@ -74711,7 +75104,7 @@ function validate345(
                                     isFinite(data9)
                                   )
                                 ) {
-                                  validate345.errors = [
+                                  validate349.errors = [
                                     {
                                       instancePath:
                                         instancePath +
@@ -74731,7 +75124,7 @@ function validate345(
                                     isFinite(data9)
                                   ) {
                                     if (data9 > 4294967295 || isNaN(data9)) {
-                                      validate345.errors = [
+                                      validate349.errors = [
                                         {
                                           instancePath:
                                             instancePath +
@@ -74749,7 +75142,7 @@ function validate345(
                                       return false;
                                     } else {
                                       if (data9 < 0 || isNaN(data9)) {
-                                        validate345.errors = [
+                                        validate349.errors = [
                                           {
                                             instancePath:
                                               instancePath +
@@ -74787,7 +75180,7 @@ function validate345(
                                       isFinite(data10)
                                     )
                                   ) {
-                                    validate345.errors = [
+                                    validate349.errors = [
                                       {
                                         instancePath:
                                           instancePath +
@@ -74810,7 +75203,7 @@ function validate345(
                                         data10 > 4294967295 ||
                                         isNaN(data10)
                                       ) {
-                                        validate345.errors = [
+                                        validate349.errors = [
                                           {
                                             instancePath:
                                               instancePath +
@@ -74828,7 +75221,7 @@ function validate345(
                                         return false;
                                       } else {
                                         if (data10 < 0 || isNaN(data10)) {
-                                          validate345.errors = [
+                                          validate349.errors = [
                                             {
                                               instancePath:
                                                 instancePath +
@@ -74864,7 +75257,7 @@ function validate345(
                                         isFinite(data11)
                                       )
                                     ) {
-                                      validate345.errors = [
+                                      validate349.errors = [
                                         {
                                           instancePath:
                                             instancePath +
@@ -74887,7 +75280,7 @@ function validate345(
                                           data11 > 4294967295 ||
                                           isNaN(data11)
                                         ) {
-                                          validate345.errors = [
+                                          validate349.errors = [
                                             {
                                               instancePath:
                                                 instancePath +
@@ -74905,7 +75298,7 @@ function validate345(
                                           return false;
                                         } else {
                                           if (data11 < 0 || isNaN(data11)) {
-                                            validate345.errors = [
+                                            validate349.errors = [
                                               {
                                                 instancePath:
                                                   instancePath +
@@ -74941,7 +75334,7 @@ function validate345(
                                           isFinite(data12)
                                         )
                                       ) {
-                                        validate345.errors = [
+                                        validate349.errors = [
                                           {
                                             instancePath:
                                               instancePath +
@@ -74964,7 +75357,7 @@ function validate345(
                                             data12 > 4294967295 ||
                                             isNaN(data12)
                                           ) {
-                                            validate345.errors = [
+                                            validate349.errors = [
                                               {
                                                 instancePath:
                                                   instancePath +
@@ -74983,7 +75376,7 @@ function validate345(
                                             return false;
                                           } else {
                                             if (data12 < 0 || isNaN(data12)) {
-                                              validate345.errors = [
+                                              validate349.errors = [
                                                 {
                                                   instancePath:
                                                     instancePath +
@@ -75021,7 +75414,7 @@ function validate345(
                                             isFinite(data13)
                                           )
                                         ) {
-                                          validate345.errors = [
+                                          validate349.errors = [
                                             {
                                               instancePath:
                                                 instancePath +
@@ -75044,7 +75437,7 @@ function validate345(
                                               data13 > 4294967295 ||
                                               isNaN(data13)
                                             ) {
-                                              validate345.errors = [
+                                              validate349.errors = [
                                                 {
                                                   instancePath:
                                                     instancePath +
@@ -75063,7 +75456,7 @@ function validate345(
                                               return false;
                                             } else {
                                               if (data13 < 0 || isNaN(data13)) {
-                                                validate345.errors = [
+                                                validate349.errors = [
                                                   {
                                                     instancePath:
                                                       instancePath +
@@ -75103,7 +75496,7 @@ function validate345(
                                               isFinite(data14)
                                             )
                                           ) {
-                                            validate345.errors = [
+                                            validate349.errors = [
                                               {
                                                 instancePath:
                                                   instancePath +
@@ -75126,7 +75519,7 @@ function validate345(
                                                 data14 > 4294967295 ||
                                                 isNaN(data14)
                                               ) {
-                                                validate345.errors = [
+                                                validate349.errors = [
                                                   {
                                                     instancePath:
                                                       instancePath +
@@ -75148,7 +75541,7 @@ function validate345(
                                                   data14 < 0 ||
                                                   isNaN(data14)
                                                 ) {
-                                                  validate345.errors = [
+                                                  validate349.errors = [
                                                     {
                                                       instancePath:
                                                         instancePath +
@@ -75188,7 +75581,7 @@ function validate345(
                                                 isFinite(data15)
                                               )
                                             ) {
-                                              validate345.errors = [
+                                              validate349.errors = [
                                                 {
                                                   instancePath:
                                                     instancePath +
@@ -75211,7 +75604,7 @@ function validate345(
                                                   data15 > 4294967295 ||
                                                   isNaN(data15)
                                                 ) {
-                                                  validate345.errors = [
+                                                  validate349.errors = [
                                                     {
                                                       instancePath:
                                                         instancePath +
@@ -75233,7 +75626,7 @@ function validate345(
                                                     data15 < 0 ||
                                                     isNaN(data15)
                                                   ) {
-                                                    validate345.errors = [
+                                                    validate349.errors = [
                                                       {
                                                         instancePath:
                                                           instancePath +
@@ -75273,7 +75666,7 @@ function validate345(
                                                   isFinite(data16)
                                                 )
                                               ) {
-                                                validate345.errors = [
+                                                validate349.errors = [
                                                   {
                                                     instancePath:
                                                       instancePath +
@@ -75296,7 +75689,7 @@ function validate345(
                                                     data16 > 4294967295 ||
                                                     isNaN(data16)
                                                   ) {
-                                                    validate345.errors = [
+                                                    validate349.errors = [
                                                       {
                                                         instancePath:
                                                           instancePath +
@@ -75318,7 +75711,7 @@ function validate345(
                                                       data16 < 0 ||
                                                       isNaN(data16)
                                                     ) {
-                                                      validate345.errors = [
+                                                      validate349.errors = [
                                                         {
                                                           instancePath:
                                                             instancePath +
@@ -75357,7 +75750,7 @@ function validate345(
                                                     isFinite(data17)
                                                   )
                                                 ) {
-                                                  validate345.errors = [
+                                                  validate349.errors = [
                                                     {
                                                       instancePath:
                                                         instancePath +
@@ -75383,7 +75776,7 @@ function validate345(
                                                       data17 > 4294967295 ||
                                                       isNaN(data17)
                                                     ) {
-                                                      validate345.errors = [
+                                                      validate349.errors = [
                                                         {
                                                           instancePath:
                                                             instancePath +
@@ -75405,7 +75798,7 @@ function validate345(
                                                         data17 < 0 ||
                                                         isNaN(data17)
                                                       ) {
-                                                        validate345.errors = [
+                                                        validate349.errors = [
                                                           {
                                                             instancePath:
                                                               instancePath +
@@ -75445,7 +75838,7 @@ function validate345(
                                                       isFinite(data18)
                                                     )
                                                   ) {
-                                                    validate345.errors = [
+                                                    validate349.errors = [
                                                       {
                                                         instancePath:
                                                           instancePath +
@@ -75472,7 +75865,7 @@ function validate345(
                                                         data18 > 4294967295 ||
                                                         isNaN(data18)
                                                       ) {
-                                                        validate345.errors = [
+                                                        validate349.errors = [
                                                           {
                                                             instancePath:
                                                               instancePath +
@@ -75494,7 +75887,7 @@ function validate345(
                                                           data18 < 0 ||
                                                           isNaN(data18)
                                                         ) {
-                                                          validate345.errors = [
+                                                          validate349.errors = [
                                                             {
                                                               instancePath:
                                                                 instancePath +
@@ -75539,7 +75932,7 @@ function validate345(
                                                         isFinite(data19)
                                                       )
                                                     ) {
-                                                      validate345.errors = [
+                                                      validate349.errors = [
                                                         {
                                                           instancePath:
                                                             instancePath +
@@ -75566,7 +75959,7 @@ function validate345(
                                                           data19 > 4294967295 ||
                                                           isNaN(data19)
                                                         ) {
-                                                          validate345.errors = [
+                                                          validate349.errors = [
                                                             {
                                                               instancePath:
                                                                 instancePath +
@@ -75590,7 +75983,7 @@ function validate345(
                                                             data19 < 0 ||
                                                             isNaN(data19)
                                                           ) {
-                                                            validate345.errors =
+                                                            validate349.errors =
                                                               [
                                                                 {
                                                                   instancePath:
@@ -75636,7 +76029,7 @@ function validate345(
                                                           isFinite(data20)
                                                         )
                                                       ) {
-                                                        validate345.errors = [
+                                                        validate349.errors = [
                                                           {
                                                             instancePath:
                                                               instancePath +
@@ -75664,7 +76057,7 @@ function validate345(
                                                               4294967295 ||
                                                             isNaN(data20)
                                                           ) {
-                                                            validate345.errors =
+                                                            validate349.errors =
                                                               [
                                                                 {
                                                                   instancePath:
@@ -75689,7 +76082,7 @@ function validate345(
                                                               data20 < 0 ||
                                                               isNaN(data20)
                                                             ) {
-                                                              validate345.errors =
+                                                              validate349.errors =
                                                                 [
                                                                   {
                                                                     instancePath:
@@ -75735,7 +76128,7 @@ function validate345(
                                                             isFinite(data21)
                                                           )
                                                         ) {
-                                                          validate345.errors = [
+                                                          validate349.errors = [
                                                             {
                                                               instancePath:
                                                                 instancePath +
@@ -75765,7 +76158,7 @@ function validate345(
                                                                 4294967295 ||
                                                               isNaN(data21)
                                                             ) {
-                                                              validate345.errors =
+                                                              validate349.errors =
                                                                 [
                                                                   {
                                                                     instancePath:
@@ -75790,7 +76183,7 @@ function validate345(
                                                                 data21 < 0 ||
                                                                 isNaN(data21)
                                                               ) {
-                                                                validate345.errors =
+                                                                validate349.errors =
                                                                   [
                                                                     {
                                                                       instancePath:
@@ -75837,7 +76230,7 @@ function validate345(
                                                               isFinite(data22)
                                                             )
                                                           ) {
-                                                            validate345.errors =
+                                                            validate349.errors =
                                                               [
                                                                 {
                                                                   instancePath:
@@ -75869,7 +76262,7 @@ function validate345(
                                                                   4294967295 ||
                                                                 isNaN(data22)
                                                               ) {
-                                                                validate345.errors =
+                                                                validate349.errors =
                                                                   [
                                                                     {
                                                                       instancePath:
@@ -75894,7 +76287,7 @@ function validate345(
                                                                   data22 < 0 ||
                                                                   isNaN(data22)
                                                                 ) {
-                                                                  validate345.errors =
+                                                                  validate349.errors =
                                                                     [
                                                                       {
                                                                         instancePath:
@@ -75944,7 +76337,7 @@ function validate345(
                                                                 isFinite(data23)
                                                               )
                                                             ) {
-                                                              validate345.errors =
+                                                              validate349.errors =
                                                                 [
                                                                   {
                                                                     instancePath:
@@ -75976,7 +76369,7 @@ function validate345(
                                                                     4294967295 ||
                                                                   isNaN(data23)
                                                                 ) {
-                                                                  validate345.errors =
+                                                                  validate349.errors =
                                                                     [
                                                                       {
                                                                         instancePath:
@@ -76005,7 +76398,7 @@ function validate345(
                                                                       data23,
                                                                     )
                                                                   ) {
-                                                                    validate345.errors =
+                                                                    validate349.errors =
                                                                       [
                                                                         {
                                                                           instancePath:
@@ -76060,7 +76453,7 @@ function validate345(
                                                                   )
                                                                 )
                                                               ) {
-                                                                validate345.errors =
+                                                                validate349.errors =
                                                                   [
                                                                     {
                                                                       instancePath:
@@ -76097,7 +76490,7 @@ function validate345(
                                                                       data24,
                                                                     )
                                                                   ) {
-                                                                    validate345.errors =
+                                                                    validate349.errors =
                                                                       [
                                                                         {
                                                                           instancePath:
@@ -76126,7 +76519,7 @@ function validate345(
                                                                         data24,
                                                                       )
                                                                     ) {
-                                                                      validate345.errors =
+                                                                      validate349.errors =
                                                                         [
                                                                           {
                                                                             instancePath:
@@ -76181,7 +76574,7 @@ function validate345(
                                                                     )
                                                                   )
                                                                 ) {
-                                                                  validate345.errors =
+                                                                  validate349.errors =
                                                                     [
                                                                       {
                                                                         instancePath:
@@ -76219,7 +76612,7 @@ function validate345(
                                                                         data25,
                                                                       )
                                                                     ) {
-                                                                      validate345.errors =
+                                                                      validate349.errors =
                                                                         [
                                                                           {
                                                                             instancePath:
@@ -76248,7 +76641,7 @@ function validate345(
                                                                           data25,
                                                                         )
                                                                       ) {
-                                                                        validate345.errors =
+                                                                        validate349.errors =
                                                                           [
                                                                             {
                                                                               instancePath:
@@ -76304,7 +76697,7 @@ function validate345(
                                                                       )
                                                                     )
                                                                   ) {
-                                                                    validate345.errors =
+                                                                    validate349.errors =
                                                                       [
                                                                         {
                                                                           instancePath:
@@ -76342,7 +76735,7 @@ function validate345(
                                                                           data26,
                                                                         )
                                                                       ) {
-                                                                        validate345.errors =
+                                                                        validate349.errors =
                                                                           [
                                                                             {
                                                                               instancePath:
@@ -76371,7 +76764,7 @@ function validate345(
                                                                             data26,
                                                                           )
                                                                         ) {
-                                                                          validate345.errors =
+                                                                          validate349.errors =
                                                                             [
                                                                               {
                                                                                 instancePath:
@@ -76427,7 +76820,7 @@ function validate345(
                                                                         )
                                                                       )
                                                                     ) {
-                                                                      validate345.errors =
+                                                                      validate349.errors =
                                                                         [
                                                                           {
                                                                             instancePath:
@@ -76465,7 +76858,7 @@ function validate345(
                                                                             data27,
                                                                           )
                                                                         ) {
-                                                                          validate345.errors =
+                                                                          validate349.errors =
                                                                             [
                                                                               {
                                                                                 instancePath:
@@ -76494,7 +76887,7 @@ function validate345(
                                                                               data27,
                                                                             )
                                                                           ) {
-                                                                            validate345.errors =
+                                                                            validate349.errors =
                                                                               [
                                                                                 {
                                                                                   instancePath:
@@ -76550,7 +76943,7 @@ function validate345(
                                                                           )
                                                                         )
                                                                       ) {
-                                                                        validate345.errors =
+                                                                        validate349.errors =
                                                                           [
                                                                             {
                                                                               instancePath:
@@ -76588,7 +76981,7 @@ function validate345(
                                                                               data28,
                                                                             )
                                                                           ) {
-                                                                            validate345.errors =
+                                                                            validate349.errors =
                                                                               [
                                                                                 {
                                                                                   instancePath:
@@ -76617,7 +77010,7 @@ function validate345(
                                                                                 data28,
                                                                               )
                                                                             ) {
-                                                                              validate345.errors =
+                                                                              validate349.errors =
                                                                                 [
                                                                                   {
                                                                                     instancePath:
@@ -76675,7 +77068,7 @@ function validate345(
                                                                             )
                                                                           )
                                                                         ) {
-                                                                          validate345.errors =
+                                                                          validate349.errors =
                                                                             [
                                                                               {
                                                                                 instancePath:
@@ -76713,7 +77106,7 @@ function validate345(
                                                                                 data29,
                                                                               )
                                                                             ) {
-                                                                              validate345.errors =
+                                                                              validate349.errors =
                                                                                 [
                                                                                   {
                                                                                     instancePath:
@@ -76742,7 +77135,7 @@ function validate345(
                                                                                   data29,
                                                                                 )
                                                                               ) {
-                                                                                validate345.errors =
+                                                                                validate349.errors =
                                                                                   [
                                                                                     {
                                                                                       instancePath:
@@ -76800,7 +77193,7 @@ function validate345(
                                                                               )
                                                                             )
                                                                           ) {
-                                                                            validate345.errors =
+                                                                            validate349.errors =
                                                                               [
                                                                                 {
                                                                                   instancePath:
@@ -76838,7 +77231,7 @@ function validate345(
                                                                                   data30,
                                                                                 )
                                                                               ) {
-                                                                                validate345.errors =
+                                                                                validate349.errors =
                                                                                   [
                                                                                     {
                                                                                       instancePath:
@@ -76867,7 +77260,7 @@ function validate345(
                                                                                     data30,
                                                                                   )
                                                                                 ) {
-                                                                                  validate345.errors =
+                                                                                  validate349.errors =
                                                                                     [
                                                                                       {
                                                                                         instancePath:
@@ -76925,7 +77318,7 @@ function validate345(
                                                                                 )
                                                                               )
                                                                             ) {
-                                                                              validate345.errors =
+                                                                              validate349.errors =
                                                                                 [
                                                                                   {
                                                                                     instancePath:
@@ -76963,7 +77356,7 @@ function validate345(
                                                                                     data31,
                                                                                   )
                                                                                 ) {
-                                                                                  validate345.errors =
+                                                                                  validate349.errors =
                                                                                     [
                                                                                       {
                                                                                         instancePath:
@@ -76992,7 +77385,7 @@ function validate345(
                                                                                       data31,
                                                                                     )
                                                                                   ) {
-                                                                                    validate345.errors =
+                                                                                    validate349.errors =
                                                                                       [
                                                                                         {
                                                                                           instancePath:
@@ -77050,7 +77443,7 @@ function validate345(
                                                                                   )
                                                                                 )
                                                                               ) {
-                                                                                validate345.errors =
+                                                                                validate349.errors =
                                                                                   [
                                                                                     {
                                                                                       instancePath:
@@ -77088,7 +77481,7 @@ function validate345(
                                                                                       data32,
                                                                                     )
                                                                                   ) {
-                                                                                    validate345.errors =
+                                                                                    validate349.errors =
                                                                                       [
                                                                                         {
                                                                                           instancePath:
@@ -77117,7 +77510,7 @@ function validate345(
                                                                                         data32,
                                                                                       )
                                                                                     ) {
-                                                                                      validate345.errors =
+                                                                                      validate349.errors =
                                                                                         [
                                                                                           {
                                                                                             instancePath:
@@ -77175,7 +77568,7 @@ function validate345(
                                                                                     )
                                                                                   )
                                                                                 ) {
-                                                                                  validate345.errors =
+                                                                                  validate349.errors =
                                                                                     [
                                                                                       {
                                                                                         instancePath:
@@ -77213,7 +77606,7 @@ function validate345(
                                                                                         data33,
                                                                                       )
                                                                                     ) {
-                                                                                      validate345.errors =
+                                                                                      validate349.errors =
                                                                                         [
                                                                                           {
                                                                                             instancePath:
@@ -77242,7 +77635,7 @@ function validate345(
                                                                                           data33,
                                                                                         )
                                                                                       ) {
-                                                                                        validate345.errors =
+                                                                                        validate349.errors =
                                                                                           [
                                                                                             {
                                                                                               instancePath:
@@ -77300,7 +77693,7 @@ function validate345(
                                                                                       )
                                                                                     )
                                                                                   ) {
-                                                                                    validate345.errors =
+                                                                                    validate349.errors =
                                                                                       [
                                                                                         {
                                                                                           instancePath:
@@ -77338,7 +77731,7 @@ function validate345(
                                                                                           data34,
                                                                                         )
                                                                                       ) {
-                                                                                        validate345.errors =
+                                                                                        validate349.errors =
                                                                                           [
                                                                                             {
                                                                                               instancePath:
@@ -77367,7 +77760,7 @@ function validate345(
                                                                                             data34,
                                                                                           )
                                                                                         ) {
-                                                                                          validate345.errors =
+                                                                                          validate349.errors =
                                                                                             [
                                                                                               {
                                                                                                 instancePath:
@@ -77425,7 +77818,7 @@ function validate345(
                                                                                         )
                                                                                       )
                                                                                     ) {
-                                                                                      validate345.errors =
+                                                                                      validate349.errors =
                                                                                         [
                                                                                           {
                                                                                             instancePath:
@@ -77463,7 +77856,7 @@ function validate345(
                                                                                             data35,
                                                                                           )
                                                                                         ) {
-                                                                                          validate345.errors =
+                                                                                          validate349.errors =
                                                                                             [
                                                                                               {
                                                                                                 instancePath:
@@ -77492,7 +77885,7 @@ function validate345(
                                                                                               data35,
                                                                                             )
                                                                                           ) {
-                                                                                            validate345.errors =
+                                                                                            validate349.errors =
                                                                                               [
                                                                                                 {
                                                                                                   instancePath:
@@ -77550,7 +77943,7 @@ function validate345(
                                                                                           )
                                                                                         )
                                                                                       ) {
-                                                                                        validate345.errors =
+                                                                                        validate349.errors =
                                                                                           [
                                                                                             {
                                                                                               instancePath:
@@ -77588,7 +77981,7 @@ function validate345(
                                                                                               data36,
                                                                                             )
                                                                                           ) {
-                                                                                            validate345.errors =
+                                                                                            validate349.errors =
                                                                                               [
                                                                                                 {
                                                                                                   instancePath:
@@ -77617,7 +78010,7 @@ function validate345(
                                                                                                 data36,
                                                                                               )
                                                                                             ) {
-                                                                                              validate345.errors =
+                                                                                              validate349.errors =
                                                                                                 [
                                                                                                   {
                                                                                                     instancePath:
@@ -77675,7 +78068,7 @@ function validate345(
                                                                                             )
                                                                                           )
                                                                                         ) {
-                                                                                          validate345.errors =
+                                                                                          validate349.errors =
                                                                                             [
                                                                                               {
                                                                                                 instancePath:
@@ -77713,7 +78106,7 @@ function validate345(
                                                                                                 data37,
                                                                                               )
                                                                                             ) {
-                                                                                              validate345.errors =
+                                                                                              validate349.errors =
                                                                                                 [
                                                                                                   {
                                                                                                     instancePath:
@@ -77742,7 +78135,7 @@ function validate345(
                                                                                                   data37,
                                                                                                 )
                                                                                               ) {
-                                                                                                validate345.errors =
+                                                                                                validate349.errors =
                                                                                                   [
                                                                                                     {
                                                                                                       instancePath:
@@ -77800,7 +78193,7 @@ function validate345(
                                                                                               )
                                                                                             )
                                                                                           ) {
-                                                                                            validate345.errors =
+                                                                                            validate349.errors =
                                                                                               [
                                                                                                 {
                                                                                                   instancePath:
@@ -77838,7 +78231,7 @@ function validate345(
                                                                                                   data38,
                                                                                                 )
                                                                                               ) {
-                                                                                                validate345.errors =
+                                                                                                validate349.errors =
                                                                                                   [
                                                                                                     {
                                                                                                       instancePath:
@@ -77867,7 +78260,7 @@ function validate345(
                                                                                                     data38,
                                                                                                   )
                                                                                                 ) {
-                                                                                                  validate345.errors =
+                                                                                                  validate349.errors =
                                                                                                     [
                                                                                                       {
                                                                                                         instancePath:
@@ -77925,7 +78318,7 @@ function validate345(
                                                                                                 )
                                                                                               )
                                                                                             ) {
-                                                                                              validate345.errors =
+                                                                                              validate349.errors =
                                                                                                 [
                                                                                                   {
                                                                                                     instancePath:
@@ -77963,7 +78356,7 @@ function validate345(
                                                                                                     data39,
                                                                                                   )
                                                                                                 ) {
-                                                                                                  validate345.errors =
+                                                                                                  validate349.errors =
                                                                                                     [
                                                                                                       {
                                                                                                         instancePath:
@@ -77992,7 +78385,7 @@ function validate345(
                                                                                                       data39,
                                                                                                     )
                                                                                                   ) {
-                                                                                                    validate345.errors =
+                                                                                                    validate349.errors =
                                                                                                       [
                                                                                                         {
                                                                                                           instancePath:
@@ -78050,7 +78443,7 @@ function validate345(
                                                                                                   )
                                                                                                 )
                                                                                               ) {
-                                                                                                validate345.errors =
+                                                                                                validate349.errors =
                                                                                                   [
                                                                                                     {
                                                                                                       instancePath:
@@ -78088,7 +78481,7 @@ function validate345(
                                                                                                       data40,
                                                                                                     )
                                                                                                   ) {
-                                                                                                    validate345.errors =
+                                                                                                    validate349.errors =
                                                                                                       [
                                                                                                         {
                                                                                                           instancePath:
@@ -78117,7 +78510,7 @@ function validate345(
                                                                                                         data40,
                                                                                                       )
                                                                                                     ) {
-                                                                                                      validate345.errors =
+                                                                                                      validate349.errors =
                                                                                                         [
                                                                                                           {
                                                                                                             instancePath:
@@ -78175,7 +78568,7 @@ function validate345(
                                                                                                     )
                                                                                                   )
                                                                                                 ) {
-                                                                                                  validate345.errors =
+                                                                                                  validate349.errors =
                                                                                                     [
                                                                                                       {
                                                                                                         instancePath:
@@ -78213,7 +78606,7 @@ function validate345(
                                                                                                         data41,
                                                                                                       )
                                                                                                     ) {
-                                                                                                      validate345.errors =
+                                                                                                      validate349.errors =
                                                                                                         [
                                                                                                           {
                                                                                                             instancePath:
@@ -78242,7 +78635,7 @@ function validate345(
                                                                                                           data41,
                                                                                                         )
                                                                                                       ) {
-                                                                                                        validate345.errors =
+                                                                                                        validate349.errors =
                                                                                                           [
                                                                                                             {
                                                                                                               instancePath:
@@ -78300,7 +78693,7 @@ function validate345(
                                                                                                       )
                                                                                                     )
                                                                                                   ) {
-                                                                                                    validate345.errors =
+                                                                                                    validate349.errors =
                                                                                                       [
                                                                                                         {
                                                                                                           instancePath:
@@ -78338,7 +78731,7 @@ function validate345(
                                                                                                           data42,
                                                                                                         )
                                                                                                       ) {
-                                                                                                        validate345.errors =
+                                                                                                        validate349.errors =
                                                                                                           [
                                                                                                             {
                                                                                                               instancePath:
@@ -78367,7 +78760,7 @@ function validate345(
                                                                                                             data42,
                                                                                                           )
                                                                                                         ) {
-                                                                                                          validate345.errors =
+                                                                                                          validate349.errors =
                                                                                                             [
                                                                                                               {
                                                                                                                 instancePath:
@@ -78425,7 +78818,7 @@ function validate345(
                                                                                                         )
                                                                                                       )
                                                                                                     ) {
-                                                                                                      validate345.errors =
+                                                                                                      validate349.errors =
                                                                                                         [
                                                                                                           {
                                                                                                             instancePath:
@@ -78463,7 +78856,7 @@ function validate345(
                                                                                                             data43,
                                                                                                           )
                                                                                                         ) {
-                                                                                                          validate345.errors =
+                                                                                                          validate349.errors =
                                                                                                             [
                                                                                                               {
                                                                                                                 instancePath:
@@ -78492,7 +78885,7 @@ function validate345(
                                                                                                               data43,
                                                                                                             )
                                                                                                           ) {
-                                                                                                            validate345.errors =
+                                                                                                            validate349.errors =
                                                                                                               [
                                                                                                                 {
                                                                                                                   instancePath:
@@ -78550,7 +78943,7 @@ function validate345(
                                                                                                           )
                                                                                                         )
                                                                                                       ) {
-                                                                                                        validate345.errors =
+                                                                                                        validate349.errors =
                                                                                                           [
                                                                                                             {
                                                                                                               instancePath:
@@ -78588,7 +78981,7 @@ function validate345(
                                                                                                               data44,
                                                                                                             )
                                                                                                           ) {
-                                                                                                            validate345.errors =
+                                                                                                            validate349.errors =
                                                                                                               [
                                                                                                                 {
                                                                                                                   instancePath:
@@ -78617,7 +79010,7 @@ function validate345(
                                                                                                                 data44,
                                                                                                               )
                                                                                                             ) {
-                                                                                                              validate345.errors =
+                                                                                                              validate349.errors =
                                                                                                                 [
                                                                                                                   {
                                                                                                                     instancePath:
@@ -78675,7 +79068,7 @@ function validate345(
                                                                                                             )
                                                                                                           )
                                                                                                         ) {
-                                                                                                          validate345.errors =
+                                                                                                          validate349.errors =
                                                                                                             [
                                                                                                               {
                                                                                                                 instancePath:
@@ -78713,7 +79106,7 @@ function validate345(
                                                                                                                 data45,
                                                                                                               )
                                                                                                             ) {
-                                                                                                              validate345.errors =
+                                                                                                              validate349.errors =
                                                                                                                 [
                                                                                                                   {
                                                                                                                     instancePath:
@@ -78742,7 +79135,7 @@ function validate345(
                                                                                                                   data45,
                                                                                                                 )
                                                                                                               ) {
-                                                                                                                validate345.errors =
+                                                                                                                validate349.errors =
                                                                                                                   [
                                                                                                                     {
                                                                                                                       instancePath:
@@ -78800,7 +79193,7 @@ function validate345(
                                                                                                               )
                                                                                                             )
                                                                                                           ) {
-                                                                                                            validate345.errors =
+                                                                                                            validate349.errors =
                                                                                                               [
                                                                                                                 {
                                                                                                                   instancePath:
@@ -78838,7 +79231,7 @@ function validate345(
                                                                                                                   data46,
                                                                                                                 )
                                                                                                               ) {
-                                                                                                                validate345.errors =
+                                                                                                                validate349.errors =
                                                                                                                   [
                                                                                                                     {
                                                                                                                       instancePath:
@@ -78867,7 +79260,7 @@ function validate345(
                                                                                                                     data46,
                                                                                                                   )
                                                                                                                 ) {
-                                                                                                                  validate345.errors =
+                                                                                                                  validate349.errors =
                                                                                                                     [
                                                                                                                       {
                                                                                                                         instancePath:
@@ -78941,7 +79334,7 @@ function validate345(
                       }
                     }
                   } else {
-                    validate345.errors = [
+                    validate349.errors = [
                       {
                         instancePath: instancePath + "/runtime_tags",
                         schemaPath: "#/properties/runtime_tags/type",
@@ -78962,7 +79355,7 @@ function validate345(
         }
       }
     } else {
-      validate345.errors = [
+      validate349.errors = [
         {
           instancePath,
           schemaPath: "#/type",
@@ -78974,15 +79367,15 @@ function validate345(
       return false;
     }
   }
-  validate345.errors = vErrors;
+  validate349.errors = vErrors;
   return errors === 0;
 }
-validate345.evaluated = {
+validate349.evaluated = {
   props: { cases: true, id: true, name: true, runtime_tags: true },
   dynamicProps: false,
   dynamicItems: false,
 };
-const schema122 = {
+const schema124 = {
   properties: {
     id: { format: "uint32", maximum: 4294967295, minimum: 0, type: "integer" },
     slots: { items: { $ref: "#/$defs/VtableSlot" }, type: "array" },
@@ -78990,7 +79383,7 @@ const schema122 = {
   required: ["id", "slots"],
   type: "object",
 };
-const schema123 = {
+const schema125 = {
   properties: {
     callee: {
       format: "uint32",
@@ -79015,7 +79408,7 @@ const schema123 = {
   required: ["slot", "method", "callee", "receiver"],
   type: "object",
 };
-function validate350(
+function validate354(
   data,
   {
     instancePath = "",
@@ -79027,7 +79420,7 @@ function validate350(
 ) {
   let vErrors = null;
   let errors = 0;
-  const evaluated0 = validate350.evaluated;
+  const evaluated0 = validate354.evaluated;
   if (evaluated0.dynamicProps) {
     evaluated0.props = undefined;
   }
@@ -79043,7 +79436,7 @@ function validate350(
         (data.callee === undefined && (missing0 = "callee")) ||
         (data.receiver === undefined && (missing0 = "receiver"))
       ) {
-        validate350.errors = [
+        validate354.errors = [
           {
             instancePath,
             schemaPath: "#/required",
@@ -79065,7 +79458,7 @@ function validate350(
               isFinite(data0)
             )
           ) {
-            validate350.errors = [
+            validate354.errors = [
               {
                 instancePath: instancePath + "/callee",
                 schemaPath: "#/properties/callee/type",
@@ -79079,7 +79472,7 @@ function validate350(
           if (errors === _errs1) {
             if (typeof data0 == "number" && isFinite(data0)) {
               if (data0 > 4294967295 || isNaN(data0)) {
-                validate350.errors = [
+                validate354.errors = [
                   {
                     instancePath: instancePath + "/callee",
                     schemaPath: "#/properties/callee/maximum",
@@ -79091,7 +79484,7 @@ function validate350(
                 return false;
               } else {
                 if (data0 < 0 || isNaN(data0)) {
-                  validate350.errors = [
+                  validate354.errors = [
                     {
                       instancePath: instancePath + "/callee",
                       schemaPath: "#/properties/callee/minimum",
@@ -79113,7 +79506,7 @@ function validate350(
           if (data.method !== undefined) {
             const _errs3 = errors;
             if (typeof data.method !== "string") {
-              validate350.errors = [
+              validate354.errors = [
                 {
                   instancePath: instancePath + "/method",
                   schemaPath: "#/properties/method/type",
@@ -79154,7 +79547,7 @@ function validate350(
               if (data.receiver_handback !== undefined) {
                 const _errs6 = errors;
                 if (typeof data.receiver_handback !== "boolean") {
-                  validate350.errors = [
+                  validate354.errors = [
                     {
                       instancePath: instancePath + "/receiver_handback",
                       schemaPath: "#/properties/receiver_handback/type",
@@ -79181,7 +79574,7 @@ function validate350(
                       isFinite(data4)
                     )
                   ) {
-                    validate350.errors = [
+                    validate354.errors = [
                       {
                         instancePath: instancePath + "/slot",
                         schemaPath: "#/properties/slot/type",
@@ -79195,7 +79588,7 @@ function validate350(
                   if (errors === _errs8) {
                     if (typeof data4 == "number" && isFinite(data4)) {
                       if (data4 > 4294967295 || isNaN(data4)) {
-                        validate350.errors = [
+                        validate354.errors = [
                           {
                             instancePath: instancePath + "/slot",
                             schemaPath: "#/properties/slot/maximum",
@@ -79207,7 +79600,7 @@ function validate350(
                         return false;
                       } else {
                         if (data4 < 0 || isNaN(data4)) {
-                          validate350.errors = [
+                          validate354.errors = [
                             {
                               instancePath: instancePath + "/slot",
                               schemaPath: "#/properties/slot/minimum",
@@ -79231,7 +79624,7 @@ function validate350(
         }
       }
     } else {
-      validate350.errors = [
+      validate354.errors = [
         {
           instancePath,
           schemaPath: "#/type",
@@ -79243,10 +79636,10 @@ function validate350(
       return false;
     }
   }
-  validate350.errors = vErrors;
+  validate354.errors = vErrors;
   return errors === 0;
 }
-validate350.evaluated = {
+validate354.evaluated = {
   props: {
     callee: true,
     method: true,
@@ -79257,7 +79650,7 @@ validate350.evaluated = {
   dynamicProps: false,
   dynamicItems: false,
 };
-function validate349(
+function validate353(
   data,
   {
     instancePath = "",
@@ -79269,7 +79662,7 @@ function validate349(
 ) {
   let vErrors = null;
   let errors = 0;
-  const evaluated0 = validate349.evaluated;
+  const evaluated0 = validate353.evaluated;
   if (evaluated0.dynamicProps) {
     evaluated0.props = undefined;
   }
@@ -79283,7 +79676,7 @@ function validate349(
         (data.id === undefined && (missing0 = "id")) ||
         (data.slots === undefined && (missing0 = "slots"))
       ) {
-        validate349.errors = [
+        validate353.errors = [
           {
             instancePath,
             schemaPath: "#/required",
@@ -79305,7 +79698,7 @@ function validate349(
               isFinite(data0)
             )
           ) {
-            validate349.errors = [
+            validate353.errors = [
               {
                 instancePath: instancePath + "/id",
                 schemaPath: "#/properties/id/type",
@@ -79319,7 +79712,7 @@ function validate349(
           if (errors === _errs1) {
             if (typeof data0 == "number" && isFinite(data0)) {
               if (data0 > 4294967295 || isNaN(data0)) {
-                validate349.errors = [
+                validate353.errors = [
                   {
                     instancePath: instancePath + "/id",
                     schemaPath: "#/properties/id/maximum",
@@ -79331,7 +79724,7 @@ function validate349(
                 return false;
               } else {
                 if (data0 < 0 || isNaN(data0)) {
-                  validate349.errors = [
+                  validate353.errors = [
                     {
                       instancePath: instancePath + "/id",
                       schemaPath: "#/properties/id/minimum",
@@ -79360,7 +79753,7 @@ function validate349(
                 for (let i0 = 0; i0 < len0; i0++) {
                   const _errs5 = errors;
                   if (
-                    !validate350(data1[i0], {
+                    !validate354(data1[i0], {
                       instancePath: instancePath + "/slots/" + i0,
                       parentData: data1,
                       parentDataProperty: i0,
@@ -79370,8 +79763,8 @@ function validate349(
                   ) {
                     vErrors =
                       vErrors === null
-                        ? validate350.errors
-                        : vErrors.concat(validate350.errors);
+                        ? validate354.errors
+                        : vErrors.concat(validate354.errors);
                     errors = vErrors.length;
                   }
                   var valid1 = _errs5 === errors;
@@ -79380,7 +79773,7 @@ function validate349(
                   }
                 }
               } else {
-                validate349.errors = [
+                validate353.errors = [
                   {
                     instancePath: instancePath + "/slots",
                     schemaPath: "#/properties/slots/type",
@@ -79399,7 +79792,7 @@ function validate349(
         }
       }
     } else {
-      validate349.errors = [
+      validate353.errors = [
         {
           instancePath,
           schemaPath: "#/type",
@@ -79411,10 +79804,10 @@ function validate349(
       return false;
     }
   }
-  validate349.errors = vErrors;
+  validate353.errors = vErrors;
   return errors === 0;
 }
-validate349.evaluated = {
+validate353.evaluated = {
   props: { id: true, slots: true },
   dynamicProps: false,
   dynamicItems: false,
@@ -80114,7 +80507,7 @@ function validate52(
                                         for (let i10 = 0; i10 < len10; i10++) {
                                           const _errs47 = errors;
                                           if (
-                                            !validate264(data23[i10], {
+                                            !validate268(data23[i10], {
                                               instancePath:
                                                 instancePath +
                                                 "/resources/" +
@@ -80127,9 +80520,9 @@ function validate52(
                                           ) {
                                             vErrors =
                                               vErrors === null
-                                                ? validate264.errors
+                                                ? validate268.errors
                                                 : vErrors.concat(
-                                                    validate264.errors,
+                                                    validate268.errors,
                                                   );
                                             errors = vErrors.length;
                                           }
@@ -80172,7 +80565,7 @@ function validate52(
                                           ) {
                                             const _errs50 = errors;
                                             if (
-                                              !validate266(data25[i11], {
+                                              !validate270(data25[i11], {
                                                 instancePath:
                                                   instancePath +
                                                   "/runtime_families/" +
@@ -80185,9 +80578,9 @@ function validate52(
                                             ) {
                                               vErrors =
                                                 vErrors === null
-                                                  ? validate266.errors
+                                                  ? validate270.errors
                                                   : vErrors.concat(
-                                                      validate266.errors,
+                                                      validate270.errors,
                                                     );
                                               errors = vErrors.length;
                                             }
@@ -80220,7 +80613,7 @@ function validate52(
                                       if (data.schema_version !== undefined) {
                                         const _errs51 = errors;
                                         if (
-                                          !validate313(data.schema_version, {
+                                          !validate317(data.schema_version, {
                                             instancePath:
                                               instancePath + "/schema_version",
                                             parentData: data,
@@ -80232,9 +80625,9 @@ function validate52(
                                         ) {
                                           vErrors =
                                             vErrors === null
-                                              ? validate313.errors
+                                              ? validate317.errors
                                               : vErrors.concat(
-                                                  validate313.errors,
+                                                  validate317.errors,
                                                 );
                                           errors = vErrors.length;
                                         }
@@ -80319,7 +80712,7 @@ function validate52(
                                                 ) {
                                                   const _errs58 = errors;
                                                   if (
-                                                    !validate315(data30[i13], {
+                                                    !validate319(data30[i13], {
                                                       instancePath:
                                                         instancePath +
                                                         "/structural_render/" +
@@ -80332,9 +80725,9 @@ function validate52(
                                                   ) {
                                                     vErrors =
                                                       vErrors === null
-                                                        ? validate315.errors
+                                                        ? validate319.errors
                                                         : vErrors.concat(
-                                                            validate315.errors,
+                                                            validate319.errors,
                                                           );
                                                     errors = vErrors.length;
                                                   }
@@ -80381,7 +80774,7 @@ function validate52(
                                                   ) {
                                                     const _errs61 = errors;
                                                     if (
-                                                      !validate324(
+                                                      !validate328(
                                                         data32[i14],
                                                         {
                                                           instancePath:
@@ -80398,9 +80791,9 @@ function validate52(
                                                     ) {
                                                       vErrors =
                                                         vErrors === null
-                                                          ? validate324.errors
+                                                          ? validate328.errors
                                                           : vErrors.concat(
-                                                              validate324.errors,
+                                                              validate328.errors,
                                                             );
                                                       errors = vErrors.length;
                                                     }
@@ -80447,7 +80840,7 @@ function validate52(
                                                     ) {
                                                       const _errs64 = errors;
                                                       if (
-                                                        !validate334(
+                                                        !validate338(
                                                           data34[i15],
                                                           {
                                                             instancePath:
@@ -80464,9 +80857,9 @@ function validate52(
                                                       ) {
                                                         vErrors =
                                                           vErrors === null
-                                                            ? validate334.errors
+                                                            ? validate338.errors
                                                             : vErrors.concat(
-                                                                validate334.errors,
+                                                                validate338.errors,
                                                               );
                                                         errors = vErrors.length;
                                                       }
@@ -80519,7 +80912,7 @@ function validate52(
                                                       ) {
                                                         const _errs67 = errors;
                                                         if (
-                                                          !validate336(
+                                                          !validate340(
                                                             data36[i16],
                                                             {
                                                               instancePath:
@@ -80537,9 +80930,9 @@ function validate52(
                                                         ) {
                                                           vErrors =
                                                             vErrors === null
-                                                              ? validate336.errors
+                                                              ? validate340.errors
                                                               : vErrors.concat(
-                                                                  validate336.errors,
+                                                                  validate340.errors,
                                                                 );
                                                           errors =
                                                             vErrors.length;
@@ -80595,7 +80988,7 @@ function validate52(
                                                           const _errs70 =
                                                             errors;
                                                           if (
-                                                            !validate345(
+                                                            !validate349(
                                                               data38[i17],
                                                               {
                                                                 instancePath:
@@ -80613,9 +81006,9 @@ function validate52(
                                                           ) {
                                                             vErrors =
                                                               vErrors === null
-                                                                ? validate345.errors
+                                                                ? validate349.errors
                                                                 : vErrors.concat(
-                                                                    validate345.errors,
+                                                                    validate349.errors,
                                                                   );
                                                             errors =
                                                               vErrors.length;
@@ -80671,7 +81064,7 @@ function validate52(
                                                             const _errs73 =
                                                               errors;
                                                             if (
-                                                              !validate349(
+                                                              !validate353(
                                                                 data40[i18],
                                                                 {
                                                                   instancePath:
@@ -80689,9 +81082,9 @@ function validate52(
                                                             ) {
                                                               vErrors =
                                                                 vErrors === null
-                                                                  ? validate349.errors
+                                                                  ? validate353.errors
                                                                   : vErrors.concat(
-                                                                      validate349.errors,
+                                                                      validate353.errors,
                                                                     );
                                                               errors =
                                                                 vErrors.length;
@@ -80795,8 +81188,8 @@ validate52.evaluated = {
   dynamicProps: false,
   dynamicItems: false,
 };
-export const validCodecShape: ValidateFunction = validate354;
-const schema124 = {
+export const validCodecShape: ValidateFunction = validate358;
+const schema126 = {
   $schema: "https://json-schema.org/draft/2020-12/schema",
   description:
     "The compiler's structural plan, with child indices preserving recursion.",
@@ -80840,7 +81233,7 @@ const schema124 = {
   title: "Shape",
   type: "object",
 };
-const schema125 = {
+const schema127 = {
   oneOf: [
     { enum: ["Unit", "Bool", "Char", "String", "Bytes"], type: "string" },
     {
@@ -80990,7 +81383,7 @@ const schema125 = {
     },
   ],
 };
-const schema126 = {
+const schema128 = {
   properties: {
     flags: {
       format: "uint32",
@@ -81004,7 +81397,7 @@ const schema126 = {
   required: ["name", "flags"],
   type: "object",
 };
-function validate356(
+function validate360(
   data,
   {
     instancePath = "",
@@ -81016,7 +81409,7 @@ function validate356(
 ) {
   let vErrors = null;
   let errors = 0;
-  const evaluated0 = validate356.evaluated;
+  const evaluated0 = validate360.evaluated;
   if (evaluated0.dynamicProps) {
     evaluated0.props = undefined;
   }
@@ -81030,7 +81423,7 @@ function validate356(
         (data.name === undefined && (missing0 = "name")) ||
         (data.flags === undefined && (missing0 = "flags"))
       ) {
-        validate356.errors = [
+        validate360.errors = [
           {
             instancePath,
             schemaPath: "#/required",
@@ -81052,7 +81445,7 @@ function validate356(
               isFinite(data0)
             )
           ) {
-            validate356.errors = [
+            validate360.errors = [
               {
                 instancePath: instancePath + "/flags",
                 schemaPath: "#/properties/flags/type",
@@ -81066,7 +81459,7 @@ function validate356(
           if (errors === _errs1) {
             if (typeof data0 == "number" && isFinite(data0)) {
               if (data0 > 4294967295 || isNaN(data0)) {
-                validate356.errors = [
+                validate360.errors = [
                   {
                     instancePath: instancePath + "/flags",
                     schemaPath: "#/properties/flags/maximum",
@@ -81078,7 +81471,7 @@ function validate356(
                 return false;
               } else {
                 if (data0 < 0 || isNaN(data0)) {
-                  validate356.errors = [
+                  validate360.errors = [
                     {
                       instancePath: instancePath + "/flags",
                       schemaPath: "#/properties/flags/minimum",
@@ -81100,7 +81493,7 @@ function validate356(
           if (data.name !== undefined) {
             const _errs3 = errors;
             if (typeof data.name !== "string") {
-              validate356.errors = [
+              validate360.errors = [
                 {
                   instancePath: instancePath + "/name",
                   schemaPath: "#/properties/name/type",
@@ -81128,12 +81521,12 @@ function validate356(
                 ) &&
                 data2 !== null
               ) {
-                validate356.errors = [
+                validate360.errors = [
                   {
                     instancePath: instancePath + "/tag",
                     schemaPath: "#/properties/tag/type",
                     keyword: "type",
-                    params: { type: schema126.properties.tag.type },
+                    params: { type: schema128.properties.tag.type },
                     message: "must be integer,null",
                   },
                 ];
@@ -81142,7 +81535,7 @@ function validate356(
               if (errors === _errs5) {
                 if (typeof data2 == "number" && isFinite(data2)) {
                   if (data2 < 0 || isNaN(data2)) {
-                    validate356.errors = [
+                    validate360.errors = [
                       {
                         instancePath: instancePath + "/tag",
                         schemaPath: "#/properties/tag/minimum",
@@ -81163,7 +81556,7 @@ function validate356(
         }
       }
     } else {
-      validate356.errors = [
+      validate360.errors = [
         {
           instancePath,
           schemaPath: "#/type",
@@ -81175,15 +81568,15 @@ function validate356(
       return false;
     }
   }
-  validate356.errors = vErrors;
+  validate360.errors = vErrors;
   return errors === 0;
 }
-validate356.evaluated = {
+validate360.evaluated = {
   props: { flags: true, name: true, tag: true },
   dynamicProps: false,
   dynamicItems: false,
 };
-function validate355(
+function validate359(
   data,
   {
     instancePath = "",
@@ -81195,7 +81588,7 @@ function validate355(
 ) {
   let vErrors = null;
   let errors = 0;
-  const evaluated0 = validate355.evaluated;
+  const evaluated0 = validate359.evaluated;
   if (evaluated0.dynamicProps) {
     evaluated0.props = undefined;
   }
@@ -81234,7 +81627,7 @@ function validate355(
       instancePath,
       schemaPath: "#/oneOf/0/enum",
       keyword: "enum",
-      params: { allowedValues: schema125.oneOf[0].enum },
+      params: { allowedValues: schema127.oneOf[0].enum },
       message: "must be equal to one of the allowed values",
     };
     if (vErrors === null) {
@@ -82690,7 +83083,7 @@ function validate355(
                                           if (len2 > 0) {
                                             const _errs68 = errors;
                                             if (
-                                              !validate356(data18[0], {
+                                              !validate360(data18[0], {
                                                 instancePath:
                                                   instancePath +
                                                   "/Record/" +
@@ -82704,9 +83097,9 @@ function validate355(
                                             ) {
                                               vErrors =
                                                 vErrors === null
-                                                  ? validate356.errors
+                                                  ? validate360.errors
                                                   : vErrors.concat(
-                                                      validate356.errors,
+                                                      validate360.errors,
                                                     );
                                               errors = vErrors.length;
                                             }
@@ -82951,7 +83344,7 @@ function validate355(
                                             if (len4 > 0) {
                                               const _errs78 = errors;
                                               if (
-                                                !validate356(data22[0], {
+                                                !validate360(data22[0], {
                                                   instancePath:
                                                     instancePath +
                                                     "/Variant/" +
@@ -82965,9 +83358,9 @@ function validate355(
                                               ) {
                                                 vErrors =
                                                   vErrors === null
-                                                    ? validate356.errors
+                                                    ? validate360.errors
                                                     : vErrors.concat(
-                                                        validate356.errors,
+                                                        validate360.errors,
                                                       );
                                                 errors = vErrors.length;
                                               }
@@ -82996,7 +83389,7 @@ function validate355(
                                                       "#/oneOf/10/properties/Variant/items/prefixItems/1/type",
                                                     keyword: "type",
                                                     params: {
-                                                      type: schema125.oneOf[10]
+                                                      type: schema127.oneOf[10]
                                                         .properties.Variant
                                                         .items.prefixItems[1]
                                                         .type,
@@ -83276,7 +83669,7 @@ function validate355(
       vErrors.push(err81);
     }
     errors++;
-    validate355.errors = vErrors;
+    validate359.errors = vErrors;
     return false;
   } else {
     errors = _errs0;
@@ -83288,12 +83681,12 @@ function validate355(
       }
     }
   }
-  validate355.errors = vErrors;
+  validate359.errors = vErrors;
   evaluated0.props = props0;
   return errors === 0;
 }
-validate355.evaluated = { dynamicProps: true, dynamicItems: false };
-function validate354(
+validate359.evaluated = { dynamicProps: true, dynamicItems: false };
+function validate358(
   data,
   {
     instancePath = "",
@@ -83305,7 +83698,7 @@ function validate354(
 ) {
   let vErrors = null;
   let errors = 0;
-  const evaluated0 = validate354.evaluated;
+  const evaluated0 = validate358.evaluated;
   if (evaluated0.dynamicProps) {
     evaluated0.props = undefined;
   }
@@ -83323,7 +83716,7 @@ function validate354(
         (data.variants === undefined && (missing0 = "variants")) ||
         (data.grouped_payloads === undefined && (missing0 = "grouped_payloads"))
       ) {
-        validate354.errors = [
+        validate358.errors = [
           {
             instancePath,
             schemaPath: "#/required",
@@ -83353,13 +83746,13 @@ function validate354(
                   ) &&
                   data1 !== null
                 ) {
-                  validate354.errors = [
+                  validate358.errors = [
                     {
                       instancePath: instancePath + "/aggregates/" + i0,
                       schemaPath: "#/properties/aggregates/items/type",
                       keyword: "type",
                       params: {
-                        type: schema124.properties.aggregates.items.type,
+                        type: schema126.properties.aggregates.items.type,
                       },
                       message: "must be integer,null",
                     },
@@ -83369,7 +83762,7 @@ function validate354(
                 if (errors === _errs3) {
                   if (typeof data1 == "number" && isFinite(data1)) {
                     if (data1 > 4294967295 || isNaN(data1)) {
-                      validate354.errors = [
+                      validate358.errors = [
                         {
                           instancePath: instancePath + "/aggregates/" + i0,
                           schemaPath: "#/properties/aggregates/items/maximum",
@@ -83381,7 +83774,7 @@ function validate354(
                       return false;
                     } else {
                       if (data1 < 0 || isNaN(data1)) {
-                        validate354.errors = [
+                        validate358.errors = [
                           {
                             instancePath: instancePath + "/aggregates/" + i0,
                             schemaPath: "#/properties/aggregates/items/minimum",
@@ -83401,7 +83794,7 @@ function validate354(
                 }
               }
             } else {
-              validate354.errors = [
+              validate358.errors = [
                 {
                   instancePath: instancePath + "/aggregates",
                   schemaPath: "#/properties/aggregates/type",
@@ -83428,7 +83821,7 @@ function validate354(
                 for (let i1 = 0; i1 < len1; i1++) {
                   const _errs7 = errors;
                   if (typeof data2[i1] !== "boolean") {
-                    validate354.errors = [
+                    validate358.errors = [
                       {
                         instancePath: instancePath + "/grouped_payloads/" + i1,
                         schemaPath: "#/properties/grouped_payloads/items/type",
@@ -83445,7 +83838,7 @@ function validate354(
                   }
                 }
               } else {
-                validate354.errors = [
+                validate358.errors = [
                   {
                     instancePath: instancePath + "/grouped_payloads",
                     schemaPath: "#/properties/grouped_payloads/type",
@@ -83472,7 +83865,7 @@ function validate354(
                   for (let i2 = 0; i2 < len2; i2++) {
                     const _errs11 = errors;
                     if (typeof data4[i2] !== "string") {
-                      validate354.errors = [
+                      validate358.errors = [
                         {
                           instancePath: instancePath + "/names/" + i2,
                           schemaPath: "#/properties/names/items/type",
@@ -83489,7 +83882,7 @@ function validate354(
                     }
                   }
                 } else {
-                  validate354.errors = [
+                  validate358.errors = [
                     {
                       instancePath: instancePath + "/names",
                       schemaPath: "#/properties/names/type",
@@ -83516,7 +83909,7 @@ function validate354(
                     for (let i3 = 0; i3 < len3; i3++) {
                       const _errs15 = errors;
                       if (
-                        !validate355(data6[i3], {
+                        !validate359(data6[i3], {
                           instancePath: instancePath + "/nodes/" + i3,
                           parentData: data6,
                           parentDataProperty: i3,
@@ -83526,8 +83919,8 @@ function validate354(
                       ) {
                         vErrors =
                           vErrors === null
-                            ? validate355.errors
-                            : vErrors.concat(validate355.errors);
+                            ? validate359.errors
+                            : vErrors.concat(validate359.errors);
                         errors = vErrors.length;
                       }
                       var valid4 = _errs15 === errors;
@@ -83536,7 +83929,7 @@ function validate354(
                       }
                     }
                   } else {
-                    validate354.errors = [
+                    validate358.errors = [
                       {
                         instancePath: instancePath + "/nodes",
                         schemaPath: "#/properties/nodes/type",
@@ -83564,7 +83957,7 @@ function validate354(
                       isFinite(data8)
                     )
                   ) {
-                    validate354.errors = [
+                    validate358.errors = [
                       {
                         instancePath: instancePath + "/root",
                         schemaPath: "#/properties/root/type",
@@ -83578,7 +83971,7 @@ function validate354(
                   if (errors === _errs16) {
                     if (typeof data8 == "number" && isFinite(data8)) {
                       if (data8 < 0 || isNaN(data8)) {
-                        validate354.errors = [
+                        validate358.errors = [
                           {
                             instancePath: instancePath + "/root",
                             schemaPath: "#/properties/root/minimum",
@@ -83615,13 +84008,13 @@ function validate354(
                             ) &&
                             data10 !== null
                           ) {
-                            validate354.errors = [
+                            validate358.errors = [
                               {
                                 instancePath: instancePath + "/variants/" + i4,
                                 schemaPath: "#/properties/variants/items/type",
                                 keyword: "type",
                                 params: {
-                                  type: schema124.properties.variants.items
+                                  type: schema126.properties.variants.items
                                     .type,
                                 },
                                 message: "must be integer,null",
@@ -83632,7 +84025,7 @@ function validate354(
                           if (errors === _errs20) {
                             if (typeof data10 == "number" && isFinite(data10)) {
                               if (data10 > 4294967295 || isNaN(data10)) {
-                                validate354.errors = [
+                                validate358.errors = [
                                   {
                                     instancePath:
                                       instancePath + "/variants/" + i4,
@@ -83649,7 +84042,7 @@ function validate354(
                                 return false;
                               } else {
                                 if (data10 < 0 || isNaN(data10)) {
-                                  validate354.errors = [
+                                  validate358.errors = [
                                     {
                                       instancePath:
                                         instancePath + "/variants/" + i4,
@@ -83671,7 +84064,7 @@ function validate354(
                           }
                         }
                       } else {
-                        validate354.errors = [
+                        validate358.errors = [
                           {
                             instancePath: instancePath + "/variants",
                             schemaPath: "#/properties/variants/type",
@@ -83694,7 +84087,7 @@ function validate354(
         }
       }
     } else {
-      validate354.errors = [
+      validate358.errors = [
         {
           instancePath,
           schemaPath: "#/type",
@@ -83706,10 +84099,10 @@ function validate354(
       return false;
     }
   }
-  validate354.errors = vErrors;
+  validate358.errors = vErrors;
   return errors === 0;
 }
-validate354.evaluated = {
+validate358.evaluated = {
   props: {
     aggregates: true,
     grouped_payloads: true,

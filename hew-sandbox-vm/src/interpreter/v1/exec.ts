@@ -81,6 +81,14 @@ import {
   type RuntimeContinuation,
 } from "./shims.js";
 import { AdmittedPackage } from "./validate.js";
+import {
+  HeapExceeded,
+  ManagedBudget,
+  ManagedLayouts,
+  type ManagedLease,
+  type ManagedRoot,
+  type ManagedProjection,
+} from "./managed-budget.js";
 import type { CheckedPackage } from "../schema-validator.js";
 
 const DEFAULT_STEP_BUDGET = 1_000_000;
@@ -90,6 +98,9 @@ const DEFAULT_STEP_BUDGET = 1_000_000;
 interface Cell {
   value: VmValue;
   valid: boolean;
+  budget?: ManagedBudget;
+  type?: number;
+  lease?: ManagedLease;
 }
 
 /// Where a value id or a place currently lives. A projected loan is a
@@ -139,6 +150,7 @@ interface FrameContext {
 }
 
 interface GeneratorEntry {
+  managedType?: number;
   id: string;
   frame: Activation;
   callable: VmValue;
@@ -183,6 +195,7 @@ interface OneShotTimer extends ActorTimer {
 }
 
 interface ActorMessage {
+  managedLease?: ManagedLease;
   timer?: OneShotTimer;
   requestDeadline?: number;
   caller: CallerStamp;
@@ -198,6 +211,8 @@ interface ActorMessage {
 }
 
 interface ActorInstance {
+  budget?: ManagedBudget;
+  stateLease?: ManagedLease;
   /** Native encoding error slots follow actor identity across handler turns. */
   encodingErrors?: Partial<Record<EncodingFormat, string>>;
   rcOwner: RcOwner;
@@ -208,6 +223,7 @@ interface ActorInstance {
   mailbox: ActorMessage[];
   timers: Set<ActorTimer>;
   disposals: VmValue[];
+  disposalLeases: ManagedLease[];
   admission: Array<() => void>;
   busy: boolean;
   constructing: boolean;
@@ -259,6 +275,10 @@ interface RoleSlot {
 }
 
 interface TaskEntry {
+  frame?: Activation;
+  callable?: VmValue;
+  managedLease?: ManagedLease;
+  taken?: boolean;
   grouped: boolean;
   id: string;
   done: boolean;
@@ -292,7 +312,9 @@ interface Activation {
   opIndex: number;
   env: Map<number, Ref>;
   trivial: Set<number>;
+  owned: Set<number>;
   managedTypes: Map<number, number>;
+  managedInputs: ManagedLease[];
   scopes: Map<number, TaskGroup>;
   places: Map<number, Cell>;
   fault: Fault | null;
@@ -453,6 +475,7 @@ class ExecutorV1 {
   private rootFault: Fault | null = null;
 
   private readonly pkg: PackageV1;
+  private readonly managed: ManagedLayouts;
   private readonly directories: BrowserDirectories;
   private readonly semaphores: Semaphores;
 
@@ -465,6 +488,9 @@ class ExecutorV1 {
   ) {
     const pkg = admission.bytecode;
     this.pkg = pkg;
+    this.managed = new ManagedLayouts(pkg.managed_types ?? [], (value, type) =>
+      this.managedRetained(value, type),
+    );
     this.directories = new BrowserDirectories(options.directoryRoots);
     this.scheduler = new FrameScheduler(trace, policy);
     this.semaphores = new Semaphores((nanos, ready) =>
@@ -687,13 +713,22 @@ class ExecutorV1 {
       : parentContext;
     const env = new Map<number, Ref>();
     for (const [at, param] of fn.params.entries()) {
-      env.set(param.value, ownedRef(args[at] ?? UNIT));
+      env.set(
+        param.value,
+        ownedRef(
+          args[at] ?? UNIT,
+          param.own === "owned" ? executionContext.actor?.budget : undefined,
+          param.managed_type ?? undefined,
+        ),
+      );
     }
     const places = new Map<number, Cell>();
     const trivial = new Set<number>();
+    const owned = new Set<number>();
     const managedTypes = new Map<number, number>();
     const record = (value: ValueDef) => {
       if (value.own === "none") trivial.add(value.value);
+      if (value.own === "owned") owned.add(value.value);
       if (value.managed_type != null)
         managedTypes.set(value.value, value.managed_type);
     };
@@ -714,7 +749,11 @@ class ExecutorV1 {
     }
     for (const [index, param] of fn.params.entries())
       if (param.managed_type != null && args[index])
-        this.stampManaged(args[index]!, param.managed_type);
+        this.stampManaged(
+          args[index]!,
+          param.managed_type,
+          executionContext.actor?.budget,
+        );
     return {
       rcOwner: fn.actor_construction
         ? { blocks: new Set(), closed: false }
@@ -728,7 +767,9 @@ class ExecutorV1 {
       opIndex: 0,
       env,
       trivial,
+      owned,
       managedTypes,
+      managedInputs: [],
       scopes: new Map(),
       places,
       fault: null,
@@ -790,7 +831,11 @@ class ExecutorV1 {
 
   private read(act: Activation, id: number): VmValue {
     try {
-      return readRef(this.refOf(act, id));
+      const value = readRef(this.refOf(act, id));
+      const type = act.managedTypes.get(id);
+      if (type != null)
+        this.stampManaged(value, type, act.context.actor?.budget);
+      return value;
     } catch (error) {
       throw new Error(
         `${act.fn.name} block ${act.block.id} value ${id}: ${(error as Error).message}`,
@@ -807,23 +852,154 @@ class ExecutorV1 {
       return;
     }
     const type = act.managedTypes.get(id);
-    if (type != null) this.stampManaged(value, type);
-    act.env.set(id, ownedRef(value));
+    if (type != null) this.stampManaged(value, type, act.context.actor?.budget);
+    const budget = act.owned.has(id) ? act.context.actor?.budget : undefined;
+    act.env.set(id, ownedRef(value, budget, type));
   }
 
-  private stampManaged(value: VmValue, type: number): void {
-    const row = this.pkg.managed_types?.[type];
-    if (value.kind !== "vector" || !row) return;
-    const storage = vectorStorage(value);
-    if (row.kind === "bytes") {
-      storage.bytes = true;
-      storage.shareOnCopy = true;
-    } else if (
-      row.kind === "vector" ||
-      row.kind === "array" ||
-      row.kind === "slice"
-    ) {
-      storage.shareOnCopy = row.share_on_copy;
+  private stampManaged(
+    value: VmValue,
+    type: number,
+    budget?: ManagedBudget,
+  ): void {
+    this.managed.stamp(value, type);
+    if (value.kind === "generator") this.generatorFor(value).managedType = type;
+    if (value.kind === "string") {
+      value.prepareGrowth = budget
+        ? (capacity) => budget.checkStringGrowth(value, capacity)
+        : undefined;
+    } else if (value.kind === "vector") {
+      value.prepareMutation = budget
+        ? (capacity, detached) => {
+            const row = this.managed.row(type);
+            const storage = vectorStorage(value);
+            const items =
+              detached &&
+              (row.kind === "vector" ||
+                row.kind === "array" ||
+                row.kind === "slice")
+                ? value.items.map((item) =>
+                    this.managed.copy(item, row.element),
+                  )
+                : value.items;
+            budget.checkMutation(value, {
+              ...value,
+              items,
+              storage: { ...storage, capacity, items, owners: 1 },
+            });
+          }
+        : undefined;
+    }
+  }
+
+  private frameManagedRoots(frame: Activation): ManagedRoot[] {
+    const roots: ManagedRoot[] = [];
+    for (const [id, ref] of frame.env) {
+      const type = frame.managedTypes.get(id);
+      if (type != null && frame.owned.has(id) && liveRef(ref))
+        roots.push({ value: readRef(ref), type });
+    }
+    for (const [id, cell] of frame.places) {
+      const type = frame.fn.places[id]?.managed_type;
+      if (type != null && cell.valid) roots.push({ value: cell.value, type });
+    }
+    return roots;
+  }
+
+  private managedRetained(value: VmValue, type: number): ManagedProjection {
+    const row = this.managed.row(type);
+    const typed = (value: VmValue): ManagedRoot => ({
+      value,
+      type: this.managed.type(value),
+    });
+    if (row.kind === "generator") {
+      const generator = this.generatorFor(value);
+      return {
+        identity: generator,
+        bytes: BigInt(row.payload_bytes),
+        children: [
+          typed(generator.callable),
+          ...this.frameManagedRoots(generator.frame),
+        ],
+      };
+    }
+    if (row.kind !== "provider")
+      throw new Error("managed retained visitor received no provider");
+    switch (row.provider) {
+      case "task":
+      case "actor_call": {
+        const task = this.taskFor(value);
+        const children: ManagedRoot[] =
+          task.frame && !task.done ? this.frameManagedRoots(task.frame) : [];
+        if (task.callable?.kind === "closure" && !task.done)
+          children.push(typed(task.callable));
+        if (task.done && !task.taken && !task.fault && !task.actorError)
+          children.push({ value: task.value, type: row.children[0]! });
+        return {
+          identity: task,
+          bytes:
+            row.provider === "task" ||
+            (task.done && !task.taken && !task.fault && !task.actorError)
+              ? this.managed.width(row.children[0]!)
+              : 0n,
+          children,
+        };
+      }
+      case "sink": {
+        if (value.kind !== "sink")
+          throw new Error("typed sink has no endpoint");
+        const sender = this.senderEndpoints.get(value.channelId);
+        if (sender)
+          return {
+            identity: sender.owner,
+            bytes: 0n,
+            children: [typed(sender.owner.sink), typed(sender.owner.encoder)],
+          };
+        return {
+          identity: this.pipes.managedRetained(value).identity,
+          bytes: 0n,
+          children: [],
+        };
+      }
+      case "stream": {
+        if (value.kind !== "stream")
+          throw new Error("typed stream has no endpoint");
+        const adapter = this.generatorStreams.get(value.channelId);
+        if (adapter) {
+          const generatorType = adapter.generator.managedType;
+          if (generatorType == null)
+            throw new Error("generator stream lacks its producer descriptor");
+          const children: ManagedRoot[] = [
+            {
+              value: { kind: "generator", id: adapter.generator.id },
+              type: generatorType,
+            },
+          ];
+          if (adapter.pending)
+            children.push({
+              value: adapter.pending,
+              type: row.children[0]!,
+              slots: true,
+              identity: adapter,
+            });
+          return { identity: adapter, bytes: 0n, children };
+        }
+        const graph = this.pipes.managedRetained(value);
+        return {
+          identity: graph.identity,
+          bytes: 0n,
+          children: graph.queued.map((item) => ({
+            value: item.value,
+            type: row.children[0]!,
+            slots: true,
+            identity: item,
+          })),
+        };
+      }
+      default:
+        throw new Error(
+          `managed ${row.provider} has no canonical retained payload descriptor`,
+        );
     }
   }
 
@@ -884,11 +1060,21 @@ class ExecutorV1 {
   /// and a borrow passes the live value.
   private boundary(act: Activation, operand: BoundaryOperand): VmValue {
     const value = this.read(act, operand.value);
+    const budget = act.context.actor?.budget;
+    const type = act.managedTypes.get(operand.value);
     switch (operand.decision) {
       case "copy":
-      case "snapshot":
-        return cloneValue(value);
+      case "snapshot": {
+        if (budget && type != null)
+          budget.check([{ value: this.managed.copy(value, type), type }]);
+        const copy = cloneValue(value);
+        if (budget && type != null)
+          act.managedInputs.push(budget.retain({ value: copy, type }));
+        return copy;
+      }
       case "move":
+        if (budget && type != null)
+          act.managedInputs.push(budget.retain({ value, type }));
         this.invalidate(act, operand.value);
         return value;
       default:
@@ -943,8 +1129,13 @@ class ExecutorV1 {
         return;
       case "destroy_value": {
         const value = this.read(act, op.value);
+        const type = act.managedTypes.get(op.value);
+        const cleanup =
+          type == null
+            ? undefined
+            : act.context.actor?.budget?.retain({ value, type });
         this.invalidate(act, op.value);
-        this.releaseOperation(act, value);
+        this.releaseOperation(act, value, () => cleanup?.release());
         return;
       }
       case "begin_borrow":
@@ -955,10 +1146,16 @@ class ExecutorV1 {
         return;
 
       case "alloc_place":
-        act.places.set(op.place, { value: UNIT, valid: false });
+        act.places.set(op.place, {
+          value: UNIT,
+          valid: false,
+          budget: act.context.actor?.budget,
+          type: act.fn.places[op.place]?.managed_type ?? undefined,
+        });
         return;
       case "store.init":
         writeRef(this.placeRef(act, op.place), this.read(act, op.value));
+        this.invalidate(act, op.value);
         return;
       case "store.assign": {
         const ref = this.placeRef(act, op.place);
@@ -968,7 +1165,10 @@ class ExecutorV1 {
         // replacement after cleanup, including when close records a fault;
         // the following cleanup.dispatch then drains the new owner once.
         invalidateRef(ref);
-        this.releaseOperation(act, previous, () => writeRef(ref, replacement));
+        this.releaseOperation(act, previous, () => {
+          writeRef(ref, replacement);
+          this.invalidate(act, op.value);
+        });
         return;
       }
       case "load.copy":
@@ -990,8 +1190,13 @@ class ExecutorV1 {
       case "end_lifetime": {
         const ref = this.placeRef(act, op.place);
         const value = liveRef(ref) ? readRef(ref) : UNIT;
+        const type = act.fn.places[op.place]?.managed_type;
+        const cleanup =
+          type == null
+            ? undefined
+            : act.context.actor?.budget?.retain({ value, type });
         invalidateRef(ref);
-        this.releaseOperation(act, value);
+        this.releaseOperation(act, value, () => cleanup?.release());
         return;
       }
 
@@ -1047,7 +1252,7 @@ class ExecutorV1 {
         return;
       case "array.repeat": {
         const seed = this.read(act, op.value);
-        const count = op.count ?? 0;
+        const count = this.arrayRepeatLength(op);
         this.define(act, op.dst, {
           kind: "vector",
           elementType: "",
@@ -1250,7 +1455,10 @@ class ExecutorV1 {
             })),
           },
           () => {
-            for (const task of group?.tasks ?? []) this.tasks.delete(task.id);
+            for (const task of group?.tasks ?? []) {
+              task.managedLease?.release();
+              this.tasks.delete(task.id);
+            }
             act.scopes.delete(op.scope);
           },
         );
@@ -1308,7 +1516,10 @@ class ExecutorV1 {
           return member;
         });
         if (!members.length) throw new Error("race requires members");
-        const task = this.newTask();
+        const task = this.newTask(
+          act.context.actor?.budget,
+          act.managedTypes.get(op.dst),
+        );
         scope.tasks.push(task);
         let selected = false;
         let winner: TaskEntry | null = null;
@@ -1450,7 +1661,10 @@ class ExecutorV1 {
           op.op === "task.invoke" && "specialization" in op.callee
             ? op.callee.specialization
             : null;
-        const task = this.newTask();
+        const task = this.newTask(
+          act.context.actor?.budget,
+          act.managedTypes.get(op.dst),
+        );
         group.tasks.push(task);
         const settle = (value: VmValue, fault: Fault | null) => {
           if (task.done || task.finishing) return;
@@ -1600,6 +1814,8 @@ class ExecutorV1 {
           null,
           context,
         );
+        task.frame = frame;
+        task.callable = callable;
         task.cancel = () => {
           if (task.done || task.finishing) return;
           context.pendingCancellation ??= {
@@ -1666,10 +1882,21 @@ class ExecutorV1 {
 
   private terminate(act: Activation, term: TermV1): void {
     switch (term.op) {
-      case "materialize":
+      case "materialize": {
+        const budget = act.context.actor?.budget;
+        try {
+          if (term.operation.op === "array.repeat")
+            this.arrayRepeatLength(term.operation);
+          if (budget) this.prepareMaterialize(act, term.operation, budget);
+        } catch (error) {
+          if (!(error instanceof HeapExceeded)) throw error;
+          this.takeEdge(act, term.failure);
+          return;
+        }
         this.execute(act, term.operation);
         this.takeEdge(act, term.normal);
         return;
+      }
       case "goto":
         this.takeEdge(act, term.edge);
         return;
@@ -2142,11 +2369,126 @@ class ExecutorV1 {
     }
   }
 
+  /** Reserve the exact constructor/copy graph before any operand is consumed. */
+  private arrayRepeatLength(op: Extract<OpV1, { op: "array.repeat" }>): number {
+    const type = op.definitions?.[0]?.managed_type;
+    const row = type == null ? undefined : this.managed.row(type);
+    if (row?.kind !== "array")
+      throw new Error("array repeat lacks its canonical length");
+    const count = BigInt(row.length);
+    this.managed.width(row.element, count);
+    if (count > 0xffffffffn) throw new HeapExceeded();
+    return Number(count);
+  }
+
+  private prepareMaterialize(
+    act: Activation,
+    op: OpV1,
+    budget: ManagedBudget,
+  ): void {
+    const type = op.definitions?.[0]?.managed_type;
+    if (type == null)
+      throw new Error("materialization has no managed result descriptor");
+    const read = (id: number) => this.read(act, id);
+    const copy = (value: VmValue) => this.managed.copy(value, type);
+    let value: VmValue;
+    switch (op.op) {
+      case "const.str":
+        value = stringValue(this.pkg.strings[op.str] ?? "");
+        break;
+      case "const.bytes":
+        value = bytesValue(this.pkg.bytes[op.bytes] ?? []);
+        break;
+      case "copy_value":
+        value = copy(read(op.source));
+        break;
+      case "load.copy":
+        value = copy(readRef(this.placeRef(act, op.place)));
+        break;
+      case "tuple.get":
+        value = copy(fieldsOf(read(op.tuple))[op.index]!);
+        break;
+      case "aggregate.project_copy":
+        value = copy(fieldsOf(read(op.aggregate))[op.field]!);
+        break;
+      case "variant.project_copy":
+        value = copy(payloadOf(read(op.source))[op.field]!);
+        break;
+      case "array.make":
+        value = {
+          kind: "vector",
+          elementType: "",
+          items: op.elements.map(read),
+        };
+        break;
+      case "array.repeat": {
+        const count = this.arrayRepeatLength(op);
+        const row = this.managed.row(type);
+        if (row.kind !== "array")
+          throw new Error("array repeat lacks its element descriptor");
+        const empty: VmValue[] = [];
+        const storage = {
+          items: empty,
+          capacity: count,
+          owners: 1,
+          bytes: false,
+          shareOnCopy: row.share_on_copy,
+        };
+        value = { kind: "vector", elementType: "", items: empty, storage };
+        budget.check([{ value, type }]);
+        const seed = read(op.value);
+        storage.items = Array.from({ length: count }, (_, index) =>
+          index ? this.managed.copy(seed, row.element) : seed,
+        );
+        value.items = storage.items;
+        break;
+      }
+      case "variant.make":
+        value = {
+          kind: "enum",
+          typeId: "",
+          shape: op.shape,
+          tag: op.variant,
+          payload: op.fields.map(read),
+        };
+        break;
+      case "closure.make":
+        value = {
+          kind: "closure",
+          entries: this.closureAt(op.closure).entries,
+          specialization: null,
+          environment: {
+            kind: "record",
+            typeId: "",
+            fields: op.fields.map(read),
+          },
+        };
+        break;
+      case "dyn.make":
+        value = { kind: "dyn", vtable: op.vtable, value: read(op.value) };
+        break;
+      case "generator.make": {
+        const row = this.managed.row(type);
+        if (row.kind !== "generator")
+          throw new Error("generator lacks its payload descriptor");
+        const callable = read(op.callable);
+        budget.checkPayload(BigInt(row.payload_bytes), [
+          { value: callable, type: this.managed.type(callable) },
+        ]);
+        return;
+      }
+      default:
+        throw new Error(`unexpected managed materialization ${op.op}`);
+    }
+    budget.check([{ value, type }]);
+  }
+
   private takeEdge(act: Activation, edge: Edge): void {
     // Read every argument before rebinding, so a block that branches to itself
     // with permuted parameters binds the incoming values, not the rebound ones.
     const args = edge.args.map((id) => this.refOf(act, id));
     const target = this.blockAt(act.fn, edge.to);
+    for (const lease of act.managedInputs.splice(0)) lease.release();
     for (const [at, param] of target.params.entries()) {
       act.env.set(param.value, args[at] ?? ownedRef(UNIT));
     }
@@ -2213,11 +2555,15 @@ class ExecutorV1 {
         aggregateId == null ? null : (this.pkg.aggregates[aggregateId] ?? null);
       value = shim(this.host, args, shape, aggregate);
     } catch (error) {
-      if (error instanceof ShimFault) {
+      if (error instanceof ShimFault || error instanceof HeapExceeded) {
         this.keepInputs(act, term, args);
         this.raiseFault(
           act,
-          { kind: "trap", trap: error.trap, message: error.message },
+          {
+            kind: "trap",
+            trap: error instanceof HeapExceeded ? "heap_exceeded" : error.trap,
+            message: error.message,
+          },
           term.unwind,
         );
         return;
@@ -2293,8 +2639,12 @@ class ExecutorV1 {
       try {
         step = iterator.next(value);
       } catch (error) {
-        if (error instanceof ShimFault) {
-          fail({ kind: "trap", trap: error.trap, message: error.message });
+        if (error instanceof ShimFault || error instanceof HeapExceeded) {
+          fail({
+            kind: "trap",
+            trap: error instanceof HeapExceeded ? "heap_exceeded" : error.trap,
+            message: error.message,
+          });
           return;
         }
         throw error;
@@ -2442,7 +2792,25 @@ class ExecutorV1 {
       );
     }
     if (term.result && term.result !== "never") {
-      this.define(act, term.result.value, value);
+      try {
+        this.define(act, term.result.value, value);
+      } catch (error) {
+        if (!(error instanceof HeapExceeded)) throw error;
+        this.closeValueAsync(
+          value,
+          error.message,
+          (fault) => {
+            this.raiseFault(
+              act,
+              combineFaults({ kind: "trap", trap: "heap_exceeded" }, fault)!,
+              "unwind" in term ? term.unwind : null,
+            );
+          },
+          act.context.actor,
+          act.rcOwner,
+        );
+        return;
+      }
     }
     this.takeEdge(act, term.normal);
   }
@@ -2551,7 +2919,37 @@ class ExecutorV1 {
     const caller = act.caller;
     if (!caller) {
       this.running = false;
+      let reply: ManagedLease | undefined;
+      if (
+        act.context.actor?.budget &&
+        act.block.term.op === "return" &&
+        act.block.term.value
+      ) {
+        const type = act.managedTypes.get(act.block.term.value.value);
+        if (type == null)
+          throw new Error("actor reply lacks its managed descriptor");
+        try {
+          reply = act.context.actor.budget.retain({ value, type, slots: true });
+        } catch (error) {
+          if (!(error instanceof HeapExceeded)) throw error;
+          this.closeValueAsync(
+            value,
+            error.message,
+            (fault) => {
+              for (const lease of act.managedInputs.splice(0)) lease.release();
+              act.context.failed(
+                combineFaults({ kind: "trap", trap: "heap_exceeded" }, fault)!,
+              );
+            },
+            act.context.actor,
+            act.rcOwner,
+          );
+          return;
+        }
+      }
       act.context.returned(value);
+      reply?.release();
+      for (const lease of act.managedInputs.splice(0)) lease.release();
       return;
     }
     if (!act.normal) {
@@ -2573,6 +2971,7 @@ class ExecutorV1 {
     }
     this.current = caller;
     this.takeEdge(caller, act.normal);
+    for (const lease of act.managedInputs.splice(0)) lease.release();
   }
 
   private dynamicEntry(
@@ -2638,6 +3037,7 @@ class ExecutorV1 {
     if (!caller) {
       this.running = false;
       act.context.failed(fault, handback);
+      for (const lease of act.managedInputs.splice(0)) lease.release();
       return;
     }
     if (!act.unwind) {
@@ -2661,6 +3061,7 @@ class ExecutorV1 {
     caller.fault = fault;
     this.current = caller;
     this.takeEdge(caller, act.unwind);
+    for (const lease of act.managedInputs.splice(0)) lease.release();
   }
 
   private finishConsumedCallable(
@@ -2842,6 +3243,7 @@ class ExecutorV1 {
           else {
             const value = task.value;
             task.value = UNIT;
+            task.taken = true;
             wake(value);
           }
         };
@@ -3582,7 +3984,7 @@ class ExecutorV1 {
     actor: ActorInstance | null = this.current.context.actor,
     rcOwner: RcOwner | null = actor?.rcOwner ?? this.current.rcOwner,
   ): void {
-    const pending = [value];
+    const pending: Array<VmValue | { retire: VmValue }> = [value];
     let firstFault: Fault | null = null;
     const next = (failure: Fault | null = null) => {
       firstFault = combineFaults(firstFault, failure);
@@ -3591,7 +3993,13 @@ class ExecutorV1 {
       const currentFault =
         fault ?? this.faultText(actor?.crashing ?? firstFault);
       while (pending.length) {
-        const value = pending.pop()!;
+        const entry = pending.pop()!;
+        if ("retire" in entry) {
+          this.managed.retire(entry.retire);
+          continue;
+        }
+        const value = entry;
+        pending.push({ retire: value });
         switch (value.kind) {
           case "encoding":
             value.value = null;
@@ -3646,6 +4054,7 @@ class ExecutorV1 {
             if (task?.done) {
               const result = task.value;
               task.value = UNIT;
+              task.taken = true;
               this.closeValueAsync(
                 result,
                 currentFault,
@@ -3765,9 +4174,10 @@ class ExecutorV1 {
       for (const field of value.payload) this.closeValue(field, fault);
     else if (value.kind === "vector")
       for (const item of releaseVector(value)) this.closeValue(item, fault);
+    this.managed.retire(value);
   }
 
-  private newTask(): TaskEntry {
+  private newTask(budget?: ManagedBudget, type?: number): TaskEntry {
     const task: TaskEntry = {
       id: this.ids.task(),
       grouped: false,
@@ -3781,6 +4191,16 @@ class ExecutorV1 {
       changed: [],
     };
     this.tasks.set(task.id, task);
+    if (budget) {
+      if (type == null)
+        throw new Error("task has no managed result descriptor");
+      const row = this.managed.row(type);
+      if (row.kind === "provider" && row.provider === "task")
+        task.managedLease = budget.retain({
+          value: { kind: "task", id: task.id },
+          type,
+        });
+    }
     return task;
   }
 
@@ -3951,6 +4371,7 @@ class ExecutorV1 {
           mailbox: [],
           timers: new Set(),
           disposals: [],
+          disposalLeases: [],
           admission: [],
           busy: true,
           constructing: true,
@@ -3999,6 +4420,8 @@ class ExecutorV1 {
                 const retained = combineFaults(primary, stateFault)!;
                 this.sweepRcOwner(actor.rcOwner, actor, (sweepFault) => {
                   actor.completed = true;
+                  actor.stateLease?.release();
+                  actor.stateLease = undefined;
                   for (const closed of actor.closed.splice(0)) closed();
                   this.raiseFault(
                     act,
@@ -4052,6 +4475,25 @@ class ExecutorV1 {
             );
           else started();
         };
+        if (layout.max_heap_bytes != null) {
+          actor.budget = new ManagedBudget(
+            this.managed,
+            BigInt(layout.max_heap_bytes),
+          );
+          if (layout.state_type == null)
+            throw new Error("limited actor state lacks a managed descriptor");
+          try {
+            actor.stateLease = actor.budget.retain({
+              value: actor.state,
+              type: layout.state_type,
+              slots: true,
+            });
+          } catch (error) {
+            if (!(error instanceof HeapExceeded)) throw error;
+            failed({ kind: "trap", trap: "heap_exceeded" });
+            return;
+          }
+        }
         if (layout.init != null)
           actor.active = this.invokeFrame(
             actor,
@@ -4174,7 +4616,11 @@ class ExecutorV1 {
             complete: (_value, _error, drained) => drained?.(null),
           };
           const status = this.admitActorMessage(actor, message);
-          if (status === "full" || status === "closed") {
+          if (
+            status === "full" ||
+            status === "closed" ||
+            status === "trapped"
+          ) {
             actor.disposals.push(payload);
             timer.discarded();
             this.dispatchActor(actor);
@@ -4220,7 +4666,23 @@ class ExecutorV1 {
             );
             if (!handler)
               throw new Error("stream request has no producer handler");
+            let managedLease: ManagedLease | undefined;
+            try {
+              managedLease = this.acquireActorMessage(actor, handler, fields);
+            } catch (error) {
+              if (!(error instanceof HeapExceeded)) throw error;
+              this.crashActor(
+                actor,
+                { kind: "trap", trap: "heap_exceeded" },
+                handler,
+              );
+              this.closeValue(payload!, error.message);
+              this.completeShim(act, term, UNIT);
+              this.scheduler.enqueue(act.context.id, () => this.runFrame(act));
+              return;
+            }
             actor.mailbox.push({
+              managedLease,
               caller,
               handler,
               payload: fields,
@@ -4270,6 +4732,7 @@ class ExecutorV1 {
         act.fault ??= task.fault;
         const value = task.value;
         task.value = UNIT;
+        task.taken = true;
         this.completeShim(
           act,
           term,
@@ -4337,6 +4800,23 @@ class ExecutorV1 {
             complete: (_value, _error, drained) => drained?.(null),
           };
           const status = this.admitActorMessage(actor, message);
+          if (status === "trapped") {
+            this.closeValueAsync(
+              payload,
+              "actor heap limit exceeded",
+              (fault) => {
+                act.fault ??= fault;
+                finish(
+                  this.variant(term.result_shape, "ResultErr", [
+                    this.variant(term.error_shape, "ActorErrorTrapped"),
+                  ]),
+                );
+              },
+              act.context.actor,
+              act.rcOwner,
+            );
+            return;
+          }
           if (status === "full") {
             if (operation.policy === "drop_newest") {
               let settled = false;
@@ -4667,6 +5147,7 @@ class ExecutorV1 {
     let admitted = false;
     let closing = false;
     const owner = this.current.context.actor;
+    const sender = this.current;
     const rcOwner = this.current.rcOwner;
     const deadline = this.requestDeadline(this.current);
     let cancelTimer: (() => void) | undefined;
@@ -4794,9 +5275,24 @@ class ExecutorV1 {
         }
         return;
       }
+      let managedLease: ManagedLease | undefined;
+      try {
+        managedLease = this.acquireActorMessage(actor, handler, payload);
+      } catch (error) {
+        if (!(error instanceof HeapExceeded)) throw error;
+        this.crashActor(
+          actor,
+          { kind: "trap", trap: "heap_exceeded" },
+          handler,
+        );
+        reject("Trapped");
+        return;
+      }
       admitted = true;
+      for (const lease of sender.managedInputs.splice(0)) lease.release();
       receiver = actor;
       message = {
+        managedLease,
         caller,
         handler,
         payload,
@@ -4817,6 +5313,8 @@ class ExecutorV1 {
       const index = receiver.mailbox.indexOf(message);
       if (index < 0) return;
       receiver.mailbox.splice(index, 1);
+      message.managedLease?.release();
+      message.managedLease = undefined;
       admitted = false;
       for (const admit of receiver.admission.splice(0)) admit();
     };
@@ -4847,16 +5345,57 @@ class ExecutorV1 {
     };
   }
 
+  private acquireActorMessage(
+    actor: ActorInstance,
+    handler: ActorMessage["handler"],
+    payload: VmValue[],
+  ): ManagedLease | undefined {
+    if (!actor.budget) return undefined;
+    const params = this.functionAt(handler.callable).params.slice(1);
+    if (params.length !== payload.length)
+      throw new Error("typed message payload differs from its handler");
+    return actor.budget.retainMany(
+      params.map((param, index) => {
+        if (param.managed_type == null)
+          throw new Error("message parameter lacks its managed descriptor");
+        return {
+          value: payload[index]!,
+          type: param.managed_type,
+          slots: true,
+        };
+      }),
+    );
+  }
+
   private admitActorMessage(
     actor: ActorInstance,
     message: ActorMessage,
-  ): "accepted" | "discarded" | "full" | "closed" {
+  ): "accepted" | "discarded" | "full" | "closed" | "trapped" {
     if (!actor.alive || actor.closing) return "closed";
     const full =
       actor.layout.mailbox_capacity != null &&
       actor.mailbox.length >= actor.layout.mailbox_capacity;
     let declared = full ? actor.layout.overflow : null;
+    const acquire = () => {
+      try {
+        message.managedLease = this.acquireActorMessage(
+          actor,
+          message.handler,
+          message.payload,
+        );
+      } catch (error) {
+        if (!(error instanceof HeapExceeded)) throw error;
+        this.crashActor(
+          actor,
+          { kind: "trap", trap: "heap_exceeded" },
+          message.handler,
+        );
+        return false;
+      }
+      return true;
+    };
     const discard = (lost: ActorMessage) => {
+      if (lost.managedLease) actor.disposalLeases.push(lost.managedLease);
       actor.disposals.push({
         kind: "record",
         typeId: "",
@@ -4879,6 +5418,7 @@ class ExecutorV1 {
           )
         : -1;
       if (queued >= 0) {
+        if (!acquire()) return "trapped";
         const superseded = actor.mailbox[queued]!;
         actor.mailbox[queued] = message;
         discard(superseded);
@@ -4895,12 +5435,14 @@ class ExecutorV1 {
         ? actor.mailbox.findIndex((queued) => !queued.obligated)
         : -1;
     if (oldest >= 0) {
+      if (!acquire()) return "trapped";
       const [evicted] = actor.mailbox.splice(oldest, 1);
       actor.mailbox.push(message);
       discard(evicted!);
       return "accepted";
     }
     if (full) return "full";
+    if (!acquire()) return "trapped";
     actor.mailbox.push(message);
     this.trace.snapshot("actor.send", {
       actor_id: actor.id,
@@ -4993,10 +5535,12 @@ class ExecutorV1 {
     if (actor.disposals.length > 0) {
       actor.busy = true;
       const values = actor.disposals.splice(0);
+      const leases = actor.disposalLeases.splice(0);
       this.closeValueAsync(
         { kind: "vector", elementType: "message", items: values },
         this.faultText(actor.crashing),
         (fault) => {
+          leases.forEach((lease) => lease.release());
           actor.busy = false;
           if (fault) this.crashActor(actor, fault);
           else this.dispatchActor(actor);
@@ -5039,6 +5583,8 @@ class ExecutorV1 {
         return;
       }
       actor.mailbox.shift();
+      message.managedLease?.release();
+      message.managedLease = undefined;
       for (const admit of actor.admission.splice(0)) admit();
       if (
         message.requestDeadline !== undefined &&
@@ -5202,6 +5748,8 @@ class ExecutorV1 {
                 this.reportFault(actor.closingFault);
               }
               actor.completed = true;
+              actor.stateLease?.release();
+              actor.stateLease = undefined;
               for (const wake of actor.closed.splice(0)) wake();
               for (const admit of actor.admission.splice(0)) admit();
               if (actor.supervisor) {
@@ -5237,11 +5785,13 @@ class ExecutorV1 {
               shape: actor.layout.crash_kind!,
               tag: runtimeTag(
                 this.pkg.variants[actor.layout.crash_kind!]!,
-                code === 214
-                  ? "CrashKindTimerOverdue"
-                  : code === 213
-                    ? "CrashKindHandlerFailed"
-                    : "CrashKindFault",
+                code === 200
+                  ? "CrashKindHeapExceeded"
+                  : code === 214
+                    ? "CrashKindTimerOverdue"
+                    : code === 213
+                      ? "CrashKindHandlerFailed"
+                      : "CrashKindFault",
               ),
               payload: [],
             },
@@ -5693,6 +6243,12 @@ class ExecutorV1 {
     done: (fault: Fault | null) => void,
   ): void {
     const messages = actor.mailbox.splice(0);
+    const leases = [
+      ...actor.disposalLeases.splice(0),
+      ...messages.flatMap((message) =>
+        message.managedLease ? [message.managedLease] : [],
+      ),
+    ];
     actor.drainingMailbox = true;
     this.closeValueAsync(
       {
@@ -5709,6 +6265,7 @@ class ExecutorV1 {
       },
       fault,
       (closeFault) => {
+        leases.forEach((lease) => lease.release());
         actor.drainingMailbox = false;
         for (const message of messages) message.complete(null, "Dead");
         done(closeFault);
@@ -5799,6 +6356,8 @@ class ExecutorV1 {
               }
               actor.completed = true;
               actor.alive = false;
+              actor.stateLease?.release();
+              actor.stateLease = undefined;
               actor.busy = false;
               this.trace.snapshot(
                 actor.terminating ? "actor.terminate" : "actor.stop",
@@ -5975,13 +6534,31 @@ function faultReport(fault: Fault, secondary = false): string {
 
 // ── refs ────────────────────────────────────────────────────────────────────
 
-function ownedRef(value: VmValue): Ref {
-  return { kind: "cell", cell: { value, valid: true } };
+function ownedRef(value: VmValue, budget?: ManagedBudget, type?: number): Ref {
+  if (budget && type == null)
+    throw new Error("owned value has no managed descriptor");
+  return {
+    kind: "cell",
+    cell: {
+      value,
+      valid: true,
+      budget,
+      type,
+      lease: budget?.retain({ value, type: type! }),
+    },
+  };
 }
 
 function writeRef(ref: Ref, value: VmValue): void {
   switch (ref.kind) {
     case "cell":
+      if (ref.cell.budget) {
+        if (ref.cell.type == null)
+          throw new Error("owned place has no managed descriptor");
+        const lease = ref.cell.budget.retain({ value, type: ref.cell.type });
+        ref.cell.lease?.release();
+        ref.cell.lease = lease;
+      }
       ref.cell.value = value;
       ref.cell.valid = true;
       return;
@@ -5997,8 +6574,11 @@ function writeRef(ref: Ref, value: VmValue): void {
 /// Only a cell of its own can be ended; a projection lives as long as the
 /// storage it reaches through.
 function invalidateRef(ref: Ref): void {
-  if (ref.kind === "cell") ref.cell.valid = false;
-  else writeRef(ref, UNIT);
+  if (ref.kind === "cell") {
+    ref.cell.valid = false;
+    ref.cell.lease?.release();
+    ref.cell.lease = undefined;
+  } else writeRef(ref, UNIT);
 }
 
 function readRef(ref: Ref): VmValue {

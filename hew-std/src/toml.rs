@@ -17,39 +17,6 @@ pub struct HewTomlValue {
     inner: toml::Value,
 }
 
-fn managed_payload(value: &toml::Value, copy: bool) -> crate::managed_tree::Payload {
-    use crate::managed_tree::{add, slots, text, HANDLE_BYTES, TOML_NODE_BYTES};
-    match value {
-        toml::Value::String(value) => text(value, copy),
-        toml::Value::Array(values) => {
-            let mut bytes = slots(
-                if copy {
-                    values.len()
-                } else {
-                    values.capacity()
-                },
-                TOML_NODE_BYTES,
-            )?;
-            for value in values {
-                bytes = add(bytes, managed_payload(value, copy)?)?;
-            }
-            Ok(bytes)
-        }
-        toml::Value::Table(values) => {
-            let mut bytes = slots(values.len(), HANDLE_BYTES + TOML_NODE_BYTES)?;
-            for (key, value) in values {
-                bytes = add(bytes, text(key, copy)?)?;
-                bytes = add(bytes, managed_payload(value, copy)?)?;
-            }
-            Ok(bytes)
-        }
-        toml::Value::Integer(_)
-        | toml::Value::Float(_)
-        | toml::Value::Boolean(_)
-        | toml::Value::Datetime(_) => Ok(0),
-    }
-}
-
 /// Visit the canonical payload of a TOML value without copying or mutating it.
 ///
 /// # Safety
@@ -67,10 +34,8 @@ pub unsafe extern "C" fn hew_managed_visit_toml(
     // SAFETY: the borrowed tree and visitor remain live throughout traversal.
     unsafe {
         crate::managed_tree::tree(visitor, core::ptr::from_ref(value).cast(), false, |copy| {
-            crate::managed_tree::add(
-                crate::managed_tree::TOML_NODE_BYTES,
-                managed_payload(&value.inner, copy)?,
-            )
+            hew_codec::managed_tree::toml_payload_bytes(&value.inner, copy)
+                .ok_or(hew_cabi::managed::HEAP_EXCEEDED)
         })
     }
 }

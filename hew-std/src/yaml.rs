@@ -21,92 +21,6 @@ pub struct HewYamlValue {
     inner: Arc<serde_yaml::Value>,
 }
 
-fn normalize_tags(value: &mut serde_yaml::Value) {
-    use serde_yaml::Value;
-    match value {
-        Value::Tagged(tagged) => {
-            // Tag exposes its canonical text but keeps its String private.
-            // Own exactly that text, so its retained UTF-8 capacity is known
-            // without inspecting serde's private representation.
-            tagged.tag =
-                serde_yaml::value::Tag::new(tagged.tag.to_string().into_boxed_str().into_string());
-            normalize_tags(&mut tagged.value);
-        }
-        Value::Sequence(values) => values.iter_mut().for_each(normalize_tags),
-        Value::Mapping(values) => {
-            if values.keys().any(contains_tag) {
-                let mut normalized = serde_yaml::Mapping::with_capacity(values.capacity());
-                for (mut key, mut value) in std::mem::take(values) {
-                    normalize_tags(&mut key);
-                    normalize_tags(&mut value);
-                    normalized.insert(key, value);
-                }
-                *values = normalized;
-            } else {
-                values.values_mut().for_each(normalize_tags);
-            }
-        }
-        Value::Null | Value::Bool(_) | Value::Number(_) | Value::String(_) => {}
-    }
-}
-
-fn contains_tag(value: &serde_yaml::Value) -> bool {
-    match value {
-        serde_yaml::Value::Tagged(_) => true,
-        serde_yaml::Value::Sequence(values) => values.iter().any(contains_tag),
-        serde_yaml::Value::Mapping(values) => values
-            .iter()
-            .any(|(key, value)| contains_tag(key) || contains_tag(value)),
-        _ => false,
-    }
-}
-
-fn tag_bytes(tag: &serde_yaml::value::Tag) -> crate::managed_tree::Payload {
-    use std::fmt::Write as _;
-    struct Counter(u64);
-    impl std::fmt::Write for Counter {
-        fn write_str(&mut self, value: &str) -> std::fmt::Result {
-            self.0 = self
-                .0
-                .checked_add(value.len() as u64)
-                .ok_or(std::fmt::Error)?;
-            Ok(())
-        }
-    }
-    let mut counter = Counter(0);
-    write!(counter, "{tag}").map_err(|_| hew_cabi::managed::HEAP_EXCEEDED)?;
-    Ok(counter.0)
-}
-
-fn managed_payload(value: &serde_yaml::Value) -> crate::managed_tree::Payload {
-    use crate::managed_tree::{add, slots, text, YAML_LAYOUT, YAML_NODE_BYTES};
-    match value {
-        serde_yaml::Value::String(value) => text(value, false),
-        serde_yaml::Value::Sequence(values) => {
-            let mut bytes = slots(values.capacity(), YAML_NODE_BYTES)?;
-            for value in values {
-                bytes = add(bytes, managed_payload(value)?)?;
-            }
-            Ok(bytes)
-        }
-        serde_yaml::Value::Mapping(values) => {
-            let mut bytes = slots(values.capacity(), 2 * YAML_NODE_BYTES)?;
-            for (key, value) in values {
-                bytes = add(bytes, managed_payload(key)?)?;
-                bytes = add(bytes, managed_payload(value)?)?;
-            }
-            Ok(bytes)
-        }
-        serde_yaml::Value::Tagged(tagged) => {
-            let bytes = add(YAML_LAYOUT.tagged_bytes, tag_bytes(&tagged.tag)?)?;
-            add(bytes, managed_payload(&tagged.value)?)
-        }
-        serde_yaml::Value::Null | serde_yaml::Value::Bool(_) | serde_yaml::Value::Number(_) => {
-            Ok(0)
-        }
-    }
-}
-
 /// Visit one shared immutable YAML tree's canonical payload.
 ///
 /// # Safety
@@ -124,10 +38,8 @@ pub unsafe extern "C" fn hew_managed_visit_yaml(
     // SAFETY: the Arc keeps its complete immutable tree and visitor live.
     unsafe {
         crate::managed_tree::tree(visitor, Arc::as_ptr(&value.inner).cast(), true, |_| {
-            crate::managed_tree::add(
-                crate::managed_tree::YAML_NODE_BYTES,
-                managed_payload(value.value())?,
-            )
+            hew_codec::managed_tree::yaml_payload_bytes(value.value())
+                .ok_or(hew_cabi::managed::HEAP_EXCEEDED)
         })
     }
 }
@@ -191,7 +103,7 @@ mod managed_tests {
             value: serde_yaml::Value::String("x".to_owned()),
         };
         let mut tagged = serde_yaml::Value::Tagged(Box::new(tag));
-        normalize_tags(&mut tagged);
+        hew_codec::managed_tree::normalize_yaml_tags(&mut tagged);
         let value = boxed_value(tagged);
         let mut mapping = serde_yaml::Mapping::with_capacity(32);
         mapping.insert(serde_yaml::Value::Bool(true), serde_yaml::Value::Null);
@@ -365,7 +277,7 @@ pub unsafe extern "C" fn hew_yaml_parse(yaml_str: *const HewString) -> *mut HewY
     let s = unsafe { string_as_str(yaml_str) };
     match hew_codec::yaml_value::parse(s) {
         Ok(mut val) => {
-            normalize_tags(&mut val);
+            hew_codec::managed_tree::normalize_yaml_tags(&mut val);
             clear_parse_last_error();
             boxed_value(val)
         }

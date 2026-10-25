@@ -19,6 +19,7 @@ pub(super) fn bind_frame_roots<'ctx>(
         .filter(|(id, _)| {
             let storage = &function.storage[id.0 as usize];
             storage.own == OwnKind::Owned
+                && function.frame_roots.slots.contains(id)
                 && !matches!(
                     storage.origin,
                     StorageOrigin::ActorState { .. } | StorageOrigin::Capture { .. }

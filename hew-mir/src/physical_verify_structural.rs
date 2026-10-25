@@ -153,7 +153,7 @@ pub(crate) fn verify_structural_glue(module: &PhysicalModule) -> Result<(), Phys
 )]
 pub(crate) fn verify_physical_module(
     module: &PhysicalModule,
-) -> Result<BTreeMap<super::CallableId, super::PhysicalDebugAvailability>, PhysicalError> {
+) -> Result<BTreeMap<super::CallableId, super::verify_ops::FunctionInitialization>, PhysicalError> {
     capability::verify(module)?;
     wire::verify_actor_codecs(module)?;
     verify_resources(module)?;
@@ -674,7 +674,7 @@ pub(crate) fn verify_variant_glue(
 pub(crate) fn verify_physical_function(
     module: &PhysicalModule,
     function: &PhysicalFunction,
-) -> Result<super::PhysicalDebugAvailability, PhysicalError> {
+) -> Result<super::verify_ops::FunctionInitialization, PhysicalError> {
     suspend::verify_task_scopes(function)?;
     let callable = module
         .callables

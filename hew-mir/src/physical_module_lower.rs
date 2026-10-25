@@ -346,9 +346,14 @@ pub fn lower_physical_module(
             .is_resumable = is_resumable;
     }
     physical.releases = ReleaseEffects::compute(&physical);
-    for (callable, available) in verify_physical_module(&physical)? {
-        if let Some(debug) = physical.debug.functions.get_mut(&callable) {
-            debug.available = available;
+    let mut initialization = verify_physical_module(&physical)?;
+    for function in &mut physical.functions {
+        let facts = initialization
+            .remove(&function.callable)
+            .ok_or_else(|| PhysicalError::new("verified body lacks initialization facts"))?;
+        function.frame_roots = facts.frame_roots;
+        if let Some(debug) = physical.debug.functions.get_mut(&function.callable) {
+            debug.available = facts.available;
         }
     }
     Ok(VerifiedPhysicalModule(physical))
@@ -1359,6 +1364,7 @@ pub(crate) fn lower_function(
             entry: function.entry,
             parameters,
             place_storage,
+            frame_roots: super::PhysicalFrameRootPlan::default(),
             storage: lowerer.storage,
             blocks,
         },

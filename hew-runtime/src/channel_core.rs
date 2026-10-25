@@ -51,6 +51,9 @@ use crate::read_slot::{
 };
 use crate::wake::{HewWaker, OwnedWaker};
 
+pub(crate) mod typed;
+use typed::QueueItem;
+
 /// Whether a producer blocked on a full ring must abandon its send because the
 /// runtime is shutting down.
 ///
@@ -126,7 +129,7 @@ impl NativeRegistration {
     reason = "producer closure, reader closure, fault and one-time binding are independent lifecycle facts"
 )]
 struct Inner {
-    queue: VecDeque<Vec<u8>>,
+    queue: VecDeque<QueueItem>,
     capacity: usize,
     /// The producer signalled EOF: every sink handle finished or closed.
     sink_closed: bool,
@@ -406,7 +409,7 @@ impl ChannelCore {
         let native_producers;
         {
             let mut inner = self.locked();
-            match inner.queue.pop_front() {
+            match inner.queue.pop_front().map(QueueItem::into_content) {
                 Some(bytes) => {
                     item = bytes;
                     producer_wake = Self::drain_one_producer(&mut inner);
@@ -503,7 +506,7 @@ impl ChannelCore {
                 inner.native_producers.push(registration);
                 return (0, Some(envelope));
             }
-            inner.queue.push_back(envelope);
+            inner.queue.push_back(envelope.into());
             consumer_wake = inner.consumer.take();
             native_consumer = inner
                 .native_consumer
@@ -573,7 +576,7 @@ impl ChannelCore {
         let fault_actor_id;
         {
             let mut inner = self.locked();
-            item = inner.queue.pop_front();
+            item = inner.queue.pop_front().map(QueueItem::into_content);
             fault_actor_id = if item.is_none() {
                 inner.sink_fault.then_some(inner.fault_actor_id).flatten()
             } else {
@@ -616,7 +619,7 @@ impl ChannelCore {
         {
             let mut inner = self.locked();
             loop {
-                if let Some(v) = inner.queue.pop_front() {
+                if let Some(v) = inner.queue.pop_front().map(QueueItem::into_content) {
                     item = Some(v);
                     break;
                 }
@@ -768,7 +771,7 @@ impl ChannelCore {
                 return STREAM_AWAIT_READY;
             }
             if inner.queue.len() < inner.capacity {
-                inner.queue.push_back(item);
+                inner.queue.push_back(item.into());
                 consumer_wake = inner.consumer.take();
                 native_consumer = inner
                     .native_consumer
@@ -831,7 +834,7 @@ impl ChannelCore {
                     return;
                 }
                 if inner.queue.len() < inner.capacity {
-                    inner.queue.push_back(item);
+                    inner.queue.push_back(item.into());
                     consumer_wake = inner.consumer.take();
                     native_consumer = inner
                         .native_consumer
@@ -904,7 +907,7 @@ impl ChannelCore {
             if inner.queue.len() >= inner.capacity {
                 return (TrySendResult::Full, Some(item));
             }
-            inner.queue.push_back(item);
+            inner.queue.push_back(item.into());
             consumer_wake = inner.consumer.take();
             native_consumer = inner
                 .native_consumer
@@ -1001,7 +1004,7 @@ impl ChannelCore {
             let mut inner = self.locked();
             inner.stream_closed = true;
             layout = inner.elem_layout;
-            discarded.extend(inner.queue.drain(..));
+            discarded.extend(inner.queue.drain(..).map(QueueItem::into_content));
             native_producers = std::mem::take(&mut inner.native_producers);
             actor_stream_cancellation = inner.actor_stream_cancellation.take();
             while let Some(mut w) = inner.producers.pop_front() {
@@ -1153,7 +1156,7 @@ impl ChannelCore {
         }
         let mut w = inner.producers.pop_front()?;
         if let Some(item) = w.item.take() {
-            inner.queue.push_back(item);
+            inner.queue.push_back(item.into());
         }
         Some(w)
     }
@@ -1171,7 +1174,7 @@ impl Drop for ChannelCore {
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let layout = inner.elem_layout;
         for env in inner.queue.drain(..) {
-            Self::drop_envelope(layout.as_ref(), env);
+            Self::drop_envelope(layout.as_ref(), env.into_content());
         }
         if let Some(w) = inner.consumer.take() {
             // SAFETY: the core owned this in-flight ref; nothing else can

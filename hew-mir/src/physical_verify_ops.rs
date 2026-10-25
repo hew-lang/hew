@@ -1314,7 +1314,7 @@ pub(crate) fn arm_release_fault(
                 place
                     .leaves
                     .iter()
-                    .any(|leaf| leaf.destroy.as_ref().is_some_and(raises))
+                    .any(|leaf| leaf.recipe.destroy.as_ref().is_some_and(raises))
             })
     {
         state.fault = FaultState::MaybeActive;

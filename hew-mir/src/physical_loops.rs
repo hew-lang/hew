@@ -223,7 +223,7 @@ impl PhysicalFunction {
                         || !place.path.is_empty()
                         || place.leaves.len() != 1
                         || place.leaves[0].storage != *id
-                        || place.leaves[0].destroy.is_some()
+                        || place.leaves[0].recipe.destroy.is_some()
                 })
         }) {
             return None;

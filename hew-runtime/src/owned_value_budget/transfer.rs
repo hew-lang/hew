@@ -390,6 +390,7 @@ mod tests {
         ) -> i32 {
             // SAFETY: this test descriptor lends the same live provider.
             let provider = unsafe { &*slot.cast::<*const Provider>().read() };
+            // SAFETY: the synchronous caller retains the visitor throughout this test walk.
             let walk = unsafe { &*visitor };
             match walk.kind {
                 HewManagedWalkKind::PrepareTransfer => {
@@ -409,6 +410,7 @@ mod tests {
                     0
                 }
                 _ => {
+                    // SAFETY: the live provider and callback share this synchronous visitor.
                     let status = unsafe {
                         (walk.storage)(walk.context, core::ptr::from_ref(provider).cast(), 6)
                     };

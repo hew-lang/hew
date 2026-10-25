@@ -34,11 +34,14 @@ pub unsafe extern "C" fn hew_managed_visit_invocation(
     }
     // SAFETY: the canonical record and pinned view outlive this frozen walk.
     let record = unsafe { &*state.cast::<hew_cabi::coro::HewCoroInvocation>() };
+    // SAFETY: the frozen invocation retains its compiler-bound frame view.
     if let Some(frame) = unsafe { record.managed_frame.as_ref() } {
         // Settle pending protocol ownership before freezing endpoints retained
         // by ordinary slots. A typed write can hold its receiver's admission
         // gate until this operation view cancels or quiesces that write.
+        // SAFETY: the frame pins its active operation until semantic take.
         if let Some(operation) = unsafe { frame.operation.as_ref() } {
+            // SAFETY: the active operation retains its exact descriptor.
             if let Some(layout) = unsafe { operation.layout.as_ref() } {
                 // SAFETY: the active protocol owns this typed handle until
                 // its emitter clears the same root before consumption/free.
@@ -53,6 +56,7 @@ pub unsafe extern "C" fn hew_managed_visit_invocation(
             let child = unsafe { frame.child.read() }
                 .cast_mut()
                 .cast::<HewCoroState>();
+            // SAFETY: the frozen parent pins this child throughout the walk.
             let status = unsafe { hew_managed_visit_invocation(child, visitor) };
             if status != 0 {
                 return status;
@@ -78,9 +82,13 @@ pub unsafe extern "C" fn hew_managed_visit_invocation(
     }
     // Rebinding is a commit-only mutation after destination quota acquisition.
     // Provider freeze protects this invocation and its retained contexts.
+    // SAFETY: the synchronous visitor is pinned by the owning transfer.
     if unsafe { (*visitor).kind } == HewManagedWalkKind::CommitTransfer {
+        // SAFETY: CommitTransfer carries the canonical destination account.
         let owner = unsafe { super::transfer::destination_owner(visitor) };
+        // SAFETY: the same transfer pins its destination execution binding.
         let binding = unsafe { super::transfer::destination_binding(visitor) };
+        // SAFETY: provider quiescence excludes execution and teardown.
         unsafe { crate::coro_state::rebind_value_owner(state, owner, binding) };
     }
     0

@@ -78,7 +78,7 @@ pub unsafe extern "C" fn hew_managed_visit_string(
 }
 
 /// # Safety
-/// The slot contains a live BytesTriple and visitor remains live.
+/// The slot contains a live `BytesTriple` and visitor remains live.
 #[no_mangle]
 pub unsafe extern "C" fn hew_managed_visit_bytes(
     slot: *const c_void,
@@ -102,7 +102,7 @@ pub unsafe extern "C" fn hew_managed_visit_bytes(
 }
 
 /// # Safety
-/// The slot contains a live typed HewVec pointer; no mutation races this walk.
+/// The slot contains a live typed `HewVec` pointer; no mutation races this walk.
 #[no_mangle]
 pub unsafe extern "C" fn hew_managed_visit_vector(
     slot: *const c_void,
@@ -110,6 +110,7 @@ pub unsafe extern "C" fn hew_managed_visit_vector(
 ) -> i32 {
     // SAFETY: the descriptor supplies the live container handle.
     let pointer = unsafe { slot.cast::<*const hew_cabi::vec::HewVec>().read() };
+    // SAFETY: the slot owner retains this immutable header throughout the visit.
     let end = unsafe { pointer.as_ref() }.map_or(0, |value| value.len);
     // SAFETY: the ordinary value owns the full initialized range and backing.
     unsafe { visit_vector_range(pointer, 0, end, true, visitor) }
@@ -276,29 +277,8 @@ pub unsafe extern "C" fn hew_managed_visit_shared(
     slot: *const c_void,
     visitor: *const HewManagedStorageVisitor,
 ) -> i32 {
-    // SAFETY: the strong reference retains both layout and payload storage.
-    unsafe {
-        let data = slot.cast::<*mut u8>().read();
-        if data.is_null() {
-            return 0;
-        }
-        let layout = crate::rc::managed_payload_layout(data);
-        let width = match slot_bytes(&layout) {
-            Ok(width) => width,
-            Err(status) => return status,
-        };
-        match storage(visitor, data.cast(), width) {
-            SKIP_DESCENDANTS => return 0,
-            DESCEND => {}
-            failure => return failure,
-        }
-        // Copying Rc retains its existing payload; it never deep-copies it.
-        let mut payload_visitor = *visitor;
-        if payload_visitor.kind == HewManagedWalkKind::ClonePlan {
-            payload_visitor.kind = HewManagedWalkKind::Retain;
-        }
-        visit_value(&layout, data.cast(), &raw const payload_visitor)
-    }
+    // SAFETY: the strong reference retains this exact cell throughout the typed walk.
+    unsafe { crate::rc::visit_managed(slot.cast::<*mut u8>().read(), visitor) }
 }
 
 /// # Safety
@@ -425,18 +405,18 @@ mod tests {
             }
             let alias = hew_vec_clone(value);
             assert_eq!(
-                hew_managed_visit_vector((&raw const value).cast(), &sink),
+                hew_managed_visit_vector((&raw const value).cast(), &raw const sink),
                 0
             );
             assert_eq!(
-                hew_managed_visit_vector((&raw const alias).cast(), &sink),
+                hew_managed_visit_vector((&raw const alias).cast(), &raw const sink),
                 0
             );
             assert_eq!(walk.retained.values().sum::<u64>(), 32);
             let item = 4_i64;
             hew_vec_push_owned(alias, (&raw const item).cast());
             assert_eq!(
-                hew_managed_visit_vector((&raw const alias).cast(), &sink),
+                hew_managed_visit_vector((&raw const alias).cast(), &raw const sink),
                 0
             );
             assert_eq!(walk.retained.values().sum::<u64>(), 96);
@@ -459,7 +439,7 @@ mod tests {
             let mut walk = Walk::default();
             let sink = visitor(&mut walk, HewManagedWalkKind::ClonePlan);
             assert_eq!(
-                hew_managed_visit_vector((&raw const value).cast(), &sink),
+                hew_managed_visit_vector((&raw const value).cast(), &raw const sink),
                 0
             );
             assert_eq!(
@@ -476,12 +456,18 @@ mod tests {
         // SAFETY: both triples keep the same backing live through the visit.
         unsafe {
             let input = b"0123456789abcdef0123456789abcdef";
-            let original = crate::bytes::hew_bytes_from_static(input.as_ptr(), input.len() as u32);
+            let original = crate::bytes::hew_bytes_from_static(
+                input.as_ptr(),
+                u32::try_from(input.len()).unwrap(),
+            );
             let alias =
                 crate::bytes::hew_bytes_slice(original.ptr, original.offset, original.len, 0, 1);
             let mut walk = Walk::default();
             let sink = visitor(&mut walk, HewManagedWalkKind::Retain);
-            assert_eq!(hew_managed_visit_bytes((&raw const alias).cast(), &sink), 0);
+            assert_eq!(
+                hew_managed_visit_bytes((&raw const alias).cast(), &raw const sink),
+                0
+            );
             assert_eq!(walk.retained.values().sum::<u64>(), 32);
             crate::bytes::hew_bytes_drop(alias.ptr);
             crate::bytes::hew_bytes_drop(original.ptr);

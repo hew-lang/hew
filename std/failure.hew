@@ -70,7 +70,7 @@ pub enum CrashKind {
     /// Generic crash from `panic(...)`, `hew_panic()`, or an
     /// unclassified trap (SEGV / BUS / FPE / ILL / TRAP).
     Fault;
-    /// Per-actor arena cap exceeded.
+    /// The actor's owned managed values exceeded its byte budget.
     HeapExceeded;
     /// A remote link became unreachable under its partition policy.
     PartitionDetected;

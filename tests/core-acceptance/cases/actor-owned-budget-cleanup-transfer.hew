@@ -26,6 +26,11 @@ fn finish_in_cleanup(consume ready: stream.Sink<i64>, consume gate: stream.Strea
         values.push(i);
     }
     let ticket = Ticket { values: values, ready: ready, gate: gate };
+    var sibling: Vec<i64> = Vec.new();
+    for i in 0..4 { sibling.push(i); }
+    // Reverse tuple cleanup reaches Ticket first. The other field remains
+    // owned while Ticket.close parks, and must follow the transferred task.
+    let _owners = (sibling, ticket);
     7
 }
 

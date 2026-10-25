@@ -94,7 +94,11 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
             self.emit_edge(fail)?;
             self.builder.position_at_end(live);
         }
-        let failure = if shared_access { None } else { failure };
+        let failure = if shared_access && !matches!(action.family, RuntimeCallFamily::RcSet) {
+            None
+        } else {
+            failure
+        };
         // A collection operation is realized entirely by its physical glue.
         match action.carrier {
             PhysicalRuntimeCarrier::Map { operation, glue } => {
@@ -125,7 +129,7 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                 );
             }
             PhysicalRuntimeCarrier::SharedHandle(glue) => {
-                self.emit_shared_call(action.family, glue, transfers, result)?;
+                self.emit_shared_call(action.family, glue, transfers, result, failure)?;
                 return self.emit_result_edge(result, normal);
             }
             PhysicalRuntimeCarrier::StructuralFormat(glue) => {

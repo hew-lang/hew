@@ -1,8 +1,17 @@
 //! Checked storage plans from explicit physical construction and SIR layouts.
 
+#![allow(
+    clippy::wildcard_imports,
+    reason = "sibling split of the physical lowerer"
+)]
+
 use super::*;
 
 impl FunctionLowerer<'_> {
+    #[expect(
+        clippy::too_many_lines,
+        reason = "closed projection of the owning construction operation"
+    )]
     pub(crate) fn managed_acquisition(
         &self,
         operations: &[PhysicalOp],

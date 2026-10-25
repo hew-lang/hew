@@ -88,20 +88,38 @@ pub unsafe extern "C" fn hew_vec_push_managed(
     moved: u32,
     invocation: *const crate::coro_state::HewCoroState,
 ) -> i32 {
-    use crate::owned_value_budget::{
-        materialize::{invocation_owner, HewManagedInput, MaterializationPermit},
-        ManagedStorage,
-    };
-    // SAFETY: the compiler retains the inputs until this checked call succeeds.
-    unsafe {
-        let Some(owner) = invocation_owner(invocation) else {
+    // SAFETY: the caller retains the invocation and both typed inputs.
+    let Some(owner) =
+        (unsafe { crate::owned_value_budget::materialize::invocation_owner(invocation) })
+    else {
+        // SAFETY: unbounded execution retains the ordinary ownership contract.
+        unsafe {
             if moved != 0 {
                 hew_vec_push_owned_move(v, data);
             } else {
                 hew_vec_push_owned(v, data);
             }
-            return 0;
-        };
+        }
+        return 0;
+    };
+    // SAFETY: bounded execution retains the same inputs through publication.
+    unsafe { push_managed_bounded(v, data, moved, owner) }
+}
+
+// Keep reservation bookkeeping off the ordinary unbounded push's stack.
+#[inline(never)]
+unsafe fn push_managed_bounded(
+    v: *mut HewVec,
+    data: *const c_void,
+    moved: u32,
+    owner: crate::owned_value_budget::ValueOwner,
+) -> i32 {
+    use crate::owned_value_budget::{
+        materialize::{HewManagedInput, MaterializationPermit},
+        ManagedStorage,
+    };
+    // SAFETY: the checked caller retains the inputs until publication succeeds.
+    unsafe {
         let layout = owned_descriptor(v);
         let Some(managed) = layout.managed.as_ref() else {
             return hew_cabi::managed::UNDESCRIBED;

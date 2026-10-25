@@ -100,6 +100,15 @@ impl ReadyState {
     }
 }
 
+pub(crate) fn enqueue(work: Arc<dyn ReadyWork>) {
+    #[cfg(not(target_arch = "wasm32"))]
+    if !crate::driver::active() {
+        crate::scheduler::enqueue_work(work);
+        return;
+    }
+    crate::driver::publish_work(work);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -131,13 +140,4 @@ mod tests {
         assert!(!state.try_begin());
         assert!(!state.finish(false));
     }
-}
-
-pub(crate) fn enqueue(work: Arc<dyn ReadyWork>) {
-    #[cfg(not(target_arch = "wasm32"))]
-    if !crate::driver::active() {
-        crate::scheduler::enqueue_work(work);
-        return;
-    }
-    crate::driver::publish_work(work);
 }

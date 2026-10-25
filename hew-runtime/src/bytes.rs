@@ -253,7 +253,8 @@ unsafe fn prepare_mutation(
     let cap = if detached {
         value.len.max(MIN_CAPACITY)
     } else {
-        old.expect("non-null unique bytes have a backing").bytes as u32
+        u32::try_from(old.expect("non-null unique bytes have a backing").bytes)
+            .map_err(|_| hew_cabi::managed::HEAP_EXCEEDED)?
     };
     let offset = if detached { 0 } else { value.offset };
     let fail = || hew_cabi::managed::HEAP_EXCEEDED;
@@ -1022,6 +1023,8 @@ pub unsafe extern "C" fn hew_bytes_ends_with(
 ///
 /// `data` must be valid for `len` bytes (or null if `len == 0`).
 #[no_mangle]
+/// # Panics
+/// Panics if literal capacity no longer fits the runtime's u32 buffer ABI.
 pub unsafe extern "C" fn hew_bytes_from_static(data: *const u8, len: u32) -> BytesTriple {
     if len == 0 || data.is_null() {
         return BytesTriple {

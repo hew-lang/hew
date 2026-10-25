@@ -580,6 +580,9 @@ impl RuntimeSemanticContract {
     }
 
     /// Add the checked publication edge without changing existing failures.
+    ///
+    /// # Panics
+    /// Panics for a failure combination without an explicit checked cleanup contract.
     #[must_use]
     pub const fn with_managed_publication(mut self) -> Self {
         if !self.publishes_managed_leaf() {
@@ -612,10 +615,19 @@ impl RuntimeSemanticContract {
                 self.result,
                 RuntimeResultEffect::FreshOwned(
                     RuntimeValueKind::PipeHalf(PipeHalfKind::Sink)
-                        | RuntimeValueKind::Applied(BuiltinType::Sink, _)
+                        | RuntimeValueKind::Applied(BuiltinType::Sink | BuiltinType::Stream, _)
+                        | RuntimeValueKind::Receiver(BuiltinType::Rc)
                 )
             ))
-            || self.failures == [RuntimeLogicalFailure::RcUnavailable]
+            || (self
+                .failures
+                .contains(&RuntimeLogicalFailure::RcUnavailable)
+                && self.failures.iter().all(|failure| {
+                    matches!(
+                        failure,
+                        RuntimeLogicalFailure::RcUnavailable | RuntimeLogicalFailure::HeapExceeded
+                    )
+                }))
             || (!self.failures.is_empty()
                 && self.failures.iter().all(|failure| {
                     matches!(

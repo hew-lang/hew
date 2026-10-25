@@ -64,6 +64,8 @@ impl MaterializationPermit {
     ///
     /// # Safety
     /// All typed inputs remain live and unchanged until construction commits.
+    /// # Errors
+    /// Returns a quota or descriptor refusal without consuming input ownership.
     pub unsafe fn prepare(
         owner: ValueOwner,
         fresh_bytes: u64,
@@ -100,6 +102,8 @@ impl MaterializationPermit {
     ///
     /// # Safety
     /// The result matches layout and retains all moved input payloads.
+    /// # Errors
+    /// Returns a descriptor refusal if the unpublished result differs from its plan.
     pub unsafe fn commit(self, layout: &HewValueLayout, result: *const c_void) -> Result<(), i32> {
         let Self {
             owner,
@@ -345,16 +349,16 @@ mod tests {
 
     #[test]
     fn unpublished_result_refusal_cleans_without_inheriting_the_bounded_owner() {
-        let owner = ValueOwner::new(Some(5));
-        let mut layout = crate::layout_intrinsics::hew_layout_val_string;
         unsafe extern "C-unwind" fn drop_string(slot: *mut c_void) {
             // SAFETY: the cursor owns this initialized string carrier.
             unsafe {
                 crate::string::hew_string_drop_managed(
                     slot.cast::<*mut hew_cabi::string::HewString>().read(),
-                )
+                );
             };
         }
+        let owner = ValueOwner::new(Some(5));
+        let mut layout = crate::layout_intrinsics::hew_layout_val_string;
         layout.drop_fn = Some(drop_string);
         // SAFETY: each fresh string is published or transferred into one cursor.
         unsafe {

@@ -283,7 +283,6 @@ export function resolveRuntime(entry: RuntimeFamilyEntry): RuntimeRegistration {
           });
         case "GetBorrow":
         case "TakeFirst":
-        case "Append":
           return refused(`Vector::${entry.detail}`);
         default:
           return ordinary(VECTOR_SHIMS[entry.detail]);
@@ -997,6 +996,15 @@ const VECTOR_SHIMS = {
     target.items.push(arg(args, 1));
     return target;
   },
+  Append: (_host, args) => {
+    const target = vec(args, 0);
+    const added = [...vec(args, 1).items];
+    if (added.length) {
+      mutableVector(target, target.items.length + added.length, added);
+      target.items.push(...added.map(cloneValue));
+    }
+    return target;
+  },
   Remove: (_host, args) => {
     const target = vec(args, 0);
     const at = index(args, 1);
@@ -1038,23 +1046,26 @@ const VECTOR_SHIMS = {
     const start = index(args, 1);
     const end = index(args, 2);
     checkSliceBounds(start, end, items.length);
-    return {
-      kind: "vector",
-      elementType: "",
-      items: items.slice(start, end).map(cloneValue),
-    };
+    return vectorSlice(items.slice(start, end));
   },
   SliceFrom: (_host, args) => {
     const items = vec(args, 0).items;
     const start = index(args, 1);
     checkSliceBounds(start, items.length, items.length);
-    return {
-      kind: "vector",
-      elementType: "",
-      items: items.slice(start).map(cloneValue),
-    };
+    return vectorSlice(items.slice(start));
   },
 } satisfies Record<string, RuntimeShim>;
+
+function vectorSlice(items: readonly VmValue[]): VmValue {
+  const result: Extract<VmValue, { kind: "vector" }> = {
+    kind: "vector",
+    elementType: "",
+    items: [],
+  };
+  mutableVector(result, items.length);
+  result.items.push(...items.map(cloneValue));
+  return result;
+}
 
 function sequenceElement(args: VmValue[]): VmValue {
   const items = vec(args, 0).items;

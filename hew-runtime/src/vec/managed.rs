@@ -1,13 +1,20 @@
 //! Checked vector mutation and copied-result publication. The existing vector
 //! implementation remains the authority for allocation and element semantics.
 
-use super::*;
+use super::{
+    buffer_owner, capacity_for, hew_vec_append, hew_vec_get_clone, hew_vec_make_unique,
+    hew_vec_set_owned_move_release, hew_vec_set_owned_release, owned_descriptor, HewValueLayout,
+    HewVec,
+};
 use crate::coro_state::HewCoroState;
 use crate::owned_value_budget::{
     materialize::{invocation_owner, HewManagedInput, MaterializationPermit},
     BackingChange, ManagedStorage, ValueOwner,
 };
+use crate::release_walker::HewReleaseCursor;
+use core::{ffi::c_void, ptr};
 use hew_cabi::managed::HEAP_EXCEEDED;
+use std::sync::atomic::Ordering;
 
 unsafe fn prepare_backing(
     owner: &ValueOwner,

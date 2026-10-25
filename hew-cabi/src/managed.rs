@@ -26,6 +26,10 @@ pub const TRANSFER_PENDING: i32 = 4;
 pub enum HewManagedWalkKind {
     Retain,
     Release,
+    /// Move one creator-owned Rc payload graph after its ordinary handle
+    /// transfer. Nested Rc edges release their cell edge only; graph-wide
+    /// commit visits each reached cell's owned payload separately.
+    ReleaseTransferredPayload,
     /// Preflight a semantic copy. A null storage identity describes fresh
     /// private capacity, while an existing identity describes a shared retain.
     ClonePlan,

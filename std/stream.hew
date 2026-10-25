@@ -73,7 +73,9 @@ pub fn pipe<T>(capacity: i64) -> Result<(Sink<T>, Stream<T>), string> {
     }
     let (sink, input, valid): (Sink<T>, Stream<T>, bool) = pipe_halves(capacity);
     if !valid {
-        return .Err(unsafe { hew_stream_last_error() });
+        return .Err(unsafe {
+            hew_stream_last_error()
+        });
     }
     .Ok((sink, input))
 }

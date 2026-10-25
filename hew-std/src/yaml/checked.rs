@@ -1,5 +1,10 @@
 //! Checked allocation boundaries for owned encoding results.
 
+#![allow(
+    clippy::wildcard_imports,
+    reason = "checked sibling shares its provider module's concrete helpers"
+)]
+
 use super::*;
 use hew_cabi::value::HewValueLayout;
 

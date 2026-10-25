@@ -1465,6 +1465,7 @@ pub struct PhysicalBlock {
 impl PhysicalBlock {
     /// Static inventory, including operations on checked acquisition success.
     /// Availability and execution retain the terminator's two distinct paths.
+    #[must_use]
     pub fn operations(&self) -> impl DoubleEndedIterator<Item = &PhysicalOp> {
         let checked = match &self.terminator {
             PhysicalTerminator::Materialize { operations, .. } => operations.as_slice(),

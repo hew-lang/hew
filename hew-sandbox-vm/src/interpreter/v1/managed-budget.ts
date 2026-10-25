@@ -104,7 +104,7 @@ export class ManagedLayouts {
         case "variant":
           return row.cases.some((fields) => fields.some(contains));
         case "shared":
-          return !row.weak && contains(row.payload);
+          return !row.weak;
         case "map":
           return contains(row.key) || contains(row.value);
         case "array":
@@ -387,6 +387,7 @@ export class ManagedLayouts {
           if (value.kind !== "rc" && value.kind !== "weak")
             throw new Error("managed shared value has no cell");
           if (value.closed || !value.cell || row.weak) return;
+          retained?.(value, type);
           allocation(value.cell, this.width(row.payload), () =>
             visit(value.cell!.value, row.payload),
           );

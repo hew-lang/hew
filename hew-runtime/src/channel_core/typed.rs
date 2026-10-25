@@ -905,13 +905,19 @@ mod tests {
         let owner = current_owner().expect("typed cleanup owner");
         assert!(owner.live_bytes() >= 8 + 6);
         unsafe {
-            crate::string::hew_string_drop_managed(*slot.cast::<*mut hew_cabi::string::HewString>())
+            crate::string::hew_string_drop_managed(
+                *slot.cast::<*mut hew_cabi::string::HewString>(),
+            );
         };
     }
     fn layout(string: bool) -> HewValueLayout {
         HewValueLayout {
             code_owner: core::ptr::null(),
-            managed: if string { &STRING } else { &PLAIN },
+            managed: if string {
+                &raw const STRING
+            } else {
+                &raw const PLAIN
+            },
             release_start: None,
             size: 8,
             align: 8,
@@ -955,7 +961,7 @@ mod tests {
             source
                 .acquire_value(&layout, (&raw const value).cast())
                 .unwrap()
-                .commit()
+                .commit();
         };
         let mut write = send(core.clone(), (&raw mut value).cast(), layout);
         assert_eq!(with_value_owner(&Some(source.clone()), || write.poll()), 1);
@@ -1015,7 +1021,7 @@ mod tests {
             source
                 .acquire_value(&layout, (&raw const value).cast())
                 .unwrap()
-                .commit()
+                .commit();
         };
         assert_eq!(
             with_value_owner(&Some(source.clone()), || send(
@@ -1034,7 +1040,7 @@ mod tests {
             b"retain"
         );
         with_value_owner(&Some(source.clone()), || unsafe {
-            crate::string::hew_string_drop_managed(value)
+            crate::string::hew_string_drop_managed(value);
         });
         core.close_typed_sync();
         assert_eq!(source.live_bytes(), 0);
@@ -1042,7 +1048,7 @@ mod tests {
 
     unsafe extern "C-unwind" fn drop_bytes(slot: *mut c_void) {
         unsafe {
-            crate::bytes::hew_bytes_drop_managed((*slot.cast::<crate::bytes::BytesTriple>()).ptr)
+            crate::bytes::hew_bytes_drop_managed((*slot.cast::<crate::bytes::BytesTriple>()).ptr);
         };
     }
     #[test]
@@ -1053,7 +1059,7 @@ mod tests {
         };
         let layout = HewValueLayout {
             code_owner: core::ptr::null(),
-            managed: &BYTES,
+            managed: &raw const BYTES,
             release_start: None,
             size: size_of::<crate::bytes::BytesTriple>(),
             align: align_of::<crate::bytes::BytesTriple>(),
@@ -1096,12 +1102,12 @@ mod tests {
         assert_eq!(out.len, 1);
         assert_eq!(receiver.live_bytes(), 32);
         with_value_owner(&Some(receiver.clone()), || unsafe {
-            crate::bytes::hew_bytes_drop_managed(out.ptr)
+            crate::bytes::hew_bytes_drop_managed(out.ptr);
         });
         assert_eq!(receiver.live_bytes(), 0);
         assert_eq!(unsafe { *full.ptr }, b'0');
         with_value_owner(&Some(source.clone()), || unsafe {
-            crate::bytes::hew_bytes_drop_managed(full.ptr)
+            crate::bytes::hew_bytes_drop_managed(full.ptr);
         });
         core.close_typed_sync();
         assert_eq!(source.live_bytes(), 0);
@@ -1166,7 +1172,7 @@ mod tests {
             visit: Some(visit_probe),
         };
         let mut layout = layout(false);
-        layout.managed = &PROBE;
+        layout.managed = &raw const PROBE;
         layout.drop_fn = Some(drop_probe);
         layout.ownership_kind = HewTypeOwnershipKind::LayoutManaged;
         layout
@@ -1194,7 +1200,7 @@ mod tests {
             source
                 .acquire_value(&layout, (&raw const value).cast())
                 .unwrap()
-                .commit()
+                .commit();
         };
         let mut write = send(core.clone(), (&raw mut value).cast(), layout);
         assert_eq!(with_value_owner(&Some(source.clone()), || write.poll()), 0);
@@ -1212,7 +1218,7 @@ mod tests {
             .unwrap();
         drop(reservation);
         with_value_owner(&Some(source), || unsafe {
-            drop_probe((&raw mut value).cast())
+            drop_probe((&raw mut value).cast());
         });
         core.close_typed_sync();
         assert_eq!(receiver.live_bytes(), 0);
@@ -1232,7 +1238,7 @@ mod tests {
             source
                 .acquire_value(&layout, (&raw const value).cast())
                 .unwrap()
-                .commit()
+                .commit();
         };
         let mut write = send(core.clone(), (&raw mut value).cast(), layout);
         assert_eq!(with_value_owner(&Some(source.clone()), || write.poll()), 1);
@@ -1260,7 +1266,7 @@ mod tests {
             source
                 .acquire_value(&element, (&raw const value).cast())
                 .unwrap()
-                .commit()
+                .commit();
         };
         assert_eq!(
             with_value_owner(&Some(source.clone()), || send(
@@ -1273,12 +1279,12 @@ mod tests {
         );
         let stream = Arc::as_ptr(&core);
         let mut descriptor = layout(false);
-        descriptor.managed = &STREAM;
+        descriptor.managed = &raw const STREAM;
         let transfer = unsafe {
             transfer::ValueTransfer::prepare(
                 Some(source.clone()),
                 Some(receiver.clone()),
-                &descriptor,
+                &raw const descriptor,
                 (&raw const stream).cast(),
             )
         }

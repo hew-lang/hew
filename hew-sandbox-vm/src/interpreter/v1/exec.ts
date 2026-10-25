@@ -943,10 +943,10 @@ class ExecutorV1 {
         : undefined;
     } else if (value.kind === "vector") {
       value.prepareMutation = budget
-        ? (capacity, detached) => {
+        ? (capacity, detached, appended) => {
             const row = this.managed.row(type);
             const storage = vectorStorage(value);
-            const items =
+            let items =
               detached &&
               (row.kind === "vector" ||
                 row.kind === "array" ||
@@ -955,6 +955,20 @@ class ExecutorV1 {
                     this.managed.copy(item, row.element),
                   )
                 : value.items;
+            if (appended?.length) {
+              if (
+                row.kind !== "vector" &&
+                row.kind !== "array" &&
+                row.kind !== "slice"
+              )
+                throw new Error(
+                  "vector append lacks its canonical element type",
+                );
+              items = [
+                ...items,
+                ...appended.map((item) => this.managed.copy(item, row.element)),
+              ];
+            }
             budget.checkMutation(
               value,
               {
@@ -1039,7 +1053,23 @@ class ExecutorV1 {
       (value, type) => {
         this.bindManagedStream(value, type, actor);
         const row = this.managed.row(type);
-        if (row.kind === "generator")
+        if (value.kind === "rc" && value.cell && !value.closed) {
+          if (row.kind !== "shared")
+            throw new Error("Rc has no canonical payload descriptor");
+          const cell = value.cell;
+          if (cell.owner !== actor.rcOwner && !cell.dying) {
+            cell.owner?.blocks.delete(cell);
+            cell.owner = actor.rcOwner;
+            cell.managedPayload = row.payload;
+            actor.rcOwner.blocks.add(cell);
+            cell.managedLease = this.rehomeLease(
+              cell.managedLease,
+              actor.budget,
+            );
+            if (!cell.managedLease && actor.budget)
+              cell.managedLease = actor.budget.retain({ value, type });
+          }
+        } else if (row.kind === "generator")
           this.rehomeFrame(this.generatorFor(value).frame, actor);
         else if (value.kind === "task")
           this.rehomeTask(this.taskFor(value), actor);
@@ -1106,6 +1136,7 @@ class ExecutorV1 {
     if (frame.accountActor === actor) return;
     const previous = frame.accountActor;
     frame.accountActor = actor;
+    frame.rcOwner = actor.rcOwner;
     frame.context.actor = actor;
     frame.context.id = actor.id;
     const cells = new Set<Cell>();
@@ -2288,6 +2319,11 @@ class ExecutorV1 {
           throw new Error(`switch.variant has no arm for tag ${tag}`);
         }
         this.spread(act, payloadOf(scrutinee), arm.fields);
+        if (act.owned.has(term.scrutinee)) {
+          this.invalidate(act, term.scrutinee);
+          this.managed.retire(scrutinee);
+          act.context.actor?.budget?.changed();
+        }
         this.takeEdge(act, arm.edge);
         return;
       }
@@ -2503,6 +2539,16 @@ class ExecutorV1 {
             return;
           }
           case "collection": {
+            const receiverType =
+              term.args[0] && act.managedTypes.get(term.args[0].value);
+            const receiverLayout =
+              receiverType == null ? undefined : this.managed.row(receiverType);
+            const elementType =
+              receiverLayout &&
+              (receiverLayout.kind === "vector" ||
+                receiverLayout.kind === "array")
+                ? receiverLayout.element
+                : undefined;
             const args = term.args.map((operand) =>
               this.boundary(act, operand),
             );
@@ -2512,11 +2558,32 @@ class ExecutorV1 {
               args,
               term.callbacks ?? [],
               term.result_member_shapes?.[1] ?? term.result_shape,
+              elementType,
             );
             this.runValueProgram(act, term, args, iterator);
             return;
           }
           case "shared": {
+            if (
+              act.context.actor?.budget &&
+              (registration.operation === "RcNew" ||
+                registration.operation === "RcSet")
+            ) {
+              const constructing = registration.operation === "RcNew";
+              const operand = term.args[constructing ? 0 : 1]!;
+              const type = act.managedTypes.get(operand.value);
+              if (type == null)
+                throw new Error("Rc payload lacks its typed descriptor");
+              if (
+                !this.checkRuntimePayload(
+                  act,
+                  term,
+                  constructing ? this.managed.width(type) : 0n,
+                  [{ value: this.read(act, operand.value), type }],
+                )
+              )
+                return;
+            }
             const args = term.args.map((operand) =>
               this.boundary(act, operand),
             );
@@ -2937,8 +3004,51 @@ class ExecutorV1 {
     );
   }
 
-  /// Run a runtime or extern shim. A fault it raises takes the call's `unwind`
-  /// edge so the cleanup the package names runs before the program ends.
+  /** Reserve typed runtime payload before construction or replacement. Refusal
+   * follows the call's existing input ownership and authored cleanup edge. */
+  private checkRuntimePayload(
+    act: Activation,
+    term: Extract<TermV1, { op: "runtime.call" | "extern.call" }>,
+    bytes: bigint,
+    children: readonly ManagedRoot[],
+  ): boolean {
+    const budget = act.context.actor?.budget;
+    if (!budget) return true;
+    try {
+      budget.checkPayload(bytes, children);
+      return true;
+    } catch (error) {
+      if (!(error instanceof HeapExceeded)) throw error;
+      const fault: Fault = { kind: "trap", trap: "heap_exceeded" };
+      if (this.keepsInputs(term)) {
+        // No new payload exists and none of the consuming inputs has moved.
+        this.raiseFault(act, fault, term.unwind);
+        return false;
+      }
+      const consumed = term.args
+        .filter((operand) => operand.decision === "move")
+        .map((operand) => this.boundary(act, operand));
+      this.running = false;
+      this.closeValueAsync(
+        { kind: "record", typeId: "", fields: consumed },
+        error.message,
+        (cleanupFault) => {
+          this.raiseFault(
+            act,
+            combineFaults(fault, cleanupFault)!,
+            term.unwind,
+          );
+          this.scheduler.enqueue(act.context.id, () => this.runFrame(act));
+        },
+        act.context.actor,
+        act.rcOwner,
+        act,
+      );
+      return false;
+    }
+  }
+
+  /// Run a runtime or extern shim through its authored fault continuation.
   private callShim(
     act: Activation,
     term: Extract<TermV1, { op: "runtime.call" | "extern.call" }>,
@@ -2959,43 +3069,18 @@ class ExecutorV1 {
           throw new Error("stream adapter input lacks its typed descriptor");
         return { value: this.read(act, operand.value), type };
       });
-      try {
-        budget.checkPayload(
+      if (
+        !this.checkRuntimePayload(
+          act,
+          term,
           children.reduce(
             (bytes, child) => bytes + this.managed.width(child.type),
             0n,
           ),
           children,
-        );
-      } catch (error) {
-        if (!(error instanceof HeapExceeded)) throw error;
-        const fault: Fault = { kind: "trap", trap: "heap_exceeded" };
-        if (this.keepsInputs(term)) {
-          // The carrier has not been allocated and neither consuming input moved.
-          this.raiseFault(act, fault, term.unwind);
-          return;
-        }
-        const consumed = term.args
-          .filter((operand) => operand.decision === "move")
-          .map((operand) => this.boundary(act, operand));
-        this.running = false;
-        this.closeValueAsync(
-          { kind: "record", typeId: "", fields: consumed },
-          error.message,
-          (cleanupFault) => {
-            this.raiseFault(
-              act,
-              combineFaults(fault, cleanupFault)!,
-              term.unwind,
-            );
-            this.scheduler.enqueue(act.context.id, () => this.runFrame(act));
-          },
-          act.context.actor,
-          act.rcOwner,
-          act,
-        );
+        )
+      )
         return;
-      }
     }
     const args = term.args.map((operand) => this.boundary(act, operand));
     // A call that hands back its updated receiver names its value's shape as
@@ -3125,7 +3210,7 @@ class ExecutorV1 {
                 act,
                 (request.retained ?? [request.value]).map((value) => ({
                   value,
-                  type: this.managed.type(value),
+                  type: request.retainedType ?? this.managed.type(value),
                 })),
               )
             : undefined;

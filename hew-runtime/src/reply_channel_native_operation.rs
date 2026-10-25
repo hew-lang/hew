@@ -348,7 +348,7 @@ mod tests {
     static SCALAR: HewValueLayout = HewValueLayout {
         size: 8,
         align: 8,
-        managed: &SCALAR_MANAGED,
+        managed: &raw const SCALAR_MANAGED,
         ..PAYLOAD_LAYOUT
     };
 
@@ -368,7 +368,7 @@ mod tests {
     static CHANNEL: HewValueLayout = HewValueLayout {
         size: size_of::<*mut HewReplyChannel>(),
         align: align_of::<*mut HewReplyChannel>(),
-        managed: &CHANNEL_MANAGED,
+        managed: &raw const CHANNEL_MANAGED,
         ..PAYLOAD_LAYOUT
     };
 
@@ -386,7 +386,7 @@ mod tests {
                         wake.descriptor(),
                         None,
                         None,
-                        &SCALAR,
+                        &raw const SCALAR,
                     )
                 });
             super::super::super::hew_reply_channel_retain(channel);
@@ -401,7 +401,7 @@ mod tests {
                 crate::owned_value_budget::with_value_owner(&Some(source.clone()), || {
                     hew_actor_reply_start_native(
                         (&raw mut value).cast(),
-                        &SCALAR,
+                        &raw const SCALAR,
                         parent,
                         &raw mut status,
                     )
@@ -412,10 +412,10 @@ mod tests {
             let mut transfer = ValueTransfer::begin(
                 Some(original.clone()),
                 Some(destination.clone()),
-                &CHANNEL,
+                &raw const CHANNEL,
                 (&raw const channel).cast(),
             );
-            transfer.set_waker(OwnedWaker::retain(&*wake.descriptor()));
+            transfer.set_waker(OwnedWaker::retain(wake.descriptor()));
             assert!(transfer.poll_prepare().unwrap());
             assert_eq!(
                 hew_actor_reply_poll_native(operation, parent),
@@ -458,7 +458,7 @@ mod tests {
                 crate::owned_value_budget::with_value_owner(&Some(source.clone()), || {
                     hew_actor_reply_start_native(
                         (&raw mut value).cast(),
-                        &SCALAR,
+                        &raw const SCALAR,
                         parent,
                         &raw mut status,
                     )
@@ -478,8 +478,12 @@ mod tests {
         let destination = ValueOwner::new(Some(8));
         // SAFETY: both channel references and the receiver transfer remain pinned.
         unsafe {
-            let channel =
-                super::super::hew_reply_channel_new_native(wake.descriptor(), None, None, &SCALAR);
+            let channel = super::super::hew_reply_channel_new_native(
+                wake.descriptor(),
+                None,
+                None,
+                &raw const SCALAR,
+            );
             super::super::super::hew_reply_channel_retain(channel);
             let _context = TestExecutionContext::install(HewExecutionContext {
                 reply_channel: channel.cast(),
@@ -492,7 +496,7 @@ mod tests {
                 crate::owned_value_budget::with_value_owner(&Some(source.clone()), || {
                     hew_actor_reply_start_native(
                         (&raw mut value).cast(),
-                        &SCALAR,
+                        &raw const SCALAR,
                         parent,
                         &raw mut status,
                     )
@@ -501,10 +505,10 @@ mod tests {
             let mut transfer = ValueTransfer::begin(
                 None,
                 Some(destination.clone()),
-                &CHANNEL,
+                &raw const CHANNEL,
                 (&raw const channel).cast(),
             );
-            transfer.set_waker(OwnedWaker::retain(&*wake.descriptor()));
+            transfer.set_waker(OwnedWaker::retain(wake.descriptor()));
             assert!(transfer.poll_prepare().unwrap());
             assert_eq!(
                 hew_actor_reply_poll_native(operation, parent),
@@ -545,7 +549,7 @@ mod tests {
                         wake.descriptor(),
                         None,
                         None,
-                        &SCALAR,
+                        &raw const SCALAR,
                     )
                 });
             super::super::super::hew_reply_channel_retain(channel);
@@ -560,7 +564,7 @@ mod tests {
                 crate::owned_value_budget::with_value_owner(&Some(source.clone()), || {
                     hew_actor_reply_start_native(
                         (&raw mut value).cast(),
-                        &SCALAR,
+                        &raw const SCALAR,
                         parent,
                         &raw mut status,
                     )
@@ -619,7 +623,7 @@ mod tests {
         static LAYOUT: HewValueLayout = HewValueLayout {
             size: size_of::<Payload>(),
             align: align_of::<Payload>(),
-            managed: &MANAGED,
+            managed: &raw const MANAGED,
             drop_fn: Some(close),
             ..SCALAR
         };
@@ -634,7 +638,7 @@ mod tests {
                         wake.descriptor(),
                         None,
                         None,
-                        &LAYOUT,
+                        &raw const LAYOUT,
                     )
                 });
             super::super::super::hew_reply_channel_retain(channel);
@@ -645,14 +649,14 @@ mod tests {
             let parent = crate::coro_state::hew_coro_state_new(wake.descriptor(), ptr::null_mut());
             let mut value = Payload {
                 channel,
-                expected: &destination,
+                expected: &raw const destination,
             };
             let mut status = -1;
             let operation =
                 crate::owned_value_budget::with_value_owner(&Some(source.clone()), || {
                     hew_actor_reply_start_native(
                         (&raw mut value).cast(),
-                        &LAYOUT,
+                        &raw const LAYOUT,
                         parent,
                         &raw mut status,
                     )

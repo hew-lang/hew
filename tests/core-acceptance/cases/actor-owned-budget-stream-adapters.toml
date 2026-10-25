@@ -1,0 +1,11 @@
+[[case]]
+id = "actor-owned-budget-stream-adapters"
+intent = "Common line/chunk generators retain typed buffers, preserve framing and refund their owned carriers."
+source = "cases/actor-owned-budget-stream-adapters.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 30
+
+[case.expected]
+stdout = "3\n3\nadapter limit\n"
+stderr = "hew: failure: HeapExceeded (200)\nhew: actor crash in Small.wrap (actor 3): HeapExceeded\n"
+exit = 1

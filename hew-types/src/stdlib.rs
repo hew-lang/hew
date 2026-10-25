@@ -47,14 +47,6 @@ mod tests {
             Some("hew_stream_close")
         );
         assert_eq!(
-            resolve_stream_method(STREAM, "lines"),
-            Some("hew_stream_lines")
-        );
-        assert_eq!(
-            resolve_stream_method(STREAM, "chunks"),
-            Some("hew_stream_chunks")
-        );
-        assert_eq!(
             resolve_stream_method(STREAM, "take"),
             Some("hew_stream_take")
         );

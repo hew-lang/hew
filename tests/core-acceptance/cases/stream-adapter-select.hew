@@ -1,0 +1,54 @@
+import std.stream;
+
+#[max_heap(256)]
+actor Watcher {
+    var input: Stream<string>;
+    receive fn partial() -> i64 {
+        select {
+            value from input.recv() => match value {
+                .Some(text) => text.len(),
+                .None => 0,
+            }
+            after 1ms => -1,
+        }
+    }
+    receive fn complete() -> i64 {
+        select {
+            value from input.recv() => match value {
+                .Some(text) => {
+                    assert(text == "part line");
+                    text.len()
+                }
+                .None => 0,
+            }
+            after 10s => -1,
+        }
+    }
+}
+
+fn main() {
+    let (output, input): (Sink<bytes>, Stream<bytes>) = stream.pipe(2).expect("pipe");
+    let watcher = spawn Watcher { input: input.lines() };
+    output.send(b"part ").expect("partial");
+    assert(watcher.partial().expect("partial observation") == -1);
+    output.send(b"line\r\n").expect("completed line");
+    assert(watcher.complete().expect("complete observation") == 9);
+    stop(watcher);
+    stopped(watcher);
+    assert(output.send(b"closed").is_err());
+    output.close();
+    let (ready, first): (Sink<bytes>, Stream<bytes>) = stream.pipe(1).expect("ready pipe");
+    ready.send(b"first").expect("ready item");
+    let (invalid, unobserved): (Sink<bytes>, Stream<bytes>) = stream.pipe(1).expect("later pipe");
+    invalid.send([255, 10]).expect("unexamined invalid line");
+    let later = unobserved.lines();
+    select {
+        value from first.recv() => assert(value == .Some(b"first")),
+        _ from later.recv() => panic("later arm selected"),
+    };
+    later.close();
+    first.close();
+    ready.close();
+    invalid.close();
+    println("partial line retained across selection");
+}

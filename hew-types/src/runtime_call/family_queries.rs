@@ -708,8 +708,6 @@ impl RuntimeCallFamily {
             | F::Encoding { .. }
             | F::StreamClose
             // Wrapping a source stream in an adaptor is a pointer handoff.
-            | F::StreamChunks
-            | F::StreamLines
             | F::StreamTake
             | F::StreamTryNextLayout
             | F::StreamTrySendLayout

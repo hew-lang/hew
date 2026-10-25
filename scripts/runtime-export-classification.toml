@@ -587,7 +587,6 @@ stable = [
   "hew_stderr_write",
   "hew_stream_await_next",
   "hew_stream_channel",
-  "hew_stream_chunks",
   "hew_stream_close",
   "hew_stream_collect_string",
   "hew_stream_count",
@@ -601,7 +600,6 @@ stable = [
   "hew_stream_last_error",
   "hew_stream_last_error_kind",
   "hew_stream_last_write_committed",
-  "hew_stream_lines",
   "hew_stream_next_layout",
   "hew_stream_next_sized",
   "hew_stream_next_view",
@@ -1278,6 +1276,7 @@ non-declarable = [
   "hew_managed_visit_invocation",
   "hew_managed_visit_json",
   "hew_managed_visit_map",
+  "hew_managed_visit_opaque",
   "hew_managed_visit_release_driver",
   "hew_managed_visit_release_driver_slot",
   "hew_managed_visit_scope_wait",
@@ -3391,27 +3390,7 @@ params = ["consume"]
 release-symbol = ""
 discharge-depth = "none"
 
-# The three adaptors each call consume_stream_inner on their upstream, which
-# reads the backing out and deallocates the HewStream box, then return a fresh
-# into_stream_ptr Box wrapping the new adapter. The source handle is gone when
-# they return, so the parameter is a transfer, and the result is the caller's
-# sole handle, released by hew_stream_close.
-[[ownership.contracts]]
-symbol = "hew_stream_chunks"
-result = "fresh"
-params = ["consume", "borrow"]
-release-symbol = "hew_stream_close"
-discharge-depth = "shallow"
-result-retention = "transferred"
-
-[[ownership.contracts]]
-symbol = "hew_stream_lines"
-result = "fresh"
-params = ["consume"]
-release-symbol = "hew_stream_close"
-discharge-depth = "shallow"
-result-retention = "transferred"
-
+# Take transfers the existing Stream handle with its receive limit.
 [[ownership.contracts]]
 symbol = "hew_stream_take"
 result = "fresh"

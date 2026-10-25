@@ -16,8 +16,7 @@ use std::os::unix::io::AsRawFd;
 
 use hew_cabi::sink::hew_stream_last_errno;
 use hew_runtime::stream::{
-    hew_stream_chunks, hew_stream_next_sized, hew_stream_pair_free, hew_stream_pair_stream,
-    hew_tcp_stream_from_conn,
+    hew_stream_next_sized, hew_stream_pair_free, hew_stream_pair_stream, hew_tcp_stream_from_conn,
 };
 use hew_runtime::transport::{hew_tcp_connect, hew_tcp_set_read_timeout};
 
@@ -195,45 +194,6 @@ fn read_error_sets_last_errno() {
     );
 
     // SAFETY: pair is valid.
-    unsafe { hew_stream_pair_free(pair) };
-}
-
-/// Bridge a bytes stream through the chunks adapter; verify chunked output.
-#[test]
-fn compose_with_chunks_adapter() {
-    let payload = b"abcdefghij"; // 10 bytes
-    let chunk_size: i64 = 4; // yields [abcd][efgh][ij] + EOF
-    let (conn, mut peer) = make_bridge_pair();
-
-    // SAFETY: conn is valid.
-    let pair = unsafe { hew_tcp_stream_from_conn(conn) };
-    assert!(!pair.is_null());
-
-    // SAFETY: pair is valid.
-    let stream_ptr = unsafe { hew_stream_pair_stream(pair) };
-    assert!(!stream_ptr.is_null());
-
-    // Write payload and close peer.
-    peer.write_all(payload).unwrap();
-    drop(peer);
-
-    // SAFETY: stream_ptr is valid; hew_stream_chunks consumes it.
-    let chunked = unsafe { hew_stream_chunks(stream_ptr, chunk_size) };
-    assert!(!chunked.is_null(), "hew_stream_chunks must return non-null");
-
-    // SAFETY: chunked is the new valid stream.
-    let received = unsafe { drain_bytes(chunked) };
-    // All bytes must be present (concatenated chunks reconstruct payload).
-    assert_eq!(
-        received, payload,
-        "chunks must reconstruct the original payload"
-    );
-
-    // Verify chunking: no individual item should exceed chunk_size bytes.
-    // Re-read via the same chunked stream is impossible after drain; we trust
-    // the ChunksStream implementation and the drain helper above.
-
-    // SAFETY: pair still owns the sink half.
     unsafe { hew_stream_pair_free(pair) };
 }
 

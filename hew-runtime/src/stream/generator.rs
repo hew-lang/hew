@@ -141,6 +141,10 @@ impl GeneratorStream {
 }
 
 impl StreamBacking for GeneratorStream {
+    fn select_readiness(&self) -> super::SelectReadiness {
+        super::SelectReadiness::Generator
+    }
+
     fn generator(&mut self) -> Option<&mut GeneratorStream> {
         Some(self)
     }

@@ -1,0 +1,75 @@
+import std.stream;
+
+fn read_content() -> i64 {
+    let (output, input): (Sink<bytes>, Stream<bytes>) = stream.pipe(3).expect("");
+    output.send("a\r".to_bytes()).expect("");
+    output.send("\n\nz".to_bytes()).expect("");
+    output.finish();
+    let lines = input.lines();
+    assert(lines.recv() == .Some("a"));
+    assert(lines.recv() == .Some(""));
+    assert(lines.recv() == .Some("z"));
+    assert(lines.recv() == .None);
+    lines.close();
+    output.close();
+    let (sender, source): (Sink<bytes>, Stream<bytes>) = stream.pipe(2).expect("");
+    sender.send("abcde".to_bytes()).expect("");
+    sender.finish();
+    let chunks = source.chunks(2);
+    assert(chunks.recv() == .Some("ab".to_bytes()));
+    assert(chunks.recv() == .Some("cd".to_bytes()));
+    assert(chunks.recv() == .Some("e".to_bytes()));
+    assert(chunks.recv() == .None);
+    chunks.close();
+    sender.close();
+    3
+}
+
+#[max_heap(1024)]
+actor Reader {
+    receive fn read() -> i64 {
+        read_content()
+    }
+}
+
+fn wrap_lines() {
+    let (output, input): (Sink<bytes>, Stream<bytes>) = stream.pipe(1).expect("");
+    let lines = input.lines();
+    lines.close();
+    output.close();
+}
+
+// Input capture8, callable carrier8, output slot8 and Stream's Generator slot8.
+#[max_heap(32)]
+actor Exact {
+    receive fn wrap() {
+        wrap_lines();
+    }
+}
+
+#[max_heap(31)]
+actor Small {
+    receive fn wrap() {
+        wrap_lines();
+    }
+}
+
+fn main() -> i64 {
+    let reader = spawn Reader;
+    println(reader.read().expect("content"));
+    println(reader.read().expect("cleanup reuse"));
+    stop(reader);
+    stopped(reader);
+    let exact = spawn Exact;
+    exact.wrap().expect("exact carrier");
+    exact.wrap().expect("carrier reuse");
+    stop(exact);
+    stopped(exact);
+    let small = spawn Small;
+    match small.wrap() {
+        .Err(.Trapped) => println("adapter limit"),
+        _ => return 2,
+    }
+    stopped(small);
+    0
+}

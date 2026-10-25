@@ -171,6 +171,7 @@ interface GeneratorStream {
   pending: VmValue | null;
   fault: Fault | null;
   receiving: boolean;
+  observers: Set<() => void>;
   waiting?: (value: VmValue | null, fault: Fault | null) => void;
 }
 
@@ -566,6 +567,7 @@ class ExecutorV1 {
           pending: null,
           fault: null,
           receiving: false,
+          observers: new Set(),
         });
         return { kind: "stream", channelId: id };
       },
@@ -3939,12 +3941,23 @@ class ExecutorV1 {
         );
         let cancelTimer: (() => void) | undefined;
         const choose = () => {
-          const ready = sources.flatMap((value, index) => {
-            if (value.kind === "stream")
-              return this.pipes.readable(value) ? [{ index, order: 0 }] : [];
-            const task = this.taskFor(value);
-            return task.done ? [{ index, order: task.completedAt }] : [];
-          });
+          const ready: Array<{ index: number; order: number }> = [];
+          for (const [index, value] of sources.entries()) {
+            if (value.kind === "stream") {
+              const adapter = this.generatorStreams.get(value.channelId);
+              if (adapter) this.pollGeneratorStream(adapter);
+              const readable = adapter
+                ? adapter.pending !== null ||
+                  adapter.generator.done ||
+                  adapter.closed
+                : this.pipes.readable(value);
+              if (readable) ready.push({ index, order: 0 });
+            } else {
+              const task = this.taskFor(value);
+              if (task.done) ready.push({ index, order: task.completedAt });
+            }
+            if (ready.length && term.detail.order !== "completion") break;
+          }
           if (term.detail.order === "completion")
             ready.sort((a, b) => a.order - b.order);
           if (ready[0]) {
@@ -3973,9 +3986,13 @@ class ExecutorV1 {
           );
         }
         sources.forEach((value) => {
-          if (value.kind === "stream")
-            unwatch.push(this.pipes.observe(value, choose));
-          else {
+          if (value.kind === "stream") {
+            const adapter = this.generatorStreams.get(value.channelId);
+            if (adapter) {
+              adapter.observers.add(choose);
+              unwatch.push(() => adapter.observers.delete(choose));
+            } else unwatch.push(this.pipes.observe(value, choose));
+          } else {
             const task = this.taskFor(value);
             task.changed.push(choose);
             unwatch.push(() => {
@@ -4513,7 +4530,20 @@ class ExecutorV1 {
           cancel?.(closeFault ?? fault),
         );
       };
-    if (adapter.receiving) return;
+    this.pollGeneratorStream(adapter);
+  }
+
+  /** Readiness drives the same producer as recv but leaves a published item
+   * retained until the winning receive. Losing observations only detach. */
+  private pollGeneratorStream(adapter: GeneratorStream): void {
+    const generator = adapter.generator;
+    if (
+      adapter.receiving ||
+      adapter.pending !== null ||
+      generator.done ||
+      adapter.closed
+    )
+      return;
     adapter.receiving = true;
     generator.receive = (value, fault) => {
       adapter.receiving = false;
@@ -4526,6 +4556,7 @@ class ExecutorV1 {
       adapter.waiting = undefined;
       if (waiting) waiting(value, fault);
       else adapter.pending = value;
+      for (const changed of [...adapter.observers]) changed();
     };
     if (generator.started) {
       const resume = generator.resume;

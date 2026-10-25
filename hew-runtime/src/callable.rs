@@ -404,6 +404,9 @@ unsafe fn take_release_items(
                         pointer: carrier.environment,
                         size: layout.size,
                         align: layout.align,
+                        // SAFETY: this carrier retains its defining layout through release.
+                        managed_bytes: unsafe { layout.managed.as_ref() }
+                            .map(|managed| managed.slot_bytes),
                     }),
                     Some(ReleaseItem::CodeRoot(code)),
                 ]);

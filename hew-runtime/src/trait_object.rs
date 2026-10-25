@@ -465,6 +465,15 @@ pub unsafe extern "C" fn hew_trait_object_release_begin(
                     pointer: value.data.cast(),
                     size: table.size_of,
                     align: table.align_of,
+                    // SAFETY: the vtable retains its exact concrete descriptor through cleanup.
+                    // SAFETY: the retained vtable pins its exact concrete value descriptor.
+                    managed_bytes: unsafe {
+                        table
+                            .value_layout
+                            .as_ref()
+                            .and_then(|layout| layout.managed.as_ref())
+                    }
+                    .map(|managed| managed.slot_bytes),
                 });
             }
             // SAFETY: generated tables retain a static concrete descriptor;

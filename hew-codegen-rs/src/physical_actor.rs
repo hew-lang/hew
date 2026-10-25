@@ -1639,16 +1639,9 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
                 &[code.into()],
                 "stream.cancel.fault",
             )?;
-            let finish = get_or_declare_external(
-                &self.llvm,
-                "hew_actor_coro_finish",
-                self.ctx
-                    .void_type()
-                    .fn_type(&[ptr.into(), ptr.into()], false),
-            )?;
             builder
-                .build_call(finish, &[child.into(), cancellation.into()], "")
-                .llvm_ctx("finish a stream cancelled before its actor turn")?;
+                .build_store(fault, cancellation)
+                .llvm_ctx("retain cancellation until the actor frame retires")?;
             builder
                 .build_unconditional_branch(frame.finish)
                 .llvm_ctx("finish cancelled actor stream adapter")?;
@@ -1682,7 +1675,14 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
             )?;
         }
         self.emit_actor_reply(&builder, ramp, actor, handler, output, fault, Some(&frame))?;
-        let returned_fault = builder
+        let completion = self.ctx.create_builder();
+        completion.position_before(
+            &frame
+                .finish
+                .get_terminator()
+                .ok_or_else(|| CodegenError::FailClosed("actor finish lacks its branch".into()))?,
+        );
+        let returned_fault = completion
             .build_load(ptr, fault, "handler.returned.fault")
             .llvm_ctx("read completed handler fault")?;
         let finish = get_or_declare_external(
@@ -1692,9 +1692,9 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
                 .void_type()
                 .fn_type(&[ptr.into(), ptr.into()], false),
         )?;
-        builder
+        completion
             .build_call(finish, &[child.into(), returned_fault.into()], "")
-            .llvm_ctx("finish handler invocation under current activation")?;
+            .llvm_ctx("finish handler invocation after retiring its managed view")?;
         builder
             .build_unconditional_branch(frame.finish)
             .llvm_ctx("finish actor adapter frame")?;

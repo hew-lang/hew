@@ -65,6 +65,8 @@ pub(crate) enum ReleaseItem {
         pointer: *mut c_void,
         size: usize,
         align: usize,
+        /// Canonical payload width, absent for uncharged scratch storage.
+        managed_bytes: Option<u64>,
     },
     /// Expand a vector into its elements and then its own storage.
     Vector { vec: *mut HewVec },
@@ -335,7 +337,13 @@ unsafe fn expand(
                 pointer,
                 size,
                 align,
+                managed_bytes,
             } => {
+                if let (Some(owner), Some(bytes)) =
+                    (crate::owned_value_budget::current_owner(), managed_bytes)
+                {
+                    owner.release_backing(pointer, bytes);
+                }
                 crate::mem::hew_dealloc(pointer.cast(), size as u64, align as u64);
             }
             ReleaseItem::Vector { vec } => crate::vec::expand_vector(vec, pending),
@@ -394,6 +402,7 @@ impl HewReleaseCursor {
                     pointer: storage.cast(),
                     size,
                     align: layout.align,
+                    managed_bytes: None,
                 },
                 ReleaseItem::Value {
                     slot: storage.cast(),
@@ -890,10 +899,21 @@ pub(crate) unsafe fn visit_cursor(
                     (stream as *const *mut crate::stream::HewStream).cast(),
                     visitor,
                 ),
+                ReleaseItem::Allocation {
+                    pointer,
+                    managed_bytes: Some(bytes),
+                    ..
+                } => match visit::storage(visitor, *pointer, *bytes) {
+                    hew_cabi::managed::DESCEND | hew_cabi::managed::SKIP_DESCENDANTS => 0,
+                    failure => failure,
+                },
                 ReleaseItem::RcSurvivors(_) => UNDESCRIBED,
                 ReleaseItem::CodeRoot(_)
                 | ReleaseItem::Storage { .. }
-                | ReleaseItem::Allocation { .. } => 0,
+                | ReleaseItem::Allocation {
+                    managed_bytes: None,
+                    ..
+                } => 0,
             };
             if status != 0 {
                 return status;
@@ -1189,7 +1209,7 @@ mod tests {
             unsafe {
                 crate::string::hew_string_drop_managed(
                     slot.cast::<*mut hew_cabi::string::HewString>().read(),
-                )
+                );
             };
         }
         unsafe fn free(pointer: *mut c_void) {
@@ -1208,7 +1228,7 @@ mod tests {
             drop_fn: Some(drop_string),
             release_start: None,
             code_owner: ptr::null(),
-            managed: &STRING_MANAGED,
+            managed: &raw const STRING_MANAGED,
         };
         static DRIVER_MANAGED: HewManagedValueDescriptor = HewManagedValueDescriptor {
             slot_bytes: 0,
@@ -1222,7 +1242,7 @@ mod tests {
             drop_fn: None,
             release_start: None,
             code_owner: ptr::null(),
-            managed: &DRIVER_MANAGED,
+            managed: &raw const DRIVER_MANAGED,
         };
         // SAFETY: each value/backing has one semantic release and stays pinned
         // while the refused and successful transfer inspect the same worklist.
@@ -1254,7 +1274,7 @@ mod tests {
             assert!(ValueTransfer::prepare(
                 Some(source.clone()),
                 Some(small.clone()),
-                &DRIVER,
+                &raw const DRIVER,
                 (&raw const handle).cast()
             )
             .is_err());
@@ -1264,7 +1284,7 @@ mod tests {
             ValueTransfer::prepare(
                 Some(source.clone()),
                 Some(destination.clone()),
-                &DRIVER,
+                &raw const DRIVER,
                 (&raw const handle).cast(),
             )
             .unwrap()

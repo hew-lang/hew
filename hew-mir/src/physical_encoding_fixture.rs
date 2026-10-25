@@ -198,7 +198,14 @@ pub fn operation(family: RuntimeCallFamily) -> sir::SemModule {
                         vec![]
                     },
                 },
-                unwind: sir::CallUnwind::NotApplicable,
+                unwind: if contract.failures.is_empty() {
+                    sir::CallUnwind::NotApplicable
+                } else {
+                    sir::CallUnwind::Cleanup(sir::Edge {
+                        target: sir::BlockId(2),
+                        args: vec![],
+                    })
+                },
             },
         },
         sir::SemBlock {
@@ -226,6 +233,29 @@ pub fn operation(family: RuntimeCallFamily) -> sir::SemModule {
             },
         },
     ];
+    if !contract.failures.is_empty() {
+        function.blocks.push(sir::SemBlock {
+            terminator_provenance: sir::Provenance::Synthesized,
+            id: sir::BlockId(2),
+            args: vec![],
+            ops: function
+                .params
+                .iter()
+                .filter(|param| param.own == sir::OwnKind::Owned)
+                .enumerate()
+                .map(|(index, param)| {
+                    op(
+                        u32::try_from(1000 + index).unwrap(),
+                        sir::SemOpKind::DestroyValue {
+                            value: operand(param.value.0),
+                        },
+                        vec![],
+                    )
+                })
+                .collect(),
+            terminator: sir::SemTerminator::ResumeUnwind { handback: None },
+        });
+    }
     sir::check_module(&module).unwrap();
     module
 }

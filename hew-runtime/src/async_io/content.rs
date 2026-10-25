@@ -261,6 +261,12 @@ impl Content {
     }
 }
 
+impl hew_cabi::sink::SinkContent for Content {
+    fn bytes(&self) -> &[u8] {
+        &self.bytes
+    }
+}
+
 impl std::ops::Deref for Content {
     type Target = [u8];
 
@@ -415,6 +421,34 @@ mod tests {
         drop(producer);
         assert_eq!(owner.live_bytes(), 0);
         assert!(operation_view.upgrade().is_none());
+    }
+
+    #[test]
+    fn partial_socket_content_keeps_its_receipt_through_finish() {
+        use hew_cabi::sink::{into_nonblocking_sink_ptr, PendingBytes, TrySendResult};
+        let owner = ValueOwner::new(Some(16));
+        let mut bytes = Vec::with_capacity(16);
+        bytes.extend_from_slice(b"abcdef");
+        let content = Content::new(bytes, Some(owner.clone())).unwrap();
+        let identity = content.as_ptr();
+        let sink = into_nonblocking_sink_ptr((), |_, _| true, |_, _| Ok(2), |_| {}, |_| {});
+        // SAFETY: the test owns this freshly created endpoint and finishes its sole loan.
+        unsafe {
+            assert_eq!(
+                (*sink).try_write_owned(PendingBytes::retained(content)),
+                TrySendResult::Accepted
+            );
+            assert_eq!(owner.live_bytes(), 16);
+            let mut finish = (*sink).begin_finish().unwrap();
+            let pending = finish.take_pending();
+            assert_eq!(&*pending, b"cdef");
+            assert_eq!(pending.as_ptr(), identity.add(2));
+            finish.finish();
+            drop(Box::from_raw(sink));
+            assert_eq!(owner.live_bytes(), 16);
+            drop(pending);
+        }
+        assert_eq!(owner.live_bytes(), 0);
     }
 
     #[test]

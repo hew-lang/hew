@@ -325,10 +325,6 @@ impl TypedWrite {
         }
     }
 
-    pub(crate) fn committed(&self) -> bool {
-        self.accepted
-    }
-
     /// Quiesce the child protocol before the parent's input graph is visited.
     /// # Safety
     /// The operation retains this receipt and its input through the walk.
@@ -570,9 +566,6 @@ impl TypedRead {
 
     pub(crate) fn cancel(&mut self) {
         self.waker = None;
-    }
-    pub(crate) fn committed(&self) -> bool {
-        self.slot.is_some()
     }
 
     /// # Safety

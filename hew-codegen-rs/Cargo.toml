@@ -33,6 +33,7 @@ llvm-sys = "221"
 cc = "1"
 
 [dev-dependencies]
+hew-live = { path = "../hew-live" }
 hew-compile = { path = "../hew-compile" }
 hew-std = { path = "../hew-std" }
 hew-hir = { path = "../hew-hir" }

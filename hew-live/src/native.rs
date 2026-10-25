@@ -224,6 +224,10 @@ impl fmt::Debug for Generation {
 }
 
 impl NativeHost {
+    pub(crate) fn owns(&self, generation: &Generation) -> bool {
+        Arc::ptr_eq(&self.runtime, &generation.host.runtime)
+    }
+
     /// Open the process's sole native runtime image.
     ///
     /// # Safety

@@ -10,6 +10,7 @@ Build and exercise the native execution path with:
 
 ```sh
 make test-live-native
+make test-live-host
 ```
 
 The test compiles ordinary Hew into a native module, retains a resource owning
@@ -34,9 +35,18 @@ roots are reclaimed together. The unsafe symbol API requires the generated
 header's exact signature and ownership contract. A native runtime lifetime token
 still follows the existing `hew_runtime_new` / `hew_runtime_release` contract.
 
-Current preparation supports ELF and Mach-O linker drivers; the execution oracle
-has been run on Linux. Windows module linking, automatic session roots, retained
-compiler declaration identities, portable components, deployment migration and
-authoring integration are not implemented here yet. This crate is an
-experimental native execution foundation, not the completed live-execution
-product.
+`NativeSession` executes compiler-generated submissions over persistent typed
+places. Each result reports actual initialization and write/move revisions,
+including work completed before a fault. Clearing a session runs ordinary Hew
+cleanup in reverse declaration order and collects cleanup failures. The typed
+places retain their defining code until their values and cleanup are released.
+
+The `hew-live-host` worker runs these sessions separately from the compiler,
+which already statically links a runtime. One local control connection carries
+ordered prepare, execute, inspect, retire and cleanup commands; ordinary Hew
+stdio remains available to the program. A lost reply leaves the caller with an
+uncertain outcome. The worker never retries or replays a submission.
+
+Preparation supports ELF and Mach-O linker drivers; execution has been tested
+on Linux. The persistent source frontend, portable components, deployment
+migration and authoring integration remain in progress.

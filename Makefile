@@ -420,7 +420,15 @@ test-live-native: hew-native ## Test: load native generations sharing one runtim
 	HEW_LIVE_RUNTIME_DIR="$(abspath $(DEBUG_DIR))" \
 		$(TEST_RUN_ENV) cargo nextest run --profile ci -p hew-live $(CARGO_TARGET_FLAG) --test native
 
-test-live-places: hew-native ## Test: preserve compiler-owned slots across native submissions
+.PHONY: live-host
+live-host: ## Build: isolated persistent native execution worker
+	cargo build -p hew-lib -p hew-live --lib --bin hew-live-host $(CARGO_TARGET_FLAG)
+
+.PHONY: test-live-host
+test-live-host: live-host ## Test: execute persistent submissions through the native worker
+	$(TEST_RUN_ENV) cargo nextest run --profile ci -p hew-codegen-rs --lib -E 'test(native_session_places_host)'
+
+test-live-places: hew-native live-host ## Test: preserve compiler-owned slots across native submissions
 	$(TEST_RUN_ENV) cargo nextest run --profile ci -p hew-codegen-rs -p hew-compile --lib -E 'test(native_session_places) | test(live_retained_type)'
 
 test-live-code-ownership: hew-native ## Test: retain native code through typed ownership and cleanup

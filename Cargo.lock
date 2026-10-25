@@ -1930,6 +1930,7 @@ dependencies = [
  "hew-codec",
  "hew-compile",
  "hew-hir",
+ "hew-live",
  "hew-mir",
  "hew-parser",
  "hew-runtime",
@@ -1998,10 +1999,12 @@ dependencies = [
 name = "hew-live"
 version = "0.9.4"
 dependencies = [
+ "clap",
  "hew-cabi",
  "libloading",
  "object 0.40.0",
  "serde",
+ "serde_json",
  "sha2 0.11.0",
  "tempfile",
 ]

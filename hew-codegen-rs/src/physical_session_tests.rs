@@ -2,6 +2,191 @@
 
 use super::*;
 
+#[test]
+fn native_session_places_host_retains_mutations_and_fault_occupancy() {
+    use std::io::{BufRead, BufReader, Write};
+    use std::net::TcpListener;
+    use std::process::{Command, Stdio};
+
+    use serde_json::{json, Value};
+
+    struct Worker(Option<std::process::Child>);
+
+    impl Drop for Worker {
+        fn drop(&mut self) {
+            if let Some(child) = &mut self.0 {
+                let _ = child.kill();
+                let _ = child.wait();
+            }
+        }
+    }
+
+    fn exchange(connection: &mut BufReader<std::net::TcpStream>, request: Value) -> Value {
+        serde_json::to_writer(connection.get_mut(), &request).unwrap();
+        connection.get_mut().write_all(b"\n").unwrap();
+        connection.get_mut().flush().unwrap();
+        let mut line = String::new();
+        assert!(connection.read_line(&mut line).unwrap() > 0);
+        serde_json::from_str(&line).unwrap()
+    }
+
+    let directory = tempfile::tempdir().unwrap();
+    for (name, source, inputs, next) in [
+        (
+            "initial",
+            "pub fn submission() { var count: i64 = 40; let text = \"retained\"; }",
+            &[][..],
+            0,
+        ),
+        (
+            "failing",
+            "pub fn submission(var count: i64, text: string) { count += 2; panic(\"stop\"); }",
+            &[0, 1][..],
+            2,
+        ),
+        (
+            "resume",
+            "pub fn submission(var count: i64, text: string) { assert(count == 42); assert(text == \"retained\"); count += 1; assert(count == 43); }",
+            &[0, 1][..],
+            2,
+        ),
+    ] {
+        compile_with_ownership(directory.path(), name, source, inputs, next, true);
+    }
+    let binaries = std::env::current_exe()
+        .unwrap()
+        .parent()
+        .unwrap()
+        .parent()
+        .unwrap()
+        .to_path_buf();
+    let runtime = binaries.join(if cfg!(target_os = "macos") {
+        "libhew.dylib"
+    } else {
+        "libhew.so"
+    });
+    for suffix in ["", "_o2"] {
+        let listener = TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0)).unwrap();
+        let mut child = Worker(Some(
+            Command::new(binaries.join("hew-live-host"))
+                .arg("--runtime")
+                .arg(&runtime)
+                .args(["--compiler", "session-test", "--target", "native-test"])
+                .arg("--control")
+                .arg(listener.local_addr().unwrap().to_string())
+                .stdin(Stdio::null())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .spawn()
+                .unwrap(),
+        ));
+        let (control, _) = listener.accept().unwrap();
+        control.set_nodelay(true).unwrap();
+        control
+            .set_read_timeout(Some(std::time::Duration::from_secs(30)))
+            .unwrap();
+        let mut connection = BufReader::new(control);
+        for (id, name) in ["initial", "failing", "resume"].into_iter().enumerate() {
+            let module = directory.path().join(format!("{name}{suffix}.so"));
+            let manifest = hew_live::native::prepare(
+                &directory.path().join(format!("{name}{suffix}.o")),
+                &runtime,
+                &module,
+                "session-test",
+                "native-test",
+            )
+            .unwrap();
+            let request =
+                json!({ "op": "prepare", "id": id, "module": module, "manifest": manifest });
+            assert_eq!(
+                exchange(&mut connection, request.clone()),
+                json!({ "prepared": id })
+            );
+            if id == 0 {
+                assert!(exchange(&mut connection, request)["error"]
+                    .as_str()
+                    .unwrap()
+                    .contains("already prepared"));
+            }
+        }
+        let initial = exchange(
+            &mut connection,
+            json!({ "op": "execute", "id": 0, "entry": "initial", "slot_count": 2 }),
+        );
+        assert!(initial["execution"]["fault"].is_null(), "{initial}");
+        assert_eq!(initial["execution"]["slots"].as_array().unwrap().len(), 2);
+        assert!(initial["execution"]["slots"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|slot| slot["initialized"] == true));
+        let failed = exchange(
+            &mut connection,
+            json!({ "op": "execute", "id": 1, "entry": "failing", "slot_count": 2 }),
+        );
+        assert!(
+            failed["execution"]["fault"]["message"]
+                .as_str()
+                .unwrap()
+                .contains("stop"),
+            "{failed}"
+        );
+        assert!(failed["execution"]["slots"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|slot| slot["initialized"] == true));
+        assert_eq!(
+            exchange(&mut connection, json!({ "op": "inspect" }))["slots"],
+            failed["execution"]["slots"]
+        );
+        assert!(exchange(
+            &mut connection,
+            json!({ "op": "execute", "id": 2, "entry": "resume", "slot_count": 1 })
+        )["error"]
+            .as_str()
+            .unwrap()
+            .contains("cannot discard"));
+        let resumed = exchange(
+            &mut connection,
+            json!({ "op": "execute", "id": 2, "entry": "resume", "slot_count": 2 }),
+        );
+        assert!(resumed["execution"]["fault"].is_null(), "{resumed}");
+        // The initial descriptor remains executable after its explicit root is
+        // retired; the live String slot retains its defining generation.
+        assert!(
+            exchange(&mut connection, json!({ "op": "retire", "id": 0 }))["collected"]
+                .as_array()
+                .unwrap()
+                .is_empty()
+        );
+        assert_eq!(
+            exchange(&mut connection, json!({ "op": "clear" })),
+            json!({ "cleanup_faults": [] })
+        );
+        assert_eq!(
+            exchange(&mut connection, json!({ "op": "inspect" })),
+            json!({ "slots": [] })
+        );
+        assert!(
+            !exchange(&mut connection, json!({ "op": "collect" }))["collected"]
+                .as_array()
+                .unwrap()
+                .is_empty()
+        );
+        assert_eq!(
+            exchange(&mut connection, json!({ "op": "quit" })),
+            json!({ "cleanup_faults": [] })
+        );
+        let output = child.0.take().unwrap().wait_with_output().unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+}
+
 fn execute(directory: &Path, modules: &[&str]) {
     let runtime = std::env::current_exe()
         .unwrap()

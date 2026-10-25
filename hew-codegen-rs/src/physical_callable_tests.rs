@@ -398,6 +398,7 @@ fn failed_nested_callable_clone_rolls_back_completed_fields_and_preserves_output
     let env = &mut physical.environment_glue[0];
     env.fields[1] = PhysicalValueRecipe {
         ty: nested.clone(),
+        managed_slot_bytes: 8,
         own: OwnKind::Owned,
         clone: Some(CloneAction::Callable),
         destroy: Some(DestroyAction::Callable),

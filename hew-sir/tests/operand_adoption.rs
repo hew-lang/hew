@@ -2,6 +2,9 @@
 //! caller hands over an independent owner instead of paying for a second
 //! structural copy the operation would make and this scope would destroy.
 
+#[path = "support/checked.rs"]
+mod checked;
+
 use hew_hir::{lower_program_host_target, ResolutionCtx};
 use hew_sir::{
     canonicalize_module_constant_cfg, lower_module, transfer_module_dead_local_reads,
@@ -61,13 +64,21 @@ fn pushed_element(module: &SemModule) -> (BoundaryDecision, ValueId) {
 
 /// The operation kind that defines `value`, following one transfer.
 fn producer(module: &SemModule, value: ValueId) -> SemOpKind {
+    let function = module
+        .functions
+        .iter()
+        .find(|function| module.defs.path(function.declaration) == "main")
+        .unwrap();
     let defining = |value: ValueId| {
-        module
-            .functions
+        function
+            .blocks
             .iter()
-            .flat_map(|function| &function.blocks)
             .flat_map(|block| block.operations())
-            .find(|op| op.results.iter().any(|result| result.id == value))
+            .find(|op| {
+                op.results
+                    .iter()
+                    .any(|result| result.id == checked::source(function, value))
+            })
             .map(|op| op.kind.clone())
             .expect("operand has a defining operation")
     };

@@ -1,3 +1,6 @@
+#[path = "support/checked.rs"]
+mod checked;
+
 use hew_hir::{lower_program_host_target, ResolutionCtx};
 use hew_sir::{
     lower_module, verify_module, BoundaryDecision, CallResult, CallUnwind, OwnKind, SemOpKind,
@@ -122,7 +125,7 @@ fn ordinary_vector_values_share_one_operation_family() {
         assert!(
             main.blocks.iter().flat_map(|block| block.operations()).any(
                 |op| matches!(op.kind, SemOpKind::LoadCopy { place } if place == source)
-                    && op.results[0].id == copied
+                    && op.results[0].id == checked::source(main, copied)
             ),
             "{element}: ordinary vector alias must copy into independent storage"
         );

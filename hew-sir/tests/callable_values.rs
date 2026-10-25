@@ -1,3 +1,6 @@
+#[path = "support/checked.rs"]
+mod checked;
+
 use hew_hir::{lower_program_host_target, ResolutionCtx};
 use hew_sir::{lower_module, verify_module, BoundaryDecision, SemModule, SemOpKind, SemTerminator};
 use hew_types::{module_registry::ModuleRegistry, Checker};
@@ -429,7 +432,9 @@ fn mutable_callable_parameters_keep_private_state_without_caller_visible_borrows
         .iter()
         .flat_map(|block| block.operations())
         .find_map(|op| match op.kind {
-            SemOpKind::StoreInit { place, ref value } if value.value == copied.results[0].id => {
+            SemOpKind::StoreInit { place, ref value }
+                if checked::source(advance, value.value) == copied.results[0].id =>
+            {
                 Some(place)
             }
             _ => None,

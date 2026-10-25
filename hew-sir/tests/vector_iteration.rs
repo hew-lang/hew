@@ -57,6 +57,11 @@ fn explicit_next_uses_the_common_vector_and_aggregate_contracts() {
         module.defs.path(shape.instance.nominal.declaration()),
         "std.builtins.VecIter"
     );
+    assert_eq!(hew_sir::managed_slot(&module, &cursor).unwrap().bytes, 24);
+    assert!(
+        matches!(hew_sir::managed_storage_shape(&module, &cursor).unwrap(),
+        hew_sir::ManagedStorageShape::Aggregate { fields } if fields.len() == 3)
+    );
 }
 
 #[test]

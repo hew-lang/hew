@@ -6,3 +6,6 @@
 
 pub mod native;
 pub mod session;
+
+#[cfg(feature = "component")]
+pub mod component;

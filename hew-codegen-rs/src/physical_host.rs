@@ -45,10 +45,9 @@ impl<'a> HostExport<'a> {
         if (selected.is_empty() && asynchronous.is_empty())
             || module.entry_callable.is_some()
             || !module.test_entries.is_empty()
-            || module.target.triple.starts_with("wasm")
         {
             return Err(fail(
-                "C host exports require a native library without a process entry",
+                "C host exports require a library without a process entry",
             ));
         }
         let mut functions = Vec::<ExportedFunction>::new();
@@ -243,7 +242,11 @@ impl<'a> HostExport<'a> {
             let symbol = if export.asynchronous {
                 let call = format!("HewCall_{}", export.symbol);
                 header.push_str(&format!("typedef struct {call} {call};\n"));
-                let mut start = vec!["HewRuntime *runtime".to_string()];
+                let mut start = if self.verified.module().target.triple.starts_with("wasm") {
+                    Vec::new()
+                } else {
+                    vec!["HewRuntime *runtime".to_string()]
+                };
                 start.append(&mut params);
                 start.extend([
                     "const HewWaker *waker".into(),

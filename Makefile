@@ -434,6 +434,21 @@ test-live-authoring: hew-native live-host ## Test: exercise persistent source au
 test-live-places: hew-native live-host ## Test: preserve compiler-owned slots across native submissions
 	$(TEST_RUN_ENV) cargo nextest run --profile ci -p hew-codegen-rs -p hew-compile --lib -E 'test(native_session_places) | test(live_retained_type)'
 
+.PHONY: live-component-bindings
+live-component-bindings: ## Generate: C guest bindings for the portable reference router
+	@test -n "$(COMPONENT_BINDINGS_DIR)" || { echo 'Set COMPONENT_BINDINGS_DIR to the output directory'; exit 1; }
+	cargo run -p hew-live --features component --example component_bindings -- "$(COMPONENT_BINDINGS_DIR)"
+
+.PHONY: test-live-component live-component-foreign
+live-component-foreign:
+	cargo build --manifest-path hew-live/tests/fixtures/foreign-router/Cargo.toml --target wasm32-wasip1
+
+test-live-component: hew-native wasm-runtime-debug live-component-foreign ## Test: execute the portable Hew reference component
+	HEW_LIVE_COMPILER="$(abspath $(DEBUG_HEW))" \
+	HEW_LIVE_WASM_LIB_DIR="$(abspath $(WASM_DEBUG_DIR))" \
+	HEW_LIVE_FOREIGN_COMPONENT="$(abspath $(WASM_DEBUG_DIR))/hew_foreign_router.wasm" \
+		$(TEST_RUN_ENV) cargo nextest run --profile ci -p hew-live --features component --test component
+
 test-live-code-ownership: hew-native ## Test: retain native code through typed ownership and cleanup
 	$(TEST_RUN_ENV) cargo nextest run --profile ci -p hew-runtime --no-default-features --lib -E 'test(code_owner)'
 	HEW_LIVE_COMPILER="$(abspath $(DEBUG_HEW))" HEW_LIVE_RUNTIME_DIR="$(abspath $(DEBUG_DIR))" \

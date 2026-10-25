@@ -19,9 +19,6 @@ pub(super) fn emit(
     emit_llvm: bool,
 ) -> Result<(), DiagChannel> {
     let fail = |message: &str| emit_semantic_error("E_HOST_EXPORT", message, DiagChannel::User);
-    if target.is_wasm() {
-        return Err(fail("C exports require a native target"));
-    }
     let (selections, async_selections) = exports;
     let sync_count = selections.len();
     let selections = selections
@@ -108,6 +105,7 @@ pub(super) fn emit(
     })?;
     let produced = artefacts
         .native_obj_path
+        .or(artefacts.wasm_obj_path)
         .ok_or_else(|| fail("C export produced no object"))?;
     if produced != output {
         std::fs::rename(&produced, output).map_err(|error| fail(&error.to_string()))?;

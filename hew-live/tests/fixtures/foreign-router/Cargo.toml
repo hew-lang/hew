@@ -1,0 +1,13 @@
+[package]
+name = "hew-foreign-router"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+wit-bindgen = { version = "=0.62.0", features = ["async"] }
+
+[workspace]

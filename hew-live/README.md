@@ -82,5 +82,29 @@ compiler-generated scaffolding retains its own diagnostic context.
 Use `--show-wrapper` to inspect each checked submission's generated source on
 stderr before execution.
 
-Portable components, deployment migration and editor integration
-remain in progress.
+Deployment migration and editor integration remain in progress.
+
+## Portable components
+
+The optional `component` feature provides typed bindings for the portable
+reference router in `wit/router.wit`. Its Hew implementation uses ordinary
+typed pipes to await imported services and retains its accepted-event count in
+a guest actor. Each component instance contains its own Hew runtime. The same
+WIT contract also has an independent Rust implementation.
+
+With an installed WASI SDK, run both implementations through the shared oracle:
+
+```sh
+HEW_WASI_SDK=/path/to/wasi-sdk make test-live-component
+```
+
+The oracle checks concurrent calls, service errors, Unicode and embedded NULs,
+admission refusal while paused, retained-state resume, disposal and snapshot
+activation with different instance grants. Guest C bindings can be generated
+with `make live-component-bindings COMPONENT_BINDINGS_DIR=output`.
+
+The reference router has one counter actor and no autonomous background work.
+Its quiescence contract drains admitted calls and retains the old actor so an
+unsuccessful replacement can resume it. Next work extends
+quiescence to timers and child tasks, adds fenced network deployment and integrates
+durable artefact caching.

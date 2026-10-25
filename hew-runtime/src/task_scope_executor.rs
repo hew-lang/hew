@@ -34,6 +34,7 @@ struct Driver {
     fault: *mut HewFault,
     owner: u64,
     rc_owner: Option<Arc<crate::rc::RcAllocations>>,
+    value_owner: Option<crate::owned_value_budget::ValueOwner>,
     request_deadline: crate::request_deadline::RequestDeadline,
 }
 
@@ -63,6 +64,8 @@ impl TaskExecution {
                 owner: crate::fault::owning_actor_at_spawn(),
                 // SAFETY: the scope outlives every submitted child.
                 rc_owner: unsafe { (*(*task).scope).rc_owner.clone() },
+                // SAFETY: the lexical drain retains the incarnation account.
+                value_owner: unsafe { (*(*task).scope).value_owner.clone() },
                 request_deadline: crate::request_deadline::RequestDeadline::current(),
             }),
         });
@@ -122,6 +125,10 @@ impl Driver {
                     .execution_mut()
                     .rc_owner
                     .clone_from(&self.rc_owner);
+                (*self.state)
+                    .execution_mut()
+                    .value_owner
+                    .clone_from(&self.value_owner);
                 let (invocation, result) = {
                     let mut task = checked(self.task).lock_or_recover();
                     (

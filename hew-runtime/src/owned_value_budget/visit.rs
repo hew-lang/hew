@@ -8,6 +8,29 @@ use hew_cabi::managed::{
 };
 use hew_cabi::value::HewValueLayout;
 
+/// Report a compiler-described private backing without exposing host layout
+/// details of the visitor to generated code.
+///
+/// # Safety
+/// The synchronous visitor and retained backing identity remain live.
+#[no_mangle]
+pub unsafe extern "C" fn hew_managed_visit_backing(
+    visitor: *const HewManagedStorageVisitor,
+    identity: *const c_void,
+    bytes: u64,
+    fresh_on_clone: u8,
+) -> i32 {
+    // SAFETY: the caller lends the immutable visitor throughout this call.
+    unsafe {
+        let identity = if fresh_on_clone != 0 && (*visitor).kind == HewManagedWalkKind::ClonePlan {
+            core::ptr::null()
+        } else {
+            identity
+        };
+        storage(visitor, identity, bytes)
+    }
+}
+
 /// Read canonical metadata without substituting a host ABI size.
 pub(crate) unsafe fn slot_bytes(layout: &HewValueLayout) -> Result<u64, i32> {
     // SAFETY: the caller retains the layout and defining code root.

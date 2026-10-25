@@ -54,6 +54,7 @@ pub struct HewCoroState {
 pub(crate) struct InvocationContext {
     pub(crate) actor_turn: crate::lifetime::live_actors::ActorIncarnation,
     pub(crate) rc_owner: Option<std::sync::Arc<crate::rc::RcAllocations>>,
+    pub(crate) value_owner: Option<crate::owned_value_budget::ValueOwner>,
     pub(crate) actor_message_type: i32,
     pub(crate) actor_caller: crate::actor_caller::HewCallerStamp,
     pub(crate) request_deadline: crate::request_deadline::RequestDeadline,
@@ -260,6 +261,7 @@ unsafe fn context_with_token(
     InvocationContext {
         actor_turn: crate::lifetime::live_actors::ActorIncarnation::NONE,
         rc_owner: crate::rc::current_allocations(),
+        value_owner: crate::owned_value_budget::current_owner(),
         actor_message_type: 0,
         actor_caller: crate::actor_caller::HewCallerStamp::default(),
         request_deadline: crate::request_deadline::RequestDeadline::current(),
@@ -378,6 +380,7 @@ pub unsafe extern "C" fn hew_coro_state_init_construction(
     context.actor_caller = execution.actor_caller;
     context.request_deadline = execution.request_deadline;
     context.rc_owner = Some(std::sync::Arc::default());
+    context.value_owner = None;
     let child = HewCoroState::with_context(
         Box::into_raw(Box::new(context)),
         hew_cabi::coro::OWNS_CONTEXT,
@@ -485,6 +488,7 @@ unsafe fn owned_child(
     };
     context.actor_turn = execution.actor_turn;
     context.rc_owner.clone_from(&execution.rc_owner);
+    context.value_owner.clone_from(&execution.value_owner);
     context.actor_message_type = execution.actor_message_type;
     context.actor_caller = execution.actor_caller;
     context.request_deadline = deadline;
@@ -649,6 +653,7 @@ pub unsafe extern "C" fn hew_coro_state_enter_token(
     };
     context.actor_turn = execution.actor_turn;
     context.rc_owner.clone_from(&execution.rc_owner);
+    context.value_owner.clone_from(&execution.value_owner);
     context.actor_message_type = execution.actor_message_type;
     context.actor_caller = execution.actor_caller;
     context.request_deadline = execution.request_deadline;

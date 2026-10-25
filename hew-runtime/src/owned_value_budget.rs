@@ -13,6 +13,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex, MutexGuard};
 
 pub mod visit;
+mod walk;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct BudgetExceeded {
@@ -53,6 +54,20 @@ struct Account {
 /// allocation and any descriptor walk on ordinary unbounded retain/release.
 #[derive(Clone, Debug)]
 pub struct ValueOwner(Arc<Account>);
+
+/// Borrow the current actor incarnation's account. Independently scheduled
+/// tasks use their retained invocation account directly instead of this lookup.
+pub(crate) fn current_owner() -> Option<ValueOwner> {
+    let actor = crate::actor::hew_actor_self();
+    if actor.is_null() {
+        return None;
+    }
+    // SAFETY: the canonical dispatch context retains this incarnation.
+    unsafe { &*actor }
+        .native_completion
+        .as_ref()
+        .and_then(|completion| completion.cleanup.value_owner.clone())
+}
 
 impl ValueOwner {
     #[must_use]
@@ -208,7 +223,7 @@ impl ValueOwner {
 fn storage_counts(storage: &[ManagedStorage]) -> HashMap<usize, Retention> {
     let mut pending = HashMap::<usize, Retention>::new();
     for backing in storage {
-        if backing.bytes == 0 {
+        if backing.identity == 0 && backing.bytes == 0 {
             continue;
         }
         assert_ne!(

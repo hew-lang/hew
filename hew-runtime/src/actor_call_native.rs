@@ -79,10 +79,19 @@ pub unsafe extern "C" fn hew_managed_visit_actor_call(
 ) -> i32 {
     // SAFETY: the select/invocation owner retains its affine operation.
     unsafe {
-        let pointer = slot.cast::<*const HewActorCall>().read();
-        let Some(call) = pointer.as_ref() else {
+        let pointer = slot.cast::<*mut HewActorCall>().read();
+        let Some(call) = pointer.as_mut() else {
             return 0;
         };
+        if let Some(driver) = &mut call.cleanup {
+            let status = crate::release_walker::hew_managed_visit_release_driver(
+                ptr::from_mut(&mut **driver).cast(),
+                visitor,
+            );
+            if status != 0 {
+                return status;
+            }
+        }
         match &call.route {
             CallRoute::Local(local) => {
                 crate::reply_channel::native::visit_managed_reply(local.channel, visitor)

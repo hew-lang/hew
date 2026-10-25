@@ -18,6 +18,26 @@ pub(super) fn bind_runtime<'ctx>(llvm: &Module<'ctx>, engine: &ExecutionEngine<'
             }
         })*};
     }
+    if let Some(function) = llvm.get_function("hew_budget_release_backing") {
+        engine.add_global_mapping(
+            &function,
+            hew_runtime::owned_value_budget::hew_budget_release_backing as *const () as usize,
+        );
+    }
+    for (name, address) in [
+        (
+            "hew_code_root_acquire",
+            hew_cabi::code::hew_code_root_acquire as *const () as usize,
+        ),
+        (
+            "hew_code_root_release",
+            hew_cabi::code::hew_code_root_release as *const () as usize,
+        ),
+    ] {
+        if let Some(function) = llvm.get_function(name) {
+            engine.add_global_mapping(&function, address);
+        }
+    }
     bind_budget!(
         frame::hew_budget_bind_frame,
         frame::hew_managed_visit_invocation,
@@ -37,6 +57,7 @@ pub(super) fn bind_runtime<'ctx>(llvm: &Module<'ctx>, engine: &ExecutionEngine<'
         visit::hew_managed_visit_dynamic,
     );
     bind!(
+        release_walker::hew_managed_visit_release_driver_slot,
         bytes::hew_bytes_literal_capacity,
         bytes::hew_bytes_push_checked,
         bytes::hew_bytes_append_checked,
@@ -140,6 +161,11 @@ pub(super) fn bind_runtime<'ctx>(llvm: &Module<'ctx>, engine: &ExecutionEngine<'
         hashset::hew_hashset_iter_next_layout,
         hashset::hew_hashset_iter_free_layout,
         vec::hew_vec_new_with_elem_layout,
+        vec::hew_vec_push_managed,
+        vec::hew_vec_make_unique_managed,
+        vec::hew_vec_set_managed,
+        vec::hew_vec_append_managed,
+        vec::hew_vec_get_clone_managed,
         vec::hew_vec_make_unique,
         vec::hew_vec_free_owned,
         vec::hew_vec_free_owned_walk,

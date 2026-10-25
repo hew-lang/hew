@@ -438,6 +438,7 @@ fn main() {
             value_callbacks: BTreeMap::new(),
         };
         emitter.declare_functions().unwrap();
+        emitter.emit_managed_descriptors().unwrap();
         emitter.emit_selected_value_callbacks().unwrap();
         // Model the private callable's failure ABI with a distinct nonzero status
         // and an opaque pointer. It deliberately dirties its own scratch result.

@@ -54,7 +54,7 @@ fn immutable_scalar_tuple_lowering_keeps_aggregate_semantics_in_sir() {
     let ops: Vec<_> = main
         .blocks
         .iter()
-        .flat_map(|block| block.operations())
+        .flat_map(hew_sir::SemBlock::operations)
         .collect();
     let tuple_make = ops
         .iter()
@@ -142,7 +142,7 @@ fn generic_scalar_instances_substitute_tuple_values_before_raw_mir() {
     let tuple_make = function
         .blocks
         .iter()
-        .flat_map(|block| block.operations())
+        .flat_map(hew_sir::SemBlock::operations)
         .find(|op| matches!(op.kind, SemOpKind::TupleMake { .. }))
         .expect("the concrete generic body must retain tuple.make");
     assert_eq!(
@@ -190,13 +190,13 @@ fn nested_bitcopy_tuples_remain_abstract_through_projection() {
     let tuple_makes = main
         .blocks
         .iter()
-        .flat_map(|block| block.operations())
+        .flat_map(hew_sir::SemBlock::operations)
         .filter(|op| matches!(op.kind, SemOpKind::TupleMake { .. }))
         .count();
     let tuple_gets = main
         .blocks
         .iter()
-        .flat_map(|block| block.operations())
+        .flat_map(hew_sir::SemBlock::operations)
         .filter(|op| matches!(op.kind, SemOpKind::TupleGet { .. }))
         .count();
     assert_eq!(tuple_makes, 2);
@@ -387,7 +387,7 @@ fn every_binding_is_recorded_with_the_value_it_names() {
     let anonymous = twice
         .blocks
         .iter()
-        .flat_map(|block| block.operations())
+        .flat_map(hew_sir::SemBlock::operations)
         .flat_map(|op| &op.results)
         .filter(|result| !bound_values.contains(&result.id))
         .count();

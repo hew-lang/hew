@@ -5,10 +5,6 @@ use crate::{
 };
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
-#[expect(
-    clippy::too_many_lines,
-    reason = "verify lexical scope ancestry and the invocation loans each scope retains"
-)]
 pub(crate) fn verify(function: &SemFunction) -> Result<(), String> {
     let mut declared = BTreeSet::new();
     let mut invocation_loans = BTreeMap::new();
@@ -161,10 +157,8 @@ impl TaskState {
                 }
                 self.invocation_loans.remove(&borrow.value);
             }
-            SemOpKind::TaskScopeClose { scope } => {
-                if self.scopes.pop() != Some((*scope, true)) {
-                    return Err("task scope close requires its completed drain".into());
-                }
+            SemOpKind::TaskScopeClose { scope } if self.scopes.pop() != Some((*scope, true)) => {
+                return Err("task scope close requires its completed drain".into());
             }
             _ => {}
         }

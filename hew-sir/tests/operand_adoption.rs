@@ -73,7 +73,7 @@ fn producer(module: &SemModule, value: ValueId) -> SemOpKind {
         function
             .blocks
             .iter()
-            .flat_map(|block| block.operations())
+            .flat_map(hew_sir::SemBlock::operations)
             .find(|op| {
                 op.results
                     .iter()

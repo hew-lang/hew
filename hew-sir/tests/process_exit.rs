@@ -193,7 +193,7 @@ fn an_unconditional_exit_does_not_register_an_unrunnable_defer() {
     assert!(!main
         .blocks
         .iter()
-        .flat_map(|block| block.operations())
+        .flat_map(hew_sir::SemBlock::operations)
         .any(|op| matches!(op.kind, hew_sir::SemOpKind::RegisterDefer { .. })));
 }
 

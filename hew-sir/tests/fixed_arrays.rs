@@ -35,7 +35,7 @@ fn fixed_array_construction_verifier_requires_exact_element_count() {
         .functions
         .iter_mut()
         .flat_map(|function| &mut function.blocks)
-        .flat_map(|block| block.operations_mut())
+        .flat_map(hew_sir::SemBlock::operations_mut)
         .find(|operation| matches!(operation.kind, SemOpKind::ArrayMake { .. }))
         .unwrap();
     let SemOpKind::ArrayMake { fields } = &mut operation.kind else {
@@ -56,7 +56,7 @@ fn fixed_array_repeat_keeps_one_seed_independent_of_length() {
             .functions
             .iter()
             .flat_map(|function| &function.blocks)
-            .flat_map(|block| block.operations())
+            .flat_map(hew_sir::SemBlock::operations)
             .filter(|operation| matches!(operation.kind, SemOpKind::ArrayRepeat { .. }))
             .collect::<Vec<_>>();
         assert_eq!(repeats.len(), 1);

@@ -299,7 +299,7 @@ fn equality_snapshots_a_whole_binding_before_later_mutation() {
         let snapshot = main
             .blocks
             .iter()
-            .flat_map(|block| block.operations())
+            .flat_map(hew_sir::SemBlock::operations)
             .find(|op| {
                 op.results
                     .iter()
@@ -404,8 +404,8 @@ fn main() -> i64 {
         };
         assert_eq!(
             cleanup_blocks
-                .iter()
-                .flat_map(|block| block.operations())
+                .iter().copied()
+                .flat_map(hew_sir::SemBlock::operations)
                 .filter(|op| matches!(op.kind, hew_sir::SemOpKind::EndLifetime { place } if place == owner))
                 .count(),
             1

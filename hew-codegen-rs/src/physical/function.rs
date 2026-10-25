@@ -63,7 +63,9 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
             };
             let mut frame = coro::begin(ctx, &module.llvm, &builder, value, execution)?;
             frame.completion_state = state;
-            frame.owns_state = callable.is_authored_close;
+            if callable.is_authored_close {
+                frame.bind_cleanup_execution(ctx, &module.llvm, &builder)?;
+            }
             Some(frame)
         } else {
             None

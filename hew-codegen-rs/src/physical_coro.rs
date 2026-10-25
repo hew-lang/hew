@@ -15,7 +15,6 @@ pub(super) struct Frame<'ctx> {
     /// An authored close executes in private cleanup ancestry but completes
     /// the invocation supplied by its caller.
     pub completion_state: PointerValue<'ctx>,
-    pub owns_state: bool,
     pub budget: PointerValue<'ctx>,
     destroying: PointerValue<'ctx>,
     pub finish: BasicBlock<'ctx>,
@@ -335,7 +334,6 @@ pub(super) fn begin<'ctx>(
     let frame = Frame {
         state,
         completion_state: state,
-        owns_state: false,
         budget,
         destroying,
         finish,
@@ -353,6 +351,59 @@ pub(super) fn begin<'ctx>(
 }
 
 impl<'ctx> Frame<'ctx> {
+    /// The caller observes completion while authored cleanup uses shielded
+    /// execution ancestry. Keep that private execution in the same live view.
+    pub(super) fn bind_cleanup_execution(
+        &self,
+        ctx: &'ctx Context,
+        module: &Module<'ctx>,
+        builder: &Builder<'ctx>,
+    ) -> CodegenResult<()> {
+        let pointer = ctx.ptr_type(AddressSpace::default());
+        let view_ty = managed_frame_type(ctx, module)?;
+        let child = self.storage(ctx, pointer.into(), "close.execution.root")?;
+        builder
+            .build_store(child, self.state)
+            .llvm_ctx("retain the authored close execution root")?;
+        let view = self.storage(ctx, view_ty.into(), "close.completion.view")?;
+        let row = builder
+            .build_insert_value(view_ty.const_zero(), child, 2, "close.execution.view")
+            .llvm_ctx("link completion to authored cleanup execution")?;
+        builder
+            .build_store(view, row.into_struct_value())
+            .llvm_ctx("initialize the completion invocation view")?;
+        let bind = get_or_declare_external(
+            module,
+            "hew_budget_bind_frame",
+            ctx.void_type().fn_type(&[pointer.into(); 2], false),
+        )?;
+        builder
+            .build_call(bind, &[self.completion_state.into(), view.into()], "")
+            .llvm_ctx("publish authored cleanup execution to its caller")?;
+        let finish = ctx.create_builder();
+        finish.position_before(
+            &self.finish.get_terminator().ok_or_else(|| {
+                CodegenError::FailClosed("cleanup finish lacks its branch".into())
+            })?,
+        );
+        finish
+            .build_call(
+                bind,
+                &[self.completion_state.into(), pointer.const_null().into()],
+                "",
+            )
+            .llvm_ctx("retire completed authored cleanup linkage")?;
+        let free = get_or_declare_external(
+            module,
+            "hew_coro_state_free",
+            ctx.void_type().fn_type(&[pointer.into()], false),
+        )?;
+        finish
+            .build_call(free, &[self.state.into()], "")
+            .llvm_ctx("release private cleanup state after retiring its root view")?;
+        Ok(())
+    }
+
     pub(super) fn bind_managed_roots(
         &self,
         ctx: &'ctx Context,
@@ -362,16 +413,8 @@ impl<'ctx> Frame<'ctx> {
         count: u64,
     ) -> CodegenResult<()> {
         let pointer = ctx.ptr_type(AddressSpace::default());
-        let data_layout = module.get_data_layout();
-        let data_layout = data_layout
-            .as_str()
-            .to_str()
-            .map_err(|_| CodegenError::FailClosed("target data layout is not UTF-8".into()))?;
-        let size = ctx.ptr_sized_int_type(&TargetData::create(data_layout), None);
-        let view_ty = ctx.struct_type(
-            &[pointer.into(), size.into(), pointer.into(), pointer.into()],
-            false,
-        );
+        let view_ty = managed_frame_type(ctx, module)?;
+        let size = view_ty.get_field_type_at_index(1).unwrap().into_int_type();
         let view = if let Some(view) = self.managed_view.get() {
             view
         } else {
@@ -690,4 +733,21 @@ mod abi_tests {
         reordered.swap(0, 1);
         assert!(mismatch(ctx.struct_type(&reordered, false)).is_some());
     }
+}
+
+fn managed_frame_type<'ctx>(
+    ctx: &'ctx Context,
+    module: &Module<'ctx>,
+) -> CodegenResult<inkwell::types::StructType<'ctx>> {
+    let pointer = ctx.ptr_type(AddressSpace::default());
+    let data_layout = module.get_data_layout();
+    let data_layout = data_layout
+        .as_str()
+        .to_str()
+        .map_err(|_| CodegenError::FailClosed("target data layout is not UTF-8".into()))?;
+    let size = ctx.ptr_sized_int_type(&TargetData::create(data_layout), None);
+    Ok(ctx.struct_type(
+        &[pointer.into(), size.into(), pointer.into(), pointer.into()],
+        false,
+    ))
 }

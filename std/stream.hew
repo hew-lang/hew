@@ -236,10 +236,105 @@ gen fn decoded_frames<T, C: Codec<T>>(consume input: Stream<bytes>, consume code
 }
 
 impl Stream<bytes> {
+    /// Yield newline-free UTF-8 lines, normalizing CRLF and flushing a final
+    /// unterminated line at EOF. Lines longer than one MiB are split into
+    /// bounded pieces. Closing the adapter closes its source cooperatively.
+    fn lines(consume self) -> Stream<string> {
+        from_generator(normalized_lines(self))
+    }
+
+    /// Yield byte chunks of `width` bytes, with a possibly shorter final chunk.
+    /// Zero and negative widths select one byte per chunk.
+    fn chunks(consume self, width: i64) -> Stream<bytes> {
+        from_generator(fixed_chunks(self, if width > 0 { width } else { 1 }))
+    }
+
     /// Decode frames across arbitrary chunk boundaries. A terminal codec error
     /// is delivered once, then the stream ends. The adapter owns both inputs.
     fn frames<T: Send, C: Codec<T> + Send>(consume self, consume codec: C) -> Stream<Result<T, CodecError>> {
         from_generator(decoded_frames(self, codec))
+    }
+}
+
+fn line_text(content: bytes) -> string {
+    match utf8.decode(content) {
+        .Ok(text) => text,
+        .Err(_) => panic("stream line contains invalid UTF-8"),
+    }
+}
+
+gen fn normalized_lines(consume input: Stream<bytes>) -> string {
+    var buffer = bytes.new();
+    var done = false;
+    var skip_delimiter = false;
+    let limit = 1024 * 1024;
+    loop {
+        if skip_delimiter {
+            if buffer.len() >= 2 && buffer[0] == 13 && buffer[1] == 10 {
+                buffer = buffer[2..buffer.len()];
+                skip_delimiter = false;
+            } else if buffer.len() > 0 && buffer[0] == 10 {
+                buffer = buffer[1..buffer.len()];
+                skip_delimiter = false;
+            } else if !(buffer.len() == 1 && buffer[0] == 13 && !done) && (buffer.len() > 0 || done) {
+                skip_delimiter = false;
+            }
+        }
+        var end = -1;
+        for i in 0..buffer.len() {
+            if buffer[i] == 10 {
+                end = i;
+                break;
+            }
+        }
+        if end >= 0 && (end < limit || (end == limit && buffer[end - 1] == 13)) {
+            let content_end = if end > 0 && buffer[end - 1] == 13 { end - 1 } else { end };
+            let line = line_text(buffer[0..content_end]);
+            buffer = buffer[end + 1 .. buffer.len()];
+            yield line;
+            continue;
+        }
+        if buffer.len() >= limit {
+            let line = line_text(buffer[0..limit]);
+            buffer = buffer[limit..buffer.len()];
+            skip_delimiter = true;
+            yield line;
+            continue;
+        }
+        if done {
+            if !buffer.is_empty() {
+                yield line_text(buffer);
+            }
+            return;
+        }
+        match input.recv() {
+            .Some(chunk) => buffer.append(chunk),
+            .None => {
+                done = true;
+            }
+        }
+    }
+}
+
+gen fn fixed_chunks(consume input: Stream<bytes>, width: i64) -> bytes {
+    var buffer = bytes.new();
+    var done = false;
+    loop {
+        while buffer.len() < width && !done {
+            match input.recv() {
+                .Some(chunk) => buffer.append(chunk),
+                .None => {
+                    done = true;
+                }
+            }
+        }
+        if buffer.is_empty() {
+            return;
+        }
+        let count = if buffer.len() < width { buffer.len() } else { width };
+        let chunk = buffer[0..count];
+        buffer = buffer[count..buffer.len()];
+        yield chunk;
     }
 }
 

@@ -1253,6 +1253,23 @@ fn bounded_semaphore_handles_retain_only_runtime_bookkeeping() {
 }
 
 #[test]
+fn content_adapters_share_typed_generator_ownership() {
+    assert_native_manifest(
+        "actor-owned-budget-stream-adapters",
+        hew_compile::SourceSet::in_memory(),
+    );
+    assert_native_manifest("stream-adapter-select", hew_compile::SourceSet::in_memory());
+    assert_native_manifest(
+        "stream-content-framing",
+        hew_compile::SourceSet::in_memory(),
+    );
+    assert_native_manifest(
+        "stream-adapter-invalid-utf8",
+        hew_compile::SourceSet::in_memory(),
+    );
+}
+
+#[test]
 fn pipelines_close_actor_streams_before_next_turn() {
     assert_native_manifest("pipeline-actor-stream", hew_compile::SourceSet::in_memory());
 }

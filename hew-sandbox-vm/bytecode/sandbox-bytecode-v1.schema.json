@@ -5018,16 +5018,6 @@
               "type": "null"
             },
             "family": {
-              "const": "StreamLines"
-            }
-          }
-        },
-        {
-          "properties": {
-            "detail": {
-              "type": "null"
-            },
-            "family": {
               "const": "StreamNextLayout"
             }
           }
@@ -6168,16 +6158,6 @@
             },
             "family": {
               "const": "ReplyPayloadFree"
-            }
-          }
-        },
-        {
-          "properties": {
-            "detail": {
-              "type": "null"
-            },
-            "family": {
-              "const": "StreamChunks"
             }
           }
         },

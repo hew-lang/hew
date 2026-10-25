@@ -22,14 +22,29 @@ const rows = [
 const integer = (value) => ({ kind: "i64", value: BigInt(value) });
 
 test("unbounded descriptor propagation does not acquire opaque payloads", () => {
-  const layouts = new ManagedLayouts([
-    ...rows,
-    { id: 4, slot_bytes: "8", kind: "provider", provider: "opaque", children: [] },
-    { id: 5, slot_bytes: "16", kind: "aggregate", fields: [3, 4] },
-  ], () => { throw new HeapExceeded(); });
+  const layouts = new ManagedLayouts(
+    [
+      ...rows,
+      {
+        id: 4,
+        slot_bytes: "8",
+        kind: "provider",
+        provider: "opaque",
+        children: [],
+      },
+      { id: 5, slot_bytes: "16", kind: "aggregate", fields: [3, 4] },
+    ],
+    () => {
+      throw new HeapExceeded();
+    },
+  );
   const values = { kind: "vector", elementType: "", items: [integer(7)] };
   const foreign = { kind: "record", typeId: "foreign", fields: [] };
-  const value = { kind: "record", typeId: "wrapper", fields: [values, foreign] };
+  const value = {
+    kind: "record",
+    typeId: "wrapper",
+    fields: [values, foreign],
+  };
   layouts.stampGraph({ value, type: 5 });
   assert.equal(layouts.type(values), 3);
   assert.equal(layouts.type(values.items[0]), 0);

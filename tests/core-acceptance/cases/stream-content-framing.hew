@@ -1,0 +1,33 @@
+// Stream's source methods are available without a std.stream import.
+actor Feed {
+    receive gen fn text() -> bytes {
+        yield b"hello\r";
+        yield b"\n\nworld";
+    }
+    receive gen fn data() -> bytes {
+        yield b"abc";
+        yield b"de";
+    }
+}
+
+fn main() {
+    let feed = spawn Feed;
+    let lines = feed.text().lines();
+    assert(lines.recv() == .Some("hello"));
+    assert(lines.recv() == .Some(""));
+    assert(lines.recv() == .Some("world"));
+    assert(lines.recv() == .None);
+    lines.close();
+    let chunks = feed.data().chunks(2);
+    assert(chunks.recv() == .Some(b"ab"));
+    assert(chunks.recv() == .Some(b"cd"));
+    assert(chunks.recv() == .Some(b"e"));
+    assert(chunks.recv() == .None);
+    chunks.close();
+    let single = feed.data().chunks(-1);
+    assert(single.recv() == .Some(b"a"));
+    single.close();
+    stop(feed);
+    stopped(feed);
+    println("source stream framing");
+}

@@ -5665,28 +5665,6 @@ impl RuntimeCallFamily {
                 physical: RuntimePhysicalForm::Direct,
                 c_return: RuntimeCReturn::Storage,
             },
-            Self::StreamChunks => RuntimeOpRow {
-                authority: RuntimeAuthority::Service,
-                symbol: "hew_stream_chunks",
-                contract: Some(RuntimeSemanticContract {
-                    arguments: &[
-                        A {
-                            ty: K::Receiver(BuiltinType::Stream),
-                            effect: E::Move,
-                        },
-                        A {
-                            ty: K::I64,
-                            effect: E::Copy,
-                        },
-                    ],
-                    result: R::FreshOwned(K::Receiver(BuiltinType::Stream)),
-                    failures: &[],
-                }),
-                staging: RuntimeStaging::PreStaged,
-                abi_shape: RuntimeCallAbiShape::Other,
-                physical: RuntimePhysicalForm::Direct,
-                c_return: RuntimeCReturn::Storage,
-            },
             Self::StreamForward => RuntimeOpRow {
                 authority: RuntimeAuthority::Service,
                 symbol: "hew_stream_pipe",
@@ -5787,24 +5765,6 @@ impl RuntimeCallFamily {
                         ty: K::StreamPair,
                         effect: E::Borrow,
                     }],
-                    result: R::FreshOwned(K::PipeHalfResult(PipeHalfKind::Stream)),
-                    failures: &[],
-                }),
-                staging: RuntimeStaging::PreStaged,
-                abi_shape: RuntimeCallAbiShape::Other,
-                physical: RuntimePhysicalForm::Direct,
-                c_return: RuntimeCReturn::Storage,
-            },
-            Self::StreamLines => RuntimeOpRow {
-                authority: RuntimeAuthority::Service,
-                symbol: "hew_stream_lines",
-                contract: Some(RuntimeSemanticContract {
-                    arguments: &[A {
-                        ty: K::Receiver(BuiltinType::Stream),
-                        effect: E::Move,
-                    }],
-                    // `Stream<bytes>` in, `Stream<string>` out: the result
-                    // takes its element from the checked expression type.
                     result: R::FreshOwned(K::PipeHalfResult(PipeHalfKind::Stream)),
                     failures: &[],
                 }),

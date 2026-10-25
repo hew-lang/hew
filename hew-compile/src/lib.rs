@@ -2351,31 +2351,35 @@ pub fn inject_implicit_imports(items: &mut Vec<Spanned<Item>>, source: &str) {
 /// could name one; the import selects no names, so it loads the declarations
 /// without binding anything. A standard-library module checked directly is
 /// the prelude's own floor and loads nothing: `std.link_monitor` would import
-/// itself, and `std.failure` would close a cycle through it.
+/// itself, and `std.failure` would close a cycle through it. Stream's ordinary
+/// source methods also belong to every program, including programs that obtain
+/// a Stream from an actor without importing std.stream. Loading it through the
+/// normal resolver retains its transitive codec declarations and identities.
 fn inject_prelude_module_loads(items: &mut Vec<Spanned<Item>>, input: &Path) {
     if canonical_direct_stdlib_module_for_source(input).is_some() {
         return;
     }
-    let path = ["std", "link_monitor"];
-    let already_imported = items
-        .iter()
-        .any(|(item, _)| matches!(item, Item::Import(decl) if import_segments(&decl.path) == path));
-    if already_imported {
-        return;
+    for path in [["std", "link_monitor"], ["std", "stream"]] {
+        let already_imported = items.iter().any(
+            |(item, _)| matches!(item, Item::Import(decl) if import_segments(&decl.path) == path),
+        );
+        if already_imported {
+            continue;
+        }
+        items.push((
+            Item::Import(ImportDecl {
+                path: hew_parser::ast::Path::from_spellings(&path),
+                spec: Some(hew_parser::ast::ImportSpec::Names(Vec::new())),
+                selection_trailing_comma: false,
+                module_alias: None,
+                file_path: None,
+                resolved_items: None,
+                resolved_item_source_paths: Vec::new(),
+                resolved_source_paths: Vec::new(),
+            }),
+            0..0,
+        ));
     }
-    items.push((
-        Item::Import(ImportDecl {
-            path: hew_parser::ast::Path::from_spellings(&path),
-            spec: Some(hew_parser::ast::ImportSpec::Names(Vec::new())),
-            selection_trailing_comma: false,
-            module_alias: None,
-            file_path: None,
-            resolved_items: None,
-            resolved_item_source_paths: Vec::new(),
-            resolved_source_paths: Vec::new(),
-        }),
-        0..0,
-    ));
 }
 
 fn source_contains_regex_literal(source: &str) -> bool {

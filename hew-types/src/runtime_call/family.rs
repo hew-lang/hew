@@ -290,16 +290,12 @@ pub enum RuntimeCallFamily {
     // `true` for `StreamClose`/`SinkClose` to mirror
     // `runtime_symbol_consumes_receiver`.
     StreamClose,
-    /// The three lazy adaptors. Each consumes its source stream and returns a
-    /// fresh one that closes the source cooperatively when the consumer stops.
-    StreamChunks,
     /// `stream.forward(from, to)`: drain `from` into `to`, finishing `to` at
     /// EOF. Both halves are consumed.
     StreamForward,
     StreamPipe,
     StreamFromGenerator,
     SinkFromEncoder,
-    StreamLines,
     StreamNextLayout,
     /// The two halves of one `stream.pipe` allocation, extracted by the
     /// source intrinsics `std.stream.pair_sink` / `pair_stream`.

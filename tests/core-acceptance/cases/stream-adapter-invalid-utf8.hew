@@ -1,0 +1,21 @@
+import std.stream;
+
+actor Reader {
+    receive fn read() {
+        let (output, input): (Sink<bytes>, Stream<bytes>) = stream.pipe(1).expect("pipe");
+        output.send([255, 10]).expect("input");
+        output.finish();
+        let lines = input.lines();
+        lines.recv();
+    }
+}
+
+fn main() -> i64 {
+    let reader = spawn Reader;
+    match reader.read() {
+        .Err(.Trapped) => println("invalid UTF-8 trapped"),
+        _ => return 2,
+    }
+    stopped(reader);
+    0
+}

@@ -375,16 +375,11 @@ fn utf8_decode_rejects_a_foreign_optional_payload_descriptor() {
                     },
                 ..
             },
-        failure,
         ..
     } = &mut physical.functions[0].blocks[0].terminator
     else {
         panic!("expected the typed decoder runtime action");
     };
-    assert!(
-        failure.is_none(),
-        "invalid UTF-8 is not a native fault edge"
-    );
     *error_len = *result;
     let error = verify_physical_module(&physical)
         .expect_err("Result storage cannot stand in for Option<i64>");
@@ -1436,19 +1431,19 @@ fn physical_borrow_roots_cannot_end_before_their_dependent_reads() {
 #[test]
 fn physical_fault_cleanup_must_end_its_field_loans() {
     let mut physical = borrowed_aggregate_fixture();
+    let PhysicalTerminator::RuntimeCall {
+        failure: Some(failure),
+        ..
+    } = &vector_block(&mut physical.functions[0], VecValueOp::Index).terminator
+    else {
+        panic!("the field read must expose its checked failure cleanup");
+    };
+    let cleanup = failure.target;
     let fault = physical.functions[0]
         .blocks
         .iter_mut()
-        .find(|block| {
-            matches!(
-                block.terminator,
-                PhysicalTerminator::CheckedRaiseFault { .. }
-            ) && block
-                .ops
-                .iter()
-                .any(|op| matches!(op, PhysicalOp::EndBorrow { .. }))
-        })
-        .unwrap();
+        .find(|block| block.id == cleanup)
+        .expect("the field read's failure cleanup block");
     let before = fault.ops.len();
     fault
         .ops

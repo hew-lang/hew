@@ -113,7 +113,9 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
         inputs.push(witness.into());
         let checked = matches!(
             family,
-            RuntimeCallFamily::SinkClone | RuntimeCallFamily::SinkFromEncoder
+            RuntimeCallFamily::StreamFromGenerator
+                | RuntimeCallFamily::SinkClone
+                | RuntimeCallFamily::SinkFromEncoder
         );
         let status = if checked {
             let status = self

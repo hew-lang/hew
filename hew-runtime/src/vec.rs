@@ -2439,11 +2439,13 @@ pub unsafe extern "C" fn hew_vec_truncate_release(
         }
         let mut cursors = Vec::new();
         if let Some(layout) = (*v).layout.as_ref() {
-            for index in new_len..old_len {
-                cursors.push(HewReleaseCursor::detached(
-                    (*v).data.add(index * layout.size).cast(),
-                    *layout,
-                ));
+            if layout.drop_fn.is_some() || layout.release_start.is_some() {
+                for index in new_len..old_len {
+                    cursors.push(HewReleaseCursor::detached(
+                        (*v).data.add(index * layout.size).cast(),
+                        *layout,
+                    ));
+                }
             }
         } else if (*v).elem_kind == ElemKind::String {
             let mut pending = Vec::new();
@@ -5488,6 +5490,36 @@ mod vec_owned_tests {
             assert_eq!(*hew_vec_get_owned(snapshot, 0).cast::<i64>(), 11);
             assert_eq!(*hew_vec_get_owned(snapshot, 1).cast::<i64>(), 22);
             hew_vec_free_owned(snapshot);
+            hew_vec_free_owned(vector);
+        }
+    }
+
+    #[test]
+    fn plain_truncate_releases_without_element_cursors() {
+        let layout = HewValueLayout {
+            size: size_of::<i64>(),
+            align: align_of::<i64>(),
+            ownership_kind: HewTypeOwnershipKind::Plain,
+            clone_fn: None,
+            drop_fn: None,
+            release_start: None,
+        };
+        // SAFETY: initialized i64 values match the plain descriptor.
+        unsafe {
+            let vector = hew_vec_new_with_elem_layout(&raw const layout);
+            for value in [11_i64, 22, 33] {
+                hew_vec_push_owned(vector, (&raw const value).cast());
+            }
+            let capacity = (*vector).cap;
+
+            assert!(hew_vec_truncate_release(vector, 1).is_null());
+            assert_eq!((*vector).len, 1);
+            assert_eq!((*vector).cap, capacity);
+            assert_eq!(*hew_vec_get_owned(vector, 0).cast::<i64>(), 11);
+
+            assert!(hew_vec_clear_release(vector).is_null());
+            assert_eq!((*vector).len, 0);
+            assert_eq!((*vector).cap, capacity);
             hew_vec_free_owned(vector);
         }
     }

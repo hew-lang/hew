@@ -235,7 +235,7 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
         let inspectable = self.debug.is_some();
         let value = self.value;
         let chunks = if self.frame.is_some() && !inspectable && self.module.coverage.is_empty() {
-            self.function.loop_chunks()
+            self.function.loop_chunks(self.module)
         } else {
             Vec::new()
         };

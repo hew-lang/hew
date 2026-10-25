@@ -132,9 +132,10 @@ fn trace_http_cursors_are_independent_and_report_overflow_and_reset() {
             hew_runtime::profiler::metrics::MetricsRing::new(),
         )),
     });
-    thread::Builder::new()
+    let (shutdown, shutdown_rx) = hew_runtime::profiler::oneshot::channel();
+    let server = thread::Builder::new()
         .name("trace-cursor-http-e2e-server".into())
-        .spawn(move || run_tcp_with_listener(listener, ctx))
+        .spawn(move || run_tcp_with_listener(listener, ctx, shutdown_rx))
         .expect("spawn profiler server");
 
     for (actor_id, event_type) in [(101, SPAN_SPAWN), (102, SPAN_SPAWN), (101, SPAN_STOP)] {
@@ -326,6 +327,8 @@ fn trace_http_cursors_are_independent_and_report_overflow_and_reset() {
     assert_eq!(overflow["events"][0]["sequence"], "8");
     assert_eq!(overflow["has_more"], true);
 
+    shutdown.send(()).expect("signal profiler shutdown");
+    server.join().expect("profiler server should exit cleanly");
     hew_trace_reset();
     let _ = set_current_context(previous_context);
 }

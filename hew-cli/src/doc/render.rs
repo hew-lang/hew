@@ -1018,11 +1018,12 @@ pub fn render_module_with_index(
 /// Render an index page listing all documented modules, grouped by section.
 #[must_use]
 pub fn render_index(modules: &[DocModule], config: &DocSiteConfig) -> String {
-    let mut body = format!(
-        "<h1>{}</h1>\n<p>{}</p>\n",
-        html_escape(&config.index_title),
-        html_escape(&config.index_description)
-    );
+    let mut body = format!("<h1>{}</h1>\n", html_escape(&config.index_title));
+    if !config.index_description.trim().is_empty() {
+        body.push_str("<p>");
+        body.push_str(&html_escape(config.index_description.trim()));
+        body.push_str("</p>\n");
+    }
     if config.module_filter {
         body.push_str("<label class=\"search-label\" for=\"module-search\">Find a guide or module</label>\n<input id=\"module-search\" class=\"module-search\" type=\"search\" placeholder=\"Filter by name or description\" autocomplete=\"off\">\n<p id=\"search-status\" class=\"search-status\" aria-live=\"polite\"></p>\n");
     }
@@ -1048,7 +1049,14 @@ pub fn render_index(modules: &[DocModule], config: &DocSiteConfig) -> String {
     language_mods.sort_by_key(|module| (config.guide_rank(&module.name), &module.name));
 
     if !language_mods.is_empty() {
-        body.push_str("<section class=\"doc-section\"><h2>");
+        body.push_str(
+            "<nav class=\"index-nav\" aria-label=\"Reference sections\"><a href=\"#guides\">",
+        );
+        body.push_str(&html_escape(&config.guide_title));
+        body.push_str("</a><a href=\"#modules\">");
+        body.push_str(&html_escape(&config.module_title));
+        body.push_str("</a></nav>\n");
+        body.push_str("<section class=\"doc-section\" id=\"guides\"><h2>");
         body.push_str(&html_escape(&config.guide_title));
         body.push_str("</h2>\n");
         let mut guide_intro = String::new();
@@ -1304,6 +1312,9 @@ pub fn add(a: i32, b: i32) -> i32 {
 
         let html = render_index(&[module, advanced], &config);
         assert!(html.contains("<h2>Learn Hew</h2>"));
+        assert!(html.contains("aria-label=\"Reference sections\""));
+        assert!(html.contains("href=\"#guides\""));
+        assert!(html.contains("href=\"#modules\""));
         assert!(html.contains("<h3>Start here</h3>"));
         assert!(html.contains(">Basics</a>"));
         assert!(html.contains(">Write a first program.</span>"));

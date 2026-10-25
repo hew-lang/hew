@@ -137,6 +137,8 @@ pre.shiki .line::before {
 .module-list li .module-desc { color: var(--comment); font-size: 0.9em; line-height: 1.5; }
 .guide-group { margin-top: 1.5rem; }
 .guide-group h3 { margin-bottom: 0.25rem; color: var(--fg); }
+.index-nav { display: flex; gap: 1rem; margin: 0.75rem 0 1.25rem; font-size: 0.9rem; }
+.index-nav a + a::before { content: "·"; color: var(--comment); margin-right: 1rem; }
 .section-heading { font-size: 1.1rem; font-weight: 600; color: var(--muted); text-transform: capitalize; margin: 1.75rem 0 0.5rem; padding-bottom: 0.25rem; border-bottom: 1px solid var(--border); }
 .search-label { display: block; font-weight: 600; margin-top: 1.5rem; }
 .module-search { width: 100%; margin: 0.4rem 0 0.25rem; padding: 0.65rem 0.75rem; border: 1px solid var(--border); border-radius: 6px; background: var(--code-bg); color: var(--fg); font: inherit; }
@@ -150,9 +152,10 @@ footer a { color: var(--comment); }
 footer a:hover { color: var(--accent); }
 @media (max-width: 44rem) {
     body { padding: 0 1rem 1.5rem; }
-    .site-header { align-items: flex-start; flex-direction: column; gap: 0.75rem; }
-    .site-nav { flex-wrap: wrap; gap: 0.6rem 1rem; }
-    .site-brand-tag { display: none; }
+    .site-header { align-items: flex-start; flex-direction: column; gap: 0.4rem; padding: 0.75rem 0; margin-bottom: 1.25rem; }
+    .site-nav { flex-wrap: wrap; gap: 0.35rem 0.6rem; }
+    .site-nav a { font-size: 0.8125rem; }
+    .site-brand-tag { display: inline; }
     .module-list li { grid-template-columns: minmax(0, 1fr); row-gap: 0.2rem; padding: 0.65rem 0; }
     .module-desc { display: block; }
 }

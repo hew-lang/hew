@@ -58,7 +58,8 @@ pub use lower::{
 pub use lower_error::{SirLoweringError, SirOwnershipError};
 pub use managed_storage::{
     managed_array_payload, managed_generator_payload, managed_slot, managed_slot_is_plain,
-    managed_variant_payload, ManagedLayoutError, ManagedSlot,
+    managed_storage_shape, managed_variant_payload, ManagedHandleKind, ManagedLayoutError,
+    ManagedProviderKind, ManagedSlot, ManagedStorageShape,
 };
 pub use model::{
     runtime_variant_shape_refs, AggregateShapeId, AggregateShapeRef, BlockArg, BlockId,

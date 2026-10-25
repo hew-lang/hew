@@ -35,6 +35,259 @@ pub enum ManagedLayoutError {
     RecursiveInline(ResolvedTy),
 }
 
+/// Concrete storage families. Backends project these typed facts instead of
+/// classifying type names or reconstructing ownership from native callbacks.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ManagedStorageShape {
+    Scalar,
+    Handle(ManagedHandleKind),
+    String,
+    Bytes,
+    Vector {
+        element: ResolvedTy,
+        share_on_copy: bool,
+    },
+    Array {
+        element: ResolvedTy,
+        length: u64,
+        share_on_copy: bool,
+    },
+    Slice {
+        element: ResolvedTy,
+        share_on_copy: bool,
+    },
+    Map {
+        key: ResolvedTy,
+        value: ResolvedTy,
+    },
+    Set {
+        element: ResolvedTy,
+    },
+    Aggregate {
+        fields: Vec<ResolvedTy>,
+    },
+    Variant {
+        indirect: bool,
+        payload_bytes: u64,
+        cases: Vec<Vec<ResolvedTy>>,
+    },
+    /// `None` uses the callable's concrete environment descriptor. A function
+    /// signature can carry a closure; it does not prove an empty environment.
+    Callable {
+        captures: Option<Vec<ResolvedTy>>,
+    },
+    Shared {
+        payload: ResolvedTy,
+        weak: bool,
+    },
+    Dynamic,
+    Generator {
+        yielded: ResolvedTy,
+        returned: ResolvedTy,
+        payload_bytes: u64,
+    },
+    Provider {
+        kind: ManagedProviderKind,
+        children: Vec<ResolvedTy>,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ManagedHandleKind {
+    Actor,
+    Pointer,
+    Borrow,
+    Cancellation,
+}
+
+/// Provider state is not charged by its Rust/JS representation. Its concrete
+/// descriptor must expose retained typed Hew values; an opaque provider without
+/// that description fails closed at a bounded ownership boundary.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ManagedProviderKind {
+    Task,
+    ActorCall,
+    Stream,
+    Sink,
+    Encoding(BuiltinType),
+    Opaque,
+}
+
+pub fn managed_storage_shape(
+    module: &SemModule,
+    ty: &ResolvedTy,
+) -> Result<ManagedStorageShape, ManagedLayoutError> {
+    use ManagedStorageShape as S;
+    use ResolvedTy as T;
+    let ty = ty.callable_body();
+    let shape = match ty {
+        T::Unit
+        | T::Never
+        | T::Bool
+        | T::I8
+        | T::U8
+        | T::I16
+        | T::U16
+        | T::Char
+        | T::I32
+        | T::U32
+        | T::F32
+        | T::I64
+        | T::U64
+        | T::Isize
+        | T::Usize
+        | T::F64
+        | T::Duration => S::Scalar,
+        T::String => S::String,
+        T::Bytes => S::Bytes,
+        T::Pointer { .. } => S::Handle(ManagedHandleKind::Pointer),
+        T::Borrow { .. } => S::Handle(ManagedHandleKind::Borrow),
+        T::CancellationToken => S::Handle(ManagedHandleKind::Cancellation),
+        T::Array(element, length) => S::Array {
+            element: element.as_ref().clone(),
+            length: *length,
+            share_on_copy: managed_slot_is_plain(module, element)?,
+        },
+        T::Slice(element) => S::Slice {
+            element: element.as_ref().clone(),
+            share_on_copy: managed_slot_is_plain(module, element)?,
+        },
+        T::Closure { captures, .. } => S::Callable {
+            captures: Some(captures.clone()),
+        },
+        T::Function { .. } => S::Callable { captures: None },
+        T::TraitObject { .. } => S::Dynamic,
+        T::Task(result) => S::Provider {
+            kind: ManagedProviderKind::Task,
+            children: vec![result.as_ref().clone()],
+        },
+        _ => {
+            if let Some((yielded, returned)) = ty.generator_parts() {
+                S::Generator {
+                    yielded: yielded.clone(),
+                    returned: returned.clone(),
+                    payload_bytes: managed_generator_payload(module, ty)?.bytes,
+                }
+            } else if let Some((builtin, args)) =
+                hew_types::runtime_call::collection_type_arguments(ty)
+            {
+                match builtin {
+                    BuiltinType::Vec => S::Vector {
+                        element: args[0].clone(),
+                        share_on_copy: managed_slot_is_plain(module, &args[0])?,
+                    },
+                    BuiltinType::HashMap => S::Map {
+                        key: args[0].clone(),
+                        value: args[1].clone(),
+                    },
+                    BuiltinType::HashSet => S::Set {
+                        element: args[0].clone(),
+                    },
+                    _ => unreachable!("the collection authority admits only these families"),
+                }
+            } else if let Some(payload) = hew_types::runtime_call::shared_handle_payload(ty) {
+                S::Shared {
+                    payload: payload.clone(),
+                    weak: matches!(
+                        ty,
+                        T::Named {
+                            head: TypeHead::Builtin(BuiltinType::Weak),
+                            ..
+                        }
+                    ),
+                }
+            } else if let T::Named {
+                head: TypeHead::Builtin(builtin),
+                args,
+                ..
+            } = ty
+            {
+                match builtin {
+                    BuiltinType::NodeId | BuiltinType::Location => S::Scalar,
+                    BuiltinType::ActorHandle | BuiltinType::ActorFn => {
+                        S::Handle(ManagedHandleKind::Actor)
+                    }
+                    BuiltinType::CancellationToken => S::Handle(ManagedHandleKind::Cancellation),
+                    BuiltinType::Task
+                    | BuiltinType::ActorCall
+                    | BuiltinType::Stream
+                    | BuiltinType::Sink => {
+                        if args.len() != 1 {
+                            return Err(ManagedLayoutError::MissingShape(ty.clone()));
+                        }
+                        S::Provider {
+                            kind: match builtin {
+                                BuiltinType::Task => ManagedProviderKind::Task,
+                                BuiltinType::ActorCall => ManagedProviderKind::ActorCall,
+                                BuiltinType::Stream => ManagedProviderKind::Stream,
+                                BuiltinType::Sink => ManagedProviderKind::Sink,
+                                _ => unreachable!(),
+                            },
+                            children: args.clone(),
+                        }
+                    }
+                    BuiltinType::JsonValue | BuiltinType::YamlValue | BuiltinType::TomlValue => {
+                        S::Provider {
+                            kind: ManagedProviderKind::Encoding(*builtin),
+                            children: Vec::new(),
+                        }
+                    }
+                    _ => managed_structural_shape(module, ty)?,
+                }
+            } else if matches!(
+                ty,
+                T::Named {
+                    head: TypeHead::Actor(_),
+                    ..
+                }
+            ) {
+                S::Handle(ManagedHandleKind::Actor)
+            } else {
+                managed_structural_shape(module, ty)?
+            }
+        }
+    };
+    Ok(shape)
+}
+
+fn managed_structural_shape(
+    module: &SemModule,
+    ty: &ResolvedTy,
+) -> Result<ManagedStorageShape, ManagedLayoutError> {
+    if let Some(shape) = module.variant_shape_for_type(ty) {
+        Ok(ManagedStorageShape::Variant {
+            indirect: shape.is_indirect,
+            payload_bytes: managed_variant_payload(module, shape)?.bytes,
+            cases: shape
+                .variants
+                .iter()
+                .map(|case| case.fields.iter().map(|field| field.ty.clone()).collect())
+                .collect(),
+        })
+    } else if let Some(shape) = module.aggregate_shape_for_type(ty) {
+        Ok(ManagedStorageShape::Aggregate {
+            fields: shape.fields.iter().map(|field| field.ty.clone()).collect(),
+        })
+    } else if let ResolvedTy::Tuple(fields) = ty {
+        Ok(ManagedStorageShape::Aggregate {
+            fields: fields.clone(),
+        })
+    } else if matches!(
+        ty,
+        ResolvedTy::Named {
+            is_opaque: true,
+            ..
+        }
+    ) {
+        Ok(ManagedStorageShape::Provider {
+            kind: ManagedProviderKind::Opaque,
+            children: Vec::new(),
+        })
+    } else {
+        Err(ManagedLayoutError::MissingShape(ty.clone()))
+    }
+}
+
 /// Whether copying a sequence can share its backing without element callbacks.
 /// This uses the checker's exact copy and ownership facts, the same facts that
 /// produce a Plain native layout with no clone, drop or release callback.
@@ -275,6 +528,40 @@ mod tests {
         };
         assert_eq!(managed_generator_payload(&module, &ty).unwrap().bytes, 17);
         assert_eq!(managed_slot(&module, &ty).unwrap().bytes, 8);
+        assert!(matches!(
+            managed_storage_shape(&module, &ty).unwrap(),
+            ManagedStorageShape::Generator {
+                payload_bytes: 17,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn providers_keep_typed_results_and_handles_keep_nonownership() {
+        let module = SemModule::default();
+        let task = ResolvedTy::Task(Box::new(ResolvedTy::Bytes));
+        assert_eq!(
+            managed_storage_shape(&module, &task).unwrap(),
+            ManagedStorageShape::Provider {
+                kind: ManagedProviderKind::Task,
+                children: vec![ResolvedTy::Bytes]
+            }
+        );
+        let borrow = ResolvedTy::Borrow {
+            pointee: Box::new(ResolvedTy::String),
+        };
+        assert_eq!(
+            managed_storage_shape(&module, &borrow).unwrap(),
+            ManagedStorageShape::Handle(ManagedHandleKind::Borrow)
+        );
+        let fields = ResolvedTy::Tuple(vec![ResolvedTy::U64, ResolvedTy::String]);
+        assert_eq!(
+            managed_storage_shape(&module, &fields).unwrap(),
+            ManagedStorageShape::Aggregate {
+                fields: vec![ResolvedTy::U64, ResolvedTy::String]
+            }
+        );
     }
 
     #[test]

@@ -135,11 +135,7 @@ fn main() {
     // today, so this prints the first five keys unranked.
     println("first 5 ids (unranked):");
     let kn = keys.len();
-    let limit = if kn < 5 {
-        kn
-    } else {
-        5
-    };
+    let limit = if kn < 5 { kn } else { 5 };
     for k in 0..limit {
         let id = keys[k];
         if let .Some(c) = index.get(id) {

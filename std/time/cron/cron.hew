@@ -238,11 +238,7 @@ fn named(text: string, field: i64) -> i64 fails CronError {
 
 fn endpoint(text: string, field: i64, lower: i64, upper: i64) -> i64 fails CronError {
     let initial = text.get(0).expect("nonempty endpoint");
-    let value = if initial >= '0' && initial <= '9' {
-        number(text)?
-    } else {
-        named(text, field)?
-    };
+    let value = if initial >= '0' && initial <= '9' { number(text)? } else { named(text, field)? };
     if value < lower || value > upper {
         return error invalid(f"cron field is outside {lower}..{upper}: {text}");
     }
@@ -255,33 +251,17 @@ fn parse_span(text: string, field: i64, lower: i64, upper: i64) -> Span fails Cr
         return error invalid(f"invalid cron step: {text}");
     }
     let stepped = parts.len() == 2;
-    let step = if stepped {
-        number(parts[1])?
-    } else {
-        1
-    };
+    let step = if stepped { number(parts[1])? } else { 1 };
     if step == 0 || (field != 6 && step > upper) {
         return error invalid(f"invalid cron step: {text}");
     }
     let base = parts[0];
     if base == "*" || (base == "?" && (field == 3 || field == 5)) {
         return Span {
-            first: if field == 6 {
-                MIN_INTEGER
-            } else {
-                lower
-            },
-            last: if field == 6 {
-                .None
-            } else {
-                .Some(upper)
-            },
+            first: if field == 6 { MIN_INTEGER } else { lower },
+            last: if field == 6 { .None } else { .Some(upper) },
             // Preserve the established phase of wildcard year steps.
-            anchor: if field == 6 {
-                1970
-            } else {
-                lower
-            },
+            anchor: if field == 6 { 1970 } else { lower },
             step: step,
         };
     }
@@ -298,11 +278,7 @@ fn parse_span(text: string, field: i64, lower: i64, upper: i64) -> Span fails Cr
         return Span { first: first, last: .Some(last), anchor: first, step: step };
     }
     Span { first: first, last: if stepped {
-        if field == 6 {
-            .None
-        } else {
-            .Some(upper)
-        }
+        if field == 6 { .None } else { .Some(upper) }
     } else {
         .Some(first)
     }, anchor: first, step: step }
@@ -328,16 +304,8 @@ pub fn parse(text: string) -> Expr fails CronError {
         _ => trimmed,
     };
     let five_fields = whitespace_fields(text) == 5;
-    let source = if five_fields {
-        "0 " + text + " *"
-    } else {
-        text
-    };
-    let normalized = if five_fields {
-        "0 " + expanded + " *"
-    } else {
-        expanded
-    };
+    let source = if five_fields { "0 " + text + " *" } else { text };
+    let normalized = if five_fields { "0 " + expanded + " *" } else { expanded };
     var columns = fields(normalized)?;
     if columns.len() == 6 {
         columns.push("*");
@@ -350,19 +318,11 @@ pub fn parse(text: string) -> Expr fails CronError {
 
 fn remainder(value: i64, modulus: i64) -> i64 {
     let rest = value % modulus;
-    if rest < 0 {
-        rest + modulus
-    } else {
-        rest
-    }
+    if rest < 0 { rest + modulus } else { rest }
 }
 
 fn first_in_span(span: Span, lower: i64) -> Option<i64> {
-    let first = if lower > span.first {
-        lower
-    } else {
-        span.first
-    };
+    let first = if lower > span.first { lower } else { span.first };
     let offset = remainder(remainder(span.anchor, span.step) - remainder(first, span.step), span.step);
     if first > 0 && offset > MAX_INTEGER - first {
         return .None;
@@ -481,22 +441,14 @@ fn next_year(field: Field, lower: i64, excluded: Vec<bool>) -> Option<i64> fails
 
 fn time_on_day(expr: Expr, year: i64, month: i64, day: i64, after: datetime.Components) -> Option<timestamp> fails CronError {
     let same_day = year == after.year && month == after.month && day == after.day;
-    var hour_start = if same_day {
-        after.hour
-    } else {
-        0
-    };
+    var hour_start = if same_day { after.hour } else { 0 };
     while hour_start <= 23 {
         let hour = match next_value(expr.hours, hour_start) {
             .Some(value) => value,
             .None => return .None,
         };
         let same_hour = same_day && hour == after.hour;
-        var minute_start = if same_hour {
-            after.minute
-        } else {
-            0
-        };
+        var minute_start = if same_hour { after.minute } else { 0 };
         while minute_start <= 59 {
             let minute = match next_value(expr.minutes, minute_start) {
                 .Some(value) => value,
@@ -519,22 +471,14 @@ fn time_on_day(expr: Expr, year: i64, month: i64, day: i64, after: datetime.Comp
 }
 
 fn in_year(expr: Expr, year: i64, after: datetime.Components) -> Option<timestamp> fails CronError {
-    var month_start = if year == after.year {
-        after.month
-    } else {
-        1
-    };
+    var month_start = if year == after.year { after.month } else { 1 };
     while month_start <= 12 {
         let month = match next_value(expr.months, month_start) {
             .Some(value) => value,
             .None => return .None,
         };
         let first = components(calendar(year, month, 1, 0, 0, 0)?)?;
-        var day_start = if year == after.year && month == after.month {
-            after.day
-        } else {
-            1
-        };
+        var day_start = if year == after.year && month == after.month { after.day } else { 1 };
         while day_start <= first.days_in_month {
             let day = match next_value(expr.days, day_start) {
                 .Some(value) => value,

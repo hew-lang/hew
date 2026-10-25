@@ -51,11 +51,7 @@ fn pq_size(pq: Vec<i64>) -> i64 {
 }
 
 fn pq_is_empty(pq: Vec<i64>) -> i64 {
-    if pq_size(pq) == 0 {
-        1
-    } else {
-        0
-    }
+    if pq_size(pq) == 0 { 1 } else { 0 }
 }
 
 fn run_test(name: string, passed: i64) -> i64 {
@@ -73,55 +69,35 @@ fn main() {
     var pq: Vec<i64> = Vec.new();
     // Test 1: empty
     total = total + 1;
-    let r1 = if pq_is_empty(pq) == 1 {
-        1
-    } else {
-        0
-    };
+    let r1 = if pq_is_empty(pq) == 1 { 1 } else { 0 };
     passed = passed + run_test("new pq is empty", r1);
 
     // Test 2: insert and peek min
     total = total + 1;
     let first: Vec<i64> = [30, 10, 20];
     pq = pq_insert_all(pq, first);
-    let r2 = if pq_peek_min(pq) == 10 {
-        1
-    } else {
-        0
-    };
+    let r2 = if pq_peek_min(pq) == 10 { 1 } else { 0 };
     passed = passed + run_test("peek min after insert", r2);
 
     // Test 3: extract min returns smallest
     total = total + 1;
     let (after_m1, m1) = pq_extract_min(pq);
     pq = after_m1;
-    let r3 = if m1 == 10 {
-        1
-    } else {
-        0
-    };
+    let r3 = if m1 == 10 { 1 } else { 0 };
     passed = passed + run_test("extract_min returns 10", r3);
 
     // Test 4: next min is 20
     total = total + 1;
     let (after_m2, m2) = pq_extract_min(pq);
     pq = after_m2;
-    let r4 = if m2 == 20 {
-        1
-    } else {
-        0
-    };
+    let r4 = if m2 == 20 { 1 } else { 0 };
     passed = passed + run_test("next extract_min is 20", r4);
 
     // Test 5: last is 30
     total = total + 1;
     let (after_m3, m3) = pq_extract_min(pq);
     pq = after_m3;
-    let r5 = if m3 == 30 {
-        1
-    } else {
-        0
-    };
+    let r5 = if m3 == 30 { 1 } else { 0 };
     passed = passed + run_test("last extract_min is 30", r5);
 
     // Test 6: insert duplicates

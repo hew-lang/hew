@@ -1,0 +1,98 @@
+import std.cache;
+
+#[resource]
+type Ticket {
+    id: i64;
+}
+
+impl Ticket {
+    fn close(consume self) {
+        println(f"close {self.id}");
+    }
+}
+
+fn main() {
+    var values: cache.Cache<string, string> = cache.new(.Some(1)).expect("bounded cache");
+    values.insert("live", "ORIGINAL".to_lower());
+    let unused = Ticket { id: 1 };
+    let hit: Result<string, string> = values.get_or_load("live", move || {
+        println(f"unexpected load {unused.id}");
+        .Ok("wrong")
+    });
+    assert(hit == .Ok("original"));
+    let rejected = Ticket { id: 2 };
+    let failed: Result<string, string> = values.get_or_load("failed", move || {
+        println(f"failed load {rejected.id}");
+        .Err("not found")
+    });
+    assert(failed == .Err("not found"));
+    assert(values.len() == 1);
+    assert(values.get("live") == .Some("original"));
+    assert(values.get("failed").is_none());
+    let retry: Result<string, string> = values.get_or_load("failed", || .Ok("retry succeeded"));
+    assert(retry == .Ok("retry succeeded"));
+    assert(values.get("live").is_none());
+    let faulted = Ticket { id: 3 };
+    let fault = scope {
+        let result: Result<string, string> = values.get_or_load("fault", move || {
+            println(f"faulted load {faulted.id}");
+            panic("cache loader fault");
+            .Ok("unreachable")
+        });
+        result.expect("unreachable")
+    } handle failure {
+        match failure {
+            .Fault { message } => message,
+            _ => "wrong failure",
+        }
+    };
+    assert(fault == "cache loader fault");
+    assert(values.get("failed") == .Some("retry succeeded"));
+    let cancelled = Ticket { id: 4 };
+    let deadline = scope within 10ms {
+        let result: Result<string, string> = values.get_or_load("cancelled", move || {
+            println(f"cancelled load {cancelled.id}");
+            sleep(60s);
+            .Ok("unreachable")
+        });
+        result.expect("unreachable")
+    } handle failure {
+        match failure {
+            .Deadline { .. } => "cancelled",
+            _ => "wrong failure",
+        }
+    };
+    assert(deadline == "cancelled");
+    assert(values.get("failed") == .Some("retry succeeded"));
+    assert(values.get("cancelled").is_none());
+    let recovered: Result<string, string> = values.get_or_load("cancelled", || .Ok("recovered"));
+    assert(recovered == .Ok("recovered"));
+
+    // The virtual clock advances during loading. Starting TTL at the original
+    // miss would make this freshly returned value already expired.
+    var timed: cache.Cache<string, string> = cache.new(.None, .Some(10ms)).expect("TTL cache");
+    let slow: Result<string, string> = timed.get_or_load("slow", || {
+        sleep(20ms);
+        .Ok("loaded")
+    });
+    assert(slow == .Ok("loaded"));
+    let completed = instant.now();
+    assert(timed.get("slow", completed + 9ms) == .Some("loaded"));
+    assert(timed.get("slow", completed + 10ms).is_none());
+    {
+        let owner = Rc.new(Ticket { id: 5 });
+        var owners: cache.Cache<i64, Rc<Ticket>> = cache.new(.Some(1)).expect("owner cache");
+        owners.insert(1, owner.clone());
+        assert(owner.strong_count() == 2);
+        {
+            let read = owners.get(1).expect("owned read");
+            assert(read.strong_count() == 3);
+        };
+        assert(owner.strong_count() == 2);
+        owners.insert(2, Rc.new(Ticket { id: 6 }));
+        assert(owner.strong_count() == 1);
+        owners.clear();
+        assert(owners.len() == 0);
+    };
+    println("cache loaders and cleanup passed");
+}

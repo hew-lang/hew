@@ -137,11 +137,7 @@ impl<T: Clone> Arena<T> {
         }
         match self.slots.get(key.index) {
             .Some(slot) => match slot.value {
-                .Some(value) => if slot.generation == key.generation {
-                    .Some(value)
-                } else {
-                    .None
-                }
+                .Some(value) => if slot.generation == key.generation { .Some(value) } else { .None }
                 .None => .None,
             }
             .None => .None,

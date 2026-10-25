@@ -103,7 +103,7 @@ pub unsafe extern "C" fn hew_vec_push_managed(
         return 0;
     };
     // SAFETY: bounded execution retains the same inputs through publication.
-    unsafe { push_managed_bounded(v, data, moved, owner) }
+    unsafe { push_managed_bounded(v, data, moved, &owner) }
 }
 
 // Keep reservation bookkeeping off the ordinary unbounded push's stack.
@@ -112,7 +112,7 @@ unsafe fn push_managed_bounded(
     v: *mut HewVec,
     data: *const c_void,
     moved: u32,
-    owner: crate::owned_value_budget::ValueOwner,
+    owner: &crate::owned_value_budget::ValueOwner,
 ) -> i32 {
     use crate::owned_value_budget::{
         materialize::{HewManagedInput, MaterializationPermit},

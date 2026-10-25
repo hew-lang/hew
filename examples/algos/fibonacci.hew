@@ -2,11 +2,7 @@
 fn fib_recursive(n: i64) -> i64 {
     if n <= 0 {
         0
-    } else if n == 1 {
-        1
-    } else {
-        fib_recursive(n - 1) + fib_recursive(n - 2)
-    }
+    } else if n == 1 { 1 } else { fib_recursive(n - 1) + fib_recursive(n - 2) }
 }
 
 fn fib_iterative(n: i64) -> i64 {

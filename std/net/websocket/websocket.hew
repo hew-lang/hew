@@ -147,11 +147,7 @@ impl ConnMethods for Conn {
         let selected = unsafe {
             hew_ws_subprotocol(self)
         };
-        if selected.is_empty() {
-            .None
-        } else {
-            .Some(selected)
-        }
+        if selected.is_empty() { .None } else { .Some(selected) }
     }
     fn send_text(self, text: string) -> Result<(), net.NetError> {
         if unsafe {

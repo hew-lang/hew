@@ -104,11 +104,7 @@ fn main() {
     total = total + 1;
     let seeds: Vec<i64> = [30, 10, 50, 20, 40];
     arr = sa_insert_all(arr, seeds);
-    let r1 = if sa_is_sorted(arr) == 1 {
-        1
-    } else {
-        0
-    };
+    let r1 = if sa_is_sorted(arr) == 1 { 1 } else { 0 };
     passed = passed + run_test("insert maintains sorted", r1);
 
     // Test 2: correct values [10, 20, 30, 40, 50]
@@ -130,21 +126,13 @@ fn main() {
     // Test 3: search finds existing
     total = total + 1;
     let idx = sa_search(arr, 30);
-    let r3 = if idx == 2 {
-        1
-    } else {
-        0
-    };
+    let r3 = if idx == 2 { 1 } else { 0 };
     passed = passed + run_test("search finds 30 at idx 2", r3);
 
     // Test 4: search returns -1 for missing
     total = total + 1;
     let idx2 = sa_search(arr, 99);
-    let r4 = if idx2 < 0 {
-        1
-    } else {
-        0
-    };
+    let r4 = if idx2 < 0 { 1 } else { 0 };
     passed = passed + run_test("search missing returns -1", r4);
 
     // Test 5: remove element
@@ -165,11 +153,7 @@ fn main() {
     total = total + 1;
     let (after_miss, removed2) = sa_remove(arr, 99);
     arr = after_miss;
-    let r6 = if removed2 == 0 {
-        1
-    } else {
-        0
-    };
+    let r6 = if removed2 == 0 { 1 } else { 0 };
     passed = passed + run_test("remove missing returns 0", r6);
 
     // Test 7: insert duplicates

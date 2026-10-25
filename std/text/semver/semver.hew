@@ -72,11 +72,7 @@ impl VersionMethods for Version {
     }
     /// Return the pre-release label, or `None` for a release version.
     fn pre(self) -> Option<string> {
-        if self.pre_release.is_empty() {
-            .None
-        } else {
-            .Some(self.pre_release)
-        }
+        if self.pre_release.is_empty() { .None } else { .Some(self.pre_release) }
     }
     /// Compare this version to another. Return -1, 0, or 1.
     fn compare(self, other: Version) -> i64 {

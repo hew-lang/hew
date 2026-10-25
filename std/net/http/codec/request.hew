@@ -286,11 +286,7 @@ fn token_at(line: string, index: i64) -> string {
         return "";
     }
     let parts = (line).split(" ");
-    if parts.len() > index {
-        parts[index]
-    } else {
-        ""
-    }
+    if parts.len() > index { parts[index] } else { "" }
 }
 
 /// The header lines of a head block (everything after the request/status line),

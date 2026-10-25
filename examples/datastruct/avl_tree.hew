@@ -46,19 +46,11 @@ fn add_node(var nodes: Vec<i64>, val: i64, NIL: i64) -> (Vec<i64>, i64) {
 }
 
 fn get_height(nodes: Vec<i64>, i: i64, NIL: i64) -> i64 {
-    if i == NIL {
-        0
-    } else {
-        node_height(nodes, i)
-    }
+    if i == NIL { 0 } else { node_height(nodes, i) }
 }
 
 fn max_val(a: i64, b: i64) -> i64 {
-    if a > b {
-        a
-    } else {
-        b
-    }
+    if a > b { a } else { b }
 }
 
 fn update_height(var nodes: Vec<i64>, i: i64, NIL: i64) -> Vec<i64> {

@@ -1,0 +1,10 @@
+[[case]]
+id = "example-keyed-cache"
+intent = "A bounded TTL product cache loads once per key, returns composite values and handles a failed load without retaining it."
+source = "../../examples/keyed_cache.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+[case.expected]
+stdout = "loading product 42\nHew handbook: language\ncannot load: unknown product\nretained products: 0\n"
+stderr = ""
+exit = 0

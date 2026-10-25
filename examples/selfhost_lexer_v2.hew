@@ -26,38 +26,22 @@ fn is_alpha(ch: i32) -> i32 {
         if ch <= 122 {
             1
         } else {
-            if ch == 95 {
-                1
-            } else {
-                0
-            }
+            if ch == 95 { 1 } else { 0 }
         }
     } else if ch >= 65 {
         if ch <= 90 {
             1
         } else {
-            if ch == 95 {
-                1
-            } else {
-                0
-            }
+            if ch == 95 { 1 } else { 0 }
         }
     } else {
-        if ch == 95 {
-            1
-        } else {
-            0
-        }
+        if ch == 95 { 1 } else { 0 }
     }
 }
 
 fn is_digit(ch: i32) -> i32 {
     if ch >= 48 {
-        if ch <= 57 {
-            1
-        } else {
-            0
-        }
+        if ch <= 57 { 1 } else { 0 }
     } else {
         0
     }
@@ -66,11 +50,7 @@ fn is_digit(ch: i32) -> i32 {
 fn is_alnum(ch: i32) -> i32 {
     if is_alpha(ch) == 1 {
         1
-    } else if is_digit(ch) == 1 {
-        1
-    } else {
-        0
-    }
+    } else if is_digit(ch) == 1 { 1 } else { 0 }
 }
 
 fn is_whitespace(ch: i32) -> i32 {
@@ -80,11 +60,7 @@ fn is_whitespace(ch: i32) -> i32 {
         1
     } else if ch == 10 {
         1
-    } else if ch == 13 {
-        1
-    } else {
-        0
-    }
+    } else if ch == 13 { 1 } else { 0 }
 }
 
 // --- Keyword matching using == operator ---
@@ -125,11 +101,7 @@ fn classify_keyword_str(word: string) -> i32 {
         46
     } else if word == "break" {
         47
-    } else if word == "continue" {
-        48
-    } else {
-        1
-    }
+    } else if word == "continue" { 48 } else { 1 }
 }
 
 // --- Token type name printing ---

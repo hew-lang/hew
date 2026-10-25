@@ -238,14 +238,6 @@ pub fn total_cmp(a: f64, b: f64) -> i64 {
     let right_sign = right >> 63;
     let less = if left_sign != right_sign {
         left_sign > right_sign
-    } else if left_sign != 0 {
-        left > right
-    } else {
-        left < right
-    };
-    if less {
-        -1
-    } else {
-        1
-    }
+    } else if left_sign != 0 { left > right } else { left < right };
+    if less { -1 } else { 1 }
 }

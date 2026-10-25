@@ -114,11 +114,7 @@ trait ValueMethods {
 
 fn require_kind(value: Value, expected: Kind) -> Result<(), AccessError> {
     let actual = value.type_of();
-    if actual == expected {
-        .Ok(())
-    } else {
-        .Err(AccessError.WrongKind(expected, actual))
-    }
+    if actual == expected { .Ok(()) } else { .Err(AccessError.WrongKind(expected, actual)) }
 }
 
 impl ValueMethods for Value {
@@ -144,11 +140,7 @@ impl ValueMethods for Value {
         let reason = unsafe {
             hew_json_last_error()
         };
-        if !reason.is_empty() {
-            .Err(EncodeError.Invalid(reason))
-        } else {
-            .Ok(text)
-        }
+        if !reason.is_empty() { .Err(EncodeError.Invalid(reason)) } else { .Ok(text) }
     }
     fn get_bool(self) -> bool fails AccessError {
         require_kind(self, Kind.Bool)?;

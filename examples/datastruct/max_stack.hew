@@ -57,11 +57,7 @@ fn main() {
     let (data_five, maxs_five) = ms_push(data, maxs, 5);
     data = data_five;
     maxs = maxs_five;
-    let r1 = if ms_max(maxs) == 5 {
-        1
-    } else {
-        0
-    };
+    let r1 = if ms_max(maxs) == 5 { 1 } else { 0 };
     passed = passed + run_test("single element max", r1);
 
     // Test 2: push larger, max updates
@@ -69,11 +65,7 @@ fn main() {
     let (data_eight, maxs_eight) = ms_push(data, maxs, 8);
     data = data_eight;
     maxs = maxs_eight;
-    let r2 = if ms_max(maxs) == 8 {
-        1
-    } else {
-        0
-    };
+    let r2 = if ms_max(maxs) == 8 { 1 } else { 0 };
     passed = passed + run_test("push larger updates max", r2);
 
     // Test 3: push smaller, max stays
@@ -81,11 +73,7 @@ fn main() {
     let (data_three, maxs_three) = ms_push(data, maxs, 3);
     data = data_three;
     maxs = maxs_three;
-    let r3 = if ms_max(maxs) == 8 {
-        1
-    } else {
-        0
-    };
+    let r3 = if ms_max(maxs) == 8 { 1 } else { 0 };
     passed = passed + run_test("push smaller keeps max", r3);
 
     // Test 4: push even larger
@@ -93,11 +81,7 @@ fn main() {
     let (data_twelve, maxs_twelve) = ms_push(data, maxs, 12);
     data = data_twelve;
     maxs = maxs_twelve;
-    let r4 = if ms_max(maxs) == 12 {
-        1
-    } else {
-        0
-    };
+    let r4 = if ms_max(maxs) == 12 { 1 } else { 0 };
     passed = passed + run_test("push even larger", r4);
 
     // Stack: [5, 8, 3, 12], maxs: [5, 8, 8, 12]
@@ -107,11 +91,7 @@ fn main() {
     let (data_p5, maxs_p5, _p5) = ms_pop(data, maxs);
     data = data_p5;
     maxs = maxs_p5;
-    let r5 = if ms_max(maxs) == 8 {
-        1
-    } else {
-        0
-    };
+    let r5 = if ms_max(maxs) == 8 { 1 } else { 0 };
     passed = passed + run_test("pop reverts max to 8", r5);
 
     // Test 6: pop again, max stays 8
@@ -119,11 +99,7 @@ fn main() {
     let (data_p6, maxs_p6, _p6) = ms_pop(data, maxs);
     data = data_p6;
     maxs = maxs_p6;
-    let r6 = if ms_max(maxs) == 8 {
-        1
-    } else {
-        0
-    };
+    let r6 = if ms_max(maxs) == 8 { 1 } else { 0 };
     passed = passed + run_test("pop again max still 8", r6);
 
     // Test 7: pop the 8, max becomes 5
@@ -131,11 +107,7 @@ fn main() {
     let (data_p7, maxs_p7, _p7) = ms_pop(data, maxs);
     data = data_p7;
     maxs = maxs_p7;
-    let r7 = if ms_max(maxs) == 5 {
-        1
-    } else {
-        0
-    };
+    let r7 = if ms_max(maxs) == 5 { 1 } else { 0 };
     passed = passed + run_test("pop 8 max becomes 5", r7);
 
     // Test 8: many elements
@@ -146,11 +118,7 @@ fn main() {
     let (d2_many, m2_many) = ms_push_all(d2, m2, many);
     d2 = d2_many;
     m2 = m2_many;
-    let r8 = if ms_max(m2) == 90 {
-        1
-    } else {
-        0
-    };
+    let r8 = if ms_max(m2) == 90 { 1 } else { 0 };
     passed = passed + run_test("many elements max=90", r8);
 
     // Test 9: pop back, max reverts correctly
@@ -159,11 +127,7 @@ fn main() {
     let (d2_b, m2_b, _ninety) = ms_pop(d2_a, m2_a); // remove 90, max=50
     d2 = d2_b;
     m2 = m2_b;
-    let r9 = if ms_max(m2) == 50 {
-        1
-    } else {
-        0
-    };
+    let r9 = if ms_max(m2) == 50 { 1 } else { 0 };
     passed = passed + run_test("pop 2 max becomes 50", r9);
 
     // Summary

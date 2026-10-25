@@ -1,0 +1,10 @@
+[[case]]
+id = "keyed-cache-policies"
+intent = "Generic value cache snapshots, FIFO replacement/eviction, inclusive TTL boundaries, expiry before eviction, invalidation and checked zero/negative limits."
+source = "cases/keyed-cache-policies.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 30
+[case.expected]
+stdout = "cache policies passed\n"
+stderr = ""
+exit = 0

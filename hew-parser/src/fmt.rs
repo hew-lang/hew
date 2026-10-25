@@ -3688,6 +3688,56 @@ impl<'a> Formatter<'a> {
         }
     }
 
+    fn format_short_conditional(
+        &mut self,
+        condition: &Spanned<Expr>,
+        then_expr: &Spanned<Expr>,
+        else_expr: Option<&Spanned<Expr>>,
+    ) -> bool {
+        let Some(else_expr) = else_expr else {
+            return false;
+        };
+        let (Expr::Block(then_block), Expr::Block(else_block)) = (&then_expr.0, &else_expr.0)
+        else {
+            return false;
+        };
+        if !then_block.stmts.is_empty() || !else_block.stmts.is_empty() {
+            return false;
+        }
+        let (Some(then_value), Some(else_value)) = (
+            then_block.trailing_expr.as_deref(),
+            else_block.trailing_expr.as_deref(),
+        ) else {
+            return false;
+        };
+        if [condition, then_value, else_value]
+            .iter()
+            .any(|value| !Self::can_format_expr_inline(&value.0))
+            || self.comments[self.next_comment..].iter().any(|comment| {
+                comment.span.start >= condition.1.start && comment.span.start < else_expr.1.end
+            })
+        {
+            return false;
+        }
+        let prefix = self.output.rsplit('\n').next().map_or(0, str::len);
+        let width = prefix
+            + [condition, then_value, else_value]
+                .iter()
+                .map(|value| format_expression(value).len())
+                .sum::<usize>()
+            + "if  {  } else {  }".len();
+        if width > 100 {
+            return false;
+        }
+        self.write("if ");
+        self.format_cond_expr(condition);
+        self.write(" ");
+        self.format_gen_block_inline(then_block);
+        self.write_else();
+        self.format_gen_block_inline(else_block);
+        true
+    }
+
     fn format_gen_block_inline(&mut self, body: &Block) {
         self.write("{");
         if !body.stmts.is_empty() || body.trailing_expr.is_some() {
@@ -4536,13 +4586,15 @@ impl<'a> Formatter<'a> {
                 then_block,
                 else_block,
             } => {
-                self.write("if ");
-                self.format_cond_expr(condition);
-                self.write(" ");
-                self.format_expr(then_block);
-                if let Some(eb) = else_block {
-                    self.write_else();
-                    self.format_expr(eb);
+                if !self.format_short_conditional(condition, then_block, else_block.as_deref()) {
+                    self.write("if ");
+                    self.format_cond_expr(condition);
+                    self.write(" ");
+                    self.format_expr(then_block);
+                    if let Some(eb) = else_block {
+                        self.write_else();
+                        self.format_expr(eb);
+                    }
                 }
             }
             Expr::IfLet {
@@ -5925,11 +5977,7 @@ impl Display for Foo {
     fn fibonacci() {
         let src = "\
 fn fibonacci(n: i32) -> i32 {
-    if n <= 1 {
-        n
-    } else {
-        fibonacci(n - 1) + fibonacci(n - 2)
-    }
+    if n <= 1 { n } else { fibonacci(n - 1) + fibonacci(n - 2) }
 }
 
 fn main() -> i32 {
@@ -6103,6 +6151,33 @@ trait Fluent {
             result.errors
         );
         format_source(src, &result.program)
+    }
+
+    #[test]
+    fn short_conditional_values_stay_compact_and_roundtrip() {
+        let source = "fn sign(x: i64) -> i64 {\n    if x < 0 {\n        -1\n    } else {\n        1\n    }\n}\n";
+        let formatted = roundtrip_source(source);
+        assert_eq!(
+            formatted,
+            "fn sign(x: i64) -> i64 {\n    if x < 0 { -1 } else { 1 }\n}\n"
+        );
+        assert_eq!(roundtrip_source(&formatted), formatted);
+        let parsed = parse(source);
+        assert!(format_checked(source, &parsed.program).is_ok());
+    }
+
+    #[test]
+    fn conditional_comments_and_statement_blocks_keep_their_layout() {
+        for source in [
+            "fn choose(x: bool) -> i64 {\n    if x {\n        // selected\n        1\n    } else {\n        2\n    }\n}\n",
+            "fn choose(x: bool) -> i64 {\n    if x {\n        1\n    } // reason\n    else {\n        2\n    }\n}\n",
+            "fn choose(x: bool) -> i64 {\n    if x {\n        println(1);\n        1\n    } else {\n        2\n    }\n}\n",
+        ] {
+            let parsed = parse(source);
+            let formatted = format_checked(source, &parsed.program).expect("preserve source behaviour and comments");
+            assert!(formatted.contains("if x {\n"), "{formatted}");
+            assert_eq!(roundtrip_source(&formatted), formatted);
+        }
     }
 
     #[test]
@@ -6574,11 +6649,7 @@ fn classify(x: int) -> int {
     if x == 0 {
         0
     // documents the next branch
-    } else if x == 1 {
-        1
-    } else {
-        -1
-    }
+    } else if x == 1 { 1 } else { -1 }
 }
 ";
         let once = roundtrip_source(src);
@@ -6616,11 +6687,7 @@ fn lookup(errno: int) -> int {
     } else if errno == 13 {
         2
     // EEXIST
-    } else if errno == 17 {
-        3
-    } else {
-        0
-    }
+    } else if errno == 17 { 3 } else { 0 }
 }
 ";
         let once = roundtrip_source(src);

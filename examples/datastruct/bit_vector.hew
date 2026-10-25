@@ -38,11 +38,7 @@ fn bv_get_bit(bv: Vec<i64>, bit: i64) -> i64 {
     let offset = bit % 32;
     let mask = bv_shl(1, offset);
     let val = bv_and(bv[word], mask);
-    if val != 0 {
-        1
-    } else {
-        0
-    }
+    if val != 0 { 1 } else { 0 }
 }
 
 // Shift left by repeated doubling

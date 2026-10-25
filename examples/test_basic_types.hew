@@ -64,16 +64,8 @@ fn test_string() -> i32 {
 fn test_bool() -> i32 {
     let flag: bool = true;
     let other: bool = false;
-    let r1 = if flag {
-        1
-    } else {
-        0
-    };
-    let r2 = if other {
-        0
-    } else {
-        1
-    };
+    let r1 = if flag { 1 } else { 0 };
+    let r2 = if other { 0 } else { 1 };
     if r1 == 1 {
         if r2 == 1 {
             println("PASS: bool");
@@ -138,9 +130,5 @@ fn main() -> i32 {
     print("Passed: ");
     print(passed);
     println(f"/{total}");
-    if passed == total {
-        0
-    } else {
-        1
-    }
+    if passed == total { 0 } else { 1 }
 }

@@ -4988,6 +4988,16 @@
               "type": "null"
             },
             "family": {
+              "const": "StreamPipe"
+            }
+          }
+        },
+        {
+          "properties": {
+            "detail": {
+              "type": "null"
+            },
+            "family": {
               "const": "StreamFromGenerator"
             }
           }

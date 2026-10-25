@@ -206,13 +206,39 @@ test("actor-owned mailbox refusal rolls back the recipient and preserves caller 
   assert.equal(result.exit_code, 1, JSON.stringify(result));
 });
 
+test("actor-owned Generator Stream retains typed outputs and its carrier", async () => {
+  const source = fs.readFileSync(
+    path.join(
+      repoRoot,
+      "tests/core-acceptance/cases/actor-owned-budget-generator-stream.hew",
+    ),
+    "utf8",
+  );
+  const result = await runProgram(source, "");
+  assert.equal(
+    result.stdout,
+    "7\n7\ngenerator carrier limit\n",
+    JSON.stringify(result),
+  );
+  assert.equal(result.exit_code, 1, JSON.stringify(result));
+});
+
 for (const [name, file, stdout] of [
-  ["String", "actor-owned-budget-pipe.hew", "6\n6\npipe limit\nsender retained\n"],
-  ["Bytes slice", "actor-owned-budget-pipe-bytes.hew", "1\nretained slice capacity\nsender retained\n"],
+  [
+    "String",
+    "actor-owned-budget-pipe.hew",
+    "6\n6\npipe limit\nsender retained\n",
+  ],
+  [
+    "Bytes slice",
+    "actor-owned-budget-pipe-bytes.hew",
+    "1\nretained slice capacity\nsender retained\n",
+  ],
 ]) {
   test(`actor-owned Pipe ${name} retains capacity and preserves a refused sender`, async () => {
     const source = fs.readFileSync(
-      path.join(repoRoot, "tests/core-acceptance/cases", file), "utf8",
+      path.join(repoRoot, "tests/core-acceptance/cases", file),
+      "utf8",
     );
     const result = await runProgram(source, "");
     assert.equal(result.stdout, stdout, JSON.stringify(result));
@@ -222,15 +248,45 @@ for (const [name, file, stdout] of [
 
 for (const [name, file, stdout] of [
   ["Pipe input", "actor-owned-budget-pipe-input.hew", "7\ninput limit\n"],
-  ["Sink encoder", "actor-owned-budget-sink-encoder.hew", "encoder ready\nencoder limit\n"],
+  [
+    "Sink encoder",
+    "actor-owned-budget-sink-encoder.hew",
+    "encoder ready\nencoder limit\n",
+  ],
 ]) {
   test(`actor-owned ${name} charges its retained canonical slots`, async () => {
     const source = fs.readFileSync(
-      path.join(repoRoot, "tests/core-acceptance/cases", file), "utf8",
+      path.join(repoRoot, "tests/core-acceptance/cases", file),
+      "utf8",
     );
     const result = await runProgram(source, "");
     assert.equal(result.stdout, stdout, JSON.stringify(result));
     assert.equal(result.exit_code, 1, JSON.stringify(result));
+  });
+}
+
+for (const [name, file, stdout, exit] of [
+  [
+    "encoding messages",
+    "actor-owned-budget-encoding-message.hew",
+    "40\n41\n42\n",
+    0,
+  ],
+  [
+    "leaf results",
+    "actor-owned-budget-leaf-results.hew",
+    "5\nnumber limit\n4\nstring slice limit\n4\noptional slice limit\n3\ndecode limit\n",
+    1,
+  ],
+]) {
+  test(`actor-owned ${name} follow the shared native publication contract`, async () => {
+    const source = fs.readFileSync(
+      path.join(repoRoot, "tests/core-acceptance/cases", file),
+      "utf8",
+    );
+    const result = await runProgram(source, "");
+    assert.equal(result.stdout, stdout, JSON.stringify(result));
+    assert.equal(result.exit_code, exit, JSON.stringify(result));
   });
 }
 

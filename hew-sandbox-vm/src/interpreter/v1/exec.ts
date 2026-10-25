@@ -1280,7 +1280,11 @@ class ExecutorV1 {
               slots: true,
               identity: adapter,
             });
-          return { identity: adapter, bytes: 0n, children };
+          return {
+            identity: adapter,
+            bytes: this.managed.width(generatorType),
+            children,
+          };
         }
         const graph = this.pipes.managedRetained(value);
         return {
@@ -2940,6 +2944,59 @@ class ExecutorV1 {
     term: Extract<TermV1, { op: "runtime.call" | "extern.call" }>,
     shim: RuntimeShim,
   ): void {
+    const family =
+      term.op === "runtime.call"
+        ? this.pkg.runtime_families[term.family]?.family
+        : undefined;
+    const budget = act.context.actor?.budget;
+    if (
+      budget &&
+      (family === "SinkFromEncoder" || family === "StreamFromGenerator")
+    ) {
+      const children = term.args.map((operand) => {
+        const type = act.managedTypes.get(operand.value);
+        if (type == null)
+          throw new Error("stream adapter input lacks its typed descriptor");
+        return { value: this.read(act, operand.value), type };
+      });
+      try {
+        budget.checkPayload(
+          children.reduce(
+            (bytes, child) => bytes + this.managed.width(child.type),
+            0n,
+          ),
+          children,
+        );
+      } catch (error) {
+        if (!(error instanceof HeapExceeded)) throw error;
+        const fault: Fault = { kind: "trap", trap: "heap_exceeded" };
+        if (this.keepsInputs(term)) {
+          // The carrier has not been allocated and neither consuming input moved.
+          this.raiseFault(act, fault, term.unwind);
+          return;
+        }
+        const consumed = term.args
+          .filter((operand) => operand.decision === "move")
+          .map((operand) => this.boundary(act, operand));
+        this.running = false;
+        this.closeValueAsync(
+          { kind: "record", typeId: "", fields: consumed },
+          error.message,
+          (cleanupFault) => {
+            this.raiseFault(
+              act,
+              combineFaults(fault, cleanupFault)!,
+              term.unwind,
+            );
+            this.scheduler.enqueue(act.context.id, () => this.runFrame(act));
+          },
+          act.context.actor,
+          act.rcOwner,
+          act,
+        );
+        return;
+      }
+    }
     const args = term.args.map((operand) => this.boundary(act, operand));
     // A call that hands back its updated receiver names its value's shape as
     // the pair's second member.
@@ -4532,6 +4589,8 @@ class ExecutorV1 {
           )
             this.pipes.finishClose(entry.retire);
           this.managed.retire(entry.retire);
+          if (entry.retire.kind === "stream")
+            this.generatorStreams.delete(entry.retire.channelId);
           actor?.budget?.changed();
           if (entry.retire.kind === "task") {
             const task = this.tasks.get(entry.retire.id);
@@ -4676,7 +4735,6 @@ class ExecutorV1 {
           case "stream": {
             const adapter = this.generatorStreams.get(value.channelId);
             if (adapter) {
-              this.generatorStreams.delete(value.channelId);
               adapter.closed = true;
               if (adapter.pending !== null) pending.push(adapter.pending);
               adapter.pending = null;

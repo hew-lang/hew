@@ -509,6 +509,16 @@ const UNIT_FAMILIES = {
     ),
   StringToUppercase: (_host, args) => str(text(args, 0).toUpperCase()),
   StringToLowercase: (_host, args) => str(text(args, 0).toLowerCase()),
+  StreamPipe: (host, args) => {
+    const pair = host.newPipe!(Number(integer(args, 0)));
+    const fields = [
+      host.pipes!.extract(pair, "sink"),
+      host.pipes!.extract(pair, "stream"),
+      bool(true),
+    ];
+    host.pipes!.freePair(pair);
+    return { kind: "record", typeId: "", fields };
+  },
   StreamPairSink: (host, args) => host.pipes!.extract(arg(args, 0), "sink"),
   StreamPairStream: (host, args) => host.pipes!.extract(arg(args, 0), "stream"),
   StreamFromGenerator: (host, args) => host.generatorStream!(arg(args, 0)),

@@ -807,6 +807,7 @@ export type RuntimeCallFamily =
   | "StreamClose"
   | "StreamChunks"
   | "StreamForward"
+  | "StreamPipe"
   | "StreamFromGenerator"
   | "SinkFromEncoder"
   | "StreamLines"

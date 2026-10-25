@@ -36,14 +36,21 @@ impl stream.Codec<i64> for EmptyCodec {
 
 // The lazy decoder owns its input Stream capture8, callable carrier8 and
 // output slot16. Its Stream adapter adds the retained Generator field8.
+fn wrap_empty() {
+    let (output, input): (stream.Sink<bytes>, stream.Stream<bytes>) = stream.pipe(1).expect("empty pipe");
+    let framed: stream.Stream<Result<i64, stream.CodecError>> = input.frames(EmptyCodec {});
+    framed.close();
+    output.close();
+}
+
+#[max_heap(40)]
+actor Exact {
+    receive fn wrap() { wrap_empty(); }
+}
+
 #[max_heap(39)]
 actor Small {
-    receive fn wrap() {
-        let (output, input): (stream.Sink<bytes>, stream.Stream<bytes>) = stream.pipe(1).expect("empty pipe");
-        let framed: stream.Stream<Result<i64, stream.CodecError>> = input.frames(EmptyCodec {});
-        framed.close();
-        output.close();
-    }
+    receive fn wrap() { wrap_empty(); }
 }
 
 fn main() -> i64 {
@@ -52,6 +59,11 @@ fn main() -> i64 {
     println(reader.read().expect("generator stream cleanup reuse"));
     stop(reader);
     stopped(reader);
+    let exact = spawn Exact;
+    exact.wrap().expect("exact carrier capacity");
+    exact.wrap().expect("carrier cleanup reuse");
+    stop(exact);
+    stopped(exact);
     let small = spawn Small;
     match small.wrap() { .Err(.Trapped) => println("generator carrier limit"), _ => return 2, }
     stopped(small);

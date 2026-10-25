@@ -289,30 +289,64 @@ pub fn render_index(modules: &[DocModule], config: &DocSiteConfig) -> String {
 
     if !language_mods.is_empty() {
         let _ = writeln!(out, "## {}\n", config.guide_title);
-        for m in &language_mods {
-            render_index_entry_md(&mut out, m, true);
+        if config.guide_groups.is_empty() {
+            for m in &language_mods {
+                render_index_entry_md(&mut out, m, true, config);
+            }
+        } else {
+            for group in &config.guide_groups {
+                let _ = writeln!(out, "### {}\n", group.title);
+                for guide in &group.guides {
+                    if let Some(module) = language_mods
+                        .iter()
+                        .find(|module| module.name == guide.module)
+                    {
+                        render_index_entry_md(&mut out, module, true, config);
+                    }
+                }
+                out.push('\n');
+            }
+            let remaining_guides: Vec<&&DocModule> = language_mods
+                .iter()
+                .filter(|module| config.guide_entry(&module.name).is_none())
+                .collect();
+            if !remaining_guides.is_empty() {
+                out.push_str("### More guides\n\n");
+                for module in remaining_guides {
+                    render_index_entry_md(&mut out, module, true, config);
+                }
+                out.push('\n');
+            }
         }
         out.push('\n');
     }
 
     let _ = writeln!(out, "## {}\n", config.module_title);
     for m in &root_mods {
-        render_index_entry_md(&mut out, m, false);
+        render_index_entry_md(&mut out, m, false, config);
     }
 
     for (category, mods) in &groups {
         let _ = writeln!(out, "\n### {category}\n");
         for m in mods {
-            render_index_entry_md(&mut out, m, false);
+            render_index_entry_md(&mut out, m, false, config);
         }
     }
 
     out
 }
 
-fn render_index_entry_md(out: &mut String, module: &DocModule, is_guide: bool) {
+fn render_index_entry_md(
+    out: &mut String,
+    module: &DocModule,
+    is_guide: bool,
+    config: &DocSiteConfig,
+) {
     let filename = super::module_to_filename(&module.name, "md");
-    if is_guide {
+    let guide = is_guide.then(|| config.guide_entry(&module.name)).flatten();
+    if let Some(guide) = guide {
+        let _ = write!(out, "- [{}]({filename})", guide.label);
+    } else if is_guide {
         let _ = write!(
             out,
             "- [{}]({filename})",
@@ -321,7 +355,10 @@ fn render_index_entry_md(out: &mut String, module: &DocModule, is_guide: bool) {
     } else {
         let _ = write!(out, "- [`{}`]({filename})", module.name.replace("::", "."));
     }
-    let summary = module_summary(module.doc.as_deref());
+    let summary = guide.map_or_else(
+        || module_summary(module.doc.as_deref()),
+        |guide| guide.summary.clone(),
+    );
     if !summary.is_empty() {
         let _ = write!(out, " — {summary}");
     }
@@ -347,6 +384,7 @@ fn module_summary(doc: Option<&str>) -> String {
 
 #[cfg(test)]
 mod tests {
+    use super::super::config::{GuideEntry, GuideGroup};
     use super::super::extract::extract_docs;
     use super::*;
 
@@ -379,5 +417,39 @@ mod tests {
         let md = render_index(&[module], &DocSiteConfig::default());
         assert!(md.contains("[`std.math`](std.math.md)"));
         assert!(md.contains("Math utilities."));
+    }
+
+    #[test]
+    fn render_index_markdown_uses_reader_facing_guide_groups() {
+        let module = DocModule {
+            name: "language::basics".to_string(),
+            doc: Some("# Language basics\n\nA long technical introduction.".to_string()),
+            functions: vec![],
+            types: vec![],
+            actors: vec![],
+            machines: vec![],
+            traits: vec![],
+            impls: vec![],
+            consts: vec![],
+            type_aliases: vec![],
+        };
+        let config = DocSiteConfig {
+            guide_title: "Learn Hew".to_string(),
+            guide_groups: vec![GuideGroup {
+                title: "Start here".to_string(),
+                guides: vec![GuideEntry {
+                    module: "language::basics".to_string(),
+                    label: "Basics".to_string(),
+                    summary: "Write a first program.".to_string(),
+                }],
+            }],
+            ..DocSiteConfig::default()
+        };
+
+        let markdown = render_index(&[module], &config);
+        assert!(markdown.contains("## Learn Hew"));
+        assert!(markdown.contains("### Start here"));
+        assert!(markdown.contains("[Basics](language.basics.md) — Write a first program."));
+        assert!(!markdown.contains("A long technical introduction."));
     }
 }

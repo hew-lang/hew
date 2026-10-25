@@ -286,7 +286,7 @@ fn negative_bytes_index_takes_the_owned_cleanup_failure_edge() {
 }"#,
         1,
         b"",
-        b"hew: failure: IndexOutOfBounds (205)\n",
+        b"hew: failure: IndexOutOfBounds (205): bytes index -1 out of bounds for length 1\n",
     );
 }
 
@@ -302,7 +302,7 @@ fn past_end_bytes_index_takes_the_owned_cleanup_failure_edge() {
 }"#,
         1,
         b"",
-        b"hew: failure: IndexOutOfBounds (205)\n",
+        b"hew: failure: IndexOutOfBounds (205): bytes index 1 out of bounds for length 1\n",
     );
 }
 

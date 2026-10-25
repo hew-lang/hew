@@ -8,6 +8,23 @@ use hew_cabi::managed::{
 };
 use hew_cabi::value::HewValueLayout;
 
+/// Foreign payloads have no described provider to rebind. This permits their
+/// existing unbounded transfers without claiming they have an empty quota graph.
+/// # Safety
+/// The descriptor lends a live visitor for the synchronous phase.
+#[no_mangle]
+pub unsafe extern "C" fn hew_managed_visit_opaque(
+    _slot: *const c_void,
+    visitor: *const HewManagedStorageVisitor,
+) -> i32 {
+    // SAFETY: the descriptor retains this visitor for the entire callback.
+    if unsafe { (*visitor).kind.is_transfer() } {
+        0
+    } else {
+        UNDESCRIBED
+    }
+}
+
 /// Report a compiler-described private backing without exposing host layout
 /// details of the visitor to generated code.
 ///
@@ -386,6 +403,25 @@ mod tests {
             storage: collect,
             kind,
         }
+    }
+
+    #[test]
+    fn foreign_payload_transfer_does_not_claim_bounded_accounting() {
+        let mut walk = Walk::default();
+        for kind in [
+            HewManagedWalkKind::PrepareTransfer,
+            HewManagedWalkKind::CommitTransfer,
+            HewManagedWalkKind::AbortTransfer,
+            HewManagedWalkKind::ResumeTransfer,
+            HewManagedWalkKind::Retain,
+            HewManagedWalkKind::ClonePlan,
+        ] {
+            let sink = visitor(&mut walk, kind);
+            // SAFETY: this leaf never reads a payload; the visitor stays live.
+            let status = unsafe { hew_managed_visit_opaque(core::ptr::null(), &raw const sink) };
+            assert_eq!(status, if kind.is_transfer() { 0 } else { UNDESCRIBED });
+        }
+        assert!(walk.retained.is_empty());
     }
 
     #[test]

@@ -21,6 +21,24 @@ const rows = [
 ];
 const integer = (value) => ({ kind: "i64", value: BigInt(value) });
 
+test("unbounded descriptor propagation does not acquire opaque payloads", () => {
+  const layouts = new ManagedLayouts([
+    ...rows,
+    { id: 4, slot_bytes: "8", kind: "provider", provider: "opaque", children: [] },
+    { id: 5, slot_bytes: "16", kind: "aggregate", fields: [3, 4] },
+  ], () => { throw new HeapExceeded(); });
+  const values = { kind: "vector", elementType: "", items: [integer(7)] };
+  const foreign = { kind: "record", typeId: "foreign", fields: [] };
+  const value = { kind: "record", typeId: "wrapper", fields: [values, foreign] };
+  layouts.stampGraph({ value, type: 5 });
+  assert.equal(layouts.type(values), 3);
+  assert.equal(layouts.type(values.items[0]), 0);
+  assert.equal(vectorStorage(values).shareOnCopy, true);
+  const bounded = new ManagedBudget(layouts, 64n);
+  assert.throws(() => bounded.retain({ value, type: 5 }), HeapExceeded);
+  assert.equal(bounded.liveBytes, 0n);
+});
+
 test("managed aliases charge backing once per retaining incarnation", () => {
   const layouts = new ManagedLayouts(rows);
   const source = new ManagedBudget(layouts, 3n);

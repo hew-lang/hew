@@ -1396,7 +1396,7 @@ class ExecutorV1 {
     const transferable =
       act.context.generator || act.context.retainsTransferableFrame;
     if (!budget && transferable && type != null)
-      this.managed.collect({ value, type }, new Map());
+      this.managed.stampGraph({ value, type });
     switch (operand.decision) {
       case "copy":
       case "snapshot": {
@@ -1404,7 +1404,7 @@ class ExecutorV1 {
           budget.check([{ value: this.managed.copy(value, type), type }]);
         const copy = cloneValue(value);
         if (!budget && transferable && type != null)
-          this.managed.collect({ value: copy, type }, new Map());
+          this.managed.stampGraph({ value: copy, type });
         if (type != null)
           act.managedInputs.push(
             this.retainRoots([{ value: copy, type }], budget),

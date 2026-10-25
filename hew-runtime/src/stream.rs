@@ -2964,7 +2964,11 @@ pub unsafe extern "C" fn hew_managed_visit_stream(
     let Some(stream) = (unsafe { stream.as_mut() }) else {
         return 0;
     };
-    if !stream.inner.managed_supported() {
+    // Legacy content adapters have undescribed persistent host buffers. Their
+    // unbounded transfer still follows any typed upstream queue, while bounded
+    // acquisition must refuse until those retained buffers have a descriptor.
+    // SAFETY: the enclosing descriptor retains the synchronous visitor.
+    if !stream.inner.managed_supported() && !unsafe { (*visitor).kind.is_transfer() } {
         return hew_cabi::managed::UNDESCRIBED;
     }
     if let Some(core) = stream.typed_core() {

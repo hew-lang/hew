@@ -5,6 +5,7 @@
 //! opaque handles compatible with the runtime's C ABI.
 
 use std::io::Write;
+use std::sync::atomic::{AtomicPtr, Ordering};
 use std::sync::{Mutex, MutexGuard};
 
 // ── Stream/sink error channel (single owner: hew-runtime) ─────────────────────
@@ -319,6 +320,7 @@ impl<T: Send> SinkOps for NonblockingSink<T> {
 /// Opaque writable sink handle.
 pub struct HewSink {
     state: Mutex<SinkState>,
+    runtime_adapter: AtomicPtr<core::ffi::c_void>,
 }
 
 /// Backing retained while an admitted finish waits for native readiness.
@@ -400,7 +402,6 @@ impl Drop for PendingFinish {
 struct SinkState {
     inner: Option<Box<dyn SinkOps>>,
     finished: bool,
-    runtime_adapter: *const core::ffi::c_void,
     /// Opaque borrow of the suspending channel core (`ChannelCore`) when this
     /// sink is the write half of an in-memory pipe (NEW-7). Null for every
     /// other sink kind. The runtime sets this so a suspending write can
@@ -422,7 +423,6 @@ impl SinkState {
         Self {
             inner: None,
             finished: true,
-            runtime_adapter: core::ptr::null(),
             channel_core: core::ptr::null(),
             native_connection: None,
             #[cfg(windows)]
@@ -438,9 +438,10 @@ impl std::fmt::Debug for HewSink {
 }
 
 impl HewSink {
-    fn new(state: SinkState) -> Self {
+    fn new(state: SinkState, adapter: *const core::ffi::c_void) -> Self {
         Self {
             state: Mutex::new(state),
+            runtime_adapter: AtomicPtr::new(adapter.cast_mut()),
         }
     }
 
@@ -457,14 +458,14 @@ impl HewSink {
     /// Borrow an adapter identity pinned by this endpoint's backing.
     #[must_use]
     pub fn runtime_adapter(&self) -> *const core::ffi::c_void {
-        let state = self.state();
-        state.runtime_adapter
+        self.runtime_adapter.load(Ordering::Acquire).cast_const()
     }
 
     /// Transfer hidden owners after the endpoint's I/O has drained.
     pub fn take_owners(&mut self) -> Option<SinkOwners> {
+        self.runtime_adapter
+            .store(core::ptr::null_mut(), Ordering::Release);
         let state = self.state_mut();
-        state.runtime_adapter = core::ptr::null();
         state.inner.as_mut().and_then(|inner| inner.take_owners())
     }
 
@@ -479,15 +480,24 @@ impl HewSink {
         borrow: impl FnOnce(*const core::ffi::c_void, bool) -> R,
     ) -> R {
         let mut state = self.state();
-        if state.runtime_adapter.is_null() {
-            let original = Self::new(std::mem::replace(&mut *state, SinkState::empty()));
+        if self.runtime_adapter.load(Ordering::Acquire).is_null() {
+            let original = Self::new(
+                std::mem::replace(&mut *state, SinkState::empty()),
+                core::ptr::null(),
+            );
             let mut replacement = install(original);
             *state = std::mem::replace(replacement.state_mut(), SinkState::empty());
-            if state.runtime_adapter.is_null() {
+            self.runtime_adapter.store(
+                replacement
+                    .runtime_adapter
+                    .swap(core::ptr::null_mut(), Ordering::AcqRel),
+                Ordering::Release,
+            );
+            if self.runtime_adapter.load(Ordering::Acquire).is_null() {
                 std::process::abort();
             }
         }
-        borrow(state.runtime_adapter, state.finished)
+        borrow(self.runtime_adapter(), state.finished)
     }
 
     /// Borrow the pipe backing's identity through its exclusive native I/O loan.
@@ -533,8 +543,8 @@ impl HewSink {
     }
 
     /// Transfer buffered bytes to the sink's exclusive native write operation.
-    pub fn take_pending(&mut self) -> Vec<u8> {
-        let state = self.state_mut();
+    pub fn take_pending(&self) -> Vec<u8> {
+        let mut state = self.state();
         state
             .inner
             .as_mut()
@@ -565,8 +575,8 @@ impl HewSink {
     }
 
     /// Write one item (exact bytes). Blocks if the backing buffer is full.
-    pub fn write_item(&mut self, data: &[u8]) {
-        let state = self.state_mut();
+    pub fn write_item(&self, data: &[u8]) {
+        let mut state = self.state();
         if state.finished {
             return;
         }
@@ -580,8 +590,8 @@ impl HewSink {
     ///
     /// Returns whether the item was accepted, the buffer was full, or the sink
     /// was closed, or a write failed. Unsupported backings report failure.
-    pub fn try_write_item(&mut self, data: &[u8]) -> TrySendResult {
-        let state = self.state_mut();
+    pub fn try_write_item(&self, data: &[u8]) -> TrySendResult {
+        let mut state = self.state();
         if state.finished {
             return TrySendResult::Closed;
         }
@@ -592,8 +602,8 @@ impl HewSink {
     }
 
     /// Flush any buffered writes (file sinks).
-    pub fn flush(&mut self) {
-        let state = self.state_mut();
+    pub fn flush(&self) {
+        let mut state = self.state();
         if state.finished {
             return;
         }
@@ -627,7 +637,7 @@ impl HewSink {
             PendingFinish {
                 sink: self,
                 inner: Some(state.inner.take()?),
-                adapter: state.runtime_adapter,
+                adapter: self.runtime_adapter(),
                 close: true,
                 connection: state.native_connection.take(),
                 #[cfg(windows)]
@@ -639,7 +649,7 @@ impl HewSink {
     }
 
     /// Signal EOF to the reader and release the backing resource.
-    pub fn close(&mut self) {
+    pub fn close(&self) {
         self.finish();
     }
 }
@@ -666,24 +676,26 @@ pub unsafe fn into_owned_sink_ptr<T: Send + 'static>(
     close: fn(&mut T),
     owners: fn(&mut T) -> Option<SinkOwners>,
 ) -> *mut HewSink {
-    Box::into_raw(Box::new(HewSink::new(SinkState {
-        inner: Some(Box::new(OwnedSink {
-            retire,
-            callbacks: CallbackSink {
-                backing,
-                write_item,
-                flush,
-                close,
-            },
-            owners,
-        })),
-        finished,
-        runtime_adapter: context,
-        channel_core: core::ptr::null(),
-        native_connection: None,
-        #[cfg(windows)]
-        native_pipe_handle: None,
-    })))
+    Box::into_raw(Box::new(HewSink::new(
+        SinkState {
+            inner: Some(Box::new(OwnedSink {
+                retire,
+                callbacks: CallbackSink {
+                    backing,
+                    write_item,
+                    flush,
+                    close,
+                },
+                owners,
+            })),
+            finished,
+            channel_core: core::ptr::null(),
+            native_connection: None,
+            #[cfg(windows)]
+            native_pipe_handle: None,
+        },
+        context,
+    )))
 }
 
 impl Drop for HewSink {
@@ -699,21 +711,23 @@ pub fn into_sink_ptr<T: Send + 'static>(
     flush: fn(&mut T),
     close: fn(&mut T),
 ) -> *mut HewSink {
-    Box::into_raw(Box::new(HewSink::new(SinkState {
-        // ALLOCATOR-PAIRING: GlobalAlloc
-        inner: Some(Box::new(CallbackSink {
-            backing,
-            write_item,
-            flush,
-            close,
-        })),
-        finished: false,
-        runtime_adapter: core::ptr::null(),
-        channel_core: std::ptr::null(),
-        native_connection: None,
-        #[cfg(windows)]
-        native_pipe_handle: None,
-    })))
+    Box::into_raw(Box::new(HewSink::new(
+        SinkState {
+            // ALLOCATOR-PAIRING: GlobalAlloc
+            inner: Some(Box::new(CallbackSink {
+                backing,
+                write_item,
+                flush,
+                close,
+            })),
+            finished: false,
+            channel_core: std::ptr::null(),
+            native_connection: None,
+            #[cfg(windows)]
+            native_pipe_handle: None,
+        },
+        core::ptr::null(),
+    )))
 }
 
 /// Create a sink that retains an accepted item's unwritten bytes in order.
@@ -724,23 +738,25 @@ pub fn into_nonblocking_sink_ptr<T: Send + 'static>(
     flush: fn(&mut T),
     close: fn(&mut T),
 ) -> *mut HewSink {
-    Box::into_raw(Box::new(HewSink::new(SinkState {
-        inner: Some(Box::new(NonblockingSink {
-            backing,
-            write,
-            try_write,
-            flush,
-            close,
-            pending: Vec::new(),
-            offset: 0,
-        })),
-        finished: false,
-        runtime_adapter: core::ptr::null(),
-        channel_core: std::ptr::null(),
-        native_connection: None,
-        #[cfg(windows)]
-        native_pipe_handle: None,
-    })))
+    Box::into_raw(Box::new(HewSink::new(
+        SinkState {
+            inner: Some(Box::new(NonblockingSink {
+                backing,
+                write,
+                try_write,
+                flush,
+                close,
+                pending: Vec::new(),
+                offset: 0,
+            })),
+            finished: false,
+            channel_core: std::ptr::null(),
+            native_connection: None,
+            #[cfg(windows)]
+            native_pipe_handle: None,
+        },
+        core::ptr::null(),
+    )))
 }
 
 fn write_via_write<W: Write>(backing: &mut W, data: &[u8]) {
@@ -768,21 +784,23 @@ fn close_via_write<W: Write>(backing: &mut W) {
 
 /// Create a heap-allocated [`HewSink`] from a [`Write`] implementation.
 pub fn into_write_sink_ptr(backing: impl Write + Send + 'static) -> *mut HewSink {
-    Box::into_raw(Box::new(HewSink::new(SinkState {
-        // ALLOCATOR-PAIRING: GlobalAlloc
-        inner: Some(Box::new(CallbackSink {
-            backing,
-            write_item: write_via_write::<_>,
-            flush: flush_via_write::<_>,
-            close: close_via_write::<_>,
-        })),
-        finished: false,
-        runtime_adapter: core::ptr::null(),
-        channel_core: std::ptr::null(),
-        native_connection: None,
-        #[cfg(windows)]
-        native_pipe_handle: None,
-    })))
+    Box::into_raw(Box::new(HewSink::new(
+        SinkState {
+            // ALLOCATOR-PAIRING: GlobalAlloc
+            inner: Some(Box::new(CallbackSink {
+                backing,
+                write_item: write_via_write::<_>,
+                flush: flush_via_write::<_>,
+                close: close_via_write::<_>,
+            })),
+            finished: false,
+            channel_core: std::ptr::null(),
+            native_connection: None,
+            #[cfg(windows)]
+            native_pipe_handle: None,
+        },
+        core::ptr::null(),
+    )))
 }
 
 // ── Channel-backed sink ───────────────────────────────────────────────────────
@@ -836,16 +854,18 @@ impl SinkOps for ChannelSinkBacking {
 /// observes EOF.
 #[must_use]
 pub fn into_channel_sink_ptr(tx: std::sync::mpsc::SyncSender<Vec<u8>>) -> *mut HewSink {
-    Box::into_raw(Box::new(HewSink::new(SinkState {
-        // ALLOCATOR-PAIRING: GlobalAlloc
-        inner: Some(Box::new(ChannelSinkBacking { tx })),
-        finished: false,
-        runtime_adapter: core::ptr::null(),
-        channel_core: std::ptr::null(),
-        native_connection: None,
-        #[cfg(windows)]
-        native_pipe_handle: None,
-    })))
+    Box::into_raw(Box::new(HewSink::new(
+        SinkState {
+            // ALLOCATOR-PAIRING: GlobalAlloc
+            inner: Some(Box::new(ChannelSinkBacking { tx })),
+            finished: false,
+            channel_core: std::ptr::null(),
+            native_connection: None,
+            #[cfg(windows)]
+            native_pipe_handle: None,
+        },
+        core::ptr::null(),
+    )))
 }
 
 /// Standalone definitions of hew-runtime's stream-error C ABI, for hew-cabi's

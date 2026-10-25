@@ -787,7 +787,7 @@ fn verify_constant_references(
     function: &SemFunction,
     diagnostics: &mut Vec<SirDiagnostic>,
 ) {
-    for operation in function.blocks.iter().flat_map(|block| block.operations()) {
+    for operation in function.blocks.iter().flat_map(crate::SemBlock::operations) {
         if let SemOpKind::ActorIngressAdapter(adapter) = operation.kind {
             if let Err(reason) = adapter.handler(&module.actors) {
                 diagnostics.push(diag(
@@ -2651,7 +2651,7 @@ fn callable_mutation_permitted(
         let Some(operation) = function
             .blocks
             .iter()
-            .flat_map(|block| block.operations())
+            .flat_map(crate::SemBlock::operations)
             .find(|operation| operation.results.iter().any(|result| result.id == value))
         else {
             // Call results are fresh owned values on their normal continuation.

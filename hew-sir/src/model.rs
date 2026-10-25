@@ -276,6 +276,7 @@ impl SemBlock {
     /// Static operation inventory, including an operation executed only on
     /// checked acquisition success. Execution and availability analyses must
     /// continue to honour the terminator's separate success and failure paths.
+    #[must_use]
     pub fn operations(&self) -> impl DoubleEndedIterator<Item = &SemOp> {
         self.ops.iter().chain(self.terminator.materialization())
     }
@@ -2433,6 +2434,10 @@ impl SemTerminator {
     }
 
     /// Visit SSA values defined by this terminator.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "Keep the exhaustive terminator vocabulary together"
+    )]
     pub fn visit_results(&self, mut visit: impl FnMut(&ValueDef)) {
         if let Some(handback) = self.call_handback() {
             visit(handback);
@@ -2972,6 +2977,10 @@ impl SemTerminator {
     ///
     /// Panics only when a suspension carries more edges than the module-local
     /// `u32` successor-slot range can represent.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "Keep the exhaustive terminator vocabulary together"
+    )]
     pub fn visit_successors_with_slots(&self, mut visit: impl FnMut(SuccessorSlot, &Edge)) {
         match self {
             Self::Materialize {
@@ -3083,6 +3092,10 @@ impl SemTerminator {
     ///
     /// Panics only when a suspension carries more edges than the module-local
     /// `u32` successor-slot range can represent.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "Keep the exhaustive terminator vocabulary together"
+    )]
     pub fn visit_successors_with_slots_mut(
         &mut self,
         mut visit: impl FnMut(SuccessorSlot, &mut Edge),
@@ -3420,6 +3433,10 @@ impl SemTerminator {
     /// diagnostics. Callers only pass slots previously produced by
     /// [`Self::visit_operands`].
     #[must_use]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "Keep the exhaustive terminator vocabulary together"
+    )]
     pub fn operand_context(&self, slot: OperandSlot) -> &'static str {
         match self {
             Self::Materialize { .. } => "checked materialization operand",

@@ -571,7 +571,7 @@ impl<'a> Flow<'a> {
         let mut parents = BTreeMap::new();
         let mut local_borrows = BTreeSet::new();
         let mut exclusive_borrows = BTreeSet::new();
-        for op in function.blocks.iter().flat_map(|block| block.operations()) {
+        for op in function.blocks.iter().flat_map(crate::SemBlock::operations) {
             if let SemOpKind::TaskInvoke { callee, args, .. } = &op.kind {
                 exclusive_borrows.extend(
                     callee

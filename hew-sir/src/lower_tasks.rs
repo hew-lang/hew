@@ -41,7 +41,7 @@ pub(super) fn remove_empty_scopes(function: &mut SemFunction) {
     if function
         .blocks
         .iter()
-        .flat_map(|block| block.operations())
+        .flat_map(crate::SemBlock::operations)
         .any(|op| {
             matches!(
                 op.kind,

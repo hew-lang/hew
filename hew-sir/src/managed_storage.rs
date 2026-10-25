@@ -27,6 +27,9 @@ pub const fn managed_callable_carrier() -> ManagedSlot {
 
 impl ManagedSlot {
     /// Charge actual payload capacity, never an estimated host-object size.
+    ///
+    /// # Errors
+    /// Returns an error when the canonical payload exceeds `u64`.
     pub fn capacity_bytes(self, capacity: u64) -> Result<u64, ManagedLayoutError> {
         self.bytes
             .checked_mul(capacity)
@@ -170,6 +173,14 @@ fn managed_actor_call_shape(
     selected.ok_or_else(|| ManagedLayoutError::MissingShape(ty.clone()))
 }
 
+/// Describe the canonical managed storage family.
+///
+/// # Errors
+/// Returns an error for missing semantic layout facts or overflowing payload widths.
+#[expect(
+    clippy::too_many_lines,
+    reason = "One exhaustive classifier owns storage families"
+)]
 pub fn managed_storage_shape(
     module: &SemModule,
     ty: &ResolvedTy,
@@ -345,6 +356,9 @@ fn managed_structural_shape(
 /// Whether copying a sequence can share its backing without element callbacks.
 /// This uses the checker's exact copy and ownership facts, the same facts that
 /// produce a Plain native layout with no clone, drop or release callback.
+///
+/// # Errors
+/// Returns an error for missing semantic layout facts or overflowing payload widths.
 pub fn managed_slot_is_plain(
     module: &SemModule,
     ty: &ResolvedTy,
@@ -362,6 +376,9 @@ pub fn managed_slot_is_plain(
 /// Resolve widths from the same exact semantic shapes that own field access
 /// and copy/drop traversal. Backends must consume the result, not recalculate
 /// it using their target's pointer sizes or host object representations.
+///
+/// # Errors
+/// Returns an error for missing semantic layout facts or overflowing payload widths.
 pub fn managed_slot(
     module: &SemModule,
     ty: &ResolvedTy,
@@ -392,8 +409,17 @@ fn slot(
         T::Bool | T::I8 | T::U8 => return Ok(1),
         T::I16 | T::U16 => return Ok(2),
         T::Char | T::I32 | T::U32 | T::F32 => return Ok(4),
-        T::I64 | T::U64 | T::Isize | T::Usize | T::F64 | T::Duration => return Ok(8),
-        T::String
+        T::GenericCallable { callable, .. } => return slot(module, callable, active),
+        T::Named {
+            head: TypeHead::Builtin(BuiltinType::NodeId),
+            ..
+        } => return Ok(16),
+        T::Named {
+            head: TypeHead::Builtin(BuiltinType::Location),
+            ..
+        } => return Ok(32),
+        T::I64 | T::U64 | T::Isize | T::Usize | T::F64 | T::Duration
+        | T::String
         | T::Bytes
         | T::Array(_, _)
         | T::Slice(_)
@@ -404,47 +430,24 @@ fn slot(
         | T::TraitObject { .. }
         | T::Task(_)
         | T::Pointer { .. }
-        | T::Borrow { .. } => return Ok(managed_callable_carrier().bytes),
-        T::GenericCallable { callable, .. } => return slot(module, callable, active),
-        T::Named {
-            head: TypeHead::Builtin(BuiltinType::NodeId),
-            ..
-        } => return Ok(16),
-        T::Named {
-            head: TypeHead::Builtin(BuiltinType::Location),
-            ..
-        } => return Ok(32),
-        T::Named {
+        | T::Borrow { .. }
+
+        | T::Named {
             head: TypeHead::Actor(_),
             ..
-        } => return Ok(8),
-        T::Named {
-            head: TypeHead::Builtin(builtin),
-            ..
-        } if matches!(
-            builtin,
-            BuiltinType::Vec
-                | BuiltinType::HashMap
-                | BuiltinType::HashSet
-                | BuiltinType::Rc
-                | BuiltinType::Weak
-                | BuiltinType::Task
-                | BuiltinType::ActorCall
-                | BuiltinType::Generator
-                | BuiltinType::Stream
-                | BuiltinType::Sink
-                | BuiltinType::ActorHandle
-                | BuiltinType::ActorFn
-                | BuiltinType::CancellationToken
-        ) =>
-        {
-            return Ok(8)
         }
-        // An opaque value's slot is its handle. Its provider must describe
-        // managed payload separately; this does not exempt that payload.
-        T::Named {
-            is_opaque: true, ..
-        } => return Ok(8),
+        | T::Named {
+            head: TypeHead::Builtin(
+                BuiltinType::Vec | BuiltinType::HashMap | BuiltinType::HashSet
+                | BuiltinType::Rc | BuiltinType::Weak | BuiltinType::Task
+                | BuiltinType::ActorCall | BuiltinType::Generator | BuiltinType::Stream
+                | BuiltinType::Sink | BuiltinType::ActorHandle | BuiltinType::ActorFn
+                | BuiltinType::CancellationToken
+            ),
+            ..
+        }
+        // Opaque slots are handles; their providers describe retained payload.
+        | T::Named { is_opaque: true, .. } => return Ok(managed_callable_carrier().bytes),
         _ => {}
     }
     if let Some(shape) = module.variant_shape_for_type(ty) {
@@ -475,6 +478,9 @@ fn slot(
 
 /// Fixed arrays own a sequence backing even as locals. Nested arrays occupy
 /// handle slots and charge each distinct backing separately, like vectors.
+///
+/// # Errors
+/// Returns an error for missing semantic layout facts or overflowing payload widths.
 pub fn managed_array_payload(
     module: &SemModule,
     ty: &ResolvedTy,
@@ -492,6 +498,9 @@ pub fn managed_array_payload(
 /// storage retain their own identities through the ordinary value recipes.
 /// Coroutine scheduling fields and primitive SSA spill slots are bookkeeping,
 /// not a target-dependent charge for the runtime's native frame allocation.
+///
+/// # Errors
+/// Returns an error for missing semantic layout facts or overflowing payload widths.
 pub fn managed_generator_payload(
     module: &SemModule,
     ty: &ResolvedTy,
@@ -510,6 +519,9 @@ pub fn managed_generator_payload(
 /// The fixed payload capacity of an indirect variant allocation. The
 /// discriminator is included; the owning handle's slot is charged only when
 /// it occupies another managed allocation.
+///
+/// # Errors
+/// Returns an error for missing semantic layout facts or overflowing payload widths.
 pub fn managed_variant_payload(
     module: &SemModule,
     shape: &crate::SemVariantShape,

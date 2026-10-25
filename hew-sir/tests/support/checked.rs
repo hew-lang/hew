@@ -1,6 +1,9 @@
 //! Inspect checked continuations without treating a normal block argument as
 //! another copy, or treating the failure path as a successful materialization.
-#![allow(dead_code)]
+#![allow(
+    dead_code,
+    reason = "Shared test support serves independently compiled integration tests"
+)]
 
 use hew_sir::{SemBlock, SemFunction, SemTerminator, ValueId};
 

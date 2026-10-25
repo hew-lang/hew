@@ -1,0 +1,33 @@
+// A plain-element vector alias shares all 32 capacity bytes within this
+// actor's account. Growing it must retain the old backing and acquire the
+// detached 64-byte backing before publishing the mutation.
+#[max_heap(56)]
+actor Buffer {
+    var values: Vec<i64>;
+
+    receive fn fill_and_alias() -> i64 {
+        for i in 0..4 { values.push(i); }
+        let alias = values;
+        alias.len() + values.len()
+    }
+
+    receive fn detach() -> i64 {
+        let alias = values;
+        values.push(4);
+        alias.len()
+    }
+}
+
+fn main() -> i64 {
+    let buffer = spawn Buffer { values: Vec.new() };
+    match buffer.fill_and_alias() {
+        .Ok(n) => println(n),
+        .Err(_) => return 1,
+    }
+    match buffer.detach() {
+        .Err(.Trapped) => println("retained backing"),
+        _ => return 2,
+    }
+    stopped(buffer);
+    0
+}

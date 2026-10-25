@@ -19,7 +19,7 @@ impl LowerCtx {
             .iter()
             .map(|(key, signature)| (key.clone(), (ids.item(), signature.clone())))
             .collect();
-        Self {
+        let mut context = Self {
             ids,
             checked_sites: HashMap::new(),
             binding_scopes: Vec::new(),
@@ -125,7 +125,7 @@ impl LowerCtx {
             indexed_place_operations: HashMap::new(),
             actor_handler_state_guards: tc_output.actor_handler_state_guards.clone(),
             cycle_capable_actors: tc_output.cycle_capable_actors.clone(),
-            actor_protocol_descriptors: tc_output.actor_protocol_descriptors.clone(),
+            actor_protocol_descriptors: HashMap::new(),
             lambda_actor_declarations: tc_output.lambda_actor_declarations.clone(),
             pending_lambda_actors: Vec::new(),
             // A supervisor is addressed by its own type exactly as an actor is,
@@ -196,7 +196,34 @@ impl LowerCtx {
             module_import_bindings: tc_output.module_import_bindings.clone(),
             published_bare_const_owners: tc_output.published_bare_const_owners.clone(),
             defs: std::sync::Arc::clone(&tc_output.defs),
-        }
+        };
+        // Protocol signatures and body annotations use the same declaration
+        // facts at the checker-to-HIR boundary.
+        context.actor_protocol_descriptors = tc_output
+            .actor_protocol_descriptors
+            .iter()
+            .map(|(name, descriptor)| {
+                let mut descriptor = descriptor.clone();
+                for handler in &mut descriptor.handlers {
+                    handler.param_tys = handler
+                        .param_tys
+                        .drain(..)
+                        .map(|ty| context.restore_type_declaration_facts(ty))
+                        .collect();
+                    handler.return_ty =
+                        context.restore_type_declaration_facts(handler.return_ty.clone());
+                    for receiver in &mut handler.remote_receivers {
+                        receiver.args = receiver
+                            .args
+                            .drain(..)
+                            .map(|ty| context.restore_type_declaration_facts(ty))
+                            .collect();
+                    }
+                }
+                (name.clone(), descriptor)
+            })
+            .collect();
+        context
     }
 
     pub(super) fn source_declaration(

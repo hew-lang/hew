@@ -632,7 +632,7 @@ fn expect_literal_diagnostics_are_cold_and_preserve_owned_payloads_at_o0_o2() {
         let (glue, arms) = loop {
             let block = &function.blocks[prefix.0 as usize];
             assert!(
-                !block.ops.iter().any(|op| matches!(
+                !block.operations().any(|op| matches!(
                     op,
                     PhysicalOp::Const {
                         value: PhysicalConst::String(_),
@@ -642,9 +642,12 @@ fn expect_literal_diagnostics_are_cold_and_preserve_owned_payloads_at_o0_o2() {
                 "successful expect must not construct its diagnostic"
             );
             match &block.terminator {
-                PhysicalTerminator::Goto(edge) => prefix = edge.target,
+                PhysicalTerminator::Goto(edge)
+                | PhysicalTerminator::Materialize { normal: edge, .. } => {
+                    prefix = edge.target;
+                }
                 PhysicalTerminator::SwitchVariant { glue, arms, .. } => break (glue, arms),
-                other => panic!("expect must switch before calling or allocating: {other:?}"),
+                other => panic!("expect must select its variant before calling: {other:?}"),
             }
         };
         let glue = &semantic.variant_glue[glue.0 as usize];
@@ -665,7 +668,7 @@ fn expect_literal_diagnostics_are_cold_and_preserve_owned_payloads_at_o0_o2() {
             .blocks
             .iter()
             .filter(|block| {
-                block.ops.iter().any(|op| {
+                block.operations().any(|op| {
                     matches!(
                         op,
                         PhysicalOp::Const {
@@ -677,9 +680,23 @@ fn expect_literal_diagnostics_are_cold_and_preserve_owned_payloads_at_o0_o2() {
             })
             .map(|block| block.id)
             .collect();
-        assert_eq!(
-            literal_blocks,
-            [failure],
+        // Rebuilding the failed receiver and constructing its diagnostic each
+        // have checked managed-acquisition edges before the original call.
+        let mut failure_path = std::collections::BTreeSet::new();
+        let mut current = failure;
+        loop {
+            assert!(failure_path.insert(current), "expect failure path cycles");
+            match &function.blocks[current.0 as usize].terminator {
+                PhysicalTerminator::Goto(edge)
+                | PhysicalTerminator::Materialize { normal: edge, .. } => {
+                    current = edge.target;
+                }
+                _ => break,
+            }
+        }
+        assert_eq!(literal_blocks.len(), 1);
+        assert!(
+            failure_path.contains(&literal_blocks[0]),
             "diagnostic belongs only to failed variant"
         );
     }

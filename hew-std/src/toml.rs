@@ -7,6 +7,8 @@
 //! released with [`hew_toml_free`]; the compiler copies values with
 //! [`hew_toml_clone`] and releases them through the shared encoding-value
 //! operation vocabulary.
+mod checked;
+
 use hew_cabi::string::{string_as_str, string_from_str, HewString};
 
 /// Opaque wrapper around a [`toml::Value`].
@@ -15,6 +17,82 @@ use hew_cabi::string::{string_as_str, string_from_str, HewString};
 #[derive(Debug)]
 pub struct HewTomlValue {
     inner: toml::Value,
+}
+
+/// Visit the canonical payload of a TOML value without copying or mutating it.
+///
+/// # Safety
+/// `slot` contains a live TOML handle (or null); visitor/context remain live.
+#[no_mangle]
+pub unsafe extern "C" fn hew_managed_visit_toml(
+    slot: *const core::ffi::c_void,
+    visitor: *const hew_cabi::managed::HewManagedStorageVisitor,
+) -> i32 {
+    // SAFETY: the compiler's descriptor supplies this concrete handle slot.
+    let value = unsafe { slot.cast::<*const HewTomlValue>().read().as_ref() };
+    let Some(value) = value else {
+        return 0;
+    };
+    // SAFETY: the borrowed tree and visitor remain live throughout traversal.
+    unsafe {
+        crate::managed_tree::tree(visitor, core::ptr::from_ref(value).cast(), false, |copy| {
+            hew_codec::managed_tree::toml_payload_bytes(&value.inner, copy)
+                .ok_or(hew_cabi::managed::HEAP_EXCEEDED)
+        })
+    }
+}
+
+#[cfg(test)]
+mod managed_tests {
+    use super::*;
+    use crate::managed_tree::tests::Capture;
+    use hew_cabi::managed::HewManagedWalkKind;
+
+    #[test]
+    fn managed_toml_counts_typed_datetime_and_clone_capacity() {
+        let mut text = String::with_capacity(64);
+        text.push_str("hew");
+        let mut values = Vec::with_capacity(8);
+        values.push(toml::Value::String(text));
+        values.push(toml::Value::Datetime(
+            "1979-05-27T07:32:00Z".parse().unwrap(),
+        ));
+        let value = boxed_value(toml::Value::Array(values));
+        // SAFETY: each concrete handle and borrowed visitor is live until free.
+        unsafe {
+            let mut retained = Capture::default();
+            assert_eq!(
+                hew_managed_visit_toml(
+                    (&raw const value).cast(),
+                    &retained.visitor(HewManagedWalkKind::Retain)
+                ),
+                0
+            );
+            assert_eq!(retained.entries, vec![(value as usize, 20 + 8 * 20 + 64)]);
+            let mut plan = Capture::default();
+            assert_eq!(
+                hew_managed_visit_toml(
+                    (&raw const value).cast(),
+                    &plan.visitor(HewManagedWalkKind::ClonePlan)
+                ),
+                0
+            );
+            assert_eq!(plan.entries, vec![(0, 20 + 2 * 20 + 3)]);
+            let copy = hew_toml_clone(value);
+            let mut copied = Capture::default();
+            assert_eq!(
+                hew_managed_visit_toml(
+                    (&raw const copy).cast(),
+                    &copied.visitor(HewManagedWalkKind::Retain)
+                ),
+                0
+            );
+            assert_eq!(copied.entries, vec![(copy as usize, plan.entries[0].1)]);
+            assert_eq!((*value).inner, (*copy).inner);
+            hew_toml_free(copy);
+            hew_toml_free(value);
+        }
+    }
 }
 
 #[cfg(test)]
@@ -108,7 +186,7 @@ pub unsafe extern "C" fn hew_toml_eq(lhs: *const HewTomlValue, rhs: *const HewTo
 /// # Safety
 ///
 /// `s` must be null (canonical empty) or a live managed string handle.
-#[no_mangle]
+#[must_use]
 pub unsafe extern "C" fn hew_toml_parse(s: *const HewString) -> *mut HewTomlValue {
     // SAFETY: the caller borrows a live managed string or canonical empty handle.
     let rust_str = unsafe { string_as_str(s) };
@@ -131,7 +209,7 @@ pub unsafe extern "C" fn hew_toml_parse(s: *const HewString) -> *mut HewTomlValu
 ///
 /// Errors are keyed per (actor, parser-kind), so a different parser's success
 /// does not clear this slot.
-#[no_mangle]
+#[must_use]
 pub extern "C" fn hew_toml_last_error() -> *mut HewString {
     string_from_str(&get_parse_last_error())
 }
@@ -168,7 +246,7 @@ pub unsafe extern "C" fn hew_toml_type(val: *const HewTomlValue) -> i32 {
 /// # Safety
 ///
 /// `val` must be a valid pointer to a [`HewTomlValue`] (or null).
-#[no_mangle]
+#[must_use]
 pub unsafe extern "C" fn hew_toml_get_string(val: *const HewTomlValue) -> *mut HewString {
     if val.is_null() {
         return std::ptr::null_mut();
@@ -246,7 +324,7 @@ pub unsafe extern "C" fn hew_toml_get_bool(val: *const HewTomlValue) -> i32 {
 /// # Safety
 ///
 /// `val` must be a valid pointer to a [`HewTomlValue`] (or null).
-#[no_mangle]
+#[must_use]
 pub unsafe extern "C" fn hew_toml_get_datetime(val: *const HewTomlValue) -> *mut HewString {
     // SAFETY: val is null or a valid pointer to a HewTomlValue per caller contract.
     match unsafe { val.as_ref() }.map(|value| &value.inner) {
@@ -264,7 +342,7 @@ pub unsafe extern "C" fn hew_toml_get_datetime(val: *const HewTomlValue) -> *mut
 ///
 /// `val` must be a valid pointer to a [`HewTomlValue`] (or null).
 /// `key` must be null (canonical empty) or a live managed string handle.
-#[no_mangle]
+#[must_use]
 pub unsafe extern "C" fn hew_toml_get_field(
     val: *const HewTomlValue,
     key: *const HewString,
@@ -293,7 +371,7 @@ pub unsafe extern "C" fn hew_toml_get_field(
 /// # Safety
 ///
 /// `val` must be a valid pointer to a [`HewTomlValue`] (or null).
-#[no_mangle]
+#[must_use]
 pub unsafe extern "C" fn hew_toml_object_keys(val: *const HewTomlValue) -> *mut HewTomlValue {
     // SAFETY: val is null or a valid pointer to a HewTomlValue per caller contract.
     match unsafe { val.as_ref() }.map(|value| &value.inner) {
@@ -336,7 +414,7 @@ pub unsafe extern "C" fn hew_toml_array_len(val: *const HewTomlValue) -> i32 {
 /// # Safety
 ///
 /// `val` must be a valid pointer to a [`HewTomlValue`] (or null).
-#[no_mangle]
+#[must_use]
 pub unsafe extern "C" fn hew_toml_array_get(
     val: *const HewTomlValue,
     index: i32,
@@ -371,7 +449,7 @@ pub unsafe extern "C" fn hew_toml_array_get(
 /// # Safety
 ///
 /// `val` must be a valid pointer to a [`HewTomlValue`] (or null).
-#[no_mangle]
+#[must_use]
 pub unsafe extern "C" fn hew_toml_stringify(val: *const HewTomlValue) -> *mut HewString {
     if val.is_null() {
         set_parse_last_error("toml: cannot serialize an invalid value");
@@ -399,7 +477,7 @@ pub unsafe extern "C" fn hew_toml_stringify(val: *const HewTomlValue) -> *mut He
 ///
 /// Returns a heap-allocated [`HewTomlValue`] wrapping an empty table.
 /// Must be freed with [`hew_toml_free`].
-#[no_mangle]
+#[must_use]
 pub extern "C" fn hew_toml_object_new() -> *mut HewTomlValue {
     boxed_value(toml::Value::Table(toml::map::Map::new()))
 }
@@ -417,28 +495,19 @@ pub extern "C" fn hew_toml_object_new() -> *mut HewTomlValue {
 /// `key` must be null (canonical empty) or a live managed string handle.
 /// `val` must be a pointer previously returned by a function in this module
 /// and must not have been freed already (or null).
-#[no_mangle]
 pub unsafe extern "C" fn hew_toml_object_set(
     tbl: *mut HewTomlValue,
     key: *const HewString,
     val: *mut HewTomlValue,
 ) {
-    if val.is_null() {
-        return;
-    }
-    // SAFETY: val was allocated with Box::into_raw and has not been freed.
-    // Ownership transfers at the ABI boundary even if insertion is rejected.
-    let child = unsafe { Box::from_raw(val) };
-    #[cfg(test)]
-    record_value_box_consumed();
-    if tbl.is_null() {
-        return;
-    }
-    // SAFETY: key is null (canonical empty) or a live managed string handle.
-    let key = unsafe { string_as_str(key) }.to_owned();
-    // SAFETY: tbl is non-null (checked above) and valid per caller contract.
-    if let toml::Value::Table(map) = &mut unsafe { &mut *tbl }.inner {
-        map.insert(key, child.inner);
+    let mut status = 0;
+    // Physical host callers use the same edit path without a Hew account.
+    hew_runtime::owned_value_budget::with_value_owner(&None, || {
+        // SAFETY: this wrapper preserves the checked operation's input contract.
+        unsafe { checked::hew_toml_object_set_checked(tbl, key, val, &raw mut status) };
+    });
+    if status != 0 {
+        std::process::abort();
     }
 }
 
@@ -446,7 +515,7 @@ pub unsafe extern "C" fn hew_toml_object_set(
 ///
 /// Returns a heap-allocated [`HewTomlValue`] wrapping an empty array.
 /// Must be freed with [`hew_toml_free`].
-#[no_mangle]
+#[must_use]
 pub extern "C" fn hew_toml_array_new() -> *mut HewTomlValue {
     boxed_value(toml::Value::Array(Vec::new()))
 }
@@ -462,22 +531,15 @@ pub extern "C" fn hew_toml_array_new() -> *mut HewTomlValue {
 /// `arr` must be a valid pointer to a [`HewTomlValue`] (or null).
 /// `val` must be a pointer previously returned by a function in this module
 /// and must not have been freed already (or null).
-#[no_mangle]
 pub unsafe extern "C" fn hew_toml_array_push(arr: *mut HewTomlValue, val: *mut HewTomlValue) {
-    if val.is_null() {
-        return;
-    }
-    // SAFETY: val was allocated with Box::into_raw and has not been freed.
-    // Ownership transfers at the ABI boundary even if insertion is rejected.
-    let child = unsafe { Box::from_raw(val) };
-    #[cfg(test)]
-    record_value_box_consumed();
-    if arr.is_null() {
-        return;
-    }
-    // SAFETY: arr is non-null (checked above) and valid per caller contract.
-    if let toml::Value::Array(vec) = &mut unsafe { &mut *arr }.inner {
-        vec.push(child.inner);
+    let mut status = 0;
+    // Physical host callers use the same edit path without a Hew account.
+    hew_runtime::owned_value_budget::with_value_owner(&None, || {
+        // SAFETY: this wrapper preserves the checked operation's input contract.
+        unsafe { checked::hew_toml_array_push_checked(arr, val, &raw mut status) };
+    });
+    if status != 0 {
+        std::process::abort();
     }
 }
 
@@ -489,7 +551,7 @@ pub unsafe extern "C" fn hew_toml_array_push(arr: *mut HewTomlValue, val: *mut H
 ///
 /// Returns a heap-allocated [`HewTomlValue`]. Must be freed with
 /// [`hew_toml_free`].
-#[no_mangle]
+#[must_use]
 pub extern "C" fn hew_toml_from_bool(val: i32) -> *mut HewTomlValue {
     boxed_value(toml::Value::Boolean(val != 0))
 }
@@ -498,7 +560,7 @@ pub extern "C" fn hew_toml_from_bool(val: i32) -> *mut HewTomlValue {
 ///
 /// Returns a heap-allocated [`HewTomlValue`]. Must be freed with
 /// [`hew_toml_free`].
-#[no_mangle]
+#[must_use]
 pub extern "C" fn hew_toml_from_int(val: i64) -> *mut HewTomlValue {
     boxed_value(toml::Value::Integer(val))
 }
@@ -507,7 +569,7 @@ pub extern "C" fn hew_toml_from_int(val: i64) -> *mut HewTomlValue {
 ///
 /// Returns a heap-allocated [`HewTomlValue`]. Must be freed with
 /// [`hew_toml_free`].
-#[no_mangle]
+#[must_use]
 pub extern "C" fn hew_toml_from_float(val: f64) -> *mut HewTomlValue {
     boxed_value(toml::Value::Float(val))
 }
@@ -520,7 +582,7 @@ pub extern "C" fn hew_toml_from_float(val: f64) -> *mut HewTomlValue {
 /// # Safety
 ///
 /// `val` must be null (canonical empty) or a live managed string handle.
-#[no_mangle]
+#[must_use]
 pub unsafe extern "C" fn hew_toml_from_string(val: *const HewString) -> *mut HewTomlValue {
     // SAFETY: val is null (canonical empty) or a live managed string handle.
     let s = unsafe { string_as_str(val) }.to_owned();

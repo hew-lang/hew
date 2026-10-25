@@ -1,0 +1,14 @@
+[[case]]
+id = "actor-owned-budget-variant"
+intent = "Indirect variants charge canonical payload capacity and refund storage after consumption."
+source = "cases/actor-owned-budget-variant.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 30
+
+[case.env]
+HEW_WORKERS = "2"
+
+[case.expected]
+stdout = "40\nvariant limit\n"
+stderr = "hew: failure: HeapExceeded (200)\nhew: actor crash in Small.run (actor 2): HeapExceeded\n"
+exit = 1

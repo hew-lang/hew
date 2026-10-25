@@ -62,7 +62,7 @@ pub fn normalize(module: &mut SemModule) {
     for function in &mut module.functions {
         let mut next = 0;
         for block in &mut function.blocks {
-            for op in &mut block.ops {
+            for op in block.operations_mut() {
                 op.id = OpId(next);
                 next += 1;
             }

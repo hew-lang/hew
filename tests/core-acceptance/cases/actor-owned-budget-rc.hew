@@ -1,0 +1,55 @@
+fn shared_values() -> i64 {
+    var values: Vec<i64> = Vec.new();
+    for i in 0..4 { values.push(i); }
+    let cell = Rc.new(values);
+    let alias = cell.clone();
+    let weak = cell.downgrade();
+    let upgraded = match weak.upgrade() { .Some(value) => value, .None => return 0, };
+    alias.strong_count() + upgraded.strong_count()
+}
+
+fn scalar_value() -> i64 {
+    let cell = Rc.new(1);
+    cell.set(9);
+    cell.get()
+}
+
+// Cell payload8 plus a plain vector's actual four-element backing32.
+#[max_heap(40)]
+actor Exact {
+    receive fn run() -> i64 { shared_values() }
+}
+
+#[max_heap(39)]
+actor Small {
+    receive fn run() -> i64 { shared_values() }
+}
+
+#[max_heap(8)]
+actor ScalarExact {
+    receive fn run() -> i64 { scalar_value() }
+}
+
+#[max_heap(7)]
+actor ScalarSmall {
+    receive fn run() -> i64 { scalar_value() }
+}
+
+fn main() -> i64 {
+    let exact = spawn Exact;
+    println(exact.run().expect("shared cell"));
+    println(exact.run().expect("cell cleanup reuse"));
+    stop(exact);
+    stopped(exact);
+    let small = spawn Small;
+    match small.run() { .Err(.Trapped) => println("rc limit"), _ => return 2, }
+    stopped(small);
+    let copy = spawn ScalarExact;
+    println(copy.run().expect("scalar replacement"));
+    stop(copy);
+    stopped(copy);
+    let refused = spawn ScalarSmall;
+    match refused.run() { .Err(.Trapped) => println("scalar limit"), _ => return 3, }
+    stopped(refused);
+    0
+}

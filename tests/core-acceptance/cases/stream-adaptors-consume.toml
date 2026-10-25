@@ -1,6 +1,6 @@
 [[case]]
 id = "stream-adaptors-consume"
-intent = "The std stream externs that consume their source (`sink.close`, `input.close`, `input.collect`, `stream.forward`) transfer the handle to the runtime and leave the caller no drop, while `sink.send` borrows both the sink and the item; repeated frames release each handle exactly once."
+intent = "Source collection drains a consumed Stream through checked iteration. Closing or forwarding consumes its endpoints, while sending borrows the sink and item; repeated calls preserve results and release each endpoint exactly once."
 source = "cases/stream-adaptors-consume.hew"
 suites = ["acceptance", "safety"]
 timeout_seconds = 30

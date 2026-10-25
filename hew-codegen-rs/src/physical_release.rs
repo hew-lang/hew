@@ -698,6 +698,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             "hew_stream_operation_release_begin",
             pointer.fn_type(&[pointer.into()], false),
         )?;
+        frame.clear_operation(self.ctx, &self.builder)?;
         let cursor = suspend::call_value(
             &self.builder,
             begin,
@@ -726,8 +727,11 @@ fn fields<'ctx>(
     source: PointerValue<'ctx>,
     object: inkwell::types::StructType<'ctx>,
     recipes: &[PhysicalValueRecipe],
+    backing: Option<(PointerValue<'ctx>, PointerValue<'ctx>, PointerValue<'ctx>)>,
 ) -> CodegenResult<()> {
-    for (index, recipe) in recipes.iter().enumerate().rev() {
+    let mut roots = backing.into_iter().collect::<Vec<_>>();
+    let mut fields = Vec::new();
+    for (index, recipe) in recipes.iter().enumerate() {
         let Some(action) = recipe.destroy else {
             continue;
         };
@@ -735,6 +739,37 @@ fn fields<'ctx>(
             .builder
             .build_struct_gep(object, source, index as u32, "release.field")
             .llvm_ctx("address owned release field")?;
+        let name = managed::value_layout_symbol(values.module, &recipe.ty)?;
+        let target = TargetData::create(&values.module.target.data_layout);
+        let descriptor = values
+            .llvm
+            .get_global(&name)
+            .unwrap_or_else(|| {
+                values
+                    .llvm
+                    .add_global(value_descriptor_type(values.ctx, &target), None, &name)
+            })
+            .as_pointer_value();
+        let initialized = scratch(
+            values,
+            frame,
+            values.ctx.i8_type().into(),
+            "release.field.initialized",
+        )?;
+        values
+            .builder
+            .build_store(initialized, values.ctx.i8_type().const_int(1, false))
+            .llvm_ctx("retain each unreleased field")?;
+        roots.push((descriptor, field, initialized));
+        fields.push((recipe, action, field, initialized));
+    }
+    frame.bind_root_entries(values.ctx, values.llvm, values.builder, &roots)?;
+    for (recipe, action, field, initialized) in fields.into_iter().rev() {
+        // The selected child's own invocation takes over its live descendants.
+        values
+            .builder
+            .build_store(initialized, values.ctx.i8_type().const_zero())
+            .llvm_ctx("transfer a field into its consuming release")?;
         let layout = values
             .module
             .target
@@ -826,11 +861,44 @@ fn body<'ctx>(
             source,
             llvm_type(values.ctx, &layout.repr)?.into_struct_type(),
             &values.aggregate_glue(id)?.fields,
+            None,
         ),
         DestroyAction::Variant(id) => {
             let glue = values.variant_glue(id)?;
             let variant = values.variant_layout(&glue.ty)?;
             let node = values.variant_object_ptr(source, variant)?;
+            let backing = if variant.is_indirect {
+                let row = &values.module.managed_types[&glue.ty];
+                let hew_mir::physical::ManagedStorageShape::Variant { payload_bytes, .. } =
+                    row.shape
+                else {
+                    return Err(CodegenError::FailClosed(
+                        "variant cleanup lacks canonical backing width".into(),
+                    ));
+                };
+                let identity = scratch(values, frame, pointer.into(), "release.variant.backing")?;
+                values
+                    .builder
+                    .build_store(identity, node)
+                    .llvm_ctx("retain variant allocation through child cleanup")?;
+                let present = scratch(
+                    values,
+                    frame,
+                    values.ctx.i8_type().into(),
+                    "release.variant.present",
+                )?;
+                values
+                    .builder
+                    .build_store(present, values.ctx.i8_type().const_int(1, false))
+                    .llvm_ctx("retain variant backing until actual free")?;
+                Some((
+                    managed::flat_backing_layout(values.ctx, values.llvm, payload_bytes)?,
+                    identity,
+                    present,
+                ))
+            } else {
+                None
+            };
             let tag = values.load_variant_tag(node, variant)?;
             let invalid = values
                 .ctx
@@ -857,7 +925,7 @@ fn body<'ctx>(
                 .llvm_ctx("select consuming variant release")?;
             for (index, (_, block)) in cases.iter().enumerate() {
                 values.builder.position_at_end(*block);
-                if !glue.variants[index].fields.is_empty() {
+                {
                     let payload = values.variant_payload_ptr(node, variant)?;
                     fields(
                         values,
@@ -865,6 +933,7 @@ fn body<'ctx>(
                         payload,
                         llvm_type(values.ctx, &variant.variants[index].repr)?.into_struct_type(),
                         &glue.variants[index].fields,
+                        backing,
                     )?;
                 }
                 values
@@ -876,6 +945,10 @@ fn body<'ctx>(
             values.emit_invalid_variant_tag()?;
             values.builder.position_at_end(done);
             if variant.is_indirect {
+                values
+                    .builder
+                    .build_store(backing.unwrap().2, values.ctx.i8_type().const_zero())
+                    .llvm_ctx("retire variant backing at actual disposal")?;
                 values.free_variant_node(node, variant)?;
             }
             Ok(())
@@ -1014,6 +1087,19 @@ fn drain_operation<'ctx>(
     poll_name: &str,
     fault_name: &str,
 ) -> CodegenResult<()> {
+    let visit = match poll_name {
+        "hew_release_driver_poll" => Some("hew_managed_visit_release_driver_slot"),
+        "hew_actor_call_cleanup_poll" => Some("hew_managed_visit_actor_call"),
+        _ => None,
+    };
+    if let Some(visit) = visit {
+        frame.bind_operation(
+            values.ctx,
+            values.builder,
+            managed::operation_layout(values.ctx, values.llvm, visit)?,
+            owner,
+        )?;
+    }
     let pointer = values.ctx.ptr_type(AddressSpace::default());
     let poll = values
         .ctx
@@ -1056,6 +1142,9 @@ fn drain_operation<'ctx>(
         .build_unreachable()
         .llvm_ctx("refuse unfinished operation destruction")?;
     values.builder.position_at_end(done);
+    if visit.is_some() {
+        frame.clear_operation(values.ctx, values.builder)?;
+    }
     let take_fault = get_or_declare_external(
         values.llvm,
         fault_name,
@@ -1173,165 +1262,25 @@ fn drain_cursor_inline<'ctx>(
     cursor: PointerValue<'ctx>,
 ) -> CodegenResult<()> {
     let pointer = values.ctx.ptr_type(AddressSpace::default());
-    let next = values
-        .ctx
-        .append_basic_block(values.value, "release.cursor.next");
-    let item = values
-        .ctx
-        .append_basic_block(values.value, "release.cursor.item");
-    let done = values
-        .ctx
-        .append_basic_block(values.value, "release.cursor.done");
-    let present = values
-        .builder
-        .build_is_not_null(cursor, "release.cursor.present")
-        .llvm_ctx("test optional release cursor")?;
-    values
-        .builder
-        .build_conditional_branch(present, next, done)
-        .llvm_ctx("start consuming container")?;
-    values.builder.position_at_end(next);
-    let slot = scratch(values, frame, pointer.into(), "release.cursor.slot")?;
-    let wait = values
-        .ctx
-        .append_basic_block(values.value, "release.cursor.wait");
-    let invalid = values
-        .ctx
-        .append_basic_block(values.value, "release.cursor.invalid");
-    let advance = get_or_declare_external(
+    let create = get_or_declare_external(
         values.llvm,
-        "hew_release_poll",
-        values.ctx.i32_type().fn_type(&[pointer.into(); 3], false),
-    )?;
-    let status = suspend::call_value(
-        values.builder,
-        advance,
-        &[cursor.into(), frame.state.into(), slot.into()],
-        "release.cursor.status",
-    )?
-    .into_int_value();
-    values
-        .builder
-        .build_switch(
-            status,
-            done,
-            &[
-                (values.ctx.i32_type().const_zero(), wait),
-                (values.ctx.i32_type().const_int(1, false), item),
-            ],
-        )
-        .llvm_ctx("select next release item")?;
-    values.builder.position_at_end(wait);
-    frame.suspend(values.ctx, values.builder, next, invalid)?;
-    values.builder.position_at_end(invalid);
-    values
-        .builder
-        .build_unreachable()
-        .llvm_ctx("refuse unfinished release destruction")?;
-    values.builder.position_at_end(item);
-    let source = values
-        .builder
-        .build_load(pointer, slot, "release.slot")
-        .llvm_ctx("read current release slot")?
-        .into_pointer_value();
-    let get_layout = get_or_declare_external(
-        values.llvm,
-        "hew_release_layout",
+        "hew_release_driver_new",
         pointer.fn_type(&[pointer.into()], false),
     )?;
-    let descriptor = suspend::call_value(
-        values.builder,
-        get_layout,
-        &[cursor.into()],
-        "release.layout",
-    )?
-    .into_pointer_value();
-    descriptor_slot(values, frame, source, descriptor)?;
-    values
-        .builder
-        .build_unconditional_branch(next)
-        .llvm_ctx("continue consuming container")?;
-    values.builder.position_at_end(done);
-    let finish = get_or_declare_external(
-        values.llvm,
-        "hew_release_finish",
-        values.ctx.void_type().fn_type(&[pointer.into()], false),
-    )?;
-    values
-        .builder
-        .build_call(finish, &[cursor.into()], "")
-        .llvm_ctx("release drained container storage")?;
-    Ok(())
-}
-
-fn descriptor_slot<'ctx>(
-    values: &ValueEmitter<'_, 'ctx>,
-    frame: &coro::Frame<'ctx>,
-    source: PointerValue<'ctx>,
-    descriptor: PointerValue<'ctx>,
-) -> CodegenResult<()> {
-    let pointer = values.ctx.ptr_type(AddressSpace::default());
-    let target = TargetData::create(&values.module.target.data_layout);
-    let layout = value_descriptor_type(values.ctx, &target);
-    let start = descriptor_release_start(values, descriptor)?;
-    let asynchronous = values.ctx.append_basic_block(values.value, "release.async");
-    let synchronous = values.ctx.append_basic_block(values.value, "release.sync");
-    let done = values
-        .ctx
-        .append_basic_block(values.value, "release.item.done");
-    let has_start = values
-        .builder
-        .build_is_not_null(start, "release.can.suspend")
-        .llvm_ctx("select release protocol")?;
-    values
-        .builder
-        .build_conditional_branch(has_start, asynchronous, synchronous)
-        .llvm_ctx("dispatch release protocol")?;
-    values.builder.position_at_end(asynchronous);
-    invoke(values, frame, start, source)?;
-    values
-        .builder
-        .build_unconditional_branch(done)
-        .llvm_ctx("finish asynchronous release")?;
-    values.builder.position_at_end(synchronous);
-    let drop_address = values
-        .builder
-        .build_struct_gep(layout, descriptor, 4, "release.drop.slot")
-        .llvm_ctx("address synchronous destructor")?;
-    let drop = values
-        .builder
-        .build_load(pointer, drop_address, "release.drop")
-        .llvm_ctx("read synchronous destructor")?
+    let driver = suspend::call_value(values.builder, create, &[cursor.into()], "release.driver")?
         .into_pointer_value();
-    let run = values
-        .ctx
-        .append_basic_block(values.value, "release.sync.run");
-    let has_drop = values
-        .builder
-        .build_is_not_null(drop, "release.owned")
-        .llvm_ctx("test synchronous owner")?;
+    drain_operation(
+        values,
+        frame,
+        driver,
+        "hew_release_driver_poll",
+        "hew_release_driver_fault",
+    )?;
+    let free = external_drop(values.ctx, values.llvm, "hew_release_driver_free")?;
     values
         .builder
-        .build_conditional_branch(has_drop, run, done)
-        .llvm_ctx("select synchronous owner release")?;
-    values.builder.position_at_end(run);
-    values.emit_release_in_sink(|| {
-        values
-            .builder
-            .build_indirect_call(
-                values.ctx.void_type().fn_type(&[pointer.into()], false),
-                drop,
-                &[source.into()],
-                "",
-            )
-            .llvm_ctx("release synchronous descriptor value")?;
-        Ok(())
-    })?;
-    values
-        .builder
-        .build_unconditional_branch(done)
-        .llvm_ctx("finish synchronous release")?;
-    values.builder.position_at_end(done);
+        .build_call(free, &[driver.into()], "")
+        .llvm_ctx("release the completed typed driver")?;
     Ok(())
 }
 

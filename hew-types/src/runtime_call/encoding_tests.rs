@@ -190,7 +190,6 @@ fn encoding_mutation_moves_both_owners_and_returns_the_updated_receiver() {
             let family = RuntimeCallFamily::Encoding { format, op };
             let contract = family.semantic_contract().unwrap();
             let child = params.len() - 1;
-            assert!(contract.failures.is_empty());
             assert_eq!(contract.arguments[0].effect, RuntimeArgumentEffect::Move);
             assert_eq!(
                 contract.arguments[child].effect,

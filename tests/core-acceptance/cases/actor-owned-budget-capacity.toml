@@ -1,0 +1,14 @@
+[[case]]
+id = "actor-owned-budget-capacity"
+intent = "Ordinary vector growth charges capacity and refuses before changing retained state."
+source = "cases/actor-owned-budget-capacity.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 30
+
+[case.env]
+HEW_WORKERS = "2"
+
+[case.expected]
+stdout = "4\n4\nlimit\n"
+stderr = "hew: failure: HeapExceeded (200)\nhew: actor crash in Buffer.grow_fifth (actor 1): HeapExceeded\n"
+exit = 1

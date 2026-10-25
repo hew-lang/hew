@@ -1,3 +1,6 @@
+#[path = "support/checked.rs"]
+mod checked;
+
 use hew_hir::{lower_program_host_target, ResolutionCtx};
 use hew_sir::{lower_module, verify_module, BoundaryDecision, SemModule, SemOpKind, SemTerminator};
 use hew_types::{module_registry::ModuleRegistry, Checker};
@@ -27,8 +30,9 @@ fn lower_source(source: &str) -> SemModule {
     );
     assert!(
         verify_module(&lowered.module).is_empty(),
-        "{:?}",
-        verify_module(&lowered.module)
+        "{:?}\n{}",
+        verify_module(&lowered.module),
+        hew_sir::dump_sir(&lowered.module)
     );
     lowered.module
 }
@@ -61,13 +65,13 @@ fn function_values_demand_their_bodies_and_share_indirect_call_cleanup() {
         .functions
         .iter()
         .flat_map(|function| &function.blocks)
-        .flat_map(|block| &block.ops)
+        .flat_map(hew_sir::SemBlock::operations)
         .any(|operation| matches!(operation.kind, SemOpKind::FunctionMake { .. })));
     assert!(module
         .functions
         .iter()
         .flat_map(|function| &function.blocks)
-        .flat_map(|block| &block.ops)
+        .flat_map(hew_sir::SemBlock::operations)
         .any(|operation| matches!(operation.kind, SemOpKind::CallableCoerce { .. })));
     assert!(module.functions.iter().flat_map(|function| &function.blocks)
         .any(|block| matches!(&block.terminator, SemTerminator::IndirectCall { callee, .. } if callee.decision == BoundaryDecision::Borrow)));
@@ -119,7 +123,7 @@ fn captured_snapshots_and_escaped_environments_have_exact_body_instances() {
         assert!(body
             .blocks
             .iter()
-            .flat_map(|block| &block.ops)
+            .flat_map(hew_sir::SemBlock::operations)
             .any(|operation| matches!(operation.kind, SemOpKind::LoadCopy { .. })));
     }
 }
@@ -146,7 +150,7 @@ fn copied_private_counter_uses_mutable_receiver_and_capture_storage() {
         .functions
         .iter()
         .flat_map(|function| &function.blocks)
-        .flat_map(|block| &block.ops)
+        .flat_map(hew_sir::SemBlock::operations)
         .any(|op| matches!(op.kind, SemOpKind::StoreAssign { .. })));
     assert!(module.functions.iter().flat_map(|function| &function.blocks)
         .any(|block| matches!(&block.terminator, SemTerminator::IndirectCall { callee, .. } if callee.decision == BoundaryDecision::BorrowMut)));
@@ -197,7 +201,7 @@ fn consuming_capture_is_taken_before_invocation_and_environment_cleanup() {
     assert!(body
         .blocks
         .iter()
-        .flat_map(|block| &block.ops)
+        .flat_map(hew_sir::SemBlock::operations)
         .any(|op| matches!(op.kind, SemOpKind::LoadTake { .. })));
 }
 
@@ -310,7 +314,7 @@ fn main() -> i64 {
             let borrow = main
                 .blocks
                 .iter()
-                .flat_map(|block| &block.ops)
+                .flat_map(hew_sir::SemBlock::operations)
                 .find(|op| {
                     op.results
                         .iter()
@@ -421,14 +425,16 @@ fn mutable_callable_parameters_keep_private_state_without_caller_visible_borrows
         .find(|function| module.defs.path(function.declaration) == "advance")
         .unwrap();
     assert_eq!(advance.params[0].own, hew_sir::OwnKind::Guaranteed);
-    let copied = advance.blocks.iter().flat_map(|block| &block.ops)
+    let copied = advance.blocks.iter().flat_map(hew_sir::SemBlock::operations)
         .find(|op| matches!(&op.kind, SemOpKind::CopyValue { source } if source.value == advance.params[0].value)).unwrap();
     let private = advance
         .blocks
         .iter()
-        .flat_map(|block| &block.ops)
+        .flat_map(hew_sir::SemBlock::operations)
         .find_map(|op| match op.kind {
-            SemOpKind::StoreInit { place, ref value } if value.value == copied.results[0].id => {
+            SemOpKind::StoreInit { place, ref value }
+                if checked::source(advance, value.value) == copied.results[0].id =>
+            {
                 Some(place)
             }
             _ => None,
@@ -449,7 +455,7 @@ fn mutable_callable_parameters_keep_private_state_without_caller_visible_borrows
         .find(|function| module.defs.path(function.declaration) == "consume_advance")
         .unwrap();
     assert_eq!(consuming.params[0].own, hew_sir::OwnKind::Owned);
-    assert!(!consuming.blocks.iter().flat_map(|block| &block.ops)
+    assert!(!consuming.blocks.iter().flat_map(hew_sir::SemBlock::operations)
         .any(|op| matches!(&op.kind, SemOpKind::CopyValue { source } if source.value == consuming.params[0].value)));
 }
 
@@ -490,7 +496,7 @@ fn borrowed_callable_replacements_share_local_storage_across_branches() {
             function
                 .blocks
                 .iter()
-                .flat_map(|block| &block.ops)
+                .flat_map(hew_sir::SemBlock::operations)
                 .filter(
                     |op| matches!(op.kind, SemOpKind::StoreAssign { place, .. } if place == local)
                 )
@@ -510,7 +516,7 @@ fn borrowed_callable_replacements_share_local_storage_across_branches() {
             function
                 .blocks
                 .iter()
-                .flat_map(|block| &block.ops)
+                .flat_map(hew_sir::SemBlock::operations)
                 .any(|op| matches!(op.kind, SemOpKind::EndLifetime { place } if place == local)),
             "a replacement that acquires the private slot must clean it on its active exits"
         );
@@ -752,14 +758,14 @@ fn a_capture_mutation_takes_the_capture_and_restores_it_on_failure() {
         function
             .blocks
             .iter()
-            .flat_map(|block| &block.ops)
+            .flat_map(hew_sir::SemBlock::operations)
             .find(|op| op.results.iter().any(|result| result.id == value))
             .map(|op| &op.kind)
     };
     // Every receiver transform keeps its receiver on its failure edge, so a
-    // mutation takes the capture in place; the map insert, which a key
-    // callback can fail, re-initializes the capture on that edge so a call
-    // after a recovered fault reads it again.
+    // mutation takes the capture in place. Both a key callback failure and a
+    // managed-storage refusal restore it, so a call after a recovered fault
+    // reads the capture again.
     let mut taken = Vec::new();
     let mut restored = Vec::new();
     for block in &function.blocks {
@@ -789,7 +795,7 @@ fn a_capture_mutation_takes_the_capture_and_restores_it_on_failure() {
         }
     }
     assert_eq!(taken, [capture(0), capture(1)]);
-    assert_eq!(restored, [capture(0)]);
+    assert_eq!(restored, taken);
 }
 
 #[test]
@@ -812,7 +818,7 @@ fn borrowed_callable_weakening_preserves_parameter_ownership() {
         .find(|function| module.defs.path(function.declaration) == "reuse")
         .expect("reusable borrowed callback body");
     let result = function.blocks.iter_mut()
-        .flat_map(|block| &mut block.ops)
+        .flat_map(hew_sir::SemBlock::operations_mut)
         .filter(|operation| matches!(operation.kind, SemOpKind::BeginBorrow { .. }))
         .flat_map(|operation| &mut operation.results)
         .find(|result| matches!(&result.ty, hew_types::ResolvedTy::Function { capabilities, .. } if capabilities.suspends))

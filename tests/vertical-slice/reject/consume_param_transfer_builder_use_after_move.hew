@@ -1,61 +1,33 @@
-// A child passed to a consume parameter moves from the caller into the native
-// sink. Reusing it would create two release authorities for one opaque resource.
-#[opaque]
-type Handle {
-}
-
-// This mirrors the shipped encoding-builder contract, including the consuming
-// `free()` compatibility alias for the compiler-visible `close()` disposer.
+// A consume parameter moves the child out of the caller even when a fluent
+// method returns its receiver unchanged.
 #[resource]
 type Value {
-    handle: Handle;
+    label: string;
 }
 
 trait ValueMethods {
-    fn free(consume self);
-
     #[returns_receiver]
     fn absorb(consume self, consume child: Value) -> Self;
 }
 
 impl ValueMethods for Value {
-    fn free(consume self) {
-        self.close();
-    }
     #[returns_receiver]
     fn absorb(consume self, consume child: Value) -> Value {
-        unsafe {
-            hew_json_array_push(self.handle, child.release())
-        };
+        child.close();
         self
     }
 }
 
 impl Value {
     fn close(consume self) {
-        unsafe {
-            hew_json_free(self.handle)
-        };
+        println(self.label);
     }
-    fn release(consume self) -> Handle {
-        self.handle
-    }
-}
-
-extern "C" {
-    fn hew_json_free(consume handle: Handle);
-    fn hew_json_array_push(handle: Handle, consume child: Handle);
-    fn hew_json_array_new() -> Handle;
 }
 
 fn main() {
-    let owner = Value { handle: unsafe {
-        hew_json_array_new()
-    } };
-    let child = Value { handle: unsafe {
-        hew_json_array_new()
-    } };
+    let owner = Value { label: "owner" };
+    let child = Value { label: "child" };
     let combined = owner.absorb(child);
     child.close();
-    combined.free();
+    combined.close();
 }

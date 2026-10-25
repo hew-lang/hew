@@ -8,8 +8,8 @@ use super::{
     require_type_facts, BindingTarget, BlockArg, Builder, CallResult, CallTarget, CallUnwind, Edge,
     FaultHandback, HirExpr, HirExprKind, IntentKind, OpId, Operand, OwnKind, OwnedBindingUse,
     PlaceId, PlaceOrigin, PreparedCallee, Provenance, ResolvedRef, ResolvedTy, SemAbiParam,
-    SemCallableKind, SemOp, SemOpKind, SemParamPassing, SemSignature, SemTerminator,
-    TypeInstanceKey, ValueDef, ValueId, WritableRoot,
+    SemCallableKind, SemOpKind, SemParamPassing, SemSignature, SemTerminator, TypeInstanceKey,
+    ValueDef, ValueId, WritableRoot,
 };
 
 impl Builder<'_, '_> {
@@ -218,16 +218,12 @@ impl Builder<'_, '_> {
             if self.ended_loans.contains(&value) {
                 continue;
             }
-            let op = SemOp {
-                id: OpId(self.ops),
-                results: Vec::new(),
-                kind: SemOpKind::EndBorrow {
+            self.emit_place_operation(
+                SemOpKind::EndBorrow {
                     borrow: Operand { value },
                 },
-                provenance: Provenance::Synthesized,
-            };
-            self.current_block_mut().append_op(op)?;
-            self.ops += 1;
+                Provenance::Synthesized,
+            )?;
         }
         Ok(())
     }
@@ -2507,6 +2503,7 @@ impl Builder<'_, '_> {
         let id = OpId(self.ops);
         self.ops += 1;
         let normal_target = normal.target;
+        let borrowed_owner = result_is_loan.then(|| lowered_args[0].operand.value);
         self.set_terminator(SemTerminator::RtCall {
             id,
             family,
@@ -2563,6 +2560,11 @@ impl Builder<'_, '_> {
             // back-edge, innermost first.
             self.scope_loans.extend(loans.iter().copied());
             if let Some(continuation) = continuation {
+                self.borrow_parents.insert(
+                    continuation,
+                    crate::PlaceBase::Value(borrowed_owner.expect("loan result has an owner")),
+                );
+                self.live_loans.insert(continuation);
                 self.scope_loans.push(continuation);
             }
         } else {

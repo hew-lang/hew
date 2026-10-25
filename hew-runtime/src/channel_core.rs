@@ -52,6 +52,9 @@ use crate::read_slot::{
 };
 use crate::wake::{HewWaker, OwnedWaker, WakeTarget};
 
+pub(crate) mod typed;
+use typed::QueueItem;
+
 /// Whether a producer blocked on a full ring must abandon its send because the
 /// runtime is shutting down.
 ///
@@ -127,7 +130,8 @@ impl NativeRegistration {
     reason = "producer closure, reader closure, fault and one-time binding are independent lifecycle facts"
 )]
 struct Inner {
-    queue: VecDeque<Vec<u8>>,
+    queue: VecDeque<QueueItem>,
+    typed: Option<typed::State>,
     /// Foreign callers between their predicate check and return from a condvar
     /// wait. Registration and notification decisions share this predicate lock,
     /// so native-only transfers can skip kernel notifications without a gap.
@@ -162,6 +166,7 @@ struct Inner {
     /// `None` for Plain/String/Bytes elements — their envelopes own no heap
     /// beyond the `Vec<u8>` itself.
     elem_layout: Option<HewValueLayout>,
+    elem_code: Option<crate::code_owner::CodeRoot>,
     /// The checked consumer parked by [`ChannelCore::poll_recv_envelope`].
     native_consumer: Option<NativeRegistration>,
     /// Checked producers parked on a full ring by [`ChannelCore::poll_send_envelope`].
@@ -215,6 +220,7 @@ impl ChannelCore {
             inner: Mutex::new(Inner {
                 queue: VecDeque::new(),
                 foreign_waiters: 0,
+                typed: None,
                 capacity: capacity.max(1),
                 sink_closed: false,
                 sink_handles: 1,
@@ -224,6 +230,7 @@ impl ChannelCore {
                 consumer: None,
                 producers: VecDeque::new(),
                 elem_layout: None,
+                elem_code: None,
                 native_consumer: None,
                 native_producers: SmallVec::new(),
                 actor_stream_cancellation: None,
@@ -327,7 +334,13 @@ impl ChannelCore {
     pub fn stamp_elem_layout(&self, layout: &HewValueLayout) {
         let mut inner = self.locked();
         match &inner.elem_layout {
-            None => inner.elem_layout = Some(*layout),
+            None => {
+                // SAFETY: the sending owner retains this exact descriptor while
+                // stamping; the queue retains it through all envelope cleanup.
+                inner.elem_code =
+                    Some(unsafe { crate::code_owner::CodeRoot::acquire(layout.code_owner) });
+                inner.elem_layout = Some(*layout);
+            }
             Some(existing) => {
                 if existing.size != layout.size || existing.ownership_kind != layout.ownership_kind
                 {
@@ -421,7 +434,7 @@ impl ChannelCore {
         let native_producers;
         {
             let mut inner = self.locked();
-            match inner.queue.pop_front() {
+            match inner.queue.pop_front().map(QueueItem::into_content) {
                 Some(bytes) => {
                     item = bytes;
                     producer_wake = Self::drain_one_producer(&mut inner);
@@ -533,7 +546,7 @@ impl ChannelCore {
                 inner.native_producers.push(registration);
                 return (0, Some(envelope));
             }
-            inner.queue.push_back(envelope);
+            inner.queue.push_back(envelope.into());
             consumer_wake = inner.consumer.take();
             native_consumer = inner
                 .native_consumer
@@ -607,7 +620,7 @@ impl ChannelCore {
         let fault_actor_id;
         {
             let mut inner = self.locked();
-            item = inner.queue.pop_front();
+            item = inner.queue.pop_front().map(QueueItem::into_content);
             fault_actor_id = if item.is_none() {
                 inner.sink_fault.then_some(inner.fault_actor_id).flatten()
             } else {
@@ -652,7 +665,7 @@ impl ChannelCore {
         {
             let mut inner = self.locked();
             loop {
-                if let Some(v) = inner.queue.pop_front() {
+                if let Some(v) = inner.queue.pop_front().map(QueueItem::into_content) {
                     item = Some(v);
                     break;
                 }
@@ -812,7 +825,7 @@ impl ChannelCore {
                 return STREAM_AWAIT_READY;
             }
             if inner.queue.len() < inner.capacity {
-                inner.queue.push_back(item);
+                inner.queue.push_back(item.into());
                 consumer_wake = inner.consumer.take();
                 native_consumer = inner
                     .native_consumer
@@ -879,7 +892,7 @@ impl ChannelCore {
                     return;
                 }
                 if inner.queue.len() < inner.capacity {
-                    inner.queue.push_back(item);
+                    inner.queue.push_back(item.into());
                     consumer_wake = inner.consumer.take();
                     native_consumer = inner
                         .native_consumer
@@ -959,7 +972,7 @@ impl ChannelCore {
             if inner.queue.len() >= inner.capacity {
                 return (TrySendResult::Full, Some(item));
             }
-            inner.queue.push_back(item);
+            inner.queue.push_back(item.into());
             consumer_wake = inner.consumer.take();
             native_consumer = inner
                 .native_consumer
@@ -1045,6 +1058,10 @@ impl ChannelCore {
     /// so their `await_send` resumes (the writes become no-ops) and drops their
     /// pending items — owned envelopes are released via the stamped witness.
     pub fn close_stream(&self) {
+        if self.is_typed() {
+            self.close_typed_sync();
+            return;
+        }
         let (layout, discarded) = self.close_stream_take();
         for value in discarded {
             Self::drop_envelope(layout.as_ref(), value);
@@ -1064,7 +1081,7 @@ impl ChannelCore {
             let mut inner = self.locked();
             inner.stream_closed = true;
             layout = inner.elem_layout;
-            discarded.extend(inner.queue.drain(..));
+            discarded.extend(inner.queue.drain(..).map(QueueItem::into_content));
             native_producers = std::mem::take(&mut inner.native_producers);
             actor_stream_cancellation = inner.actor_stream_cancellation.take();
             while let Some(mut w) = inner.producers.pop_front() {
@@ -1223,7 +1240,7 @@ impl ChannelCore {
         }
         let mut w = inner.producers.pop_front()?;
         if let Some(item) = w.item.take() {
-            inner.queue.push_back(item);
+            inner.queue.push_back(item.into());
         }
         Some(w)
     }
@@ -1235,13 +1252,16 @@ impl Drop for ChannelCore {
     /// witness exactly once, and any registration the core still holds an
     /// in-flight slot ref for is released (no read-slot leak on teardown).
     fn drop(&mut self) {
+        if self.is_typed() {
+            self.close_typed_sync();
+        }
         let inner = self
             .inner
             .get_mut()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let layout = inner.elem_layout;
         for env in inner.queue.drain(..) {
-            Self::drop_envelope(layout.as_ref(), env);
+            Self::drop_envelope(layout.as_ref(), env.into_content());
         }
         if let Some(w) = inner.consumer.take() {
             // SAFETY: the core owned this in-flight ref; nothing else can
@@ -1883,6 +1903,8 @@ mod tests {
 
     fn blocking_elem_layout() -> HewValueLayout {
         HewValueLayout {
+            code_owner: core::ptr::null(),
+            managed: core::ptr::null(),
             release_start: None,
             size: size_of::<u64>(),
             align: align_of::<u64>(),
@@ -2050,6 +2072,8 @@ mod tests {
 
     fn owned_elem_layout() -> HewValueLayout {
         HewValueLayout {
+            code_owner: core::ptr::null(),
+            managed: core::ptr::null(),
             release_start: None,
             size: size_of::<OwnedElem>(),
             align: align_of::<OwnedElem>(),

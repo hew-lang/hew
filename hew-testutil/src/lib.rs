@@ -9,6 +9,9 @@ use std::process::{Child, Command, ExitStatus, Output, Stdio};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
 use std::time::{Duration, Instant};
 
+/// Default wall-clock deadline for compiler invocations in integration tests.
+pub const DEFAULT_COMPILE_TIMEOUT: Duration = Duration::from_mins(2);
+
 /// Default wall-clock deadline for Hew execution tests.
 pub const DEFAULT_EXEC_TIMEOUT: Duration = Duration::from_secs(30);
 

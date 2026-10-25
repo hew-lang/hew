@@ -1,0 +1,14 @@
+[[case]]
+id = "actor-owned-budget-encoding"
+intent = "Growing a retained encoding tree checks quota before committing mutation."
+source = "cases/actor-owned-budget-encoding.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 30
+
+[case.env]
+HEW_WORKERS = "2"
+
+[case.expected]
+stdout = "32\nencoding limit\n"
+stderr = "hew: failure: HeapExceeded (200)\nhew: actor crash in Small.grow (actor 2): HeapExceeded\n"
+exit = 1

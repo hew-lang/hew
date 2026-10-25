@@ -2,7 +2,7 @@
 
 use std::collections::{btree_map::Entry, BTreeMap};
 
-use hew_mir::physical::{LeafContents, PhysicalCleanup, SemParamPassing, StorageOrigin};
+use hew_mir::physical::{LeafContents, OwnKind, PhysicalCleanup, SemParamPassing, StorageOrigin};
 use inkwell::builder::Builder;
 use inkwell::values::{FunctionValue, IntValue, PointerValue};
 
@@ -28,6 +28,10 @@ pub(super) fn allocate_storage<'ctx>(
         .map(|storage| {
             if matches!(storage.origin, StorageOrigin::Aggregate(_)) {
                 return Ok(None);
+            }
+            if matches!(storage.origin, StorageOrigin::Session { .. }) {
+                return super::session::allocate_slot(module, function, value, builder, storage)
+                    .map(Some);
             }
             if let StorageOrigin::ActorState { state, field, .. } = storage.origin {
                 let index = function
@@ -175,15 +179,26 @@ pub(super) fn allocate_flags<'ctx>(
                     module.ctx.bool_type().into(),
                     &format!("s{}.initialized", leaf.storage.0),
                 )?;
-                let initialized = function.parameters.contains(&projection.root);
-                builder
-                    .build_store(
-                        flag,
-                        module
-                            .ctx
-                            .bool_type()
-                            .const_int(u64::from(initialized), false),
+                let initialized = if let StorageOrigin::Session { context, slot, .. } =
+                    function.storage[projection.root.0 as usize].origin
+                {
+                    let value = entry_block.get_parent().ok_or_else(|| {
+                        super::CodegenError::FailClosed("session entry has no function".into())
+                    })?;
+                    super::session::initialized(
+                        module,
+                        builder,
+                        super::session::context_argument(function, value, context)?,
+                        slot,
+                    )?
+                } else {
+                    module.ctx.bool_type().const_int(
+                        u64::from(function.parameters.contains(&projection.root)),
+                        false,
                     )
+                };
+                builder
+                    .build_store(flag, initialized)
                     .llvm_ctx("initialize aggregate leaf state")?;
                 entry.insert(flag);
             }
@@ -201,6 +216,38 @@ pub(super) fn allocate_flags<'ctx>(
                 &function.storage[state.0 as usize].layout,
                 field,
             )?);
+        }
+    }
+    if module.module.callables[function.callable.0 as usize].is_resumable {
+        for storage in &function.storage {
+            if storage.own != OwnKind::Owned
+                || !function.frame_roots.slots.contains(&storage.id)
+                || matches!(
+                    storage.origin,
+                    StorageOrigin::Capture { .. } | StorageOrigin::ActorState { .. }
+                )
+                || function.place_storage.contains_key(&storage.id)
+            {
+                continue;
+            }
+            if let Entry::Vacant(entry) = flags.entry(storage.id) {
+                let flag = super::coro::entry_storage(
+                    module.ctx,
+                    entry_block,
+                    module.ctx.bool_type().into(),
+                    &format!("s{}.initialized", storage.id.0),
+                )?;
+                builder
+                    .build_store(
+                        flag,
+                        module
+                            .ctx
+                            .bool_type()
+                            .const_int(u64::from(function.parameters.contains(&storage.id)), false),
+                    )
+                    .llvm_ctx("initialize owned invocation slot")?;
+                entry.insert(flag);
+            }
         }
     }
     Ok(flags)
@@ -244,6 +291,16 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             return Ok(());
         }
         if let Some(projection) = self.function.place_storage.get(&id) {
+            if id != projection.root
+                && matches!(
+                    self.storage(projection.root)?.origin,
+                    StorageOrigin::Session { .. }
+                )
+            {
+                return Err(CodegenError::FailClosed(
+                    "partial ownership changes to persistent session bindings require persistent aggregate leaf state".into(),
+                ));
+            }
             for leaf in &projection.leaves {
                 self.builder
                     .build_store(
@@ -254,6 +311,16 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
                     )
                     .llvm_ctx("publish aggregate leaf initialization")?;
             }
+            self.publish_session_initialization(projection.root, initialized)?;
+        } else if let Some(flag) = self.place_flags.get(&id) {
+            self.builder
+                .build_store(
+                    *flag,
+                    self.ctx
+                        .bool_type()
+                        .const_int(u64::from(initialized), false),
+                )
+                .llvm_ctx("publish owned invocation slot initialization")?;
         }
         Ok(())
     }

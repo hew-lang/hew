@@ -2318,6 +2318,7 @@ struct InboundRequest {
     wrapper: *mut c_void,
     size: usize,
     drop: crate::xnode_serial::DropThunk,
+    codec: crate::xnode_serial::ThunkPair,
 }
 
 impl InboundRequest {
@@ -2333,6 +2334,7 @@ impl InboundRequest {
             wrapper,
             size,
             drop,
+            codec,
         })
     }
 
@@ -2342,18 +2344,18 @@ impl InboundRequest {
         reason = "the decoded request retains its exact remote admission"
     )]
     fn ask_start(
-        self,
+        mut self,
         token: crate::lifetime::local_handles::HewLocalPidId,
         msg_type: i32,
-        reply: Option<crate::xnode_serial::ThunkPair>,
+        reply: Option<&crate::xnode_serial::ThunkPair>,
         caller: crate::actor_caller::HewCallerStamp,
         waker: &crate::wake::HewWaker,
         deadline: crate::request_deadline::RequestDeadline,
         admission: service::RemoteAdmission,
         kind: crate::request_state::RequestKind,
     ) -> *mut crate::actor_call_native::HewActorCall {
-        let (wrapper, size, drop) = (self.wrapper, self.size, self.drop);
-        std::mem::forget(self);
+        let wrapper = std::mem::replace(&mut self.wrapper, ptr::null_mut());
+        let (size, drop) = (self.size, self.drop);
         // SAFETY: the operation owns the fields on every outcome and retains the waker.
         unsafe {
             crate::actor_call_native::actor_call_new(
@@ -2372,6 +2374,8 @@ impl InboundRequest {
                 caller,
                 ptr::null(),
                 Some(admission),
+                self.codec.layout,
+                reply.map_or(ptr::null(), |reply| reply.layout),
             )
         }
     }
@@ -2379,7 +2383,7 @@ impl InboundRequest {
     /// Take and encode a ready reply, consuming the operation and its owned fields.
     unsafe fn ask_take(
         operation: *mut crate::actor_call_native::HewActorCall,
-        reply: crate::xnode_serial::ThunkPair,
+        reply: &crate::xnode_serial::ThunkPair,
         status: i32,
     ) -> Result<Vec<u8>, AskError> {
         let mut value = vec![0_u8; reply.size];
@@ -2432,8 +2436,10 @@ impl Drop for InboundRequest {
     fn drop(&mut self) {
         // SAFETY: an undelivered wrapper still owns its fields and bytes.
         unsafe {
-            (self.drop)(self.wrapper);
-            crate::mem::buf_free(self.wrapper);
+            if !self.wrapper.is_null() {
+                (self.drop)(self.wrapper);
+                crate::mem::buf_free(self.wrapper);
+            }
         }
     }
 }

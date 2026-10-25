@@ -517,7 +517,7 @@ fn receiver_vec_move_is_descriptor_owned_and_read_copy_surfaces_reject() {
         .expect("read drop-only Receiver Vec LLVM IR");
     assert!(
         ir.contains("call ptr @hew_vec_new_with_elem_layout")
-            && ir.contains("call void @hew_vec_push_owned_move")
+            && ir.contains("call i32 @hew_vec_push_managed")
             && ir.contains("call ptr @hew_vec_release_begin")
             && ir.contains("call ptr @hew_stream_release_begin"),
         "Receiver Vec must move its endpoint through the element descriptor and consuming release cursor:\n{ir}"

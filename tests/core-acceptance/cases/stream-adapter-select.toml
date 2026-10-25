@@ -1,0 +1,11 @@
+[[case]]
+id = "stream-adapter-select"
+intent = "A losing line-readiness observation preserves its partial buffer, then final cleanup closes the upstream pipe."
+source = "cases/stream-adapter-select.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 30
+
+[case.expected]
+stdout = "partial line retained across selection\n"
+stderr = ""
+exit = 0

@@ -1,0 +1,14 @@
+[[case]]
+id = "actor-owned-budget-rc"
+intent = "Rc cells reserve typed payloads, retain aliases and refund only after final cleanup."
+source = "cases/actor-owned-budget-rc.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 30
+
+[case.env]
+HEW_WORKERS = "2"
+
+[case.expected]
+stdout = "6\n6\nrc limit\n9\nscalar limit\n"
+stderr = "hew: failure: HeapExceeded (200)\nhew: actor crash in Small.run (actor 2): HeapExceeded\nhew: failure: HeapExceeded (200)\nhew: actor crash in ScalarSmall.run (actor 4): HeapExceeded\n"
+exit = 1

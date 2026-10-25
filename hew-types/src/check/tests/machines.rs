@@ -3,7 +3,7 @@ use super::*;
 #[test]
 fn machine_interpolation_distinguishes_intrinsics_from_custom_display() {
     for suffix in ["", ":?"] {
-        for (value, custom) in [("7", false), ("Label { value: 7 }", true)] {
+        for (value, ty, custom) in [("7", "i64", false), ("Label { value: 7 }", "Label", true)] {
             let source = format!(
                 r#"
 type Label {{ value: i64; }}
@@ -12,7 +12,7 @@ machine Labels {{
     events {{ Show; }}
     state Idle;
     on Show: Idle => Idle {{
-        let value = {value};
+        let value: {ty} = {value};
         let label = f"{{value{suffix}}}";
         Idle
     }}

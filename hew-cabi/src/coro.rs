@@ -23,6 +23,7 @@ pub struct HewCoroInvocation {
     pub flags: u8,
     pub cleanup_fault: AtomicU8,
     pub cleanup_abandon_io: AtomicU8,
+    pub managed_frame: *const crate::managed::HewManagedFrame,
 }
 
 const _: () = {

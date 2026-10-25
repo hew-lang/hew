@@ -12,6 +12,9 @@ use std::ptr;
 
 pub(super) struct RaceGroup {
     task: *mut HewTask,
+    members: Vec<*mut HewTask>,
+    member_slot_bytes: u64,
+    value_owner: Option<crate::owned_value_budget::ValueOwner>,
     wait: Box<HewCheckedScopeWait>,
     selected: bool,
     winner: bool,
@@ -21,19 +24,81 @@ pub(super) struct RaceGroup {
 }
 
 impl RaceGroup {
+    pub(super) unsafe fn visit_managed(
+        &mut self,
+        visitor: *const hew_cabi::managed::HewManagedStorageVisitor,
+    ) -> i32 {
+        use hew_cabi::managed::{DESCEND, HEAP_EXCEEDED, SKIP_DESCENDANTS};
+        let Some(bytes) = self
+            .member_slot_bytes
+            .checked_mul(self.members.capacity() as u64)
+        else {
+            return HEAP_EXCEEDED;
+        };
+        // SAFETY: a frozen executor keeps the group's owning member vector stable.
+        unsafe {
+            match crate::owned_value_budget::visit::storage(
+                visitor,
+                self.members.as_ptr().cast(),
+                bytes,
+            ) {
+                SKIP_DESCENDANTS => return 0,
+                DESCEND => {}
+                failure => return failure,
+            }
+            for member in &self.members {
+                let status = super::hew_managed_visit_task(ptr::from_ref(member).cast(), visitor);
+                if status != 0 {
+                    return status;
+                }
+            }
+            let wait = ptr::from_ref(&*self.wait);
+            let status = super::hew_managed_visit_scope_wait(ptr::from_ref(&wait).cast(), visitor);
+            if status != 0 {
+                return status;
+            }
+            if let Some(driver) = &mut self.release {
+                let status = crate::release_walker::hew_managed_visit_release_driver(
+                    ptr::from_mut(&mut **driver).cast(),
+                    visitor,
+                );
+                if status != 0 {
+                    return status;
+                }
+            }
+            if (*visitor).kind == hew_cabi::managed::HewManagedWalkKind::CommitTransfer {
+                self.value_owner = crate::owned_value_budget::transfer::destination_owner(visitor);
+            }
+        }
+        0
+    }
+
     pub(super) unsafe fn new(
         task: *mut HewTask,
         members: Vec<*mut HewTask>,
         state: *mut HewCoroState,
         waker: *const HewWaker,
+        member_slot_bytes: u64,
     ) -> Self {
-        // SAFETY: invocation owns every member reference, transferred into waits.
+        // Keep the original owning member storage throughout the group. Each
+        // readiness observation borrows it through a separate runtime reference.
         let tasks = members
-            .into_iter()
-            .map(|member| unsafe { HewCheckedTaskWait::new(member, waker) })
+            .iter()
+            // SAFETY: the group retains every checked member until this ownership traversal completes.
+            .map(|member| unsafe {
+                super::retain(*member);
+                HewCheckedTaskWait::new(*member, waker, false)
+            })
             .collect();
         Self {
             task,
+            members,
+            member_slot_bytes,
+            // SAFETY: the executor keeps the original invocation owner live.
+            value_owner: unsafe { checked(task) }
+                .lock_or_recover()
+                .value_owner
+                .clone(),
             wait: Box::new(HewCheckedScopeWait {
                 // SAFETY: executor retains the group and its live parent scope.
                 scope: unsafe { (*task).scope },
@@ -112,10 +177,10 @@ impl RaceGroup {
                 }
                 if self.winner && !self.fault.is_null() {
                     let result = checked(self.task).lock_or_recover();
-                    self.release = Some(ReleaseDriver::new(HewReleaseCursor::values([(
-                        result.result,
-                        *result.layout,
-                    )])));
+                    self.release = Some(ReleaseDriver::with_value_owner(
+                        HewReleaseCursor::values([(result.result, *result.layout)]),
+                        self.value_owner.clone(),
+                    ));
                 }
             }
             if let Some(release) = &mut self.release {
@@ -128,6 +193,28 @@ impl RaceGroup {
             let status = self.fault.as_ref().map_or(0, HewFault::code);
             fault.write(std::mem::replace(&mut self.fault, ptr::null_mut()));
             hew_coro_state_finish(state, status);
+        }
+    }
+}
+
+impl Drop for RaceGroup {
+    fn drop(&mut self) {
+        if let Some(owner) = &self.value_owner {
+            owner.release(&[crate::owned_value_budget::ManagedStorage {
+                identity: self.members.as_ptr() as usize,
+                bytes: self
+                    .member_slot_bytes
+                    .checked_mul(self.members.capacity() as u64)
+                    .unwrap_or_else(|| std::process::abort()),
+            }]);
+        }
+        for member in self.members.drain(..) {
+            // SAFETY: the invocation transferred one owning handle per member;
+            // observer references remain until this group's fields are dropped.
+            unsafe {
+                super::release_account(member);
+                super::release_task_ref(member);
+            }
         }
     }
 }

@@ -128,6 +128,8 @@ fn vector_descriptor_matches_the_runtime_c_abi() {
         offset_of!(HewValueLayout, clone_fn),
         offset_of!(HewValueLayout, drop_fn),
         offset_of!(HewValueLayout, release_start),
+        offset_of!(HewValueLayout, code_owner),
+        offset_of!(HewValueLayout, managed),
     ]
     .into_iter()
     .enumerate()
@@ -164,6 +166,15 @@ fn utf8_decode_emits_typed_outcomes_with_reusable_scratch() {
         vec![ctx.ptr_type(AddressSpace::default()).into(); 4]
     );
     for function in module.get_functions() {
+        // Typed destruction adds helper callbacks with bounded invocation-local
+        // scratch. Only the source body's loop can accumulate decoder scratch.
+        if !function
+            .get_basic_blocks()
+            .iter()
+            .any(|block| block.get_name().to_bytes() == b"physical.prologue")
+        {
+            continue;
+        }
         for block in function.get_basic_blocks() {
             if block.get_name().to_bytes() == b"physical.prologue" {
                 continue;
@@ -239,6 +250,7 @@ fn collection_operation_module(family: hew_types::RuntimeCallFamily) -> SemModul
         module.variant_shapes = seed.variant_shapes;
     }
     let mut facts = TypeFactService::new(TypeFactContext::default(), module.type_facts);
+    facts.require(&ResolvedTy::Unit).unwrap();
     facts.require(&result_ty).unwrap();
     let mut copies = Vec::new();
     let mut operands = Vec::new();
@@ -1019,8 +1031,8 @@ fn owned_record_layout_and_recursive_glue_emit_verified_llvm() {
     );
     assert!(module.get_function("hew_string_clone").is_some());
     assert!(module.get_function("hew_bytes_clone_ref").is_some());
-    assert!(module.get_function("hew_string_drop").is_some());
-    assert!(module.get_function("hew_bytes_drop").is_some());
+    assert!(module.get_function("hew_string_drop_managed").is_some());
+    assert!(module.get_function("hew_bytes_drop_managed").is_some());
 }
 
 #[test]
@@ -1095,7 +1107,7 @@ fn main() -> i64 {
         assert!(ir.contains("call void @llvm.trap"));
         assert!(module.get_function("llvm.trap").is_some());
         assert!(module.get_function("hew_string_clone").is_some());
-        assert!(module.get_function("hew_string_drop").is_some());
+        assert!(module.get_function("hew_string_drop_managed").is_some());
         for callable in &verified.module().callables {
             let function = module
                 .get_function(&emitted_symbol(verified.module(), callable))
@@ -1402,10 +1414,9 @@ fn scalar_and_vector_loop_chunks_preserve_the_shared_budget_across_serial_calls(
     }
     unsafe extern "C-unwind" fn release_vector(vector: *mut std::ffi::c_void) {
         VECTOR_RELEASES.set(VECTOR_RELEASES.get() + 1);
-        // SAFETY: generated cleanup transfers one live scalar-vector owner.
-        unsafe {
-            hew_runtime::vec::hew_vec_free_owned_walk(vector.cast());
-        }
+        // SAFETY: scalar-vector cleanup is synchronous and transfers one live
+        // owner to the consuming walk, including cancellation cleanup.
+        unsafe { hew_runtime::vec::hew_vec_free_owned_walk(vector.cast()) };
     }
     let semantic = lower_source(
         r"
@@ -1452,7 +1463,12 @@ fn scalar_and_vector_loop_chunks_preserve_the_shared_budget_across_serial_calls(
                 release_vector as *const () as usize,
             ),
         ] {
-            engine.add_global_mapping(&llvm.get_function(name).unwrap(), address);
+            engine.add_global_mapping(
+                &llvm
+                    .get_function(name)
+                    .unwrap_or_else(|| panic!("missing runtime boundary {name}")),
+                address,
+            );
         }
         type Main = unsafe extern "C" fn(*mut i64, *mut *mut hew_runtime::fault::HewFault) -> i32;
         // SAFETY: the generated main wrapper has the physical result/fault ABI.

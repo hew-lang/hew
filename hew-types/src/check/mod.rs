@@ -1067,7 +1067,7 @@ impl Checker {
                 self.defs.mint_source_file_module(&canonical, source);
             }
         }
-        if self.repl_fragment {
+        if self.repl_fragment && self.session_type_seed.is_none() {
             self.defs.mint_synthetic_root();
         } else if let Some(root) = module_graph.modules.get(&module_graph.root) {
             if self.defs.mint_root_module(&root.source_paths).is_none() {
@@ -2854,6 +2854,17 @@ impl Checker {
         output
     }
 
+    /// Install compiler-owned identities and retained parameter types for the
+    /// next interactive submission. Ordinary source cannot supply these facts.
+    pub fn set_session_type_seed(&mut self, seed: std::sync::Arc<crate::session::SessionTypeSeed>) {
+        if self.has_checked_program {
+            self.reset_for_program();
+            self.has_checked_program = false;
+        }
+        self.seed_defs = Some((*seed.definitions).clone());
+        self.session_type_seed = Some(seed);
+    }
+
     /// Check all declarations and bodies, then publish the finalized output.
     pub fn check_program(&mut self, program: &Program) -> TypeCheckOutput {
         let source_program = program;
@@ -3241,6 +3252,7 @@ impl Checker {
             scopes: self.scopes.clone(),
             registering_embedded_source: self.registering_embedded_source.clone(),
             seed_defs: self.seed_defs.clone(),
+            session_type_seed: self.session_type_seed.clone(),
             extern_table: self.extern_table.clone(),
             contractless_extern_occurrences: self.contractless_extern_occurrences.clone(),
             reported_declaration_collisions: self.reported_declaration_collisions.clone(),

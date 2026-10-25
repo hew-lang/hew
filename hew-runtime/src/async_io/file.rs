@@ -12,7 +12,7 @@ use crate::wake::HewWaker;
 
 enum FileRequest {
     StreamRead(*mut crate::stream::HewStream),
-    SinkWrite(*mut crate::stream::HewSink, Vec<u8>),
+    SinkWrite(*mut crate::stream::HewSink, Arc<super::content::Content>),
     SinkFinish(hew_cabi::sink::PendingFinish),
     ReadFile(*const crate::file_resources::HewReadFile),
     WriteFile(*const crate::file_resources::HewWriteFile, Vec<u8>),
@@ -94,6 +94,7 @@ pub(super) unsafe fn start_sink_finish(
             shared_blocking_pool_opt(),
             waker,
             Ok(FileRequest::SinkFinish(pending)),
+            None,
         )
     }
 }
@@ -135,13 +136,18 @@ unsafe extern "C" fn run_file_job(context: *mut c_void) {
     operation.complete(result);
 }
 
+#[allow(
+    clippy::option_option,
+    reason = "None is a non-stream operation; Some(None) is an unbounded stream read"
+)]
 unsafe fn submit(
     pool: Option<*mut HewBlockingPool>,
     waker: *const HewWaker,
     request: Result<FileRequest, IoFailure>,
+    stream_owner: Option<Option<crate::owned_value_budget::ValueOwner>>,
 ) -> *const HewAsyncIo {
     // SAFETY: the start entrypoint lends the waker for this call.
-    let operation = unsafe { HewAsyncIo::new(waker) };
+    let operation = unsafe { HewAsyncIo::with_net(waker, None, stream_owner) };
     match (pool, request) {
         (_, Err(error)) => operation.complete(Err(error)),
         (None, Ok(request)) => {
@@ -179,6 +185,7 @@ unsafe fn submit(
 pub(crate) unsafe fn start_stream_read(
     stream: *mut crate::stream::HewStream,
     waker: *const HewWaker,
+    owner: Option<crate::owned_value_budget::ValueOwner>,
 ) -> *const HewAsyncIo {
     // SAFETY: the caller keeps the borrowed heap handle live through quiescence.
     unsafe {
@@ -186,6 +193,7 @@ pub(crate) unsafe fn start_stream_read(
             shared_blocking_pool_opt(),
             waker,
             Ok(FileRequest::StreamRead(stream)),
+            Some(owner),
         )
     }
 }
@@ -196,7 +204,7 @@ pub(crate) unsafe fn start_stream_read(
 /// `sink` remains live and untouched until cleanup is ready. `waker` is borrowed.
 pub(crate) unsafe fn start_sink_write(
     sink: *mut crate::stream::HewSink,
-    data: Vec<u8>,
+    data: Arc<super::content::Content>,
     waker: *const HewWaker,
 ) -> *const HewAsyncIo {
     // SAFETY: the job owns data and the caller retains the exclusive heap loan.
@@ -205,6 +213,7 @@ pub(crate) unsafe fn start_sink_write(
             shared_blocking_pool_opt(),
             waker,
             Ok(FileRequest::SinkWrite(sink, data)),
+            None,
         )
     }
 }
@@ -224,6 +233,7 @@ pub unsafe extern "C" fn hew_async_file_read(
             shared_blocking_pool_opt(),
             waker,
             Ok(FileRequest::ReadFile(file)),
+            None,
         )
     }
 }
@@ -259,7 +269,7 @@ pub unsafe extern "C" fn hew_async_file_write(
         },
     );
     // SAFETY: the job owns its bytes and the compiler retains the file loan.
-    unsafe { submit(shared_blocking_pool_opt(), waker, request) }
+    unsafe { submit(shared_blocking_pool_opt(), waker, request, None) }
 }
 
 #[cfg(windows)]

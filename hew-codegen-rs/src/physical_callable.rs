@@ -7,6 +7,78 @@ pub(super) fn environment_descriptor_symbol(index: usize) -> String {
     format!("__hew_callable_environment_{index}")
 }
 
+/// Acquire an independent code root through the canonical value descriptor.
+pub(super) fn acquire_value_code<'ctx>(
+    ctx: &'ctx Context,
+    llvm: &Module<'ctx>,
+    builder: &Builder<'ctx>,
+    layout: PointerValue<'ctx>,
+) -> CodegenResult<PointerValue<'ctx>> {
+    let pointer = ctx.ptr_type(AddressSpace::default());
+    let target = TargetData::create(llvm.get_data_layout().as_str().to_str().map_err(|_| {
+        CodegenError::FailClosed("code owner has an invalid LLVM data layout".into())
+    })?);
+    let slot = builder
+        .build_struct_gep(
+            value_descriptor_type(ctx, &target),
+            layout,
+            6,
+            "code.owner.slot",
+        )
+        .llvm_ctx("address defining-code owner")?;
+    let slot = builder
+        .build_load(pointer, slot, "code.owner")
+        .llvm_ctx("read defining-code owner")?
+        .into_pointer_value();
+    let retain = get_or_declare_external(
+        llvm,
+        "hew_code_root_acquire",
+        pointer.fn_type(&[pointer.into()], false),
+    )?;
+    builder
+        .build_call(retain, &[slot.into()], "code.root")
+        .llvm_ctx("retain defining code")?
+        .try_as_basic_value()
+        .basic()
+        .map(BasicValueEnum::into_pointer_value)
+        .ok_or_else(|| CodegenError::FailClosed("code acquisition returned no root".into()))
+}
+
+fn acquire_callable_code<'ctx>(
+    ctx: &'ctx Context,
+    llvm: &Module<'ctx>,
+    builder: &Builder<'ctx>,
+    descriptor: PointerValue<'ctx>,
+) -> CodegenResult<PointerValue<'ctx>> {
+    let layout = builder
+        .build_load(
+            ctx.ptr_type(AddressSpace::default()),
+            descriptor,
+            "callable.environment.layout",
+        )
+        .llvm_ctx("read callable code provenance")?
+        .into_pointer_value();
+    acquire_value_code(ctx, llvm, builder, layout)
+}
+
+pub(super) fn release_code<'ctx>(
+    ctx: &'ctx Context,
+    llvm: &Module<'ctx>,
+    builder: &Builder<'ctx>,
+    root: PointerValue<'ctx>,
+) -> CodegenResult<()> {
+    let release = get_or_declare_external(
+        llvm,
+        "hew_code_root_release",
+        ctx.void_type()
+            .fn_type(&[ctx.ptr_type(AddressSpace::default()).into()], false),
+    )?;
+    builder
+        .build_call(release, &[root.into()], "")
+        .llvm_ctx("release defining-code root")?;
+    Ok(())
+}
+
 fn receiver_disposal_suspends(
     module: &PhysicalModule,
     receiver: &hew_mir::physical::PhysicalValueRecipe,
@@ -133,6 +205,8 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
                 pointer.const_null()
             }
             .into(),
+            self.code_owner().into(),
+            self.emit_environment_managed(name, glue, layout)?.into(),
         ]);
         let global = self.llvm.add_global(descriptor_ty, None, name);
         global.set_linkage(Linkage::Internal);
@@ -310,7 +384,7 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
     }
 }
 
-fn environment_field<'ctx>(
+pub(super) fn environment_field<'ctx>(
     ctx: &'ctx Context,
     builder: &Builder<'ctx>,
     layout: &PhysicalLayout,
@@ -577,7 +651,7 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
         }
         let mut functions = BTreeMap::new();
         for function in &self.module.functions {
-            for op in function.blocks.iter().flat_map(|block| &block.ops) {
+            for op in function.blocks.iter().flat_map(|block| block.operations()) {
                 if let PhysicalOp::FunctionMake { dest, callee } = op {
                     functions.insert(*callee, &function.storage[dest.0 as usize].ty);
                 }
@@ -596,7 +670,7 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
             .functions
             .iter()
             .flat_map(|function| &function.blocks)
-            .flat_map(|block| &block.ops)
+            .flat_map(|block| block.operations())
             .filter_map(|op| {
                 if let PhysicalOp::TaskInvoke {
                     callee: hew_mir::physical::PhysicalInvocationCallee::Direct(target),
@@ -611,7 +685,7 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
             .collect::<std::collections::BTreeSet<_>>();
         let mut dynamic = Vec::new();
         for function in &self.module.functions {
-            for op in function.blocks.iter().flat_map(|block| &block.ops) {
+            for op in function.blocks.iter().flat_map(|block| block.operations()) {
                 if let PhysicalOp::TaskInvoke {
                     callee: callee @ hew_mir::physical::PhysicalInvocationCallee::Dyn { .. },
                     dest,
@@ -631,7 +705,7 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
             .functions
             .iter()
             .flat_map(|function| &function.blocks)
-            .flat_map(|block| &block.ops)
+            .flat_map(|block| block.operations())
         {
             if let PhysicalOp::TaskInvoke {
                 callee:
@@ -669,6 +743,8 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
                         .into(),
                     pointer.const_null().into(),
                     pointer.const_null().into(),
+                    pointer.const_null().into(),
+                    self.code_owner().into(),
                     pointer.const_null().into(),
                 ]),
             );
@@ -1411,6 +1487,19 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
         } else {
             status
         };
+        if consuming && !has_receiver && mutable.is_none() {
+            let carrier = callable_carrier(self.ctx, &builder, environment, descriptor)?;
+            let slot = builder
+                .build_alloca(carrier.get_type(), "function.consumed")
+                .llvm_ctx("stage consumed function carrier")?;
+            builder
+                .build_store(slot, carrier)
+                .llvm_ctx("transfer consumed function carrier")?;
+            let drop = external_drop(self.ctx, &self.llvm, "hew_callable_drop")?;
+            builder
+                .build_call(drop, &[slot.into()], "")
+                .llvm_ctx("release consumed function code")?;
+        }
         if synchronous {
             builder
                 .build_return(Some(&status))
@@ -1500,7 +1589,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             .function
             .blocks
             .iter()
-            .flat_map(|block| &block.ops)
+            .flat_map(|block| block.operations())
             .find_map(|op| {
                 if let PhysicalOp::AggregateProjectBorrow {
                     dest,
@@ -1628,6 +1717,12 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             self.ctx.ptr_type(AddressSpace::default()).const_null(),
             descriptor.as_pointer_value(),
         )?;
+        acquire_callable_code(
+            self.ctx,
+            self.llvm,
+            &self.builder,
+            descriptor.as_pointer_value(),
+        )?;
         self.store(dest, carrier)
     }
 
@@ -1677,6 +1772,12 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             self.clear_owned(*field)?;
             set_environment_mask_bit(self.ctx, &self.builder, environment, index, true)?;
         }
+        acquire_callable_code(
+            self.ctx,
+            self.llvm,
+            &self.builder,
+            descriptor.as_pointer_value(),
+        )?;
         self.store(
             dest,
             callable_carrier(
@@ -1819,6 +1920,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             .llvm_ctx("load exact invocation adapter")?
             .into_pointer_value();
         let (argument_slots, moved) = self.prepare_callable_arguments(args)?;
+        let code = acquire_callable_code(self.ctx, self.llvm, &self.builder, descriptor)?;
         if consuming {
             self.clear_owned(source)?;
         }
@@ -1872,6 +1974,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             self.builder
                 .build_store(self.active_status, status)
                 .llvm_ctx("retain invocation status")?;
+            release_code(self.ctx, self.llvm, &self.builder, code)?;
             return self.emit_call_outcome(status, result, normal, unwind);
         }
         let frame = self.frame.as_ref().ok_or_else(|| {
@@ -1957,6 +2060,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
         self.builder
             .build_store(self.active_status, status)
             .llvm_ctx("retain invocation status")?;
+        release_code(self.ctx, self.llvm, &self.builder, code)?;
         self.emit_call_outcome(status, result, normal, unwind)
     }
 }

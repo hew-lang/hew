@@ -244,6 +244,12 @@ impl PhysicalTarget {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum StorageOrigin {
+    Session {
+        context: StorageId,
+        slot: u32,
+        initialized: bool,
+        recipe: Box<PhysicalValueRecipe>,
+    },
     /// A field of the actor state receiver. `initialized` is false only in
     /// init for a field init owns (D447): the slot starts uninitialized,
     /// must be initialized at every return and uninitialized at every fault
@@ -390,9 +396,19 @@ pub enum DestroyAction {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PhysicalValueRecipe {
     pub ty: ResolvedTy,
+    /// Canonical managed payload slot width, independent of the ABI layout.
+    pub managed_slot_bytes: u64,
     pub own: OwnKind,
     pub clone: Option<CloneAction>,
     pub destroy: Option<DestroyAction>,
+}
+
+/// Owning-stage storage facts projected without target-dependent arithmetic.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PhysicalManagedType {
+    pub slot_bytes: u64,
+    pub shape: hew_sir::ManagedStorageShape,
+    pub recipe: PhysicalValueRecipe,
 }
 
 /// One value an `#[offload]` job's environment owns.
@@ -723,6 +739,7 @@ pub enum PhysicalOp {
         dest: StorageId,
         yielded: PhysicalValueRecipe,
         returned: PhysicalValueRecipe,
+        callable_slot_bytes: u64,
     },
     TaskScopeEnter {
         scope: hew_sir::TaskScopeId,
@@ -737,6 +754,7 @@ pub enum PhysicalOp {
         members: Vec<StorageId>,
         dest: StorageId,
         output: Option<PhysicalValueRecipe>,
+        member_slot_bytes: u64,
     },
     TaskInvoke {
         scope: hew_sir::TaskScopeId,
@@ -744,6 +762,7 @@ pub enum PhysicalOp {
         args: Vec<ArgumentTransfer>,
         dest: StorageId,
         output: Option<PhysicalValueRecipe>,
+        callable_slot_bytes: u64,
     },
     TaskSpawn {
         scope: hew_sir::TaskScopeId,
@@ -751,6 +770,7 @@ pub enum PhysicalOp {
         dest: StorageId,
         /// Absent only for the uninhabited result of Task<!>.
         output: Option<PhysicalValueRecipe>,
+        callable_slot_bytes: u64,
     },
     /// Static scheduling marker; dependencies alias existing storage.
     RegisterDefer {
@@ -1097,8 +1117,53 @@ pub struct PhysicalWireDecodeResult {
     pub error_ty: ResolvedTy,
 }
 
+/// Exact source slot selected before a checked construction executes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PhysicalManagedSource {
+    Value(StorageId),
+    AggregateField {
+        source: StorageId,
+        field: u32,
+    },
+    VariantField {
+        source: StorageId,
+        variant: u32,
+        field: u32,
+        glue: PhysicalVariantId,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PhysicalManagedInput {
+    pub source: PhysicalManagedSource,
+    pub ty: ResolvedTy,
+    pub copies: u64,
+    pub consume: bool,
+}
+
+/// Owning-stage storage plan. LLVM supplies addresses, never accounting policy.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PhysicalMaterialization {
+    pub result: StorageId,
+    /// `None` is canonical arithmetic overflow and refuses bounded acquisition.
+    pub fresh_bytes: Option<u64>,
+    /// The bytes substrate supplies its actual literal capacity policy.
+    pub bytes_literal_length: Option<u32>,
+    pub inputs: Vec<PhysicalManagedInput>,
+    pub start_task: bool,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum PhysicalTerminator {
+    /// Execute the already selected physical value construction only after
+    /// its managed-storage acquisition succeeds. No input moves or result
+    /// publication occur on the failure edge.
+    Materialize {
+        operations: Vec<PhysicalOp>,
+        acquisition: PhysicalMaterialization,
+        normal: PhysicalEdge,
+        failure: PhysicalEdge,
+    },
     /// Take the next element from the exclusively borrowed stream. `park`
     /// waits for an element or for the producer to finish; without it an empty
     /// stream produces `None` at once.
@@ -1397,6 +1462,34 @@ pub struct PhysicalBlock {
     pub terminator: PhysicalTerminator,
 }
 
+impl PhysicalBlock {
+    /// Static inventory, including operations on checked acquisition success.
+    /// Availability and execution retain the terminator's two distinct paths.
+    #[must_use]
+    pub fn operations(&self) -> impl DoubleEndedIterator<Item = &PhysicalOp> {
+        let checked = match &self.terminator {
+            PhysicalTerminator::Materialize { operations, .. } => operations.as_slice(),
+            _ => &[],
+        };
+        self.ops.iter().chain(checked)
+    }
+
+    pub fn operations_mut(&mut self) -> impl DoubleEndedIterator<Item = &mut PhysicalOp> {
+        let checked = match &mut self.terminator {
+            PhysicalTerminator::Materialize { operations, .. } => operations.as_mut_slice(),
+            _ => &mut [],
+        };
+        self.ops.iter_mut().chain(checked)
+    }
+}
+
+/// Local owned storage that can be initialized at an invocation's quiescent
+/// entry. Derived by the same flow analysis that verifies initialization.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct PhysicalFrameRootPlan {
+    pub slots: BTreeSet<StorageId>,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct PhysicalFunction {
     pub callable: CallableId,
@@ -1405,6 +1498,7 @@ pub struct PhysicalFunction {
     pub storage: Vec<PhysicalStorage>,
     /// Verified root partitions and their target-realized projection paths.
     pub place_storage: BTreeMap<StorageId, PhysicalPlaceStorage>,
+    pub frame_roots: PhysicalFrameRootPlan,
     pub blocks: Vec<PhysicalBlock>,
 }
 
@@ -1414,6 +1508,7 @@ pub struct PhysicalModule {
     pub actors: Vec<hew_sir::SemActor>,
     pub supervisors: Vec<hew_sir::SemSupervisor>,
     pub actor_recipes: BTreeMap<ResolvedTy, PhysicalValueRecipe>,
+    pub managed_types: BTreeMap<ResolvedTy, PhysicalManagedType>,
     pub resources: Vec<PhysicalResourceDescriptor>,
     pub value_capabilities:
         BTreeMap<(ResolvedTy, hew_types::ValueCapability), PhysicalValueCapability>,

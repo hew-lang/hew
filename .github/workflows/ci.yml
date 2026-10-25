@@ -217,7 +217,8 @@ jobs:
         run: |
           make hew-native wasm-runtime-debug
           mkdir -p compiled-hew/debug compiled-hew/wasm32-wasip1/debug
-          cp target/debug/hew target/debug/libhew.a target/debug/libhew_runtime.a compiled-hew/debug/
+          cp target/debug/hew target/debug/libhew.a target/debug/libhew.so \
+            target/debug/libhew_runtime.a compiled-hew/debug/
           cp target/wasm32-wasip1/debug/libhew_runtime.a \
             target/wasm32-wasip1/debug/libhew_std.a compiled-hew/wasm32-wasip1/debug/
           # Relocated toolchain layout: the binary finds std at <exe_dir>/../std.

@@ -1,0 +1,45 @@
+fn ready() -> i64 {
+    7
+}
+
+#[max_heap(56)]
+actor Enough {
+    receive fn run() -> i64 {
+        scope {
+            let answer = await race [
+                ready(),
+                ready(),
+            ];
+            var values: Vec<i64> = Vec.new();
+            values.push(1);
+            assert(values.len() == 1);
+            answer
+        }
+    }
+}
+
+#[max_heap(55)]
+actor Small {
+    receive fn run() -> i64 {
+        scope {
+            await race [
+                ready(),
+                ready(),
+            ]
+        }
+    }
+}
+
+fn main() -> i64 {
+    let enough = spawn Enough;
+    println(enough.run().expect("race fits"));
+    stop(enough);
+    stopped(enough);
+    let small = spawn Small;
+    match small.run() {
+        .Err(.Trapped) => println("race limit"),
+        _ => return 2,
+    }
+    stopped(small);
+    0
+}

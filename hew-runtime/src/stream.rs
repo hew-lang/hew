@@ -113,6 +113,8 @@ pub(crate) enum SelectReadiness {
     /// The next read never waits indefinitely: a regular file or an in-memory
     /// stream.
     Ready,
+    /// Drive the existing checked producer until it publishes an owned yield.
+    Generator,
     /// Ready once this reactor handle (a connection or a child process pipe)
     /// is readable.
     #[cfg(not(target_arch = "wasm32"))]
@@ -120,19 +122,6 @@ pub(crate) enum SelectReadiness {
     /// This stream cannot report readiness without taking an item; the reason
     /// a selection over it refuses.
     Unsupported(&'static str),
-}
-
-/// An adapter may hold only part of its next item when its upstream turns
-/// ready, so it is observable only over an upstream whose next read never
-/// waits.
-fn adapter_select_readiness(upstream: SelectReadiness) -> SelectReadiness {
-    match upstream {
-        #[cfg(not(target_arch = "wasm32"))]
-        SelectReadiness::Reactor(_) => SelectReadiness::Unsupported(
-            "select cannot observe a line, chunk or take adapter over a socket or pipe stream yet",
-        ),
-        other => other,
-    }
 }
 
 /// How a native receive on a reactor-backed stream produces its next item.
@@ -158,6 +147,12 @@ trait StreamBacking: Send + std::fmt::Debug {
     }
     fn owned_values(&mut self) -> Vec<(*mut c_void, crate::vec::HewValueLayout)> {
         Vec::new()
+    }
+    fn typed_core(&self) -> Option<Arc<crate::channel_core::ChannelCore>> {
+        None
+    }
+    fn managed_supported(&self) -> bool {
+        true
     }
 
     /// How a native receive reaches this backing's reactor handle, if it has
@@ -212,6 +207,14 @@ pub struct HewStream {
 }
 
 impl HewStream {
+    fn typed_core(&self) -> Option<Arc<crate::channel_core::ChannelCore>> {
+        self.channel
+            .as_ref()
+            .filter(|core| core.is_typed())
+            .cloned()
+            .or_else(|| self.inner.typed_core())
+    }
+
     pub(crate) fn exhausted(&self) -> bool {
         self.closed || self.remaining == Some(0)
     }
@@ -266,6 +269,20 @@ impl HewStream {
             self.inner.select_readiness()
         }
     }
+
+    /// Observe a checked producer's output without taking it or closing a
+    /// producer whose selection loses. Its relay retains the parent's waker.
+    /// # Safety
+    /// The selection owns the exclusive Stream poll loan and retains parent.
+    pub(crate) unsafe fn poll_select_generator(
+        &mut self,
+        parent: *mut crate::coro_state::HewCoroState,
+    ) -> Option<bool> {
+        self.inner.generator().map(|generator| {
+            // SAFETY: the selected source and parent are retained through this poll.
+            unsafe { generator.poll_native(parent) != 0 }
+        })
+    }
 }
 
 impl Drop for HewStream {
@@ -313,15 +330,29 @@ struct ChannelStream {
 }
 
 impl StreamBacking for ChannelStream {
+    fn managed_supported(&self) -> bool {
+        self.core.is_typed()
+    }
+    fn typed_core(&self) -> Option<Arc<crate::channel_core::ChannelCore>> {
+        self.core.is_typed().then(|| self.core.clone())
+    }
     fn next(&mut self) -> Option<Item> {
         // Default (non-suspending) callers block the foreign thread on the core
         // condvar. Suspending callers never reach here — they go through
         // `hew_stream_await_next` + `hew_stream_pop_bytes`.
-        self.core.blocking_recv()
+        if self.core.is_typed() {
+            self.core.typed_content_recv(true)
+        } else {
+            self.core.blocking_recv()
+        }
     }
 
     fn try_next(&mut self, _layout: &crate::vec::HewValueLayout) -> Option<Item> {
-        self.core.try_recv()
+        if self.core.is_typed() {
+            self.core.typed_content_recv(false)
+        } else {
+            self.core.try_recv()
+        }
     }
 
     fn close(&mut self) {
@@ -336,6 +367,10 @@ impl StreamBacking for ChannelStream {
 }
 
 impl StreamBacking for VecStream {
+    // The foreign byte-image helper has no compiler-authored element receipt.
+    fn managed_supported(&self) -> bool {
+        false
+    }
     fn select_readiness(&self) -> SelectReadiness {
         SelectReadiness::Ready
     }
@@ -530,248 +565,23 @@ struct VecStream {
     items: VecDeque<Item>,
 }
 
-// ── Lines adapter backing ─────────────────────────────────────────────────────
-
-/// Maximum bytes the lines adapter will buffer before yielding a truncated
-/// line.  Prevents unbounded memory growth when the upstream never sends a
-/// newline (e.g. binary data or a malicious sender).
-const MAX_LINE_BUFFER_SIZE: usize = 1024 * 1024; // 1 MiB
-
-/// Wraps a `Stream<bytes>` and yields newline-terminated strings (as utf-8 bytes).
-#[derive(Debug)]
-struct LinesStream {
-    /// Unconsumed bytes from the upstream stream.
-    buf: Vec<u8>,
-    /// Upstream bytes stream.
-    upstream: Box<dyn StreamBacking>,
-    done: bool,
-    /// After a forced flush at the buffer limit, skip a leading line
-    /// delimiter (`\n` or `\r\n`) that belongs to the oversized line.
-    skip_next_delimiter: bool,
-}
-
-impl StreamBacking for LinesStream {
-    fn select_readiness(&self) -> SelectReadiness {
-        adapter_select_readiness(self.upstream.select_readiness())
-    }
-
-    fn next(&mut self) -> Option<Item> {
-        loop {
-            // After a forced flush, consume the delimiter that terminated
-            // the oversized line (it may have arrived in a later chunk).
-            if self.skip_next_delimiter {
-                if self.buf.starts_with(b"\r\n") {
-                    self.buf.drain(..2);
-                    self.skip_next_delimiter = false;
-                } else if self.buf.first() == Some(&b'\n') {
-                    self.buf.remove(0);
-                    self.skip_next_delimiter = false;
-                } else if self.buf.first() == Some(&b'\r') && !self.done {
-                    // Lone \r — could be the start of \r\n split across
-                    // chunks.  Need more data before deciding.
-                } else if !self.buf.is_empty() || self.done {
-                    // Non-delimiter data or EOF — no delimiter to skip.
-                    self.skip_next_delimiter = false;
-                }
-                // else: buf empty, stream open — fall through to pull more.
-            }
-
-            // Check if there's a complete line already buffered — but only
-            // take this fast path if the line (up to and including its
-            // delimiter) fits within the cap.  A single chunk that is
-            // already over MAX_LINE_BUFFER_SIZE *and* happens to carry its
-            // own trailing '\n' must still be capped: otherwise the
-            // size-limit check below (which only fires when no newline is
-            // found) is bypassed entirely and an arbitrarily large line can
-            // be returned whole, defeating the point of the cap.
-            if let Some(pos) = self.buf.iter().position(|&b| b == b'\n') {
-                // `pos` is the index of the delimiter itself, not the
-                // content length: for a CRLF-terminated line, the '\r' just
-                // before it is a delimiter byte, not content. When pos ==
-                // MAX_LINE_BUFFER_SIZE and that preceding byte is '\r', the
-                // actual content (everything before the '\r') still fits
-                // within the cap, so this must still take the fast path —
-                // otherwise the '\r' gets misclassified as content and
-                // leaked into the returned line by the size-limit drain
-                // below.
-                if pos < MAX_LINE_BUFFER_SIZE
-                    || (pos == MAX_LINE_BUFFER_SIZE && self.buf[pos - 1] == b'\r')
-                {
-                    let mut line: Vec<u8> = self.buf.drain(..=pos).collect();
-                    // Strip the trailing newline delimiter (and \r for CRLF).
-                    if line.last() == Some(&b'\n') {
-                        line.pop();
-                    }
-                    if line.last() == Some(&b'\r') {
-                        line.pop();
-                    }
-                    return Some(line);
-                }
-                // Newline exists but only past the cap — fall through to the
-                // size-limit drain below so the returned line is bounded.
-                // The '\n' (and anything before it) stays in `buf` and is
-                // consumed by the `skip_next_delimiter` handling above on a
-                // later call, exactly as for the no-newline overflow case.
-            }
-            // Buffer full without a (fits-in-cap) newline — drain exactly the
-            // limit to bound memory.  Leftover bytes stay in buf for the next
-            // call.
-            if self.buf.len() >= MAX_LINE_BUFFER_SIZE {
-                let line: Vec<u8> = self.buf.drain(..MAX_LINE_BUFFER_SIZE).collect();
-                self.skip_next_delimiter = true;
-                return Some(line);
-            }
-            if self.done {
-                // Flush remaining bytes as the last "line" even without newline.
-                if self.buf.is_empty() {
-                    return None;
-                }
-                return Some(std::mem::take(&mut self.buf));
-            }
-            // Pull more bytes from upstream.
-            match self.upstream.next() {
-                Some(chunk) => self.buf.extend_from_slice(&chunk),
-                None => {
-                    self.done = true;
-                }
-            }
-        }
-    }
-
-    fn close(&mut self) {
-        self.upstream.close();
-        self.buf.clear();
-        self.done = true;
-    }
-
-    fn is_closed(&self) -> bool {
-        self.done && self.buf.is_empty()
-    }
-}
-
-// ── Chunks adapter backing ────────────────────────────────────────────────────
-
-#[derive(Debug)]
-struct ChunksStream {
-    buf: Vec<u8>,
-    chunk_size: usize,
-    upstream: Box<dyn StreamBacking>,
-    done: bool,
-}
-
-impl StreamBacking for ChunksStream {
-    fn select_readiness(&self) -> SelectReadiness {
-        adapter_select_readiness(self.upstream.select_readiness())
-    }
-
-    fn next(&mut self) -> Option<Item> {
-        while self.buf.len() < self.chunk_size && !self.done {
-            match self.upstream.next() {
-                Some(chunk) => self.buf.extend_from_slice(&chunk),
-                None => self.done = true,
-            }
-        }
-        if self.buf.is_empty() {
-            return None;
-        }
-        let n = self.chunk_size.min(self.buf.len());
-        let chunk: Vec<u8> = self.buf.drain(..n).collect();
-        Some(chunk)
-    }
-
-    fn close(&mut self) {
-        self.upstream.close();
-        self.buf.clear();
-        self.done = true;
-    }
-
-    fn is_closed(&self) -> bool {
-        self.done && self.buf.is_empty()
-    }
-}
-
 // ── Helper: box stream / sink into raw pointers ───────────────────────────────
 
 fn into_stream_ptr(backing: impl StreamBacking + 'static) -> *mut HewStream {
+    into_boxed_stream_ptr(Box::new(backing))
+}
+
+fn into_boxed_stream_ptr(backing: Box<dyn StreamBacking>) -> *mut HewStream {
     Box::into_raw(Box::new(HewStream {
         // ALLOCATOR-PAIRING: GlobalAlloc
-        inner: Box::new(backing),
+        inner: backing,
         closed: false,
         remaining: None,
         channel: None,
     }))
 }
 
-/// Consume a `HewStream` pointer, extract its inner backing, and free the
-/// outer allocation.  Equivalent to `Box::from_raw` + field move, but marks
-/// the stream as closed first so `HewStream::drop` won't double-close.
-///
-/// # Safety
-///
-/// `stream` must be a valid `HewStream` pointer allocated via `Box::into_raw`.
-unsafe fn consume_stream_inner(stream: *mut HewStream) -> Box<dyn StreamBacking> {
-    // SAFETY: stream is a valid HewStream pointer per the function contract.
-    let inner = unsafe { ptr::read(&raw const (*stream).inner) };
-    // SAFETY: read+drop the non-Copy auxiliary fields so they release their
-    // resources. `closed` is POD, but going through ptr::read+drop is uniform
-    // and cheap; `channel` owns an Arc and must run Drop.
-    unsafe {
-        let _ = ptr::read(&raw const (*stream).closed);
-        drop(ptr::read(&raw const (*stream).channel));
-    }
-    // SAFETY: stream is still live and the limit is a Copy field.
-    let remaining = unsafe { (*stream).remaining };
-    // SAFETY: stream was allocated via Box::into_raw(Box::new(HewStream { .. })),
-    // so deallocating with Layout::new::<HewStream>() is correct. We use dealloc
-    // instead of Box::from_raw to avoid running Drop (which would double-free inner).
-    unsafe {
-        std::alloc::dealloc(stream.cast::<u8>(), std::alloc::Layout::new::<HewStream>());
-    }
-    match remaining {
-        Some(remaining) => Box::new(TakeStream {
-            upstream: inner,
-            remaining,
-        }),
-        None => inner,
-    }
-}
-
 // into_sink_ptr is defined in hew_cabi::sink and re-exported above.
-
-// ── Stream transform infrastructure ────────────────────────────────────────────
-//
-// ── Take adapter ──────────────────────────────────────────────────────────────
-
-/// Wraps a stream and yields at most `limit` items.
-#[derive(Debug)]
-struct TakeStream {
-    upstream: Box<dyn StreamBacking>,
-    remaining: usize,
-}
-
-impl StreamBacking for TakeStream {
-    fn select_readiness(&self) -> SelectReadiness {
-        adapter_select_readiness(self.upstream.select_readiness())
-    }
-
-    fn next(&mut self) -> Option<Item> {
-        if self.remaining == 0 {
-            return None;
-        }
-        let item = self.upstream.next()?;
-        self.remaining -= 1;
-        Some(item)
-    }
-
-    fn close(&mut self) {
-        self.remaining = 0;
-        self.upstream.close();
-    }
-
-    fn is_closed(&self) -> bool {
-        self.remaining == 0 || self.upstream.is_closed()
-    }
-}
 
 // ── C ABI ─────────────────────────────────────────────────────────────────────
 
@@ -837,8 +647,11 @@ pub unsafe extern "C" fn hew_stream_channel(capacity: i64) -> *mut HewStreamPair
 }
 
 /// Create one bounded element pipe for a checked stream producer request.
-/// Elements move as raw bytes of `elem_size`; `elem_drop` releases whichever
-/// elements are still queued when the pipe ends.
+/// Elements retain their exact typed image and managed backing identities.
+/// The receiving Stream owns queued payload until read or semantic cleanup.
+///
+/// # Panics
+/// Panics if the compiler supplies a capacity outside the target's address space.
 ///
 /// # Safety
 /// `sink_out` is a writable slot that receives the owned sink half.
@@ -848,29 +661,34 @@ pub unsafe extern "C" fn hew_stream_pipe_native(
     layout: *const hew_cabi::vec::HewValueLayout,
     sink_out: *mut *mut HewSink,
 ) -> *mut HewStream {
-    // SAFETY: the pair constructor accepts any capacity.
-    let pair = unsafe { hew_stream_channel(capacity) };
-    if pair.is_null() {
-        std::process::abort();
-    }
-    // SAFETY: the pair was just allocated by `hew_stream_channel`.
-    let mut pair = unsafe { Box::from_raw(pair) };
-    // SAFETY: the compiler lends a static descriptor for the owned element.
+    // SAFETY: the compiler lends the exact concrete element descriptor.
     let layout = unsafe {
         crate::channel_common::move_elem_layout_witness(layout, "hew_stream_pipe_native")
     };
-    // SAFETY: both halves are live and share the core this pair created.
+    // SAFETY: the caller supplies its uninitialized sink result slot.
+    unsafe { *sink_out = ptr::null_mut() };
+    let Ok(cap) = usize::try_from(capacity.max(1)) else {
+        set_last_error(format!(
+            "hew_stream_channel: capacity {capacity} exceeds platform maximum"
+        ));
+        return ptr::null_mut();
+    };
+    // SAFETY: no endpoint is exposed before its canonical empty root is bound.
+    let core = unsafe { crate::channel_core::ChannelCore::new_typed(cap, *layout) };
+    let core_raw = Arc::as_ptr(&core).cast::<c_void>();
+    let stream = into_stream_ptr(ChannelStream { core: core.clone() });
+    let sink = into_sink_ptr(
+        core.clone(),
+        channel_sink_write,
+        channel_sink_flush,
+        channel_sink_close,
+    );
+    // SAFETY: fresh unique endpoints and a writable compiler-provided sink slot.
     unsafe {
-        if let Some(core) = (*pair.stream).channel.as_ref() {
-            core.stamp_elem_layout(layout);
-        }
-        *sink_out = pair.sink;
+        (*stream).channel = Some(core);
+        (*sink).set_channel_core(core_raw);
+        *sink_out = sink;
     }
-    let stream = pair.stream;
-    // The halves now belong to the caller; the pair drop frees only itself.
-    pair.sink = std::ptr::null_mut();
-    pair.stream = std::ptr::null_mut();
-    drop(pair);
     stream
 }
 
@@ -883,7 +701,11 @@ pub const extern "C" fn hew_stream_pair_is_valid(pair: *const HewStreamPair) -> 
 /// Channel-sink callback: blocking write (default callers). Suspending callers
 /// route through the channel core's own send instead.
 fn channel_sink_write(core: &mut Arc<crate::channel_core::ChannelCore>, data: &[u8]) {
-    core.blocking_send(data.to_vec());
+    if core.is_typed() {
+        core.typed_content_send(data);
+    } else {
+        core.blocking_send(data.to_vec());
+    }
 }
 
 /// Channel-sink callback: flush is a no-op (the core is not write-buffered).
@@ -2006,6 +1828,27 @@ pub unsafe extern "C" fn hew_stream_release_begin(
             unsafe { drop(Box::from_raw(owner.cast::<HewStream>())) };
         }
     }
+    // SAFETY: the consuming boundary pins this optional unique Stream handle.
+    if let Some(core) = unsafe { stream.as_ref() }.and_then(HewStream::typed_core) {
+        let cursor = HewReleaseCursor::new(vec![ReleaseItem::Stream { stream }]);
+        // SAFETY: this fresh cursor exclusively owns the provider's terminal drain.
+        unsafe { (*cursor).set_value_owner(core.typed_owner()) };
+        return cursor;
+    }
+    // SAFETY: the consuming boundary uniquely retains this provider and its stable backing.
+    if let Some(backing) = unsafe { stream.as_mut() }.and_then(|stream| stream.inner.generator()) {
+        let owner = backing.owner();
+        let mut pending = vec![ReleaseItem::Storage {
+            owner: stream.cast(),
+            free: free_stream,
+        }];
+        // SAFETY: the cursor pins the provider until generator cleanup and flat refund finish.
+        unsafe { backing.expand_release(&mut pending) };
+        let cursor = HewReleaseCursor::new(pending);
+        // SAFETY: this fresh cursor retains the provider's actual incarnation account.
+        unsafe { (*cursor).set_value_owner(owner) };
+        return cursor;
+    }
     // SAFETY: the caller supplies an exclusive live handle or null.
     let (layout, discarded) = unsafe { stream.as_ref() }
         .and_then(|stream| stream.channel.as_ref())
@@ -2108,6 +1951,14 @@ pub(crate) unsafe fn expand_sink(
             owner: owners.storage,
             free: owners.free,
         });
+        if let Some((pointer, bytes)) = owners.managed_backing {
+            unsafe fn keep_shared_fields(_pointer: *mut c_void) {}
+            pending.push(ReleaseItem::ManagedBacking {
+                pointer: pointer.cast_mut(),
+                bytes,
+                free: keep_shared_fields,
+            });
+        }
         pending.extend(
             owners
                 .values
@@ -2201,54 +2052,6 @@ pub unsafe extern "C" fn hew_stream_pipe(stream: *mut HewStream, sink: *mut HewS
         drop(Box::from_raw(stream)); // ALLOCATOR-PAIRING: GlobalAlloc
         drop(Box::from_raw(sink)); // ALLOCATOR-PAIRING: GlobalAlloc
     }
-}
-
-/// Wrap a `Stream<bytes>` with a lines adapter.
-///
-/// Returns a new `HewStream*` that yields one line at a time, with the
-/// newline removed.  Takes ownership of `stream` — do not use it after this
-/// call.
-///
-/// # Safety
-///
-/// `stream` must be a valid stream pointer.
-#[no_mangle]
-pub unsafe extern "C" fn hew_stream_lines(stream: *mut HewStream) -> *mut HewStream {
-    cabi_guard!(stream.is_null(), ptr::null_mut());
-    // SAFETY: stream is a valid HewStream pointer from the Hew runtime ABI.
-    let upstream = unsafe { consume_stream_inner(stream) };
-    into_stream_ptr(LinesStream {
-        buf: Vec::new(),
-        upstream,
-        done: false,
-        skip_next_delimiter: false,
-    })
-}
-
-/// Wrap a `Stream<bytes>` with a fixed-size chunks adapter.
-///
-/// Returns a new `HewStream*` that yields exactly `chunk_size`-byte items
-/// (except possibly the last one, which may be shorter).  Takes ownership
-/// of `stream`.
-///
-/// # Safety
-///
-/// `stream` must be a valid stream pointer.
-#[no_mangle]
-pub unsafe extern "C" fn hew_stream_chunks(
-    stream: *mut HewStream,
-    chunk_size: i64,
-) -> *mut HewStream {
-    cabi_guard!(stream.is_null(), ptr::null_mut());
-    let size = usize::try_from(chunk_size.max(1)).unwrap_or(1);
-    // SAFETY: stream is a valid HewStream pointer from the Hew runtime ABI.
-    let upstream = unsafe { consume_stream_inner(stream) };
-    into_stream_ptr(ChunksStream {
-        buf: Vec::new(),
-        chunk_size: size,
-        upstream,
-        done: false,
-    })
 }
 
 // ── Convenience functions ─────────────────────────────────────────────────────
@@ -2850,61 +2653,87 @@ pub unsafe extern "C" fn hew_stream_try_send_layout(
     }
 }
 
-/// Try one send while transferring its input on every outcome. Rejected
-/// element owners return to the caller as a consuming release cursor.
-/// # Safety
-/// `sink` is null or a live exclusive loan, `data` transfers one value matching
-/// `layout`, and `release_out` is a disjoint writable cursor output.
-unsafe fn try_send_underlying(
-    sink: *mut HewSink,
-    data: *mut c_void,
-    layout: *const crate::vec::HewValueLayout,
-    release_out: *mut *mut crate::release_walker::HewReleaseCursor,
-    fault_out: *mut *mut crate::fault::HewFault,
-) -> i32 {
-    use crate::channel_common::{move_elem_envelope, move_elem_layout_witness};
-    use crate::release_walker::HewReleaseCursor;
-    let _ = take_last_error();
-    // SAFETY: the caller supplies a checked descriptor and one transferred owner.
-    unsafe {
-        *release_out = std::ptr::null_mut();
-        *fault_out = std::ptr::null_mut();
-        let layout = move_elem_layout_witness(layout, "Sink.try_send");
-        let envelope = move_elem_envelope(data, layout, "Sink.try_send");
-        let (status, rejected) = if sink.is_null() || (*sink).is_closed() {
-            (TrySendResult::Closed, Some(envelope))
-        } else if let Some(core) = sink_channel_core(sink) {
-            if layout.ownership_kind == crate::vec::HewTypeOwnershipKind::LayoutManaged {
-                core.stamp_elem_layout(layout);
-            }
-            core.try_send_owned(envelope)
-        } else {
-            if layout.ownership_kind == crate::vec::HewTypeOwnershipKind::LayoutManaged {
-                crate::channel_common::abort_elem_witness(
-                    "Sink.try_send",
-                    "layout-managed elements require an in-memory channel sink",
-                );
-            }
-            ((*sink).try_write_item(&envelope), None)
-        };
-        if let Some(envelope) = rejected {
-            if layout.ownership_kind == crate::vec::HewTypeOwnershipKind::LayoutManaged {
-                *release_out = HewReleaseCursor::detached(envelope.as_ptr().cast(), *layout);
-            }
-        }
-        if status == TrySendResult::Failed {
-            *fault_out = hew_stream_take_error_fault();
-        }
-        status.into_abi_code()
-    }
-}
-
 #[no_mangle]
 pub extern "C" fn hew_stream_take_error_fault() -> *mut crate::fault::HewFault {
     Box::into_raw(Box::new(crate::fault::HewFault::with_message(
         crate::internal::types::HEW_TRAP_USER_PANIC,
         take_last_error().unwrap_or_else(|| "stream write failed".into()),
     )))
+}
+
+/// Traverse the unique receiving Pipe provider, never producer endpoint aliases.
+/// # Safety
+/// The descriptor retains the live Stream slot and provider through this walk.
+#[no_mangle]
+pub unsafe extern "C" fn hew_managed_visit_stream(
+    slot: *const c_void,
+    visitor: *const hew_cabi::managed::HewManagedStorageVisitor,
+) -> i32 {
+    // SAFETY: the compiler's Stream descriptor supplies its exact handle slot.
+    let stream = unsafe { *slot.cast::<*mut HewStream>() };
+    // SAFETY: the enclosing descriptor retains this optional live handle.
+    let Some(stream) = (unsafe { stream.as_mut() }) else {
+        return 0;
+    };
+    // Legacy foreign byte-image providers remain available unbounded. Their
+    // raw queues must not masquerade as an empty bounded language-value graph.
+    // SAFETY: the enclosing descriptor retains the synchronous visitor.
+    if !stream.inner.managed_supported() && !unsafe { (*visitor).kind.is_transfer() } {
+        return hew_cabi::managed::UNDESCRIBED;
+    }
+    if let Some(core) = stream.typed_core() {
+        // SAFETY: the Stream's unique provider lifetime pins its queue during this walk.
+        return unsafe { core.visit_typed(visitor) };
+    }
+    if let Some(generator) = stream.inner.generator() {
+        // SAFETY: common provider transfer freezes generator execution before publication.
+        return unsafe { generator.visit(visitor) };
+    }
+    // File/socket content and legacy host channels contain no typed queued values.
+    0
+}
+
+pub(crate) unsafe fn prepare_stream_release(
+    stream: *mut HewStream,
+    state: *const crate::coro_state::HewCoroState,
+) -> bool {
+    // SAFETY: the consuming cursor retains this unique optional Stream handle.
+    let Some(core) = (unsafe { stream.as_ref() }).and_then(HewStream::typed_core) else {
+        return true;
+    };
+    let waker = if state.is_null() {
+        None
+    } else {
+        // SAFETY: the polling invocation retains this wake descriptor through registration.
+        Some(unsafe {
+            crate::wake::OwnedWaker::retain(&*crate::coro_state::hew_coro_state_waker(state))
+        })
+    };
+    core.prepare_typed_close(waker)
+}
+
+pub(crate) unsafe fn expand_stream_release(
+    stream: *mut HewStream,
+    pending: &mut Vec<crate::release_walker::ReleaseItem>,
+) {
+    use crate::release_walker::ReleaseItem;
+    unsafe fn free(owner: *mut c_void) {
+        // SAFETY: the cursor drained every queued child and owns this original Box.
+        unsafe { drop(Box::from_raw(owner.cast::<HewStream>())) };
+    }
+    // SAFETY: expansion borrows the cursor's unique Stream before final retirement.
+    let Some(stream_ref) = (unsafe { stream.as_mut() }) else {
+        return;
+    };
+    let core = stream_ref.typed_core().expect("typed Stream release core");
+    // The allocation pins the core identity until its queued children and flat
+    // payload finish; its destructor must not start another content close.
+    stream_ref.closed = true;
+    pending.push(ReleaseItem::Storage {
+        owner: stream.cast(),
+        free,
+    });
+    core.expand_typed_close(pending);
 }
 
 #[cfg(test)]
@@ -2914,6 +2743,38 @@ mod tests {
     use std::ffi::CString;
     use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
     use std::sync::Mutex;
+
+    #[test]
+    fn foreign_byte_images_do_not_claim_an_empty_bounded_payload() {
+        use hew_cabi::managed::{HewManagedStorageVisitor, HewManagedWalkKind, UNDESCRIBED};
+        unsafe extern "C" fn no_storage(
+            _context: *mut c_void,
+            _identity: *const c_void,
+            _bytes: u64,
+        ) -> i32 {
+            panic!("an undescribed foreign image must not report guessed storage")
+        }
+        let image = b"retained";
+        // SAFETY: the byte image and synchronous visitor stay live; close consumes the unique handle.
+        unsafe {
+            let stream = hew_stream_from_bytes(image.as_ptr(), image.len(), 0);
+            for kind in [
+                HewManagedWalkKind::Retain,
+                HewManagedWalkKind::PrepareTransfer,
+            ] {
+                let visitor = HewManagedStorageVisitor {
+                    context: ptr::null_mut(),
+                    storage: no_storage,
+                    kind,
+                };
+                assert_eq!(
+                    hew_managed_visit_stream((&raw const stream).cast(), &raw const visitor),
+                    if kind.is_transfer() { 0 } else { UNDESCRIBED }
+                );
+            }
+            hew_stream_close(stream);
+        }
+    }
 
     /// Wrapper to send raw sink pointers across thread boundaries.
     ///
@@ -3452,6 +3313,8 @@ mod tests {
             unsafe { hew_sink_close(*slot.cast::<*mut HewSink>()) };
         }
         static SINK: HewValueLayout = HewValueLayout {
+            code_owner: core::ptr::null(),
+            managed: core::ptr::null(),
             size: size_of::<*mut HewSink>(),
             align: align_of::<*mut HewSink>(),
             ownership_kind: HewTypeOwnershipKind::LayoutManaged,
@@ -3793,333 +3656,6 @@ mod tests {
                 vec![b"piped".to_vec(), b" cont".to_vec(), b"ent".to_vec()]
             );
             hew_stream_close(output);
-        }
-    }
-
-    // ── Lines adapter ───────────────────────────────────────────────────
-
-    #[test]
-    fn lines_splits_on_newlines() {
-        let data = b"alpha\nbeta\ngamma\n";
-        // SAFETY: all FFI calls use valid pointers.
-        unsafe {
-            let raw = hew_stream_from_bytes(data.as_ptr(), data.len(), 0);
-            let lines = hew_stream_lines(raw);
-            assert!(!lines.is_null());
-            let items = drain_stream(lines);
-            assert_eq!(items.len(), 3);
-            assert_eq!(items[0], b"alpha");
-            assert_eq!(items[1], b"beta");
-            assert_eq!(items[2], b"gamma");
-            hew_stream_close(lines);
-        }
-    }
-
-    #[test]
-    fn lines_handles_crlf() {
-        let data = b"line1\r\nline2\r\n";
-        // SAFETY: all FFI calls use valid pointers.
-        unsafe {
-            let raw = hew_stream_from_bytes(data.as_ptr(), data.len(), 0);
-            let lines = hew_stream_lines(raw);
-            let items = drain_stream(lines);
-            assert_eq!(items.len(), 2);
-            assert_eq!(items[0], b"line1");
-            assert_eq!(items[1], b"line2");
-            hew_stream_close(lines);
-        }
-    }
-
-    #[test]
-    fn lines_final_line_without_newline_is_yielded() {
-        let data = b"first\nsecond";
-        // SAFETY: all FFI calls use valid pointers.
-        unsafe {
-            let raw = hew_stream_from_bytes(data.as_ptr(), data.len(), 0);
-            let lines = hew_stream_lines(raw);
-            let items = drain_stream(lines);
-            assert_eq!(items.len(), 2);
-            assert_eq!(items[0], b"first");
-            assert_eq!(items[1], b"second");
-            hew_stream_close(lines);
-        }
-    }
-
-    #[test]
-    fn lines_null_stream_returns_null() {
-        // SAFETY: null is handled by cabi_guard.
-        let result = unsafe { hew_stream_lines(ptr::null_mut()) };
-        assert!(result.is_null());
-    }
-
-    #[test]
-    fn lines_empty_stream_yields_nothing() {
-        // SAFETY: null data yields an empty vec stream.
-        unsafe {
-            let raw = hew_stream_from_bytes(ptr::null(), 0, 0);
-            let lines = hew_stream_lines(raw);
-            let items = drain_stream(lines);
-            assert!(items.is_empty());
-            hew_stream_close(lines);
-        }
-    }
-
-    #[test]
-    fn lines_data_at_buffer_limit_not_truncated() {
-        // Data exactly at the limit (with trailing newline) should yield one
-        // complete line — no premature truncation.
-        let mut data = vec![b'x'; MAX_LINE_BUFFER_SIZE - 1];
-        data.push(b'\n');
-        // SAFETY: all FFI calls use valid pointers.
-        unsafe {
-            let raw = hew_stream_from_bytes(data.as_ptr(), data.len(), 0);
-            let lines = hew_stream_lines(raw);
-            let items = drain_stream(lines);
-            assert_eq!(items.len(), 1);
-            assert_eq!(items[0].len(), MAX_LINE_BUFFER_SIZE - 1);
-            hew_stream_close(lines);
-        }
-    }
-
-    #[test]
-    fn lines_exceeding_buffer_limit_yields_truncated_line() {
-        // Chunked delivery: two half-chunks fill the buffer to the limit,
-        // then the remaining byte arrives in a third chunk.  The adapter
-        // must drain exactly MAX_LINE_BUFFER_SIZE, not the whole buffer.
-        let chunk_size = MAX_LINE_BUFFER_SIZE / 2;
-        let total = MAX_LINE_BUFFER_SIZE + 1;
-        let data = vec![b'B'; total];
-        // SAFETY: all FFI calls use valid pointers.
-        unsafe {
-            let raw = hew_stream_from_bytes(data.as_ptr(), data.len(), chunk_size);
-            let lines = hew_stream_lines(raw);
-            let items = drain_stream(lines);
-            assert_eq!(items.len(), 2);
-            assert_eq!(items[0].len(), MAX_LINE_BUFFER_SIZE);
-            assert_eq!(items[1].len(), 1);
-            hew_stream_close(lines);
-        }
-    }
-
-    #[test]
-    fn lines_single_oversized_chunk_capped_at_limit() {
-        // One chunk larger than the limit arrives all at once (item_size=0).
-        // The adapter must still cap the returned line at MAX_LINE_BUFFER_SIZE.
-        let total = MAX_LINE_BUFFER_SIZE + 123;
-        let data = vec![b'Z'; total];
-        // SAFETY: all FFI calls use valid pointers.
-        unsafe {
-            let raw = hew_stream_from_bytes(data.as_ptr(), data.len(), 0);
-            let lines = hew_stream_lines(raw);
-            let items = drain_stream(lines);
-            assert_eq!(items.len(), 2);
-            assert_eq!(items[0].len(), MAX_LINE_BUFFER_SIZE);
-            assert_eq!(items[1].len(), 123);
-            hew_stream_close(lines);
-        }
-    }
-
-    #[test]
-    fn lines_newline_immediately_after_limit_no_spurious_empty() {
-        // Buffer fills to exactly the limit, and the next byte is \n.
-        // The \n is the delimiter for the oversized line and must be consumed
-        // — not yielded as a spurious empty line.
-        let chunk_size = MAX_LINE_BUFFER_SIZE;
-        let mut data = vec![b'D'; MAX_LINE_BUFFER_SIZE];
-        data.push(b'\n');
-        // SAFETY: all FFI calls use valid pointers.
-        unsafe {
-            let raw = hew_stream_from_bytes(data.as_ptr(), data.len(), chunk_size);
-            let lines = hew_stream_lines(raw);
-            let items = drain_stream(lines);
-            assert_eq!(items.len(), 1);
-            assert_eq!(items[0].len(), MAX_LINE_BUFFER_SIZE);
-            hew_stream_close(lines);
-        }
-    }
-
-    #[test]
-    fn lines_crlf_immediately_after_limit_no_spurious_empty() {
-        // Same as above but with \r\n delimiter.
-        let chunk_size = MAX_LINE_BUFFER_SIZE;
-        let mut data = vec![b'E'; MAX_LINE_BUFFER_SIZE];
-        data.extend_from_slice(b"\r\n");
-        // SAFETY: all FFI calls use valid pointers.
-        unsafe {
-            let raw = hew_stream_from_bytes(data.as_ptr(), data.len(), chunk_size);
-            let lines = hew_stream_lines(raw);
-            let items = drain_stream(lines);
-            assert_eq!(items.len(), 1);
-            assert_eq!(items[0].len(), MAX_LINE_BUFFER_SIZE);
-            hew_stream_close(lines);
-        }
-    }
-
-    #[test]
-    fn lines_oversized_single_chunk_with_newline_at_cap_boundary_is_capped() {
-        // Regression for PR #323 (upstream, closed unmerged): a single
-        // upstream chunk (item_size=0, i.e. delivered all at once) that is
-        // already over MAX_LINE_BUFFER_SIZE and whose own trailing '\n'
-        // lands exactly at the cap boundary. The newline-scan branch used to
-        // run unconditionally before the size-cap check, so this returned
-        // the whole oversized line uncapped instead of splitting at the cap.
-        let total = MAX_LINE_BUFFER_SIZE; // '\n' is byte index MAX_LINE_BUFFER_SIZE
-        let mut data = vec![b'Q'; total];
-        data.push(b'\n');
-        // SAFETY: all FFI calls use valid pointers.
-        unsafe {
-            let raw = hew_stream_from_bytes(data.as_ptr(), data.len(), 0);
-            let lines = hew_stream_lines(raw);
-            let items = drain_stream(lines);
-            assert_eq!(items.len(), 1);
-            assert_eq!(items[0].len(), MAX_LINE_BUFFER_SIZE);
-            hew_stream_close(lines);
-        }
-    }
-
-    #[test]
-    fn lines_oversized_single_chunk_with_newline_past_cap_is_capped_then_splits() {
-        // Same defect as above, but the '\n' lands further past the cap
-        // (not immediately at the boundary), and there is trailing data
-        // after it. Must yield: [capped oversized prefix, the leftover
-        // pre-\n bytes as their own line, then subsequent lines split
-        // normally].
-        let total = MAX_LINE_BUFFER_SIZE + 500;
-        let mut data = vec![b'Q'; total];
-        data.push(b'\n');
-        data.extend_from_slice(b"tail\n");
-        data.extend_from_slice(b"more");
-        // SAFETY: all FFI calls use valid pointers.
-        unsafe {
-            let raw = hew_stream_from_bytes(data.as_ptr(), data.len(), 0);
-            let lines = hew_stream_lines(raw);
-            let items = drain_stream(lines);
-            assert_eq!(items.len(), 4);
-            assert_eq!(items[0].len(), MAX_LINE_BUFFER_SIZE);
-            assert_eq!(items[1], vec![b'Q'; 500]);
-            assert_eq!(items[2], b"tail");
-            assert_eq!(items[3], b"more");
-            hew_stream_close(lines);
-        }
-    }
-
-    #[test]
-    fn lines_newline_after_limit_splits_correctly() {
-        // Buffer fills past the limit, then the next chunk has a real line.
-        // The oversized prefix flushes first; subsequent data splits normally.
-        let chunk_size = MAX_LINE_BUFFER_SIZE;
-        let mut data = vec![b'C'; MAX_LINE_BUFFER_SIZE];
-        data.extend_from_slice(b"tail\n");
-        // SAFETY: all FFI calls use valid pointers.
-        unsafe {
-            let raw = hew_stream_from_bytes(data.as_ptr(), data.len(), chunk_size);
-            let lines = hew_stream_lines(raw);
-            let items = drain_stream(lines);
-            assert_eq!(items.len(), 2);
-            assert_eq!(items[0].len(), MAX_LINE_BUFFER_SIZE);
-            assert_eq!(items[1], b"tail");
-            hew_stream_close(lines);
-        }
-    }
-
-    #[test]
-    fn lines_crlf_content_at_cap_minus_one_not_corrupted() {
-        // Regression: a single chunk (item_size=0) whose content is exactly
-        // MAX_LINE_BUFFER_SIZE - 1 bytes, terminated by "\r\n". The '\n' sits
-        // at index MAX_LINE_BUFFER_SIZE (the '\r' just before it is index
-        // MAX_LINE_BUFFER_SIZE - 1), so `pos == MAX_LINE_BUFFER_SIZE`. The
-        // boundary check must recognize the preceding '\r' as a delimiter
-        // byte (not content) and still take the fast/newline path, yielding
-        // exactly one line of content length MAX_LINE_BUFFER_SIZE - 1 whose
-        // last byte is 'Z' — not a cap-sized line with a leaked '\r' (0x0D).
-        let mut data = vec![b'Z'; MAX_LINE_BUFFER_SIZE - 1];
-        data.extend_from_slice(b"\r\n");
-        // SAFETY: all FFI calls use valid pointers.
-        unsafe {
-            let raw = hew_stream_from_bytes(data.as_ptr(), data.len(), 0);
-            let lines = hew_stream_lines(raw);
-            let items = drain_stream(lines);
-            assert_eq!(items.len(), 1);
-            assert_eq!(items[0].len(), MAX_LINE_BUFFER_SIZE - 1);
-            assert_eq!(items[0].last(), Some(&b'Z'));
-            hew_stream_close(lines);
-        }
-    }
-
-    #[test]
-    fn lines_crlf_split_across_flush_boundary_no_spurious_empty() {
-        // \r and \n arrive in separate chunks after a forced flush.
-        // The adapter must wait for the \n before clearing skip_next_delimiter.
-        let limit = MAX_LINE_BUFFER_SIZE;
-        let mut data = vec![b'F'; limit];
-        data.push(b'\r');
-        data.push(b'\n');
-        // item_size = limit+1 puts the payload + \r in chunk 1, \n in chunk 2.
-        // SAFETY: all FFI calls use valid pointers.
-        unsafe {
-            let raw = hew_stream_from_bytes(data.as_ptr(), data.len(), limit + 1);
-            let lines = hew_stream_lines(raw);
-            let items = drain_stream(lines);
-            assert_eq!(items.len(), 1);
-            assert_eq!(items[0].len(), limit);
-            hew_stream_close(lines);
-        }
-    }
-
-    // ── Chunks adapter ──────────────────────────────────────────────────
-
-    #[test]
-    fn chunks_yields_fixed_size_pieces() {
-        let data = b"123456789"; // 9 bytes
-                                 // SAFETY: all FFI calls use valid pointers.
-        unsafe {
-            let raw = hew_stream_from_bytes(data.as_ptr(), data.len(), 0);
-            let chunked = hew_stream_chunks(raw, 3);
-            assert!(!chunked.is_null());
-            let items = drain_stream(chunked);
-            assert_eq!(items.len(), 3);
-            assert_eq!(items[0], b"123");
-            assert_eq!(items[1], b"456");
-            assert_eq!(items[2], b"789");
-            hew_stream_close(chunked);
-        }
-    }
-
-    #[test]
-    fn chunks_last_chunk_may_be_shorter() {
-        let data = b"12345"; // 5 bytes, chunk_size=3
-                             // SAFETY: all FFI calls use valid pointers.
-        unsafe {
-            let raw = hew_stream_from_bytes(data.as_ptr(), data.len(), 0);
-            let chunked = hew_stream_chunks(raw, 3);
-            let items = drain_stream(chunked);
-            assert_eq!(items.len(), 2);
-            assert_eq!(items[0], b"123");
-            assert_eq!(items[1], b"45");
-            hew_stream_close(chunked);
-        }
-    }
-
-    #[test]
-    fn chunks_null_stream_returns_null() {
-        // SAFETY: null is handled by cabi_guard.
-        let result = unsafe { hew_stream_chunks(ptr::null_mut(), 10) };
-        assert!(result.is_null());
-    }
-
-    #[test]
-    fn chunks_negative_size_clamps_to_one() {
-        let data = b"abcd";
-        // SAFETY: all FFI calls use valid pointers.
-        unsafe {
-            let raw = hew_stream_from_bytes(data.as_ptr(), data.len(), 0);
-            let chunked = hew_stream_chunks(raw, -5);
-            let items = drain_stream(chunked);
-            // chunk_size clamps to 1, so 4 items of 1 byte each.
-            assert_eq!(items.len(), 4);
-            assert_eq!(items[0], b"a");
-            assert_eq!(items[3], b"d");
-            hew_stream_close(chunked);
         }
     }
 
@@ -4561,36 +4097,6 @@ mod tests {
         }
     }
 
-    // ── Composed adapters ───────────────────────────────────────────────
-
-    #[test]
-    fn lines_then_take_limits_line_count() {
-        let data = b"a\nb\nc\nd\ne\n";
-        // SAFETY: all FFI calls use valid pointers.
-        unsafe {
-            let raw = hew_stream_from_bytes(data.as_ptr(), data.len(), 0);
-            let lines = hew_stream_lines(raw);
-            let taken = hew_stream_take(lines, 2);
-            let items = drain_stream(taken);
-            assert_eq!(items.len(), 2);
-            assert_eq!(items[0], b"a");
-            assert_eq!(items[1], b"b");
-            hew_stream_close(taken);
-        }
-    }
-
-    #[test]
-    fn chunks_then_count_yields_correct_total() {
-        let data = b"0123456789"; // 10 bytes, chunks of 4 → 3 chunks (4+4+2)
-                                  // SAFETY: all FFI calls use valid pointers.
-        unsafe {
-            let raw = hew_stream_from_bytes(data.as_ptr(), data.len(), 0);
-            let chunked = hew_stream_chunks(raw, 4);
-            let count = hew_stream_count(chunked); // consumes chunked
-            assert_eq!(count, 3);
-        }
-    }
-
     // ── TcpStreamBacking unit tests ──────────────────────────────────────
 
     #[test]
@@ -4883,6 +4389,8 @@ mod tests {
 
     fn plain_elem_layout(size: usize, align: usize) -> HewValueLayout {
         HewValueLayout {
+            code_owner: core::ptr::null(),
+            managed: core::ptr::null(),
             release_start: None,
             size,
             align,
@@ -4894,6 +4402,8 @@ mod tests {
 
     fn string_elem_layout() -> HewValueLayout {
         HewValueLayout {
+            code_owner: core::ptr::null(),
+            managed: core::ptr::null(),
             release_start: None,
             size: size_of::<*const HewString>(),
             align: align_of::<*const HewString>(),
@@ -4905,6 +4415,8 @@ mod tests {
 
     fn bytes_elem_layout() -> HewValueLayout {
         HewValueLayout {
+            code_owner: core::ptr::null(),
+            managed: core::ptr::null(),
             release_start: None,
             size: size_of::<crate::bytes::BytesTriple>(),
             align: align_of::<crate::bytes::BytesTriple>(),
@@ -5109,6 +4621,8 @@ mod tests {
 
     fn st_owned_layout() -> HewValueLayout {
         HewValueLayout {
+            code_owner: core::ptr::null(),
+            managed: core::ptr::null(),
             release_start: None,
             size: size_of::<StOwnedElem>(),
             align: align_of::<StOwnedElem>(),

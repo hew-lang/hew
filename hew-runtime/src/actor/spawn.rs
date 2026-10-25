@@ -30,8 +30,7 @@ pub struct HewActorOpts {
     ///
     /// Non-zero values cause [`hew_actor_spawn_opts`] to call
     /// `hew_arena_new_with_cap(arena_cap_bytes)` instead of `hew_arena_new()`.
-    /// Set from the `#[max_heap(N)]` actor attribute; callers that do not use
-    /// the attribute must supply `0`.
+    /// This explicit arena limit is separate from managed actor-value budgets.
     pub arena_cap_bytes: usize,
     /// Non-zero when the checker determined this actor participates in an
     /// actor-ref cycle. Future consumer: cycle-detection / Machine Lane B
@@ -739,7 +738,7 @@ pub unsafe extern "C" fn hew_actor_construct_native(
     stop_release: Option<hew_cabi::value::HewValueReleaseStart>,
     capacity: i32,
     overflow: i32,
-    cap_bytes: usize,
+    max_heap_bytes: u64,
     sys_dispatch: Option<HewSysDispatchFn>,
     native_crash: Option<HewNativeCrashFn>,
     fault: *mut *mut crate::fault::HewFault,
@@ -748,6 +747,8 @@ pub unsafe extern "C" fn hew_actor_construct_native(
     state_release: Option<hew_cabi::value::HewValueReleaseStart>,
     rejected_state_release: *mut *mut crate::release_walker::HewReleaseCursor,
     construction: *mut crate::coro_state::HewCoroState,
+    has_heap_limit: u32,
+    state_layout: *const hew_cabi::value::HewValueLayout,
 ) -> crate::lifetime::local_handles::HewLocalPidId {
     // SAFETY: generated code supplies an empty cursor output.
     if !rejected_state_release.is_null() {
@@ -795,12 +796,27 @@ pub unsafe extern "C" fn hew_actor_construct_native(
         }
     }
     let mut completion = crate::actor_native::NativeActorCompletion::with_crash(native_crash);
+    // SAFETY: generated code retains the source descriptor during construction;
+    // acquire its independent actor owner before any scheduler publication.
+    completion.cleanup.code = unsafe { state_layout.as_ref() }.map(|layout| {
+        // SAFETY: the constructing invocation retains the defining generation.
+        unsafe { crate::code_owner::CodeRoot::acquire(layout.code_owner) }
+    });
     if let Some(owner) =
         // SAFETY: construction remains live through publication.
         unsafe { construction.as_ref() }.and_then(|state| state.execution().rc_owner.clone())
     {
         completion.cleanup.rc = owner;
     }
+    completion.cleanup.value_owner = (has_heap_limit != 0)
+        .then(|| crate::owned_value_budget::ValueOwner::new(Some(max_heap_bytes)));
+    completion
+        .cleanup
+        .state_layout
+        .store(state_layout.cast_mut(), Ordering::Relaxed);
+    // SAFETY: construction retains its invocation context through admission.
+    *completion.cleanup.state_source_owner.lock_or_recover() =
+        Some(unsafe { crate::owned_value_budget::materialize::invocation_owner(construction) });
     completion.cleanup.set_state_release(state_release);
     completion.cleanup.set_stop_release(stop_release);
     // SAFETY: ownership and callbacks are supplied atomically before publication.
@@ -821,7 +837,7 @@ pub unsafe extern "C" fn hew_actor_construct_native(
             budget: HEW_MSG_BUDGET,
             coalesce_match_fn: coalesce_match,
             cycle_capable: false,
-            cap_bytes,
+            cap_bytes: 0,
             adopt: true,
         })
     };
@@ -835,6 +851,13 @@ pub unsafe extern "C" fn hew_actor_construct_native(
         // SAFETY: construction owns its context and the new actor cannot dispatch.
         unsafe {
             let actor = &*actor;
+            if let Some(owner) = actor
+                .native_completion
+                .as_ref()
+                .and_then(|completion| completion.cleanup.value_owner.as_ref())
+            {
+                owner.bind_incarnation(std::ptr::from_ref(actor).cast_mut());
+            }
             let construction = &mut *construction;
             construction.execution_mut().actor_turn =
                 live_actors::ActorIncarnation::of(std::ptr::from_ref(actor).cast_mut());
@@ -951,6 +974,7 @@ pub unsafe extern "C" fn hew_actor_abort_construction(
         let actor = unsafe { &*raw };
         let completion = actor.native_completion.as_ref().expect("native completion");
         completion.construction.lock_or_recover().take();
+        completion.construction_budget.lock_or_recover().take();
         completion.cleanup.set_stop_release(None);
         // SAFETY: construction relinquishes its Rc list and self identity before joining cleanup.
         unsafe {
@@ -1122,6 +1146,10 @@ pub(crate) unsafe fn submit_bound_native_envelope(
     }
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "the ownership transaction stays between reservation and publication"
+)]
 unsafe fn admit_bound_native_request(
     actor: *mut HewActor,
     message: i32,
@@ -1147,22 +1175,121 @@ unsafe fn admit_bound_native_request(
         unsafe { crate::mailbox::retire_orphaned_ask_sender_ref(reply) };
         return mailbox::SendOutcome::Dropped;
     }
-    // SAFETY: the pinned mailbox consumes only an admitted envelope.
-    let outcome = unsafe {
-        if terminal {
-            mailbox::admit_native_terminal(&*a.mailbox.cast(), message, envelope)
+    // Providers quiesce without holding queue/ledger locks. The source keeps
+    // the unpublished envelope while waiting, including on a restarted role.
+    // SAFETY: the send pin retains this incarnation and the producer owns its envelope.
+    let frozen = unsafe {
+        let env = &mut *envelope;
+        if env.layout.is_null() {
+            Ok(true)
         } else {
-            mailbox::try_admit_native_request(
-                &*a.mailbox.cast(),
-                message,
-                envelope,
-                reply,
-                obligated,
-                caller,
-            )
+            let identity = crate::lifetime::live_actors::ActorIncarnation::of(actor);
+            if env
+                .transfer
+                .as_ref()
+                .is_some_and(|transfer| transfer.target != identity)
+            {
+                env.transfer.take();
+            }
+            if env.transfer.is_none() {
+                let destination = a
+                    .native_completion
+                    .as_ref()
+                    .and_then(|completion| completion.cleanup.value_owner.clone());
+                let mut value = crate::owned_value_budget::transfer::ValueTransfer::begin(
+                    env.value_owner.clone(),
+                    destination,
+                    &raw const crate::cow_envelope::ENVELOPE_LAYOUT,
+                    envelope.cast(),
+                );
+                value.set_destination_actor(actor);
+                if let Some(waker) = env.transfer_waker.clone() {
+                    value.set_waker(waker);
+                }
+                env.transfer = Some(crate::cow_envelope::EnvelopeTransfer {
+                    target: identity,
+                    value,
+                    pending: false,
+                });
+            }
+            let transfer = env.transfer.as_mut().unwrap();
+            let frozen = transfer.value.poll_freeze();
+            transfer.pending = matches!(frozen, Ok(false));
+            frozen
         }
     };
-    if matches!(outcome, mailbox::SendOutcome::Enqueued) {
+    if matches!(frozen, Ok(false)) {
+        return mailbox::SendOutcome::Failed;
+    }
+    // The policy decides whether this admission accepts before recipient quota
+    // is consulted. Reservation pins a coalesced/evicted victim without loss.
+    // SAFETY: this exact mailbox and both unpublished request references remain pinned.
+    let reservation = match unsafe {
+        mailbox::reserve_native_request(
+            &*a.mailbox.cast(),
+            message,
+            envelope,
+            reply,
+            obligated,
+            terminal,
+            caller,
+        )
+    } {
+        Ok(reservation) => reservation,
+        Err(outcome) => {
+            if !matches!(outcome, mailbox::SendOutcome::Dropped) {
+                // SAFETY: refusal preserves the original unpublished envelope.
+                unsafe {
+                    (*envelope).transfer.take();
+                }
+            }
+            return outcome;
+        }
+    };
+    // SAFETY: accepted capacity pins this envelope while its providers stay frozen.
+    let acquired = frozen.and_then(|_| unsafe {
+        (*envelope)
+            .transfer
+            .as_mut()
+            .map_or(Ok(()), |transfer| transfer.value.acquire())
+    });
+    if acquired.is_err() {
+        drop(reservation);
+        // SAFETY: no ownership committed; receiver cleanup disposes the sender-owned request.
+        unsafe {
+            (*envelope).transfer.take();
+            // Refusal is the recipient's supervised fault. Its established
+            // completion has no returned request and never faults the sender.
+            hew_actor_trap(actor, crate::internal::types::HEW_TRAP_HEAP_EXCEEDED);
+            if !reply.is_null() {
+                crate::reply_channel::hew_reply_channel_publish_crash_fallback(reply.cast());
+            }
+            crate::mailbox::hew_msg_envelope_release(envelope);
+        }
+        return mailbox::SendOutcome::Enqueued;
+    }
+    // SAFETY: the accepted unpublished root is frozen through whole-graph commit and resume.
+    unsafe {
+        if let Some(transfer) = (*envelope).transfer.take() {
+            transfer
+                .value
+                .commit()
+                .unwrap_or_else(|_| std::process::abort());
+            (*envelope).value_owner = a
+                .native_completion
+                .as_ref()
+                .and_then(|completion| completion.cleanup.value_owner.clone());
+        }
+        (*envelope).transfer_waker = None;
+        (*envelope).admission_pending = false;
+    }
+    // No receiver can access the borrowed root before graph-wide commit/resume.
+    // SAFETY: ownership has committed and the caller still pins this mailbox.
+    let outcome = unsafe { reservation.publish() };
+    if matches!(
+        outcome,
+        mailbox::SendOutcome::Enqueued | mailbox::SendOutcome::Coalesced
+    ) {
         // SAFETY: a message reached the live, pinned actor's mailbox.
         unsafe { schedule_actor_after_enqueue(actor, a, message) };
     }

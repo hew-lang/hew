@@ -379,6 +379,9 @@ pub(crate) fn physical_value_recipe(
     let own = OwnKind::of_class(facts.class);
     Ok(PhysicalValueRecipe {
         ty: ty.clone(),
+        managed_slot_bytes: hew_sir::managed_slot(module, ty)
+            .map_err(|error| PhysicalError::new(format!("missing managed slot layout: {error:?}")))?
+            .bytes,
         own,
         clone: clone_action_for_type(ty, facts.clone, ids)?,
         destroy: if own == OwnKind::Owned {

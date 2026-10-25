@@ -29,6 +29,7 @@ pub(super) struct BodyBoundary {
     preserved: BTreeMap<ValueId, ResolvedTy>,
     loop_depth: usize,
     loan_depth: usize,
+    preserved_loans: BTreeSet<ValueId>,
 }
 
 fn edge(target: BlockId) -> Edge {
@@ -204,6 +205,22 @@ impl Builder<'_, '_> {
             .map(|b| b.preserved.clone())
             .unwrap_or_default();
         let mut steps = self.plan_task_joins(floor, true);
+        // A constructor can fail while its caller is still collecting local
+        // argument loans. Those loans are live, but have no lexical cleanup
+        // group yet. Preserve only loans from outside a recovery/defer body.
+        steps.extend(
+            self.live_loans
+                .iter()
+                .rev()
+                .filter(|loan| {
+                    !self.scope_loans.contains(loan)
+                        && !self.argument_receiver_loans.contains(loan)
+                        && !boundary
+                            .as_ref()
+                            .is_some_and(|body| body.preserved_loans.contains(loan))
+                })
+                .map(|&loan| super::cleanup::ExitStep::EndLoan(loan)),
+        );
         steps.extend(self.plan_argument_loans(loan_floor));
         // The planned steps end these loans; no deferred body lowered on
         // this path may treat them as its own.
@@ -219,7 +236,7 @@ impl Builder<'_, '_> {
             } else {
                 None
             };
-            for step in self.plan_fault_drain(floor, &preserved, boundary.is_none()) {
+            for step in self.plan_fault_drain(floor, &preserved, boundary.is_none())? {
                 self.emit_exit_step(&step, true)?;
             }
             self.set_terminator(
@@ -228,7 +245,7 @@ impl Builder<'_, '_> {
                 }),
             )?;
         } else {
-            steps.extend(self.plan_fault_drain(floor, &preserved, boundary.is_none()));
+            steps.extend(self.plan_fault_drain(floor, &preserved, boundary.is_none())?);
             let end = boundary.map_or(super::cleanup::ExitEnd::Unwind, |body| {
                 super::cleanup::ExitEnd::Finish(body.finish)
             });
@@ -392,6 +409,7 @@ impl Builder<'_, '_> {
             preserved: self.owned_live.clone(),
             loop_depth: self.loops.len(),
             loan_depth: self.argument_receiver_loans.len(),
+            preserved_loans: self.live_loans.clone(),
         });
         let previous_failure = self.failure_exit;
         self.failure_exit = false;
@@ -410,7 +428,12 @@ impl Builder<'_, '_> {
         let mut body_values = BTreeSet::new();
         for block in &self.blocks[block_floor..] {
             body_values.extend(block.args.iter().map(|arg| arg.value));
-            for operation in &block.ops {
+            for operation in block.ops.iter().chain(
+                block
+                    .terminator
+                    .as_ref()
+                    .and_then(SemTerminator::materialization),
+            ) {
                 operation.kind.visit_places(|place| {
                     used.insert(place);
                 });
@@ -433,6 +456,9 @@ impl Builder<'_, '_> {
             }
             let (root, _) = crate::projection::place_path(&self.places, place)?;
             match root {
+                crate::OwnerRoot::Session(_) => {
+                    dependencies.insert(place);
+                }
                 crate::OwnerRoot::Local(local) if (local.0 as usize) < place_floor => {
                     dependencies.insert(place);
                 }
@@ -489,6 +515,7 @@ impl Builder<'_, '_> {
             preserved: self.owned_live.clone(),
             loop_depth: self.loops.len(),
             loan_depth: self.argument_receiver_loans.len(),
+            preserved_loans: self.live_loans.clone(),
         });
         let result_ty = self.ty(&whole.ty);
         let result = match &scope.kind {

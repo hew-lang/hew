@@ -29,6 +29,8 @@ mod supervisor;
 
 #[path = "lower_binding.rs"]
 mod binding;
+#[path = "lower_session.rs"]
+mod session;
 
 #[path = "lower_defer.rs"]
 mod deferred;
@@ -1308,6 +1310,7 @@ enum InterceptorNext {
 
 enum BodySource {
     Function,
+    Session(hew_hir::HirSessionEntry),
     Closure(Box<HirExpr>),
     Actor {
         actor: crate::ActorId,
@@ -1333,7 +1336,7 @@ impl BodySource {
     fn parameters<'a>(&'a self, function: &'a HirFn) -> Result<&'a [HirBinding], SirLoweringError> {
         match self {
             Self::Function | Self::Actor { .. } => Ok(&function.params),
-            Self::EntryAdapter(_) => Ok(&[]),
+            Self::EntryAdapter(_) | Self::Session(_) => Ok(&[]),
             Self::Closure(expression) => match &expression.kind {
                 HirExprKind::Closure { params, .. } => Ok(params),
                 _ => Err("closure body source is not a checked literal"
@@ -1407,6 +1410,24 @@ fn callable_signature_with_substitution(
     facts: &mut TypeFactService,
 ) -> Result<SemSignature, SirLoweringError> {
     generic_template_admission(function)?;
+    if module
+        .session_entry
+        .as_ref()
+        .is_some_and(|entry| entry.declaration == function.declaration)
+    {
+        return Ok(SemSignature {
+            failure_domain: function.failure_domain,
+            params: vec![SemAbiParam {
+                ty: ResolvedTy::Pointer {
+                    is_mutable: true,
+                    pointee: Box::new(ResolvedTy::Unit),
+                },
+                passing: SemParamPassing::ReadOnly,
+                caller_visible_projection: false,
+            }],
+            return_ty: function.return_ty.clone(),
+        });
+    }
     let mut params = Vec::with_capacity(function.params.len());
     for (index, parameter) in function.params.iter().enumerate() {
         let ty = substitution.apply(&parameter.ty);
@@ -1854,6 +1875,7 @@ struct ControlState {
     bindings: HashMap<BindingId, BindingTarget>,
     binding_declarations: HashMap<BindingId, usize>,
     owned_live: BTreeMap<ValueId, ResolvedTy>,
+    live_loans: BTreeSet<ValueId>,
     loans: Vec<ValueId>,
     scopes: Vec<Vec<BindingId>>,
     scope_loans: Vec<ValueId>,
@@ -2032,6 +2054,10 @@ struct Builder<'hir, 'service> {
     bindings: HashMap<BindingId, BindingTarget>,
     binding_declarations: HashMap<BindingId, usize>,
     owned_live: BTreeMap<ValueId, ResolvedTy>,
+    /// All emitted local loans still live on this construction path. Lexical
+    /// lists group normal cleanup; this also covers argument-local loans
+    /// before their caller has registered that group.
+    live_loans: BTreeSet<ValueId>,
     /// Definition ancestry derived once from `SemOpKind::borrow_parent`.
     borrow_parents: HashMap<ValueId, crate::PlaceBase>,
     /// Lexical declarations only. Storage activity and payload availability
@@ -2061,6 +2087,7 @@ struct Builder<'hir, 'service> {
     loops: Vec<Option<LoopScope>>,
     places: Vec<crate::PlaceDecl>,
     capture_places: HashMap<BindingId, crate::PlaceId>,
+    session_places: HashMap<BindingId, crate::PlaceId>,
     /// Receivers already evaluated while their arguments are being lowered,
     /// and nested payload fields borrowed while a match candidate is probed.
     /// A terminating path must end these loans before owner cleanup; a probe

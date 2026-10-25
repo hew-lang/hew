@@ -134,7 +134,7 @@ fn execute_storage(case: fixture::Case, flag: bool, code: i64, order: &[usize], 
             .set_linkage(Linkage::External);
         let engine = engine(&llvm, optimized);
         engine.add_global_mapping(
-            &llvm.get_function("hew_string_drop").unwrap(),
+            &llvm.get_function("hew_string_drop_managed").unwrap(),
             release as *const () as usize,
         );
         type Run =

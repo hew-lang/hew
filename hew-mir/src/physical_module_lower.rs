@@ -269,6 +269,25 @@ pub fn lower_physical_module(
         coverage: module.coverage.clone(),
         releases: ReleaseEffects::default(),
         actor_recipes: actor_value_recipes(module, &ids)?,
+        managed_types: super::physical_type_inventory(module)
+            .types()
+            .map(|ty| {
+                let slot = hew_sir::managed_slot(module, ty).map_err(|error| {
+                    PhysicalError::new(format!("managed payload width for {ty:?}: {error:?}"))
+                })?;
+                let shape = hew_sir::managed_storage_shape(module, ty).map_err(|error| {
+                    PhysicalError::new(format!("managed storage shape for {ty:?}: {error:?}"))
+                })?;
+                Ok((
+                    ty.clone(),
+                    super::PhysicalManagedType {
+                        slot_bytes: slot.bytes,
+                        shape,
+                        recipe: physical_value_recipe(module, &ids, ty)?,
+                    },
+                ))
+            })
+            .collect::<Result<_, PhysicalError>>()?,
         actors: module.actors.clone(),
         supervisors: module.supervisors.clone(),
         resources,
@@ -327,9 +346,14 @@ pub fn lower_physical_module(
             .is_resumable = is_resumable;
     }
     physical.releases = ReleaseEffects::compute(&physical);
-    for (callable, available) in verify_physical_module(&physical)? {
-        if let Some(debug) = physical.debug.functions.get_mut(&callable) {
-            debug.available = available;
+    let mut initialization = verify_physical_module(&physical)?;
+    for function in &mut physical.functions {
+        let facts = initialization
+            .remove(&function.callable)
+            .ok_or_else(|| PhysicalError::new("verified body lacks initialization facts"))?;
+        function.frame_roots = facts.frame_roots;
+        if let Some(debug) = physical.debug.functions.get_mut(&function.callable) {
+            debug.available = facts.available;
         }
     }
     Ok(VerifiedPhysicalModule(physical))
@@ -782,7 +806,7 @@ pub fn physical_type_inventory(module: &SemModule) -> PhysicalTypeInventory {
         types.extend(function.places.iter().map(|place| place.ty.clone()));
         for block in &function.blocks {
             types.extend(block.args.iter().map(|argument| argument.ty.clone()));
-            for operation in &block.ops {
+            for operation in block.operations() {
                 types.extend(operation.results.iter().map(|result| result.ty.clone()));
             }
             if let Some(result) = terminator_result(&block.terminator) {
@@ -1156,6 +1180,16 @@ pub(crate) fn lower_function(
                 OwnKind::of_ty(&place.ty, &module.type_facts).map_err(PhysicalError::new)?
             },
             origin: match place.origin {
+                hew_sir::PlaceOrigin::Session {
+                    context,
+                    slot,
+                    initialized,
+                } => StorageOrigin::Session {
+                    context: lowerer.value(context)?,
+                    slot,
+                    initialized,
+                    recipe: Box::new(physical_value_recipe(module, glue_ids, &place.ty)?),
+                },
                 hew_sir::PlaceOrigin::ActorState {
                     state,
                     field,
@@ -1330,6 +1364,7 @@ pub(crate) fn lower_function(
             entry: function.entry,
             parameters,
             place_storage,
+            frame_roots: super::PhysicalFrameRootPlan::default(),
             storage: lowerer.storage,
             blocks,
         },
@@ -1358,6 +1393,9 @@ pub(crate) fn function_attribution(
     let mut locals = BTreeMap::new();
     for entry in storage {
         let binding = match entry.origin {
+            StorageOrigin::Session { slot, .. } => function.places.iter()
+                .find(|place| matches!(place.origin, hew_sir::PlaceOrigin::Session { slot: candidate, .. } if candidate == slot))
+                .and_then(|place| function.binding_rooting(place.id)),
             StorageOrigin::Local(place) | StorageOrigin::Aggregate(place) => {
                 function.binding_rooting(place)
             }
@@ -1391,6 +1429,7 @@ pub(crate) fn function_attribution(
 
 pub(crate) fn terminator_result(terminator: &SemTerminator) -> Option<&hew_sir::ValueDef> {
     match terminator {
+        SemTerminator::Materialize { operation, .. } => operation.results.first(),
         SemTerminator::Call {
             result: CallResult::Value(result),
             ..

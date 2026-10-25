@@ -27,6 +27,10 @@ pub enum HirSpawnSlot {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct HirModule {
+    /// One compiler-generated interactive entry and its persistent bindings.
+    /// The entry's source parameters describe retained values; SIR lowers them
+    /// as session-owned places, not value transfers at invocation entry.
+    pub session_entry: Option<HirSessionEntry>,
     /// Authored origins of generated spans, shared with checker diagnostics.
     /// HIR node spans and checked-site identities retain their semantic keys.
     pub source_origins: Arc<hew_types::check::SourceSpanOrigins>,
@@ -130,6 +134,19 @@ pub struct HirModule {
     /// The compilation's declaration table: every `DefId` in the module
     /// indexes it, and it is the only renderer of a declaration path.
     pub defs: Arc<hew_types::DefTable>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct HirSessionEntry {
+    pub declaration: DefId,
+    pub bindings: Vec<HirSessionBinding>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct HirSessionBinding {
+    pub binding: HirBinding,
+    pub slot: u32,
+    pub initialized: bool,
 }
 
 #[derive(Debug, Clone, PartialEq)]

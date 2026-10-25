@@ -438,6 +438,7 @@ fn main() {
             value_callbacks: BTreeMap::new(),
         };
         emitter.declare_functions().unwrap();
+        emitter.emit_managed_descriptors().unwrap();
         emitter.emit_selected_value_callbacks().unwrap();
         // Model the private callable's failure ABI with a distinct nonzero status
         // and an opaque pointer. It deliberately dirties its own scratch result.
@@ -670,6 +671,8 @@ fn selected_vector_hash_and_equality_walk_live_elements_and_active_fields() {
         // SAFETY: the wrapper consumes the exact Option slot representation.
         let variant_eq = unsafe { engine.get_function::<EqCallback>("variant_eq").unwrap() };
         let layout = hew_runtime::vec::HewValueLayout {
+            code_owner: core::ptr::null(),
+            managed: core::ptr::null(),
             release_start: None,
             size: std::mem::size_of::<i64>(),
             align: std::mem::align_of::<i64>(),

@@ -38,42 +38,31 @@ fn run_wasi_example(source: &Path) -> Output {
 }
 
 #[test]
-fn yaml_bytes_ffi_return_runs_natively_and_under_wasi() {
+fn yaml_base64_value_runs_natively_and_under_wasi() {
     let dir = tempdir();
-    let source = dir.path().join("yaml_bytes_ffi_return.hew");
+    let source = dir.path().join("yaml_base64_value.hew");
     fs::write(
         &source,
         r#"import std.encoding.utf8;
-
-#[opaque]
-type YamlValue {}
-
-extern "C" {
-    fn hew_yaml_parse(s: string) -> YamlValue;
-    fn hew_yaml_get_bytes(val: YamlValue) -> bytes;
-    fn hew_yaml_free(consume val: YamlValue);
-}
+import std.encoding.yaml;
+import std.encoding.base64;
 
 fn main() {
-    let value = unsafe { hew_yaml_parse("'aGV3'") };
-    let decoded: bytes = unsafe { hew_yaml_get_bytes(value) };
-    let text = match utf8.decode(decoded) {
-        .Ok(decoded_text) => decoded_text,
-        .Err(error) => panic("YAML bytes payload is not valid UTF-8"),
-    };
-    println(text);
-    unsafe { hew_yaml_free(value) };
+    let value = yaml.parse("'aGV3'").expect("valid YAML");
+    let encoded = value.get_string().expect("string");
+    let decoded = base64.decode(encoded).expect("valid base64");
+    println(utf8.decode(decoded).expect("valid UTF-8"));
 }
 "#,
     )
-    .expect("write YAML bytes FFI program");
+    .expect("write YAML base64 value program");
     let source = source.to_str().expect("source path must be valid UTF-8");
 
     require_codegen();
     let native = run_hew_in(repo_root(), &["run", source]);
     assert!(
         native.status.success(),
-        "native YAML bytes FFI program failed\nstdout:\n{}\nstderr:\n{}",
+        "native YAML base64 value program failed\nstdout:\n{}\nstderr:\n{}",
         String::from_utf8_lossy(&native.stdout),
         String::from_utf8_lossy(&native.stderr),
     );
@@ -83,7 +72,7 @@ fn main() {
     let wasm = run_hew_in(repo_root(), &["run", source, "--target", "wasm32-wasi"]);
     assert!(
         wasm.status.success(),
-        "Wasm YAML bytes FFI program failed\nstdout:\n{}\nstderr:\n{}",
+        "Wasm YAML base64 value program failed\nstdout:\n{}\nstderr:\n{}",
         String::from_utf8_lossy(&wasm.stdout),
         String::from_utf8_lossy(&wasm.stderr),
     );
@@ -529,8 +518,12 @@ fn supplied_directory_preopens_preserve_rooted_owners_under_wasi() {
             if target != "native" {
                 build.args(["--target", target]);
             }
-            let compiled =
-                support::run_bounded_command(build, format!("directory {target} O{level}"));
+            let compiled = support::try_run_bounded_command(
+                build,
+                format!("directory {target} O{level}"),
+                hew_testutil::DEFAULT_COMPILE_TIMEOUT,
+            )
+            .unwrap_or_else(|error| panic!("{error}"));
             support::assert_success(&compiled, "compile directory capability");
             let mut run = if target == "native" {
                 Command::new(&binary)

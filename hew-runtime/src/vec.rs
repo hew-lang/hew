@@ -38,6 +38,9 @@ use hew_cabi::string::HewString;
 use std::alloc::{alloc, dealloc, realloc, Layout};
 use std::sync::atomic::{fence, AtomicUsize, Ordering};
 
+mod managed;
+pub use managed::*;
+
 // ---------------------------------------------------------------------------
 // Internal helpers
 // ---------------------------------------------------------------------------
@@ -58,18 +61,117 @@ unsafe fn ensure_cap_raw(v: *mut HewVec, needed: usize) {
             hew_vec_make_unique(v);
             return;
         }
-        let mut new_cap = if capacity == 0 { 4 } else { capacity };
-        while new_cap < needed {
-            new_cap = if let Some(c) = new_cap.checked_mul(2) {
-                c
-            } else {
-                // SAFETY: writing to stderr and aborting is always safe.
-                let msg = b"PANIC: Vec capacity overflow\n\0";
-                write_stderr(&msg[..msg.len() - 1]);
-                libc::abort();
-            };
-        }
+        let new_cap = capacity_for(capacity, needed).unwrap_or_else(|| allocation_size_overflow());
         resize_buffer(v, new_cap);
+    }
+}
+
+/// The same growth policy serves allocation and checked preflight.
+pub(crate) fn capacity_for(capacity: usize, needed: usize) -> Option<usize> {
+    if capacity >= needed {
+        return Some(capacity);
+    }
+    let mut new_cap = if capacity == 0 { 4 } else { capacity };
+    while new_cap < needed {
+        new_cap = new_cap.checked_mul(2)?;
+    }
+    Some(new_cap)
+}
+
+/// Push through a checked managed-storage boundary before changing any input.
+/// # Safety
+/// Vector, element and invocation are live and match the compiler descriptor.
+#[no_mangle]
+pub unsafe extern "C" fn hew_vec_push_managed(
+    v: *mut HewVec,
+    data: *const c_void,
+    moved: u32,
+    invocation: *const crate::coro_state::HewCoroState,
+) -> i32 {
+    // SAFETY: the caller retains the invocation and both typed inputs.
+    let Some(owner) =
+        (unsafe { crate::owned_value_budget::materialize::invocation_owner(invocation) })
+    else {
+        // SAFETY: unbounded execution retains the ordinary ownership contract.
+        unsafe {
+            if moved != 0 {
+                hew_vec_push_owned_move(v, data);
+            } else {
+                hew_vec_push_owned(v, data);
+            }
+        }
+        return 0;
+    };
+    // SAFETY: bounded execution retains the same inputs through publication.
+    unsafe { push_managed_bounded(v, data, moved, &owner) }
+}
+
+// Keep reservation bookkeeping off the ordinary unbounded push's stack.
+#[inline(never)]
+unsafe fn push_managed_bounded(
+    v: *mut HewVec,
+    data: *const c_void,
+    moved: u32,
+    owner: &crate::owned_value_budget::ValueOwner,
+) -> i32 {
+    use crate::owned_value_budget::{
+        materialize::{HewManagedInput, MaterializationPermit},
+        ManagedStorage,
+    };
+    // SAFETY: the checked caller retains the inputs until publication succeeds.
+    unsafe {
+        let layout = owned_descriptor(v);
+        let Some(managed) = layout.managed.as_ref() else {
+            return hew_cabi::managed::UNDESCRIBED;
+        };
+        let Some(needed) = (*v).len.checked_add(1) else {
+            return hew_cabi::managed::HEAP_EXCEEDED;
+        };
+        let Some(capacity) = capacity_for((*v).cap, needed) else {
+            return hew_cabi::managed::HEAP_EXCEEDED;
+        };
+        let Some(bytes) = managed.slot_bytes.checked_mul(capacity as u64) else {
+            return hew_cabi::managed::HEAP_EXCEEDED;
+        };
+        let unique = (*v).data.is_null() || (*buffer_owner(v)).load(Ordering::Acquire) == 1;
+        let old = (!(*v).data.is_null()).then(|| ManagedStorage {
+            identity: (*v).data as usize,
+            bytes: managed.slot_bytes * (*v).cap as u64,
+        });
+        let backing = if capacity != (*v).cap || !unique {
+            match owner.prepare_backing_change(old, bytes, unique) {
+                Ok(permit) => Some(permit),
+                Err(_) => return hew_cabi::managed::HEAP_EXCEEDED,
+            }
+        } else {
+            None
+        };
+        let inputs = [HewManagedInput {
+            layout,
+            slot: data,
+            copies: u64::from(moved == 0),
+            consume: u8::from(moved != 0),
+        }];
+        let element = match MaterializationPermit::prepare(owner.clone(), 0, &inputs) {
+            Ok(permit) => permit,
+            Err(status) => return status,
+        };
+        let index = (*v).len;
+        if moved != 0 {
+            hew_vec_push_owned_move(v, data);
+        } else {
+            hew_vec_push_owned(v, data);
+        }
+        if let Some(backing) = backing {
+            backing.commit((*v).data as usize);
+        }
+        if element
+            .commit(layout, (*v).data.add(index * layout.size).cast())
+            .is_err()
+        {
+            std::process::abort();
+        }
+        0
     }
 }
 
@@ -622,6 +724,8 @@ pub unsafe extern "C" fn hew_vec_new_with_layout(layout: *const HewTypeLayout) -
             }
         };
         (*v).layout_storage = HewValueLayout {
+            code_owner: core::ptr::null(),
+            managed: core::ptr::null(),
             release_start: None,
             size: descriptor.size,
             align: descriptor.align,
@@ -1612,6 +1716,23 @@ pub(crate) unsafe fn release_element_chunk(
 pub(crate) unsafe fn free_vector_storage(v: *mut HewVec) {
     // SAFETY: caller guarantees the allocation contract.
     unsafe {
+        if let Some(owner) = crate::owned_value_budget::current_owner() {
+            if !(*v).data.is_null() {
+                let layout = owned_descriptor(v);
+                if let Some(managed) = layout.managed.as_ref() {
+                    let bytes = managed
+                        .slot_bytes
+                        .checked_mul((*v).cap as u64)
+                        .unwrap_or_else(|| std::process::abort());
+                    owner.release_backing((*v).data.cast(), bytes);
+                }
+            }
+        }
+
+        let _code = (*v)
+            .layout
+            .as_ref()
+            .map(|layout| crate::code_owner::CodeRoot::take(layout.code_owner));
         if !(*v).data.is_null() {
             release_buffer(v);
         }
@@ -2807,6 +2928,7 @@ pub unsafe extern "C" fn hew_vec_new_with_elem_layout(
         // Owned elements use the Plain bulk-buffer kind; ownership is driven by
         // the descriptor thunks, not the legacy `elem_kind` string path.
         (*v).elem_kind = ElemKind::Plain;
+        crate::code_owner::CodeRoot::retain_for_carrier(descriptor.code_owner);
         (*v).layout_storage = *descriptor;
         (*v).layout = core::ptr::addr_of!((*v).layout_storage);
         v
@@ -5098,6 +5220,8 @@ mod vec_owned_tests {
     #[test]
     fn zero_sized_elements_preserve_length_without_reading_or_writing_payload() {
         let layout = HewValueLayout {
+            code_owner: core::ptr::null(),
+            managed: core::ptr::null(),
             release_start: None,
             size: 0,
             align: 1,
@@ -5140,6 +5264,8 @@ mod vec_owned_tests {
     #[test]
     fn plain_descriptor_uses_the_same_value_operations_without_thunks() {
         let layout = HewValueLayout {
+            code_owner: core::ptr::null(),
+            managed: core::ptr::null(),
             release_start: None,
             size: size_of::<(i64, i64)>(),
             align: align_of::<(i64, i64)>(),
@@ -5293,6 +5419,8 @@ mod vec_owned_tests {
 
     fn owned_layout() -> HewValueLayout {
         HewValueLayout {
+            code_owner: core::ptr::null(),
+            managed: core::ptr::null(),
             release_start: None,
             size: core::mem::size_of::<OwnedElem>(),
             align: core::mem::align_of::<OwnedElem>(),
@@ -5348,6 +5476,8 @@ mod vec_owned_tests {
         // freed separately afterwards.
         unsafe {
             let layout = HewValueLayout {
+                code_owner: core::ptr::null(),
+                managed: core::ptr::null(),
                 release_start: None,
                 size: core::mem::size_of::<OwnedElem>(),
                 align: core::mem::align_of::<OwnedElem>(),
@@ -5390,6 +5520,8 @@ mod vec_owned_tests {
         // declared layout. The output owns the payload after `take` returns.
         unsafe {
             let layout = HewValueLayout {
+                code_owner: core::ptr::null(),
+                managed: core::ptr::null(),
                 release_start: None,
                 size: core::mem::size_of::<OwnedElem>(),
                 align: core::mem::align_of::<OwnedElem>(),
@@ -5465,6 +5597,8 @@ mod vec_owned_tests {
     #[test]
     fn plain_set_accepts_an_element_alias() {
         let layout = HewValueLayout {
+            code_owner: core::ptr::null(),
+            managed: core::ptr::null(),
             size: size_of::<i64>(),
             align: align_of::<i64>(),
             ownership_kind: HewTypeOwnershipKind::Plain,
@@ -5503,6 +5637,8 @@ mod vec_owned_tests {
             clone_fn: None,
             drop_fn: None,
             release_start: None,
+            code_owner: ptr::null(),
+            managed: core::ptr::null(),
         };
         // SAFETY: initialized i64 values match the plain descriptor.
         unsafe {
@@ -5613,6 +5749,8 @@ mod vec_owned_tests {
         #[repr(C, align(64))]
         struct Aligned([u8; 64]);
         let layout = HewValueLayout {
+            code_owner: core::ptr::null(),
+            managed: core::ptr::null(),
             size: size_of::<Aligned>(),
             align: align_of::<Aligned>(),
             ownership_kind: HewTypeOwnershipKind::Plain,
@@ -5884,6 +6022,8 @@ mod vec_owned_tests {
             return;
         }
         let layout = HewValueLayout {
+            code_owner: core::ptr::null(),
+            managed: core::ptr::null(),
             release_start: None,
             size: core::mem::size_of::<OwnedElem>(),
             align: core::mem::align_of::<OwnedElem>(),

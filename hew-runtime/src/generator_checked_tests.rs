@@ -24,6 +24,8 @@ unsafe extern "C-unwind" fn drop_return(slot: *mut c_void) {
 }
 
 const CAPTURE: HewValueLayout = HewValueLayout {
+    code_owner: core::ptr::null(),
+    managed: core::ptr::null(),
     release_start: None,
     size: size_of::<*const Counts>(),
     align: align_of::<*const Counts>(),
@@ -83,7 +85,7 @@ fn producer(descriptor: &HewCallableDescriptor, counts: &Counts) -> *mut HewChec
             environment,
             descriptor,
         };
-        hew_checked_generator_new(&raw mut callable, &CAPTURE, &RETURN)
+        hew_checked_generator_new(&raw mut callable, &CAPTURE, &RETURN, 8, ptr::null())
     }
 }
 
@@ -230,8 +232,13 @@ fn pending_nested_close_retains_lazy_captures_and_terminal_outputs() {
                 environment,
                 descriptor: &raw const descriptor,
             };
-            let generator =
-                hew_checked_generator_new(&raw mut callable, &CAPTURE, &raw const returned);
+            let generator = hew_checked_generator_new(
+                &raw mut callable,
+                &CAPTURE,
+                &raw const returned,
+                8,
+                ptr::null(),
+            );
             if !lazy {
                 assert_eq!(
                     hew_checked_generator_poll(generator, parent, false),

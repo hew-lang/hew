@@ -10,7 +10,7 @@ kind = "reject"
 code = "OpaqueMessagePayload"
 line = 6
 column = 28
-message = "opaque type `std.builtins.Timer` cannot be used as a receive-fn parameter; actor message payloads must be CBOR-serializable, and opaque handles have no serializable layout. Open or construct the handle locally inside the handler instead [E_OPAQUE_MESSAGE_PAYLOAD]"
+message = "opaque type `std.builtins.Timer` has no supported actor message transfer layout. Open or construct the handle locally inside the handler instead [E_OPAQUE_MESSAGE_PAYLOAD]"
 
 [[case.expected.diagnostics]]
 code = "BoundsNotSatisfied"

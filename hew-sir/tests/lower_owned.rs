@@ -1,3 +1,6 @@
+#[path = "support/checked.rs"]
+mod checked;
+
 use hew_hir::{lower_program_host_target, ResolutionCtx};
 use hew_sir::{
     canonicalize_module_constant_cfg, lower_module, verify_module, BoundaryDecision, SemOpKind,
@@ -28,6 +31,68 @@ fn lower_source_with_registry(source: &str, registry: ModuleRegistry) -> hew_sir
     lower_module(&hir.module, &facts)
 }
 
+#[test]
+fn allocation_failure_drains_machine_watch_borrows() {
+    let lowered = lower_source(
+        r#"
+        type Notice { text: string; revision: i64; }
+        type State { notices: Vec<Notice>; }
+        type Cursor { id: i64; last_seen: i64; }
+        actor Core {
+            var committed: State;
+            var cursors: Vec<Cursor>;
+            receive fn read(id: i64) -> Notice {
+                for i in 0..cursors.len() {
+                    if cursors[i].id == id {
+                        let notice = committed.notices[id + 1];
+                        var cursor = cursors.remove(i);
+                        cursor.last_seen = notice.revision;
+                        cursors.push(cursor);
+                        return notice;
+                    }
+                }
+                panic("missing cursor")
+            }
+        }
+        fn main() {
+            let core = spawn Core {
+                committed: State { notices: [Notice { text: "retained", revision: 1 }] },
+                cursors: [Cursor { id: 0, last_seen: 0 }]
+            };
+            let _ = core.read(0);
+        }
+        "#,
+    );
+    let diagnostics = verify_module(&lowered.module);
+    assert!(
+        diagnostics.is_empty(),
+        "{diagnostics:?}\n{}",
+        hew_sir::dump_sir(&lowered.module)
+    );
+}
+
+#[test]
+fn later_parameter_copy_failure_closes_earlier_private_storage() {
+    let lowered = lower_source(
+        r#"
+        fn put(var counts: HashMap<string, i64>, var key: string) {
+            key = "replacement";
+            counts.insert(key, 1);
+        }
+        fn main() {
+            let counts: HashMap<string, i64> = HashMap.new();
+            put(counts, "caller");
+        }
+        "#,
+    );
+    let diagnostics = verify_module(&lowered.module);
+    assert!(
+        diagnostics.is_empty(),
+        "{diagnostics:?}\n{}",
+        hew_sir::dump_sir(&lowered.module)
+    );
+}
+
 fn cleanup_path(
     function: &hew_sir::SemFunction,
     mut target: hew_sir::BlockId,
@@ -46,7 +111,8 @@ fn cleanup_path(
 
 fn cleanup_has_lifetime(path: &[&hew_sir::SemBlock], place: hew_sir::PlaceId) -> bool {
     path.iter()
-        .flat_map(|block| &block.ops)
+        .copied()
+        .flat_map(hew_sir::SemBlock::operations)
         .any(|op| matches!(op.kind, SemOpKind::EndLifetime { place: found } if found == place))
 }
 
@@ -94,6 +160,55 @@ fn canonical_string_length_uses_a_borrowing_runtime_operation() {
                 && args[0].decision == BoundaryDecision::Borrow
     )));
     assert!(verify_module(&lowered.module).is_empty());
+}
+
+#[test]
+fn deferred_checked_field_copies_keep_exact_free_place_dependencies() {
+    let lowered = lower_source(
+        r#"
+        fn staged_work() -> i64 { loop {} }
+        machine Gate {
+            events { Open; }
+            emits { Pending { label: string; } }
+            state Closed { label: string; }
+            state Opened { label: string; value: i64; }
+            on Open: Closed => Opened {
+                emit Pending { label: state.label + ":pending" };
+                Opened { label: state.label + ":candidate", value: staged_work() }
+            }
+            default { state }
+        }
+        fn main() {
+            var gate: Gate = .Closed { label: "original" };
+            defer {
+                match gate {
+                    .Closed { label } => println("rollback:" + label),
+                    .Opened { label, value } => println(f"committed:{label}:{value}"),
+                }
+            }
+            let report = gate.step(.Open);
+        }
+    "#,
+    );
+    assert!(
+        verify_module(&lowered.module).is_empty(),
+        "{:?}",
+        verify_module(&lowered.module)
+    );
+    for name in ["staged_work", "main"] {
+        assert!(
+            matches!(
+                lowered
+                    .statuses
+                    .iter()
+                    .find(|status| status.name == name)
+                    .map(|status| &status.status),
+                Some(SirLoweringStatus::Lowered)
+            ),
+            "{name} must lower: {:?}",
+            lowered.statuses
+        );
+    }
 }
 
 #[test]
@@ -215,7 +330,7 @@ fn constant_owned_branch_that_needs_cleanup_remains_executable() {
     assert!(main_after
         .blocks
         .iter()
-        .flat_map(|block| &block.ops)
+        .flat_map(hew_sir::SemBlock::operations)
         .any(|op| matches!(op.kind, SemOpKind::EndLifetime { .. })));
     assert!(verify_module(&lowered.module).is_empty());
 }
@@ -242,7 +357,7 @@ fn bytes_runtime_transform_and_failure_edges_are_explicit_and_checked() {
                 args,
                 result: hew_sir::CallResult::Value(result),
                 normal,
-                unwind: hew_sir::CallUnwind::NotApplicable,
+                unwind: hew_sir::CallUnwind::Cleanup(_),
                 ..
             } => {
                 assert_eq!(args.len(), 2);
@@ -390,7 +505,7 @@ fn owned_string_and_bytes_calls_copy_borrows_and_clean_both_exits() {
         assert!(function
             .blocks
             .iter()
-            .flat_map(|block| &block.ops)
+            .flat_map(hew_sir::SemBlock::operations)
             .any(|op| { matches!(op.kind, SemOpKind::CopyValue { .. }) }));
     }
     for function in &lowered.module.functions {
@@ -419,7 +534,7 @@ fn owned_string_and_bytes_calls_copy_borrows_and_clean_both_exits() {
     assert!(use_values
         .blocks
         .iter()
-        .flat_map(|block| &block.ops)
+        .flat_map(hew_sir::SemBlock::operations)
         .any(|op| matches!(op.kind, SemOpKind::EndLifetime { .. })));
     assert!(
         verify_module(&lowered.module).is_empty(),
@@ -477,7 +592,7 @@ fn owned_binding_aliases_copy_and_preserve_source() {
     assert_eq!(
         main.blocks
             .iter()
-            .flat_map(|block| &block.ops)
+            .flat_map(hew_sir::SemBlock::operations)
             .filter(|op| matches!(op.kind, SemOpKind::LoadCopy { .. }))
             .count(),
         2,
@@ -628,33 +743,37 @@ fn owned_block_expressions_destroy_inner_locals_at_scope_exit() {
             .iter()
             .find_map(|(id, value)| (value == source).then_some(*id))
             .expect("scratch literal must be interned");
+        let owner = main
+            .blocks
+            .iter()
+            .flat_map(hew_sir::SemBlock::operations)
+            .find_map(|op| match op.kind {
+                SemOpKind::ConstStr(id) if id == literal => {
+                    op.results.first().map(|result| result.id)
+                }
+                _ => None,
+            })
+            .expect("scratch literal must have a checked producer");
+        let place = main
+            .blocks
+            .iter()
+            .flat_map(hew_sir::SemBlock::operations)
+            .find_map(|op| match op.kind {
+                SemOpKind::StoreInit { place, ref value }
+                    if checked::source(main, value.value) == owner =>
+                {
+                    Some(place)
+                }
+                _ => None,
+            })
+            .expect("scratch must initialize local storage");
         assert!(
-            main.blocks.iter().any(|block| {
-                let Some(owner) = block.ops.iter().find_map(|op| match op.kind {
-                    SemOpKind::ConstStr(id) if id == literal => {
-                        op.results.first().map(|result| result.id)
-                    }
-                    _ => None,
-                }) else {
-                    return false;
-                };
-                let place = block
-                    .ops
-                    .iter()
-                    .find_map(|op| match op.kind {
-                        SemOpKind::StoreInit { place, ref value } if value.value == owner => {
-                            Some(place)
-                        }
-                        _ => None,
-                    })
-                    .expect("scratch must initialize local storage");
-                block.ops.iter().any(|op| {
-                    matches!(
-                        op.kind,
-                        SemOpKind::EndLifetime { place: ended } if ended == place
-                    )
-                })
-            }),
+            main.blocks.iter().any(|block| block.ops.iter().any(|op| {
+                matches!(
+                    op.kind,
+                    SemOpKind::EndLifetime { place: ended } if ended == place
+                )
+            })),
             "`{source}` must be destroyed in its defining lexical block"
         );
     }
@@ -768,7 +887,7 @@ fn owned_string_reassignment_loop_and_early_return_verify() {
         choose
             .blocks
             .iter()
-            .flat_map(|block| &block.ops)
+            .flat_map(hew_sir::SemBlock::operations)
             .filter(
                 |op| matches!(op.kind, SemOpKind::StoreAssign { place, .. } if place == selected)
             )
@@ -779,6 +898,11 @@ fn owned_string_reassignment_loop_and_early_return_verify() {
         !choose
             .blocks
             .iter()
+            .filter(|block| !choose
+                .blocks
+                .iter()
+                .any(|predecessor| matches!(&predecessor.terminator,
+                SemTerminator::Materialize { normal, .. } if normal.target == block.id)))
             .flat_map(|block| &block.args)
             .any(|arg| arg.own == hew_sir::OwnKind::Owned),
         "lexical owners must not become loop or branch SSA arguments"

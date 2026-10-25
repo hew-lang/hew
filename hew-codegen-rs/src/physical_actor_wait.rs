@@ -496,6 +496,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
         &self,
         request: &[BasicMetadataValueEnum<'ctx>],
         payload_release: PointerValue<'ctx>,
+        payload_layout: PointerValue<'ctx>,
         source: StorageId,
         unwind: Option<&PhysicalEdge>,
         policy: hew_types::actor_delivery::SendPolicy,
@@ -519,6 +520,14 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             &[frame.state.into()],
             "submission.waker",
         )?;
+        let quota_status = frame.storage(
+            self.ctx,
+            self.ctx.i32_type().into(),
+            "submission.seal.status",
+        )?;
+        self.builder
+            .build_store(quota_status, self.ctx.i32_type().const_zero())
+            .llvm_ctx("initialize checked submission sealing")?;
         let new = get_or_declare_external_widened(
             self.llvm,
             "hew_actor_submit_new",
@@ -536,6 +545,8 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
                     ptr.into(),
                     ptr.into(),
                     self.ctx.bool_type().into(),
+                    ptr.into(),
+                    ptr.into(),
                 ],
                 false,
             ),
@@ -561,8 +572,46 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
                 .const_int(u64::from(owns_target), false)
                 .into(),
         ]);
+        args.push(payload_layout.into());
+        args.push(quota_status.into());
         let operation =
             call_value(&self.builder, new, &args, "submission.operation")?.into_pointer_value();
+        let status = self
+            .builder
+            .build_load(self.ctx.i32_type(), quota_status, "submission.seal.status")
+            .llvm_ctx("read checked submission ownership")?
+            .into_int_value();
+        let accepted = self
+            .ctx
+            .append_basic_block(self.value, "submission.quota.accepted");
+        let quota_refused = self
+            .ctx
+            .append_basic_block(self.value, "submission.quota.refused");
+        let ok = self
+            .builder
+            .build_int_compare(
+                IntPredicate::EQ,
+                status,
+                self.ctx.i32_type().const_zero(),
+                "submission.quota.ok",
+            )
+            .llvm_ctx("check submission payload reservation")?;
+        self.builder
+            .build_conditional_branch(ok, accepted, quota_refused)
+            .llvm_ctx("preserve message fields before quota acquisition")?;
+        self.builder.position_at_end(quota_refused);
+        let free = external_drop(self.ctx, self.llvm, "hew_actor_payload_free")?;
+        self.builder
+            .build_call(free, &[request[2]], "")
+            .llvm_ctx("free unadopted shallow submission wrapper")?;
+        self.initialize_active_fault(hew_runtime::internal::types::HEW_TRAP_HEAP_EXCEEDED)?;
+        self.discard_pending_message(source)?;
+        if let Some(unwind) = unwind {
+            self.emit_edge(unwind)?;
+        } else {
+            self.emit_propagate_fault()?;
+        }
+        self.builder.position_at_end(accepted);
         let missing = self
             .builder
             .build_is_null(operation, "submission.not_sealed")
@@ -728,6 +777,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
         &self,
         request: &[BasicMetadataValueEnum<'ctx>],
         release: PointerValue<'ctx>,
+        payload_layout: PointerValue<'ctx>,
         source: StorageId,
         unwind: Option<&PhysicalEdge>,
         obligated: bool,
@@ -758,6 +808,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
                     ptr.into(),
                     self.ctx.i32_type().into(),
                     ptr.into(),
+                    ptr.into(),
                 ],
                 false,
             ),
@@ -774,6 +825,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
                 .into(),
         );
         args.push(self.sender_stamp()?.into());
+        args.push(payload_layout.into());
         let wait = call_value(&self.builder, new, &args, "send.wait")?.into_pointer_value();
         let poll = self.ctx.append_basic_block(self.value, "send.poll");
         let inspect = self.ctx.append_basic_block(self.value, "send.inspect");

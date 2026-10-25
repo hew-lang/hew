@@ -110,7 +110,7 @@ const _: () = {
     assert!(core::mem::offset_of!(HewVec, elem_kind) == 32);
     assert!(core::mem::offset_of!(HewVec, layout) == 40);
     assert!(core::mem::offset_of!(HewVec, layout_storage) == 48);
-    assert!(core::mem::size_of::<HewVec>() == 96);
+    assert!(core::mem::size_of::<HewVec>() == 112);
 };
 
 #[cfg(target_pointer_width = "32")]
@@ -122,7 +122,7 @@ const _: () = {
     assert!(core::mem::offset_of!(HewVec, elem_kind) == 16);
     assert!(core::mem::offset_of!(HewVec, layout) == 20);
     assert!(core::mem::offset_of!(HewVec, layout_storage) == 24);
-    assert!(core::mem::size_of::<HewVec>() == 48);
+    assert!(core::mem::size_of::<HewVec>() == 56);
 };
 
 // ---------------------------------------------------------------------------

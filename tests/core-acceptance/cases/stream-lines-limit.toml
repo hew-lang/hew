@@ -1,0 +1,11 @@
+[[case]]
+id = "stream-lines-limit"
+intent = "Line framing caps oversized input without leaking a CRLF delimiter or emitting a phantom empty line across chunk boundaries."
+source = "cases/stream-lines-limit.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 30
+
+[case.expected]
+stdout = "bounded line pieces\n"
+stderr = ""
+exit = 0

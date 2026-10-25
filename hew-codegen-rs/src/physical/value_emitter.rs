@@ -257,6 +257,31 @@ impl<'a, 'ctx> ValueEmitter<'a, 'ctx> {
         layout: &PhysicalVariantLayout,
     ) -> CodegenResult<()> {
         let size_ty = self.ctx.i64_type();
+        let hew_mir::physical::ManagedStorageShape::Variant { payload_bytes, .. } =
+            self.module.managed_types[&layout.ty].shape
+        else {
+            return Err(CodegenError::FailClosed(
+                "indirect variant lacks canonical backing width".into(),
+            ));
+        };
+        let refund = get_or_declare_external(
+            self.llvm,
+            "hew_budget_release_backing",
+            self.ctx.void_type().fn_type(
+                &[
+                    self.ctx.ptr_type(AddressSpace::default()).into(),
+                    size_ty.into(),
+                ],
+                false,
+            ),
+        )?;
+        self.builder
+            .build_call(
+                refund,
+                &[node.into(), size_ty.const_int(payload_bytes, false).into()],
+                "",
+            )
+            .llvm_ctx("refund variant backing after its children finish")?;
         let dealloc = get_or_declare_external(
             self.llvm,
             "hew_dealloc",
@@ -903,7 +928,7 @@ impl<'a, 'ctx> ValueEmitter<'a, 'ctx> {
                 let symbol = if matches!(action, DestroyAction::WeakRelease) {
                     RuntimeCallFamily::WeakDropRc.row().symbol
                 } else {
-                    RuntimeCallFamily::RcDrop.row().symbol
+                    "hew_rc_drop_managed"
                 };
                 let function = external_drop(self.ctx, self.llvm, symbol)?;
                 self.emit_release_in_sink(|| {
@@ -943,11 +968,13 @@ impl<'a, 'ctx> ValueEmitter<'a, 'ctx> {
                     }
                 };
                 let symbol = match action {
-                    DestroyAction::Encoding(format) => {
-                        hew_mir::physical::EncodingOp::Free.c_symbol(format)
-                    }
-                    DestroyAction::StringRelease => "hew_string_drop",
-                    DestroyAction::BytesRelease => "hew_bytes_drop",
+                    DestroyAction::Encoding(format) => match format {
+                        hew_mir::physical::EncodingFormat::Json => "hew_json_free_managed",
+                        hew_mir::physical::EncodingFormat::Yaml => "hew_yaml_free_managed",
+                        hew_mir::physical::EncodingFormat::Toml => "hew_toml_free_managed",
+                    },
+                    DestroyAction::StringRelease => "hew_string_drop_managed",
+                    DestroyAction::BytesRelease => "hew_bytes_drop_managed",
                     DestroyAction::Resource(_)
                     | DestroyAction::Callable
                     | DestroyAction::TraitObject
@@ -1114,7 +1141,42 @@ impl<'a, 'ctx> ValueEmitter<'a, 'ctx> {
         self.builder
             .build_store(source, value)
             .llvm_ctx("store physical variant clone source")?;
-        self.clone_variant_object(source, destination, glue, variant_layout)?;
+        if self
+            .module
+            .releases
+            .runs_user_code(DestroyAction::Variant(id))
+        {
+            self.clone_variant_object(source, destination, glue, variant_layout)?;
+        } else {
+            let pointer = self.ctx.ptr_type(AddressSpace::default());
+            let clone = self.glue_function(
+                &format!("__hew_variant_copy_{}", id.0),
+                self.ctx.void_type().fn_type(&[pointer.into(); 2], false),
+                |emitter, function| {
+                    emitter.clone_variant_object(
+                        function.get_nth_param(0).unwrap().into_pointer_value(),
+                        function.get_nth_param(1).unwrap().into_pointer_value(),
+                        glue,
+                        variant_layout,
+                    )?;
+                    emitter
+                        .builder
+                        .build_return(None)
+                        .llvm_ctx("finish variant copy")?;
+                    Ok(())
+                },
+            )?;
+            clone.add_attribute(
+                inkwell::attributes::AttributeLoc::Function,
+                self.ctx.create_enum_attribute(
+                    inkwell::attributes::Attribute::get_named_enum_kind_id("noinline"),
+                    0,
+                ),
+            );
+            self.builder
+                .build_call(clone, &[source.into(), destination.into()], "")
+                .llvm_ctx("copy variant through its shared recipe")?;
+        }
         self.builder
             .build_load(object_ty, destination, "variant.clone.result")
             .llvm_ctx("load cloned physical variant")
@@ -1223,7 +1285,14 @@ impl<'a, 'ctx> ValueEmitter<'a, 'ctx> {
     ) -> CodegenResult<()> {
         let glue = self.variant_glue(id)?;
         let variant_layout = self.variant_layout(&glue.ty)?;
-        if variant_layout.is_indirect {
+        // Checked acquisitions add many cleanup edges to the same owning
+        // variants. Keep their synchronous, non-user-code recipes shared
+        // instead of duplicating every case into each coroutine fault edge.
+        let shared = !self
+            .module
+            .releases
+            .runs_user_code(DestroyAction::Variant(id));
+        if variant_layout.is_indirect || shared {
             let pointer = self.ctx.ptr_type(AddressSpace::default());
             let drop = self.glue_function(
                 &format!("__hew_variant_drop_{}", id.0),
@@ -1236,7 +1305,9 @@ impl<'a, 'ctx> ValueEmitter<'a, 'ctx> {
                         })?
                         .into_pointer_value();
                     emitter.destroy_variant_object(node, glue, variant_layout)?;
-                    emitter.free_variant_node(node, variant_layout)?;
+                    if variant_layout.is_indirect {
+                        emitter.free_variant_node(node, variant_layout)?;
+                    }
                     emitter
                         .builder
                         .build_return(None)
@@ -1244,9 +1315,30 @@ impl<'a, 'ctx> ValueEmitter<'a, 'ctx> {
                     Ok(())
                 },
             )?;
+            if shared {
+                drop.add_attribute(
+                    inkwell::attributes::AttributeLoc::Function,
+                    self.ctx.create_enum_attribute(
+                        inkwell::attributes::Attribute::get_named_enum_kind_id("noinline"),
+                        0,
+                    ),
+                );
+            }
+            let source = if variant_layout.is_indirect {
+                value.into_pointer_value()
+            } else {
+                let slot = self.entry_scratch(
+                    llvm_type(self.ctx, &variant_layout.object.repr)?,
+                    "variant.destroy.source",
+                )?;
+                self.builder
+                    .build_store(slot, value)
+                    .llvm_ctx("stage shared variant destruction")?;
+                slot
+            };
             self.builder
-                .build_call(drop, &[value.into()], "")
-                .llvm_ctx("destroy indirect variant")?;
+                .build_call(drop, &[source.into()], "")
+                .llvm_ctx("destroy variant through its shared recipe")?;
             return Ok(());
         }
         let object_ty = llvm_type(self.ctx, &variant_layout.object.repr)?.into_struct_type();
@@ -1407,6 +1499,8 @@ pub(super) fn value_descriptor_type<'ctx>(
             size_ty.into(),
             size_ty.into(),
             ctx.i8_type().into(),
+            pointer.into(),
+            pointer.into(),
             pointer.into(),
             pointer.into(),
             pointer.into(),

@@ -17,14 +17,14 @@
       "type": "runtime.id_allocated"
     },
     {
-      "budget_remaining": 946,
+      "budget_remaining": 961,
       "id": "actor:root",
       "id_kind": "actor",
       "message": "actor.scheduler-step",
       "phase": "run",
       "seq": 2,
       "span": null,
-      "step_count": 54,
+      "step_count": 39,
       "type": "step.committed"
     },
     {
@@ -42,14 +42,14 @@
       "type": "replay.input"
     },
     {
-      "budget_remaining": 931,
+      "budget_remaining": 946,
       "id": "actor:root",
       "id_kind": "actor",
       "message": "actor.scheduler-step",
       "phase": "run",
       "seq": 4,
       "span": null,
-      "step_count": 69,
+      "step_count": 54,
       "type": "step.committed"
     },
     {
@@ -67,14 +67,14 @@
       "type": "replay.input"
     },
     {
-      "budget_remaining": 927,
+      "budget_remaining": 942,
       "id": "actor:root",
       "id_kind": "actor",
       "message": "actor.scheduler-step",
       "phase": "run",
       "seq": 6,
       "span": null,
-      "step_count": 73,
+      "step_count": 58,
       "type": "step.committed"
     },
     {
@@ -107,7 +107,7 @@
     }
   ],
   "final_state": {
-    "budget_remaining": 907,
+    "budget_remaining": 922,
     "diagnostics": [],
     "exit_code": 0,
     "globals": [],
@@ -129,7 +129,7 @@
     "stdout": [
       "7\n"
     ],
-    "step_count": 93,
+    "step_count": 78,
     "virtual_clock": {
       "current_ms": 0,
       "epoch_ms": 0,
@@ -137,7 +137,7 @@
     }
   },
   "fixture_id": "pipe-select",
-  "hew_version": "0.6.1",
+  "hew_version": "0.9.4",
   "profile": "sandbox.sandbox-vm-export.v0",
   "replay": {
     "inputs": [

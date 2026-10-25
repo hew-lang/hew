@@ -2455,6 +2455,7 @@ pub fn lower_program(
     );
 
     let module = HirModule {
+        session_entry: None,
         source_origins: type_check_output
             .normalized_program
             .as_ref()

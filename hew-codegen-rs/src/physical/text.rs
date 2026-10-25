@@ -241,6 +241,12 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
             .llvm_ctx("branch around fallible bytes index load")?;
 
         self.builder.position_at_end(failed);
+        self.initialize_bounds_fault(
+            hew_runtime::fault::BOUNDS_BYTES_INDEX,
+            index,
+            self.ctx.i64_type().const_zero(),
+            len64,
+        )?;
         self.emit_edge(failure)?;
 
         self.builder.position_at_end(safe);
@@ -275,24 +281,36 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
         result: StorageId,
         option: PhysicalVariantId,
         normal: &PhysicalEdge,
+        failure: &PhysicalEdge,
     ) -> CodegenResult<()> {
+        let ptr = self.ctx.ptr_type(AddressSpace::default());
+        let status = self
+            .value_emitter()
+            .entry_scratch(self.ctx.i32_type().into(), "bytes.pop.status")?;
         let function = get_or_declare_external(
             self.llvm,
-            "hew_bytes_pop",
+            "hew_bytes_pop_checked",
             self.ctx
                 .i64_type()
-                .fn_type(&[self.ctx.ptr_type(AddressSpace::default()).into()], false),
+                .fn_type(&[ptr.into(), ptr.into()], false),
         )?;
         let byte = self
             .runtime_call_value(
                 function,
-                &[self.slots[receiver.0 as usize].into()],
+                &[self.slots[receiver.0 as usize].into(), status.into()],
                 "bytes.pop.byte",
             )?
             .into_int_value();
+        let status = self
+            .builder
+            .build_load(self.ctx.i32_type(), status, "bytes.pop.status")
+            .llvm_ctx("read bytes pop acquisition")?
+            .into_int_value();
+        self.check_budget_status(status, failure)?;
         let destination = self.slots[result.0 as usize];
         let pair_ty = llvm_type(self.ctx, &self.storage(result)?.layout.repr)?.into_struct_type();
         let updated = self.load(receiver, "bytes.pop.receiver")?;
+        self.clear_owned(receiver)?;
         let owner = self
             .builder
             .build_struct_gep(pair_ty, destination, 0, "bytes.pop.owner")
@@ -501,13 +519,19 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
             .build_conditional_branch(invalid, failed, safe)
             .llvm_ctx("select bytes set outcome")?;
         self.builder.position_at_end(failed);
+        self.initialize_bounds_fault(
+            hew_runtime::fault::BOUNDS_BYTES_INDEX,
+            index,
+            self.ctx.i64_type().const_zero(),
+            len64,
+        )?;
         self.emit_edge(failure)?;
         self.builder.position_at_end(safe);
         let ptr = self.ctx.ptr_type(AddressSpace::default());
         let function = get_or_declare_external_widened(
             self.llvm,
-            "hew_bytes_set",
-            self.ctx.void_type().fn_type(
+            "hew_bytes_set_checked",
+            self.ctx.i32_type().fn_type(
                 &[
                     ptr.into(),
                     self.ctx.i64_type().into(),
@@ -517,7 +541,7 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
             ),
             &[(2, Widen::Zero)],
         )?;
-        self.runtime_call_void(
+        let status = self.runtime_call_value(
             function,
             &[
                 self.slots[bytes.0 as usize].into(),
@@ -526,7 +550,9 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
             ],
             "bytes.set",
         )?;
+        self.check_budget_status(status.into_int_value(), failure)?;
         let updated = self.load(bytes, "bytes.set.result")?;
+        self.clear_owned(bytes)?;
         self.store(result, updated)?;
         self.emit_result_edge(Some(result), normal)
     }
@@ -590,6 +616,12 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
             .llvm_ctx("branch around fallible string index call")?;
 
         self.builder.position_at_end(failed);
+        self.initialize_bounds_fault(
+            hew_runtime::fault::BOUNDS_STRING_INDEX,
+            index_value,
+            self.ctx.i64_type().const_zero(),
+            len,
+        )?;
         self.emit_edge(failure)?;
 
         self.builder.position_at_end(safe);
@@ -696,6 +728,12 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
             .llvm_ctx("branch around fallible bytes slice call")?;
 
         self.builder.position_at_end(failed);
+        self.initialize_bounds_fault(
+            hew_runtime::fault::BOUNDS_SLICE,
+            start_value,
+            end_value,
+            len64,
+        )?;
         self.emit_edge(failure)?;
 
         self.builder.position_at_end(safe);
@@ -718,6 +756,7 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
             ],
             "bytes.slice",
         )?;
+        self.publish_managed_result(result, failure)?;
         self.emit_result_edge(Some(result), normal)
     }
 
@@ -782,6 +821,12 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
             .llvm_ctx("branch around fallible string slice call")?;
 
         self.builder.position_at_end(failed);
+        self.initialize_bounds_fault(
+            hew_runtime::fault::BOUNDS_STRING_SLICE,
+            start_value,
+            end_value,
+            len,
+        )?;
         self.emit_edge(failure)?;
 
         self.builder.position_at_end(safe);
@@ -808,6 +853,7 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
             "string.slice.codepoints",
         )?;
         self.store(result, value)?;
+        self.publish_managed_result(result, failure)?;
         self.emit_result_edge(Some(result), normal)
     }
 
@@ -858,6 +904,12 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
             .llvm_ctx("branch around fallible string slice-from call")?;
 
         self.builder.position_at_end(failed);
+        self.initialize_bounds_fault(
+            hew_runtime::fault::BOUNDS_STRING_SLICE_FROM,
+            start_value,
+            self.ctx.i64_type().const_zero(),
+            len,
+        )?;
         self.emit_edge(failure)?;
 
         self.builder.position_at_end(safe);
@@ -876,6 +928,7 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
             "string.slice.codepoints.from",
         )?;
         self.store(result, value)?;
+        self.publish_managed_result(result, failure)?;
         self.emit_result_edge(Some(result), normal)
     }
 }

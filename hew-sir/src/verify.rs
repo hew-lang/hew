@@ -787,7 +787,7 @@ fn verify_constant_references(
     function: &SemFunction,
     diagnostics: &mut Vec<SirDiagnostic>,
 ) {
-    for operation in function.blocks.iter().flat_map(|block| &block.ops) {
+    for operation in function.blocks.iter().flat_map(crate::SemBlock::operations) {
         if let SemOpKind::ActorIngressAdapter(adapter) = operation.kind {
             if let Err(reason) = adapter.handler(&module.actors) {
                 diagnostics.push(diag(
@@ -1186,6 +1186,7 @@ pub(crate) fn verify_cfg_discard_safety(
                 | SemTerminator::RecoverFault { .. }
                 | SemTerminator::CheckedRaiseFault { .. }
                 | SemTerminator::CheckedBinary { .. }
+                | SemTerminator::Materialize { .. }
                 | SemTerminator::SwitchVariant { .. }
                 | SemTerminator::Trap { .. }
                 | SemTerminator::Panic { .. }
@@ -1443,6 +1444,11 @@ fn check_function_with_context(
                 diagnostics.push(diag(function, SirDiagnosticKind::DuplicateOp(*id)));
             }
         }
+        if let Some(operation) = block.terminator.materialization() {
+            if !operations.insert(operation.id) {
+                diagnostics.push(diag(function, SirDiagnosticKind::DuplicateOp(operation.id)));
+            }
+        }
         // A runtime family whose contract result is a loan defines a
         // `Guaranteed` value: the receiver keeps the obligation.
         let borrowed_result = matches!(
@@ -1517,7 +1523,7 @@ fn check_function_with_context(
     // square of the block count on a body with many fallible calls.
     let cleanup_suffixes = crate::lifetime::cleanup_suffixes(function);
     for block in &function.blocks {
-        for op in &block.ops {
+        for op in block.ops.iter().chain(block.terminator.materialization()) {
             verify_callable_operation(
                 function,
                 op,
@@ -1658,9 +1664,9 @@ fn check_function_with_context(
                                 Some(crate::OwnerRoot::Value(value)) => {
                                     function.binding_naming(value)
                                 }
-                                Some(crate::OwnerRoot::Local(root)) => {
-                                    function.binding_rooting(root)
-                                }
+                                Some(
+                                    crate::OwnerRoot::Local(root) | crate::OwnerRoot::Session(root),
+                                ) => function.binding_rooting(root),
                                 None => function.binding_rooting(place),
                             }
                         })
@@ -2645,7 +2651,7 @@ fn callable_mutation_permitted(
         let Some(operation) = function
             .blocks
             .iter()
-            .flat_map(|block| &block.ops)
+            .flat_map(crate::SemBlock::operations)
             .find(|operation| operation.results.iter().any(|result| result.id == value))
         else {
             // Call results are fresh owned values on their normal continuation.
@@ -2664,7 +2670,7 @@ fn callable_mutation_permitted(
                         value = root;
                         continue;
                     }
-                    crate::OwnerRoot::Local(_) => return true,
+                    crate::OwnerRoot::Local(_) | crate::OwnerRoot::Session(_) => return true,
                 }
             }
             return closure_for_body(function, context)
@@ -5200,6 +5206,9 @@ fn checked_raise_origin(
         for slot in incoming {
             found = true;
             let valid = match &block.terminator {
+                SemTerminator::Materialize { .. } => {
+                    slot.0 == 1 && kind == crate::TrapKind::HeapExceeded
+                }
                 SemTerminator::CheckedBinary { failures, .. } => {
                     slot.0 > 0
                         && failures
@@ -5334,6 +5343,7 @@ fn failure_cfg_matches_exit(
             }
             SemTerminator::Return { .. }
             | SemTerminator::Panic { .. }
+            | SemTerminator::Materialize { .. }
             | SemTerminator::CheckedBinary { .. }
             | SemTerminator::SwitchVariant { .. }
             | SemTerminator::Call { .. }
@@ -5557,6 +5567,21 @@ fn verify_terminator_shape(
 ) {
     let terminator = &block.terminator;
     match terminator {
+        SemTerminator::Materialize {
+            operation, failure, ..
+        } => {
+            if !operation.kind.is_managed_materialization()
+                || operation.results.len() != 1
+                || !failure_cfg_matches_exit(failure, Some(crate::TrapKind::HeapExceeded), blocks)
+            {
+                invalid_operation(
+                    function,
+                    operation.id,
+                    "managed acquisition requires one result and HeapExceeded cleanup".into(),
+                    diagnostics,
+                );
+            }
+        }
         SemTerminator::Safepoint {
             cancel: Some(cancel),
             ..
@@ -6429,6 +6454,13 @@ fn uses_in_terminator(term: &SemTerminator) -> Vec<(ValueId, bool)> {
     // The canonical visitor orders control inputs before normal-edge
     // arguments. Only that interval can see the terminator result.
     let normal_slots = match term {
+        SemTerminator::Materialize {
+            operation, normal, ..
+        } => {
+            let mut inputs = 0;
+            operation.visit_operands(|_, _| inputs += 1);
+            inputs..inputs + normal.args.len()
+        }
         SemTerminator::Call { args, normal, .. } => {
             args.len()..args.len() + normal.as_ref().map_or(0, |edge| edge.args.len())
         }

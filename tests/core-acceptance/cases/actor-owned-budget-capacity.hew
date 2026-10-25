@@ -1,0 +1,37 @@
+// One Vec state slot costs eight managed bytes. Four i64 elements reserve
+// 32 bytes; the fifth element requires a 64-byte backing. An i64 reply adds
+// eight bytes while owned by the actor. Runtime envelope fields do not count.
+#[max_heap(48)]
+actor Buffer {
+    var values: Vec<i64>;
+
+    receive fn fill_four() -> i64 {
+        for i in 0..4 { values.push(i); }
+        values.len()
+    }
+
+    receive fn retained() -> i64 { values.len() }
+
+    receive fn grow_fifth() -> i64 {
+        values.push(4);
+        values.len()
+    }
+}
+
+fn main() -> i64 {
+    let buffer = spawn Buffer { values: Vec.new() };
+    match buffer.fill_four() {
+        .Ok(n) => println(n),
+        .Err(_) => return 1,
+    }
+    match buffer.retained() {
+        .Ok(n) => println(n),
+        .Err(_) => return 2,
+    }
+    match buffer.grow_fifth() {
+        .Err(.Trapped) => println("limit"),
+        _ => return 3,
+    }
+    stopped(buffer);
+    0
+}

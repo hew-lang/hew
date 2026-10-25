@@ -2325,6 +2325,13 @@ const HANDWRITTEN_CATALOG: &[BuiltinEntry] = &[
     // signature. These are dispatch identities; their pointer ABI is owned by
     // the runtime contract.
     direct(
+        "stream.pipe",
+        BuiltinClass::ClassB,
+        &[BuiltinTy::I64],
+        BuiltinTy::Unit,
+        BuiltinLinkage::CalleeNameDispatchOnly,
+    ),
+    direct(
         "stream.pair_sink",
         BuiltinClass::ClassB,
         &[BuiltinTy::Pointer],

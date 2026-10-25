@@ -552,6 +552,22 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             .ok_or_else(|| CodegenError::FailClosed("dispatch table was never emitted".into()))?
             .as_pointer_value();
         let pointer = self.ctx.ptr_type(AddressSpace::default());
+        let target = TargetData::create(&self.module.target.data_layout);
+        let word = self.ctx.ptr_sized_int_type(&target, None);
+        let prefix = self.ctx.struct_type(
+            &[pointer.into(), word.into(), word.into(), pointer.into()],
+            false,
+        );
+        let layout_slot = self
+            .builder
+            .build_struct_gep(prefix, vtable_global, 3, "dyn.layout.slot")
+            .llvm_ctx("address concrete descriptor")?;
+        let layout = self
+            .builder
+            .build_load(pointer, layout_slot, "dyn.layout")
+            .llvm_ctx("load concrete descriptor")?
+            .into_pointer_value();
+        super::callable::acquire_value_code(self.ctx, self.llvm, &self.builder, layout)?;
         let fat = self
             .ctx
             .struct_type(&[pointer.into(), pointer.into()], false);
@@ -767,34 +783,17 @@ impl<'ctx> ValueEmitter<'_, 'ctx> {
         data: PointerValue<'ctx>,
         table: PointerValue<'ctx>,
     ) -> CodegenResult<()> {
-        let target = TargetData::create(&self.module.target.data_layout);
-        let word = self.ctx.ptr_sized_int_type(&target, None);
         let pointer = self.ctx.ptr_type(AddressSpace::default());
-        let prefix = self
-            .ctx
-            .struct_type(&[pointer.into(), word.into(), word.into()], false);
-        let mut layout = [word.const_zero(); 2];
-        for (index, name) in [(1u32, "dyn.size"), (2, "dyn.align")] {
-            let field = self
-                .builder
-                .build_struct_gep(prefix, table, index, name)
-                .llvm_ctx("address the table layout prefix")?;
-            layout[index as usize - 1] = self
-                .builder
-                .build_load(word, field, name)
-                .llvm_ctx("load the table layout prefix")?
-                .into_int_value();
-        }
         let free = get_or_declare_external(
             self.llvm,
-            hew_types::RuntimeCallFamily::DynBoxFree.c_symbol(),
+            "hew_dyn_box_release",
             self.ctx
                 .void_type()
-                .fn_type(&[pointer.into(), word.into(), word.into()], false),
+                .fn_type(&[pointer.into(), pointer.into()], false),
         )?;
         self.builder
-            .build_call(free, &[data.into(), layout[0].into(), layout[1].into()], "")
-            .llvm_ctx("free the erased value's box")?;
+            .build_call(free, &[data.into(), table.into()], "")
+            .llvm_ctx("release the erased box and defining code")?;
         Ok(())
     }
 }

@@ -1,0 +1,36 @@
+indirect enum Tree {
+    Leaf(i64);
+    Node(Tree, Tree);
+}
+
+fn leaf_value() -> i64 {
+    let tree = Tree.Leaf(5);
+    match tree { .Leaf(value) => value, .Node(_, _) => 0, }
+}
+
+// Every indirect Tree node reserves its canonical maximum payload:
+// discriminator4 plus two child handles8 each, independent of its case.
+#[max_heap(20)]
+actor Exact {
+    receive fn run() -> i64 {
+        var total = 0;
+        for _ in 0..8 { total += leaf_value(); }
+        total
+    }
+}
+
+#[max_heap(19)]
+actor Small {
+    receive fn run() -> i64 { leaf_value() }
+}
+
+fn main() -> i64 {
+    let exact = spawn Exact;
+    println(exact.run().expect("variant disposal reuse"));
+    stop(exact);
+    stopped(exact);
+    let small = spawn Small;
+    match small.run() { .Err(.Trapped) => println("variant limit"), _ => return 2, }
+    stopped(small);
+    0
+}

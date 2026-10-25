@@ -1,0 +1,14 @@
+[[case]]
+id = "actor-owned-budget-generator-stream"
+intent = "Codec Streams retain typed generator payloads, preserve yielded backing and refund adapters through cleanup."
+source = "cases/actor-owned-budget-generator-stream.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 30
+
+[case.env]
+HEW_WORKERS = "2"
+
+[case.expected]
+stdout = "7\n7\ngenerator carrier limit\n"
+stderr = "hew: failure: HeapExceeded (200)\nhew: actor crash in Small.wrap (actor 3): HeapExceeded\n"
+exit = 1

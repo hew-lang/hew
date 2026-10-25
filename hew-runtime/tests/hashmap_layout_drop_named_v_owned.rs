@@ -103,6 +103,8 @@ unsafe extern "C" fn eq_i64(
 fn make_descriptors() -> (HewMapKeyLayout, HewValueLayout) {
     let kl = HewMapKeyLayout {
         value: HewValueLayout {
+            code_owner: core::ptr::null(),
+            managed: core::ptr::null(),
             release_start: None,
             size: size_of::<i64>(),
             align: align_of::<i64>(),
@@ -114,6 +116,8 @@ fn make_descriptors() -> (HewMapKeyLayout, HewValueLayout) {
         eq_fn: Some(eq_i64 as HewMapKeyEqThunk),
     };
     let vl = HewValueLayout {
+        code_owner: core::ptr::null(),
+        managed: core::ptr::null(),
         release_start: None,
         size: size_of::<NamedV>(),
         align: align_of::<NamedV>(),

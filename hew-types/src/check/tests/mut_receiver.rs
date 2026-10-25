@@ -570,22 +570,34 @@ impl Holder {{
 }}
 "#
         );
-        let output = check_source(&source);
-        assert!(
-            output.errors.iter().any(|error| {
-                error.kind == TypeErrorKind::OwnPartialConsume
-                    && error.message.contains("this interpolation")
-            }),
-            "{source}: {:?}",
-            output.errors
-        );
         let scalar = source.replace("caption: Caption", "caption: i64");
-        let output = check_source(&scalar);
-        assert!(output.errors.is_empty(), "{scalar}: {:?}", output.errors);
+        for source in [source, scalar] {
+            let output = check_source(&source);
+            assert!(
+                output.errors.iter().any(|error| {
+                    error.kind == TypeErrorKind::OwnPartialConsume
+                        && error.message.contains("this interpolation")
+                }),
+                "{source}: {:?}",
+                output.errors
+            );
+            let restored = source
+                .replace("let conn = self.conn;\n        let label =", "let label =")
+                .replace(
+                    "self.conn = conn;",
+                    "let conn = self.conn; self.conn = conn;",
+                );
+            let output = check_source(&restored);
+            assert!(output.errors.is_empty(), "{restored}: {:?}", output.errors);
+        }
     }
 }
 
 #[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one table compares fallible receiver holes with restored and infallible forms"
+)]
 fn var_self_receiver_stays_whole_wherever_it_can_fail() {
     let declarations = r"#[resource]
 type Conn {
@@ -644,6 +656,10 @@ trait Touch {
             "let conn = self.conn; let n = conn.weight(); self.conn = conn; n",
             "`weight(...)`",
         ),
+        (
+            "let conn = self.conn; let label = f\"{divisor}\"; self.conn = conn; 0",
+            "this interpolation",
+        ),
         // Clearing releases elements that can reach a `close`.
         (
             "let conn = self.conn; self.pool.clear(); self.conn = conn; 0",
@@ -689,7 +705,7 @@ trait Touch {
         "self.count += 1; self.conn.fd = self.conn.fd + work(); self.count",
         // A runtime operation fails only where its contract says so.
         "let conn = self.conn; self.count = self.items.len(); self.conn = conn; 0",
-        "let conn = self.conn; let label = f\"{divisor}\"; self.count = label.len(); self.conn = conn; 0",
+        "let label = f\"{divisor}\"; let conn = self.conn; self.count = label.len(); self.conn = conn; 0",
         "let spare = self.spare.is_some(); let conn = self.conn; self.conn = conn; if spare { 1 } else { 0 }",
         "let conn = self.conn; self.items.clear(); self.conn = conn; 0",
     ] {

@@ -375,16 +375,11 @@ fn utf8_decode_rejects_a_foreign_optional_payload_descriptor() {
                     },
                 ..
             },
-        failure,
         ..
     } = &mut physical.functions[0].blocks[0].terminator
     else {
         panic!("expected the typed decoder runtime action");
     };
-    assert!(
-        failure.is_none(),
-        "invalid UTF-8 is not a native fault edge"
-    );
     *error_len = *result;
     let error = verify_physical_module(&physical)
         .expect_err("Result storage cannot stand in for Option<i64>");
@@ -566,6 +561,57 @@ fn lower_source(source: &str) -> SemModule {
         "source fixture must exercise a lowered function"
     );
     lowered.module
+}
+
+#[test]
+fn frame_roots_follow_live_owners_at_loop_and_child_suspension() {
+    for pause in [
+        "for i in 0..2 { assert(held.len() > i); }",
+        "pause(); assert(held.len() == 4);",
+    ] {
+        let source = format!(
+            r#"
+fn pause() {{ sleep(1ms); }}
+fn main() {{
+    {{ let temporary = "gone"; assert(temporary.len() == 4); }}
+    let held = "held";
+    {pause}
+}}
+"#
+        );
+        let semantic = lower_source(&source);
+        let physical = lower_physical_module(&semantic, target_for_inventory(&semantic)).unwrap();
+        let module = physical.module();
+        let function = module
+            .functions
+            .iter()
+            .find(|function| {
+                module
+                    .defs
+                    .path(module.callables[function.callable.0 as usize].declaration)
+                    == "main"
+            })
+            .unwrap();
+        let local_slot = |name| {
+            *module.debug.functions[&function.callable]
+                .locals
+                .iter()
+                .find(|(_, local)| local.name == name)
+                .unwrap()
+                .0
+        };
+        assert!(
+            !function
+                .frame_roots
+                .slots
+                .contains(&local_slot("temporary")),
+            "a disposed synchronous temporary is not a suspended frame root"
+        );
+        assert!(
+            function.frame_roots.slots.contains(&local_slot("held")),
+            "a live owner survives both cooperative loop polls and child calls"
+        );
+    }
 }
 
 #[test]
@@ -1163,7 +1209,7 @@ fn lowers_scalar_tuple_construction_and_projection_to_explicit_ops() {
         .functions
         .iter()
         .flat_map(|function| &function.blocks)
-        .flat_map(|block| &block.ops)
+        .flat_map(super::types::PhysicalBlock::operations)
         .collect::<Vec<_>>();
     assert!(operations.iter().any(|operation| matches!(
         operation,
@@ -1216,7 +1262,7 @@ fn main() {
         .functions
         .iter()
         .flat_map(|function| &function.blocks)
-        .flat_map(|block| &block.ops)
+        .flat_map(super::types::PhysicalBlock::operations)
         .collect::<Vec<_>>();
     assert!(operations
         .iter()
@@ -1235,7 +1281,7 @@ fn main() {
             function
                 .blocks
                 .iter()
-                .flat_map(|block| &block.ops)
+                .flat_map(super::types::PhysicalBlock::operations)
                 .filter_map(|operation| {
                     let PhysicalOp::Clone {
                         source,
@@ -1274,7 +1320,11 @@ fn borrowed_aggregate_fields_retain_exact_sir_parent_dependencies() {
     let physical = borrowed_aggregate_fixture();
     let function = &physical.functions[0];
     let mut loans = 0;
-    for operation in function.blocks.iter().flat_map(|block| &block.ops) {
+    for operation in function
+        .blocks
+        .iter()
+        .flat_map(super::types::PhysicalBlock::operations)
+    {
         if let PhysicalOp::AggregateProjectBorrow {
             dest, aggregate, ..
         } = operation
@@ -1378,7 +1428,7 @@ fn physical_field_loans_refuse_wrong_fields_and_forged_dependencies() {
         let operation = function
             .blocks
             .iter_mut()
-            .flat_map(|block| &mut block.ops)
+            .flat_map(super::types::PhysicalBlock::operations_mut)
             .find(|op| matches!(op, PhysicalOp::AggregateProjectBorrow { .. }))
             .unwrap();
         let PhysicalOp::AggregateProjectBorrow { dest, field, .. } = operation else {
@@ -1432,16 +1482,19 @@ fn physical_borrow_roots_cannot_end_before_their_dependent_reads() {
 #[test]
 fn physical_fault_cleanup_must_end_its_field_loans() {
     let mut physical = borrowed_aggregate_fixture();
+    let PhysicalTerminator::RuntimeCall {
+        failure: Some(failure),
+        ..
+    } = &vector_block(&mut physical.functions[0], VecValueOp::Index).terminator
+    else {
+        panic!("the field read must expose its checked failure cleanup");
+    };
+    let cleanup = failure.target;
     let fault = physical.functions[0]
         .blocks
         .iter_mut()
-        .find(|block| {
-            matches!(
-                block.terminator,
-                PhysicalTerminator::CheckedRaiseFault { .. }
-            )
-        })
-        .unwrap();
+        .find(|block| block.id == cleanup)
+        .expect("the field read's failure cleanup block");
     let before = fault.ops.len();
     fault
         .ops
@@ -1487,7 +1540,11 @@ fn borrowed_variant_payloads_retain_their_enum_dependency() {
     let physical = borrowed_variant_fixture();
     let mut loans = 0;
     for function in &physical.functions {
-        for operation in function.blocks.iter().flat_map(|block| &block.ops) {
+        for operation in function
+            .blocks
+            .iter()
+            .flat_map(super::types::PhysicalBlock::operations)
+        {
             if let PhysicalOp::VariantProjectBorrow { dest, source, .. } = operation {
                 loans += 1;
                 let slot = &function.storage[dest.0 as usize];
@@ -1514,14 +1571,14 @@ fn physical_variant_loans_refuse_forged_dependencies_and_fields() {
                 function
                     .blocks
                     .iter()
-                    .flat_map(|block| &block.ops)
+                    .flat_map(super::types::PhysicalBlock::operations)
                     .any(|op| matches!(op, PhysicalOp::VariantProjectBorrow { .. }))
             })
             .unwrap();
         let operation = function
             .blocks
             .iter_mut()
-            .flat_map(|block| &mut block.ops)
+            .flat_map(super::types::PhysicalBlock::operations_mut)
             .find(|op| matches!(op, PhysicalOp::VariantProjectBorrow { .. }))
             .unwrap();
         let PhysicalOp::VariantProjectBorrow { dest, field, .. } = operation else {
@@ -1650,7 +1707,7 @@ fn main() {
         .functions
         .iter_mut()
         .flat_map(|function| &mut function.blocks)
-        .flat_map(|block| &mut block.ops)
+        .flat_map(super::types::PhysicalBlock::operations_mut)
         .find_map(|operation| match operation {
             PhysicalOp::AggregateMake { fields, .. } => Some(fields),
             _ => None,
@@ -1671,7 +1728,7 @@ fn main() {
     let (source, action) = function
         .blocks
         .iter_mut()
-        .flat_map(|block| &mut block.ops)
+        .flat_map(super::types::PhysicalBlock::operations_mut)
         .find_map(|operation| match operation {
             PhysicalOp::Clone { source, action, .. } if projected_sources.contains(source) => {
                 Some((*source, action))
@@ -1714,7 +1771,7 @@ fn verifier_rejects_owned_or_out_of_bounds_tuple_operations() {
     let tuple_dest = owned_tuple.functions[0]
         .blocks
         .iter()
-        .flat_map(|block| &block.ops)
+        .flat_map(super::types::PhysicalBlock::operations)
         .find_map(|operation| match operation {
             PhysicalOp::TupleMake { dest, .. } => Some(*dest),
             _ => None,
@@ -1731,7 +1788,7 @@ fn verifier_rejects_owned_or_out_of_bounds_tuple_operations() {
     let index = bad_index.functions[0]
         .blocks
         .iter_mut()
-        .flat_map(|block| &mut block.ops)
+        .flat_map(super::types::PhysicalBlock::operations_mut)
         .find_map(|operation| match operation {
             PhysicalOp::TupleGet { index, .. } => Some(index),
             _ => None,
@@ -2085,7 +2142,7 @@ fn verifier_checks_assign_source_before_initialization_analysis() {
     let operation = physical.functions[0]
         .blocks
         .iter_mut()
-        .flat_map(|block| &mut block.ops)
+        .flat_map(super::types::PhysicalBlock::operations_mut)
         .find(|operation| {
             matches!(
                 operation,
@@ -2136,7 +2193,7 @@ fn verifier_checks_binary_result_and_constant_payload_types() {
     let destination = wrong_binary.functions[0]
         .blocks
         .iter_mut()
-        .flat_map(|block| &mut block.ops)
+        .flat_map(super::types::PhysicalBlock::operations_mut)
         .find_map(|operation| match operation {
             PhysicalOp::Binary {
                 op: BinaryOp::WrappingAdd,
@@ -2155,7 +2212,7 @@ fn verifier_checks_binary_result_and_constant_payload_types() {
     let constant = wrong_constant.functions[0]
         .blocks
         .iter_mut()
-        .flat_map(|block| &mut block.ops)
+        .flat_map(super::types::PhysicalBlock::operations_mut)
         .find_map(|operation| match operation {
             PhysicalOp::Const {
                 value: value @ PhysicalConst::IntegerBits(_),
@@ -2179,7 +2236,7 @@ fn full_range_u64_literal_lowers_to_its_exact_bit_pattern() {
     let bits = physical.functions[0]
         .blocks
         .iter()
-        .flat_map(|block| &block.ops)
+        .flat_map(super::types::PhysicalBlock::operations)
         .find_map(|operation| match operation {
             PhysicalOp::Const {
                 value: PhysicalConst::IntegerBits(bits),
@@ -2200,7 +2257,7 @@ fn negative_signed_literal_lowers_to_its_destination_width_twos_complement() {
     let bits = physical.functions[0]
         .blocks
         .iter()
-        .flat_map(|block| &block.ops)
+        .flat_map(super::types::PhysicalBlock::operations)
         .find_map(|operation| match operation {
             PhysicalOp::Const {
                 value: PhysicalConst::IntegerBits(bits),
@@ -2223,7 +2280,7 @@ fn verifier_rejects_a_constant_with_bits_above_its_destination_width() {
     let constant = malformed.functions[0]
         .blocks
         .iter_mut()
-        .flat_map(|block| &mut block.ops)
+        .flat_map(super::types::PhysicalBlock::operations_mut)
         .find_map(|operation| match operation {
             PhysicalOp::Const {
                 value: value @ PhysicalConst::IntegerBits(_),
@@ -2249,7 +2306,7 @@ fn verifier_rejects_missing_physical_literal_pool_entries() {
     let literal = physical.functions[0]
         .blocks
         .iter_mut()
-        .flat_map(|block| &mut block.ops)
+        .flat_map(super::types::PhysicalBlock::operations_mut)
         .find_map(|operation| match operation {
             PhysicalOp::Const {
                 value: PhysicalConst::String(id),
@@ -2389,6 +2446,7 @@ fn verifier_rejects_overwriting_a_maybe_live_owner() {
         entry: BlockId(0),
         parameters: vec![],
         place_storage: BTreeMap::new(),
+        frame_roots: PhysicalFrameRootPlan::default(),
         storage: vec![
             PhysicalStorage {
                 id: StorageId(0),
@@ -2479,6 +2537,7 @@ fn verifier_rejects_overwriting_a_maybe_live_owner() {
         actors: Vec::new(),
         supervisors: Vec::new(),
         actor_recipes: BTreeMap::new(),
+        managed_types: BTreeMap::new(),
         resources: vec![],
         closures: vec![],
         callable_specializations: Vec::new(),
@@ -2890,7 +2949,7 @@ fn vector_values_use_shared_copy_drop_recipes_for_every_element_shape() {
                 .functions
                 .iter()
                 .flat_map(|function| &function.blocks)
-                .flat_map(|block| &block.ops)
+                .flat_map(super::types::PhysicalBlock::operations)
                 .any(|op| matches!(
                     op,
                     PhysicalOp::Clone {
@@ -3871,7 +3930,7 @@ fn loop_constants_respect_accepted_physical_terminator_overwrites() {
     let constant = function
         .blocks
         .iter()
-        .flat_map(|block| &block.ops)
+        .flat_map(super::types::PhysicalBlock::operations)
         .find_map(|op| {
             if let PhysicalOp::Const {
                 dest,

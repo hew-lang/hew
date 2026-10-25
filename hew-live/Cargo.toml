@@ -1,0 +1,22 @@
+[package]
+name = "hew-live"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Experimental prepared native generations for Hew hosts"
+publish = false
+readme = "README.md"
+repository = "https://github.com/hew-lang/hew"
+keywords = ["hew", "embedding", "compiler"]
+categories = ["compilers", "api-bindings"]
+
+[dependencies]
+hew-cabi = { path = "../hew-cabi" }
+libloading = "0.9"
+object = "0.40"
+serde.workspace = true
+sha2.workspace = true
+tempfile.workspace = true
+
+[lints]
+workspace = true

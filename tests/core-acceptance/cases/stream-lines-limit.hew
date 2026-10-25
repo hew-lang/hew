@@ -1,0 +1,26 @@
+import std.stream;
+
+fn capped(first: string, second: string, expected: Vec<i64>) {
+    let (output, input): (Sink<bytes>, Stream<bytes>) = stream.pipe(2).expect("pipe");
+    output.send(first.to_bytes()).expect("first");
+    output.send(second.to_bytes()).expect("second");
+    output.finish();
+    let lines = input.lines();
+    var lengths: Vec<i64> = [];
+    for line in lines {
+        lengths.push(line.len());
+    }
+    assert(lengths == expected);
+    output.close();
+}
+
+fn main() {
+    let limit = 1024 * 1024;
+    let full = "x".repeat(limit);
+    capped(full + "\r\n", "tail", [limit, 4]);
+    capped(full, "\r\nnext\n", [limit, 4]);
+    capped(full + "more\n", "", [limit, 4]);
+    capped("x".repeat(limit - 1) + "\r\n", "", [limit - 1]);
+    capped(full + "\r", "\n", [limit]);
+    println("bounded line pieces");
+}

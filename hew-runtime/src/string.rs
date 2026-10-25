@@ -769,6 +769,101 @@ pub unsafe extern "C" fn hew_string_push(s: *mut HewString, scalar: u32) -> *mut
     unsafe { string_push(s, scalar) }
 }
 
+unsafe fn prepare_string_append(
+    value: *mut HewString,
+    added: usize,
+) -> Result<Option<crate::owned_value_budget::BackingChange>, i32> {
+    use crate::owned_value_budget::{current_owner, ManagedStorage};
+    let Some(owner) = current_owner() else {
+        return Ok(None);
+    };
+    if added == 0 {
+        return Ok(None);
+    }
+    // SAFETY: the checked caller retains its immutable input until reservation.
+    let (capacity, unique) = unsafe { hew_cabi::string::string_append_plan(value, added) }
+        .ok_or(hew_cabi::managed::HEAP_EXCEEDED)?;
+    let old = if value.is_null() {
+        None
+    } else {
+        Some(ManagedStorage {
+            identity: value as usize,
+            // SAFETY: the same original handle remains initialized.
+            bytes: unsafe { hew_cabi::string::string_payload_capacity(value) } as u64,
+        })
+    };
+    owner
+        .prepare_backing_change(old, capacity as u64, unique)
+        .map(Some)
+        .map_err(|_| hew_cabi::managed::HEAP_EXCEEDED)
+}
+
+/// Append only after canonical capacity acquisition succeeds.
+/// # Safety
+/// Input handles and status are live; refusal leaves the receiver owned by caller.
+#[no_mangle]
+pub unsafe extern "C" fn hew_string_append_checked(
+    value: *mut HewString,
+    suffix: *const HewString,
+    out_status: *mut i32,
+) -> *mut HewString {
+    // SAFETY: the caller lends both handles throughout the checked boundary.
+    unsafe {
+        out_status.write(0);
+        let added = hew_cabi::string::string_as_bytes(suffix).len();
+        let permit = match prepare_string_append(value, added) {
+            Ok(permit) => permit,
+            Err(status) => {
+                out_status.write(status);
+                return core::ptr::null_mut();
+            }
+        };
+        let result = string_append(value, suffix);
+        if let Some(permit) = permit {
+            permit.commit(result as usize);
+        }
+        result
+    }
+}
+
+/// Push only after canonical UTF-8 capacity acquisition succeeds.
+/// # Safety
+/// Receiver and status are live, and `scalar` is a valid Unicode scalar.
+#[no_mangle]
+pub unsafe extern "C" fn hew_string_push_checked(
+    value: *mut HewString,
+    scalar: u32,
+    out_status: *mut i32,
+) -> *mut HewString {
+    let scalar = char::from_u32(scalar).unwrap_or_else(|| std::process::abort());
+    // SAFETY: the original receiver stays initialized until reservation commits.
+    unsafe {
+        out_status.write(0);
+        let permit = match prepare_string_append(value, scalar.len_utf8()) {
+            Ok(permit) => permit,
+            Err(status) => {
+                out_status.write(status);
+                return core::ptr::null_mut();
+            }
+        };
+        let result = string_push(value, scalar);
+        if let Some(permit) = permit {
+            permit.commit(result as usize);
+        }
+        result
+    }
+}
+
+/// Consume the string's semantic owner and return the canonical empty handle.
+/// # Safety
+/// The caller transfers one initialized, accounted source string.
+#[no_mangle]
+pub unsafe extern "C" fn hew_string_clear_managed(value: *mut HewString) -> *mut HewString {
+    // SAFETY: clear ends the same source ownership obligation as ordinary drop.
+    unsafe { hew_string_drop_managed(value) };
+    core::ptr::null_mut()
+}
+
 /// Clear a string, consuming its owner and returning the canonical empty value.
 ///
 /// # Safety
@@ -835,6 +930,22 @@ pub unsafe extern "C" fn hew_string_repeat(s: *const HewString, count: i64) -> *
 #[no_mangle]
 pub unsafe extern "C" fn hew_string_drop(s: *mut HewString) {
     // SAFETY: the caller transfers one managed owner; null is canonical empty.
+    unsafe { string_release(s) };
+}
+
+/// Release a compiler-owned language string and its account edge.
+/// # Safety
+/// `s` is an initialized owned string charged to the current incarnation.
+#[no_mangle]
+pub unsafe extern "C" fn hew_string_drop_managed(s: *mut HewString) {
+    if !s.is_null() {
+        if let Some(owner) = crate::owned_value_budget::current_owner() {
+            // SAFETY: the source owner retains this exact string backing.
+            let bytes = unsafe { hew_cabi::string::string_payload_capacity(s) } as u64;
+            owner.release_backing(s.cast(), bytes);
+        }
+    }
+    // SAFETY: the semantic release transfers this one native reference.
     unsafe { string_release(s) };
 }
 

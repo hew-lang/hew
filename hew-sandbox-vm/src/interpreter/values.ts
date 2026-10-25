@@ -1,6 +1,6 @@
 import type { JsonValue } from "./types.js";
 import { IndexedString, stringValue } from "./strings.js";
-import type { EncodingNode, EncodingFormat } from "./v1/encoding-values.js";
+import { cloneEncoding } from "./v1/encoding-storage.js";
 export { stringValue } from "./strings.js";
 
 /** One creator-owned membership list; payload destruction uses the ordinary VM release path. */
@@ -9,6 +9,8 @@ export interface RcOwner {
   closed: boolean;
 }
 export interface RcCell {
+  managedLease?: import("./v1/managed-budget.js").ManagedLease;
+  managedPayload?: number;
   value: VmValue;
   refs: number;
   weak: number;
@@ -17,9 +19,33 @@ export interface RcCell {
   typeName: string;
 }
 
+/** The language payload allocation. JS arrays holding view metadata do not
+ * determine its capacity or identity. Bytes views retain this complete owner. */
+export interface VectorStorage {
+  items: VmValue[];
+  capacity: number;
+  owners: number;
+  bytes: boolean;
+  shareOnCopy: boolean;
+}
+
+export interface VmVector {
+  kind: "vector";
+  elementType: string;
+  items: VmValue[];
+  storage?: VectorStorage;
+  offset?: number;
+  closed?: boolean;
+  prepareMutation?: (
+    capacity: number,
+    detached: boolean,
+    appended?: readonly VmValue[],
+  ) => void;
+}
+
 export type VmValue =
   | import("./v1/semaphores.js").SemaphoreHandle
-  | { kind: "encoding"; format: EncodingFormat; value: EncodingNode | null }
+  | import("./v1/encoding-storage.js").EncodingOwner
   | { kind: "rc"; cell: RcCell | null; closed: boolean }
   | { kind: "weak"; cell: RcCell; closed: boolean }
   | { kind: "unit" }
@@ -44,7 +70,13 @@ export type VmValue =
   | { kind: "sink"; channelId: string }
   | { kind: "duplex"; channelId: string }
   | { kind: "regex"; source: string; regex: RegExp }
-  | { kind: "record"; typeId: string; shape?: number; fields: VmValue[] }
+  | {
+      kind: "record";
+      typeId: string;
+      shape?: number;
+      fields: VmValue[];
+      managedCaptures?: readonly number[];
+    }
   | {
       kind: "enum";
       typeId: string;
@@ -52,7 +84,7 @@ export type VmValue =
       tag: number;
       payload: VmValue[];
     }
-  | { kind: "vector"; elementType: string; items: VmValue[] }
+  | VmVector
   /** A map or set owns its occupied slots. Selected Hash/Eq operations probe
    *  the table; tombstones preserve collision chains across removal. */
   | {
@@ -60,11 +92,18 @@ export type VmValue =
       entries: Map<string, { key: VmValue; value: VmValue }>;
       capacity?: number;
       tombstones?: Set<number>;
+      prepareInsert?: (
+        staged: Extract<VmValue, { kind: "map" }>,
+        slot: string,
+        key: VmValue,
+        value: VmValue,
+        copyKey: boolean,
+      ) => void;
     }
   /** A trait object: the vtable the checker selected, and the value it wraps.
    *  A `dyn.call` resolves its method through `vtable`, never through the
    *  wrapped value's shape. */
-  | { kind: "dyn"; vtable: number; value: VmValue }
+  | { kind: "dyn"; vtable: number; value: VmValue; managedPayload?: number }
   /** A first-class function reference materialised by `const.function`.
    *  `id` is the bytecode function id (e.g. `"fn:my_handler"`).
    *  Function values are immutable: `cloneValue` is identity. */
@@ -78,6 +117,7 @@ export type VmValue =
       entries: ReadonlyArray<{ body: number; specialization: number | null }>;
       specialization: number | null;
       environment: VmValue;
+      managedCaptures?: readonly number[];
     };
 
 export const UNIT: VmValue = { kind: "unit" };
@@ -100,7 +140,7 @@ const I64_LITERAL_DECIMAL = /^(?:0|-?[1-9]\d*)$/;
 export function cloneValue(value: VmValue): VmValue {
   switch (value.kind) {
     case "encoding":
-      return { ...value, value: structuredClone(value.value) };
+      return cloneEncoding(value);
     case "rc":
       if (value.closed) throw new Error("cannot copy a released Rc");
       if (!value.cell || value.cell.dying)
@@ -149,6 +189,7 @@ export function cloneValue(value: VmValue): VmValue {
         kind: "record",
         typeId: value.typeId,
         shape: value.shape,
+        managedCaptures: value.managedCaptures,
         fields: value.fields.map(cloneValue),
       };
     case "enum":
@@ -160,16 +201,13 @@ export function cloneValue(value: VmValue): VmValue {
         payload: value.payload.map(cloneValue),
       };
     case "vector":
-      return {
-        kind: "vector",
-        elementType: value.elementType,
-        items: value.items.map(cloneValue),
-      };
+      return cloneVector(value);
     case "dyn":
       return {
         kind: "dyn",
         vtable: value.vtable,
         value: cloneValue(value.value),
+        managedPayload: value.managedPayload,
       };
     case "closure":
       return {
@@ -177,6 +215,7 @@ export function cloneValue(value: VmValue): VmValue {
         entries: value.entries,
         specialization: value.specialization,
         environment: cloneValue(value.environment),
+        managedCaptures: value.managedCaptures,
       };
     case "map":
       return {
@@ -191,6 +230,128 @@ export function cloneValue(value: VmValue): VmValue {
         ),
       };
   }
+}
+
+export function vectorStorage(value: VmVector): VectorStorage {
+  if (value.closed) throw new Error("cannot read a released vector");
+  return (value.storage ??= {
+    items: value.items,
+    capacity: value.items.length,
+    owners: 1,
+    bytes: false,
+    shareOnCopy: false,
+  });
+}
+
+export function byteVectorValue(items: VmValue[]): VmVector {
+  return {
+    kind: "vector",
+    elementType: "u8",
+    items,
+    storage: {
+      items,
+      capacity: items.length ? Math.max(items.length, 16) : 0,
+      owners: 1,
+      bytes: true,
+      shareOnCopy: true,
+    },
+    offset: 0,
+  };
+}
+
+function cloneVector(value: VmVector): VmVector {
+  const storage = vectorStorage(value);
+  // Native Vec clones discard an empty receiver's spare capacity. Bytes
+  // clones retain their allocation even when the visible length is zero.
+  if (storage.bytes || (storage.shareOnCopy && value.items.length !== 0)) {
+    storage.owners++;
+    return { ...value, storage, closed: false };
+  }
+  const items = value.items.map(cloneValue);
+  return {
+    kind: "vector",
+    elementType: value.elementType,
+    items,
+    storage: { ...storage, items, capacity: items.length, owners: 1 },
+  };
+}
+
+export function sliceByteVector(
+  value: VmVector,
+  start: number,
+  end: number,
+): VmVector {
+  const storage = vectorStorage(value);
+  if (!storage.bytes) throw new Error("bytes slice has no bytes storage");
+  if (start === end) return byteVectorValue([]);
+  storage.owners++;
+  return {
+    kind: "vector",
+    elementType: value.elementType,
+    items: value.items.slice(start, end),
+    storage,
+    offset: (value.offset ?? 0) + start,
+  };
+}
+
+/** Establish uniqueness before any mutation, preserving native capacity rules. */
+export function mutableVector(
+  value: VmVector,
+  needed = value.items.length,
+  appended?: readonly VmValue[],
+): VmVector {
+  let storage = vectorStorage(value);
+  let capacity = storage.capacity;
+  const detached = storage.owners !== 1;
+  if (detached && storage.bytes) capacity = Math.max(value.items.length, 16);
+  if (needed > capacity) {
+    if (storage.bytes)
+      capacity = Math.max(Math.min(capacity * 2, 0xffffffff), needed, 16);
+    else {
+      capacity = capacity || 4;
+      while (capacity < needed) capacity *= 2;
+    }
+  }
+  if (
+    !Number.isSafeInteger(capacity) ||
+    (storage.bytes && capacity > 0xffffffff)
+  )
+    throw new Error("vector capacity overflow");
+  if (detached || capacity !== storage.capacity || appended?.length)
+    value.prepareMutation?.(capacity, detached, appended);
+  if (detached) {
+    const items = value.items.map(cloneValue);
+    storage.owners--;
+    storage = { ...storage, items, capacity, owners: 1 };
+    value.storage = storage;
+    value.items = items;
+    value.offset = 0;
+  }
+  if (capacity !== storage.capacity) {
+    storage.capacity = capacity;
+    value.offset = 0;
+  } else if (storage.bytes && (value.offset ?? 0) + needed > capacity) {
+    value.offset = 0;
+  }
+  return value;
+}
+
+/** Consume one handle; only the last backing owner releases its elements. */
+export function releaseVector(value: VmVector): VmValue[] {
+  if (value.closed) return [];
+  const storage = vectorStorage(value);
+  value.closed = true;
+  return --storage.owners === 0 ? storage.items : [];
+}
+
+export function clearByteVector(value: VmVector): VmVector {
+  const storage = vectorStorage(value);
+  storage.owners--;
+  const empty = byteVectorValue([]);
+  value.items = empty.items;
+  value.storage = empty.storage;
+  value.offset = 0;
+  return value;
 }
 
 export function valueFromLiteral(value: JsonValue): VmValue {

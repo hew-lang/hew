@@ -9,18 +9,11 @@ use std::ffi::c_void;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
 
-unsafe extern "C-unwind" fn drop_bytes(slot: *mut c_void) {
-    // SAFETY: this callback consumes the one bytes slot described below.
-    unsafe { crate::bytes::hew_bytes_drop((*slot.cast::<crate::bytes::BytesTriple>()).ptr) };
-}
-
-pub(super) const BYTES: HewValueLayout = HewValueLayout {
-    size: size_of::<crate::bytes::BytesTriple>(),
-    align: align_of::<crate::bytes::BytesTriple>(),
+// Content encoding uses the Bytes envelope mode while retaining the canonical
+// Bytes ownership and accounting descriptor used by runtime collections.
+pub(super) static BYTES: HewValueLayout = HewValueLayout {
     ownership_kind: crate::vec::HewTypeOwnershipKind::Bytes,
-    clone_fn: None,
-    drop_fn: Some(drop_bytes),
-    release_start: None,
+    ..crate::layout_intrinsics::hew_layout_val_bytes
 };
 
 pub(crate) struct SharedSender {
@@ -32,6 +25,7 @@ pub(crate) struct SharedSender {
     busy: AtomicBool,
     waiters: ReadinessRegistrations,
     endpoints: AtomicUsize,
+    _code: [crate::code_owner::CodeRoot; 2],
 }
 
 // SAFETY: admission proves Send for the encoder; the gate serializes every access.
@@ -40,6 +34,18 @@ unsafe impl Send for SharedSender {}
 unsafe impl Sync for SharedSender {}
 
 impl SharedSender {
+    fn slot_bytes(&self) -> Result<u64, i32> {
+        let Some(encoder) = &self.encoder_layout else {
+            return Ok(0);
+        };
+        // SAFETY: the shared owner retains both exact descriptors and their defining code.
+        unsafe {
+            crate::owned_value_budget::visit::slot_bytes(&self.sink_layout)?
+                .checked_add(crate::owned_value_budget::visit::slot_bytes(encoder)?)
+                .ok_or(hew_cabi::managed::HEAP_EXCEEDED)
+        }
+    }
+
     #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn underlying(&self) -> *mut HewSink {
         self.sink
@@ -71,6 +77,89 @@ impl SharedSender {
     }
 }
 
+/// A sink retains its encoder's owned values; the receiving stream alone owns queued items.
+/// # Safety
+/// The slot contains a retained endpoint, and authored mutation/teardown is excluded.
+#[no_mangle]
+pub unsafe extern "C" fn hew_managed_visit_sink(
+    slot: *const c_void,
+    visitor: *const hew_cabi::managed::HewManagedStorageVisitor,
+) -> i32 {
+    // SAFETY: the endpoint pins the shared adapter until its semantic release expands it.
+    unsafe {
+        let sink = slot.cast::<*const HewSink>().read();
+        let Some(sink) = sink.as_ref() else {
+            return 0;
+        };
+        let Some(owner) = sink.runtime_adapter().cast::<SharedSender>().as_ref() else {
+            return 0;
+        };
+        visit_shared(owner, visitor)
+    }
+}
+
+unsafe fn visit_shared(
+    owner: &SharedSender,
+    visitor: *const hew_cabi::managed::HewManagedStorageVisitor,
+) -> i32 {
+    use hew_cabi::managed::{visit_value, DESCEND, SKIP_DESCENDANTS};
+    // A lazily installed plain sender contains only protocol handles, with no typed payload.
+    let Some(encoder_layout) = &owner.encoder_layout else {
+        return 0;
+    };
+    let bytes = match owner.slot_bytes() {
+        Ok(bytes) => bytes,
+        Err(status) => return status,
+    };
+    // SAFETY: immutable owned fields stay at stable Arc addresses through the entire walk.
+    unsafe {
+        match crate::owned_value_budget::visit::storage(
+            visitor,
+            std::ptr::from_ref(owner).cast(),
+            bytes,
+        ) {
+            DESCEND => {}
+            SKIP_DESCENDANTS => return 0,
+            failure => return failure,
+        }
+        let status = visit_value(
+            &owner.sink_layout,
+            std::ptr::from_ref(&owner.sink).cast(),
+            visitor,
+        );
+        if status != 0 {
+            return status;
+        }
+        visit_value(
+            encoder_layout,
+            std::ptr::from_ref(owner.encoder.as_ref().expect("encoder descriptor")).cast(),
+            visitor,
+        )
+    }
+}
+
+unsafe extern "C" fn visit_shared_slot(
+    slot: *const c_void,
+    visitor: *const hew_cabi::managed::HewManagedStorageVisitor,
+) -> i32 {
+    // SAFETY: this private descriptor receives one retained shared-owner pointer.
+    unsafe { visit_shared(&*slot.cast::<*const SharedSender>().read(), visitor) }
+}
+
+static SHARED_OWNER: HewValueLayout = HewValueLayout {
+    size: size_of::<*const SharedSender>(),
+    align: align_of::<*const SharedSender>(),
+    ownership_kind: crate::vec::HewTypeOwnershipKind::Plain,
+    clone_fn: None,
+    drop_fn: None,
+    release_start: None,
+    code_owner: std::ptr::null(),
+    managed: &hew_cabi::managed::HewManagedValueDescriptor {
+        slot_bytes: 0,
+        visit: Some(visit_shared_slot),
+    },
+};
+
 #[expect(
     clippy::struct_excessive_bools,
     reason = "admission policy, gate, callback output and cancellation track independent ownership facts"
@@ -81,6 +170,8 @@ pub(super) struct SharedWrite {
     claimed: bool,
     observed: bool,
     input: Option<(*mut c_void, std::alloc::Layout, bool)>,
+    value_owner: Option<crate::owned_value_budget::ValueOwner>,
+    input_slot_bytes: u64,
     fault: *mut crate::fault::HewFault,
     source: *mut HewSink,
     parent: *const crate::coro_state::HewCoroState,
@@ -93,33 +184,121 @@ pub(super) struct SharedWrite {
 }
 
 impl SharedWrite {
-    pub(super) fn new(
+    /// The enclosing invocation freezes this operation before visiting its owning inputs.
+    pub(super) unsafe fn visit_managed(
+        &mut self,
+        layout: &HewValueLayout,
+        visitor: *const hew_cabi::managed::HewManagedStorageVisitor,
+    ) -> i32 {
+        use hew_cabi::managed::{visit_value, HewManagedWalkKind, DESCEND, SKIP_DESCENDANTS};
+        // SAFETY: the operation and every initialized slot remain pinned and frozen.
+        unsafe {
+            // Stop any unpublished child admission before its borrowed input is frozen elsewhere.
+            let status = super::native::hew_managed_visit_stream_operation(
+                std::ptr::from_ref(&self.child).cast(),
+                visitor,
+            );
+            if status != 0 {
+                return status;
+            }
+            if let Some((slot, _, owned)) = self.input {
+                match crate::owned_value_budget::visit::storage(
+                    visitor,
+                    slot,
+                    self.input_slot_bytes,
+                ) {
+                    DESCEND if owned => {
+                        let status = visit_value(layout, slot, visitor);
+                        if status != 0 {
+                            return status;
+                        }
+                    }
+                    DESCEND | SKIP_DESCENDANTS => {}
+                    failure => return failure,
+                }
+            }
+            if self.encoded_live {
+                let status = visit_value(&BYTES, self.encoded.as_ptr().cast(), visitor);
+                if status != 0 {
+                    return status;
+                }
+            }
+            let status = self.invocation.visit_managed(visitor);
+            if status != 0 {
+                return status;
+            }
+            if (*visitor).kind == HewManagedWalkKind::CommitTransfer {
+                self.value_owner = crate::owned_value_budget::transfer::destination_owner(visitor);
+            }
+            0
+        }
+    }
+
+    pub(super) unsafe fn new(
         owner: Arc<SharedSender>,
         source: *mut HewSink,
         parent: *const crate::coro_state::HewCoroState,
         park: bool,
-    ) -> Self {
-        Self {
+        data: *const c_void,
+        layout: &HewValueLayout,
+    ) -> Result<Self, i32> {
+        // SAFETY: the caller retains the optional parent invocation.
+        let value_owner =
+            unsafe { crate::owned_value_budget::materialize::invocation_owner(parent) };
+        // Unbounded foreign descriptors may lack metadata; a bounded caller must describe its input.
+        // SAFETY: the checked layout describes the source value retained by this write.
+        let input_slot_bytes = unsafe { crate::owned_value_budget::visit::slot_bytes(layout) }
+            .or_else(|failure| {
+                if value_owner.is_none() {
+                    Ok(0)
+                } else {
+                    Err(failure)
+                }
+            })?;
+        let reservation = value_owner
+            .as_ref()
+            .map(|owner| owner.reserve_new(input_slot_bytes))
+            .transpose()
+            .map_err(|_| hew_cabi::managed::HEAP_EXCEEDED)?;
+        let allocation = std::alloc::Layout::from_size_align(layout.size.max(1), layout.align)
+            .unwrap_or_else(|_| std::process::abort());
+        // SAFETY: this operation takes the initialized source into aligned storage.
+        let slot = unsafe { std::alloc::alloc(allocation) }.cast::<c_void>();
+        if slot.is_null() {
+            std::alloc::handle_alloc_error(allocation);
+        }
+        // SAFETY: the caller transfers one complete value without cloning its children.
+        unsafe {
+            std::ptr::copy_nonoverlapping(data.cast::<u8>(), slot.cast(), layout.size);
+        }
+        if let Some(reservation) = reservation {
+            reservation.commit(&[crate::owned_value_budget::ManagedStorage {
+                identity: slot as usize,
+                bytes: input_slot_bytes,
+            }]);
+        }
+        Ok(Self {
+            value_owner,
+            input_slot_bytes,
             owner,
             child: std::ptr::null_mut(),
             claimed: false,
             observed: false,
-            input: None,
+            input: Some((slot, allocation, true)),
             fault: std::ptr::null_mut(),
             source,
             parent,
             park,
             invocation: crate::callable::BorrowedInvocation::new(),
-            argument: std::ptr::null_mut(),
+            argument: slot,
             encoded: std::mem::MaybeUninit::uninit(),
             encoded_live: false,
             cancelled: false,
-        }
+        })
     }
 
     pub(super) unsafe fn poll<T: WakeTarget + 'static>(
         &mut self,
-        envelope: &mut Option<Vec<u8>>,
         layout: &HewValueLayout,
         waker: &Arc<T>,
     ) -> i32 {
@@ -154,24 +333,6 @@ impl SharedWrite {
                 };
             }
             self.claimed = true;
-            let allocation = std::alloc::Layout::from_size_align(layout.size.max(1), layout.align)
-                .unwrap_or_else(|_| std::process::abort());
-            // SAFETY: the runtime transfers its owned envelope into an exact aligned slot.
-            let slot = unsafe { std::alloc::alloc(allocation) }.cast::<c_void>();
-            if slot.is_null() {
-                std::alloc::handle_alloc_error(allocation);
-            }
-            // SAFETY: the owned envelope initializes this exact aligned input slot once.
-            unsafe {
-                crate::channel_common::decode_elem_envelope(
-                    envelope.take(),
-                    slot,
-                    layout,
-                    "shared sink input",
-                )
-            };
-            self.input = Some((slot, allocation, self.owner.encoder.is_some()));
-            self.argument = slot;
         }
         if self.child.is_null() {
             let (data, item_layout) = if let Some(encoder) = &self.owner.encoder {
@@ -198,7 +359,7 @@ impl SharedWrite {
                 (self.argument, layout)
             };
             // SAFETY: the admission gate exclusively lends the backing; the child takes its input.
-            self.child = unsafe {
+            let child = unsafe {
                 super::native::start_underlying(
                     self.owner.sink,
                     waker.owned_waker().descriptor(),
@@ -208,10 +369,49 @@ impl SharedWrite {
                     self.park,
                 )
             };
-            self.encoded_live = false;
+            self.child = match child {
+                Ok(child) => child,
+                Err(status) => {
+                    self.fault = crate::fault::hew_fault_new(
+                        if status == hew_cabi::managed::HEAP_EXCEEDED {
+                            crate::internal::types::HEW_TRAP_HEAP_EXCEEDED
+                        } else {
+                            crate::internal::types::HEW_TRAP_USER_PANIC
+                        },
+                    );
+                    return 3;
+                }
+            };
+            // SAFETY: this sender retains its unique child operation until cleanup.
+            if !unsafe { super::native::borrows_write_input(self.child) } {
+                self.child_consumed_input();
+            }
         }
         // SAFETY: this owner drives its unique underlying operation.
-        unsafe { super::native::hew_stream_write_poll_native(self.child) }
+        let status = unsafe { super::native::hew_stream_write_poll_native(self.child) };
+        // SAFETY: this sender retains its unique child operation until cleanup.
+        if status == 1 && unsafe { super::native::borrows_write_input(self.child) } {
+            self.child_consumed_input();
+        }
+        if status == 0 && !self.park {
+            4
+        } else {
+            status
+        }
+    }
+
+    fn child_consumed_input(&mut self) {
+        if self.owner.encoder.is_none() {
+            if let Some((slot, allocation, _)) = self.input.take() {
+                // SAFETY: successful admission consumed the source representation without retaining a borrow.
+                unsafe { std::alloc::dealloc(slot.cast(), allocation) };
+                if let Some(owner) = &self.value_owner {
+                    owner.release_backing(slot, self.input_slot_bytes);
+                }
+                self.argument = std::ptr::null_mut();
+            }
+        }
+        self.encoded_live = false;
     }
 
     pub(super) unsafe fn take_fault(&mut self) -> *mut crate::fault::HewFault {
@@ -301,11 +501,17 @@ impl SharedWrite {
                     pointer: slot,
                     size: allocation.size(),
                     align: allocation.align(),
+                    managed_bytes: Some(self.input_slot_bytes),
                 }];
                 if owned {
                     pending.push(ReleaseItem::Value { slot, layout });
                 }
-                HewReleaseCursor::new(pending)
+                let cursor = HewReleaseCursor::new(pending);
+                // SAFETY: this fresh cursor owns the retained input and its allocation.
+                if let Some(cursor) = unsafe { cursor.as_mut() } {
+                    cursor.set_value_owner(self.value_owner.clone());
+                }
+                cursor
             });
         let encoded = if std::mem::take(&mut self.encoded_live) {
             // SAFETY: a completed but abandoned callback result transfers once before boxed storage frees.
@@ -314,7 +520,13 @@ impl SharedWrite {
             std::ptr::null_mut()
         };
         // SAFETY: these fresh cursors transfer child, input and abandoned result obligations.
-        unsafe { HewReleaseCursor::join(vec![child, own, encoded]) }
+        unsafe {
+            let cursor = HewReleaseCursor::join(vec![child, own, encoded]);
+            if let Some(cursor) = cursor.as_mut() {
+                cursor.set_value_owner(self.value_owner.clone());
+            }
+            cursor
+        }
     }
 }
 
@@ -379,18 +591,34 @@ fn finish(endpoint: &mut Endpoint) {
 fn owners(endpoint: &mut Endpoint) -> Option<SinkOwners> {
     unsafe fn free(owner: *mut c_void) {
         // SAFETY: the cursor consumed both exact value slots before their storage.
-        unsafe { drop(Box::from_raw(owner.cast::<SharedSender>())) };
+        unsafe { drop(Box::from_raw(owner.cast::<Arc<SharedSender>>())) };
     }
-    let mut owner = Box::new(Arc::into_inner(endpoint.take()?)?);
+    let mut owner = Box::new(endpoint.take()?);
+    let root = Arc::as_ptr(&owner);
+    let Some(value) = Arc::get_mut(&mut owner) else {
+        if let Some(account) = crate::owned_value_budget::current_owner() {
+            // SAFETY: another endpoint retains the immutable owned fields after this alias ends.
+            unsafe { account.release_value(&SHARED_OWNER, (&raw const root).cast()) }
+                .unwrap_or_else(|_| std::process::abort());
+        }
+        return None;
+    };
+    let managed_backing = value.encoder_layout.as_ref().map(|_| {
+        (
+            root.cast(),
+            value.slot_bytes().unwrap_or_else(|_| std::process::abort()),
+        )
+    });
     let mut values = Vec::new();
-    if let (Some(encoder), Some(layout)) = (&mut owner.encoder, owner.encoder_layout) {
+    if let (Some(encoder), Some(layout)) = (&mut value.encoder, value.encoder_layout) {
         values.push(((encoder as *mut HewCallableValue).cast(), layout));
     }
-    values.push(((&raw mut owner.sink).cast(), owner.sink_layout));
+    values.push(((&raw mut value.sink).cast(), value.sink_layout));
     Some(SinkOwners {
         values,
         storage: Box::into_raw(owner).cast(),
         free,
+        managed_backing,
     })
 }
 
@@ -488,28 +716,102 @@ pub unsafe extern "C" fn hew_sink_from_encoder(
     encoder: *mut HewCallableValue,
     sink_layout: *const HewValueLayout,
     encoder_layout: *const HewValueLayout,
+    out_status: *mut i32,
 ) -> *mut HewSink {
+    // SAFETY: the compiler provides writable status and live concrete descriptors.
+    unsafe { out_status.write(0) };
+    // SAFETY: the checked layout describes the source value retained by this write.
+    let width = unsafe {
+        crate::owned_value_budget::visit::slot_bytes(&*sink_layout).and_then(|sink| {
+            crate::owned_value_budget::visit::slot_bytes(&*encoder_layout).and_then(|encoder| {
+                sink.checked_add(encoder)
+                    .ok_or(hew_cabi::managed::HEAP_EXCEEDED)
+            })
+        })
+    };
+    let width = match width {
+        Ok(width) => width,
+        Err(status) => {
+            // SAFETY: the caller provides a writable status output for this constructor.
+            unsafe { out_status.write(status) };
+            return std::ptr::null_mut();
+        }
+    };
+    let Ok(reservation) = crate::owned_value_budget::current_owner()
+        .map(|owner| owner.reserve_new(width))
+        .transpose()
+    else {
+        // SAFETY: the caller provides a writable status output for this constructor.
+        unsafe { out_status.write(hew_cabi::managed::HEAP_EXCEEDED) };
+        return std::ptr::null_mut();
+    };
     // SAFETY: the compiler transfers one complete callable carrier.
     let encoder = unsafe { encoder.read() };
     // SAFETY: construction exclusively consumes the underlying endpoint.
     let finished = unsafe { (*sink).is_closed() };
     // SAFETY: this consumed endpoint retains its channel until its last producer finishes.
     let channel = unsafe { channel(sink) };
-    endpoint(
-        Arc::new(SharedSender {
-            sink,
-            channel,
-            encoder: Some(encoder),
-            // SAFETY: the compiler provides both checked static value descriptors.
-            sink_layout: unsafe { *sink_layout },
-            // SAFETY: this checked encoder descriptor is immutable and static.
-            encoder_layout: Some(unsafe { *encoder_layout }),
-            busy: AtomicBool::new(false),
-            waiters: ReadinessRegistrations::default(),
-            endpoints: AtomicUsize::new(usize::from(!finished)),
-        }),
-        finished,
-    )
+    let owner = Arc::new(SharedSender {
+        // SAFETY: both transferred owners retain their checked descriptors.
+        _code: unsafe {
+            [
+                crate::code_owner::CodeRoot::acquire((*sink_layout).code_owner),
+                crate::code_owner::CodeRoot::acquire((*encoder_layout).code_owner),
+            ]
+        },
+        sink,
+        channel,
+        encoder: Some(encoder),
+        // SAFETY: the compiler provides both checked static value descriptors.
+        sink_layout: unsafe { *sink_layout },
+        // SAFETY: this checked encoder descriptor is immutable and static.
+        encoder_layout: Some(unsafe { *encoder_layout }),
+        busy: AtomicBool::new(false),
+        waiters: ReadinessRegistrations::default(),
+        endpoints: AtomicUsize::new(usize::from(!finished)),
+    });
+    if let Some(reservation) = reservation {
+        // The two owned inputs move beneath this new shared root; their existing
+        // descendant interests remain unchanged in the same incarnation.
+        reservation.commit(&[crate::owned_value_budget::ManagedStorage {
+            identity: Arc::as_ptr(&owner) as usize,
+            bytes: width,
+        }]);
+    }
+    endpoint(owner, finished)
+}
+
+/// Clone an endpoint after acquiring this incarnation's shared payload interest.
+/// # Safety
+/// The source loan and its descriptor remain live; status is writable.
+#[no_mangle]
+pub unsafe extern "C" fn hew_sink_clone_checked(
+    sink: *mut HewSink,
+    layout: *const HewValueLayout,
+    out_status: *mut i32,
+) -> *mut HewSink {
+    // SAFETY: the caller provides a writable status output for this constructor.
+    unsafe { out_status.write(0) };
+    let acquired = match crate::owned_value_budget::current_owner()
+        .map(|owner| {
+            // SAFETY: the immutable source loan pins the descriptor-selected graph.
+            unsafe { owner.acquire_value(&*layout, (&raw const sink).cast()) }
+        })
+        .transpose()
+    {
+        Ok(acquired) => acquired,
+        Err(status) => {
+            // SAFETY: the caller provides a writable status output for this constructor.
+            unsafe { out_status.write(status) };
+            return std::ptr::null_mut();
+        }
+    };
+    // SAFETY: the existing physical clone does not duplicate account acquisition.
+    let result = unsafe { hew_sink_clone(sink, layout) };
+    if let Some(acquired) = acquired {
+        acquired.commit();
+    }
+    result
 }
 
 /// Clone an endpoint without duplicating its underlying resource or codec.
@@ -540,6 +842,10 @@ pub(super) unsafe fn retain(
                 let closed = original.is_closed();
                 let channel = super::clone_sink_channel_core((&raw const original).cast_mut());
                 let owner = Arc::new(SharedSender {
+                    _code: [
+                        crate::code_owner::CodeRoot::acquire((*layout).code_owner),
+                        crate::code_owner::CodeRoot::acquire(std::ptr::null()),
+                    ],
                     sink: Box::into_raw(Box::new(original)),
                     channel,
                     encoder: None,
@@ -561,5 +867,150 @@ pub(super) unsafe fn retain(
                 (owner, closed)
             },
         )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::owned_value_budget::{with_value_owner, ValueOwner};
+    use hew_cabi::managed::HewManagedValueDescriptor;
+
+    unsafe extern "C-unwind" fn drop_sink(slot: *mut c_void) {
+        // SAFETY: this descriptor receives an initialized owning Sink slot.
+        unsafe { super::super::hew_sink_close(slot.cast::<*mut HewSink>().read()) };
+    }
+
+    unsafe extern "C-unwind" fn drop_callable(slot: *mut c_void) {
+        // SAFETY: this descriptor receives an initialized owning callable slot.
+        unsafe { crate::callable::hew_callable_drop(slot.cast()) };
+    }
+
+    #[test]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one two-account ownership lifecycle control"
+    )]
+    fn shared_encoder_reserves_before_move_and_releases_each_actor_interest() {
+        let sink_layout = HewValueLayout {
+            size: size_of::<*mut HewSink>(),
+            align: align_of::<*mut HewSink>(),
+            ownership_kind: crate::vec::HewTypeOwnershipKind::LayoutManaged,
+            clone_fn: None,
+            drop_fn: Some(drop_sink),
+            release_start: None,
+            code_owner: std::ptr::null(),
+            managed: &HewManagedValueDescriptor {
+                slot_bytes: 8,
+                visit: Some(hew_managed_visit_sink),
+            },
+        };
+        let callable_layout = HewValueLayout {
+            size: size_of::<HewCallableValue>(),
+            align: align_of::<HewCallableValue>(),
+            ownership_kind: crate::vec::HewTypeOwnershipKind::LayoutManaged,
+            clone_fn: None,
+            drop_fn: Some(drop_callable),
+            release_start: None,
+            code_owner: std::ptr::null(),
+            managed: &HewManagedValueDescriptor {
+                slot_bytes: 8,
+                visit: Some(crate::owned_value_budget::visit::hew_managed_visit_callable),
+            },
+        };
+        let empty_layout = HewValueLayout {
+            size: 0,
+            align: 1,
+            ownership_kind: crate::vec::HewTypeOwnershipKind::Plain,
+            clone_fn: None,
+            drop_fn: None,
+            release_start: None,
+            code_owner: std::ptr::null(),
+            managed: &HewManagedValueDescriptor {
+                slot_bytes: 0,
+                visit: None,
+            },
+        };
+        let descriptor = crate::callable::HewCallableDescriptor {
+            environment: &raw const empty_layout,
+            invoke_borrow: None,
+            invoke_once: None,
+            invoke_borrow_sync: None,
+            invoke_once_sync: None,
+            specializations: std::ptr::null(),
+        };
+        let mut encoder = HewCallableValue {
+            environment: std::ptr::null_mut(),
+            descriptor: &raw const descriptor,
+        };
+        let closes = Arc::new(AtomicUsize::new(0));
+        let sink = super::super::into_sink_ptr(
+            Arc::clone(&closes),
+            |_, _| {},
+            |_| {},
+            |count| {
+                count.fetch_add(1, Ordering::SeqCst);
+            },
+        );
+        // SAFETY: all descriptors and retained endpoints outlive every alias and its cleanup.
+        unsafe {
+            let too_small = ValueOwner::new(Some(15));
+            let mut status = 0;
+            let refused = with_value_owner(&Some(too_small.clone()), || {
+                hew_sink_from_encoder(
+                    sink,
+                    &raw mut encoder,
+                    &raw const sink_layout,
+                    &raw const callable_layout,
+                    &raw mut status,
+                )
+            });
+            assert!(refused.is_null());
+            assert_eq!(status, hew_cabi::managed::HEAP_EXCEEDED);
+            assert_eq!(encoder.descriptor, &raw const descriptor);
+            assert!(!(*sink).is_closed());
+            assert_eq!(too_small.live_bytes(), 0);
+            let source = ValueOwner::new(Some(16));
+            let endpoint = with_value_owner(&Some(source.clone()), || {
+                hew_sink_from_encoder(
+                    sink,
+                    &raw mut encoder,
+                    &raw const sink_layout,
+                    &raw const callable_layout,
+                    &raw mut status,
+                )
+            });
+            assert!(!endpoint.is_null());
+            assert_eq!(status, 0);
+            assert_eq!(source.live_bytes(), 16);
+            let copy = with_value_owner(&Some(source.clone()), || {
+                hew_sink_clone_checked(endpoint, &raw const sink_layout, &raw mut status)
+            });
+            assert_eq!(status, 0);
+            assert_eq!(source.live_bytes(), 16);
+            let destination = ValueOwner::new(Some(16));
+            crate::owned_value_budget::transfer::ValueTransfer::prepare(
+                Some(source.clone()),
+                Some(destination.clone()),
+                &raw const sink_layout,
+                (&raw const copy).cast(),
+            )
+            .unwrap()
+            .commit()
+            .unwrap();
+            assert_eq!(source.live_bytes(), 16);
+            assert_eq!(destination.live_bytes(), 16);
+            with_value_owner(&Some(source.clone()), || {
+                super::super::hew_sink_close(endpoint);
+            });
+            assert_eq!(source.live_bytes(), 0);
+            assert_eq!(destination.live_bytes(), 16);
+            assert_eq!(closes.load(Ordering::SeqCst), 0);
+            with_value_owner(&Some(destination.clone()), || {
+                super::super::hew_sink_close(copy);
+            });
+            assert_eq!(destination.live_bytes(), 0);
+            assert_eq!(closes.load(Ordering::SeqCst), 1);
+        }
     }
 }

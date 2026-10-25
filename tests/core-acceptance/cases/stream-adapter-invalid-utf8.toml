@@ -1,0 +1,11 @@
+[[case]]
+id = "stream-adapter-invalid-utf8"
+intent = "Invalid UTF-8 in a completed line traps its consumer and closes the adapter's typed upstream during unwind."
+source = "cases/stream-adapter-invalid-utf8.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 30
+
+[case.expected]
+stdout = "invalid UTF-8 trapped\n"
+stderr = "hew: failure: UserPanic (212): stream line contains invalid UTF-8\nhew: actor crash in Reader.read (actor 1): UserPanic\n"
+exit = 1

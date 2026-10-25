@@ -12,9 +12,9 @@ The three TCP entry points and the standard input line read are the
 exceptions: codegen rewrites the TCP calls to the `hew_checked_tcp_*` /
 `hew_async_tcp_*` adapters, which take the managed handle and copy it for the
 raw transport call, and the stdin read to its waiting operation, whose result
-is taken as managed bytes. Every other declaration, intercepted by a
-runtime-call family or not, reaches its Rust definition with the managed
-carrier.
+is taken as managed bytes. The closed Encoding family uses checked exports:
+constructors append a result layout and status pointer, and in-place mutations
+append a status pointer. Their ordinary arguments keep the managed carriers.
 """
 
 from __future__ import annotations
@@ -27,6 +27,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 RUST_CRATES = ("hew-std", "hew-runtime", "hew-cabi", "hew-lib")
 CARRIER = {"string": "HewString", "bytes": "BytesTriple"}
+ENCODING_PREFIXES = ("hew_json_", "hew_yaml_", "hew_toml_")
 
 # Declarations codegen realizes through a managed-string adapter rather than a
 # direct call to the named symbol, with the adapter that owns the conversion.
@@ -129,10 +130,11 @@ def rust_definitions() -> dict[str, tuple[str, list[str], str]]:
     return definitions
 
 
-def main() -> int:
-    declarations = hew_declarations()
-    definitions = rust_definitions()
-
+def check_signatures(
+    declarations: dict[str, tuple[str, int, list[str], str]],
+    definitions: dict[str, tuple[str, list[str], str]],
+) -> dict[str, list[str]]:
+    """Compare source carriers with their direct or checked physical exports."""
     failures: dict[str, list[str]] = defaultdict(list)
     for symbol, (hew_file, hew_line, params, result) in sorted(declarations.items()):
         carriers = [
@@ -145,14 +147,40 @@ def main() -> int:
             continue
         if symbol in ADAPTED:
             continue
-        defined = definitions.get(symbol)
+        encoding = symbol.startswith(ENCODING_PREFIXES)
+        physical = f"{symbol}_checked" if encoding else symbol
+        defined = definitions.get(physical)
         if defined is None:
             failures["(no Rust definition found)"].append(
-                f"{symbol}   [{hew_file}:{hew_line}]"
+                f"{physical}   [{hew_file}:{hew_line}]"
             )
             continue
         rust_file, rust_params, rust_result = defined
         wrong: list[str] = []
+        if encoding:
+            allocating = result not in ("", "()")
+            suffix = (
+                ["*const HewValueLayout", "*mut i32"] if allocating else ["*mut i32"]
+            )
+            expected_count = len(params) + len(suffix)
+            if len(rust_params) != expected_count:
+                wrong.append(
+                    f"has {len(rust_params)} params, want {expected_count} "
+                    "including checked publication slots"
+                )
+            for offset, expected in enumerate(suffix, len(params)):
+                actual = (
+                    rust_params[offset] if offset < len(rust_params) else "<missing>"
+                )
+                if re.sub(r"\s+", "", actual) != expected.replace(" ", ""):
+                    wrong.append(f"param{offset} is {actual}, want {expected}")
+            if not allocating and rust_result not in ("", "()"):
+                wrong.append(f"in-place result is {rust_result}, want void")
+            elif allocating:
+                value = "Hew" + symbol.split("_", 2)[1].title() + "Value"
+                expected = "*mut " + CARRIER.get(result, value)
+                if re.sub(r"\s+", "", rust_result) != expected.replace(" ", ""):
+                    wrong.append(f"result is {rust_result or 'void'}, want {expected}")
         for index, carrier in carriers:
             actual = rust_params[index] if index < len(rust_params) else "<missing>"
             if carrier not in actual:
@@ -163,8 +191,14 @@ def main() -> int:
             )
         if wrong:
             failures[rust_file].append(
-                f"{symbol}: {'; '.join(wrong)}   [{hew_file}:{hew_line}]"
+                f"{physical}: {'; '.join(wrong)}   [{hew_file}:{hew_line}]"
             )
+    return failures
+
+
+def main() -> int:
+    declarations = hew_declarations()
+    failures = check_signatures(declarations, rust_definitions())
 
     if not failures:
         print(

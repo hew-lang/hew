@@ -1,0 +1,53 @@
+import std.stream;
+
+// State Stream slot8 + queued string slot8 + retained UTF-8 capacity6.
+#[max_heap(22)]
+actor Reader {
+    var input: stream.Stream<string>;
+    receive fn read() -> i64 {
+        match input.recv() {
+            .Some(value) => value.len(),
+            .None => -1,
+        }
+    }
+}
+
+#[max_heap(21)]
+actor Small {
+    var input: stream.Stream<string>;
+}
+
+fn main() -> i64 {
+    let (sink, input): (stream.Sink<string>, stream.Stream<string>) = stream.pipe(1).expect("pipe");
+    let reader = spawn Reader { input };
+    let retained = "retain";
+    sink.send(retained).expect("accepted");
+    match reader.read() {
+        .Ok(n) => println(n),
+        _ => return 2,
+    }
+    stop(reader);
+    stopped(reader);
+
+    // Moving a prefilled receiving Stream transfers the same retained graph.
+    let (queued_sink, queued_input): (stream.Sink<string>, stream.Stream<string>) = stream.pipe(1).expect("queued pipe");
+    queued_sink.send(retained).expect("queued item");
+    let queued = spawn Reader { input: queued_input };
+    match queued.read() {
+        .Ok(n) => println(n),
+        _ => return 4,
+    }
+    stop(queued);
+    stopped(queued);
+
+    let (small_sink, small_input): (stream.Sink<string>, stream.Stream<string>) = stream.pipe(1).expect("small pipe");
+    let small = spawn Small { input: small_input };
+    match small_sink.send(retained) {
+        .Err(.Closed) => println("pipe limit"),
+        _ => return 3,
+    }
+    stopped(small);
+    assert(retained == "retain");
+    println("sender retained");
+    0
+}

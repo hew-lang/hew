@@ -272,6 +272,25 @@ pub struct SemBlock {
     pub terminator_provenance: Provenance,
 }
 
+impl SemBlock {
+    /// Static operation inventory, including an operation executed only on
+    /// checked acquisition success. Execution and availability analyses must
+    /// continue to honour the terminator's separate success and failure paths.
+    #[must_use]
+    pub fn operations(&self) -> impl DoubleEndedIterator<Item = &SemOp> {
+        self.ops.iter().chain(self.terminator.materialization())
+    }
+
+    /// Mutable static inventory; control-flow rewrites remain explicit.
+    pub fn operations_mut(&mut self) -> impl DoubleEndedIterator<Item = &mut SemOp> {
+        let checked = match &mut self.terminator {
+            SemTerminator::Materialize { operation, .. } => Some(operation.as_mut()),
+            _ => None,
+        };
+        self.ops.iter_mut().chain(checked)
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct SemFunction {
     /// Source HIR item provenance for this body.
@@ -1635,6 +1654,30 @@ pub enum SemOpKind {
 }
 
 impl SemOpKind {
+    /// Operations whose owned result can allocate or acquire managed backing
+    /// storage. They require a checked control boundary before publication.
+    #[must_use]
+    pub const fn is_managed_materialization(&self) -> bool {
+        matches!(
+            self,
+            Self::ConstStr(_)
+                | Self::ConstBytes(_)
+                | Self::CopyValue { .. }
+                | Self::LoadCopy { .. }
+                | Self::TupleGet { .. }
+                | Self::AggregateProjectCopy { .. }
+                | Self::VariantProjectCopy { .. }
+                | Self::ClosureMake { .. }
+                | Self::DynMake { .. }
+                | Self::VariantMake { .. }
+                | Self::ArrayRepeat { .. }
+                | Self::ArrayMake { .. }
+                | Self::GeneratorMake { .. }
+                | Self::TaskSpawn { .. }
+                | Self::TaskInvoke { .. }
+                | Self::TaskRace { .. }
+        )
+    }
     /// Visit operands in their deterministic source order.
     ///
     /// This is intentionally the single structural operand traversal for the
@@ -2049,6 +2092,14 @@ impl SemOpKind {
 /// [`Provenance`] model rather than collapsing that attribution during a pass.
 #[derive(Debug, Clone, PartialEq)]
 pub enum SemTerminator {
+    /// Acquire managed storage before publishing results or consuming inputs.
+    /// The operation takes effect only on `normal`; refused acquisition leaves
+    /// every input and place unchanged for the explicit failure cleanup.
+    Materialize {
+        operation: Box<SemOp>,
+        normal: Edge,
+        failure: Edge,
+    },
     /// Pop the pending action and park the optional active fault before entry.
     EnterDefer {
         defer: DeferId,
@@ -2279,6 +2330,15 @@ pub struct SemVariantArm {
 }
 
 impl SemTerminator {
+    /// The checked operation, for static shape analysis. Execution must still
+    /// distinguish its successful ownership transition from refused acquisition.
+    #[must_use]
+    pub fn materialization(&self) -> Option<&SemOp> {
+        match self {
+            Self::Materialize { operation, .. } => Some(operation),
+            _ => None,
+        }
+    }
     /// Visit call, return and suspension values together with their total
     /// boundary decisions.
     ///
@@ -2356,6 +2416,7 @@ impl SemTerminator {
             | Self::Branch { .. }
             | Self::SwitchVariant { .. }
             | Self::CheckedBinary { .. }
+            | Self::Materialize { .. }
             | Self::Trap { .. }
             | Self::ResumeUnwind { handback: None }
             | Self::Unreachable => {}
@@ -2373,11 +2434,20 @@ impl SemTerminator {
     }
 
     /// Visit SSA values defined by this terminator.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "Keep the exhaustive terminator vocabulary together"
+    )]
     pub fn visit_results(&self, mut visit: impl FnMut(&ValueDef)) {
         if let Some(handback) = self.call_handback() {
             visit(handback);
         }
         match self {
+            Self::Materialize { operation, .. } => {
+                for result in &operation.results {
+                    visit(result);
+                }
+            }
             Self::Call {
                 result: CallResult::Value(result),
                 ..
@@ -2500,6 +2570,25 @@ impl SemTerminator {
             _ => 0,
         };
         match self {
+            Self::Materialize {
+                operation,
+                normal,
+                failure,
+            } => {
+                let mut index = 0_u32;
+                operation.visit_operands(|_, operand| {
+                    visit(OperandSlot(index), operand);
+                    index = index
+                        .checked_add(1)
+                        .expect("materialization operand count exceeds u32");
+                });
+                for operand in normal.args.iter().chain(&failure.args) {
+                    visit(OperandSlot(index), operand);
+                    index = index
+                        .checked_add(1)
+                        .expect("materialization operand count exceeds u32");
+                }
+            }
             Self::EnterDefer { body: edge, .. }
             | Self::FinishDefer { next: edge, .. }
             | Self::CheckedRaiseFault { cleanup: edge, .. }
@@ -2690,6 +2779,25 @@ impl SemTerminator {
             _ => 0,
         };
         match self {
+            Self::Materialize {
+                operation,
+                normal,
+                failure,
+            } => {
+                let mut index = 0_u32;
+                operation.visit_operands_mut(|_, operand| {
+                    visit(OperandSlot(index), operand);
+                    index = index
+                        .checked_add(1)
+                        .expect("materialization operand count exceeds u32");
+                });
+                for operand in normal.args.iter_mut().chain(&mut failure.args) {
+                    visit(OperandSlot(index), operand);
+                    index = index
+                        .checked_add(1)
+                        .expect("materialization operand count exceeds u32");
+                }
+            }
             Self::EnterDefer { body: edge, .. }
             | Self::FinishDefer { next: edge, .. }
             | Self::CheckedRaiseFault { cleanup: edge, .. }
@@ -2869,8 +2977,18 @@ impl SemTerminator {
     ///
     /// Panics only when a suspension carries more edges than the module-local
     /// `u32` successor-slot range can represent.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "Keep the exhaustive terminator vocabulary together"
+    )]
     pub fn visit_successors_with_slots(&self, mut visit: impl FnMut(SuccessorSlot, &Edge)) {
         match self {
+            Self::Materialize {
+                normal, failure, ..
+            } => {
+                visit(SuccessorSlot(0), normal);
+                visit(SuccessorSlot(1), failure);
+            }
             Self::CleanupDispatch { normal, fault }
             | Self::Safepoint {
                 resume: normal,
@@ -2974,11 +3092,21 @@ impl SemTerminator {
     ///
     /// Panics only when a suspension carries more edges than the module-local
     /// `u32` successor-slot range can represent.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "Keep the exhaustive terminator vocabulary together"
+    )]
     pub fn visit_successors_with_slots_mut(
         &mut self,
         mut visit: impl FnMut(SuccessorSlot, &mut Edge),
     ) {
         match self {
+            Self::Materialize {
+                normal, failure, ..
+            } => {
+                visit(SuccessorSlot(0), normal);
+                visit(SuccessorSlot(1), failure);
+            }
             Self::CleanupDispatch { normal, fault }
             | Self::Safepoint {
                 resume: normal,
@@ -3084,6 +3212,13 @@ impl SemTerminator {
     #[must_use]
     pub fn successor(&self, slot: SuccessorSlot) -> Option<&Edge> {
         match self {
+            Self::Materialize {
+                normal, failure, ..
+            } => match slot.0 {
+                0 => Some(normal),
+                1 => Some(failure),
+                _ => None,
+            },
             Self::CleanupDispatch { normal, fault }
             | Self::Safepoint {
                 resume: normal,
@@ -3179,6 +3314,13 @@ impl SemTerminator {
     #[must_use]
     pub fn successor_mut(&mut self, slot: SuccessorSlot) -> Option<&mut Edge> {
         match self {
+            Self::Materialize {
+                normal, failure, ..
+            } => match slot.0 {
+                0 => Some(normal),
+                1 => Some(failure),
+                _ => None,
+            },
             Self::CleanupDispatch { normal, fault }
             | Self::Safepoint {
                 resume: normal,
@@ -3291,8 +3433,13 @@ impl SemTerminator {
     /// diagnostics. Callers only pass slots previously produced by
     /// [`Self::visit_operands`].
     #[must_use]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "Keep the exhaustive terminator vocabulary together"
+    )]
     pub fn operand_context(&self, slot: OperandSlot) -> &'static str {
         match self {
+            Self::Materialize { .. } => "checked materialization operand",
             Self::Panic { .. } if slot.0 == 0 => "panic message",
             Self::Panic {
                 assertion: Some(_), ..

@@ -1,0 +1,14 @@
+[[case]]
+id = "actor-owned-budget-remote-cow"
+intent = "A remote immutable alias forces old plus final capacity reservation before copy-on-write commit."
+source = "cases/actor-owned-budget-remote-cow.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 30
+
+[case.env]
+HEW_WORKERS = "2"
+
+[case.expected]
+stdout = "5\ndetach transaction\n4\n"
+stderr = "hew: failure: HeapExceeded (200)\nhew: actor crash in Small.detach (actor 2): HeapExceeded\n"
+exit = 1

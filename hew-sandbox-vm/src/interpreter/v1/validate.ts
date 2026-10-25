@@ -388,7 +388,11 @@ export function admitPackage(
       };
     if (actor.exit != null || actor.down != null)
       return unavailable("actor.local_observation");
-    if (actor.max_heap_bytes != null) return unavailable("actor.heap_limit");
+    if (
+      actor.max_heap_bytes != null &&
+      (actor.state_type == null || !pkg.managed_types?.length)
+    )
+      return unavailable("actor.heap_limit");
   }
 
   for (const supervisor of pkg.supervisors ?? []) {

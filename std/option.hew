@@ -62,8 +62,9 @@ impl<T> Option<T> {
     }
     /// Move the value out of this place and leave `None` behind.
     pub fn take(var self) -> Option<T> {
+        let replacement: Option<T> = .None;
         let taken = self;
-        self = .None;
+        self = replacement;
         taken
     }
 }

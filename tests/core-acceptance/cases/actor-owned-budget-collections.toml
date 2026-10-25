@@ -1,0 +1,14 @@
+[[case]]
+id = "actor-owned-budget-collections"
+intent = "Typed vector and map iteration and arena values share the canonical managed descriptor contract."
+source = "cases/actor-owned-budget-collections.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 30
+
+[case.env]
+HEW_WORKERS = "2"
+
+[case.expected]
+stdout = "13\n"
+stderr = ""
+exit = 0

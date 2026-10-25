@@ -13,6 +13,7 @@ pub(super) struct CollectionProbe<'a, 'ctx> {
     pub commit: &'static str,
     pub commit_args: &'a [BasicMetadataValueEnum<'ctx>],
     pub releases: bool,
+    pub budget_checked: bool,
 }
 
 pub(super) struct CollectionCallbacks<'a, 'ctx> {
@@ -263,15 +264,85 @@ impl<'ctx> CollectionCallbacks<'_, 'ctx> {
         } else {
             None
         };
+        let budget_status = if operation.budget_checked {
+            let status = self.scratch(i32_ty.into(), "collection.budget.status")?;
+            self.values
+                .builder
+                .build_store(status, i32_ty.const_zero())
+                .llvm_ctx("initialize collection quota status")?;
+            arguments.push(status.into());
+            Some(status)
+        } else {
+            None
+        };
         let parameters = vec![pointer.into(); arguments.len()];
+        let checked_symbol;
+        let symbol = if operation.budget_checked {
+            checked_symbol = format!("{}_checked", operation.commit);
+            &checked_symbol
+        } else {
+            operation.commit
+        };
         let commit = get_or_declare_external(
             self.values.llvm,
-            operation.commit,
+            symbol,
             self.values.ctx.i8_type().fn_type(&parameters, false),
         )?;
         let result = self
             .call_value(commit, &arguments, "collection.probe.commit")?
             .into_int_value();
+        if let Some(status) = budget_status {
+            let status = self
+                .values
+                .builder
+                .build_load(i32_ty, status, "collection.budget.status")
+                .llvm_ctx("read collection quota status")?
+                .into_int_value();
+            let accepted = self
+                .values
+                .ctx
+                .append_basic_block(self.values.value, "collection.budget.accepted");
+            let refused = self
+                .values
+                .ctx
+                .append_basic_block(self.values.value, "collection.budget.refused");
+            let ok = self
+                .values
+                .builder
+                .build_int_compare(
+                    IntPredicate::EQ,
+                    status,
+                    i32_ty.const_zero(),
+                    "collection.budget.ok",
+                )
+                .llvm_ctx("inspect collection quota result")?;
+            self.values
+                .builder
+                .build_conditional_branch(ok, accepted, refused)
+                .llvm_ctx("preserve probe inputs on quota refusal")?;
+            self.values.builder.position_at_end(refused);
+            // This owner frame authors the common fault while the callback
+            // emitter retains and frees the still-borrowing probe.
+            let code = i32_ty.const_int(
+                hew_runtime::internal::types::HEW_TRAP_HEAP_EXCEEDED as u64,
+                false,
+            );
+            let fault = external_fault_new(self.values.ctx, self.values.llvm)?;
+            let fault = self.call_value(fault, &[code.into()], "collection.budget.fault")?;
+            self.values
+                .builder
+                .build_store(self.fault, fault)
+                .llvm_ctx("retain collection quota fault")?;
+            self.values
+                .builder
+                .build_store(self.status, code)
+                .llvm_ctx("retain collection quota fault code")?;
+            self.values
+                .builder
+                .build_unconditional_branch(failed)
+                .llvm_ctx("dispose refused probe before operand cleanup")?;
+            self.values.builder.position_at_end(accepted);
+        }
         let cursor = release_out
             .map(|slot| {
                 self.values

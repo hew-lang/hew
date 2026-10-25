@@ -1,0 +1,47 @@
+import std.stream;
+
+// A one-byte slice retains the complete 32-byte backing. The receiver owns
+// a Stream state slot8 and one queued bytes slot8, for a total of 48.
+#[max_heap(48)]
+actor Reader {
+    var input: stream.Stream<bytes>;
+    receive fn read() -> i64 {
+        match input.recv() {
+            .Some(value) => value.len(),
+            .None => -1,
+        }
+    }
+}
+
+#[max_heap(47)]
+actor Small {
+    var input: stream.Stream<bytes>;
+}
+
+fn main() -> i64 {
+    let full: bytes = [1, 2, 3, 4, 5, 6, 7, 8,
+                      9, 10, 11, 12, 13, 14, 15, 16,
+                      17, 18, 19, 20, 21, 22, 23, 24,
+                      25, 26, 27, 28, 29, 30, 31, 32];
+    let slice = full[0..1];
+    let (sink, input): (stream.Sink<bytes>, stream.Stream<bytes>) = stream.pipe(1).expect("pipe");
+    let reader = spawn Reader { input };
+    sink.send(slice).expect("accepted");
+    match reader.read() {
+        .Ok(n) => println(n),
+        _ => return 2,
+    }
+    stop(reader);
+    stopped(reader);
+
+    let (small_sink, small_input): (stream.Sink<bytes>, stream.Stream<bytes>) = stream.pipe(1).expect("small pipe");
+    let small = spawn Small { input: small_input };
+    match small_sink.send(slice) {
+        .Err(.Closed) => println("retained slice capacity"),
+        _ => return 3,
+    }
+    stopped(small);
+    assert(full.len() == 32 && slice.len() == 1);
+    println("sender retained");
+    0
+}

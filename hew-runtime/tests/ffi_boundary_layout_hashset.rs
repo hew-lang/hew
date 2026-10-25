@@ -96,6 +96,8 @@ unsafe extern "C" fn eq_point(
 fn elem_layout_point() -> HewMapKeyLayout {
     HewMapKeyLayout {
         value: HewValueLayout {
+            code_owner: core::ptr::null(),
+            managed: core::ptr::null(),
             release_start: None,
             size: 16,
             align: 8,
@@ -365,6 +367,8 @@ fn layout_hashset_null_elem_layout_aborts() {
 fn layout_hashset_managed_elem_without_drop_aborts() {
     let kl = HewMapKeyLayout {
         value: HewValueLayout {
+            code_owner: core::ptr::null(),
+            managed: core::ptr::null(),
             release_start: None,
             size: 16,
             align: 8,
@@ -378,6 +382,8 @@ fn layout_hashset_managed_elem_without_drop_aborts() {
     // The hashset's ZST value layout is internal to hew_hashset_new_with_layout;
     // for this gate-level test we synthesize an equivalent value descriptor.
     let vl = hew_cabi::map::HewValueLayout {
+        code_owner: core::ptr::null(),
+        managed: core::ptr::null(),
         release_start: None,
         size: 0,
         align: 1,

@@ -414,6 +414,20 @@ test-debugger: require-host-cargo-target ## Test: run live debugger fixtures wit
 shared-host-debug:
 	cargo build -p hew-runtime -p hew-lib -p hew-cli $(CARGO_TARGET_FLAG)
 
+.PHONY: test-live-native
+test-live-native: hew-native ## Test: load native generations sharing one runtime
+	HEW_LIVE_COMPILER="$(abspath $(DEBUG_HEW))" \
+	HEW_LIVE_RUNTIME_DIR="$(abspath $(DEBUG_DIR))" \
+		$(TEST_RUN_ENV) cargo nextest run --profile ci -p hew-live $(CARGO_TARGET_FLAG) --test native
+
+test-live-places: hew-native ## Test: preserve compiler-owned slots across native submissions
+	$(TEST_RUN_ENV) cargo nextest run --profile ci -p hew-codegen-rs -p hew-compile --lib -E 'test(native_session_places) | test(live_retained_type)'
+
+test-live-code-ownership: hew-native ## Test: retain native code through typed ownership and cleanup
+	$(TEST_RUN_ENV) cargo nextest run --profile ci -p hew-runtime --no-default-features --lib -E 'test(code_owner)'
+	HEW_LIVE_COMPILER="$(abspath $(DEBUG_HEW))" HEW_LIVE_RUNTIME_DIR="$(abspath $(DEBUG_DIR))" \
+		$(TEST_RUN_ENV) cargo nextest run --profile ci -p hew-live --lib --test native
+
 # Human-facing compiler alias. The shared host transaction is also the
 # inventory builder for the CLI, libhew and runtime archives, preventing Cargo
 # feature-set churn between separate package invocations.
@@ -669,9 +683,11 @@ unicode-tables-check: ## Check: verify sandbox Unicode tables match the native r
 	cargo run -p hew-runtime --example unicode_tables -- --check hew-sandbox-vm/src/interpreter/unicode-data.ts
 
 HEW_NATIVE_BIN ?= $(DEBUG_HEW)
+SANDBOX_VM_TEST_ARGS ?=
 
 sandbox-vm-test: sandbox-vm-deps
-	HEW_NATIVE_BIN="$(HEW_NATIVE_BIN)" npm --prefix hew-sandbox-vm test
+	npm --prefix hew-sandbox-vm run build
+	HEW_NATIVE_BIN="$(HEW_NATIVE_BIN)" node --test $(SANDBOX_VM_TEST_ARGS) hew-sandbox-vm/test/*.test.mjs
 
 # Native Hew <-> sandbox VM parity harness. The browser compiler package is
 # excluded from generic nextest runs and owned here with Node provisioned.
@@ -1269,8 +1285,9 @@ test-bench-calibration: ## Test: reject invalid calibration measurements and fai
 # Compile time is ~3× lower than the default-features build (measured: ~32s vs ~85s per binary).
 # Profiler allocator tests in transport.rs are skipped (they require feature = "profiler").
 # Run `cargo test -p hew-runtime` for the full suite including QUIC, TLS, and profiler paths.
+RUNTIME_TEST_ARGS ?=
 test-runtime-unit:
-	$(TEST_RUN_ENV) cargo nextest run --profile ci -p hew-runtime --no-default-features
+	$(TEST_RUN_ENV) cargo nextest run --profile ci --no-fail-fast -p hew-runtime --no-default-features $(RUNTIME_TEST_ARGS)
 
 # Ratcheted wrappers for the Hew-language test suites.
 #
@@ -1489,7 +1506,7 @@ test-ast-grep-contract:
 
 # These Hew-compiler-free behaviour tests have their own CI result. Source lint
 # still validates the real ABI/symbol inputs; these prove checker failures.
-test-tooling: test-build-harness test-build-version test-cabi-surface ## Test: verify build tooling and ABI checker behaviour
+test-tooling: test-build-harness test-build-version test-cabi-surface test-extern-string-abi ## Test: verify build tooling and ABI checker behaviour
 
 # Focused behaviour tests for the Hew JUnit transaction, shell discovery,
 # and compiled-Hew report aggregation. None needs a built compiler.
@@ -1659,6 +1676,10 @@ coverage-runtime:
 LINT_GATES += verify-extern-string-abi
 verify-extern-string-abi:
 	$(PYTHON) scripts/verify-extern-string-abi.py
+
+.PHONY: test-extern-string-abi
+test-extern-string-abi:
+	$(PYTHON) -B scripts/tests/test_extern_string_abi.py
 
 # Python only; no artifacts.
 

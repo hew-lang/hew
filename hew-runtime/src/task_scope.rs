@@ -78,12 +78,27 @@ unsafe fn hew_task_new() -> *mut HewTask {
 /// `task` is null or one live owning reference; it cannot be used afterwards.
 #[no_mangle]
 pub unsafe extern "C-unwind" fn hew_task_free(task: *mut HewTask) {
+    if !task.is_null() {
+        // SAFETY: this public entry consumes one semantic task-handle edge.
+        unsafe {
+            checked::release_account(task);
+            release_task_ref(task);
+        }
+    }
+}
+
+unsafe fn release_task_ref(task: *mut HewTask) {
     if task.is_null() {
         return;
     }
     // SAFETY: caller transfers one independently retained task reference.
     if unsafe { &*task }.refs.fetch_sub(1, Ordering::AcqRel) != 1 {
         return;
+    }
+    // SAFETY: the live task handle retains its checked invocation state.
+    if unsafe { &*task }.checked.is_some() {
+        // SAFETY: the final reference retains metadata through account release.
+        unsafe { checked::release_account(task) };
     }
     // SAFETY: the final reference exclusively owns allocation and token.
     let task = unsafe { Box::from_raw(task) };
@@ -107,7 +122,7 @@ unsafe fn free_scope_tasks(scope: &mut HewTaskScope) {
         // SAFETY: the drained scope owns each linked task reference.
         unsafe {
             let next = (*task).next;
-            hew_task_free(task);
+            release_task_ref(task);
             task = next;
         }
     }
@@ -119,7 +134,9 @@ pub struct HewTaskScope {
     tasks: *mut HewTask,
     pub(crate) cancel_token: *mut HewCancellationToken,
     checked_deadline: *mut crate::coro_sleep::HewCoroSleep,
+    pub(crate) actor_turn: crate::lifetime::live_actors::ActorIncarnation,
     pub(crate) rc_owner: Option<std::sync::Arc<crate::rc::RcAllocations>>,
+    pub(crate) value_owner: Option<crate::owned_value_budget::ValueOwner>,
 }
 
 impl Drop for HewTaskScope {

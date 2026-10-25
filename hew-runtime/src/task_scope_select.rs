@@ -55,6 +55,8 @@ pub struct HewCheckedTaskSelect {
     timer: *mut HewCoroSleep,
     waker: *const HewWaker,
     owner: ActorIncarnation,
+    /// Borrowed invocation retained by the generated selection's lexical life.
+    invocation: *mut crate::coro_state::HewCoroState,
     wait: *const HewActorWaitEdge,
     /// A source this selection cannot observe. The poll answers the cycle
     /// status so the selecting actor traps with this message on its own turn,
@@ -92,6 +94,7 @@ pub unsafe extern "C" fn hew_checked_task_select_new(
         timer: ptr::null_mut(),
         waker,
         owner: ActorIncarnation::NONE,
+        invocation: ptr::null_mut(),
         wait: ptr::null(),
         refusal: None,
     }))
@@ -100,14 +103,18 @@ pub unsafe extern "C" fn hew_checked_task_select_new(
 /// Bind an enclosing strict actor turn before any source is registered.
 ///
 /// # Safety
-/// Selection and invocation state are live, and selection has not been polled.
+/// Selection and invocation state are live, selection has not been polled,
+/// and the invocation remains retained until selection is freed.
 #[no_mangle]
 pub unsafe extern "C" fn hew_checked_task_select_set_context(
     selection: *mut HewCheckedTaskSelect,
     state: *const crate::coro_state::HewCoroState,
 ) {
-    // SAFETY: the invocation state is borrowed only for this identity capture.
-    unsafe { (*selection).owner = (*state).execution().actor_turn };
+    // SAFETY: the caller retains the invocation through the selection's lifetime.
+    unsafe {
+        (*selection).owner = (*state).execution().actor_turn;
+        (*selection).invocation = state.cast_mut();
+    }
 }
 
 /// Register a borrowed ephemeral actor completion in source order.
@@ -147,7 +154,7 @@ pub unsafe extern "C" fn hew_checked_task_select_add_task(
     unsafe {
         let selection = &mut *selection;
         retain(task);
-        let wait = HewCheckedTaskWait::new(task, selection.waker);
+        let wait = HewCheckedTaskWait::new(task, selection.waker, false);
         selection.sources.push(SelectSource::Task(wait));
     }
 }
@@ -155,9 +162,10 @@ pub unsafe extern "C" fn hew_checked_task_select_add_task(
 /// Register one borrowed stream receive. Readiness is observed, never taken:
 /// a pipe reports its queue, a socket stream is watched for readability, and a
 /// regular file or in-memory stream is ready at once because its next read
-/// never waits. A stream adapter over a socket may hold only part of its next
-/// item when the socket turns readable, and a file stream over a pipe, device
-/// or terminal can wait on its next read, so both refuse: the selecting actor
+/// never waits. A checked generator drives its ordinary suspension path until
+/// a complete item is published, retaining that item if another arm wins.
+/// A file stream over a pipe, device or terminal can wait on its next read,
+/// so it refuses: the selecting actor
 /// traps on its own turn and its supervisor rules on the crash.
 ///
 /// # Safety
@@ -177,6 +185,7 @@ pub unsafe extern "C" fn hew_checked_task_select_add_stream(
     let readable = match unsafe { stream.as_ref() }.filter(|stream| stream.pipe_core().is_none()) {
         Some(stream) => match stream.select_readiness() {
             SelectReadiness::Ready => ptr::null(),
+            SelectReadiness::Generator => ptr::null(),
             #[cfg(not(target_arch = "wasm32"))]
             SelectReadiness::Reactor(connection) => {
                 // SAFETY: the stream retains the connection and the selection its waker.
@@ -327,7 +336,21 @@ unsafe fn poll(selection: *mut HewCheckedTaskSelect, first_completion: bool) -> 
                     // the waker descriptor is live per the caller's contract.
                     let ready = match unsafe { (**stream).pipe_core() } {
                         Some(core) => core.poll_recv_ready(waker) != 0,
-                        None if readable.is_null() => true,
+                        None if readable.is_null() => {
+                            if selection.invocation.is_null()
+                                && matches!(
+                                    // SAFETY: the selection retains its Stream loan.
+                                    unsafe { (**stream).select_readiness() },
+                                    SelectReadiness::Generator
+                                )
+                            {
+                                return -2;
+                            }
+                            // SAFETY: set_context retains the parent invocation,
+                            // and the selection exclusively polls its borrowed Stream.
+                            unsafe { (**stream).poll_select_generator(selection.invocation) }
+                                .unwrap_or(true)
+                        }
                         None => {
                             // SAFETY: the selection owns this live watch.
                             let status = unsafe { hew_async_io_status(*readable) };

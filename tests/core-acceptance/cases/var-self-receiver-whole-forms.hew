@@ -50,8 +50,8 @@ impl Touch for Holder {
         self.conn.fd = self.conn.fd + 1;
     }
     fn measure(var self, d: i64) {
-        let conn = self.conn;
         let label = f"{d}{d}";
+        let conn = self.conn;
         self.count = self.items.len();
         let width = label.len();
         self.conn = conn;

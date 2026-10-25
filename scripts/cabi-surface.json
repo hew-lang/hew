@@ -8281,6 +8281,45 @@
       "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
+        "wasm32-wasip1": "fn hew_guest_begin_drain()"
+      },
+      "symbol": "hew_guest_begin_drain"
+    },
+    {
+      "availability": [
+        "wasm32-wasip1"
+      ],
+      "classification": "non-declarable",
+      "extent": "not-applicable",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
+        "wasm32-wasip1": "fn hew_guest_is_drained() -> bool"
+      },
+      "symbol": "hew_guest_is_drained"
+    },
+    {
+      "availability": [
+        "wasm32-wasip1"
+      ],
+      "classification": "non-declarable",
+      "extent": "not-applicable",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
+        "wasm32-wasip1": "fn hew_guest_resume()"
+      },
+      "symbol": "hew_guest_resume"
+    },
+    {
+      "availability": [
+        "wasm32-wasip1"
+      ],
+      "classification": "non-declarable",
+      "extent": "not-applicable",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
         "wasm32-wasip1": "fn hew_guest_step() -> bool"
       },
       "symbol": "hew_guest_step"

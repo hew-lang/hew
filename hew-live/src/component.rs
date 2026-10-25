@@ -4,6 +4,8 @@ use std::path::Path;
 
 use wit_bindgen_core::{wit_parser::Resolve, Files};
 
+pub mod host;
+
 /// The portable reference service's source contract, shared by guest bindings.
 pub const ROUTER_WIT: &str = include_str!("../wit/router.wit");
 

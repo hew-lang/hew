@@ -103,8 +103,31 @@ admission refusal while paused, retained-state resume, disposal and snapshot
 activation with different instance grants. Guest C bindings can be generated
 with `make live-component-bindings COMPONENT_BINDINGS_DIR=output`.
 
-The reference router has one counter actor and no autonomous background work.
-Its quiescence contract drains admitted calls and retains the old actor so an
-unsuccessful replacement can resume it. Next work extends
-quiescence to timers and child tasks, adds fenced network deployment and integrates
-durable artefact caching.
+The Hew reference also runs a sleeping periodic actor. The adapter fences host
+calls before pausing periodic admission, then drains existing actor turns, child
+tasks and one-shot actor requests through the guest's ordinary driver. Suspended
+frames block that drain. Periodic registrations and actor state remain owned by
+the old instance, so an unsuccessful replacement can resume them. The oracle
+checks periodic progress after resume and unchanged state during a sleeping
+snapshot. A host must drain every exported call and its release before using the
+runtime drain API; an empty ready queue alone does not establish quiescence.
+Resuming an in-progress attempt withdraws its snapshot authority and requests
+cooperative cancellation. Its borrowed state stays retained until release; a
+new snapshot or disposal cannot bypass that cleanup. Ordinary calls may resume
+without waiting for the abandoned snapshot's result.
+
+`component::host` runs each Store in a persistent task and keeps deployment
+admission outside that task. `Host::prepare` compiles immutable bytes before the
+fence. `Deployment::replace` drains admitted calls, snapshots the retained
+instance and initializes an ungranted candidate within one host deadline. Fuel
+yields let the deadline expire even when candidate initialization loops. Expiry
+withdraws the attempt and resumes the old instance; commit enables the candidate
+and returns a separate retirement handle for old-instance cleanup. A caller
+cancelled after admission does not release its running guest call's lease.
+`Deployment::dispose` consumes the deployment and retains its cleanup task.
+These operations run inside a Tokio runtime.
+
+The host oracle exercises admission drain, caller cancellation, snapshot expiry,
+non-terminating candidate initialization, retained-state recovery, predecessor
+fencing and disposal. Fenced network deployment, generated Hew service bindings,
+idle guest driving and durable artefact caching remain active implementation work.

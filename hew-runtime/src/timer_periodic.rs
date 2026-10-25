@@ -166,6 +166,20 @@ impl ActorTimer {
 type TimerRegistry = HashMap<usize, Vec<ActorTimer>>;
 static ACTOR_TIMERS: PoisonSafe<Option<TimerRegistry>> = PoisonSafe::new(None);
 
+/// One-shot requests already admitted by handlers must finish before a guest
+/// snapshot. Periodic registrations are retained behind the guest ingress gate.
+#[cfg(target_arch = "wasm32")]
+pub(crate) fn has_pending_guest_requests() -> bool {
+    ACTOR_TIMERS.access(|lock| {
+        lock.as_ref().is_some_and(|actors| {
+            actors
+                .values()
+                .flatten()
+                .any(|timer| matches!(timer, ActorTimer::OneShot(_)))
+        })
+    })
+}
+
 fn register_timer(actor: *mut HewActor, ctx: Arc<PeriodicCtx>) {
     ACTOR_TIMERS.access(|lock| {
         lock.get_or_insert_with(HashMap::new)
@@ -411,17 +425,23 @@ unsafe extern "C" fn periodic_timer_cb(data: *mut c_void) {
     // stall, so the ticker cannot spin through overdue intervals.
     //
     // Send a zero-payload message to the actor's dispatch function.
-    // SAFETY: actor is valid — cancel_all_timers_for_actor is spinning
-    // on our in_flight guard and won't free the actor until we clear it.
-    unsafe {
-        crate::actor::actor_send_result_internal_reply(
-            ctx.actor,
-            ctx.msg_type,
-            ptr::null_mut(),
-            0,
-            ptr::null_mut(),
-            crate::actor_caller::HewCallerStamp::timer(),
-        );
+    #[cfg(target_arch = "wasm32")]
+    let admit = crate::driver::guest_ingress_open();
+    #[cfg(not(target_arch = "wasm32"))]
+    let admit = true;
+    if admit {
+        // SAFETY: actor is valid — cancel_all_timers_for_actor is spinning
+        // on our in_flight guard and won't free the actor until we clear it.
+        unsafe {
+            crate::actor::actor_send_result_internal_reply(
+                ctx.actor,
+                ctx.msg_type,
+                ptr::null_mut(),
+                0,
+                ptr::null_mut(),
+                crate::actor_caller::HewCallerStamp::timer(),
+            );
+        }
     }
 
     // Send complete — actor pointer is no longer needed.

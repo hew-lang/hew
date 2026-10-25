@@ -29,13 +29,13 @@ fn environment(name: &str) -> PathBuf {
     )
 }
 
-fn build_component(directory: &Path) -> Vec<u8> {
+fn build_component(directory: &Path, constructor: &str) -> Vec<u8> {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
     let fixture = root.join("tests/fixtures");
     write_guest_bindings(directory).unwrap();
     run(Command::new(environment("HEW_LIVE_COMPILER"))
         .args(["build", "--target", "wasm32-wasip1", "--emit-obj"])
-        .args(["--export-c", "create=guest_create"])
+        .args(["--export-c", &format!("{constructor}=guest_create")])
         .args(["--export-c-async", "route=guest_route"])
         .args(["--export-c-async", "snapshot=guest_snapshot"])
         .args(["--export-c-async", "dispose=guest_dispose"])
@@ -137,16 +137,168 @@ async fn activate(
 #[tokio::test(flavor = "current_thread")]
 async fn hew_and_foreign_components_share_services_and_snapshot_contracts() {
     let directory = tempfile::tempdir().unwrap();
-    let bytes = build_component(directory.path());
+    let bytes = build_component(directory.path(), "create");
     let mut config = Config::new();
     config.wasm_component_model_async(true).consume_fuel(true);
     let engine = Engine::new(&config).unwrap();
     // Preparation compiles the immutable component before any service is granted.
-    let component = Component::new(&engine, bytes).unwrap();
-    exercise_router(&engine, &component).await;
+    let component = Component::new(&engine, &bytes).unwrap();
+    tokio::time::timeout(
+        std::time::Duration::from_secs(30),
+        exercise_router(&engine, &component),
+    )
+    .await
+    .expect("Hew component lifecycle must make progress");
     let core = std::fs::read(environment("HEW_LIVE_FOREIGN_COMPONENT")).unwrap();
     let foreign = Component::new(&engine, component_bytes(&core)).unwrap();
     exercise_router(&engine, &foreign).await;
+    let stalled_directory = tempfile::tempdir().unwrap();
+    let stalled = build_component(stalled_directory.path(), "create_stalled");
+    tokio::time::timeout(
+        std::time::Duration::from_mins(2),
+        exercise_deployment(&bytes, &stalled),
+    )
+    .await
+    .expect("host replacement must make progress independently of the guest");
+}
+
+struct DeploymentServices {
+    started: Arc<tokio::sync::Notify>,
+    release: Arc<tokio::sync::Notify>,
+    delivered: Arc<Mutex<Vec<Delivery>>>,
+}
+
+impl hew_live::component::host::Services for DeploymentServices {
+    fn destination(
+        &self,
+        source: String,
+    ) -> hew_live::component::host::ServiceCall<Option<String>> {
+        let started = Arc::clone(&self.started);
+        let release = Arc::clone(&self.release);
+        Box::pin(async move {
+            if source == "held" {
+                started.notify_one();
+                release.notified().await;
+            }
+            Ok(Some(source))
+        })
+    }
+
+    fn emit(&self, message: Delivery) -> hew_live::component::host::ServiceCall<()> {
+        let delivered = Arc::clone(&self.delivered);
+        Box::pin(async move {
+            delivered.lock().unwrap().push(message);
+            Ok(())
+        })
+    }
+}
+
+async fn exercise_deployment(bytes: &[u8], stalled: &[u8]) {
+    use hew_live::component::host::{Error, Host, Stage};
+    use std::time::Duration;
+
+    let services = Arc::new(DeploymentServices {
+        started: Arc::default(),
+        release: Arc::default(),
+        delivered: Arc::default(),
+    });
+    let host = Arc::new(Host::new(services.clone()).unwrap());
+    let prepared = host.prepare(bytes).unwrap();
+    let stalled = host.prepare(stalled).unwrap();
+    let deployment = Arc::new(
+        host.activate(prepared.clone(), Snapshot { accepted: 40 })
+            .await
+            .unwrap(),
+    );
+    assert!(deployment
+        .route(Event {
+            source: "first".into(),
+            body: "owned".into()
+        })
+        .await
+        .unwrap());
+
+    let caller = {
+        let deployment = Arc::clone(&deployment);
+        tokio::spawn(async move {
+            deployment
+                .route(Event {
+                    source: "held".into(),
+                    body: "admitted".into(),
+                })
+                .await
+        })
+    };
+    services.started.notified().await;
+    caller.abort();
+    assert!(caller.await.unwrap_err().is_cancelled());
+    assert!(matches!(
+        deployment
+            .replace(prepared.clone(), 1, Duration::from_millis(1))
+            .await,
+        Err(Error::Expired(Stage::Admission))
+    ));
+    assert_eq!(deployment.epoch().await, 1);
+    services.release.notify_one();
+
+    let committed = deployment
+        .replace(prepared.clone(), 1, Duration::from_secs(5))
+        .await
+        .unwrap();
+    assert_eq!(committed.snapshot.accepted, 42);
+    assert_eq!(committed.epoch, 2);
+    committed.retirement.await.unwrap().unwrap();
+
+    // The ordinary Hew snapshot sleeps for five milliseconds. A shorter
+    // attempt expires while retaining that old Store, regardless of which
+    // executor happens to observe the deadline first.
+    let expired = deployment
+        .replace(prepared.clone(), 2, Duration::from_millis(1))
+        .await
+        .unwrap_err();
+    assert!(matches!(expired, Error::Expired(_)), "{expired}");
+    assert!(deployment
+        .route(Event {
+            source: "resumed".into(),
+            body: "same state".into()
+        })
+        .await
+        .unwrap());
+
+    // Pure candidate initialization loops forever. Fuel yields allow the host
+    // deadline to revoke commit authority without trapping the old deployment.
+    assert!(matches!(
+        deployment.replace(stalled, 2, Duration::from_secs(5)).await,
+        Err(Error::Expired(Stage::Initialization))
+    ));
+    assert_eq!(deployment.epoch().await, 2);
+    assert!(deployment
+        .route(Event {
+            source: "after-expiry".into(),
+            body: "still owned".into()
+        })
+        .await
+        .unwrap());
+    let committed = deployment
+        .replace(prepared.clone(), 2, Duration::from_secs(5))
+        .await
+        .unwrap();
+    assert_eq!(committed.snapshot.accepted, 44);
+    assert_eq!(committed.epoch, 3);
+    committed.retirement.await.unwrap().unwrap();
+    assert!(matches!(
+        deployment
+            .replace(prepared, 1, Duration::from_secs(5))
+            .await,
+        Err(Error::PredecessorChanged)
+    ));
+    assert_eq!(services.delivered.lock().unwrap().len(), 4);
+    Arc::try_unwrap(deployment)
+        .unwrap()
+        .dispose()
+        .await
+        .unwrap()
+        .unwrap();
 }
 
 #[allow(
@@ -193,7 +345,17 @@ async fn exercise_router(engine: &Engine, component: &Component) {
                 .await
                 .unwrap();
             assert!(denied.unwrap_err().contains("destination grant denied"));
-            let snapshot = handler.call_quiesce(accessor).await.unwrap().unwrap();
+            let (first, second) = tokio::join!(
+                handler.call_quiesce(accessor),
+                handler.call_quiesce(accessor),
+            );
+            let snapshot = match (first.unwrap(), second.unwrap()) {
+                (Ok(snapshot), Err(error)) | (Err(error), Ok(snapshot)) => {
+                    assert!(error.contains("drain admitted calls"));
+                    snapshot
+                }
+                other => panic!("exactly one quiescence attempt must own admission: {other:?}"),
+            };
             assert_eq!(snapshot.accepted, 41);
             let refused = handler
                 .call_route(
@@ -208,6 +370,16 @@ async fn exercise_router(engine: &Engine, component: &Component) {
             assert!(refused.unwrap_err().contains("not accepting"));
             // A rejected replacement can resume this exact retained actor state.
             handler.call_resume(accessor).await.unwrap().unwrap();
+            // Resume also withdraws an in-progress attempt. Completion may win
+            // the race; either way the old instance must accept the next call.
+            let (abandoned, resumed) = tokio::join!(
+                handler.call_quiesce(accessor),
+                handler.call_resume(accessor),
+            );
+            if let Ok(snapshot) = abandoned.unwrap() {
+                assert_eq!(snapshot.accepted, 41);
+            }
+            resumed.unwrap().unwrap();
             assert!(handler
                 .call_route(
                     accessor,

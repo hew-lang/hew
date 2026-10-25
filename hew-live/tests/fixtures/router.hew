@@ -12,23 +12,54 @@ actor Counter {
     }
 }
 
+actor Background {
+    var ticks: u64 = 0;
+
+    #[every(1ms)]
+    receive fn tick() {
+        sleep(2ms);
+        ticks += 1;
+    }
+
+    receive fn count() -> u64 { ticks }
+}
+
+supervisor BackgroundTree {
+    child worker: Background;
+}
+
 #[resource]
 pub type Router {
     counter: Counter;
+    background: BackgroundTree;
 }
 
 impl Router {
     fn close(consume self) {
         stop(self.counter);
         stopped(self.counter);
+        stop(self.background);
+        stopped(self.background);
     }
 }
 
 pub fn create(accepted: u64) -> Router {
-    Router { counter: spawn Counter { accepted: accepted } }
+    Router {
+        counter: spawn Counter { accepted: accepted },
+        background: spawn BackgroundTree,
+    }
+}
+
+// A replacement candidate that never finishes pure initialization. The host
+// must expire its attempt without trapping or destroying the old instance.
+pub fn create_stalled(_accepted: u64) -> Router {
+    loop {}
 }
 
 pub fn snapshot(router: Router) -> u64 {
+    let ticks = router.background.worker.count().expect("background drained");
+    sleep(5ms);
+    assert(router.background.worker.count().expect("background retained") == ticks);
     router.counter.snapshot().expect("counter snapshot")
 }
 
@@ -66,6 +97,10 @@ fn emit(destination: string, body: string) -> Result<(), string> {
 }
 
 pub fn route(router: Router, source: string, body: string) -> bool {
+    let ticks = router.background.worker.count().expect("background running");
+    while router.background.worker.count().expect("background resumed") <= ticks {
+        sleep(1ms);
+    }
     match destination(source).expect("destination service") {
         .None => false,
         .Some(target) => {

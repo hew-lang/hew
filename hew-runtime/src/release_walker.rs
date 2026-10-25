@@ -50,6 +50,12 @@ pub(crate) enum ReleaseItem {
         owner: *mut c_void,
         free: unsafe fn(*mut c_void),
     },
+    /// Canonical payload backing, retained until preceding typed children close.
+    ManagedBacking {
+        pointer: *mut c_void,
+        bytes: u64,
+        free: unsafe fn(*mut c_void),
+    },
     /// An exactly laid out outer allocation, after its value has been consumed.
     Allocation {
         pointer: *mut c_void,
@@ -305,6 +311,16 @@ unsafe fn expand(
             ReleaseItem::Value { .. } => pending.push(item),
             ReleaseItem::String { value } => hew_cabi::string::string_release(value),
             ReleaseItem::Storage { owner, free } => free(owner),
+            ReleaseItem::ManagedBacking {
+                pointer,
+                bytes,
+                free,
+            } => {
+                if let Some(owner) = crate::owned_value_budget::current_owner() {
+                    owner.release_backing(pointer, bytes);
+                }
+                free(pointer);
+            }
             ReleaseItem::Allocation {
                 pointer,
                 size,
@@ -333,6 +349,7 @@ unsafe fn expand(
 pub struct HewReleaseCursor {
     pending: Vec<ReleaseItem>,
     current_layout: Option<HewValueLayout>,
+    current_slot: *mut c_void,
     remaining: usize,
     rc_sweep: Option<hew_observe_protocol::RcSweep>,
     value_owner: Option<Option<crate::owned_value_budget::ValueOwner>>,
@@ -376,6 +393,7 @@ impl HewReleaseCursor {
         Box::into_raw(Box::new(Self {
             pending,
             current_layout: None,
+            current_slot: ptr::null_mut(),
             remaining: STEP_ELEMENTS,
             rc_sweep: None,
             value_owner: None,
@@ -684,6 +702,43 @@ impl ReleaseDriver {
     }
 }
 
+/// Transfer a typed cursor into the common asynchronous callback driver.
+/// # Safety
+/// The caller transfers one fresh optional cursor and drives it to completion.
+#[no_mangle]
+pub unsafe extern "C" fn hew_release_driver_new(cursor: *mut HewReleaseCursor) -> *mut c_void {
+    Box::into_raw(ReleaseDriver::new(cursor)).cast()
+}
+
+/// # Safety
+/// Driver is exclusively retained and parent invocation is live through poll.
+#[no_mangle]
+pub unsafe extern "C" fn hew_release_driver_poll(
+    driver: *mut c_void,
+    parent: *mut crate::coro_state::HewCoroState,
+) -> i32 {
+    // SAFETY: generated cleanup exclusively owns the boxed driver.
+    i32::from(unsafe { (&mut *driver.cast::<ReleaseDriver>()).poll(parent) })
+}
+
+/// # Safety
+/// Driver completed; this transfers its one remaining fault owner.
+#[no_mangle]
+pub unsafe extern "C" fn hew_release_driver_fault(
+    driver: *mut c_void,
+) -> *mut crate::fault::HewFault {
+    // SAFETY: terminal driver is exclusively retained by its cleanup frame.
+    unsafe { (&mut *driver.cast::<ReleaseDriver>()).take_fault() }
+}
+
+/// # Safety
+/// Driver completed and its fault was taken; the caller relinquishes it.
+#[no_mangle]
+pub unsafe extern "C" fn hew_release_driver_free(driver: *mut c_void) {
+    // SAFETY: the caller transfers this terminal allocation exactly once.
+    drop(unsafe { Box::from_raw(driver.cast::<ReleaseDriver>()) });
+}
+
 impl Drop for ReleaseDriver {
     fn drop(&mut self) {
         if !self.done {
@@ -738,9 +793,11 @@ pub unsafe extern "C" fn hew_release_next(cursor: *mut HewReleaseCursor) -> *mut
     // SAFETY: the caller owns this cursor through completion.
     let cursor = unsafe { &mut *cursor };
     cursor.current_layout = None;
+    cursor.current_slot = ptr::null_mut();
     while let Some(item) = cursor.pending.pop() {
         if let ReleaseItem::Value { slot, layout } = item {
             cursor.current_layout = Some(layout);
+            cursor.current_slot = slot;
             return slot;
         }
         // SAFETY: the cursor owns each item and all storage below its children.
@@ -766,6 +823,7 @@ pub unsafe extern "C" fn hew_release_poll(
     // SAFETY: the caller exclusively drives this cursor and owns its slot.
     let cursor = unsafe { &mut *cursor };
     cursor.current_layout = None;
+    cursor.current_slot = ptr::null_mut();
     // SAFETY: the caller supplies writable pointer storage.
     unsafe { slot.write(ptr::null_mut()) };
     while !cursor.pending.is_empty() {
@@ -787,6 +845,7 @@ pub unsafe extern "C" fn hew_release_poll(
         } = item
         {
             cursor.current_layout = Some(layout);
+            cursor.current_slot = value;
             // SAFETY: this output slot remains writable through polling.
             unsafe { slot.write(value) };
             return 1;
@@ -843,7 +902,15 @@ pub unsafe extern "C-unwind" fn hew_release_sync(cursor: *mut HewReleaseCursor) 
     let cursor = unsafe { Box::from_raw(cursor) };
     assert!(cursor.current_layout.is_none());
     // SAFETY: the caller transfers every pending owner in consuming order.
-    unsafe { release_sync_items(cursor.pending.into_iter().rev()) };
+    let HewReleaseCursor {
+        value_owner,
+        pending,
+        ..
+    } = *cursor;
+    let owner = value_owner.unwrap_or_else(crate::owned_value_budget::current_owner);
+    crate::owned_value_budget::with_value_owner(&owner, || unsafe {
+        release_sync_items(pending.into_iter().rev())
+    });
 }
 
 /// Consume detached obligations in order, retaining faults until all finish.

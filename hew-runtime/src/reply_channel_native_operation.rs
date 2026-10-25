@@ -248,22 +248,9 @@ pub unsafe extern "C" fn hew_actor_reply_poll_native(
     }
 }
 
-struct ReplyAllocation {
-    value: *mut c_void,
-    width: u64,
-    owner: Option<ValueOwner>,
-    _code: crate::code_owner::CodeRoot,
-}
-
-unsafe fn free_reply_allocation(raw: *mut c_void) {
-    // SAFETY: the cursor runs this after every typed child has completed release.
-    unsafe {
-        let allocation = Box::from_raw(raw.cast::<ReplyAllocation>());
-        if let Some(owner) = &allocation.owner {
-            owner.release_backing(allocation.value, allocation.width);
-        }
-        crate::mem::buf_free(allocation.value);
-    }
+unsafe fn free_reply_storage(value: *mut c_void) {
+    // SAFETY: the cursor has finished every typed child and ends this backing.
+    unsafe { crate::mem::buf_free(value) };
 }
 
 /// Hand an unpublished result to the existing typed consuming cleanup walker.
@@ -302,21 +289,14 @@ pub(super) unsafe fn release_payload(
 ) -> *mut HewReleaseCursor {
     // SAFETY: the caller transfers one initialized typed reply allocation.
     unsafe {
-        let allocation = Box::new(ReplyAllocation {
-            value,
-            width: if owner.is_some() {
-                crate::owned_value_budget::visit::slot_bytes(layout)
-                    .unwrap_or_else(|_| std::process::abort())
-            } else {
-                0
-            },
-            owner: owner.clone(),
-            _code: code,
-        });
+        let width = crate::owned_value_budget::visit::slot_bytes(layout)
+            .unwrap_or_else(|_| std::process::abort());
         let cursor = HewReleaseCursor::new(vec![
-            ReleaseItem::Storage {
-                owner: Box::into_raw(allocation).cast(),
-                free: free_reply_allocation,
+            ReleaseItem::CodeRoot(code),
+            ReleaseItem::ManagedBacking {
+                pointer: value,
+                bytes: width,
+                free: free_reply_storage,
             },
             ReleaseItem::Value {
                 slot: value,

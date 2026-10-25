@@ -62,7 +62,8 @@ pub struct ValueOwner(Arc<Account>);
 
 /// Borrow the current invocation's retained account, including independently
 /// scheduled scoped tasks, before falling back to its actor incarnation.
-pub(crate) fn current_owner() -> Option<ValueOwner> {
+#[must_use]
+pub fn current_owner() -> Option<ValueOwner> {
     let context = crate::execution_context::current_context();
     if !context.is_null() {
         // SAFETY: explicit release bindings live through this synchronous poll.
@@ -305,24 +306,51 @@ impl ValueOwner {
         bytes: u64,
         unique: bool,
     ) -> Result<BackingChange, BudgetExceeded> {
-        let credit = if unique {
-            old.map_or(0, |old| old.bytes)
-        } else {
-            0
-        };
-        let reserved = bytes.saturating_sub(credit);
+        match old {
+            Some(old) => self.prepare_backing_replacement(&[(old, unique)], bytes),
+            None => self.prepare_backing_replacement(&[], bytes),
+        }
+    }
+
+    /// Reserve a replacement that retires several flat backing interests.
+    /// Each boolean permits credit for an allocation moved without a semantic
+    /// copy. Credit applies once per identity and only when all its interests
+    /// retire; surviving aliases and COW copies keep the old payload charged.
+    ///
+    /// # Errors
+    /// Returns a budget refusal without retiring any input interest.
+    /// # Panics
+    /// Panics if an input does not describe its current owned backing or
+    /// requests more interests than the account retains.
+    pub fn prepare_backing_replacement(
+        &self,
+        retired: &[(ManagedStorage, bool)],
+        bytes: u64,
+    ) -> Result<BackingChange, BudgetExceeded> {
+        let old: Vec<_> = retired.iter().map(|(storage, _)| *storage).collect();
+        let counts = storage_counts(&old);
         let mut ledger = self.ledger();
-        self.check(&ledger, reserved)?;
-        if let Some(old) = old {
+        let mut credit = 0_u64;
+        for (identity, interests) in &counts {
             let held = ledger
                 .storage
-                .get(&old.identity)
+                .get(identity)
                 .expect("unowned managed mutation");
-            assert_eq!(held.bytes, old.bytes);
-            if unique {
-                assert_eq!(held.references, 1);
+            assert_eq!(held.bytes, interests.bytes);
+            assert!(interests.references <= held.references);
+            if interests.references == held.references
+                && retired
+                    .iter()
+                    .filter(|(storage, _)| storage.identity == *identity)
+                    .all(|(_, allow_credit)| *allow_credit)
+            {
+                credit = credit
+                    .checked_add(held.bytes)
+                    .expect("invalid backing credit");
             }
         }
+        let reserved = bytes.saturating_sub(credit);
+        self.check(&ledger, reserved)?;
         ledger.reserved += reserved;
         Ok(BackingChange {
             owner: self.clone(),
@@ -426,7 +454,7 @@ fn insert_storage(ledger: &mut Ledger, pending: HashMap<usize, Retention>) {
 #[derive(Debug)]
 pub struct BackingChange {
     owner: ValueOwner,
-    old: Option<ManagedStorage>,
+    old: Vec<ManagedStorage>,
     bytes: u64,
     reserved: u64,
     committed: bool,
@@ -437,7 +465,7 @@ impl BackingChange {
     /// Panics if its actual identity contradicts the reserved storage plan.
     pub fn commit(mut self, identity: usize) {
         let mut ledger = self.owner.ledger();
-        if let Some(old) = self.old {
+        for old in &self.old {
             let entry = ledger
                 .storage
                 .get_mut(&old.identity)
@@ -680,6 +708,69 @@ mod tests {
         assert_eq!(owner.live_bytes(), 64);
         owner.prepare_resize(storage(2, 64), 16).unwrap().commit(2);
         owner.release(&[storage(2, 16)]);
+        assert_eq!(owner.live_bytes(), 0);
+    }
+
+    #[test]
+    fn backing_merge_credits_moved_inputs_and_rolls_back_refusal() {
+        let owner = ValueOwner::new(Some(64));
+        let receiver = storage(1, 16);
+        let child = storage(2, 32);
+        owner.acquire(&[receiver, child]).unwrap().commit();
+        let retired = [(receiver, true), (child, true)];
+        assert!(owner.prepare_backing_replacement(&retired, 65).is_err());
+        let pending = owner.prepare_backing_replacement(&retired, 64).unwrap();
+        assert!(owner.reserve_new(1).is_err());
+        drop(pending);
+        assert_eq!(owner.live_bytes(), 48);
+        owner
+            .prepare_backing_replacement(&retired, 64)
+            .unwrap()
+            .commit(1);
+        assert_eq!(owner.live_bytes(), 64);
+        owner.release(&[storage(1, 64)]);
+        assert_eq!(owner.live_bytes(), 0);
+    }
+
+    #[test]
+    fn backing_merge_keeps_surviving_aliases_charged() {
+        let owner = ValueOwner::new(Some(80));
+        let receiver = storage(1, 16);
+        let child = storage(2, 20);
+        owner.acquire(&[receiver, child, child]).unwrap().commit();
+        let retired = [(receiver, true), (child, true)];
+        assert!(owner.prepare_backing_replacement(&retired, 64).is_err());
+        owner.release(&[child]);
+        owner
+            .prepare_backing_replacement(&retired, 64)
+            .unwrap()
+            .commit(1);
+        owner.release(&[storage(1, 64)]);
+        assert_eq!(owner.live_bytes(), 0);
+    }
+
+    #[test]
+    fn backing_merge_deduplicates_credit_and_reserves_cow_copy() {
+        let owner = ValueOwner::new(Some(64));
+        let shared = storage(1, 32);
+        owner.acquire(&[shared, shared]).unwrap().commit();
+        assert!(owner
+            .prepare_backing_replacement(&[(shared, true), (shared, true)], 80)
+            .is_err());
+        owner
+            .prepare_backing_replacement(&[(shared, true), (shared, true)], 64)
+            .unwrap()
+            .commit(2);
+        owner.release(&[storage(2, 64)]);
+        owner.acquire(&[shared]).unwrap().commit();
+        assert!(owner
+            .prepare_backing_change(Some(shared), 40, false)
+            .is_err());
+        owner
+            .prepare_backing_change(Some(shared), 32, false)
+            .unwrap()
+            .commit(2);
+        owner.release(&[storage(2, 32)]);
         assert_eq!(owner.live_bytes(), 0);
     }
 

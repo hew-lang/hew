@@ -2648,6 +2648,47 @@ fn lower_canonical_encoding_fixture(
 }
 
 #[test]
+fn encoding_actor_protocols_keep_the_same_owned_types_as_their_bodies() {
+    for format in ["json", "yaml", "toml"] {
+        let source = format!(
+            "import std.encoding.{format}.{{Value}};\n\
+             actor Echo {{\n\
+                 receive fn one(value: Value) -> Value {{ value }}\n\
+                 receive fn nested(values: Vec<Option<Value>>) -> Vec<Option<Value>> {{ values }}\n\
+             }}"
+        );
+        let lowered =
+            lower_canonical_encoding_fixture(format, &source, "#[opaque] pub type Value {}");
+        let actor = lowered
+            .module
+            .items
+            .iter()
+            .find_map(|item| match item {
+                HirItem::Actor(actor) => Some(actor),
+                _ => None,
+            })
+            .unwrap();
+        for handler in &actor.receive_handlers {
+            let protocol = actor
+                .protocol_descriptor
+                .handlers
+                .iter()
+                .find(|protocol| protocol.declaration == handler.declaration)
+                .unwrap();
+            assert_eq!(
+                protocol.param_tys,
+                handler
+                    .params
+                    .iter()
+                    .map(|param| param.ty.clone())
+                    .collect::<Vec<_>>()
+            );
+            assert_eq!(protocol.return_ty, handler.return_ty);
+        }
+    }
+}
+
+#[test]
 fn selected_encoding_import_keeps_checked_identity_through_payload_extraction() {
     for (format, builtin) in [
         ("json", BuiltinType::JsonValue),

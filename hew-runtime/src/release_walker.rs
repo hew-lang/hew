@@ -501,6 +501,7 @@ pub(crate) struct ReleaseDriver {
     done: bool,
     rc_sweep: Option<hew_observe_protocol::RcSweep>,
     active_code: Option<crate::code_owner::CodeRoot>,
+    value_owner: Option<crate::owned_value_budget::ValueOwner>,
 }
 
 impl ReleaseDriver {
@@ -518,6 +519,18 @@ impl ReleaseDriver {
         reason = "generated child frames retain fault output addresses in this allocation"
     )]
     pub(crate) fn new(cursor: *mut HewReleaseCursor) -> Box<Self> {
+        Self::with_value_owner(cursor, crate::owned_value_budget::current_owner())
+    }
+
+    /// Retain the payload's account across asynchronous authored cleanup.
+    #[expect(
+        clippy::unnecessary_box_returns,
+        reason = "Generated callbacks retain driver output addresses"
+    )]
+    pub(crate) fn with_value_owner(
+        cursor: *mut HewReleaseCursor,
+        value_owner: Option<crate::owned_value_budget::ValueOwner>,
+    ) -> Box<Self> {
         Box::new(Self {
             cursor,
             state: ptr::null_mut(),
@@ -527,6 +540,7 @@ impl ReleaseDriver {
             done: cursor.is_null(),
             rc_sweep: None,
             active_code: None,
+            value_owner,
         })
     }
 
@@ -535,7 +549,10 @@ impl ReleaseDriver {
     /// invocation is live through this poll and supplies its retained waker.
     pub(crate) unsafe fn poll(&mut self, parent: *mut crate::coro_state::HewCoroState) -> bool {
         // SAFETY: the caller owns this driver and its parent through the poll.
-        unsafe { self.poll_inner(parent, None) }
+        let owner = self.value_owner.clone();
+        crate::owned_value_budget::with_value_owner(&owner, || unsafe {
+            self.poll_inner(parent, None)
+        })
     }
 
     /// Drive a terminal hook with its executing child visible to stop polling.
@@ -547,7 +564,10 @@ impl ReleaseDriver {
         actor: &crate::actor::HewActor,
     ) -> bool {
         // SAFETY: activation ownership pins the actor and both invocations.
-        unsafe { self.poll_inner(parent, Some(actor)) }
+        let owner = self.value_owner.clone();
+        crate::owned_value_budget::with_value_owner(&owner, || unsafe {
+            self.poll_inner(parent, Some(actor))
+        })
     }
 
     unsafe fn poll_inner(
@@ -616,6 +636,7 @@ impl ReleaseDriver {
                     if self.state.is_null() {
                         std::process::abort();
                     }
+                    (*self.state).execution_mut().value_owner = self.value_owner.clone();
                     {
                         let _binding = terminal_actor.map(|actor| {
                             crate::actor_native::bind_checked_invocation(actor, self.state)

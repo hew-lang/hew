@@ -297,6 +297,9 @@ pub struct HewExecutionContext {
     pub caller: crate::actor_caller::HewCallerStamp,
     /// Incoming completion budget; expiry does not cancel this actor turn.
     pub request_deadline: crate::request_deadline::RequestDeadline,
+    /// Borrowed explicit account during typed release. A null pointer leaves
+    /// dispatch lookup active; a pointer to `None` is explicitly unbounded.
+    pub(crate) value_owner: *const Option<crate::owned_value_budget::ValueOwner>,
 }
 
 thread_local! {

@@ -171,6 +171,8 @@ pub struct SinkOwners {
     pub values: Vec<(*mut core::ffi::c_void, crate::value::HewValueLayout)>,
     pub storage: *mut core::ffi::c_void,
     pub free: unsafe fn(*mut core::ffi::c_void),
+    /// Canonical owned field storage retained until every typed value finishes cleanup.
+    pub managed_backing: Option<(*const core::ffi::c_void, u64)>,
 }
 
 struct OwnedSink<T> {

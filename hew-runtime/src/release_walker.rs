@@ -859,7 +859,11 @@ pub(crate) unsafe fn visit_cursor(
                 ReleaseItem::MapStorage { map } => {
                     visit::visit_map_range(*map, (**map).cap, true, visitor)
                 }
-                ReleaseItem::RcSurvivors(_) | ReleaseItem::Sink { .. } => UNDESCRIBED,
+                ReleaseItem::Sink { sink } => crate::stream::sender::hew_managed_visit_sink(
+                    (sink as *const *mut crate::stream::HewSink).cast(),
+                    visitor,
+                ),
+                ReleaseItem::RcSurvivors(_) => UNDESCRIBED,
                 ReleaseItem::CodeRoot(_)
                 | ReleaseItem::Storage { .. }
                 | ReleaseItem::Allocation { .. } => 0,

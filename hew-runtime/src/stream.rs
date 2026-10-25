@@ -2108,6 +2108,14 @@ pub(crate) unsafe fn expand_sink(
             owner: owners.storage,
             free: owners.free,
         });
+        if let Some((pointer, bytes)) = owners.managed_backing {
+            unsafe fn keep_shared_fields(_pointer: *mut c_void) {}
+            pending.push(ReleaseItem::ManagedBacking {
+                pointer: pointer.cast_mut(),
+                bytes,
+                free: keep_shared_fields,
+            });
+        }
         pending.extend(
             owners
                 .values

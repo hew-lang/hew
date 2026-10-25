@@ -1032,9 +1032,14 @@ mod tests {
     }
 
     fn owned_layout() -> HewValueLayout {
+        static MANAGED: hew_cabi::managed::HewManagedValueDescriptor =
+            hew_cabi::managed::HewManagedValueDescriptor {
+                slot_bytes: 8,
+                visit: None,
+            };
         HewValueLayout {
             code_owner: core::ptr::null(),
-            managed: core::ptr::null(),
+            managed: &MANAGED,
             size: size_of::<usize>(),
             align: align_of::<usize>(),
             ownership_kind: HewTypeOwnershipKind::LayoutManaged,

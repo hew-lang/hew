@@ -21,6 +21,26 @@
 //! A fault or cancellation also leaves no partially initialized entry.
 //!
 //! See the complete product-cache example in `examples/keyed_cache.hew`.
+//!
+//! ```hew
+//! import std.cache;
+//!
+//! fn main() {
+//!     var values: cache.Cache<string, i64> = cache.new(capacity: .Some(2)).expect("valid capacity");
+//!     values.insert("first", 10);
+//!     let loaded: Result<i64, string> = values.get_or_load("second", || .Ok(20));
+//!     println(loaded.expect("loaded value"));
+//!     let snapshot = values;
+//!     values.insert("third", 30);
+//!     println(values.get("first").is_none());
+//!     var saved = snapshot;
+//!     println(saved.get("first").expect("snapshot retains first"));
+//! }
+//! // Output:
+//! // 20
+//! // true
+//! // 10
+//! ```
 
 /// Invalid cache limits.
 pub enum CacheError {

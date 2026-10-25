@@ -7,6 +7,7 @@ use super::{
     key_hash, require_clone, slot_key, slot_state, slot_val, validate_op_inputs, HewLayoutHashMap,
     EMPTY, LOAD_PCTG, OCCUPIED, TOMBSTONE,
 };
+use crate::owned_value_budget::{BackingChange, ManagedStorage};
 use crate::release_walker::{hew_release_sync, HewReleaseCursor};
 use core::{ffi::c_void, ptr};
 use hew_cabi::map::HewMapProbeStatus;
@@ -37,6 +38,14 @@ pub struct HewLayoutMapProbe {
     index: usize,
     tombstone: Option<usize>,
     found: bool,
+}
+
+fn insertion_capacity(cap: usize, len: usize, inserting: bool) -> Option<usize> {
+    if inserting && len.saturating_add(1).saturating_mul(100) >= cap.saturating_mul(LOAD_PCTG) {
+        cap.checked_mul(2)
+    } else {
+        Some(cap)
+    }
 }
 
 impl Drop for HewLayoutMapProbe {
@@ -182,13 +191,8 @@ pub unsafe extern "C" fn hew_hashmap_probe_begin(
             (*map).key_layout.value.align.max((*map).val_layout.align),
         )
     };
-    let staged = inserting != 0
-        && len.saturating_add(1).saturating_mul(100) >= old_cap.saturating_mul(LOAD_PCTG);
-    let cap = if staged {
-        old_cap.checked_mul(2).expect("map capacity overflow")
-    } else {
-        old_cap
-    };
+    let cap = insertion_capacity(old_cap, len, inserting != 0).expect("map capacity overflow");
+    let staged = cap != old_cap;
     let entries = if staged {
         // SAFETY: the map constructor validated this allocation geometry.
         unsafe { alloc_layout_entries(cap, stride, alignment) }
@@ -447,11 +451,69 @@ enum InsertMode {
     RawTransfer,
 }
 
+type ValuePermit = Option<crate::owned_value_budget::materialize::MaterializationPermit>;
+
+unsafe fn input_permit(
+    layout: *const hew_cabi::value::HewValueLayout,
+    slot: *const c_void,
+    copied: bool,
+) -> Result<ValuePermit, i32> {
+    use crate::owned_value_budget::materialize::{HewManagedInput, MaterializationPermit};
+    let Some(owner) = crate::owned_value_budget::current_owner() else {
+        return Ok(None);
+    };
+    // SAFETY: the map retains its field descriptor throughout this transaction.
+    let empty = unsafe {
+        (*layout).size == 0
+            && (*layout)
+                .managed
+                .as_ref()
+                .is_some_and(|managed| managed.visit.is_none() && managed.slot_bytes == 0)
+    };
+    if slot.is_null() && empty {
+        return Ok(None);
+    }
+    let inputs = [HewManagedInput {
+        layout,
+        slot,
+        copies: u64::from(copied),
+        consume: u8::from(!copied),
+    }];
+    // SAFETY: the probe pins this input until commit or cancellation.
+    unsafe { MaterializationPermit::prepare(owner, 0, &inputs).map(Some) }
+}
+
+unsafe fn adopt_input(
+    permit: ValuePermit,
+    layout: &hew_cabi::value::HewValueLayout,
+    slot: *const c_void,
+) {
+    if let Some(permit) = permit {
+        // SAFETY: the ordinary copy/move just initialized this reserved slot.
+        if unsafe { permit.commit(layout, slot) }.is_err() {
+            std::process::abort();
+        }
+    }
+}
+
 unsafe fn insert(
+    probe: HewLayoutMapProbe,
+    value: *const c_void,
+    mode: InsertMode,
+    release_out: *mut *mut HewReleaseCursor,
+) -> bool {
+    // SAFETY: raw glue uses its enclosing materialization permit, if bounded.
+    unsafe { insert_prepared(probe, value, mode, release_out, None, None, None) }
+}
+
+unsafe fn insert_prepared(
     mut probe: HewLayoutMapProbe,
     value: *const c_void,
     mode: InsertMode,
     release_out: *mut *mut HewReleaseCursor,
+    key_permit: ValuePermit,
+    value_permit: ValuePermit,
+    backing: Option<BackingChange>,
 ) -> bool {
     // SAFETY: snapshot geometry before allocating or changing the map.
     let (key_layout, value_layout, stride, key_offset, val_offset) = unsafe {
@@ -489,8 +551,13 @@ unsafe fn insert(
         } else if value_layout.size > 0 {
             ptr::copy_nonoverlapping(value.cast::<u8>(), val, value_layout.size);
         }
+        adopt_input(key_permit, &key_layout, key.cast());
+        adopt_input(value_permit, &value_layout, val.cast());
         probe.publish_resize();
         let map = &mut *probe.map;
+        if let Some(backing) = backing {
+            backing.commit(map.entries as usize);
+        }
         let destination_key = slot_key(map.entries, probe.index, stride, key_offset);
         let destination_value = slot_val(map.entries, probe.index, stride, val_offset);
         let mut displaced = Vec::new();
@@ -514,6 +581,171 @@ unsafe fn insert(
         *release_out = HewReleaseCursor::join(displaced);
     }
     !probe.found
+}
+
+unsafe fn insert_checked(
+    probe: *mut HewLayoutMapProbe,
+    value: *const c_void,
+    mode: InsertMode,
+    release_out: *mut *mut HewReleaseCursor,
+    status: *mut i32,
+) -> bool {
+    // SAFETY: refusal leaves this unique probe and its operands untouched;
+    // success consumes it through the same ordinary insertion implementation.
+    unsafe {
+        status.write(0);
+        let map = &*(*probe).map;
+        // Rehash scratch borrows the old owners through every authored
+        // callback. Only this commit creates the new owning table.
+        let backing = if (*probe).staged {
+            if let Some(owner) = crate::owned_value_budget::current_owner() {
+                let prepared = (|| {
+                    let old = ManagedStorage {
+                        identity: map.entries as usize,
+                        bytes: super::managed::backing_bytes(map, map.cap)?,
+                    };
+                    let bytes = super::managed::backing_bytes(map, (*probe).cap)?;
+                    owner
+                        .prepare_backing_change(Some(old), bytes, true)
+                        .map_err(|_| hew_cabi::managed::HEAP_EXCEEDED)
+                })();
+                match prepared {
+                    Ok(backing) => Some(backing),
+                    Err(error) => {
+                        status.write(error);
+                        return false;
+                    }
+                }
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+        let key = match input_permit(
+            &raw const map.key_layout.value,
+            (*probe).key,
+            matches!(mode, InsertMode::Clone | InsertMode::TakeValue),
+        ) {
+            Ok(permit) => permit,
+            Err(error) => {
+                status.write(error);
+                return false;
+            }
+        };
+        let value_permit =
+            match input_permit(&raw const map.val_layout, value, mode == InsertMode::Clone) {
+                Ok(permit) => permit,
+                Err(error) => {
+                    status.write(error);
+                    return false;
+                }
+            };
+        insert_prepared(
+            ready(probe),
+            value,
+            mode,
+            release_out,
+            key,
+            value_permit,
+            backing,
+        )
+    }
+}
+
+/// Copy one found value only after its typed clone plan fits.
+/// # Safety
+/// Probe/output satisfy get-clone; refusal preserves the ready probe for
+/// `hew_hashmap_probe_free` and leaves the value output uninitialized.
+#[no_mangle]
+pub unsafe extern "C" fn hew_hashmap_probe_get_clone_checked(
+    probe: *mut HewLayoutMapProbe,
+    out: *mut c_void,
+    status: *mut i32,
+) -> bool {
+    // SAFETY: the source map retains this descriptor and found slot.
+    unsafe {
+        status.write(0);
+        let layout = (*(*probe).map).val_layout;
+        let permit = if (*probe).found {
+            match input_permit(&raw const layout, (*probe).value().cast(), true) {
+                Ok(permit) => permit,
+                Err(error) => {
+                    status.write(error);
+                    return false;
+                }
+            }
+        } else {
+            None
+        };
+        let found = hew_hashmap_probe_get_clone(probe, out);
+        if found {
+            adopt_input(permit, &layout, out);
+        }
+        found
+    }
+}
+
+/// Checked copied insertion; refusal preserves the ready probe and all loans.
+/// # Safety
+/// Arguments satisfy insert-clone and status is a writable compiler output.
+#[no_mangle]
+pub unsafe extern "C-unwind" fn hew_hashmap_probe_insert_clone_checked(
+    probe: *mut HewLayoutMapProbe,
+    value: *const c_void,
+    release_out: *mut *mut HewReleaseCursor,
+    status: *mut i32,
+) -> bool {
+    // SAFETY: forwarded ready probe, matching input and checked output contracts.
+    unsafe { insert_checked(probe, value, InsertMode::Clone, release_out, status) }
+}
+
+/// Checked affine-value insertion; refusal preserves the probe and input owner.
+/// # Safety
+/// Arguments satisfy insert-take and status is a writable compiler output.
+#[no_mangle]
+pub unsafe extern "C-unwind" fn hew_hashmap_probe_insert_take_checked(
+    probe: *mut HewLayoutMapProbe,
+    value: *const c_void,
+    release_out: *mut *mut HewReleaseCursor,
+    status: *mut i32,
+) -> bool {
+    // SAFETY: forwarded ready probe, matching input and checked output contracts.
+    unsafe { insert_checked(probe, value, InsertMode::TakeValue, release_out, status) }
+}
+
+/// Checked copied set insertion using the map's shared ownership transaction.
+/// # Safety
+/// Arguments satisfy set insert-clone and status is writable.
+#[no_mangle]
+pub unsafe extern "C-unwind" fn hew_hashset_probe_insert_clone_checked(
+    probe: *mut HewLayoutMapProbe,
+    release_out: *mut *mut HewReleaseCursor,
+    status: *mut i32,
+) -> bool {
+    // SAFETY: the set's value descriptor is the canonical plain zero-width slot.
+    unsafe { insert_checked(probe, ptr::null(), InsertMode::Clone, release_out, status) }
+}
+
+/// Checked affine set insertion using the map's shared ownership transaction.
+/// # Safety
+/// Arguments satisfy set insert-take and status is writable.
+#[no_mangle]
+pub unsafe extern "C-unwind" fn hew_hashset_probe_insert_take_checked(
+    probe: *mut HewLayoutMapProbe,
+    release_out: *mut *mut HewReleaseCursor,
+    status: *mut i32,
+) -> bool {
+    // SAFETY: the set's value descriptor is the canonical plain zero-width slot.
+    unsafe {
+        insert_checked(
+            probe,
+            ptr::null(),
+            InsertMode::TakeElement,
+            release_out,
+            status,
+        )
+    }
 }
 
 /// # Safety

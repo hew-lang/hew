@@ -84,7 +84,7 @@ const LOAD_PCTG: usize = 75;
 // semantic copy/drop protocol used by descriptor-backed vectors.
 
 /// Initial capacity for a layout-backed map (must be a power of two).
-const LAYOUT_INIT_CAP: usize = 16;
+pub(crate) const LAYOUT_INIT_CAP: usize = 16;
 
 /// Test-only linker anchor (W4.001 Stage C0b).
 ///
@@ -181,6 +181,8 @@ pub struct HewLayoutHashMapIter {
 
 mod probe;
 pub use probe::*;
+pub(crate) mod managed;
+pub use managed::*;
 
 /// Create an iterator over the occupied entries in `m`.
 ///
@@ -1421,6 +1423,11 @@ pub(crate) unsafe fn release_slot_chunk(
 pub(crate) unsafe fn free_map_storage(m: *mut HewLayoutHashMap) {
     // SAFETY: caller guarantees the allocation contract.
     let map_ref = unsafe { &*m };
+    if let Some(owner) = crate::owned_value_budget::current_owner() {
+        let bytes =
+            managed::backing_bytes(map_ref, map_ref.cap).unwrap_or_else(|_| std::process::abort());
+        owner.release_backing(map_ref.entries.cast(), bytes);
+    }
     // SAFETY: final storage release transfers both retained descriptor roots.
     let _key_code =
         unsafe { crate::code_owner::CodeRoot::take(map_ref.key_layout.value.code_owner) };

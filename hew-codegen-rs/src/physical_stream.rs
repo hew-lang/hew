@@ -428,6 +428,12 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             "stream.read.operation",
         )?
         .into_pointer_value();
+        frame.bind_operation(
+            self.ctx,
+            &self.builder,
+            managed::operation_layout(self.ctx, self.llvm, "hew_managed_visit_stream_operation")?,
+            request,
+        )?;
         let poll = self.ctx.append_basic_block(self.value, "stream.next.poll");
         let inspect = self
             .ctx
@@ -561,6 +567,14 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
         let frame = self.stream_frame()?;
         let pointer = self.ctx.ptr_type(AddressSpace::default());
         let waker = self.task_pointer_call("hew_coro_state_waker", &[frame.state.into()])?;
+        let quota_status = frame.storage(
+            self.ctx,
+            self.ctx.i32_type().into(),
+            "stream.write.quota.status",
+        )?;
+        self.builder
+            .build_store(quota_status, self.ctx.i32_type().const_zero())
+            .llvm_ctx("initialize checked stream envelope")?;
         let start = get_or_declare_external(
             self.llvm,
             "hew_stream_write_start_native",
@@ -572,6 +586,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
                     pointer.into(),
                     pointer.into(),
                     self.ctx.bool_type().into(),
+                    pointer.into(),
                     pointer.into(),
                 ],
                 false,
@@ -597,10 +612,61 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
                     })?
                     .as_pointer_value()
                     .into(),
+                quota_status.into(),
             ],
             "stream.write.operation",
         )?
         .into_pointer_value();
+        let quota = self
+            .builder
+            .build_load(
+                self.ctx.i32_type(),
+                quota_status,
+                "stream.write.quota.status",
+            )
+            .llvm_ctx("read stream envelope reservation")?
+            .into_int_value();
+        let sealed = self
+            .ctx
+            .append_basic_block(self.value, "stream.write.sealed");
+        let quota_refused = self
+            .ctx
+            .append_basic_block(self.value, "stream.write.quota.refused");
+        let ok = self
+            .builder
+            .build_int_compare(
+                IntPredicate::EQ,
+                quota,
+                self.ctx.i32_type().const_zero(),
+                "stream.write.quota.ok",
+            )
+            .llvm_ctx("check stream envelope acquisition")?;
+        self.builder
+            .build_conditional_branch(ok, sealed, quota_refused)
+            .llvm_ctx("retain stream input until checked acquisition")?;
+        self.builder.position_at_end(quota_refused);
+        self.initialize_active_fault(hew_runtime::internal::types::HEW_TRAP_HEAP_EXCEEDED)?;
+        let recipe = &self
+            .module
+            .managed_types
+            .get(&self.storage(*value)?.ty)
+            .ok_or_else(|| {
+                CodegenError::FailClosed("stream input lacks canonical value recipe".into())
+            })?
+            .recipe;
+        if let Some(action) = recipe.destroy {
+            self.destroy_owned_operand(*value, action)?;
+        } else {
+            self.clear_owned(*value)?;
+        }
+        self.emit_edge(unwind)?;
+        self.builder.position_at_end(sealed);
+        frame.bind_operation(
+            self.ctx,
+            &self.builder,
+            managed::operation_layout(self.ctx, self.llvm, "hew_managed_visit_stream_operation")?,
+            request,
+        )?;
         self.clear_owned(*value)?;
         let poll = self.ctx.append_basic_block(self.value, "stream.send.poll");
         let inspect = self

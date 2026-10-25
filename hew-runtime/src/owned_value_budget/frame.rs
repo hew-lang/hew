@@ -100,7 +100,7 @@ mod tests {
     }
 
     #[test]
-    fn frozen_frame_visits_only_live_roots_and_its_suspended_child() {
+    fn frozen_frame_visits_live_slots_operation_and_suspended_child() {
         let (_ready, waker) = crate::wake::blocking::Readiness::new();
         // SAFETY: all stack views and real string values outlive their bound
         // invocations; both invocations are idle during each account walk.
@@ -111,6 +111,7 @@ mod tests {
                 crate::coro_state::hew_coro_state_new(waker.descriptor(), core::ptr::null_mut());
             let text = hew_cabi::string::string_from_str("roots");
             let child_text = hew_cabi::string::string_from_str("nested");
+            let operation_text = hew_cabi::string::string_from_str("protocol");
             let live = 1_u8;
             let absent = 0_u8;
             let text_layout = &crate::layout_intrinsics::hew_layout_val_string;
@@ -141,8 +142,12 @@ mod tests {
             let child_record = child
                 .cast::<hew_cabi::coro::HewCoroInvocation>()
                 .cast_const();
+            let operation = hew_cabi::managed::HewManagedFrameOperation {
+                layout: text_layout,
+                slot: (&raw const operation_text).cast(),
+            };
             let view = HewManagedFrame {
-                operation: core::ptr::null(),
+                operation: &raw const operation,
                 slots: entries.as_ptr(),
                 count: entries.len(),
                 child: &raw const child_record,
@@ -163,18 +168,18 @@ mod tests {
                 code_owner: core::ptr::null(),
                 managed: &raw const managed,
             };
-            let small = ValueOwner::new(Some(10));
+            let small = ValueOwner::new(Some(18));
             assert!(matches!(
                 small.acquire_value(&layout, (&raw const root).cast()),
                 Err(HEAP_EXCEEDED)
             ));
             assert_eq!(small.live_bytes(), 0);
-            let exact = ValueOwner::new(Some(11));
+            let exact = ValueOwner::new(Some(19));
             exact
                 .acquire_value(&layout, (&raw const root).cast())
                 .unwrap()
                 .commit();
-            assert_eq!(exact.live_bytes(), 11);
+            assert_eq!(exact.live_bytes(), 19);
             exact
                 .release_value(&layout, (&raw const root).cast())
                 .unwrap();
@@ -185,6 +190,7 @@ mod tests {
             crate::coro_state::hew_coro_state_free(root);
             hew_cabi::string::string_release(text);
             hew_cabi::string::string_release(child_text);
+            hew_cabi::string::string_release(operation_text);
         }
     }
 }

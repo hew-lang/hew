@@ -698,6 +698,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             "hew_stream_operation_release_begin",
             pointer.fn_type(&[pointer.into()], false),
         )?;
+        frame.clear_operation(self.ctx, &self.builder)?;
         let cursor = suspend::call_value(
             &self.builder,
             begin,

@@ -51,6 +51,21 @@ fn compile_with_ownership(
     next: u32,
     code_owner: bool,
 ) {
+    let inputs: Vec<_> = inputs
+        .iter()
+        .map(|slot| (*slot, hew_types::session::SessionContents::Full))
+        .collect();
+    compile_with_contents(directory, name, source, &inputs, next, code_owner);
+}
+
+fn compile_with_contents(
+    directory: &Path,
+    name: &str,
+    source: &str,
+    inputs: &[(u32, hew_types::session::SessionContents)],
+    next: u32,
+    code_owner: bool,
+) {
     let mut parsed = hew_parser::parse(source);
     assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
     hew_compile::attach_prelude_std_modules(&mut parsed.program);
@@ -64,7 +79,7 @@ fn compile_with_ownership(
         hew_compile::DiagnosticPolicy::default(),
     );
     let live = session
-        .lower_live_program(&parsed.program, &checked, roots[0], inputs, next)
+        .lower_live_program_with_contents(&parsed.program, &checked, roots[0], inputs, next)
         .unwrap();
     let triple = native_emission_triple();
     let target = physical_target_for_inventory(
@@ -488,4 +503,115 @@ fn execute_dynamic(directory: &Path) {
             String::from_utf8_lossy(&run.stderr)
         );
     }
+}
+
+#[test]
+fn native_session_places_preserve_partial_fields_through_fault_resume_and_cleanup() {
+    use hew_types::session::SessionContents;
+    const TYPES: &str = r#"
+        #[resource] pub type Handle { id: i64; }
+        impl Handle { fn close(consume self) { unsafe { record_close(self.id); } } }
+        pub type Pair { taken: Handle; held: Handle; marker: i64; }
+        extern "C" { fn record_close(id: i64); fn record_marker(value: i64); }
+    "#;
+    let directory = tempfile::tempdir().unwrap();
+    compile_with_ownership(directory.path(), "initial", &format!("{TYPES} pub fn submission() {{ var pair = Pair {{ taken: Handle {{ id: 1 }}, held: Handle {{ id: 2 }}, marker: 40 }}; }}"), &[], 0, true);
+    compile(directory.path(), "failing", &format!("{TYPES} pub fn submission(consume var pair: Pair) {{ pair.marker += 2; pair.taken.close(); panic(\"stop\"); }}"), &[0], 1);
+    compile_with_contents(directory.path(), "resume", &format!("{TYPES} pub fn submission(consume var pair: Pair) {{ unsafe {{ record_marker(pair.marker); }} pair.taken = Handle {{ id: 3 }}; pair.held.close(); }}"), &[(0, SessionContents::Partial(vec![vec![1], vec![2]]))], 1, false);
+    std::fs::write(directory.path().join("host.c"), r#"
+#include <assert.h>
+#include <stdbool.h>
+#include <stdint.h>
+#include <stddef.h>
+typedef struct { void **slots; size_t len; } Session;
+typedef struct { void *context; void (*retain)(void *); void (*release)(void *); void *try_retain; } Lease;
+extern const Lease *HewLiveCodeOwner;
+static int roots;
+static void retain(void *context) { ++*(int *)context; }
+static void release(void *context) { assert(*(int *)context > 0); --*(int *)context; }
+extern void *hew_runtime_new(void);
+extern void hew_runtime_release(void *);
+extern bool hew_live_slot_initialized(const Session *, size_t);
+extern size_t hew_live_slot_leaf_count(const Session *, size_t);
+extern const uint32_t *hew_live_slot_leaf(const Session *, size_t, size_t, size_t *, bool *);
+extern int hew_live_slot_release(Session *, size_t, void **);
+extern void hew_host_error_release(void *);
+extern int initial(void *, void **);
+extern int failing(void *, void **);
+extern int resume(void *, void **);
+static int closed[4];
+static int marker;
+void record_close(int64_t id) { assert(id >= 1 && id <= 3); assert(++closed[id] == 1); }
+void record_marker(int64_t value) { marker = value; }
+static void check_leaf(Session *session, size_t leaf, bool expected) {
+    size_t length = 0; bool initialized = false;
+    const uint32_t *path = hew_live_slot_leaf(session, 0, leaf, &length, &initialized);
+    assert(length == 1 && path[0] == leaf && initialized == expected);
+}
+int main(void) {
+    Lease lease = { &roots, retain, release };
+    HewLiveCodeOwner = &lease;
+    void *runtime = hew_runtime_new();
+    for (int continue_after_fault = 0; continue_after_fault != 2; ++continue_after_fault) {
+        void *slots[1] = {0}, *error = 0; Session session = { slots, 1 };
+        closed[1] = closed[2] = closed[3] = marker = 0;
+        assert(initial(&session, &error) == 0 && !error);
+        assert(hew_live_slot_initialized(&session, 0));
+        assert(failing(&session, &error) != 0 && error && closed[1] == 1 && closed[2] == 0);
+        hew_host_error_release(error); error = 0;
+        assert(!hew_live_slot_initialized(&session, 0) && roots > 0);
+        assert(hew_live_slot_leaf_count(&session, 0) == 3);
+        check_leaf(&session, 0, false); check_leaf(&session, 1, true); check_leaf(&session, 2, true);
+        if (continue_after_fault) {
+            assert(resume(&session, &error) == 0 && !error && marker == 42 && closed[2] == 1);
+            check_leaf(&session, 0, true); check_leaf(&session, 1, false); check_leaf(&session, 2, true);
+        }
+        assert(hew_live_slot_release(&session, 0, &error) == 0 && !error);
+        assert(closed[1] == 1 && closed[2] == 1 && closed[3] == continue_after_fault);
+        assert(roots == 0);
+    }
+    hew_runtime_release(runtime);
+}
+"#).unwrap();
+    execute(directory.path(), &["initial", "failing", "resume"]);
+}
+
+#[test]
+fn native_session_places_reject_reads_of_fields_missing_from_the_snapshot() {
+    use hew_types::session::SessionContents;
+    let source = "pub type Pair { left: string; right: string; } pub fn submission(consume pair: Pair) { println(pair.left); }";
+    let mut parsed = hew_parser::parse(source);
+    assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+    hew_compile::attach_prelude_std_modules(&mut parsed.program);
+    let mut checker =
+        hew_types::Checker::new(hew_types::module_registry::ModuleRegistry::new(Vec::new()));
+    let checked = checker.check_program(&parsed.program);
+    assert!(checked.errors.is_empty(), "{:?}", checked.errors);
+    let roots = hew_compile::Session::source_roots(&parsed.program, &checked).unwrap();
+    let session = hew_compile::Session::new(
+        hew_compile::SessionTarget::native(),
+        hew_compile::DiagnosticPolicy::default(),
+    );
+    session
+        .lower_live_program(&parsed.program, &checked, roots[0], &[0], 1)
+        .unwrap();
+    let refused = session
+        .lower_live_program_with_contents(
+            &parsed.program,
+            &checked,
+            roots[0],
+            &[(0, SessionContents::Partial(vec![vec![1]]))],
+            1,
+        )
+        .unwrap_err();
+    let hew_compile::SessionError::Semantic(diagnostics) = refused else {
+        panic!("expected a leaf availability refusal: {refused}");
+    };
+    assert!(
+        diagnostics.iter().any(|diagnostic| matches!(
+            diagnostic.kind,
+            hew_sir::SirDiagnosticKind::PlaceLifetime { .. }
+        )),
+        "{diagnostics:?}"
+    );
 }

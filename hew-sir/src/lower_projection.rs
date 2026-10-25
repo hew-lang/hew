@@ -375,7 +375,7 @@ impl Builder<'_, '_> {
 
 /// Expanding an aggregate always declares every sibling. An intermediate
 /// field's availability is derived from its children, never another owner.
-fn declare_path(
+pub(super) fn declare_path(
     places: &mut Vec<PlaceDecl>,
     mut base: PlaceBase,
     root_ty: &ResolvedTy,

@@ -771,3 +771,28 @@ pub(super) fn require_droppable(
     }
     Ok(())
 }
+
+/// Seed the physical availability flow from the exact retained session snapshot.
+pub(super) fn initialize_session_contents(
+    function: &PhysicalFunction,
+    entry: &mut FlowState,
+) -> Result<(), PhysicalError> {
+    for slot in &function.storage {
+        if let StorageOrigin::Session { contents, .. } = &slot.origin {
+            let partition = function.place_storage.get(&slot.id).ok_or_else(|| {
+                PhysicalError::new("session storage has no canonical content partition")
+            })?;
+            for leaf in &partition.leaves {
+                let path: Vec<_> = function.place_storage[&leaf.storage]
+                    .path
+                    .iter()
+                    .map(|step| step.field)
+                    .collect();
+                if contents.contains(&path) {
+                    entry.slots[leaf.storage.0 as usize] = InitState::Initialized;
+                }
+            }
+        }
+    }
+    Ok(())
+}

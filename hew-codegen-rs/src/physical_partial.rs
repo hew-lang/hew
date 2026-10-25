@@ -157,6 +157,16 @@ pub(super) fn allocate_flags<'ctx>(
         .and_then(|function| function.get_first_basic_block())
         .ok_or_else(|| CodegenError::FailClosed("physical function has no entry block".into()))?;
     let mut flags = BTreeMap::new();
+    for storage in &function.storage {
+        if matches!(storage.origin, StorageOrigin::Session { .. }) {
+            let value = entry_block
+                .get_parent()
+                .ok_or_else(|| CodegenError::FailClosed("session entry has no function".into()))?;
+            flags.extend(super::session::register_leaves(
+                module, function, value, builder, slots, storage,
+            )?);
+        }
+    }
     for projection in function.place_storage.values() {
         for leaf in &projection.leaves {
             if let Entry::Vacant(entry) = flags.entry(leaf.storage) {
@@ -179,24 +189,10 @@ pub(super) fn allocate_flags<'ctx>(
                     module.ctx.bool_type().into(),
                     &format!("s{}.initialized", leaf.storage.0),
                 )?;
-                let initialized = if let StorageOrigin::Session { context, slot, .. } =
-                    function.storage[projection.root.0 as usize].origin
-                {
-                    let value = entry_block.get_parent().ok_or_else(|| {
-                        super::CodegenError::FailClosed("session entry has no function".into())
-                    })?;
-                    super::session::initialized(
-                        module,
-                        builder,
-                        super::session::context_argument(function, value, context)?,
-                        slot,
-                    )?
-                } else {
-                    module.ctx.bool_type().const_int(
-                        u64::from(function.parameters.contains(&projection.root)),
-                        false,
-                    )
-                };
+                let initialized = module.ctx.bool_type().const_int(
+                    u64::from(function.parameters.contains(&projection.root)),
+                    false,
+                );
                 builder
                     .build_store(flag, initialized)
                     .llvm_ctx("initialize aggregate leaf state")?;
@@ -259,16 +255,6 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             return Ok(());
         }
         if let Some(projection) = self.function.place_storage.get(&id) {
-            if id != projection.root
-                && matches!(
-                    self.storage(projection.root)?.origin,
-                    StorageOrigin::Session { .. }
-                )
-            {
-                return Err(CodegenError::FailClosed(
-                    "partial ownership changes to persistent session bindings require persistent aggregate leaf state".into(),
-                ));
-            }
             for leaf in &projection.leaves {
                 self.builder
                     .build_store(
@@ -279,7 +265,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
                     )
                     .llvm_ctx("publish aggregate leaf initialization")?;
             }
-            self.publish_session_initialization(projection.root, initialized)?;
+            self.publish_session_change(projection.root)?;
         }
         Ok(())
     }

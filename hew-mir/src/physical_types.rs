@@ -247,7 +247,7 @@ pub enum StorageOrigin {
     Session {
         context: StorageId,
         slot: u32,
-        initialized: bool,
+        contents: hew_types::session::SessionContents,
         recipe: Box<PhysicalValueRecipe>,
     },
     /// A field of the actor state receiver. `initialized` is false only in

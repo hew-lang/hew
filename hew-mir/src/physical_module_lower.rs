@@ -1159,11 +1159,11 @@ pub(crate) fn lower_function(
                 hew_sir::PlaceOrigin::Session {
                     context,
                     slot,
-                    initialized,
+                    ref contents,
                 } => StorageOrigin::Session {
                     context: lowerer.value(context)?,
                     slot,
-                    initialized,
+                    contents: contents.clone(),
                     recipe: Box::new(physical_value_recipe(module, glue_ids, &place.ty)?),
                 },
                 hew_sir::PlaceOrigin::ActorState {

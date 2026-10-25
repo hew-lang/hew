@@ -60,7 +60,7 @@ fn verifier_rejects_changed_paths_partitions_and_leaf_cleanup() {
             2 => {
                 function.place_storage.get_mut(&root).unwrap().leaves[0]
                     .recipe
-                    .destroy = None
+                    .destroy = None;
             }
             3 => {
                 function.place_storage.remove(&leaf);

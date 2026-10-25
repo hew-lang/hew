@@ -863,6 +863,34 @@ pub unsafe extern "C-unwind" fn hew_rc_drop(ptr: *mut u8) {
     }
 }
 
+/// Release a source-owned Rc through the canonical semantic cleanup path.
+/// Raw descriptor candidates use [`hew_rc_drop`] before managed publication.
+/// # Safety
+/// `value` transfers one live strong reference in the current explicit account.
+/// Its payload has synchronous release, as required by the selected drop action.
+/// # Panics
+/// Panics if a resumable payload is passed to synchronous cleanup.
+#[no_mangle]
+pub unsafe extern "C-unwind" fn hew_rc_drop_managed(value: *mut u8) {
+    if value.is_null() {
+        return;
+    }
+    if crate::owned_value_budget::current_owner().is_none() {
+        // SAFETY: unbounded source cleanup needs only the ordinary physical release.
+        unsafe { hew_rc_drop(value) };
+        return;
+    }
+    // SAFETY: the source strong reference retains its exact stored descriptor.
+    unsafe {
+        let layout = (*header_from_data(value)).layout;
+        assert!(
+            layout.release_start.is_none(),
+            "Rc payload needs resumable release"
+        );
+        crate::release_walker::hew_release_sync(hew_rc_release_begin(value, &raw const layout));
+    }
+}
+
 /// Release one strong reference, transferring the final payload to a cursor.
 /// A temporary weak reference pins the header while the payload close suspends.
 /// # Safety
@@ -877,16 +905,13 @@ pub unsafe extern "C" fn hew_rc_release_begin(
 ) -> *mut crate::release_walker::HewReleaseCursor {
     use crate::release_walker::{HewReleaseCursor, ReleaseItem};
     let mut pending = Vec::new();
-    let owner = if value.is_null() {
-        None
-    } else {
+    let owner = crate::owned_value_budget::current_owner();
+    if !value.is_null() && owner.is_some() {
         // SAFETY: this semantic handle keeps its account and exact header alive.
         unsafe {
-            let owner = (*header_from_data(value)).value_owner.clone();
             release_managed_edge(value);
-            owner
         }
-    };
+    }
     // SAFETY: the caller transfers one strong owner and its payload descriptor.
     if let Some((header, stored)) = unsafe { release_strong(value) } {
         // SAFETY: the retained header stores the construction descriptor.

@@ -135,6 +135,45 @@ unsafe fn clone_rc(owner: &ValueOwner, value: *mut u8) -> *mut u8 {
         alias
     }
 }
+unsafe fn release_node(
+    owner: &ValueOwner,
+    value: *mut u8,
+) -> *mut crate::release_walker::HewReleaseCursor {
+    with_value_owner(&Some(owner.clone()), || {
+        // SAFETY: the fixture binds this typed source handle's actual account.
+        unsafe { hew_rc_release_begin(value, &raw const NODE) }
+    })
+}
+
+#[test]
+fn synchronous_source_release_refunds_before_reuse() {
+    // SAFETY: each checked constructor transfers the exact Node input to its cell.
+    unsafe {
+        let owner = ValueOwner::new(Some(22));
+        let registry = Arc::new(RcAllocations::default());
+        for _ in 0..2 {
+            let text = text(&owner);
+            let value = new_node(
+                &owner,
+                &registry,
+                &Node {
+                    next: ptr::null_mut(),
+                    text,
+                },
+            );
+            assert_eq!(owner.live_bytes(), 22);
+            // A physical candidate has a raw retained handle but no account edge.
+            let candidate = hew_rc_clone(value);
+            with_value_owner(&None, || {
+                hew_release_sync(hew_rc_release_begin(candidate, &raw const NODE));
+            });
+            assert_eq!(owner.live_bytes(), 22);
+            with_value_owner(&Some(owner.clone()), || hew_rc_drop_managed(value));
+            assert_eq!(owner.live_bytes(), 0);
+            assert!(registry.is_empty());
+        }
+    }
+}
 unsafe fn cycle(owner: &ValueOwner, registry: &Arc<RcAllocations>) -> *mut u8 {
     // SAFETY: all record inputs are typed owners; each set moves them only after admission.
     unsafe {
@@ -178,7 +217,7 @@ unsafe fn cycle(owner: &ValueOwner, registry: &Arc<RcAllocations>) -> *mut u8 {
         );
         assert_eq!(status, 0);
         hew_release_sync(old);
-        hew_release_sync(hew_rc_release_begin(second, &raw const NODE));
+        hew_release_sync(release_node(owner, second));
         first
     }
 }
@@ -228,10 +267,10 @@ fn quota_refusal_preserves_input_and_final_alias_holds_payload_until_cleanup() {
         let weak = hew_rc_downgrade(value);
         let upgraded = hew_weak_upgrade_rc_managed(weak);
         assert_eq!(upgraded, value);
-        hew_release_sync(hew_rc_release_begin(upgraded, &raw const NODE));
-        hew_release_sync(hew_rc_release_begin(value, &raw const NODE));
+        hew_release_sync(release_node(&owner, upgraded));
+        hew_release_sync(release_node(&owner, value));
         assert_eq!(owner.live_bytes(), 22);
-        let cursor = hew_rc_release_begin(alias, &raw const NODE);
+        let cursor = release_node(&owner, alias);
         assert!(hew_weak_upgrade_rc_managed(weak).is_null());
         hew_weak_drop_rc(weak);
         assert!(registry.is_empty());
@@ -295,7 +334,7 @@ fn checked_set_keeps_displaced_children_charged_and_rolls_back_refusal() {
         assert_eq!((*value.cast::<Node>()).text, new_text);
         assert_eq!(owner.live_bytes(), 22);
         crate::string::hew_string_drop(foreign);
-        hew_release_sync(hew_rc_release_begin(value, &raw const NODE));
+        hew_release_sync(release_node(&owner, value));
         assert_eq!(owner.live_bytes(), 0);
     }
 }
@@ -325,7 +364,7 @@ fn cyclic_cells_rehome_shared_descendants_without_leaving_creator_debt() {
         assert_eq!((source.live_bytes(), destination.live_bytes()), (0, 38));
         assert!(old.close_empty());
         assert_eq!(new.inner.lock_or_recover().blocks.len(), 2);
-        hew_release_sync(hew_rc_release_begin(value, &raw const NODE));
+        hew_release_sync(release_node(&destination, value));
         assert_eq!(destination.live_bytes(), 38);
         let cursor = new.sweep().unwrap();
         (*cursor).set_value_owner(Some(destination.clone()));
@@ -363,7 +402,7 @@ fn abandoned_transfer_holds_sweep_until_abort_then_refunds_cycle() {
         drop(transfer);
         assert_eq!((source.live_bytes(), destination.live_bytes()), (38, 0));
         ready.wait();
-        hew_release_sync(hew_rc_release_begin(value, &raw const NODE));
+        hew_release_sync(release_node(&source, value));
         hew_release_sync(cursor);
         assert_eq!(source.live_bytes(), 0);
         crate::coro_state::hew_coro_state_free(state);

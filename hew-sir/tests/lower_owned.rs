@@ -100,6 +100,55 @@ fn canonical_string_length_uses_a_borrowing_runtime_operation() {
 }
 
 #[test]
+fn deferred_checked_field_copies_keep_exact_free_place_dependencies() {
+    let lowered = lower_source(
+        r#"
+        fn staged_work() -> i64 { loop {} }
+        machine Gate {
+            events { Open; }
+            emits { Pending { label: string; } }
+            state Closed { label: string; }
+            state Opened { label: string; value: i64; }
+            on Open: Closed => Opened {
+                emit Pending { label: state.label + ":pending" };
+                Opened { label: state.label + ":candidate", value: staged_work() }
+            }
+            default { state }
+        }
+        fn main() {
+            var gate: Gate = .Closed { label: "original" };
+            defer {
+                match gate {
+                    .Closed { label } => println("rollback:" + label),
+                    .Opened { label, value } => println(f"committed:{label}:{value}"),
+                }
+            }
+            let report = gate.step(.Open);
+        }
+    "#,
+    );
+    assert!(
+        verify_module(&lowered.module).is_empty(),
+        "{:?}",
+        verify_module(&lowered.module)
+    );
+    for name in ["staged_work", "main"] {
+        assert!(
+            matches!(
+                lowered
+                    .statuses
+                    .iter()
+                    .find(|status| status.name == name)
+                    .map(|status| &status.status),
+                Some(SirLoweringStatus::Lowered)
+            ),
+            "{name} must lower: {:?}",
+            lowered.statuses
+        );
+    }
+}
+
+#[test]
 fn core_owned_runtime_sources_lower_to_verified_sir() {
     let sources = [
         (

@@ -428,7 +428,12 @@ impl Builder<'_, '_> {
         let mut body_values = BTreeSet::new();
         for block in &self.blocks[block_floor..] {
             body_values.extend(block.args.iter().map(|arg| arg.value));
-            for operation in &block.ops {
+            for operation in block.ops.iter().chain(
+                block
+                    .terminator
+                    .as_ref()
+                    .and_then(SemTerminator::materialization),
+            ) {
                 operation.kind.visit_places(|place| {
                     used.insert(place);
                 });

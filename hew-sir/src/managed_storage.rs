@@ -93,6 +93,13 @@ pub enum ManagedStorageShape {
         returned: ResolvedTy,
         payload_bytes: u64,
     },
+    /// The pending select operation's source completion and actual deposited
+    /// handler envelope differ: runtime admission errors have no reply payload.
+    ActorCall {
+        completion: ResolvedTy,
+        reply: ResolvedTy,
+        declared_failure: bool,
+    },
     Provider {
         kind: ManagedProviderKind,
         children: Vec<ResolvedTy>,
@@ -113,11 +120,54 @@ pub enum ManagedHandleKind {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ManagedProviderKind {
     Task,
-    ActorCall,
     Stream,
     Sink,
     Encoding(BuiltinType),
     Opaque,
+}
+
+fn managed_actor_call_shape(
+    module: &SemModule,
+    ty: &ResolvedTy,
+) -> Result<ManagedStorageShape, ManagedLayoutError> {
+    let mut selected = None;
+    for block in module
+        .functions
+        .iter()
+        .flat_map(|function| &function.blocks)
+    {
+        let crate::SemTerminator::ActorCall {
+            operation:
+                crate::ActorOperation::CallStart(protocol) | crate::ActorOperation::CallTake(protocol),
+            ..
+        } = &block.terminator
+        else {
+            continue;
+        };
+        if protocol.operation_ty() != *ty {
+            continue;
+        }
+        let handler = module
+            .actors
+            .get(protocol.actor.0 as usize)
+            .and_then(|actor| {
+                actor
+                    .handlers
+                    .iter()
+                    .find(|handler| handler.message_id == protocol.message)
+            })
+            .ok_or_else(|| ManagedLayoutError::MissingShape(ty.clone()))?;
+        let shape = ManagedStorageShape::ActorCall {
+            completion: protocol.result.clone(),
+            reply: handler.return_ty.clone(),
+            declared_failure: handler.declared_failure,
+        };
+        if selected.as_ref().is_some_and(|previous| *previous != shape) {
+            return Err(ManagedLayoutError::MissingShape(ty.clone()));
+        }
+        selected = Some(shape);
+    }
+    selected.ok_or_else(|| ManagedLayoutError::MissingShape(ty.clone()))
 }
 
 pub fn managed_storage_shape(
@@ -215,17 +265,14 @@ pub fn managed_storage_shape(
                         S::Handle(ManagedHandleKind::Actor)
                     }
                     BuiltinType::CancellationToken => S::Handle(ManagedHandleKind::Cancellation),
-                    BuiltinType::Task
-                    | BuiltinType::ActorCall
-                    | BuiltinType::Stream
-                    | BuiltinType::Sink => {
+                    BuiltinType::ActorCall => managed_actor_call_shape(module, ty)?,
+                    BuiltinType::Task | BuiltinType::Stream | BuiltinType::Sink => {
                         if args.len() != 1 {
                             return Err(ManagedLayoutError::MissingShape(ty.clone()));
                         }
                         S::Provider {
                             kind: match builtin {
                                 BuiltinType::Task => ManagedProviderKind::Task,
-                                BuiltinType::ActorCall => ManagedProviderKind::ActorCall,
                                 BuiltinType::Stream => ManagedProviderKind::Stream,
                                 BuiltinType::Sink => ManagedProviderKind::Sink,
                                 _ => unreachable!(),

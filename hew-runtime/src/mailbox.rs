@@ -2603,12 +2603,15 @@ unsafe fn admit_native_request(
     caller: crate::actor_caller::HewCallerStamp,
 ) -> SendOutcome {
     loop {
+        // SAFETY: this test helper retains the live mailbox and envelope until admission.
         match unsafe {
             reserve_native_request(mb, msg_type, envelope, reply, obligated, terminal, caller)
         } {
+            // SAFETY: the reservation is the exclusive unpublished request owner.
             Ok(reservation) => return unsafe { reservation.publish() },
+            // SAFETY: refusal leaves the original envelope alive and unchanged.
             Err(SendOutcome::Failed) if unsafe { (*envelope).admission_pending } => {
-                std::thread::yield_now()
+                std::thread::yield_now();
             }
             Err(outcome) => return outcome,
         }

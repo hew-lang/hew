@@ -76,6 +76,10 @@ pub(crate) struct Cleanup {
     pub(crate) rc: std::sync::Arc<crate::rc::RcAllocations>,
     pub(crate) code: Option<crate::code_owner::CodeRoot>,
     pub(crate) value_owner: Option<crate::owned_value_budget::ValueOwner>,
+    #[expect(
+        clippy::option_option,
+        reason = "pending adoption differs from an explicitly unbounded source owner"
+    )]
     pub(crate) state_source_owner: Mutex<Option<Option<crate::owned_value_budget::ValueOwner>>>,
     pub(crate) state_layout: AtomicPtr<hew_cabi::value::HewValueLayout>,
     pub(crate) state_backing_charged: std::sync::atomic::AtomicBool,
@@ -383,8 +387,9 @@ pub(crate) unsafe fn drive_actor_cleanup(actor: &HewActor) -> bool {
                             .as_ref()
                             .cloned()
                             .unwrap_or_else(|| cleanup.value_owner.clone());
+                        // SAFETY: this cleanup owns the initialized state until drop returns.
                         crate::owned_value_budget::with_value_owner(&owner, || unsafe {
-                            drop(actor.state)
+                            drop(actor.state);
                         });
                     }
                 } else {

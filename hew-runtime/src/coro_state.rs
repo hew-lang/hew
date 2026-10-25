@@ -398,7 +398,7 @@ pub unsafe extern "C" fn hew_coro_state_init_construction(
     context.actor_caller = execution.actor_caller;
     context.request_deadline = execution.request_deadline;
     context.rc_owner = Some(std::sync::Arc::default());
-    context.value_owner = execution.value_owner.clone();
+    context.value_owner.clone_from(&execution.value_owner);
     let child = HewCoroState::with_context(
         Box::into_raw(Box::new(context)),
         hew_cabi::coro::OWNS_CONTEXT,

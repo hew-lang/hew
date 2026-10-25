@@ -330,7 +330,7 @@ mod tests {
             drop_fn: None,
             release_start: None,
             code_owner: core::ptr::null(),
-            managed: &managed,
+            managed: &raw const managed,
         };
         for limit in [5, 6] {
             let source = ValueOwner::new(Some(0));
@@ -342,7 +342,7 @@ mod tests {
                 let transfer = ValueTransfer::prepare(
                     Some(source.clone()),
                     Some(destination.clone()),
-                    &layout,
+                    &raw const layout,
                     (&raw const operation).cast(),
                 )
                 .unwrap();
@@ -394,14 +394,14 @@ mod tests {
             drop_fn: None,
             release_start: None,
             code_owner: core::ptr::null(),
-            managed: &managed,
+            managed: &raw const managed,
         };
         // SAFETY: this pinned immutable value does not run or change during transfer.
         unsafe {
             crate::owned_value_budget::transfer::ValueTransfer::prepare(
                 Some(source.clone()),
                 Some(destination.clone()),
-                &layout,
+                &raw const layout,
                 (&raw const content).cast(),
             )
             .unwrap()
@@ -437,7 +437,7 @@ mod tests {
         bytes.extend_from_slice(b"abcdef");
         let content = Content::new(bytes, Some(owner.clone())).unwrap();
         let identity = content.as_ptr();
-        let sink = into_nonblocking_sink_ptr((), |_, _| true, |_, _| Ok(2), |_| {}, |_| {});
+        let sink = into_nonblocking_sink_ptr((), |(), _| true, |(), _| Ok(2), |()| {}, |()| {});
         // SAFETY: the test owns this freshly created endpoint and finishes its sole loan.
         unsafe {
             assert_eq!(

@@ -18,6 +18,8 @@ unsafe impl Send for ConstructionBudget {}
 /// # Safety
 /// The constructor uniquely owns its invocation and keeps the actor reserved.
 #[no_mangle]
+/// # Panics
+/// Panics if a reserved native actor lacks required construction metadata.
 pub unsafe extern "C" fn hew_actor_prepare_managed_state(
     token: crate::lifetime::local_handles::HewLocalPidId,
     construction: *mut HewCoroState,
@@ -43,17 +45,16 @@ pub unsafe extern "C" fn hew_actor_prepare_managed_state(
                 let layout = &*layout_pointer;
                 let bytes = (*layout.managed).slot_bytes;
                 let backing = if let Some(owner) = &cleanup.value_owner {
-                    match owner.acquire(&[ManagedStorage {
+                    if let Ok(guard) = owner.acquire(&[ManagedStorage {
                         identity: actor.state as usize,
                         bytes,
                     }]) {
-                        Ok(guard) => Some(guard),
-                        Err(_) => {
-                            *fault = crate::fault::hew_fault_new(
-                                crate::internal::types::HEW_TRAP_HEAP_EXCEEDED,
-                            );
-                            return 2;
-                        }
+                        Some(guard)
+                    } else {
+                        *fault = crate::fault::hew_fault_new(
+                            crate::internal::types::HEW_TRAP_HEAP_EXCEEDED,
+                        );
+                        return 2;
                     }
                 } else {
                     None
@@ -90,7 +91,10 @@ pub unsafe extern "C" fn hew_actor_prepare_managed_state(
                             .store(true, std::sync::atomic::Ordering::Release);
                     }
                     cleanup.state_source_owner.lock_or_recover().take();
-                    (*construction).execution_mut().value_owner = cleanup.value_owner.clone();
+                    (*construction)
+                        .execution_mut()
+                        .value_owner
+                        .clone_from(&cleanup.value_owner);
                     1
                 }
                 Err(_) => {

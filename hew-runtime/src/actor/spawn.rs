@@ -814,6 +814,7 @@ pub unsafe extern "C" fn hew_actor_construct_native(
         .cleanup
         .state_layout
         .store(state_layout.cast_mut(), Ordering::Relaxed);
+    // SAFETY: construction retains its invocation context through admission.
     *completion.cleanup.state_source_owner.lock_or_recover() =
         Some(unsafe { crate::owned_value_budget::materialize::invocation_owner(construction) });
     completion.cleanup.set_state_release(state_release);

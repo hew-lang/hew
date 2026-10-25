@@ -63,21 +63,20 @@ impl Walk<'_> {
                 SKIP_DESCENDANTS
             }
         } else {
-            let references = match previous {
-                Some(previous) => match previous.references.checked_add(1) {
+            let references = if let Some(previous) = previous {
+                match previous.references.checked_add(1) {
                     Some(references) => references,
                     None => return HEAP_EXCEEDED,
-                },
-                None => {
-                    if bytes
-                        .checked_add(self.fresh)
-                        .is_none_or(|charge| self.owner.check(self.ledger, charge).is_err())
-                    {
-                        return HEAP_EXCEEDED;
-                    }
-                    self.ledger.live += bytes;
-                    1
                 }
+            } else {
+                if bytes
+                    .checked_add(self.fresh)
+                    .is_none_or(|charge| self.owner.check(self.ledger, charge).is_err())
+                {
+                    return HEAP_EXCEEDED;
+                }
+                self.ledger.live += bytes;
+                1
             };
             self.undo.push((identity, previous));
             self.ledger
@@ -115,6 +114,8 @@ impl ValueOwner {
     ///
     /// # Safety
     /// The live slot matches layout and cannot mutate during the traversal.
+    /// # Errors
+    /// Returns a quota refusal or an unsupported or inconsistent typed graph.
     pub unsafe fn acquire_value(
         &self,
         layout: &HewValueLayout,
@@ -147,6 +148,8 @@ impl ValueOwner {
     ///
     /// # Safety
     /// The value has not yet been destroyed and belongs to this owner.
+    /// # Errors
+    /// Returns a descriptor refusal if the graph differs from its retained ownership.
     pub unsafe fn release_value(
         &self,
         layout: &HewValueLayout,
@@ -176,6 +179,8 @@ impl ValueOwner {
     ///
     /// # Safety
     /// The source matches layout and remains live through copy publication.
+    /// # Errors
+    /// Returns a quota refusal or an undescribed clone payload.
     pub unsafe fn reserve_clone(
         &self,
         layout: &HewValueLayout,
@@ -189,6 +194,8 @@ impl ValueOwner {
     ///
     /// # Safety
     /// Every source matches its descriptor and remains live through publication.
+    /// # Errors
+    /// Returns a quota refusal or an undescribed input payload.
     pub unsafe fn reserve_materialization(
         &self,
         fresh: u64,
@@ -237,6 +244,8 @@ impl StorageReservation {
     ///
     /// # Safety
     /// The result matches layout and remains unpublished until this succeeds.
+    /// # Errors
+    /// Returns a refusal if the actual result exceeds its reservation or has an invalid descriptor.
     pub unsafe fn commit_value(
         mut self,
         layout: &HewValueLayout,

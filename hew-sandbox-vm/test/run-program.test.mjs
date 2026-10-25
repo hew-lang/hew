@@ -220,6 +220,20 @@ for (const [name, file, stdout] of [
   });
 }
 
+for (const [name, file, stdout] of [
+  ["Pipe input", "actor-owned-budget-pipe-input.hew", "7\ninput limit\n"],
+  ["Sink encoder", "actor-owned-budget-sink-encoder.hew", "encoder ready\nencoder limit\n"],
+]) {
+  test(`actor-owned ${name} charges its retained canonical slots`, async () => {
+    const source = fs.readFileSync(
+      path.join(repoRoot, "tests/core-acceptance/cases", file), "utf8",
+    );
+    const result = await runProgram(source, "");
+    assert.equal(result.stdout, stdout, JSON.stringify(result));
+    assert.equal(result.exit_code, 1, JSON.stringify(result));
+  });
+}
+
 test("actor-owned map and set snapshots retain native Vec capacity", async () => {
   const source = fs.readFileSync(
     path.join(

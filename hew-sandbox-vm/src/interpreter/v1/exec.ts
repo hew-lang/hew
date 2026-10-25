@@ -1239,12 +1239,20 @@ class ExecutorV1 {
         if (value.kind !== "sink")
           throw new Error("typed sink has no endpoint");
         const sender = this.senderEndpoints.get(value.channelId);
-        if (sender)
+        if (sender) {
+          const children = [
+            typed(sender.owner.sink),
+            typed(sender.owner.encoder),
+          ];
           return {
             identity: sender.owner,
-            bytes: 0n,
-            children: [typed(sender.owner.sink), typed(sender.owner.encoder)],
+            bytes: children.reduce(
+              (bytes, child) => bytes + this.managed.width(child.type),
+              0n,
+            ),
+            children,
           };
+        }
         return {
           identity: this.pipes.managedRetained(value).identity,
           bytes: 0n,
@@ -3608,7 +3616,32 @@ class ExecutorV1 {
       case "StreamSend": {
         const sink = this.boundary(act, term.inputs[0]!);
         const value = this.boundary(act, term.inputs[1]!);
+        const type = act.managedTypes.get(term.inputs[1]!.value);
+        if (type == null)
+          throw new Error("stream write lacks its typed input descriptor");
+        // The native operation owns one aligned input slot until accepted or
+        // terminal cleanup, independently of the receiving queue's slot.
         const wake = this.park(act, term);
+        try {
+          act.managedInputs.push(
+            this.retainRoots(
+              [{ value, type, slots: true, identity: {} }],
+              act.context.actor?.budget,
+            ),
+          );
+        } catch (error) {
+          if (!(error instanceof HeapExceeded)) throw error;
+          const refused: Fault = { kind: "trap", trap: "heap_exceeded" };
+          this.closeValueAsync(
+            value,
+            error.message,
+            (fault) => wake(UNIT, combineFaults(refused, fault)),
+            act.context.actor,
+            act.rcOwner,
+            act,
+          );
+          return;
+        }
         const cancel = act.context.cancel;
         const stop = this.sendStream(
           sink,

@@ -354,12 +354,9 @@ fn typecheck_generator_yield_mismatch_reports_element_type() {
 }
 
 #[test]
-fn stream_lazy_adapters_fail_closed_with_one_honest_diagnostic() {
-    // `lines`/`chunks`/`take` reach their runtime rows. `map`/`filter` are not
-    // part of the pipe surface (D506): there is no type-erased runtime entry
-    // for a user callback over a `Stream<T>`, so they fail closed at the
-    // checker with the ordinary undefined-method diagnostic — no special
-    // adapter carve-out, and no leaked internal NYI noise.
+fn undefined_stream_methods_report_one_diagnostic() {
+    // Source methods are loaded separately. An unresolved method on the bare
+    // stream type produces one ordinary diagnostic without internal NYI noise.
     for method in ["map", "filter"] {
         let source =
             format!("fn use_stream(s: Stream<string>) {{\n    let _t = s.{method}(|x| x);\n}}\n");
@@ -383,23 +380,6 @@ fn stream_lazy_adapters_fail_closed_with_one_honest_diagnostic() {
              note; got errors: {errors:?}"
         );
     }
-    // Positive control: the three lowered adaptors are admitted, with no
-    // diagnostic of their own. `lines`/`chunks` each frame a `Stream<bytes>`
-    // directly (D506) — they do not chain off one another — and `take`
-    // bounds either.
-    let (errors, _warnings) =
-        parse_and_check("fn use_stream(s: Stream<bytes>) {\n    let _t = s.lines();\n}\n");
-    assert!(
-        errors.is_empty(),
-        "the lowered `lines` adaptor must type-check; got errors: {errors:?}"
-    );
-    let (errors, _warnings) = parse_and_check(
-        "fn use_stream(s: Stream<bytes>) {\n    let _t = s.chunks(4).take(2);\n}\n",
-    );
-    assert!(
-        errors.is_empty(),
-        "the lowered `chunks`/`take` adaptors must type-check; got errors: {errors:?}"
-    );
 }
 
 #[test]

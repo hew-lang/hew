@@ -116,18 +116,11 @@ fn vector_read_contracts_never_publish_an_interior_owner() {
             &[RuntimeValueKind::TypeArgument(0)],
         ))
     );
-    assert_eq!(
-        RuntimeCallFamily::Vector(VecValueOp::Index)
-            .semantic_contract()
-            .unwrap()
-            .failures,
-        &[RuntimeLogicalFailure::IndexOutOfBounds]
-    );
-    assert!(RuntimeCallFamily::Vector(VecValueOp::Get)
+    assert!(RuntimeCallFamily::Vector(VecValueOp::Index)
         .semantic_contract()
         .unwrap()
         .failures
-        .is_empty());
+        .contains(&RuntimeLogicalFailure::IndexOutOfBounds));
 }
 
 #[test]

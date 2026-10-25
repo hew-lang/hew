@@ -8,7 +8,6 @@ use std::sync::{Arc, Mutex};
 use std::task::Poll;
 use std::time::Duration;
 
-use sha2::{Digest, Sha256};
 use tokio::sync::{mpsc, oneshot, OwnedRwLockReadGuard, OwnedRwLockWriteGuard, RwLock};
 use tokio::task::JoinHandle;
 use tokio::time::Instant;
@@ -17,6 +16,7 @@ use wasmtime::{Config, Engine, Store};
 use wasmtime_wasi::{WasiCtx, WasiCtxBuilder, WasiCtxView, WasiView};
 
 use super::bindings;
+use super::cache::{self, ArtifactCache};
 pub use bindings::hew::live_router::events::{Delivery, Event, Snapshot};
 
 /// An asynchronous operation on a granted service.
@@ -32,6 +32,7 @@ pub trait Services: Send + Sync + 'static {
 #[derive(Debug)]
 pub enum Error {
     Engine(wasmtime::Error),
+    Cache(std::io::Error),
     Guest(String),
     Closed,
     Expired(Stage),
@@ -51,6 +52,7 @@ impl fmt::Display for Error {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Engine(error) => error.fmt(formatter),
+            Self::Cache(error) => error.fmt(formatter),
             Self::Guest(error) => formatter.write_str(error),
             Self::Closed => formatter.write_str("component host closed"),
             Self::Expired(stage) => {
@@ -77,6 +79,14 @@ impl From<wasmtime::Error> for Error {
 pub struct Prepared {
     component: Component,
     digest: [u8; 32],
+}
+
+impl Prepared {
+    /// The content identity of the validated portable component bytes.
+    #[must_use]
+    pub fn digest(&self) -> [u8; 32] {
+        self.digest
+    }
 }
 
 impl fmt::Debug for Prepared {
@@ -121,8 +131,27 @@ impl Host {
     pub fn prepare(&self, bytes: &[u8]) -> Result<Prepared, Error> {
         Ok(Prepared {
             component: Component::new(&self.engine, bytes)?,
-            digest: Sha256::digest(bytes).into(),
+            digest: cache::digest(bytes),
         })
+    }
+
+    /// Validate and prepare a component, then persist its immutable bytes.
+    /// Failed validation never publishes an artefact to the cache.
+    ///
+    /// # Errors
+    /// Returns validation, compilation or cache publication failures.
+    pub fn prepare_cached(&self, cache: &ArtifactCache, bytes: &[u8]) -> Result<Prepared, Error> {
+        let prepared = self.prepare(bytes)?;
+        cache.insert(bytes, prepared.digest).map_err(Error::Cache)?;
+        Ok(prepared)
+    }
+
+    /// Verify cached bytes and prepare them with this host's current engine.
+    ///
+    /// # Errors
+    /// Returns cache verification, validation or compilation failures.
+    pub fn restore(&self, cache: &ArtifactCache, digest: [u8; 32]) -> Result<Prepared, Error> {
+        self.prepare(&cache.load(digest).map_err(Error::Cache)?)
     }
 
     /// Initialize a deployment before enabling its production services.
@@ -187,6 +216,13 @@ pub struct Deployment {
     active: Arc<RwLock<Arc<Activation>>>,
 }
 
+/// One consistent observation of the active deployment authority.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Status {
+    pub epoch: u64,
+    pub digest: [u8; 32],
+}
+
 impl Deployment {
     /// Admit a call to one activation and retain that admission through release.
     /// Cancelling the caller's Rust future does not release a running guest call.
@@ -211,7 +247,16 @@ impl Deployment {
 
     /// Observe the current admission epoch.
     pub async fn epoch(&self) -> u64 {
-        self.active.read().await.epoch
+        self.status().await.epoch
+    }
+
+    /// Observe the active epoch and component identity under one admission read.
+    pub async fn status(&self) -> Status {
+        let active = self.active.read().await;
+        Status {
+            epoch: active.epoch,
+            digest: active.instance.digest,
+        }
     }
 
     /// Replace the expected activation within one fenced interval. Candidate

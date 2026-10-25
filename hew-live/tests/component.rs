@@ -233,7 +233,14 @@ async fn exercise_deployment(bytes: &[u8], stalled: &[u8]) {
         delivered: Arc::default(),
     });
     let host = Arc::new(Host::new(services.clone()).unwrap());
-    let prepared = host.prepare(bytes).unwrap();
+    let cache_directory = tempfile::tempdir().unwrap();
+    let identity = {
+        let cache =
+            hew_live::component::cache::ArtifactCache::open(cache_directory.path()).unwrap();
+        host.prepare_cached(&cache, bytes).unwrap().digest()
+    };
+    let cache = hew_live::component::cache::ArtifactCache::open(cache_directory.path()).unwrap();
+    let prepared = host.restore(&cache, identity).unwrap();
     let stalled = host.prepare(stalled).unwrap();
     let deployment = Arc::new(
         host.activate(prepared.clone(), Snapshot { accepted: 40 })
@@ -278,6 +285,13 @@ async fn exercise_deployment(bytes: &[u8], stalled: &[u8]) {
         .unwrap();
     assert_eq!(committed.snapshot.accepted, 42);
     assert_eq!(committed.epoch, 2);
+    assert_eq!(
+        deployment.status().await,
+        hew_live::component::host::Status {
+            epoch: 2,
+            digest: identity
+        }
+    );
     committed.retirement.await.unwrap().unwrap();
 
     // The ordinary Hew snapshot sleeps for five milliseconds. A shorter

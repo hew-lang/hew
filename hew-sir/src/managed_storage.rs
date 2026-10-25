@@ -18,6 +18,13 @@ pub struct ManagedSlot {
     pub bytes: u64,
 }
 
+/// Canonical stored callable carrier, independent of native pointer width.
+/// Task invocations and generators retain this slot while holding a callable.
+#[must_use]
+pub const fn managed_callable_carrier() -> ManagedSlot {
+    ManagedSlot { bytes: 8 }
+}
+
 impl ManagedSlot {
     /// Charge actual payload capacity, never an estimated host-object size.
     pub fn capacity_bytes(self, capacity: u64) -> Result<u64, ManagedLayoutError> {
@@ -350,7 +357,7 @@ fn slot(
         | T::TraitObject { .. }
         | T::Task(_)
         | T::Pointer { .. }
-        | T::Borrow { .. } => return Ok(8),
+        | T::Borrow { .. } => return Ok(managed_callable_carrier().bytes),
         T::GenericCallable { callable, .. } => return slot(module, callable, active),
         T::Named {
             head: TypeHead::Builtin(BuiltinType::NodeId),
@@ -450,7 +457,7 @@ pub fn managed_generator_payload(
         .bytes
         .max(managed_slot(module, returned)?.bytes);
     output
-        .checked_add(8)
+        .checked_add(managed_callable_carrier().bytes)
         .map(|bytes| ManagedSlot { bytes })
         .ok_or(ManagedLayoutError::Overflow)
 }

@@ -711,13 +711,14 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
             .llvm_ctx("branch around fallible bytes slice call")?;
 
         self.builder.position_at_end(failed);
+        self.initialize_active_fault(hew_runtime::internal::types::HEW_TRAP_INDEX_OUT_OF_BOUNDS)?;
         self.emit_edge(failure)?;
 
         self.builder.position_at_end(safe);
         let ptr = self.ctx.ptr_type(AddressSpace::default());
         let function = get_or_declare_external(
             self.llvm,
-            "hew_bytes_slice_managed",
+            "hew_bytes_slice_owned",
             self.ctx.void_type().fn_type(
                 &[ptr.into(), i64_ty.into(), i64_ty.into(), ptr.into()],
                 false,
@@ -733,6 +734,7 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
             ],
             "bytes.slice",
         )?;
+        self.publish_managed_result(result, failure)?;
         self.emit_result_edge(Some(result), normal)
     }
 
@@ -797,6 +799,7 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
             .llvm_ctx("branch around fallible string slice call")?;
 
         self.builder.position_at_end(failed);
+        self.initialize_active_fault(hew_runtime::internal::types::HEW_TRAP_INDEX_OUT_OF_BOUNDS)?;
         self.emit_edge(failure)?;
 
         self.builder.position_at_end(safe);
@@ -823,6 +826,7 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
             "string.slice.codepoints",
         )?;
         self.store(result, value)?;
+        self.publish_managed_result(result, failure)?;
         self.emit_result_edge(Some(result), normal)
     }
 
@@ -873,6 +877,7 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
             .llvm_ctx("branch around fallible string slice-from call")?;
 
         self.builder.position_at_end(failed);
+        self.initialize_active_fault(hew_runtime::internal::types::HEW_TRAP_INDEX_OUT_OF_BOUNDS)?;
         self.emit_edge(failure)?;
 
         self.builder.position_at_end(safe);
@@ -891,6 +896,7 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
             "string.slice.codepoints.from",
         )?;
         self.store(result, value)?;
+        self.publish_managed_result(result, failure)?;
         self.emit_result_edge(Some(result), normal)
     }
 }

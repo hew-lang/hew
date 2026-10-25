@@ -71,7 +71,7 @@ fn new_text_runtime_families_publish_closed_semantic_effects() {
         decode.result,
         RuntimeResultEffect::FreshOwnedVariant(RuntimeVariantResultKind::Utf8Decode)
     );
-    assert!(decode.failures.is_empty());
+    assert_eq!(decode.failures, &[RuntimeLogicalFailure::HeapExceeded]);
 
     let lossy = RuntimeCallFamily::BytesDecodeUtf8Lossy
         .semantic_contract()
@@ -81,7 +81,7 @@ fn new_text_runtime_families_publish_closed_semantic_effects() {
         lossy.result,
         RuntimeResultEffect::FreshOwned(RuntimeValueKind::String)
     );
-    assert!(lossy.failures.is_empty());
+    assert_eq!(lossy.failures, &[RuntimeLogicalFailure::HeapExceeded]);
 
     assert!(decode.matches_signature(
         &crate::DefTable::new(),

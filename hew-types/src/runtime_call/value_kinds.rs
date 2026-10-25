@@ -561,6 +561,44 @@ pub struct RuntimeSemanticContract {
 }
 
 impl RuntimeSemanticContract {
+    /// These ordinary runtime constructors return private managed leaf storage,
+    /// directly or inside a closed builtin result carrier.
+    /// Their exact typed payload is acquired before the result becomes visible.
+    #[must_use]
+    pub const fn publishes_managed_leaf(self) -> bool {
+        matches!(
+            self.result,
+            RuntimeResultEffect::FreshOwned(RuntimeValueKind::String | RuntimeValueKind::Bytes)
+                | RuntimeResultEffect::FreshOwnedVariant(RuntimeVariantResultKind::Utf8Decode)
+                | RuntimeResultEffect::IndependentValue(RuntimeValueKind::Applied(
+                    BuiltinType::Option,
+                    &[RuntimeValueKind::String]
+                ))
+        )
+    }
+
+    /// Add the checked publication edge without changing existing failures.
+    #[must_use]
+    pub const fn with_managed_publication(mut self) -> Self {
+        if !self.publishes_managed_leaf() {
+            return self;
+        }
+        self.failures = match self.failures {
+            [] => &[RuntimeLogicalFailure::HeapExceeded],
+            [RuntimeLogicalFailure::HeapExceeded] => self.failures,
+            [RuntimeLogicalFailure::IndexOutOfBounds] => &[
+                RuntimeLogicalFailure::IndexOutOfBounds,
+                RuntimeLogicalFailure::HeapExceeded,
+            ],
+            [RuntimeLogicalFailure::CallbackFault] => &[
+                RuntimeLogicalFailure::CallbackFault,
+                RuntimeLogicalFailure::HeapExceeded,
+            ],
+            _ => panic!("managed leaf publication needs an explicit combined failure contract"),
+        };
+        self
+    }
+
     /// A bounds failure, or a fault from a key callback, happens before a
     /// receiver transform mutates or takes any input: the runtime leaves every
     /// owner with the caller. Its cleanup edge retains those owners for

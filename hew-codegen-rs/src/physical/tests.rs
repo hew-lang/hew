@@ -166,6 +166,15 @@ fn utf8_decode_emits_typed_outcomes_with_reusable_scratch() {
         vec![ctx.ptr_type(AddressSpace::default()).into(); 4]
     );
     for function in module.get_functions() {
+        // Typed destruction adds helper callbacks with bounded invocation-local
+        // scratch. Only the source body's loop can accumulate decoder scratch.
+        if !function
+            .get_basic_blocks()
+            .iter()
+            .any(|block| block.get_name().to_bytes() == b"physical.prologue")
+        {
+            continue;
+        }
         for block in function.get_basic_blocks() {
             if block.get_name().to_bytes() == b"physical.prologue" {
                 continue;

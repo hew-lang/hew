@@ -4,6 +4,66 @@ use super::*;
 use hew_mir::physical::{PhysicalManagedSource, PhysicalMaterialization};
 
 impl<'ctx> FunctionEmitter<'_, 'ctx> {
+    pub(super) fn publish_managed_result(
+        &self,
+        result: StorageId,
+        failure: &PhysicalEdge,
+    ) -> CodegenResult<()> {
+        let pointer = self.ctx.ptr_type(AddressSpace::default());
+        let layout = self.managed_value_layout(&self.storage(result)?.ty)?;
+        let cleanup = self
+            .value_emitter()
+            .entry_scratch(pointer.into(), "publication.cleanup")?;
+        self.set_capture_initialized(result, false)?;
+        self.set_place_initialized(result, false)?;
+        let publish = get_or_declare_external(
+            self.llvm,
+            "hew_budget_publish_value",
+            self.ctx.i32_type().fn_type(&[pointer.into(); 3], false),
+        )?;
+        let status = self
+            .runtime_call_value(
+                publish,
+                &[
+                    layout.into(),
+                    self.slots[result.0 as usize].into(),
+                    cleanup.into(),
+                ],
+                "publication.status",
+            )?
+            .into_int_value();
+        let accepted = self
+            .ctx
+            .append_basic_block(self.value, "publication.accepted");
+        let refused = self
+            .ctx
+            .append_basic_block(self.value, "publication.refused");
+        let ok = self
+            .builder
+            .build_int_compare(
+                IntPredicate::EQ,
+                status,
+                self.ctx.i32_type().const_zero(),
+                "publication.ok",
+            )
+            .llvm_ctx("inspect private result acquisition")?;
+        self.builder
+            .build_conditional_branch(ok, accepted, refused)
+            .llvm_ctx("publish only an acquired managed result")?;
+        self.builder.position_at_end(refused);
+        self.clear_owned(result)?;
+        self.initialize_active_fault(hew_runtime::internal::types::HEW_TRAP_HEAP_EXCEEDED)?;
+        let cursor = self
+            .builder
+            .build_load(pointer, cleanup, "publication.cleanup")
+            .llvm_ctx("take unpublished result cleanup")?
+            .into_pointer_value();
+        release::drain(&self.value_emitter(), self.frame.as_ref(), cursor)?;
+        self.emit_edge(failure)?;
+        self.builder.position_at_end(accepted);
+        Ok(())
+    }
+
     fn managed_input_slot(
         &self,
         input: &hew_mir::physical::PhysicalManagedInput,

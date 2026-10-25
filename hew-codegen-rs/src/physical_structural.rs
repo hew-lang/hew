@@ -94,6 +94,12 @@ impl FunctionEmitter<'_, '_> {
         })?)?;
         self.builder.position_at_end(success);
         self.store(result, text)?;
+        self.publish_managed_result(
+            result,
+            failure.ok_or_else(|| {
+                CodegenError::FailClosed("structural rendering lacks quota cleanup".into())
+            })?,
+        )?;
         self.emit_result_edge(Some(result), normal)
     }
 }

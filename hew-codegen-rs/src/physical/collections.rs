@@ -652,6 +652,7 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                     "vector.join",
                 )?;
                 self.store(result, joined)?;
+                self.publish_managed_result(result, failure()?)?;
             }
             PhysicalVectorOp::Slice | PhysicalVectorOp::SliceFrom => {
                 let length_fn = get_or_declare_external(

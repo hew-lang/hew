@@ -1516,33 +1516,6 @@ pub unsafe extern "C-unwind" fn hew_bytes_slice_owned(
     }
 }
 
-/// Retain the source account's backing edge for a non-empty borrowed slice.
-/// # Safety
-/// Bounds and offsets are checked and source belongs to the active account.
-#[no_mangle]
-pub unsafe extern "C" fn hew_bytes_slice_managed(
-    src: *const BytesTriple,
-    start: i64,
-    end: i64,
-    out: *mut BytesTriple,
-) {
-    // SAFETY: the checked compiler boundary retains source throughout this call.
-    unsafe {
-        if start != end {
-            if let Some(owner) = crate::owned_value_budget::current_owner() {
-                owner
-                    .acquire(&[crate::owned_value_budget::ManagedStorage {
-                        identity: (*src).ptr as usize,
-                        bytes: u64::from(capacity((*src).ptr)),
-                    }])
-                    .unwrap_or_else(|_| std::process::abort())
-                    .commit();
-            }
-        }
-        hew_bytes_slice_owned(src, start, end, out);
-    }
-}
-
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------

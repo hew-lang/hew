@@ -1,0 +1,10 @@
+[[case]]
+id = "actor-owned-budget-leaf-results"
+intent = "String formatting, ranges and UTF-8 decoding publish actual managed payloads through checked success and refusal cleanup, including optional and declared-result carriers."
+source = "cases/actor-owned-budget-leaf-results.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 20
+
+[case.expected]
+stdout = "5\nnumber limit\n4\nstring slice limit\n4\noptional slice limit\n3\ndecode limit\n"
+exit = 1

@@ -738,9 +738,13 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                         .build_conditional_branch(found, valid, invalid)
                         .llvm_ctx("check string range bounds")?;
                     self.builder.position_at_end(invalid);
+                    self.initialize_active_fault(
+                        hew_runtime::internal::types::HEW_TRAP_INDEX_OUT_OF_BOUNDS,
+                    )?;
                     self.emit_edge(failure)?;
                     self.builder.position_at_end(valid);
                     self.store(required_result()?, value.into())?;
+                    self.publish_managed_result(required_result()?, failure)?;
                     return self.emit_result_edge(result, normal);
                 }
                 let option = variant_carrier(action)?;
@@ -1347,6 +1351,21 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                 }
                 self.emit_direct_runtime_call(action.family, arguments, result)?;
             }
+        }
+        if action
+            .family
+            .semantic_contract()
+            .is_some_and(|contract| contract.publishes_managed_leaf())
+        {
+            self.publish_managed_result(
+                required_result()?,
+                failure.ok_or_else(|| {
+                    CodegenError::FailClosed(
+                        "managed runtime result lacks publication cleanup".into(),
+                    )
+                })?,
+            )?;
+            return self.emit_result_edge(result, normal);
         }
         if failure.is_some() {
             return Err(CodegenError::FailClosed(format!(

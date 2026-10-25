@@ -25,7 +25,7 @@ impl RuntimeCallFamily {
         use RuntimeArgumentEffect as E;
         use RuntimeResultEffect as R;
         use RuntimeValueKind as K;
-        match self {
+        let mut row = match self {
             // The async IO, file and TCP operation sets and the encoding
             // matrix each carry their row in their own operation enum.
             Self::Semaphore(op) => RuntimeOpRow {
@@ -9130,6 +9130,10 @@ impl RuntimeCallFamily {
                 physical: RuntimePhysicalForm::NotAnAction,
                 c_return: RuntimeCReturn::Storage,
             },
+        };
+        if let Some(contract) = row.contract {
+            row.contract = Some(contract.with_managed_publication());
         }
+        row
     }
 }

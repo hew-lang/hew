@@ -51,6 +51,10 @@ enum TaskAccounting {
     Group,
 }
 
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "independent task lifecycle and transfer gates may overlap"
+)]
 pub(super) struct CheckedTaskState {
     invocation: Option<CheckedTaskInvocation>,
     accounting: TaskAccounting,
@@ -407,8 +411,13 @@ pub unsafe extern "C" fn hew_managed_visit_task(
     slot: *const c_void,
     visitor: *const hew_cabi::managed::HewManagedStorageVisitor,
 ) -> i32 {
+    use crate::owned_value_budget::transfer::{
+        destination_owner, transfer_identity, transfer_waker,
+    };
     use crate::owned_value_budget::visit::{slot_bytes, storage};
-    use hew_cabi::managed::{visit_value, DESCEND, SKIP_DESCENDANTS};
+    use hew_cabi::managed::{
+        visit_value, HewManagedWalkKind, DESCEND, SKIP_DESCENDANTS, TRANSFER_PENDING,
+    };
     // SAFETY: the owning handle retains the task and its typed metadata.
     unsafe {
         let task = slot.cast::<*mut HewTask>().read();
@@ -420,10 +429,6 @@ pub unsafe extern "C" fn hew_managed_visit_task(
             DESCEND => {}
             failure => return failure,
         }
-        use crate::owned_value_budget::transfer::{
-            destination_owner, transfer_identity, transfer_waker,
-        };
-        use hew_cabi::managed::{HewManagedWalkKind, TRANSFER_PENDING};
         let kind = (*visitor).kind;
         let transfer = matches!(
             kind,
@@ -596,6 +601,9 @@ unsafe fn spawn_invocation(
 /// # Safety
 /// The task is an unstarted constructor result whose materialization committed.
 /// Its parent scope and source handle remain live through this publication.
+///
+/// # Panics
+/// Panics if the checked invocation violates its internal start contract.
 #[no_mangle]
 pub unsafe extern "C" fn hew_checked_task_start(task: *mut HewTask) {
     // SAFETY: the caller owns the unpublished task and its live lexical scope.
@@ -622,6 +630,7 @@ pub unsafe extern "C" fn hew_checked_task_start(task: *mut HewTask) {
 pub(super) unsafe fn release_account(task: *mut HewTask) {
     // SAFETY: the final Rust reference keeps the complete provider graph live.
     let (owner, layout) = {
+        // SAFETY: the caller retains this checked task while its canonical state is locked.
         let state = unsafe { checked(task) }.lock_or_recover();
         (state.value_owner.clone(), state.provider_layout)
     };

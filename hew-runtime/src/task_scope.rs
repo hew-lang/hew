@@ -95,6 +95,7 @@ unsafe fn release_task_ref(task: *mut HewTask) {
     if unsafe { &*task }.refs.fetch_sub(1, Ordering::AcqRel) != 1 {
         return;
     }
+    // SAFETY: the live task handle retains its checked invocation state.
     if unsafe { &*task }.checked.is_some() {
         // SAFETY: the final reference retains metadata through account release.
         unsafe { checked::release_account(task) };

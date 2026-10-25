@@ -92,6 +92,7 @@ impl super::HewAsyncIo {
     ) -> i32 {
         use super::{IoValue, State};
         use hew_cabi::managed::{HewManagedWalkKind, TRANSFER_PENDING};
+        // SAFETY: the retained synchronous visitor and immutable content remain live throughout this ownership walk.
         let kind = unsafe { (*visitor).kind };
         let transfer = matches!(
             kind,
@@ -101,6 +102,7 @@ impl super::HewAsyncIo {
                 | HewManagedWalkKind::AbortTransfer
         );
         let identity = if transfer {
+            // SAFETY: the retained synchronous visitor and immutable content remain live throughout this ownership walk.
             (unsafe { crate::owned_value_budget::transfer::transfer_identity(visitor) }) as usize
         } else {
             0
@@ -113,6 +115,7 @@ impl super::HewAsyncIo {
             if kind == HewManagedWalkKind::PrepareTransfer {
                 if ownership.publishing || (ownership.frozen != 0 && ownership.frozen != identity) {
                     ownership.waiter =
+                        // SAFETY: the retained synchronous visitor and immutable content remain live throughout this ownership walk.
                         unsafe { crate::owned_value_budget::transfer::transfer_waker(visitor) };
                     return TRANSFER_PENDING;
                 }
@@ -123,6 +126,7 @@ impl super::HewAsyncIo {
             }
             let mut state = self.state.lock_or_recover();
             if let State::Ready(Ok(IoValue::ManagedStreamItem(Some(content)))) = &*state {
+                // SAFETY: the retained synchronous visitor and immutable content remain live throughout this ownership walk.
                 let status = unsafe { content.visit(visitor) };
                 if status != 0 {
                     return status;
@@ -130,6 +134,7 @@ impl super::HewAsyncIo {
             }
             if kind == HewManagedWalkKind::CommitTransfer {
                 ownership.owner =
+                    // SAFETY: the retained synchronous visitor and immutable content remain live throughout this ownership walk.
                     unsafe { crate::owned_value_budget::transfer::destination_owner(visitor) };
             }
             if matches!(
@@ -255,6 +260,7 @@ impl Content {
         // SAFETY: only a successfully acquired transfer changes the refund owner.
         if unsafe { (*visitor).kind } == HewManagedWalkKind::CommitTransfer {
             *self.owner.lock_or_recover() =
+                // SAFETY: the retained synchronous visitor and immutable content remain live throughout this ownership walk.
                 unsafe { crate::owned_value_budget::transfer::destination_owner(visitor) };
         }
         0

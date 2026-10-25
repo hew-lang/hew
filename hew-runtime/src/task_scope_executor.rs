@@ -225,6 +225,10 @@ impl ReadyWork for TaskExecution {
 }
 
 impl Driver {
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one driver advances and cleans up the checked task lifecycle"
+    )]
     unsafe fn poll(&mut self, execution: &Arc<TaskExecution>) -> bool {
         // SAFETY: the phase protocol serializes access to frame and outputs.
         unsafe {

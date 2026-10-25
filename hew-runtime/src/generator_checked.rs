@@ -330,7 +330,7 @@ pub unsafe extern "C" fn hew_checked_generator_poll(
                     .value_owner
                     .as_ref()
                     .and_then(crate::owned_value_budget::ValueOwner::execution_binding),
-            )
+            );
         };
     }
     // The generator executes in its current consumer's actor turn, including

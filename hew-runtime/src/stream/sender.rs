@@ -246,6 +246,7 @@ impl SharedWrite {
         let value_owner =
             unsafe { crate::owned_value_budget::materialize::invocation_owner(parent) };
         // Unbounded foreign descriptors may lack metadata; a bounded caller must describe its input.
+        // SAFETY: the checked layout describes the source value retained by this write.
         let input_slot_bytes = unsafe { crate::owned_value_budget::visit::slot_bytes(layout) }
             .or_else(|failure| {
                 if value_owner.is_none() {
@@ -377,12 +378,14 @@ impl SharedWrite {
                     return 3;
                 }
             };
+            // SAFETY: this sender retains its unique child operation until cleanup.
             if !unsafe { super::native::borrows_write_input(self.child) } {
                 self.child_consumed_input();
             }
         }
         // SAFETY: this owner drives its unique underlying operation.
         let status = unsafe { super::native::hew_stream_write_poll_native(self.child) };
+        // SAFETY: this sender retains its unique child operation until cleanup.
         if status == 1 && unsafe { super::native::borrows_write_input(self.child) } {
             self.child_consumed_input();
         }
@@ -721,6 +724,7 @@ pub unsafe extern "C" fn hew_sink_from_encoder(
 ) -> *mut HewSink {
     // SAFETY: the compiler provides writable status and live concrete descriptors.
     unsafe { out_status.write(0) };
+    // SAFETY: the checked layout describes the source value retained by this write.
     let width = unsafe {
         crate::owned_value_budget::visit::slot_bytes(&*sink_layout).and_then(|sink| {
             crate::owned_value_budget::visit::slot_bytes(&*encoder_layout).and_then(|encoder| {
@@ -732,19 +736,18 @@ pub unsafe extern "C" fn hew_sink_from_encoder(
     let width = match width {
         Ok(width) => width,
         Err(status) => {
+            // SAFETY: the caller provides a writable status output for this constructor.
             unsafe { out_status.write(status) };
             return std::ptr::null_mut();
         }
     };
-    let reservation = match crate::owned_value_budget::current_owner()
+    let Ok(reservation) = crate::owned_value_budget::current_owner()
         .map(|owner| owner.reserve_new(width))
         .transpose()
-    {
-        Ok(reservation) => reservation,
-        Err(_) => {
-            unsafe { out_status.write(hew_cabi::managed::HEAP_EXCEEDED) };
-            return std::ptr::null_mut();
-        }
+    else {
+        // SAFETY: the caller provides a writable status output for this constructor.
+        unsafe { out_status.write(hew_cabi::managed::HEAP_EXCEEDED) };
+        return std::ptr::null_mut();
     };
     // SAFETY: the compiler transfers one complete callable carrier.
     let encoder = unsafe { encoder.read() };
@@ -791,6 +794,7 @@ pub unsafe extern "C" fn hew_sink_clone_checked(
     layout: *const HewValueLayout,
     out_status: *mut i32,
 ) -> *mut HewSink {
+    // SAFETY: the caller provides a writable status output for this constructor.
     unsafe { out_status.write(0) };
     let acquired = match crate::owned_value_budget::current_owner()
         .map(|owner| {
@@ -801,6 +805,7 @@ pub unsafe extern "C" fn hew_sink_clone_checked(
     {
         Ok(acquired) => acquired,
         Err(status) => {
+            // SAFETY: the caller provides a writable status output for this constructor.
             unsafe { out_status.write(status) };
             return std::ptr::null_mut();
         }

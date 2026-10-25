@@ -362,6 +362,10 @@ pub struct HewReleaseCursor {
     current_slot: *mut c_void,
     remaining: usize,
     rc_sweep: Option<hew_observe_protocol::RcSweep>,
+    #[allow(
+        clippy::option_option,
+        reason = "absence preserves the invocation owner; Some(None) explicitly selects unbounded ownership"
+    )]
     value_owner: Option<Option<crate::owned_value_budget::ValueOwner>>,
 }
 
@@ -475,6 +479,10 @@ impl HewReleaseCursor {
         cursors: impl IntoIterator<Item = *mut Self, IntoIter: DoubleEndedIterator>,
     ) -> *mut Self {
         let mut pending = Vec::new();
+        #[allow(
+            clippy::option_option,
+            reason = "absence preserves the invocation owner; Some(None) explicitly selects unbounded ownership"
+        )]
         let mut value_owner: Option<Option<crate::owned_value_budget::ValueOwner>> = None;
         for cursor in cursors.into_iter().rev() {
             if !cursor.is_null() {
@@ -607,6 +615,7 @@ impl ReleaseDriver {
     pub(crate) unsafe fn poll(&mut self, parent: *mut crate::coro_state::HewCoroState) -> bool {
         // SAFETY: the caller owns this driver and its parent through the poll.
         let owner = self.value_owner.clone();
+        // SAFETY: the release driver exclusively owns these cursor items and retains their descriptor and source storage.
         crate::owned_value_budget::with_value_owner(&owner, || unsafe {
             self.poll_inner(parent, None)
         })
@@ -622,6 +631,7 @@ impl ReleaseDriver {
     ) -> bool {
         // SAFETY: activation ownership pins the actor and both invocations.
         let owner = self.value_owner.clone();
+        // SAFETY: the release driver exclusively owns these cursor items and retains their descriptor and source storage.
         crate::owned_value_budget::with_value_owner(&owner, || unsafe {
             self.poll_inner(parent, Some(actor))
         })
@@ -693,7 +703,10 @@ impl ReleaseDriver {
                     if self.state.is_null() {
                         std::process::abort();
                     }
-                    (*self.state).execution_mut().value_owner = self.value_owner.clone();
+                    (*self.state)
+                        .execution_mut()
+                        .value_owner
+                        .clone_from(&self.value_owner);
                     {
                         let _binding = terminal_actor.map(|actor| {
                             crate::actor_native::bind_checked_invocation(actor, self.state)
@@ -1007,6 +1020,7 @@ pub unsafe extern "C" fn hew_release_poll(
                 cursor.pending.push(ReleaseItem::Stream { stream });
                 return 0;
             }
+            // SAFETY: the release driver exclusively owns these cursor items and retains their descriptor and source storage.
             unsafe { crate::stream::expand_stream_release(stream, &mut cursor.pending) };
             continue;
         }
@@ -1068,8 +1082,9 @@ pub unsafe extern "C-unwind" fn hew_release_sync(cursor: *mut HewReleaseCursor) 
         ..
     } = *cursor;
     let owner = value_owner.unwrap_or_else(crate::owned_value_budget::current_owner);
+    // SAFETY: the release driver exclusively owns these cursor items and retains their descriptor and source storage.
     crate::owned_value_budget::with_value_owner(&owner, || unsafe {
-        release_sync_items(pending.into_iter().rev())
+        release_sync_items(pending.into_iter().rev());
     });
 }
 

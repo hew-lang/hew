@@ -224,6 +224,7 @@ pub unsafe extern "C" fn hew_stream_read_start_native(
 ) -> *mut HewNativeStream {
     // SAFETY: compiler-provided live operands satisfy the start contract.
     let layout = unsafe { *move_elem_layout_witness(layout, "native stream read") };
+    // SAFETY: the caller retains the borrowed waker descriptor during construction.
     let owned_waker = Arc::new(unsafe { OwnedWaker::retain(&*waker) });
     #[cfg(not(target_arch = "wasm32"))]
     let mut yields = ReadYield::Content;
@@ -345,21 +346,26 @@ unsafe fn try_underlying(
     let release = std::ptr::null_mut();
     let mut fault = std::ptr::null_mut();
     content_layout(&layout);
+    // SAFETY: data still holds an initialized value matching the checked content descriptor.
     let bytes = unsafe {
         crate::channel_common::encode_elem_envelope(data, &layout, "native content try write")
     };
+    // SAFETY: the optional parent invocation stays live until this constructor returns.
     let owner = unsafe { crate::owned_value_budget::materialize::invocation_owner(parent) };
     let content = async_io::content::Content::new(bytes, owner.clone())?;
     let view = async_io::content::ContentView::new(&content);
     if let Some(owner) = &owner {
+        // SAFETY: the source still owns its typed backing; the replacement content is already reserved.
         unsafe { owner.release_value(&layout, data) }?;
     }
+    // SAFETY: the typed source is initialized; its charge was released before this physical destruction.
     crate::owned_value_budget::with_value_owner(&None, || unsafe {
-        layout.drop_fn.expect("validated content destructor")(data)
+        layout.drop_fn.expect("validated content destructor")(data);
     });
     let status = if sink.is_null() {
         2
     } else {
+        // SAFETY: the sender gate retains this live sink through the synchronous capacity attempt.
         unsafe { (*sink).try_write_owned(hew_cabi::sink::PendingBytes::retained(content)) }
             .into_abi_code()
     };
@@ -400,6 +406,10 @@ unsafe fn try_underlying(
 
 /// # Safety
 /// The caller holds the underlying sender gate, or borrows an installed shared endpoint.
+#[allow(
+    clippy::too_many_lines,
+    reason = "one constructor selects the existing typed, content and legacy operation backings"
+)]
 pub(super) unsafe fn start_underlying(
     sink: *mut HewSink,
     waker: *const HewWaker,
@@ -420,6 +430,7 @@ pub(super) unsafe fn start_underlying(
             layout,
             // SAFETY: the caller retains this descriptor during operation construction.
             waker: Arc::new(unsafe { OwnedWaker::retain(&*waker) }),
+            // SAFETY: the shared endpoint, parent and typed input remain live for construction.
             backing: Backing::Shared(Box::new(unsafe {
                 super::sender::SharedWrite::new(owner, sink, parent, park, data, &layout)?
             })),
@@ -441,14 +452,19 @@ pub(super) unsafe fn start_underlying(
     let core = if raw.is_null() {
         None
     } else {
+        // SAFETY: the sink retains this channel Arc while the operation acquires its own reference.
         unsafe { Arc::increment_strong_count(raw) };
+        // SAFETY: the preceding increment transferred exactly one channel reference to this operation.
         Some(unsafe { Arc::from_raw(raw) })
     };
     if let Some(core) = core.as_ref().filter(|core| core.is_typed()) {
+        // SAFETY: the caller retains the borrowed waker descriptor during construction.
         let waker = Arc::new(unsafe { OwnedWaker::retain(&*waker) });
         return Ok(Box::into_raw(Box::new(HewNativeStream {
+            // SAFETY: the checked descriptor pins its defining code during root acquisition.
             _code: unsafe { crate::code_owner::CodeRoot::acquire(layout.code_owner) },
             layout,
+            // SAFETY: the enclosing operation retains the typed input and parent until admission or cancellation.
             backing: Backing::TypedWrite(unsafe {
                 crate::channel_core::typed::TypedWrite::new(
                     Arc::clone(core),
@@ -484,13 +500,16 @@ pub(super) unsafe fn start_underlying(
     if unsafe { !(*sink).is_closed() && (*sink).channel_core_ptr().is_null() } {
         content_layout(&layout);
         // Inspect both sources before changing either; quota refusal preserves them.
+        // SAFETY: the sender gate retains the live sink and serializes pending-content access.
         let mut bytes = unsafe { (*sink).pending_content() };
         let write_prefix = bytes.len();
+        // SAFETY: data still holds an initialized value matching the checked content descriptor.
         let envelope = unsafe {
             crate::channel_common::encode_elem_envelope(data, &layout, "native content write")
         };
         bytes.extend_from_slice(&envelope);
         let value_owner =
+            // SAFETY: the optional parent invocation stays live until this constructor returns.
             unsafe { crate::owned_value_budget::materialize::invocation_owner(parent) };
         let content = async_io::content::Content::new(bytes, value_owner.clone())?;
         let content_view = async_io::content::ContentView::new(&content);
@@ -500,17 +519,23 @@ pub(super) unsafe fn start_underlying(
         }
         // SAFETY: the admitted buffer now owns all content and the source is consumed once.
         crate::owned_value_budget::with_value_owner(&None, || unsafe {
-            layout.drop_fn.expect("validated content destructor")(data)
+            layout.drop_fn.expect("validated content destructor")(data);
         });
+        // SAFETY: the sender gate retains the live sink and serializes pending-content access.
         drop(unsafe { (*sink).take_pending() });
+        // SAFETY: the sender gate retains the live sink and serializes pending-content access.
         let io = if let Some(connection) = unsafe { (*sink).native_connection() } {
+            // SAFETY: the operation retains the endpoint loan and borrowed waker until producer quiescence.
             unsafe { async_io::start_tcp_stream_write(connection, content, waker) }
         } else {
+            // SAFETY: the operation retains the endpoint loan and borrowed waker until producer quiescence.
             unsafe { async_io::start_sink_write(sink, content, waker) }
         };
         return Ok(Box::into_raw(Box::new(HewNativeStream {
+            // SAFETY: the checked descriptor pins its defining code during root acquisition.
             _code: unsafe { crate::code_owner::CodeRoot::acquire(layout.code_owner) },
             layout,
+            // SAFETY: the caller retains the borrowed waker descriptor during construction.
             waker: Arc::new(unsafe { OwnedWaker::retain(&*waker) }),
             backing: Backing::Io(io),
             yields: ReadYield::Content,
@@ -641,10 +666,13 @@ pub unsafe extern "C" fn hew_stream_operation_fault_native(
 ) -> *mut crate::fault::HewFault {
     // SAFETY: the operation owns its unpublished-result diagnostic.
     if unsafe { !(*operation).fault.is_null() } {
+        // SAFETY: the caller retains this live operation throughout the exclusive access.
         return unsafe { std::mem::replace(&mut (*operation).fault, std::ptr::null_mut()) };
     }
     #[cfg(not(target_arch = "wasm32"))]
+    // SAFETY: the enclosing stream operation retains this async request.
     if let Backing::Io(io) = unsafe { &(*operation).backing } {
+        // SAFETY: the enclosing stream operation retains this async request.
         if let Some(code) = unsafe { async_io::failure_trap(*io) } {
             return crate::fault::hew_fault_new(code);
         }
@@ -710,22 +738,20 @@ pub unsafe extern "C" fn hew_stream_read_take_native(
     // SAFETY: the caller lends the live exclusive operation.
     let operation = unsafe { &mut *operation };
     if let Backing::TypedRead(read) = &mut operation.backing {
+        // SAFETY: out is writable storage of the operation's exact element descriptor.
         return i32::from(unsafe { read.take(out) });
     }
     #[cfg(not(target_arch = "wasm32"))]
     if let Some(content) = &operation.read_content {
         let owner = content.owner();
-        let reservation = match owner
+        let Ok(reservation) = owner
             .as_ref()
             .map(|owner| owner.reserve_new(content.len() as u64))
             .transpose()
-        {
-            Ok(reservation) => reservation,
-            Err(_) => {
-                operation.fault =
-                    crate::fault::hew_fault_new(crate::internal::types::HEW_TRAP_HEAP_EXCEEDED);
-                return 3;
-            }
+        else {
+            operation.fault =
+                crate::fault::hew_fault_new(crate::internal::types::HEW_TRAP_HEAP_EXCEEDED);
+            return 3;
         };
         // SAFETY: the temporary content image is decoded into the caller's unpublished slot.
         let status = unsafe {
@@ -738,7 +764,9 @@ pub unsafe extern "C" fn hew_stream_read_take_native(
         };
         if status == 1 {
             if let Some(reservation) = reservation {
+                // SAFETY: decoding initialized out with the same descriptor used for this reservation.
                 if let Err(failure) = unsafe { reservation.commit_value(&operation.layout, out) } {
+                    // SAFETY: the typed source is initialized; its charge was released before this physical destruction.
                     crate::owned_value_budget::with_value_owner(&None, || unsafe {
                         operation.layout.drop_fn.expect("content destructor")(out);
                     });
@@ -927,6 +955,7 @@ pub unsafe extern "C" fn hew_stream_operation_free_native(operation: *mut HewNat
 
 /// A typed Pipe receipt borrows the outer sender's slot until queue admission succeeds.
 pub(super) unsafe fn borrows_write_input(operation: *const HewNativeStream) -> bool {
+    // SAFETY: the caller retains this live operation throughout the exclusive access.
     unsafe { matches!((*operation).backing, Backing::TypedWrite(_)) }
 }
 
@@ -947,8 +976,10 @@ pub unsafe extern "C" fn hew_stream_operation_release_begin(
     let value = unsafe { (*operation).envelope.take() };
     // SAFETY: the operation retains its exact descriptor through this transfer.
     let layout = unsafe { (*operation).layout };
+    // SAFETY: the caller retains this live operation throughout the exclusive access.
     let typed_read = if unsafe { matches!((*operation).backing, Backing::TypedRead(_)) } {
         let Backing::TypedRead(read) =
+            // SAFETY: producer quiescence permits moving the unique typed-read backing into cleanup.
             (unsafe { std::mem::replace(&mut (*operation).backing, Backing::Finished) })
         else {
             unreachable!()

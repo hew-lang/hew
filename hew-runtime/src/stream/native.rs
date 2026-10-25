@@ -838,6 +838,7 @@ mod tests {
     fn owned_layout() -> HewValueLayout {
         HewValueLayout {
             code_owner: core::ptr::null(),
+            managed: core::ptr::null(),
             size: size_of::<usize>(),
             align: align_of::<usize>(),
             ownership_kind: HewTypeOwnershipKind::LayoutManaged,

@@ -423,6 +423,7 @@ fn failed_nested_callable_clone_rolls_back_completed_fields_and_preserves_output
         .insert_environment_layout(env.ty.clone(), layout);
     let nested_layout = HewValueLayout {
         code_owner: core::ptr::null(),
+        managed: core::ptr::null(),
         release_start: None,
         size: 8,
         align: 8,

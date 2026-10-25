@@ -3453,6 +3453,7 @@ mod tests {
         }
         static SINK: HewValueLayout = HewValueLayout {
             code_owner: core::ptr::null(),
+            managed: core::ptr::null(),
             size: size_of::<*mut HewSink>(),
             align: align_of::<*mut HewSink>(),
             ownership_kind: HewTypeOwnershipKind::LayoutManaged,
@@ -4885,6 +4886,7 @@ mod tests {
     fn plain_elem_layout(size: usize, align: usize) -> HewValueLayout {
         HewValueLayout {
             code_owner: core::ptr::null(),
+            managed: core::ptr::null(),
             release_start: None,
             size,
             align,
@@ -4897,6 +4899,7 @@ mod tests {
     fn string_elem_layout() -> HewValueLayout {
         HewValueLayout {
             code_owner: core::ptr::null(),
+            managed: core::ptr::null(),
             release_start: None,
             size: size_of::<*const HewString>(),
             align: align_of::<*const HewString>(),
@@ -4909,6 +4912,7 @@ mod tests {
     fn bytes_elem_layout() -> HewValueLayout {
         HewValueLayout {
             code_owner: core::ptr::null(),
+            managed: core::ptr::null(),
             release_start: None,
             size: size_of::<crate::bytes::BytesTriple>(),
             align: align_of::<crate::bytes::BytesTriple>(),
@@ -5114,6 +5118,7 @@ mod tests {
     fn st_owned_layout() -> HewValueLayout {
         HewValueLayout {
             code_owner: core::ptr::null(),
+            managed: core::ptr::null(),
             release_start: None,
             size: size_of::<StOwnedElem>(),
             align: align_of::<StOwnedElem>(),

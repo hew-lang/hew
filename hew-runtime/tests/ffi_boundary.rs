@@ -2715,6 +2715,7 @@ mod rc_arc_tests {
                 (&raw const val).cast(),
                 &hew_cabi::value::HewValueLayout {
                     code_owner: core::ptr::null(),
+                    managed: core::ptr::null(),
                     size: size_of::<i32>(),
                     align: align_of::<i32>(),
                     ownership_kind: hew_cabi::value::HewTypeOwnershipKind::Plain,
@@ -2756,6 +2757,7 @@ mod rc_arc_tests {
                 (&raw const value).cast(),
                 &hew_cabi::value::HewValueLayout {
                     code_owner: core::ptr::null(),
+                    managed: core::ptr::null(),
                     size: size_of::<i64>(),
                     align: align_of::<i64>(),
                     ownership_kind: hew_cabi::value::HewTypeOwnershipKind::Plain,
@@ -2805,6 +2807,7 @@ mod rc_arc_tests {
                 (&raw const val).cast(),
                 &hew_cabi::value::HewValueLayout {
                     code_owner: core::ptr::null(),
+                    managed: core::ptr::null(),
                     size: size_of::<i32>(),
                     align: align_of::<i32>(),
                     ownership_kind: hew_cabi::value::HewTypeOwnershipKind::Plain,

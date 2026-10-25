@@ -134,6 +134,7 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
             }
             .into(),
             pointer.const_null().into(),
+            pointer.const_null().into(),
         ]);
         let global = self.llvm.add_global(descriptor_ty, None, name);
         global.set_linkage(Linkage::Internal);
@@ -668,6 +669,7 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
                         .i8_type()
                         .const_int(HewTypeOwnershipKind::Plain as u64, false)
                         .into(),
+                    pointer.const_null().into(),
                     pointer.const_null().into(),
                     pointer.const_null().into(),
                     pointer.const_null().into(),

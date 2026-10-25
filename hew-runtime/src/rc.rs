@@ -817,6 +817,7 @@ mod tests {
     ) -> *mut u8 {
         let layout = HewValueLayout {
             code_owner: core::ptr::null(),
+            managed: core::ptr::null(),
             size,
             align,
             ownership_kind: hew_cabi::value::HewTypeOwnershipKind::LayoutManaged,

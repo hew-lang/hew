@@ -74,6 +74,7 @@ fn hashmap_of_vec_drops_every_nested_element_exactly_once() {
     let key_layout = HewMapKeyLayout {
         value: HewValueLayout {
             code_owner: core::ptr::null(),
+            managed: core::ptr::null(),
             release_start: None,
             size: size_of::<i64>(),
             align: align_of::<i64>(),
@@ -86,6 +87,7 @@ fn hashmap_of_vec_drops_every_nested_element_exactly_once() {
     };
     let value_layout = HewValueLayout {
         code_owner: core::ptr::null(),
+        managed: core::ptr::null(),
         release_start: None,
         size: size_of::<*mut HewVec>(),
         align: align_of::<*mut HewVec>(),
@@ -95,6 +97,7 @@ fn hashmap_of_vec_drops_every_nested_element_exactly_once() {
     };
     let elem_layout = HewValueLayout {
         code_owner: core::ptr::null(),
+        managed: core::ptr::null(),
         release_start: None,
         size: size_of::<i64>(),
         align: align_of::<i64>(),

@@ -119,6 +119,7 @@ fn owned_entries_allocations_are_freed_exactly_once_after_map_drop() {
     let key_layout = HewMapKeyLayout {
         value: HewValueLayout {
             code_owner: core::ptr::null(),
+            managed: core::ptr::null(),
             release_start: None,
             size: size_of::<i64>(),
             align: align_of::<i64>(),
@@ -131,6 +132,7 @@ fn owned_entries_allocations_are_freed_exactly_once_after_map_drop() {
     };
     let value_layout = HewValueLayout {
         code_owner: core::ptr::null(),
+        managed: core::ptr::null(),
         release_start: None,
         size: size_of::<OwnedValue>(),
         align: align_of::<OwnedValue>(),
@@ -140,6 +142,7 @@ fn owned_entries_allocations_are_freed_exactly_once_after_map_drop() {
     };
     let pair_layout = HewValueLayout {
         code_owner: core::ptr::null(),
+        managed: core::ptr::null(),
         release_start: None,
         size: size_of::<Pair>(),
         align: align_of::<Pair>(),

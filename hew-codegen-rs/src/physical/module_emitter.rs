@@ -515,6 +515,7 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
             }
             .into(),
             pointer.const_null().into(),
+            pointer.const_null().into(),
         ]))
     }
 

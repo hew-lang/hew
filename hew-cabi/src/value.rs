@@ -104,6 +104,7 @@ const _: () = assert!(
 ///     HewValueDropThunk        drop_fn;   /* synchronous cleanup, or NULL with release_start */
 ///     HewValueReleaseStart    release_start; /* optional consuming continuation */
 ///     const HewCodeLeaseSlot *code_owner;    /* null for statically resident code */
+///     const HewManagedValueDescriptor *managed; /* canonical payload facts */
 /// } HewValueLayout;
 /// ```
 #[repr(C)]
@@ -129,6 +130,9 @@ pub struct HewValueLayout {
     /// callable carriers and active callback frames retain their own roots.
     /// Null denotes statically resident code with no lease bookkeeping.
     pub code_owner: *const crate::code::HewCodeLeaseSlot,
+    /// Canonical payload width and typed backing traversal. Null means the
+    /// provider has not supplied accounting facts; bounded adoption refuses it.
+    pub managed: *const crate::managed::HewManagedValueDescriptor,
 }
 
 // SAFETY: descriptors and their code-owner slots are immutable after host
@@ -146,7 +150,8 @@ const _: () = {
     assert!(core::mem::offset_of!(HewValueLayout, drop_fn) == 32);
     assert!(core::mem::offset_of!(HewValueLayout, release_start) == 40);
     assert!(core::mem::offset_of!(HewValueLayout, code_owner) == 48);
-    assert!(core::mem::size_of::<HewValueLayout>() == 56);
+    assert!(core::mem::offset_of!(HewValueLayout, managed) == 56);
+    assert!(core::mem::size_of::<HewValueLayout>() == 64);
 };
 
 #[cfg(target_pointer_width = "32")]
@@ -158,5 +163,6 @@ const _: () = {
     assert!(core::mem::offset_of!(HewValueLayout, drop_fn) == 16);
     assert!(core::mem::offset_of!(HewValueLayout, release_start) == 20);
     assert!(core::mem::offset_of!(HewValueLayout, code_owner) == 24);
-    assert!(core::mem::size_of::<HewValueLayout>() == 28);
+    assert!(core::mem::offset_of!(HewValueLayout, managed) == 28);
+    assert!(core::mem::size_of::<HewValueLayout>() == 32);
 };

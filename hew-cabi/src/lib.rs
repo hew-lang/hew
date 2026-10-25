@@ -17,6 +17,7 @@ pub mod callable;
 pub mod code;
 pub mod coro;
 pub mod host_error;
+pub mod managed;
 pub mod map;
 pub mod mem;
 pub mod node;

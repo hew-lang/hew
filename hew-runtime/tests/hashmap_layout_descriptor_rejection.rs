@@ -95,6 +95,7 @@ extern "C-unwind" fn snapshot_drop(_blob: *mut c_void) {
 fn plain_v_layout() -> HewValueLayout {
     HewValueLayout {
         code_owner: core::ptr::null(),
+        managed: core::ptr::null(),
         release_start: None,
         size: 8,
         align: 8,
@@ -108,6 +109,7 @@ fn plain_k_layout() -> HewMapKeyLayout {
     HewMapKeyLayout {
         value: HewValueLayout {
             code_owner: core::ptr::null(),
+            managed: core::ptr::null(),
             release_start: None,
             size: 8,
             align: 8,
@@ -130,6 +132,7 @@ fn rejects_string_key_without_drop_fn() {
     let kl = HewMapKeyLayout {
         value: HewValueLayout {
             code_owner: core::ptr::null(),
+            managed: core::ptr::null(),
             release_start: None,
             size: 8,
             align: 8,
@@ -152,6 +155,7 @@ fn rejects_layout_managed_key_without_drop_fn() {
     let kl = HewMapKeyLayout {
         value: HewValueLayout {
             code_owner: core::ptr::null(),
+            managed: core::ptr::null(),
             release_start: None,
             size: 8,
             align: 8,
@@ -174,6 +178,7 @@ fn rejects_string_value_without_drop_fn() {
     let kl = plain_k_layout();
     let vl = HewValueLayout {
         code_owner: core::ptr::null(),
+        managed: core::ptr::null(),
         release_start: None,
         size: 8,
         align: 8,
@@ -192,6 +197,7 @@ fn rejects_layout_managed_value_without_drop_fn() {
     let kl = plain_k_layout();
     let vl = HewValueLayout {
         code_owner: core::ptr::null(),
+        managed: core::ptr::null(),
         release_start: None,
         size: 8,
         align: 8,
@@ -255,6 +261,7 @@ fn kernel_honours_snapshot_after_caller_mutates_descriptors() {
     let mut kl = HewMapKeyLayout {
         value: HewValueLayout {
             code_owner: core::ptr::null(),
+            managed: core::ptr::null(),
             release_start: None,
             size: size_of::<i64>(),
             align: align_of::<i64>(),
@@ -267,6 +274,7 @@ fn kernel_honours_snapshot_after_caller_mutates_descriptors() {
     };
     let mut vl = HewValueLayout {
         code_owner: core::ptr::null(),
+        managed: core::ptr::null(),
         release_start: None,
         size: size_of::<i64>(),
         align: align_of::<i64>(),

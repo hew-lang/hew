@@ -81,6 +81,7 @@ use crate::vec::HewVec;
 /// heap allocation.
 static VALUE_LAYOUT: HewValueLayout = HewValueLayout {
     code_owner: core::ptr::null(),
+    managed: core::ptr::null(),
     release_start: None,
     size: 0,
     align: 1,

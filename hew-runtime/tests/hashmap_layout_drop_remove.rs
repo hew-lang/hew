@@ -91,6 +91,7 @@ fn remove_drops_stored_k_and_v_exactly_once_each() {
     let kl = HewMapKeyLayout {
         value: HewValueLayout {
             code_owner: core::ptr::null(),
+            managed: core::ptr::null(),
             release_start: None,
             size: size_of::<i64>(),
             align: align_of::<i64>(),
@@ -103,6 +104,7 @@ fn remove_drops_stored_k_and_v_exactly_once_each() {
     };
     let vl = HewValueLayout {
         code_owner: core::ptr::null(),
+        managed: core::ptr::null(),
         release_start: None,
         size: size_of::<i64>(),
         align: align_of::<i64>(),
@@ -164,6 +166,7 @@ fn remove_missing_key_invokes_no_drops() {
     let kl = HewMapKeyLayout {
         value: HewValueLayout {
             code_owner: core::ptr::null(),
+            managed: core::ptr::null(),
             release_start: None,
             size: size_of::<i64>(),
             align: align_of::<i64>(),
@@ -176,6 +179,7 @@ fn remove_missing_key_invokes_no_drops() {
     };
     let vl = HewValueLayout {
         code_owner: core::ptr::null(),
+        managed: core::ptr::null(),
         release_start: None,
         size: size_of::<i64>(),
         align: align_of::<i64>(),

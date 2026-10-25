@@ -160,6 +160,7 @@ fn exercise_typed_owner(host: &NativeHost, generation: hew_live::native::Generat
         drop_fn: None,
         release_start: None,
         code_owner: &raw const slot,
+        managed: core::ptr::null(),
     };
     // SAFETY: this same-build descriptor is pinned by the generation handle
     // until the runtime acquires its own defining-code root.

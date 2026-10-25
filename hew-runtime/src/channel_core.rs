@@ -1656,6 +1656,7 @@ mod tests {
     fn blocking_elem_layout() -> HewValueLayout {
         HewValueLayout {
             code_owner: core::ptr::null(),
+            managed: core::ptr::null(),
             release_start: None,
             size: size_of::<u64>(),
             align: align_of::<u64>(),
@@ -1824,6 +1825,7 @@ mod tests {
     fn owned_elem_layout() -> HewValueLayout {
         HewValueLayout {
             code_owner: core::ptr::null(),
+            managed: core::ptr::null(),
             release_start: None,
             size: size_of::<OwnedElem>(),
             align: align_of::<OwnedElem>(),

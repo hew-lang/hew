@@ -159,6 +159,7 @@ mod tests {
             drop_fn: Some(close),
             release_start: None,
             code_owner: &raw const slot,
+            managed: core::ptr::null(),
         };
         let cursor = crate::release_walker::HewReleaseCursor::values([(
             (&raw const fixture).cast_mut().cast(),
@@ -193,6 +194,7 @@ mod tests {
             drop_fn: None,
             release_start: None,
             code_owner: &raw const slot,
+            managed: core::ptr::null(),
         };
         // SAFETY: all carriers use this exact descriptor and are released before
         // its stack-backed fixture and lease go out of scope.

@@ -206,6 +206,7 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
             }
             .into(),
             self.code_owner().into(),
+            pointer.const_null().into(),
         ]);
         let global = self.llvm.add_global(descriptor_ty, None, name);
         global.set_linkage(Linkage::Internal);
@@ -744,6 +745,7 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
                     pointer.const_null().into(),
                     pointer.const_null().into(),
                     self.code_owner().into(),
+                    pointer.const_null().into(),
                 ]),
             );
             for (name, callee) in dynamic {

@@ -16,6 +16,7 @@ unsafe extern "C-unwind" fn drop_bytes(slot: *mut c_void) {
 
 pub(super) const BYTES: HewValueLayout = HewValueLayout {
     code_owner: core::ptr::null(),
+    managed: core::ptr::null(),
     size: size_of::<crate::bytes::BytesTriple>(),
     align: align_of::<crate::bytes::BytesTriple>(),
     ownership_kind: crate::vec::HewTypeOwnershipKind::Bytes,

@@ -1072,9 +1072,17 @@ fn playground_sources_match_native() {
     ensure_native_toolchain();
     ensure_parity_runner_built();
 
+    let mut failures = Vec::new();
     for case in PARITY_CASES {
-        assert_case(case, "");
+        if std::panic::catch_unwind(|| assert_case(case, "")).is_err() {
+            failures.push(case.test_name);
+        }
     }
+    assert!(
+        failures.is_empty(),
+        "playground parity failed: {}",
+        failures.join(", ")
+    );
 }
 
 #[cfg(unix)]

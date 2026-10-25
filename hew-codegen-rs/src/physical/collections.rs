@@ -316,20 +316,22 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
             .llvm_ctx("load the compiled regex handle")
     }
 
-    fn initialize_vector_bounds_fault(
+    pub(super) fn initialize_bounds_fault(
         &self,
-        index: IntValue<'ctx>,
+        kind: u32,
+        start: IntValue<'ctx>,
+        end: IntValue<'ctx>,
         length: IntValue<'ctx>,
-        swap: bool,
     ) -> CodegenResult<()> {
         let function = get_or_declare_external(
             self.llvm,
-            "hew_fault_new_vector_bounds",
+            "hew_fault_new_bounds",
             self.ctx.ptr_type(AddressSpace::default()).fn_type(
                 &[
-                    self.ctx.i64_type().into(),
-                    self.ctx.i64_type().into(),
                     self.ctx.i32_type().into(),
+                    self.ctx.i64_type().into(),
+                    self.ctx.i64_type().into(),
+                    self.ctx.i64_type().into(),
                 ],
                 false,
             ),
@@ -337,11 +339,12 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
         let fault = self.runtime_call_value(
             function,
             &[
-                index.into(),
+                self.ctx.i32_type().const_int(u64::from(kind), false).into(),
+                start.into(),
+                end.into(),
                 length.into(),
-                self.ctx.i32_type().const_int(u64::from(swap), false).into(),
             ],
-            "vector.bounds.fault",
+            "bounds.fault",
         )?;
         self.store_active_fault(fault, HEW_TRAP_INDEX_OUT_OF_BOUNDS)?;
         self.attach_active_fault_site(self.fault_site.get())
@@ -368,7 +371,16 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
             .build_conditional_branch(in_bounds, safe, failed)
             .llvm_ctx("select vector mutation outcome")?;
         self.builder.position_at_end(failed);
-        self.initialize_vector_bounds_fault(index, length, swap)?;
+        self.initialize_bounds_fault(
+            if swap {
+                hew_runtime::fault::BOUNDS_VECTOR_SWAP
+            } else {
+                hew_runtime::fault::BOUNDS_VECTOR_INDEX
+            },
+            index,
+            self.ctx.i64_type().const_zero(),
+            length,
+        )?;
         self.emit_edge(failure)?;
         self.builder.position_at_end(safe);
         Ok(())
@@ -679,7 +691,12 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                     self.write_variant_value(self.slots[result.0 as usize], 1, &[], option)?;
                     self.emit_result_edge(Some(result), normal)?;
                 } else {
-                    self.initialize_vector_bounds_fault(index, self.vector_length(vector)?, false)?;
+                    self.initialize_bounds_fault(
+                        hew_runtime::fault::BOUNDS_VECTOR_INDEX,
+                        index,
+                        i64_ty.const_zero(),
+                        self.vector_length(vector)?,
+                    )?;
                     self.emit_edge(failure()?)?;
                 }
                 self.builder.position_at_end(present);
@@ -802,9 +819,7 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                     .build_conditional_branch(out_of_bounds, failed, safe)
                     .llvm_ctx("branch around fallible vector slice call")?;
                 self.builder.position_at_end(failed);
-                self.initialize_active_fault(
-                    hew_runtime::internal::types::HEW_TRAP_INDEX_OUT_OF_BOUNDS,
-                )?;
+                self.initialize_bounds_fault(hew_runtime::fault::BOUNDS_SLICE, start, end, length)?;
                 self.emit_edge(failure()?)?;
                 self.builder.position_at_end(safe);
                 let function = get_or_declare_external(
@@ -1199,7 +1214,8 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                 .build_unconditional_branch(complete)
                 .llvm_ctx("finish absent map value")?;
         } else {
-            self.initialize_active_fault(HEW_TRAP_INDEX_OUT_OF_BOUNDS)?;
+            let zero = self.ctx.i64_type().const_zero();
+            self.initialize_bounds_fault(hew_runtime::fault::BOUNDS_MAP_INDEX, zero, zero, zero)?;
             self.emit_edge(failure.ok_or_else(|| {
                 CodegenError::FailClosed("map index lacks its failure cleanup".into())
             })?)?;

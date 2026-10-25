@@ -2929,6 +2929,12 @@ static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1734] = {
      "HewFault\"}",
      "native,wasm32-wasip1", "non-declarable", "not-applicable",
      "no-in-signature-extent", HEW_CABI_OWNERSHIP_UNMEASURED},
+    {"hew_fault_new_bounds",
+     "{\"native\": \"fn hew_fault_new_bounds( u32, i64, i64, i64, ) -> *mut "
+     "HewFault\", \"wasm32-wasip1\": \"fn hew_fault_new_bounds( u32, i64, i64, "
+     "i64, ) -> *mut HewFault\"}",
+     "native,wasm32-wasip1", "non-declarable", "not-applicable",
+     "no-in-signature-extent", HEW_CABI_OWNERSHIP_UNMEASURED},
     {"hew_fault_new_panic",
      "{\"native\": \"fn hew_fault_new_panic( *const HewString) -> *mut "
      "HewFault\", \"wasm32-wasip1\": \"fn hew_fault_new_panic( *const "
@@ -2939,12 +2945,6 @@ static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1734] = {
      "{\"native\": \"fn hew_fault_new_unhandled_failure( *const HewString, ) "
      "-> *mut HewFault\", \"wasm32-wasip1\": \"fn "
      "hew_fault_new_unhandled_failure( *const HewString, ) -> *mut HewFault\"}",
-     "native,wasm32-wasip1", "non-declarable", "not-applicable",
-     "no-in-signature-extent", HEW_CABI_OWNERSHIP_UNMEASURED},
-    {"hew_fault_new_vector_bounds",
-     "{\"native\": \"fn hew_fault_new_vector_bounds( i64, i64, u32) -> *mut "
-     "HewFault\", \"wasm32-wasip1\": \"fn hew_fault_new_vector_bounds( i64, "
-     "i64, u32) -> *mut HewFault\"}",
      "native,wasm32-wasip1", "non-declarable", "not-applicable",
      "no-in-signature-extent", HEW_CABI_OWNERSHIP_UNMEASURED},
     {"hew_fault_report",

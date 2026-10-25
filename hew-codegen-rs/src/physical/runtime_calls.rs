@@ -746,8 +746,12 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                         .build_conditional_branch(found, valid, invalid)
                         .llvm_ctx("check string range bounds")?;
                     self.builder.position_at_end(invalid);
-                    self.initialize_active_fault(
-                        hew_runtime::internal::types::HEW_TRAP_INDEX_OUT_OF_BOUNDS,
+                    let zero = self.ctx.i64_type().const_zero();
+                    self.initialize_bounds_fault(
+                        hew_runtime::fault::BOUNDS_STRING_RANGE,
+                        zero,
+                        zero,
+                        zero,
                     )?;
                     self.emit_edge(failure)?;
                     self.builder.position_at_end(valid);

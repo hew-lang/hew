@@ -548,6 +548,8 @@ pub enum RuntimeLogicalFailure {
     /// Checked managed payload acquisition refused before input mutation.
     HeapExceeded,
     IndexOutOfBounds,
+    /// Bounds failure carrying its checked operation detail into cleanup.
+    BoundsFault,
     IntegerOverflow,
     /// A selected user callback returns an existing logical fault owner.
     CallbackFault,
@@ -653,6 +655,7 @@ impl RuntimeSemanticContract {
             matches!(
                 failure,
                 RuntimeLogicalFailure::CallbackFault
+                    | RuntimeLogicalFailure::BoundsFault
                     | RuntimeLogicalFailure::RcUnavailable
                     | RuntimeLogicalFailure::HeapExceeded
             )

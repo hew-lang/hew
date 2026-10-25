@@ -7,6 +7,12 @@ loads every `cases/*.toml` in sorted order and checks each case's expected
 outcome. A new case is one `.hew` file plus one `.toml` file, so adding a case
 never conflicts with another case's file.
 
+`timeout_seconds` bounds execution of a run case, or the frontend command for
+a check/reject case. Compilation and linking of run cases have a separate
+120-second process deadline, allowing concurrent compiler work without extending
+the program's execution budget. `--compile-timeout-seconds N` overrides that
+compiler deadline; `--timeout-seconds N` overrides the execution/check deadline.
+
 A case may name `platforms = ["linux", "macos", "freebsd"]` when its inputs
 require those operating systems, such as POSIX signals or FIFOs. Omitting
 `platforms` selects every host. The runner reports non-applicable cases as

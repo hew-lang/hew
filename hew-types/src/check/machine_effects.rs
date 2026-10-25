@@ -796,7 +796,10 @@ impl NodeVisitor for EffectVisitor<'_> {
                             let intrinsic = ResolvedTy::from_ty(ty)
                                 .ok()
                                 .and_then(|ty| self.facts.builtin_display_plan(&ty));
-                            if intrinsic.is_none_or(|plan| plan.can_fail()) {
+                            // Allocation failure does not make a builtin
+                            // conversion effectful. Authored Display bodies
+                            // still require an explicit purity proof.
+                            if intrinsic.is_none() {
                                 self.refuse(
                                     &value.1,
                                     "machine evaluation cannot call a custom Display implementation",

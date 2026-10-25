@@ -105,6 +105,16 @@ impl Control {
             .await?)
     }
 
+    async fn preview(&self, digest: String, input: String, within_ms: u64) -> Result<String> {
+        let prepared = self.candidate(parse_digest(&digest)?).await?;
+        let preview = serde_json::from_str(&input)?;
+        let outcome = self
+            .host
+            .preview(prepared, preview, Duration::from_millis(within_ms))
+            .await?;
+        Ok(serde_json::to_string(&outcome)?)
+    }
+
     pub async fn close(&self) -> Result<()> {
         {
             let mut lifecycle = self.lifecycle.lock().expect("control lifecycle poisoned");
@@ -300,6 +310,15 @@ struct Callbacks {
         Pointer,
         Pointer,
     ),
+    preview: unsafe extern "C" fn(
+        *const Control,
+        *const c_void,
+        *const c_void,
+        u64,
+        Pointer,
+        Pointer,
+        Pointer,
+    ),
 }
 
 unsafe fn read_text(pointer: *const c_void) -> String {
@@ -425,6 +444,28 @@ unsafe extern "C" fn route(
     });
 }
 
+unsafe extern "C" fn preview(
+    pointer: *const Control,
+    digest: *const c_void,
+    input: *const c_void,
+    within_ms: u64,
+    status: Pointer,
+    outcome: Pointer,
+    error: Pointer,
+) {
+    // SAFETY: Driver and the bridge retain this context and both immutable texts
+    // until the synchronous callback has copied its local SDK inputs.
+    let (control, digest, input) =
+        unsafe { (context(pointer), read_text(digest), read_text(input)) };
+    let replies = Replies::new(&control, &[status, outcome, error]);
+    control.dispatch(replies, move |control| async move {
+        control
+            .preview(digest, input, within_ms)
+            .await
+            .map(|outcome| vec![Value::Text(outcome)])
+    });
+}
+
 pub(super) fn install(driver: &mut Driver, control: Arc<Control>) -> Result<()> {
     type Install = unsafe extern "C" fn(*const Callbacks);
     let callbacks = Callbacks {
@@ -433,6 +474,7 @@ pub(super) fn install(driver: &mut Driver, control: Arc<Control>) -> Result<()> 
         replace,
         status,
         route,
+        preview,
     };
     // SAFETY: same-build SDK bridge copies this complete callback table.
     unsafe {

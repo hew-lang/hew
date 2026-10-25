@@ -3,7 +3,7 @@
 //! The editor protocol reaches ordinary authenticated Hew node services.
 
 use std::fmt::Write as _;
-use std::io::{BufRead, BufReader, Write};
+use std::io::{BufRead, BufReader, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::mpsc;
@@ -140,8 +140,23 @@ fn node(directory: &Path, module: &Path, name: &str, address: &str) -> Command {
 }
 
 fn server(directory: &Path, module: &Path, client_id: &str, address: &str) -> Process {
+    observed_server(directory, module, client_id, address, None)
+}
+
+fn observed_server(
+    directory: &Path,
+    module: &Path,
+    client_id: &str,
+    address: &str,
+    observe: Option<&str>,
+) -> Process {
+    let mut command = node(directory, module, "server", address);
+    command.env_remove("HEW_PPROF");
+    if let Some(observe) = observe {
+        command.env("HEW_PPROF", observe);
+    }
     let mut process = Process(
-        node(directory, module, "server", address)
+        command
             .args(["serve", "--allow-peer", client_id, "--cache"])
             .arg(directory.join("cache"))
             .stdout(Stdio::null())
@@ -158,10 +173,14 @@ fn server(directory: &Path, module: &Path, client_id: &str, address: &str) -> Pr
             let _ = send.send(line);
         }
     });
-    let line = receive
-        .recv_timeout(Duration::from_secs(15))
-        .expect("server startup");
-    assert!(line.starts_with("node started;"), "{line}");
+    loop {
+        let line = receive
+            .recv_timeout(Duration::from_secs(15))
+            .expect("server startup");
+        if line.starts_with("node started;") {
+            break;
+        }
+    }
     process
 }
 
@@ -186,6 +205,90 @@ fn editor(directory: &Path, module: &Path, server_id: &str, address: &str) -> Ed
     Editor { process, replies }
 }
 
+fn observe_events(address: &str) -> Vec<Value> {
+    let mut events = Vec::new();
+    let mut target = "/api/traces?limit=256".to_owned();
+    for _ in 0..64 {
+        let mut stream = std::net::TcpStream::connect(address).unwrap();
+        stream
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
+        write!(
+            stream,
+            "GET {target} HTTP/1.1\r\nHost: {address}\r\nConnection: close\r\n\r\n"
+        )
+        .unwrap();
+        let mut response = String::new();
+        stream.read_to_string(&mut response).unwrap();
+        assert!(response.starts_with("HTTP/1.1 200"), "{response}");
+        let body: Value = serde_json::from_str(response.split_once("\r\n\r\n").unwrap().1).unwrap();
+        let batch = &body["data"];
+        events.extend(batch["events"].as_array().unwrap().iter().cloned());
+        if !batch["has_more"].as_bool().unwrap() {
+            return events;
+        }
+        target = format!(
+            "/api/traces?limit=256&stream_id={}&after={}",
+            batch["stream_id"].as_str().unwrap(),
+            batch["next_cursor"].as_str().unwrap()
+        );
+    }
+    panic!("Observe trace stream did not reach its tail");
+}
+
+fn verify_preview(client: &mut Editor, active_digest: &Value, observe: &str) {
+    let source = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/preview_router.hew");
+    let digest =
+        client.request(json!({"op":"build_prepare", "source":source}), true)["digest"].clone();
+    let mut preview = json!({"state":{"accepted":41}, "input":{"source":"private-preview-source", "body":"private-preview-body"}, "fixtures":[
+        {"Destination":{"source":"private-preview-source", "result":{"Ok":"private-preview-destination"}}},
+        {"Emit":{"message":{"destination":"private-preview-destination", "body":"private-preview-body"}, "result":{"Ok":null}}}
+    ]});
+    let result = client.request(
+        json!({"op":"preview", "digest":digest, "preview":preview, "within_ms":10000}),
+        true,
+    );
+    assert_eq!(result["accepted"], true);
+    assert_eq!(result["cleanup_complete"], true);
+    assert_eq!(result["used_fixtures"], 2);
+    assert!(result["needs_input"].is_null());
+    preview["fixtures"] = json!([]);
+    let missing = client.request(
+        json!({"op":"preview", "digest":digest, "preview":preview, "within_ms":10000}),
+        true,
+    );
+    assert!(missing["accepted"].is_null());
+    assert!(missing["needs_input"].is_string());
+    assert_eq!(missing["cleanup_complete"], false);
+    let status = client.request(json!({"op":"status"}), true);
+    assert_eq!(status["epoch"], 2);
+    assert_eq!(&status["digest"], active_digest);
+    let events = observe_events(observe);
+    let encoded = serde_json::to_string(&events).unwrap();
+    assert!(!encoded.contains("private-preview-body"));
+    assert!(!encoded.contains("private-preview-source"));
+    let metadata: Vec<_> = events
+        .iter()
+        .filter_map(|event| event.get("live_execution"))
+        .filter(|value| !value.is_null())
+        .collect();
+    assert!(
+        metadata.iter().any(|event| event["mode"] == "preview"
+            && event["phase"] == "completed"
+            && event["code_id"] == digest
+            && event["coverage"] == "explicit_services"
+            && !event["invocation_id"].is_null()),
+        "{metadata:?}"
+    );
+    assert!(
+        metadata.iter().any(|event| event["mode"] == "production"
+            && event["phase"] == "completed"
+            && &event["code_id"] == active_digest
+            && event["coverage"] == "metadata_only"),
+        "{metadata:?}"
+    );
+}
+
 #[test]
 fn authenticated_source_replacement_retains_state_and_recovers_connection() {
     let directory = tempfile::tempdir().unwrap();
@@ -208,7 +311,10 @@ fn authenticated_source_replacement_retains_state_and_recovers_connection() {
     let socket = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
     let address = socket.local_addr().unwrap().to_string();
     drop(socket);
-    let service = server(root, &module, &client_id, &address);
+    let observe_listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let observe = observe_listener.local_addr().unwrap().to_string();
+    drop(observe_listener);
+    let service = observed_server(root, &module, &client_id, &address, Some(&observe));
     let mut client = editor(root, &module, &server_id, &address);
     assert_eq!(client.request(json!({"op":"status"}), true)["epoch"], 0);
     let source = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/router.hew");
@@ -240,6 +346,7 @@ fn authenticated_source_replacement_retains_state_and_recovers_connection() {
     );
     assert_eq!(replacement["epoch"], 2);
     assert_eq!(replacement["accepted"], 1);
+    verify_preview(&mut client, &digest, &observe);
     client.process.finish();
     let mut client = editor(root, &module, &server_id, &address);
     assert_eq!(client.request(json!({"op":"status"}), true)["epoch"], 2);

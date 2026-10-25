@@ -9,6 +9,7 @@ typedef struct LiveControlCallbacks {
     void (*replace)(void *, const HewText *, uint64_t, uint64_t, void *, void *, void *, void *, void *);
     void (*status)(void *, void *, void *, void *, void *);
     void (*route)(void *, const HewText *, const HewText *, void *, void *, void *);
+    void (*preview)(void *, const HewText *, const HewText *, uint64_t, void *, void *, void *);
 } LiveControlCallbacks;
 
 static LiveControlCallbacks callbacks;
@@ -37,4 +38,9 @@ void live_control_status(void *status, void *epoch, void *digest, void *error) {
 
 void live_control_route(const HewText *source, const HewText *body, void *status, void *accepted, void *error) {
     callbacks.route(callbacks.context, source, body, status, accepted, error);
+}
+
+void live_control_preview(const HewText *digest, const HewText *input, uint64_t within_ms,
+                          void *status, void *outcome, void *error) {
+    callbacks.preview(callbacks.context, digest, input, within_ms, status, outcome, error);
 }

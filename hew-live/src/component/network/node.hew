@@ -2,6 +2,7 @@ import std.net;
 import std.net.cluster;
 import std.stream;
 import std.fs;
+import std.encoding.json;
 import network_records;
 
 #[wire]
@@ -24,15 +25,52 @@ pub type Receipt {
     accepted: u64 @3;
 }
 
+#[wire]
+pub enum ServiceFixture {
+    Destination { source: string; result: Result<Option<string>, string>; } @1;
+    Emit { message: network_records.Delivery; result: Result<(), string>; } @2;
+}
+
+#[wire]
+pub type Preview {
+    state: network_records.Snapshot @1;
+    input: network_records.Event @2;
+    fixtures: Vec<ServiceFixture> @3;
+}
+
+#[wire]
+pub type PreviewOutcome {
+    accepted: Option<bool> @1;
+    needs_input: Option<string> @2;
+    used_fixtures: u64 @3;
+    supplied_fixtures: u64 @4;
+    cleanup_complete: bool @5;
+}
+
 // The SDK owns these asynchronous carriers. Applications use the typed actor.
 extern "C" {
     fn live_control_prepare(artifact: bytes, consume status: Sink<i64>, consume digest: Sink<string>, consume error: Sink<string>);
     fn live_control_replace(digest: string, predecessor: u64, within_ms: u64, consume status: Sink<i64>, consume epoch: Sink<u64>, consume identity: Sink<string>, consume accepted: Sink<u64>, consume error: Sink<string>);
     fn live_control_status(consume status: Sink<i64>, consume epoch: Sink<u64>, consume digest: Sink<string>, consume error: Sink<string>);
     fn live_control_route(source: string, body: string, consume status: Sink<i64>, consume accepted: Sink<bool>, consume error: Sink<string>);
+    fn live_control_preview(digest: string, input: string, within_ms: u64, consume status: Sink<i64>, consume outcome: Sink<string>, consume error: Sink<string>);
 }
 
 pub actor Control {
+    #[wire]
+    receive fn preview(digest: string, input: Preview, within_ms: u64) -> Result<PreviewOutcome, string> {
+        let (status, statuses): (Sink<i64>, Stream<i64>) = stream.pipe(1).expect("preview status");
+        let (outcome, outcomes): (Sink<string>, Stream<string>) = stream.pipe(1).expect("preview outcome");
+        let (error, errors): (Sink<string>, Stream<string>) = stream.pipe(1).expect("preview error");
+        // Canonical data encoding marshals only this local SDK callback boundary.
+        unsafe { live_control_preview(digest, json.encode(input), within_ms, status, outcome, error); };
+        if statuses.recv().expect("preview completion") == 0 {
+            .Ok(json.decode<PreviewOutcome>(outcomes.recv().expect("preview outcome")).expect("SDK preview outcome"))
+        } else {
+            .Err(errors.recv().expect("preview refusal"))
+        }
+    }
+
     #[wire]
     receive fn prepare(artifact: bytes) -> Result<string, string> {
         let (status, statuses): (Sink<i64>, Stream<i64>) = stream.pipe(1).expect("prepare status");
@@ -233,6 +271,12 @@ pub fn client_status(client: Client) -> Status {
 
 pub fn client_route(client: Client, source: string, body: string) -> bool {
     client.control.route(network_records.Event { source: source, body: body }).expect("route call").expect("route event")
+}
+
+pub fn client_preview(client: Client, digest: string, input: string, within_ms: u64) -> string {
+    let preview = json.decode<Preview>(input).expect("SDK preview input");
+    let outcome = client.control.preview(digest, preview, within_ms).expect("preview call").expect("preview component");
+    json.encode(outcome)
 }
 
 pub fn status_epoch(status: Status) -> u64 { status.epoch }

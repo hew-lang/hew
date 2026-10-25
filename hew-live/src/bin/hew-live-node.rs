@@ -115,7 +115,7 @@ impl BuildTools {
                 self.wasm_lib_dir.as_ref(),
                 "HEW_LIVE_WASM_LIB_DIR",
                 &[
-                    sdk_bin()?.join("../lib/hew/wasm32-wasip1"),
+                    sdk_bin()?.join("../lib/wasm32-wasip1"),
                     sdk_bin()?.join("../wasm32-wasip1/debug"),
                 ],
             )?,
@@ -187,6 +187,11 @@ enum RequestOperation {
         within_ms: u64,
     },
     Status,
+    Preview {
+        digest: String,
+        preview: host::Preview,
+        within_ms: u64,
+    },
     Route {
         source: String,
         body: String,
@@ -252,6 +257,13 @@ async fn request(
                 json!({"epoch":receipt.status.epoch, "digest":network::format_digest(receipt.status.digest), "accepted":receipt.accepted}),
             )
         }
+        RequestOperation::Preview {
+            digest,
+            preview,
+            within_ms,
+        } => Ok(serde_json::to_value(
+            client.preview(digest, preview, within_ms).await?,
+        )?),
         RequestOperation::Status => Ok(status(client.status().await?)),
         RequestOperation::Route { source, body } => {
             Ok(json!({"accepted":client.route(host::Event { source, body }).await?}))

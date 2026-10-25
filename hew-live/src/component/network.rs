@@ -57,8 +57,9 @@ impl Server {
         use std::sync::{Arc, Mutex};
         // SAFETY: caller establishes trusted immutable files.
         let worker = unsafe { native::Worker::open(runtime, module).await? };
+        let observer = worker.execute(|driver| Ok(driver.observer())).await?;
         let control = Arc::new(control::Control {
-            host: Arc::new(super::host::Host::new(services)?),
+            host: Arc::new(super::host::Host::new(services)?.with_observer(observer)),
             cache: Arc::new(cache),
             worker: worker.clone(),
             handle: tokio::runtime::Handle::current(),
@@ -179,6 +180,21 @@ impl Client {
             .await
     }
 
+    /// Execute an isolated candidate using explicit simulated service results.
+    /// The active deployment and production services are not used.
+    /// # Errors
+    /// Returns transport, input, preview execution or deadline failures.
+    pub async fn preview(
+        &self,
+        digest: String,
+        preview: super::host::Preview,
+        within_ms: u64,
+    ) -> Result<super::host::PreviewOutcome> {
+        self.worker
+            .execute(move |driver| driver.preview(&digest, &preview, within_ms))
+            .await
+    }
+
     /// Release the client grant and shut down its native node.
     /// # Errors
     /// Returns native cleanup failures.
@@ -249,6 +265,7 @@ pub fn prepare(
         "client_replace",
         "client_status",
         "client_route",
+        "client_preview",
     ] {
         compile.args(["--export-c", &format!("{name}=network_{name}")]);
     }

@@ -23,7 +23,9 @@ pub(super) struct Api {
     error_data: ReadText,
     error_release: Release,
     value_release: ReleaseValue,
+    runtime_retain: Release,
     runtime_release: Release,
+    trace_live_execution: unsafe extern "C" fn(*const u8, usize) -> i32,
     pub sink_write: unsafe extern "C" fn(Pointer, *const c_void, usize),
     pub sink_close: Release,
 }
@@ -39,7 +41,9 @@ impl Api {
                 error_data: *host.runtime_symbol(b"hew_host_error_message")?,
                 error_release: *host.runtime_symbol(b"hew_host_error_release")?,
                 value_release: *host.runtime_symbol(b"hew_host_value_release")?,
+                runtime_retain: *host.runtime_symbol(b"hew_runtime_retain")?,
                 runtime_release: *host.runtime_symbol(b"hew_runtime_release")?,
+                trace_live_execution: *host.runtime_symbol(b"hew_trace_live_execution")?,
                 sink_write: *host.runtime_symbol(b"hew_sink_write")?,
                 sink_close: *host.runtime_symbol(b"hew_sink_close")?,
             })
@@ -99,6 +103,36 @@ impl Api {
         // SAFETY: this thread transfers its unique initialized opaque owner.
         let status = unsafe { (self.value_release)(pointer, &raw mut error) };
         self.check(status, error)
+    }
+}
+
+// Observe callbacks may outlive the caller during old-instance retirement.
+// Retain both the existing runtime and executable code until their last event.
+struct NativeObserver {
+    _generation: Generation,
+    runtime: usize,
+    api: Api,
+}
+
+impl super::super::host::Observer for NativeObserver {
+    fn record(&self, event: &hew_observe_protocol::LiveExecution) {
+        if let Ok(bytes) = serde_json::to_vec(event) {
+            // SAFETY: the canonical metadata export is thread-safe; this owner
+            // retains its runtime and code while the borrowed bytes are read.
+            unsafe {
+                (self.api.trace_live_execution)(bytes.as_ptr(), bytes.len());
+            }
+        }
+    }
+}
+
+impl Drop for NativeObserver {
+    fn drop(&mut self) {
+        // SAFETY: this independent runtime reference is released once before
+        // its executable generation root is dropped.
+        unsafe {
+            (self.api.runtime_release)(self.runtime as Pointer);
+        }
     }
 }
 
@@ -179,6 +213,19 @@ pub(super) struct Driver {
 }
 
 impl Driver {
+    pub fn observer(&mut self) -> Arc<dyn super::super::host::Observer> {
+        // SAFETY: Driver retains the live singleton while creating another
+        // independent runtime owner for the metadata callback.
+        unsafe {
+            (self.api.runtime_retain)(self.runtime);
+        }
+        Arc::new(NativeObserver {
+            _generation: self.generation.clone(),
+            runtime: self.runtime as usize,
+            api: self.api,
+        })
+    }
+
     unsafe fn open(runtime: &std::path::Path, module: &Module) -> Result<Self> {
         // SAFETY: caller promises trusted, immutable same-build runtime/module files.
         let host = unsafe {
@@ -360,6 +407,47 @@ impl Driver {
         };
         self.api.check(status, error)?;
         Ok(value != 0)
+    }
+
+    pub fn preview(
+        &mut self,
+        digest: &str,
+        preview: &super::super::host::Preview,
+        within_ms: u64,
+    ) -> Result<super::super::host::PreviewOutcome> {
+        type Preview = unsafe extern "C" fn(
+            *const c_void,
+            *const c_void,
+            *const c_void,
+            u64,
+            *mut Pointer,
+            *mut Pointer,
+        ) -> i32;
+        let digest = self.api.text(digest)?;
+        let input = self.api.text(&serde_json::to_string(preview)?)?;
+        let mut value = ptr::null_mut();
+        let mut error = ptr::null_mut();
+        // SAFETY: SDK strings marshal the canonical DTO only across the local
+        // C boundary. The generated Hew wrapper makes the typed remote call.
+        let status = unsafe {
+            self.symbol::<Preview>(b"network_client_preview")?(
+                self.client,
+                digest.pointer,
+                input.pointer,
+                within_ms,
+                &raw mut value,
+                &raw mut error,
+            )
+        };
+        self.api.check(status, error)?;
+        let value = Text {
+            pointer: value,
+            api: self.api,
+        };
+        // SAFETY: the returned text owner remains live until decoding finishes.
+        Ok(serde_json::from_str(&unsafe {
+            self.api.read(value.pointer)
+        })?)
     }
 
     fn number(&self, owner: Pointer, name: &[u8]) -> Result<u64> {

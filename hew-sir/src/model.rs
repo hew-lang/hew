@@ -1672,6 +1672,9 @@ impl SemOpKind {
                 | Self::ArrayRepeat { .. }
                 | Self::ArrayMake { .. }
                 | Self::GeneratorMake { .. }
+                | Self::TaskSpawn { .. }
+                | Self::TaskInvoke { .. }
+                | Self::TaskRace { .. }
         )
     }
     /// Visit operands in their deterministic source order.

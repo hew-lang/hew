@@ -7,6 +7,12 @@ import {
 } from "../values.js";
 import type { EncodingOp, EncodingFormat } from "./instructions.generated.js";
 import type { ShimHost } from "./shims.js";
+import {
+  encodingOwner,
+  extractEncoding,
+  mutateEncoding,
+  releaseEncoding,
+} from "./encoding-storage.js";
 
 /** Lossless positional bridge to each format's native Value. Null denotes an invalid
  * handle; a live JSON or YAML null is ["null"]. Numeric text retains native kinds. */
@@ -22,10 +28,6 @@ export type EncodingNode =
   | ["datetime", string];
 
 type EncodingOwner = Extract<VmValue, { kind: "encoding" }>;
-const owner = (
-  format: EncodingFormat,
-  value: EncodingNode | null,
-): EncodingOwner => ({ kind: "encoding", format, value });
 const integer = (value: number | bigint): VmValue => ({
   kind: "i64",
   value: BigInt(value),
@@ -111,9 +113,9 @@ export function executeEncoding(
   operation: EncodingOp,
   args: VmValue[],
 ): VmValue {
-  const owned = (node: EncodingNode | null) => owner(format, node);
+  const owned = (node: EncodingNode | null) =>
+    encodingOwner(format, node, host.codecBridge);
   const value = (arg: VmValue | undefined) => checkedValue(arg, format);
-  const copy = (node: EncodingNode | null) => cloneValue(owned(node));
   if (operation === "Parse" || operation === "Stringify") {
     if (!host.codecBridge)
       throw new Error(
@@ -133,11 +135,22 @@ export function executeEncoding(
       text?: string;
       error?: string;
       failure?: string;
+      managed?: {
+        bytes: string;
+        copy_bytes: string;
+        shared_copy: boolean;
+        capacities: unknown;
+      };
     };
     if (result.failure) throw new Error(result.failure);
     host.encodingError!(format, result.error ?? "");
     return operation === "Parse"
-      ? owned(result.value ?? null)
+      ? encodingOwner(
+          format,
+          result.value ?? null,
+          host.codecBridge,
+          result.managed,
+        )
       : stringValue(result.text ?? "");
   }
   switch (operation) {
@@ -172,15 +185,15 @@ export function executeEncoding(
         equal(format, value(args[0]).value, value(args[1]).value) ? 1 : 0,
       );
     case "Clone":
-      return copy(value(args[0]).value);
+      return cloneValue(value(args[0]));
     case "Free":
-      value(args[0]).value = null;
+      releaseEncoding(value(args[0]));
       return UNIT;
     default:
       break;
   }
-  const receiver = value(args[0]),
-    node = receiver.value;
+  const receiver = value(args[0]);
+  let node = receiver.value;
   let scalar = node;
   while (scalar?.[0] === "tagged") scalar = scalar[2];
   switch (operation) {
@@ -236,22 +249,31 @@ export function executeEncoding(
       return integer(node?.[0] === "array" ? node[1].length : -1);
     case "GetDatetime":
       return stringValue(node?.[0] === "datetime" ? node[1] : "");
-    case "GetField":
-      return copy(
+    case "GetField": {
+      const index =
         node?.[0] === "object"
-          ? (node[1].find(([key]) => key === text(args[1]))?.[1] ?? null)
+          ? node[1].findIndex(([key]) => key === text(args[1]))
           : node?.[0] === "mapping"
-            ? (node[1].find(
+            ? node[1].findIndex(
                 ([key]) => key[0] === "string" && key[1] === text(args[1]),
-              )?.[1] ?? null)
-            : null,
+              )
+            : -1;
+      return extractEncoding(
+        receiver,
+        index < 0 || (node?.[0] !== "object" && node?.[0] !== "mapping")
+          ? null
+          : node[1][index]![1],
+        node?.[0] === "mapping" ? [1, index, 1] : [index, 1],
       );
-    case "ArrayGet":
-      return copy(
-        node?.[0] === "array"
-          ? (node[1][Number(BigInt.asIntN(32, number(args[1])))] ?? null)
-          : null,
+    }
+    case "ArrayGet": {
+      const index = Number(BigInt.asIntN(32, number(args[1])));
+      return extractEncoding(
+        receiver,
+        node?.[0] === "array" ? (node[1][index] ?? null) : null,
+        [1, index],
       );
+    }
     case "ObjectKeys":
       return owned(
         node?.[0] === "object"
@@ -263,6 +285,8 @@ export function executeEncoding(
     case "ObjectSet": {
       const child = value(args[2]),
         key = text(args[1]);
+      if (mutateEncoding(receiver, "object_set", child, key)) return receiver;
+      node = receiver.value;
       if (node?.[0] === "object" && child.value) {
         const index = node[1].findIndex(([name]) => name === key);
         if (index < 0) {
@@ -277,13 +301,15 @@ export function executeEncoding(
         if (index < 0) node[1].push([["string", key], child.value]);
         else node[1][index] = [["string", key], child.value];
       }
-      child.value = null;
+      releaseEncoding(child);
       return receiver;
     }
     case "ArrayPush": {
       const child = value(args[1]);
+      if (mutateEncoding(receiver, "array_push", child)) return receiver;
+      node = receiver.value;
       if (node?.[0] === "array" && child.value) node[1].push(child.value);
-      child.value = null;
+      releaseEncoding(child);
       return receiver;
     }
   }

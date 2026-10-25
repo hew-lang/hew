@@ -239,6 +239,7 @@ impl Builder<'_, '_> {
         let own = OwnKind::of_ty(result_ty, self.service.checked_facts.rows())?;
         let own = if let Some(parent) = kind.borrow_parent() {
             self.borrow_parents.insert(value, parent);
+            self.live_loans.insert(value);
             OwnKind::Guaranteed
         } else {
             own
@@ -253,12 +254,58 @@ impl Builder<'_, '_> {
             kind,
             provenance,
         };
+        if own == OwnKind::Owned && op.kind.is_managed_materialization() {
+            return self.emit_materialization(op);
+        }
         if op.results[0].own == OwnKind::Owned {
             self.owned_live.insert(value, result_ty.clone());
         }
         self.current_block_mut().append_op(op)?;
         self.ops += 1;
         Ok(value)
+    }
+
+    fn emit_materialization(&mut self, operation: SemOp) -> Result<ValueId, SirLoweringError> {
+        let result = operation.results[0].clone();
+        let continuation = self.fresh_value();
+        let normal = self.new_block(vec![BlockArg {
+            value: continuation,
+            ty: result.ty.clone(),
+            own: result.own,
+        }]);
+        let failure = self.new_block(Vec::new());
+        let live_after_inputs = self.owned_live.clone();
+        let mut live_on_refusal = live_after_inputs.clone();
+        // Consuming constructors have already staged their inputs for the
+        // operation. A refused acquisition has not consumed those owners.
+        if operation.kind.transfers_obligation() {
+            operation.visit_operands(|_, operand| {
+                if self.value_own_kind(operand.value) == Some(OwnKind::Owned) {
+                    if let Some(ty) = self.value_ty(operand.value) {
+                        live_on_refusal.insert(operand.value, ty);
+                    }
+                }
+            });
+        }
+        self.ops += 1;
+        self.set_terminator(SemTerminator::Materialize {
+            operation: Box::new(operation),
+            normal: Edge {
+                target: normal,
+                args: vec![Operand { value: result.id }],
+            },
+            failure: Edge {
+                target: failure,
+                args: Vec::new(),
+            },
+        })?;
+        self.current = failure;
+        self.owned_live = live_on_refusal;
+        self.finish_checked_fault(crate::TrapKind::HeapExceeded)?;
+        self.current = normal;
+        self.owned_live = live_after_inputs;
+        self.owned_live.insert(continuation, result.ty);
+        Ok(continuation)
     }
 
     pub(super) fn lower_checked_binary(

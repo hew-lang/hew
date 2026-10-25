@@ -179,7 +179,7 @@ fn main() {
         let mut copies = 0;
         let mut takes = 0;
         for block in &body.blocks {
-            for op in &block.ops {
+            for op in block.operations() {
                 match op.kind {
                     hew_sir::SemOpKind::LoadCopy { .. } => copies += 1,
                     hew_sir::SemOpKind::LoadTake { .. } => takes += 1,
@@ -336,7 +336,7 @@ fn stream_producers_yield_into_the_request_sink_and_update_live_state() {
     assert!(body
         .blocks
         .iter()
-        .flat_map(|block| &block.ops)
+        .flat_map(hew_sir::SemBlock::operations)
         .any(|op| matches!(
             op.kind,
             hew_sir::SemOpKind::StoreAssign { place, .. }
@@ -351,7 +351,7 @@ fn stream_producers_yield_into_the_request_sink_and_update_live_state() {
     assert!(main
         .blocks
         .iter()
-        .flat_map(|block| &block.ops)
+        .flat_map(hew_sir::SemBlock::operations)
         .any(|op| matches!(op.kind, hew_sir::SemOpKind::StreamPipe { .. })));
     assert!(main.blocks.iter().any(|block| matches!(
         block.terminator,

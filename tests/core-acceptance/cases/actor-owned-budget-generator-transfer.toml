@@ -1,0 +1,14 @@
+[[case]]
+id = "actor-owned-budget-generator-transfer"
+intent = "A suspended generator transfers a still-active scoped task and receiving endpoint without losing execution ownership."
+source = "cases/actor-owned-budget-generator-transfer.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 30
+
+[case.env]
+HEW_WORKERS = "2"
+
+[case.expected]
+stdout = "7\n"
+stderr = ""
+exit = 0

@@ -94,12 +94,23 @@ pub unsafe extern "C" fn hew_managed_visit_actor_call(
         }
         match &call.route {
             CallRoute::Local(local) => {
+                let status =
+                    crate::mailbox::native::visit_managed_request(local.admission, visitor);
+                if status != 0 {
+                    return status;
+                }
                 crate::reply_channel::native::visit_managed_reply(local.channel, visitor)
             }
             // Wire bytes belong to the transport. This route decodes directly
             // into the selected caller result, retaining no typed reply slot.
             #[cfg(not(target_arch = "wasm32"))]
-            CallRoute::Imported { .. } => 0,
+            CallRoute::Imported { request, .. } => {
+                if request.is_null() {
+                    0
+                } else {
+                    crate::cow_envelope::visit_managed((*request).cast(), visitor)
+                }
+            }
         }
     }
 }
@@ -188,6 +199,14 @@ impl HewActorCall {
                         poll_request_admission(admission)
                     });
                 let discarded = match result {
+                    Ok(SendOutcome::Failed)
+                        // SAFETY: this operation exclusively owns the same pending admission.
+                        if unsafe {
+                            crate::mailbox::native::request_transfer_pending(self.local().admission)
+                        } =>
+                    {
+                        return self.poll_deadline()
+                    }
                     Ok(SendOutcome::Failed) => match self.kind {
                         RequestKind::CallWait | RequestKind::SendWait => {
                             return self.poll_deadline()
@@ -398,15 +417,29 @@ pub unsafe extern "C" fn hew_actor_call_new(
     dispatch: *const c_void,
     payload_layout: *const hew_cabi::value::HewValueLayout,
     reply_layout: *const hew_cabi::value::HewValueLayout,
+    out_status: *mut i32,
 ) -> *mut HewActorCall {
-    // SAFETY: forwards the owned request and captures its local sender.
+    // SAFETY: the caller retains initialized source fields until checked sealing succeeds.
     unsafe {
-        actor_call_new(
-            token,
-            message,
+        out_status.write(0);
+        let envelope = match crate::cow_envelope::seal_checked(
             payload,
             size,
             drop_payload,
+            payload_release,
+            payload_layout,
+            waker,
+        ) {
+            Ok(envelope) => envelope,
+            Err(status) => {
+                out_status.write(status);
+                return ptr::null_mut();
+            }
+        };
+        actor_call_resume(
+            token,
+            message,
+            envelope,
             reply_size,
             drop_reply,
             waker,
@@ -416,13 +449,11 @@ pub unsafe extern "C" fn hew_actor_call_new(
             } else {
                 RequestKind::CallReject
             },
-            payload_release,
             reply_release,
             *caller,
             dispatch,
             #[cfg(not(target_arch = "wasm32"))]
             None,
-            payload_layout,
             reply_layout,
         )
     }
@@ -711,6 +742,7 @@ pub unsafe extern "C" fn hew_actor_submit_new(
     dispatch: *const c_void,
     owns_target: bool,
     payload_layout: *const hew_cabi::value::HewValueLayout,
+    out_status: *mut i32,
 ) -> *mut HewActorCall {
     let Some(
         kind @ (RequestKind::SendWait | RequestKind::SendReject | RequestKind::SendDropNewest),
@@ -721,13 +753,21 @@ pub unsafe extern "C" fn hew_actor_submit_new(
     // SAFETY: sealing only allocates the envelope; the fields still belong to
     // the caller on failure and the shallow wrapper then has no ownership.
     unsafe {
-        let envelope = hew_msg_envelope_new(payload, size, Some(drop_payload));
-        if envelope.is_null() {
-            crate::mem::buf_free(payload);
-            return ptr::null_mut();
-        }
-        (*envelope).release_start = payload_release;
-        crate::cow_envelope::set_layout(envelope, payload_layout);
+        out_status.write(0);
+        let envelope = match crate::cow_envelope::seal_checked(
+            payload,
+            size,
+            drop_payload,
+            payload_release,
+            payload_layout,
+            waker,
+        ) {
+            Ok(envelope) => envelope,
+            Err(status) => {
+                out_status.write(status);
+                return ptr::null_mut();
+            }
+        };
         let operation = actor_call_resume(
             token,
             message,
@@ -773,8 +813,7 @@ pub unsafe extern "C" fn hew_actor_submit_take(
                 !envelope.is_null(),
                 "refused submission retains its original fields"
             );
-            crate::mem::buf_free((*envelope).payload);
-            crate::cow_envelope::free_allocation(envelope);
+            crate::cow_envelope::return_fields(envelope);
             operation.owned_target.take();
         }
         outcome.code()

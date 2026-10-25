@@ -3,6 +3,36 @@
 use super::*;
 
 impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
+    pub(super) fn check_budget_status(
+        &self,
+        status: IntValue<'ctx>,
+        failure: &PhysicalEdge,
+    ) -> CodegenResult<()> {
+        let accepted = self
+            .ctx
+            .append_basic_block(self.value, "managed.call.accepted");
+        let refused = self
+            .ctx
+            .append_basic_block(self.value, "managed.call.refused");
+        let ok = self
+            .builder
+            .build_int_compare(
+                IntPredicate::EQ,
+                status,
+                self.ctx.i32_type().const_zero(),
+                "managed.call.ok",
+            )
+            .llvm_ctx("inspect checked managed operation")?;
+        self.builder
+            .build_conditional_branch(ok, accepted, refused)
+            .llvm_ctx("preserve original owners before quota refusal")?;
+        self.builder.position_at_end(refused);
+        self.initialize_active_fault(hew_runtime::internal::types::HEW_TRAP_HEAP_EXCEEDED)?;
+        self.emit_edge(failure)?;
+        self.builder.position_at_end(accepted);
+        Ok(())
+    }
+
     #[allow(
         clippy::too_many_lines,
         reason = "the closed match is the physical runtime ABI authority"
@@ -222,6 +252,9 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                     result,
                 )?;
             }
+            RuntimeCallFamily::StreamPipe => {
+                self.emit_stream_pipe_pair(source(0)?, required_result()?)?;
+            }
             RuntimeCallFamily::StreamPairSink => {
                 self.emit_direct_runtime_call(
                     hew_types::RuntimeCallFamily::StreamPairSink,
@@ -239,7 +272,8 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
             family @ (RuntimeCallFamily::StreamFromGenerator
             | RuntimeCallFamily::SinkFromEncoder
             | RuntimeCallFamily::SinkClone) => {
-                self.emit_stream_codec_make(family, transfers, required_result()?)?;
+                self.emit_stream_codec_make(family, transfers, required_result()?, failure)?;
+                return self.emit_result_edge(result, normal);
             }
             RuntimeCallFamily::ActorCallFree => {
                 self.emit_direct_runtime_call(
@@ -263,11 +297,12 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                 )?;
             }
             RuntimeCallFamily::Encoding { format, op } => {
-                self.emit_direct_runtime_call(
-                    hew_types::RuntimeCallFamily::Encoding { format, op },
-                    arguments,
-                    result,
-                )?;
+                let family = hew_types::RuntimeCallFamily::Encoding { format, op };
+                if let Some(failure) = failure {
+                    self.emit_checked_encoding_call(family, arguments, result, failure)?;
+                    return self.emit_result_edge(result, normal);
+                }
+                self.emit_direct_runtime_call(family, arguments, result)?;
             }
             RuntimeCallFamily::NodeShutdown => {
                 let function = get_or_declare_external(
@@ -707,9 +742,13 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                         .build_conditional_branch(found, valid, invalid)
                         .llvm_ctx("check string range bounds")?;
                     self.builder.position_at_end(invalid);
+                    self.initialize_active_fault(
+                        hew_runtime::internal::types::HEW_TRAP_INDEX_OUT_OF_BOUNDS,
+                    )?;
                     self.emit_edge(failure)?;
                     self.builder.position_at_end(valid);
                     self.store(required_result()?, value.into())?;
+                    self.publish_managed_result(required_result()?, failure)?;
                     return self.emit_result_edge(result, normal);
                 }
                 let option = variant_carrier(action)?;
@@ -827,7 +866,15 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                         "bytes pop has no pair carrier".into(),
                     ));
                 };
-                return self.emit_bytes_pop(source(0)?, required_result()?, option, normal);
+                return self.emit_bytes_pop(
+                    source(0)?,
+                    required_result()?,
+                    option,
+                    normal,
+                    failure.ok_or_else(|| {
+                        CodegenError::FailClosed("bytes pop lacks quota cleanup".into())
+                    })?,
+                );
             }
             RuntimeCallFamily::BytesGet => {
                 let option = variant_carrier(action)?;
@@ -1022,7 +1069,7 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
             RuntimeCallFamily::BytesClear => {
                 let function = get_or_declare_external(
                     self.llvm,
-                    "hew_bytes_clear",
+                    "hew_bytes_clear_managed",
                     self.ctx.void_type().fn_type(&[ptr.into()], false),
                 )?;
                 self.runtime_call_void(
@@ -1031,6 +1078,7 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                     "bytes.clear",
                 )?;
                 let value = self.load(source(0)?, "bytes.clear.result")?;
+                self.clear_owned(source(0)?)?;
                 self.store(required_result()?, value)?;
             }
             RuntimeCallFamily::BytesSet => {
@@ -1134,13 +1182,13 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
             RuntimeCallFamily::BytesPush => {
                 let function = get_or_declare_external_widened(
                     self.llvm,
-                    "hew_bytes_push_owned",
+                    "hew_bytes_push_checked",
                     self.ctx
-                        .void_type()
+                        .i32_type()
                         .fn_type(&[ptr.into(), self.ctx.i8_type().into(), ptr.into()], false),
                     &[(1, Widen::Zero)],
                 )?;
-                self.runtime_call_void(
+                let status = self.runtime_call_value(
                     function,
                     &[
                         self.slots[source(0)?.0 as usize].into(),
@@ -1149,16 +1197,24 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                     ],
                     "bytes.push.owned",
                 )?;
+                self.check_budget_status(
+                    status.into_int_value(),
+                    failure.ok_or_else(|| {
+                        CodegenError::FailClosed("bytes push lacks quota cleanup".into())
+                    })?,
+                )?;
+                self.clear_owned(source(0)?)?;
+                return self.emit_result_edge(result, normal);
             }
             RuntimeCallFamily::BytesAppend => {
                 let function = get_or_declare_external(
                     self.llvm,
-                    "hew_bytes_append_owned",
+                    "hew_bytes_append_checked",
                     self.ctx
-                        .void_type()
+                        .i32_type()
                         .fn_type(&[ptr.into(), ptr.into(), ptr.into()], false),
                 )?;
-                self.runtime_call_void(
+                let status = self.runtime_call_value(
                     function,
                     &[
                         self.slots[source(0)?.0 as usize].into(),
@@ -1167,6 +1223,14 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                     ],
                     "bytes.append.owned",
                 )?;
+                self.check_budget_status(
+                    status.into_int_value(),
+                    failure.ok_or_else(|| {
+                        CodegenError::FailClosed("bytes append lacks quota cleanup".into())
+                    })?,
+                )?;
+                self.clear_owned(source(0)?)?;
+                return self.emit_result_edge(result, normal);
             }
             RuntimeCallFamily::BytesConcat => {
                 let function = get_or_declare_external(
@@ -1185,6 +1249,58 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                     ],
                     "bytes.concat.owned",
                 )?;
+            }
+            RuntimeCallFamily::StringAppend | RuntimeCallFamily::StringPush => {
+                let receiver = source(0)?;
+                let value = self.load(receiver, "string.updated.receiver")?;
+                let extra = self.load(source(1)?, "string.append.input")?;
+                let status = self
+                    .value_emitter()
+                    .entry_scratch(self.ctx.i32_type().into(), "string.growth.status")?;
+                self.builder
+                    .build_store(status, self.ctx.i32_type().const_zero())
+                    .llvm_ctx("initialize string growth status")?;
+                let symbol = if action.family == RuntimeCallFamily::StringAppend {
+                    "hew_string_append_checked"
+                } else {
+                    "hew_string_push_checked"
+                };
+                let function = get_or_declare_external(
+                    self.llvm,
+                    symbol,
+                    ptr.fn_type(
+                        &[value.get_type().into(), extra.get_type().into(), ptr.into()],
+                        false,
+                    ),
+                )?;
+                let updated = self.runtime_call_value(
+                    function,
+                    &[value.into(), extra.into(), status.into()],
+                    "string.updated",
+                )?;
+                let status = self
+                    .builder
+                    .build_load(self.ctx.i32_type(), status, "string.growth.status")
+                    .llvm_ctx("read checked string growth")?
+                    .into_int_value();
+                self.check_budget_status(
+                    status,
+                    failure.ok_or_else(|| {
+                        CodegenError::FailClosed("string growth lacks quota cleanup".into())
+                    })?,
+                )?;
+                self.clear_owned(receiver)?;
+                self.store(required_result()?, updated)?;
+                return self.emit_result_edge(result, normal);
+            }
+            RuntimeCallFamily::StringClear => {
+                let receiver = source(0)?;
+                let value = self.load(receiver, "string.clear.receiver")?;
+                let function = external_unary_ptr(self.ctx, self.llvm, "hew_string_clear_managed")?;
+                let updated =
+                    self.runtime_call_value(function, &[value.into()], "string.cleared")?;
+                self.clear_owned(receiver)?;
+                self.store(required_result()?, updated)?;
             }
             RuntimeCallFamily::StringIndex => {
                 return self.emit_string_index(
@@ -1239,6 +1355,21 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                 }
                 self.emit_direct_runtime_call(action.family, arguments, result)?;
             }
+        }
+        if action
+            .family
+            .semantic_contract()
+            .is_some_and(|contract| contract.publishes_managed_leaf())
+        {
+            self.publish_managed_result(
+                required_result()?,
+                failure.ok_or_else(|| {
+                    CodegenError::FailClosed(
+                        "managed runtime result lacks publication cleanup".into(),
+                    )
+                })?,
+            )?;
+            return self.emit_result_edge(result, normal);
         }
         if failure.is_some() {
             return Err(CodegenError::FailClosed(format!(

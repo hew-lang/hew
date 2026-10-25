@@ -32,6 +32,7 @@ impl DestinationBinding {
     pub(crate) unsafe fn for_actor(actor: *mut crate::actor::HewActor) -> Self {
         // SAFETY: admission retains the exact actor through this snapshot.
         let actor_turn = unsafe { crate::lifetime::live_actors::ActorIncarnation::of(actor) };
+        // SAFETY: the admission pin also covers canonical receiver cleanup owners.
         let rc_owner = unsafe { actor.as_ref() }
             .and_then(|actor| actor.native_completion.as_ref())
             .map(|completion| completion.cleanup.rc.clone());
@@ -102,6 +103,8 @@ unsafe extern "C" fn backing(context: *mut c_void, identity: *const c_void, _byt
 ///
 /// # Safety
 /// Visitor belongs to this module's transfer walk and has a transfer kind.
+/// # Panics
+/// Panics when called outside an explicit provider transfer phase.
 #[must_use]
 pub unsafe fn destination_owner(visitor: *const HewManagedStorageVisitor) -> Option<ValueOwner> {
     // SAFETY: only provider transfer callbacks invoke this helper.
@@ -151,6 +154,7 @@ pub struct ValueTransfer {
     layout: *const HewValueLayout,
     slot: *const c_void,
     prepared: bool,
+    frozen: bool,
     ready: bool,
 }
 
@@ -194,6 +198,7 @@ impl ValueTransfer {
             layout,
             slot,
             prepared: false,
+            frozen: same,
             ready: same,
         };
         if same {
@@ -212,14 +217,18 @@ impl ValueTransfer {
     /// Must precede preparation; budget acquisition remains disabled for it.
     /// # Safety
     /// The actor is live and pinned by the admission operation during this call.
+    /// # Panics
+    /// Panics if destination acquisition has already begun.
     pub unsafe fn set_destination_actor(&mut self, actor: *mut crate::actor::HewActor) {
         assert!(
             self.destination.is_none(),
             "destination changed after acquisition"
         );
+        // SAFETY: the admission caller pins this exact actor through the snapshot.
         self.walk.binding = Some(unsafe { DestinationBinding::for_actor(actor) });
         self.prepared = true;
         self.ready = false;
+        self.frozen = false;
     }
 
     /// Bind a retained destination snapshot after its original dispatch ended.
@@ -231,14 +240,17 @@ impl ValueTransfer {
         self.walk.binding = binding;
         self.prepared = true;
         self.ready = false;
+        self.frozen = false;
     }
 
     /// Poll provider quiescence while retaining its transfer gates. Pending
     /// work stays sender-owned and cannot publish into either account.
     /// # Safety
     /// The original slot is pinned and unchanged until commit or guard drop.
-    pub unsafe fn poll_prepare(&mut self) -> Result<bool, i32> {
-        if self.ready {
+    /// # Errors
+    /// Returns a provider's typed traversal refusal without acquiring quota.
+    pub unsafe fn poll_freeze(&mut self) -> Result<bool, i32> {
+        if self.frozen {
             return Ok(true);
         }
         // SAFETY: this phase changes only provider gate state, not ownership.
@@ -249,11 +261,44 @@ impl ValueTransfer {
         if status != 0 {
             return Err(status);
         }
+        self.frozen = true;
+        Ok(true)
+    }
+
+    /// Acquire only after a mailbox has reserved an accepted admission. Full
+    /// and closed attempts never consult or fault the recipient account.
+    /// # Safety
+    /// The original graph remains frozen and unpublished through commit.
+    /// # Errors
+    /// Returns the recipient's quota or descriptor refusal without committing.
+    /// # Panics
+    /// Panics if provider quiescence has not completed.
+    pub unsafe fn acquire(&mut self) -> Result<(), i32> {
+        assert!(self.frozen, "transfer acquired before provider quiescence");
+        if self.ready {
+            return Ok(());
+        }
         if let Some(owner) = &self.walk.destination {
             // SAFETY: providers are now frozen; slots remain sender-owned.
             self.destination = Some(unsafe { owner.acquire_value(&*self.layout, self.slot) }?);
         }
         self.ready = true;
+        Ok(())
+    }
+
+    /// Compose provider quiescence and acquisition for already accepted
+    /// boundaries such as checked replies and actor construction.
+    /// # Safety
+    /// The original slot is pinned and unchanged until commit or guard drop.
+    /// # Errors
+    /// Returns a provider traversal or recipient acquisition refusal.
+    pub unsafe fn poll_prepare(&mut self) -> Result<bool, i32> {
+        // SAFETY: this composed operation retains its original pinned slot.
+        if !unsafe { self.poll_freeze() }? {
+            return Ok(false);
+        }
+        // SAFETY: the preceding freeze completed for the same retained graph.
+        unsafe { self.acquire() }?;
         Ok(true)
     }
 
@@ -261,6 +306,8 @@ impl ValueTransfer {
     /// the guard from `begin` and poll readiness instead.
     /// # Safety
     /// Slot/layout stay live and stable through this transfer's commit or drop.
+    /// # Errors
+    /// Returns pending, a provider refusal or a recipient acquisition refusal.
     pub unsafe fn prepare(
         source: Option<ValueOwner>,
         destination: Option<ValueOwner>,
@@ -269,6 +316,7 @@ impl ValueTransfer {
     ) -> Result<Self, i32> {
         // SAFETY: this convenience operation retains the same original slot.
         let mut transfer = unsafe { Self::begin(source, destination, layout, slot) };
+        // SAFETY: the convenience guard retains the same source slot and layout.
         if unsafe { transfer.poll_prepare() }? {
             Ok(transfer)
         } else {
@@ -280,6 +328,10 @@ impl ValueTransfer {
     ///
     /// # Safety
     /// Caller has won actual admission, and the original frozen slot is live.
+    /// # Errors
+    /// Returns a source-account descriptor inconsistency before provider rebind.
+    /// # Panics
+    /// Panics if provider preparation or destination acquisition is incomplete.
     pub unsafe fn commit(mut self) -> Result<(), i32> {
         assert!(self.ready, "transfer committed before provider quiescence");
         if !self.prepared {
@@ -297,7 +349,7 @@ impl ValueTransfer {
         if let Some(acquisition) = self.destination.take() {
             acquisition.commit();
         }
-        // Rebind the complete graph before any child executor can run.
+        // SAFETY: rebind completed across the same frozen graph before any executor resumes.
         if unsafe { self.phase(HewManagedWalkKind::ResumeTransfer) } != 0 {
             std::process::abort();
         }
@@ -453,6 +505,27 @@ mod tests {
             assert_eq!(source.live_bytes(), 0);
             assert_eq!(destination.live_bytes(), 6);
             destination.release_value(layout, slot).unwrap();
+            hew_cabi::string::string_release(text);
+        }
+    }
+
+    #[test]
+    fn freezing_before_capacity_acceptance_never_acquires_recipient_quota() {
+        let source = ValueOwner::new(Some(6));
+        let small = ValueOwner::new(Some(0));
+        let layout = &crate::layout_intrinsics::hew_layout_val_string;
+        // SAFETY: the source text and slot remain live through abort/release.
+        unsafe {
+            let text = hew_cabi::string::string_from_str("retain");
+            let slot = (&raw const text).cast();
+            source.acquire_value(layout, slot).unwrap().commit();
+            let mut transfer =
+                ValueTransfer::begin(Some(source.clone()), Some(small.clone()), layout, slot);
+            assert!(transfer.poll_freeze().unwrap());
+            assert_eq!((source.live_bytes(), small.live_bytes()), (6, 0));
+            drop(transfer);
+            assert_eq!((source.live_bytes(), small.live_bytes()), (6, 0));
+            source.release_value(layout, slot).unwrap();
             hew_cabi::string::string_release(text);
         }
     }

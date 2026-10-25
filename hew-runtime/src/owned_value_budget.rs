@@ -12,6 +12,7 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, MutexGuard};
 
+pub mod actor;
 pub mod frame;
 pub mod materialize;
 pub mod transfer;
@@ -61,7 +62,8 @@ pub struct ValueOwner(Arc<Account>);
 
 /// Borrow the current invocation's retained account, including independently
 /// scheduled scoped tasks, before falling back to its actor incarnation.
-pub(crate) fn current_owner() -> Option<ValueOwner> {
+#[must_use]
+pub fn current_owner() -> Option<ValueOwner> {
     let context = crate::execution_context::current_context();
     if !context.is_null() {
         // SAFETY: explicit release bindings live through this synchronous poll.
@@ -90,7 +92,9 @@ pub(crate) fn current_owner() -> Option<ValueOwner> {
 /// Install a borrowed account on the canonical execution carrier for one
 /// synchronous poll. The driver retains it across suspension and reinstalls it
 /// on each worker; no thread-local account or value graph survives this call.
-pub(crate) fn with_value_owner<R>(owner: &Option<ValueOwner>, run: impl FnOnce() -> R) -> R {
+/// `None` explicitly describes unpublished internal storage, independent of an
+/// enclosing bounded actor. The previous binding is restored on return or panic.
+pub fn with_value_owner<R>(owner: &Option<ValueOwner>, run: impl FnOnce() -> R) -> R {
     use crate::execution_context::{current_context, set_current_context, HewExecutionContext};
     let previous = current_context();
     let mut fallback = HewExecutionContext::default();
@@ -182,6 +186,54 @@ impl ValueOwner {
     #[must_use]
     pub fn live_bytes(&self) -> u64 {
         self.ledger().live
+    }
+
+    /// Move an exclusive shallow payload charge into its new storage carriers.
+    /// Typed descendants retain their existing edges; the total charge never
+    /// changes, so a queue pop succeeds even when the account is at its limit.
+    ///
+    /// # Errors
+    /// Returns `UNDESCRIBED` for stale, shared, colliding or unequal geometry.
+    pub(crate) fn repartition_backing(
+        &self,
+        source: ManagedStorage,
+        replacements: &[ManagedStorage],
+    ) -> Result<(), i32> {
+        use hew_cabi::managed::UNDESCRIBED;
+        let mut identities = std::collections::HashSet::new();
+        let mut total = 0_u64;
+        for replacement in replacements {
+            if replacement.identity == 0 || !identities.insert(replacement.identity) {
+                return Err(UNDESCRIBED);
+            }
+            total = total.checked_add(replacement.bytes).ok_or(UNDESCRIBED)?;
+        }
+        if total != source.bytes {
+            return Err(UNDESCRIBED);
+        }
+        let mut ledger = self.ledger();
+        if !ledger
+            .storage
+            .get(&source.identity)
+            .is_some_and(|held| held.bytes == source.bytes && held.references == 1)
+            || replacements.iter().any(|replacement| {
+                replacement.identity != source.identity
+                    && ledger.storage.contains_key(&replacement.identity)
+            })
+        {
+            return Err(UNDESCRIBED);
+        }
+        ledger.storage.remove(&source.identity);
+        for replacement in replacements {
+            ledger.storage.insert(
+                replacement.identity,
+                Retention {
+                    bytes: replacement.bytes,
+                    references: 1,
+                },
+            );
+        }
+        Ok(())
     }
 
     fn check(&self, ledger: &Ledger, bytes: u64) -> Result<(), BudgetExceeded> {
@@ -290,6 +342,75 @@ impl ValueOwner {
         })
     }
 
+    /// Reserve one container replacement without holding the ledger while
+    /// typed copy callbacks execute. Unique growth credits existing capacity;
+    /// COW retains old storage until the final replacement commits.
+    ///
+    /// # Errors
+    /// Returns the unchanged account's budget refusal when growth will not fit.
+    /// # Panics
+    /// Panics if `old` does not describe this owner's current backing.
+    pub fn prepare_backing_change(
+        &self,
+        old: Option<ManagedStorage>,
+        bytes: u64,
+        unique: bool,
+    ) -> Result<BackingChange, BudgetExceeded> {
+        match old {
+            Some(old) => self.prepare_backing_replacement(&[(old, unique)], bytes),
+            None => self.prepare_backing_replacement(&[], bytes),
+        }
+    }
+
+    /// Reserve a replacement that retires several flat backing interests.
+    /// Each boolean permits credit for an allocation moved without a semantic
+    /// copy. Credit applies once per identity and only when all its interests
+    /// retire; surviving aliases and COW copies keep the old payload charged.
+    ///
+    /// # Errors
+    /// Returns a budget refusal without retiring any input interest.
+    /// # Panics
+    /// Panics if an input does not describe its current owned backing or
+    /// requests more interests than the account retains.
+    pub fn prepare_backing_replacement(
+        &self,
+        retired: &[(ManagedStorage, bool)],
+        bytes: u64,
+    ) -> Result<BackingChange, BudgetExceeded> {
+        let old: Vec<_> = retired.iter().map(|(storage, _)| *storage).collect();
+        let counts = storage_counts(&old);
+        let mut ledger = self.ledger();
+        let mut credit = 0_u64;
+        for (identity, interests) in &counts {
+            let held = ledger
+                .storage
+                .get(identity)
+                .expect("unowned managed mutation");
+            assert_eq!(held.bytes, interests.bytes);
+            assert!(interests.references <= held.references);
+            if interests.references == held.references
+                && retired
+                    .iter()
+                    .filter(|(storage, _)| storage.identity == *identity)
+                    .all(|(_, allow_credit)| *allow_credit)
+            {
+                credit = credit
+                    .checked_add(held.bytes)
+                    .expect("invalid backing credit");
+            }
+        }
+        let reserved = bytes.saturating_sub(credit);
+        self.check(&ledger, reserved)?;
+        ledger.reserved += reserved;
+        Ok(BackingChange {
+            owner: self.clone(),
+            old,
+            bytes,
+            reserved,
+            committed: false,
+        })
+    }
+
     /// Reserve a unique backing's growth before its allocator can relocate it.
     /// Native COW uniqueness remains the container's authority; a retained
     /// alias also refuses this path and must acquire a distinct backing.
@@ -375,6 +496,55 @@ fn insert_storage(ledger: &mut Ledger, pending: HashMap<usize, Retention>) {
             .references
             .checked_add(acquired.references)
             .expect("managed reference overflow");
+    }
+}
+
+/// Container backing replacement. Typed child edges move with the existing
+/// elements; only the changed backing edge is replaced by this permit.
+#[derive(Debug)]
+pub struct BackingChange {
+    owner: ValueOwner,
+    old: Vec<ManagedStorage>,
+    bytes: u64,
+    reserved: u64,
+    committed: bool,
+}
+impl BackingChange {
+    /// Publish the replacement backing after the reserved mutation succeeds.
+    /// # Panics
+    /// Panics if its actual identity contradicts the reserved storage plan.
+    pub fn commit(mut self, identity: usize) {
+        let mut ledger = self.owner.ledger();
+        for old in &self.old {
+            let entry = ledger
+                .storage
+                .get_mut(&old.identity)
+                .expect("lost managed backing");
+            entry.references -= 1;
+            if entry.references == 0 {
+                ledger.storage.remove(&old.identity);
+                ledger.live -= old.bytes;
+            }
+        }
+        ledger.reserved -= self.reserved;
+        let new = storage_counts(&[ManagedStorage {
+            identity,
+            bytes: self.bytes,
+        }]);
+        let added = additional_bytes(&ledger, &new).expect("invalid managed replacement");
+        self.owner
+            .check(&ledger, added)
+            .expect("reserved managed replacement exceeded its plan");
+        ledger.live += added;
+        insert_storage(&mut ledger, new);
+        self.committed = true;
+    }
+}
+impl Drop for BackingChange {
+    fn drop(&mut self) {
+        if !self.committed {
+            self.owner.ledger().reserved -= self.reserved;
+        }
     }
 }
 
@@ -494,6 +664,29 @@ mod tests {
     }
 
     #[test]
+    fn shallow_repartition_moves_a_full_accounts_charge_without_headroom() {
+        let owner = ValueOwner::new(Some(16));
+        let queue = storage(11, 16);
+        owner.acquire(&[queue]).unwrap().commit();
+        let remaining = storage(11, 8);
+        let read = storage(12, 8);
+        owner
+            .repartition_backing(queue, &[remaining, read])
+            .unwrap();
+        assert_eq!(owner.live_bytes(), 16);
+        assert!(owner
+            .repartition_backing(remaining, &[storage(11, 0), storage(12, 8)])
+            .is_err());
+        assert_eq!(owner.live_bytes(), 16);
+        owner.release(&[read]);
+        owner
+            .repartition_backing(remaining, &[storage(11, 0), storage(13, 8)])
+            .unwrap();
+        owner.release(&[storage(13, 8), storage(11, 0)]);
+        assert_eq!(owner.live_bytes(), 0);
+    }
+
+    #[test]
     fn backing_refund_keeps_other_retaining_accounts_charged() {
         let first = ValueOwner::new(Some(6));
         let second = ValueOwner::new(Some(6));
@@ -588,6 +781,69 @@ mod tests {
         assert_eq!(owner.live_bytes(), 64);
         owner.prepare_resize(storage(2, 64), 16).unwrap().commit(2);
         owner.release(&[storage(2, 16)]);
+        assert_eq!(owner.live_bytes(), 0);
+    }
+
+    #[test]
+    fn backing_merge_credits_moved_inputs_and_rolls_back_refusal() {
+        let owner = ValueOwner::new(Some(64));
+        let receiver = storage(1, 16);
+        let child = storage(2, 32);
+        owner.acquire(&[receiver, child]).unwrap().commit();
+        let retired = [(receiver, true), (child, true)];
+        assert!(owner.prepare_backing_replacement(&retired, 65).is_err());
+        let pending = owner.prepare_backing_replacement(&retired, 64).unwrap();
+        assert!(owner.reserve_new(1).is_err());
+        drop(pending);
+        assert_eq!(owner.live_bytes(), 48);
+        owner
+            .prepare_backing_replacement(&retired, 64)
+            .unwrap()
+            .commit(1);
+        assert_eq!(owner.live_bytes(), 64);
+        owner.release(&[storage(1, 64)]);
+        assert_eq!(owner.live_bytes(), 0);
+    }
+
+    #[test]
+    fn backing_merge_keeps_surviving_aliases_charged() {
+        let owner = ValueOwner::new(Some(80));
+        let receiver = storage(1, 16);
+        let child = storage(2, 20);
+        owner.acquire(&[receiver, child, child]).unwrap().commit();
+        let retired = [(receiver, true), (child, true)];
+        assert!(owner.prepare_backing_replacement(&retired, 64).is_err());
+        owner.release(&[child]);
+        owner
+            .prepare_backing_replacement(&retired, 64)
+            .unwrap()
+            .commit(1);
+        owner.release(&[storage(1, 64)]);
+        assert_eq!(owner.live_bytes(), 0);
+    }
+
+    #[test]
+    fn backing_merge_deduplicates_credit_and_reserves_cow_copy() {
+        let owner = ValueOwner::new(Some(64));
+        let shared = storage(1, 32);
+        owner.acquire(&[shared, shared]).unwrap().commit();
+        assert!(owner
+            .prepare_backing_replacement(&[(shared, true), (shared, true)], 80)
+            .is_err());
+        owner
+            .prepare_backing_replacement(&[(shared, true), (shared, true)], 64)
+            .unwrap()
+            .commit(2);
+        owner.release(&[storage(2, 64)]);
+        owner.acquire(&[shared]).unwrap().commit();
+        assert!(owner
+            .prepare_backing_change(Some(shared), 40, false)
+            .is_err());
+        owner
+            .prepare_backing_change(Some(shared), 32, false)
+            .unwrap()
+            .commit(2);
+        owner.release(&[storage(2, 32)]);
         assert_eq!(owner.live_bytes(), 0);
     }
 

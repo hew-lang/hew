@@ -514,6 +514,7 @@ impl RuntimeCallFamily {
                     | RuntimeValueKind::PoolMember
                     | RuntimeValueKind::PipeHalf(_)
                     | RuntimeValueKind::PipeHalfResult(_)
+                    | RuntimeValueKind::PipePairResult
                     | RuntimeValueKind::StreamPair
                     | RuntimeValueKind::ActorRequestOwner
                     | RuntimeValueKind::ActorRequestAdmission
@@ -713,6 +714,7 @@ impl RuntimeCallFamily {
             | F::StreamTryNextLayout
             | F::StreamTrySendLayout
             | F::StreamForward
+            | F::StreamPipe
             | F::StreamFromGenerator
             | F::SinkFromEncoder
             | F::StreamPairSink

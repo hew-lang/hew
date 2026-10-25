@@ -50,7 +50,7 @@ fn count_ops(function: &SemFunction, matches: impl Fn(&SemOpKind) -> bool) -> us
     function
         .blocks
         .iter()
-        .flat_map(|block| &block.ops)
+        .flat_map(hew_sir::SemBlock::operations)
         .filter(|op| matches(&op.kind))
         .count()
 }

@@ -30,6 +30,7 @@ extern crate hew_runtime;
 
 // encoding — wire codecs (wasm + native)
 pub mod json;
+mod managed_tree;
 pub mod toml;
 pub mod yaml;
 

@@ -299,16 +299,6 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             self.builder
                 .build_call(finish, &[frame.completion_state.into(), status.into()], "")
                 .llvm_ctx("publish checked coroutine outcome")?;
-            if frame.owns_state {
-                let free = get_or_declare_external(
-                    self.llvm,
-                    "hew_coro_state_free",
-                    self.ctx.void_type().fn_type(&[pointer.into()], false),
-                )?;
-                self.builder
-                    .build_call(free, &[frame.state.into()], "")
-                    .llvm_ctx("release authored close context after completion")?;
-            }
             self.builder
                 .build_unconditional_branch(frame.finish)
                 .llvm_ctx("finish checked coroutine")?;
@@ -759,6 +749,9 @@ pub(super) fn await_child<'ctx>(
     builder.position_at_end(outcome);
     let status = state_value(true)?;
     free_handle("hew_coro_state_free", state_slot)?;
+    builder
+        .build_store(state_slot, pointer.const_null())
+        .llvm_ctx("clear completed child root")?;
     Ok(status)
 }
 

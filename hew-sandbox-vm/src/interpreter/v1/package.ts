@@ -3,6 +3,8 @@
 /// acquire only structural/reference checks, not an ownership proof.
 import type {
   TermV1,
+  BlockV1,
+  OpV1,
   VariantShape,
   RuntimeVariantRole,
 } from "./instructions.generated.js";
@@ -43,6 +45,7 @@ export type {
   PackageV1,
   Resource,
   StructuralRecipe,
+  ManagedType,
 } from "./instructions.generated.js";
 export type Operand = number;
 export type CallShape = Pick<
@@ -63,4 +66,10 @@ export function runtimeTag(
   )
     throw new Error(`variant shape ${shape.id} has no checked ${role} tag`);
   return tag;
+}
+
+/** Static inventory includes a checked operation; execution follows its edge. */
+export function* staticOperations(block: BlockV1): Iterable<OpV1> {
+  yield* block.ops;
+  if (block.term.op === "materialize") yield block.term.operation;
 }

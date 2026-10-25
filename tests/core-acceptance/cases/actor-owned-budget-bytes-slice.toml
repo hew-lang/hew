@@ -1,0 +1,14 @@
+[[case]]
+id = "actor-owned-budget-bytes-slice"
+intent = "A one-byte slice retains the complete backing capacity."
+source = "cases/actor-owned-budget-bytes-slice.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 30
+
+[case.env]
+HEW_WORKERS = "2"
+
+[case.expected]
+stdout = "1\nslice capacity\n"
+stderr = "hew: failure: HeapExceeded (200)\nhew: actor crash in Packet.detach_slice (actor 1): HeapExceeded\n"
+exit = 1

@@ -118,6 +118,48 @@ impl MaterializationPermit {
     }
 }
 
+/// Acquire a privately constructed typed result before source publication.
+/// A refused result transfers into an explicitly unaccounted cleanup cursor;
+/// the original source arguments keep the operation's authored ownership rules.
+///
+/// # Safety
+/// `slot` contains one unpublished value of `layout`, and `cleanup` is writable.
+/// The caller drives returned cleanup and never separately drops that value.
+#[no_mangle]
+pub unsafe extern "C" fn hew_budget_publish_value(
+    layout: *const HewValueLayout,
+    slot: *const c_void,
+    cleanup: *mut *mut crate::release_walker::HewReleaseCursor,
+) -> i32 {
+    // SAFETY: this checked boundary owns the empty cleanup output.
+    unsafe { cleanup.write(core::ptr::null_mut()) };
+    let Some(owner) = current_owner() else {
+        return 0;
+    };
+    // SAFETY: the compiler retains its defining module and unpublished result.
+    let layout = unsafe { &*layout };
+    // SAFETY: this is the canonical descriptor for the initialized result slot.
+    match unsafe { owner.acquire_value(layout, slot) } {
+        Ok(acquired) => {
+            acquired.commit();
+            0
+        }
+        Err(failure) => {
+            // SAFETY: refusal transfers the unacquired result into independent
+            // storage before the caller clears its unpublished source slot.
+            let cursor =
+                unsafe { crate::release_walker::HewReleaseCursor::detached(slot, *layout) };
+            if !cursor.is_null() {
+                // SAFETY: the cursor is fresh and exclusively owned here.
+                unsafe { (*cursor).set_value_owner(None) };
+            }
+            // SAFETY: the caller receives the sole cleanup cursor.
+            unsafe { cleanup.write(cursor) };
+            failure
+        }
+    }
+}
+
 /// Resolve the explicit invocation first. Null is valid for a synchronous body
 /// executing inside the canonical actor context.
 ///
@@ -164,6 +206,20 @@ pub unsafe extern "C" fn hew_budget_materialize_begin(
     0
 }
 
+/// Refuse canonical payload arithmetic overflow before executing construction.
+///
+/// # Safety
+/// A non-null invocation is retained by the current execution.
+#[no_mangle]
+pub unsafe extern "C" fn hew_budget_materialize_overflow(state: *const HewCoroState) -> i32 {
+    // SAFETY: caller retains its optional canonical invocation.
+    if unsafe { invocation_owner(state) }.is_some() {
+        hew_cabi::managed::HEAP_EXCEEDED
+    } else {
+        0
+    }
+}
+
 /// Adopt the real result and finish moved input obligations. A failed budget
 /// preflight never reaches this boundary; disagreement here is a descriptor bug.
 ///
@@ -183,7 +239,10 @@ pub unsafe extern "C" fn hew_budget_materialize_commit(
     // SAFETY: result is still unpublished and matches layout.
     match unsafe { permit.commit(&*layout, result) } {
         Ok(()) => 0,
-        Err(status) => status,
+        // The checked plan already reserved every possible new byte before
+        // construction consumed an input. A disagreement is an invalid native
+        // descriptor, not a recoverable acquisition failure after consumption.
+        Err(_) => std::process::abort(),
     }
 }
 
@@ -281,6 +340,60 @@ mod tests {
                 .release_value(layout, (&raw const text).cast())
                 .unwrap();
             hew_cabi::string::string_release(text);
+        }
+    }
+
+    #[test]
+    fn unpublished_result_refusal_cleans_without_inheriting_the_bounded_owner() {
+        let owner = ValueOwner::new(Some(5));
+        let mut layout = crate::layout_intrinsics::hew_layout_val_string;
+        unsafe extern "C-unwind" fn drop_string(slot: *mut c_void) {
+            // SAFETY: the cursor owns this initialized string carrier.
+            unsafe {
+                crate::string::hew_string_drop_managed(
+                    slot.cast::<*mut hew_cabi::string::HewString>().read(),
+                )
+            };
+        }
+        layout.drop_fn = Some(drop_string);
+        // SAFETY: each fresh string is published or transferred into one cursor.
+        unsafe {
+            let retained = hew_cabi::string::string_from_str("keep");
+            owner
+                .acquire_value(&layout, (&raw const retained).cast())
+                .unwrap()
+                .commit();
+            let refused = hew_cabi::string::string_from_str("too large");
+            let mut cleanup = core::ptr::null_mut();
+            super::super::with_value_owner(&Some(owner.clone()), || {
+                assert_eq!(
+                    hew_budget_publish_value(
+                        &raw const layout,
+                        (&raw const refused).cast(),
+                        &raw mut cleanup
+                    ),
+                    HEAP_EXCEEDED
+                );
+                assert!(!cleanup.is_null());
+                crate::release_walker::hew_release_sync(cleanup);
+            });
+            assert_eq!(owner.live_bytes(), 4);
+            let accepted = hew_cabi::string::string_from_str("x");
+            super::super::with_value_owner(&Some(owner.clone()), || {
+                assert_eq!(
+                    hew_budget_publish_value(
+                        &raw const layout,
+                        (&raw const accepted).cast(),
+                        &raw mut cleanup
+                    ),
+                    0
+                );
+                assert!(cleanup.is_null());
+                assert_eq!(owner.live_bytes(), 5);
+                crate::string::hew_string_drop_managed(accepted);
+                crate::string::hew_string_drop_managed(retained);
+            });
+            assert_eq!(owner.live_bytes(), 0);
         }
     }
 }

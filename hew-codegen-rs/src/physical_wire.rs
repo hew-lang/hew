@@ -1586,6 +1586,7 @@ impl<'ctx> DecodeEmitter<'_, 'ctx> {
             },
             commit_args: &outputs,
             releases: true,
+            budget_checked: false,
         })?;
         let unique = self
             .values

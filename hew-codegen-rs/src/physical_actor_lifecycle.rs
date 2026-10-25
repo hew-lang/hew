@@ -957,7 +957,13 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
             self.ramps[&hook],
             &args,
         )?;
-        let returned_fault = builder
+        let completion = self.ctx.create_builder();
+        completion.position_before(
+            &frame.finish.get_terminator().ok_or_else(|| {
+                CodegenError::FailClosed("lifecycle finish lacks its branch".into())
+            })?,
+        );
+        let returned_fault = completion
             .build_load(ptr, fault, "hook.returned.fault")
             .llvm_ctx("read completed lifecycle hook fault")?;
         let finish = get_or_declare_external(
@@ -967,9 +973,9 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
                 .void_type()
                 .fn_type(&[ptr.into(), ptr.into()], false),
         )?;
-        builder
+        completion
             .build_call(finish, &[child.into(), returned_fault.into()], "")
-            .llvm_ctx("finish lifecycle hook under current activation")?;
+            .llvm_ctx("finish lifecycle hook after retiring its managed view")?;
         builder
             .build_unconditional_branch(frame.finish)
             .llvm_ctx("finish lifecycle hook frame")?;

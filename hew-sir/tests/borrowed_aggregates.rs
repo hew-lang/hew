@@ -26,7 +26,7 @@ fn parent(module: &hew_sir::SemModule, loan: ValueId) -> ValueId {
     let base = function
         .blocks
         .iter()
-        .flat_map(|block| &block.ops)
+        .flat_map(hew_sir::SemBlock::operations)
         .find(|op| op.results.iter().any(|result| result.id == loan))
         .unwrap()
         .kind
@@ -126,7 +126,13 @@ fn every_fault_edge_must_end_its_local_loans() {
         let fault = function
             .blocks
             .iter_mut()
-            .find(|block| matches!(block.terminator, SemTerminator::CheckedRaiseFault { .. }))
+            .find(|block| {
+                matches!(block.terminator, SemTerminator::CheckedRaiseFault { .. })
+                    && block.ops.iter().any(|op| {
+                        matches!(&op.kind,
+                    SemOpKind::EndBorrow { borrow } if borrow.value == leaf)
+                    })
+            })
             .unwrap();
         let before = fault.ops.len();
         fault.ops.retain(
@@ -149,7 +155,7 @@ fn borrowed_fields_cannot_be_destroyed_as_owned_values() {
         let operation = function
             .blocks
             .iter_mut()
-            .flat_map(|block| &mut block.ops)
+            .flat_map(hew_sir::SemBlock::operations_mut)
             .find(|op| matches!(&op.kind, SemOpKind::EndBorrow { borrow } if borrow.value == loan))
             .unwrap();
         operation.kind = SemOpKind::DestroyValue {
@@ -170,7 +176,7 @@ fn projection_borrows_require_exact_shape_field_type_and_ownership() {
         let operation = module.functions[0]
             .blocks
             .iter_mut()
-            .flat_map(|block| &mut block.ops)
+            .flat_map(hew_sir::SemBlock::operations_mut)
             .find(|op| matches!(op.kind, SemOpKind::AggregateProjectBorrow { .. }))
             .unwrap();
         match mutation {
@@ -199,7 +205,7 @@ fn projected_owner_cannot_end_while_its_leaf_is_live() {
     let place = function
         .blocks
         .iter()
-        .flat_map(|block| &block.ops)
+        .flat_map(hew_sir::SemBlock::operations)
         .find_map(|op| match op.kind {
             SemOpKind::LoadBorrow { place } if op.results[0].id == leaf => Some(place),
             _ => None,

@@ -263,11 +263,11 @@ unsafe extern "C" fn hew_layout_key_bytes_eq(
 extern "C-unwind" fn hew_layout_string_drop(blob: *mut c_void) {
     // SAFETY: blob is non-null and points to a managed-string handle slot owned by
     // the kernel. Reading the pointer-by-value is a fixed-size load; passing
-    // it to `hew_string_drop` is correct per that fn's null-safe contract.
+    // it to the semantic leaf release preserves its retaining account edge.
     unsafe {
         let p: *mut hew_cabi::string::HewString =
             core::ptr::read(blob.cast::<*mut hew_cabi::string::HewString>());
-        crate::string::hew_string_drop(p);
+        crate::string::hew_string_drop_managed(p);
     }
 }
 
@@ -306,7 +306,7 @@ extern "C-unwind" fn hew_layout_bytes_drop(blob: *mut c_void) {
     unsafe {
         let triple: BytesTripleRepr = core::ptr::read(blob.cast::<BytesTripleRepr>());
         if !triple.ptr.is_null() {
-            crate::bytes::hew_bytes_drop(triple.ptr);
+            crate::bytes::hew_bytes_drop_managed(triple.ptr);
         }
     }
 }
@@ -605,6 +605,52 @@ mod map_status;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn canonical_leaf_destructors_refund_the_final_retaining_alias() {
+        use crate::owned_value_budget::{with_value_owner, ValueOwner};
+        let owner = ValueOwner::new(Some(21));
+        // SAFETY: the test retains each initialized carrier until its semantic
+        // descriptor consumes it; the physical clone acquires no budget edge.
+        unsafe {
+            let text = hew_cabi::string::string_from_str("hello");
+            let bytes = crate::bytes::hew_bytes_from_static(b"abc".as_ptr(), 3);
+            let mut copied_text = core::ptr::null_mut::<hew_cabi::string::HewString>();
+            let mut copied_bytes = core::mem::MaybeUninit::<crate::bytes::BytesTriple>::uninit();
+            assert_eq!(
+                hew_layout_val_string.clone_fn.unwrap()(
+                    (&raw const text).cast(),
+                    (&raw mut copied_text).cast()
+                ),
+                0
+            );
+            assert_eq!(
+                hew_layout_val_bytes.clone_fn.unwrap()(
+                    (&raw const bytes).cast(),
+                    copied_bytes.as_mut_ptr().cast()
+                ),
+                0
+            );
+            let copied_bytes = copied_bytes.assume_init();
+            for (layout, slot) in [
+                (&hew_layout_val_string, (&raw const text).cast()),
+                (&hew_layout_val_string, (&raw const copied_text).cast()),
+                (&hew_layout_val_bytes, (&raw const bytes).cast()),
+                (&hew_layout_val_bytes, (&raw const copied_bytes).cast()),
+            ] {
+                owner.acquire_value(layout, slot).unwrap().commit();
+            }
+            assert_eq!(owner.live_bytes(), 21);
+            with_value_owner(&Some(owner.clone()), || {
+                hew_layout_string_drop((&raw const text).cast_mut().cast());
+                hew_layout_bytes_drop((&raw const bytes).cast_mut().cast());
+                assert_eq!(owner.live_bytes(), 21);
+                hew_layout_string_drop((&raw const copied_text).cast_mut().cast());
+                hew_layout_bytes_drop((&raw const copied_bytes).cast_mut().cast());
+            });
+            assert_eq!(owner.live_bytes(), 0);
+        }
+    }
 
     #[test]
     fn fnv1a_64_matches_known_vectors() {

@@ -173,13 +173,17 @@ fn main() {
         .iter()
         .find(|function| function.callable == inspect.id)
         .expect("inspect must have a demanded body");
-    assert!(body.blocks.iter().flat_map(|block| &block.ops).any(|op| {
-        matches!(op.kind, SemOpKind::CopyValue { .. })
-            && op
-                .results
-                .first()
-                .is_some_and(|result| result.ty == shape.enum_ty)
-    }));
+    assert!(body
+        .blocks
+        .iter()
+        .flat_map(hew_sir::SemBlock::operations)
+        .any(|op| {
+            matches!(op.kind, SemOpKind::CopyValue { .. })
+                && op
+                    .results
+                    .first()
+                    .is_some_and(|result| result.ty == shape.enum_ty)
+        }));
     assert!(body.blocks.iter().any(|block| {
         matches!(
             &block.terminator,
@@ -261,7 +265,7 @@ fn result_constructor_return_and_exhaustive_match_transfer_owned_payloads() {
         .functions
         .iter()
         .flat_map(|function| &function.blocks)
-        .flat_map(|block| &block.ops)
+        .flat_map(hew_sir::SemBlock::operations)
         .any(|op| matches!(op.kind, SemOpKind::VariantMake { .. })));
 }
 
@@ -311,7 +315,7 @@ fn fresh_option_match_accounts_for_unbound_owned_payload() {
         classify
             .blocks
             .iter()
-            .flat_map(|block| &block.ops)
+            .flat_map(hew_sir::SemBlock::operations)
             .any(|op| {
                 matches!(
                     &op.kind,
@@ -466,7 +470,7 @@ fn main() {
     let operations = classify
         .blocks
         .iter()
-        .flat_map(|block| &block.ops)
+        .flat_map(hew_sir::SemBlock::operations)
         .collect::<Vec<_>>();
     assert!(operations
         .iter()
@@ -504,7 +508,7 @@ fn main() {
         .functions
         .iter_mut()
         .flat_map(|function| &mut function.blocks)
-        .flat_map(|block| &mut block.ops)
+        .flat_map(hew_sir::SemBlock::operations_mut)
     {
         if matches!(operation.kind, SemOpKind::ConstFloat(_)) {
             operation.results[0].ty = ResolvedTy::Char;
@@ -574,7 +578,7 @@ fn match_payload_can_move_while_an_outer_fallback_remains_live() {
         choose
             .blocks
             .iter()
-            .flat_map(|block| &block.ops)
+            .flat_map(hew_sir::SemBlock::operations)
             .any(|operation| matches!(
                 &operation.kind,
                 SemOpKind::LoadCopy { place } if *place == fallback
@@ -674,7 +678,7 @@ fn nested_match_and_failed_string_guard_preserve_the_later_payload() {
         choose
             .blocks
             .iter()
-            .flat_map(|block| &block.ops)
+            .flat_map(hew_sir::SemBlock::operations)
             .any(|op| matches!(op.kind, SemOpKind::VariantIs { .. })),
         "the nested Option tag test must be an explicit non-consuming probe"
     );
@@ -793,7 +797,7 @@ fn never_typed_return_initializer_stops_before_binding_or_sibling_work() {
     assert!(stop
         .blocks
         .iter()
-        .flat_map(|block| &block.ops)
+        .flat_map(hew_sir::SemBlock::operations)
         .any(|op| { matches!(op.kind, SemOpKind::VariantMake { .. }) }));
     assert!(!stop
         .bindings
@@ -802,7 +806,7 @@ fn never_typed_return_initializer_stops_before_binding_or_sibling_work() {
     assert!(
         stop.blocks
             .iter()
-            .flat_map(|block| &block.ops)
+            .flat_map(hew_sir::SemBlock::operations)
             .all(|op| !matches!(op.kind, SemOpKind::CopyValue { .. })),
         "unreachable binding work must not be emitted after the return"
     );
@@ -935,7 +939,7 @@ fn nested_affine_payloads_are_probed_without_consuming_their_enum() {
     let lowered = lower_source(NESTED_AFFINE_SOURCE);
     assert_main_lowered(&lowered);
     let drive = drive_function(&lowered);
-    let ops = || drive.blocks.iter().flat_map(|block| &block.ops);
+    let ops = || drive.blocks.iter().flat_map(hew_sir::SemBlock::operations);
     let probes = ops()
         .filter(|op| matches!(op.kind, SemOpKind::VariantIs { .. }))
         .count();
@@ -1032,7 +1036,7 @@ fn variant_projection_requires_an_exact_case_and_field() {
         .functions
         .iter_mut()
         .flat_map(|function| &mut function.blocks)
-        .flat_map(|block| &mut block.ops)
+        .flat_map(hew_sir::SemBlock::operations_mut)
     {
         match &mut operation.kind {
             SemOpKind::VariantProjectBorrow { field, .. } if forged == 0 => {

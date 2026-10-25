@@ -6,11 +6,12 @@
 //! exactly once to a physical action and never infers another lifetime.
 
 pub use hew_sir::{
-    ActorId, ActorIngressAdapter, ActorOperation, CallableInstance, CallableTargets,
-    LifecycleTarget, LocalObservationKind, SemActor, SemActorCoalesce, SemActorField,
-    SemActorHandler, SemActorOverflow, SemCoalesceFallback, SemCoalesceKey, SemFailureDisplay,
-    SemRestartPolicy, SemRestartStrategy, SemStopDeadline, SemSupervisedRole, SemSupervisor,
-    SemVariantKind, SupervisorId, TaskScopeJoinMode, TaskSelectionOrder,
+    pipe_parts, ActorId, ActorIngressAdapter, ActorOperation, CallableInstance, CallableTargets,
+    LifecycleTarget, LocalObservationKind, ManagedProviderKind, ManagedStorageShape, SemActor,
+    SemActorCoalesce, SemActorField, SemActorHandler, SemActorOverflow, SemCoalesceFallback,
+    SemCoalesceKey, SemFailureDisplay, SemRestartPolicy, SemRestartStrategy, SemStopDeadline,
+    SemSupervisedRole, SemSupervisor, SemVariantKind, SupervisorId, TaskScopeId, TaskScopeJoinMode,
+    TaskSelectionOrder,
 };
 use hew_types::runtime_call::{sequence_element_type, ArrayValueOp};
 
@@ -100,7 +101,7 @@ use hew_sir::{
 };
 pub use hew_sir::{
     BlockId, CallableId, CallableSpecializationId, ClosureId, DeferId, DeferScopeId, FaultParkId,
-    OffloadId, OwnKind, ResourceCarrier, ResourceRelease, SemParamPassing, TaskScopeId, TrapKind,
+    OffloadId, OwnKind, ResourceCarrier, ResourceRelease, SemParamPassing, TrapKind,
 };
 use hew_types::runtime_call::{
     collection_type_arguments, shared_handle_payload, MapValueOp, SetValueOp,
@@ -121,6 +122,8 @@ pub use module_lower::*;
 
 #[path = "physical_function_lower.rs"]
 mod function_lower;
+#[path = "physical_managed.rs"]
+mod managed;
 
 #[path = "physical_verify_structural.rs"]
 mod verify_structural;

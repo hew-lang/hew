@@ -120,6 +120,7 @@ impl<'hir, 'service> Builder<'hir, 'service> {
             bindings,
             binding_declarations,
             owned_live,
+            live_loans: BTreeSet::new(),
             borrow_parents: HashMap::new(),
             scope_loans: Vec::new(),
             scope_loan_floors: vec![0],
@@ -749,7 +750,6 @@ impl<'hir, 'service> Builder<'hir, 'service> {
                 }
                 BindingTarget::Value(source) => {
                     if take && self.value_own_kind(source) == Some(OwnKind::Owned) {
-                        self.owned_live.remove(&source);
                         source
                     } else if OwnKind::of_ty(&ty, self.service.checked_facts.rows())?
                         == OwnKind::Owned
@@ -766,8 +766,12 @@ impl<'hir, 'service> Builder<'hir, 'service> {
                     }
                 }
             };
-            self.owned_live.remove(&value);
             fields.push(Operand { value });
+        }
+        // Every acquired capture remains a temporary owner while subsequent
+        // captures can still fail. The constructor commits them together.
+        for field in &fields {
+            self.owned_live.remove(&field.value);
         }
         self.emit(expression, SemOpKind::ClosureMake { closure, fields })
     }
@@ -1072,6 +1076,7 @@ impl<'hir, 'service> Builder<'hir, 'service> {
             bindings: self.bindings.clone(),
             binding_declarations: self.binding_declarations.clone(),
             owned_live: self.owned_live.clone(),
+            live_loans: self.live_loans.clone(),
             loans: self.argument_receiver_loans.clone(),
             scopes: self.scopes.clone(),
             scope_loans: self.scope_loans.clone(),
@@ -1093,6 +1098,7 @@ impl<'hir, 'service> Builder<'hir, 'service> {
         self.binding_declarations
             .clone_from(&state.binding_declarations);
         self.owned_live = state.owned_live.clone();
+        self.live_loans.clone_from(&state.live_loans);
         self.argument_receiver_loans.clone_from(&state.loans);
         self.scopes.clone_from(&state.scopes);
         self.scope_loans.clone_from(&state.scope_loans);

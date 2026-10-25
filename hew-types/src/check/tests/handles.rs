@@ -1122,15 +1122,8 @@ fn main() {
     }
 }
 
-// ── #2511: opaque handles rejected as receive-fn (message) parameters ───────
-//
-// Actor message payloads are CBOR-serialized to cross the mailbox dispatch
-// boundary. Opaque handle types (`net.Listener`, user `#[opaque]` types, etc.)
-// are pointer-shaped runtime resources with no serializable record layout, so
-// they cannot be message payloads. Before #2511 this fell through to a raw
-// codegen-front `wire CBOR serialize: named type ... is not a registered
-// record layout` failure surfaced even at `hew check`; the checker now emits a
-// clean `OpaqueMessagePayload` diagnostic pointing at the parameter.
+// Opaque representations without a known local transfer layout remain rejected.
+// Canonical encoding values exercise their owned layouts in encoding_values.
 mod opaque_receive_fn_param_rules {
     use super::*;
 

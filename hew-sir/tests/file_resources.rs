@@ -162,7 +162,7 @@ fn resource_release_cannot_take_an_owner_while_its_read_loan_is_active() {
         let loans = function
             .blocks
             .iter()
-            .flat_map(|block| &block.ops)
+            .flat_map(hew_sir::SemBlock::operations)
             .filter(|operation| matches!(operation.kind, hew_sir::SemOpKind::LoadBorrow { .. }))
             .flat_map(|operation| &operation.results)
             .filter(|value| hew_types::runtime_call::FileReadHandleKind::Nominal.matches(&value.ty))

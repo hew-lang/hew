@@ -72,6 +72,8 @@ mod control;
 mod function;
 mod helpers;
 mod loop_chunks;
+mod managed;
+mod materialize;
 mod module_emitter;
 mod runtime_calls;
 mod text;

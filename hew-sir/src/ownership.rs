@@ -364,6 +364,7 @@ pub struct BytesLiteralId(pub u32);
 /// panic traps arrive with the `Index`/`Slice` rows they come from.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum TrapKind {
+    HeapExceeded,
     /// Private delivery completion, normalized before actor fault reporting.
     ActorRefused,
     IntegerOverflow,
@@ -378,6 +379,7 @@ pub const fn runtime_failure_trap_kind(
     failure: hew_types::RuntimeLogicalFailure,
 ) -> Option<TrapKind> {
     match failure {
+        hew_types::RuntimeLogicalFailure::HeapExceeded => Some(TrapKind::HeapExceeded),
         hew_types::RuntimeLogicalFailure::IndexOutOfBounds => Some(TrapKind::IndexOutOfBounds),
         hew_types::RuntimeLogicalFailure::IntegerOverflow => Some(TrapKind::IntegerOverflow),
         hew_types::RuntimeLogicalFailure::CallbackFault

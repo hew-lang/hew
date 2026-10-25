@@ -162,7 +162,7 @@ pub(super) unsafe fn drop_reply_value(channel: *mut HewReplyChannel, value: *mut
         match owner {
             Some(owner) => {
                 crate::owned_value_budget::with_value_owner(&owner, || {
-                    super::run_registered_reply_drop_on_value(channel, value)
+                    super::run_registered_reply_drop_on_value(channel, value);
                 });
                 if let Some(owner) = owner {
                     let width =
@@ -356,6 +356,7 @@ unsafe fn fail_native_request(channel: *mut HewReplyChannel, failure: i32) {
     channel_ref.cancelled.store(true, Ordering::Release);
     let waker = guard.waker.take();
     drop(guard);
+    // SAFETY: the caller retains the channel while this publication completes and wakes its registrations.
     unsafe { wake_publishers(channel) };
     if let Some(waker) = waker {
         waker.wake();

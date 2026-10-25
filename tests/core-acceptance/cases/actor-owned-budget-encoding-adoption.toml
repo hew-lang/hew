@@ -1,0 +1,14 @@
+[[case]]
+id = "actor-owned-budget-encoding-adoption"
+intent = "JSON, YAML and TOML recipient adoption checks typed payloads and preserves sender values on refusal."
+source = "cases/actor-owned-budget-encoding-adoption.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 30
+
+[case.env]
+HEW_WORKERS = "2"
+
+[case.expected]
+stdout = "7\njson limit\nyaml limit\ntoml limit\n64\n"
+stderr = ""
+exit = 1

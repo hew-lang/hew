@@ -92,6 +92,7 @@ impl super::HewAsyncIo {
     ) -> i32 {
         use super::{IoValue, State};
         use hew_cabi::managed::{HewManagedWalkKind, TRANSFER_PENDING};
+        // SAFETY: the retained synchronous visitor and immutable content remain live throughout this ownership walk.
         let kind = unsafe { (*visitor).kind };
         let transfer = matches!(
             kind,
@@ -101,6 +102,7 @@ impl super::HewAsyncIo {
                 | HewManagedWalkKind::AbortTransfer
         );
         let identity = if transfer {
+            // SAFETY: the retained synchronous visitor and immutable content remain live throughout this ownership walk.
             (unsafe { crate::owned_value_budget::transfer::transfer_identity(visitor) }) as usize
         } else {
             0
@@ -113,6 +115,7 @@ impl super::HewAsyncIo {
             if kind == HewManagedWalkKind::PrepareTransfer {
                 if ownership.publishing || (ownership.frozen != 0 && ownership.frozen != identity) {
                     ownership.waiter =
+                        // SAFETY: the retained synchronous visitor and immutable content remain live throughout this ownership walk.
                         unsafe { crate::owned_value_budget::transfer::transfer_waker(visitor) };
                     return TRANSFER_PENDING;
                 }
@@ -123,6 +126,7 @@ impl super::HewAsyncIo {
             }
             let mut state = self.state.lock_or_recover();
             if let State::Ready(Ok(IoValue::ManagedStreamItem(Some(content)))) = &*state {
+                // SAFETY: the retained synchronous visitor and immutable content remain live throughout this ownership walk.
                 let status = unsafe { content.visit(visitor) };
                 if status != 0 {
                     return status;
@@ -130,6 +134,7 @@ impl super::HewAsyncIo {
             }
             if kind == HewManagedWalkKind::CommitTransfer {
                 ownership.owner =
+                    // SAFETY: the retained synchronous visitor and immutable content remain live throughout this ownership walk.
                     unsafe { crate::owned_value_budget::transfer::destination_owner(visitor) };
             }
             if matches!(
@@ -255,9 +260,16 @@ impl Content {
         // SAFETY: only a successfully acquired transfer changes the refund owner.
         if unsafe { (*visitor).kind } == HewManagedWalkKind::CommitTransfer {
             *self.owner.lock_or_recover() =
+                // SAFETY: the retained synchronous visitor and immutable content remain live throughout this ownership walk.
                 unsafe { crate::owned_value_budget::transfer::destination_owner(visitor) };
         }
         0
+    }
+}
+
+impl hew_cabi::sink::SinkContent for Content {
+    fn bytes(&self) -> &[u8] {
+        &self.bytes
     }
 }
 
@@ -415,6 +427,34 @@ mod tests {
         drop(producer);
         assert_eq!(owner.live_bytes(), 0);
         assert!(operation_view.upgrade().is_none());
+    }
+
+    #[test]
+    fn partial_socket_content_keeps_its_receipt_through_finish() {
+        use hew_cabi::sink::{into_nonblocking_sink_ptr, PendingBytes, TrySendResult};
+        let owner = ValueOwner::new(Some(16));
+        let mut bytes = Vec::with_capacity(16);
+        bytes.extend_from_slice(b"abcdef");
+        let content = Content::new(bytes, Some(owner.clone())).unwrap();
+        let identity = content.as_ptr();
+        let sink = into_nonblocking_sink_ptr((), |_, _| true, |_, _| Ok(2), |_| {}, |_| {});
+        // SAFETY: the test owns this freshly created endpoint and finishes its sole loan.
+        unsafe {
+            assert_eq!(
+                (*sink).try_write_owned(PendingBytes::retained(content)),
+                TrySendResult::Accepted
+            );
+            assert_eq!(owner.live_bytes(), 16);
+            let mut finish = (*sink).begin_finish().unwrap();
+            let pending = finish.take_pending();
+            assert_eq!(&*pending, b"cdef");
+            assert_eq!(pending.as_ptr(), identity.add(2));
+            finish.finish();
+            drop(Box::from_raw(sink));
+            assert_eq!(owner.live_bytes(), 16);
+            drop(pending);
+        }
+        assert_eq!(owner.live_bytes(), 0);
     }
 
     #[test]

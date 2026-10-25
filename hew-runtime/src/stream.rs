@@ -159,6 +159,12 @@ trait StreamBacking: Send + std::fmt::Debug {
     fn owned_values(&mut self) -> Vec<(*mut c_void, crate::vec::HewValueLayout)> {
         Vec::new()
     }
+    fn typed_core(&self) -> Option<Arc<crate::channel_core::ChannelCore>> {
+        None
+    }
+    fn managed_supported(&self) -> bool {
+        true
+    }
 
     /// How a native receive reaches this backing's reactor handle, if it has
     /// one; see [`NativeRead`].
@@ -212,6 +218,14 @@ pub struct HewStream {
 }
 
 impl HewStream {
+    fn typed_core(&self) -> Option<Arc<crate::channel_core::ChannelCore>> {
+        self.channel
+            .as_ref()
+            .filter(|core| core.is_typed())
+            .cloned()
+            .or_else(|| self.inner.typed_core())
+    }
+
     pub(crate) fn exhausted(&self) -> bool {
         self.closed || self.remaining == Some(0)
     }
@@ -313,15 +327,26 @@ struct ChannelStream {
 }
 
 impl StreamBacking for ChannelStream {
+    fn typed_core(&self) -> Option<Arc<crate::channel_core::ChannelCore>> {
+        self.core.is_typed().then(|| self.core.clone())
+    }
     fn next(&mut self) -> Option<Item> {
         // Default (non-suspending) callers block the foreign thread on the core
         // condvar. Suspending callers never reach here — they go through
         // `hew_stream_await_next` + `hew_stream_pop_bytes`.
-        self.core.blocking_recv()
+        if self.core.is_typed() {
+            self.core.typed_content_recv(true)
+        } else {
+            self.core.blocking_recv()
+        }
     }
 
     fn try_next(&mut self, _layout: &crate::vec::HewValueLayout) -> Option<Item> {
-        self.core.try_recv()
+        if self.core.is_typed() {
+            self.core.typed_content_recv(false)
+        } else {
+            self.core.try_recv()
+        }
     }
 
     fn close(&mut self) {
@@ -551,6 +576,14 @@ struct LinesStream {
 }
 
 impl StreamBacking for LinesStream {
+    // Legacy foreign adapters retain private content buffers. Their synchronous
+    // API remains available, but they have no checked managed provider contract.
+    fn managed_supported(&self) -> bool {
+        false
+    }
+    fn typed_core(&self) -> Option<Arc<crate::channel_core::ChannelCore>> {
+        self.upstream.typed_core()
+    }
     fn select_readiness(&self) -> SelectReadiness {
         adapter_select_readiness(self.upstream.select_readiness())
     }
@@ -660,6 +693,14 @@ struct ChunksStream {
 }
 
 impl StreamBacking for ChunksStream {
+    // Legacy foreign adapters retain private content buffers. Their synchronous
+    // API remains available, but they have no checked managed provider contract.
+    fn managed_supported(&self) -> bool {
+        false
+    }
+    fn typed_core(&self) -> Option<Arc<crate::channel_core::ChannelCore>> {
+        self.upstream.typed_core()
+    }
     fn select_readiness(&self) -> SelectReadiness {
         adapter_select_readiness(self.upstream.select_readiness())
     }
@@ -693,9 +734,13 @@ impl StreamBacking for ChunksStream {
 // ── Helper: box stream / sink into raw pointers ───────────────────────────────
 
 fn into_stream_ptr(backing: impl StreamBacking + 'static) -> *mut HewStream {
+    into_boxed_stream_ptr(Box::new(backing))
+}
+
+fn into_boxed_stream_ptr(backing: Box<dyn StreamBacking>) -> *mut HewStream {
     Box::into_raw(Box::new(HewStream {
         // ALLOCATOR-PAIRING: GlobalAlloc
-        inner: Box::new(backing),
+        inner: backing,
         closed: false,
         remaining: None,
         channel: None,
@@ -750,6 +795,12 @@ struct TakeStream {
 }
 
 impl StreamBacking for TakeStream {
+    fn managed_supported(&self) -> bool {
+        self.upstream.managed_supported()
+    }
+    fn typed_core(&self) -> Option<Arc<crate::channel_core::ChannelCore>> {
+        self.upstream.typed_core()
+    }
     fn select_readiness(&self) -> SelectReadiness {
         adapter_select_readiness(self.upstream.select_readiness())
     }
@@ -837,8 +888,11 @@ pub unsafe extern "C" fn hew_stream_channel(capacity: i64) -> *mut HewStreamPair
 }
 
 /// Create one bounded element pipe for a checked stream producer request.
-/// Elements move as raw bytes of `elem_size`; `elem_drop` releases whichever
-/// elements are still queued when the pipe ends.
+/// Elements retain their exact typed image and managed backing identities.
+/// The receiving Stream owns queued payload until read or semantic cleanup.
+///
+/// # Panics
+/// Panics if the compiler supplies a capacity outside the target's address space.
 ///
 /// # Safety
 /// `sink_out` is a writable slot that receives the owned sink half.
@@ -848,29 +902,34 @@ pub unsafe extern "C" fn hew_stream_pipe_native(
     layout: *const hew_cabi::vec::HewValueLayout,
     sink_out: *mut *mut HewSink,
 ) -> *mut HewStream {
-    // SAFETY: the pair constructor accepts any capacity.
-    let pair = unsafe { hew_stream_channel(capacity) };
-    if pair.is_null() {
-        std::process::abort();
-    }
-    // SAFETY: the pair was just allocated by `hew_stream_channel`.
-    let mut pair = unsafe { Box::from_raw(pair) };
-    // SAFETY: the compiler lends a static descriptor for the owned element.
+    // SAFETY: the compiler lends the exact concrete element descriptor.
     let layout = unsafe {
         crate::channel_common::move_elem_layout_witness(layout, "hew_stream_pipe_native")
     };
-    // SAFETY: both halves are live and share the core this pair created.
+    // SAFETY: the caller supplies its uninitialized sink result slot.
+    unsafe { *sink_out = ptr::null_mut() };
+    let Ok(cap) = usize::try_from(capacity.max(1)) else {
+        set_last_error(format!(
+            "hew_stream_channel: capacity {capacity} exceeds platform maximum"
+        ));
+        return ptr::null_mut();
+    };
+    // SAFETY: no endpoint is exposed before its canonical empty root is bound.
+    let core = unsafe { crate::channel_core::ChannelCore::new_typed(cap, *layout) };
+    let core_raw = Arc::as_ptr(&core).cast::<c_void>();
+    let stream = into_stream_ptr(ChannelStream { core: core.clone() });
+    let sink = into_sink_ptr(
+        core.clone(),
+        channel_sink_write,
+        channel_sink_flush,
+        channel_sink_close,
+    );
+    // SAFETY: fresh unique endpoints and a writable compiler-provided sink slot.
     unsafe {
-        if let Some(core) = (*pair.stream).channel.as_ref() {
-            core.stamp_elem_layout(layout);
-        }
-        *sink_out = pair.sink;
+        (*stream).channel = Some(core);
+        (*sink).set_channel_core(core_raw);
+        *sink_out = sink;
     }
-    let stream = pair.stream;
-    // The halves now belong to the caller; the pair drop frees only itself.
-    pair.sink = std::ptr::null_mut();
-    pair.stream = std::ptr::null_mut();
-    drop(pair);
     stream
 }
 
@@ -883,7 +942,11 @@ pub const extern "C" fn hew_stream_pair_is_valid(pair: *const HewStreamPair) -> 
 /// Channel-sink callback: blocking write (default callers). Suspending callers
 /// route through the channel core's own send instead.
 fn channel_sink_write(core: &mut Arc<crate::channel_core::ChannelCore>, data: &[u8]) {
-    core.blocking_send(data.to_vec());
+    if core.is_typed() {
+        core.typed_content_send(data);
+    } else {
+        core.blocking_send(data.to_vec());
+    }
 }
 
 /// Channel-sink callback: flush is a no-op (the core is not write-buffered).
@@ -2006,6 +2069,27 @@ pub unsafe extern "C" fn hew_stream_release_begin(
             unsafe { drop(Box::from_raw(owner.cast::<HewStream>())) };
         }
     }
+    // SAFETY: the consuming boundary pins this optional unique Stream handle.
+    if let Some(core) = unsafe { stream.as_ref() }.and_then(HewStream::typed_core) {
+        let cursor = HewReleaseCursor::new(vec![ReleaseItem::Stream { stream }]);
+        // SAFETY: this fresh cursor exclusively owns the provider's terminal drain.
+        unsafe { (*cursor).set_value_owner(core.typed_owner()) };
+        return cursor;
+    }
+    // SAFETY: the consuming boundary uniquely retains this provider and its stable backing.
+    if let Some(backing) = unsafe { stream.as_mut() }.and_then(|stream| stream.inner.generator()) {
+        let owner = backing.owner();
+        let mut pending = vec![ReleaseItem::Storage {
+            owner: stream.cast(),
+            free: free_stream,
+        }];
+        // SAFETY: the cursor pins the provider until generator cleanup and flat refund finish.
+        unsafe { backing.expand_release(&mut pending) };
+        let cursor = HewReleaseCursor::new(pending);
+        // SAFETY: this fresh cursor retains the provider's actual incarnation account.
+        unsafe { (*cursor).set_value_owner(owner) };
+        return cursor;
+    }
     // SAFETY: the caller supplies an exclusive live handle or null.
     let (layout, discarded) = unsafe { stream.as_ref() }
         .and_then(|stream| stream.channel.as_ref())
@@ -2108,6 +2192,14 @@ pub(crate) unsafe fn expand_sink(
             owner: owners.storage,
             free: owners.free,
         });
+        if let Some((pointer, bytes)) = owners.managed_backing {
+            unsafe fn keep_shared_fields(_pointer: *mut c_void) {}
+            pending.push(ReleaseItem::ManagedBacking {
+                pointer: pointer.cast_mut(),
+                bytes,
+                free: keep_shared_fields,
+            });
+        }
         pending.extend(
             owners
                 .values
@@ -2847,55 +2939,6 @@ pub unsafe extern "C" fn hew_stream_try_send_layout(
         }
         // SAFETY: sink is valid per caller contract.
         None => unsafe { (*sink).try_write_item(&env) }.into_abi_code(),
-    }
-}
-
-/// Try one send while transferring its input on every outcome. Rejected
-/// element owners return to the caller as a consuming release cursor.
-/// # Safety
-/// `sink` is null or a live exclusive loan, `data` transfers one value matching
-/// `layout`, and `release_out` is a disjoint writable cursor output.
-unsafe fn try_send_underlying(
-    sink: *mut HewSink,
-    data: *mut c_void,
-    layout: *const crate::vec::HewValueLayout,
-    release_out: *mut *mut crate::release_walker::HewReleaseCursor,
-    fault_out: *mut *mut crate::fault::HewFault,
-) -> i32 {
-    use crate::channel_common::{move_elem_envelope, move_elem_layout_witness};
-    use crate::release_walker::HewReleaseCursor;
-    let _ = take_last_error();
-    // SAFETY: the caller supplies a checked descriptor and one transferred owner.
-    unsafe {
-        *release_out = std::ptr::null_mut();
-        *fault_out = std::ptr::null_mut();
-        let layout = move_elem_layout_witness(layout, "Sink.try_send");
-        let envelope = move_elem_envelope(data, layout, "Sink.try_send");
-        let (status, rejected) = if sink.is_null() || (*sink).is_closed() {
-            (TrySendResult::Closed, Some(envelope))
-        } else if let Some(core) = sink_channel_core(sink) {
-            if layout.ownership_kind == crate::vec::HewTypeOwnershipKind::LayoutManaged {
-                core.stamp_elem_layout(layout);
-            }
-            core.try_send_owned(envelope)
-        } else {
-            if layout.ownership_kind == crate::vec::HewTypeOwnershipKind::LayoutManaged {
-                crate::channel_common::abort_elem_witness(
-                    "Sink.try_send",
-                    "layout-managed elements require an in-memory channel sink",
-                );
-            }
-            ((*sink).try_write_item(&envelope), None)
-        };
-        if let Some(envelope) = rejected {
-            if layout.ownership_kind == crate::vec::HewTypeOwnershipKind::LayoutManaged {
-                *release_out = HewReleaseCursor::detached(envelope.as_ptr().cast(), *layout);
-            }
-        }
-        if status == TrySendResult::Failed {
-            *fault_out = hew_stream_take_error_fault();
-        }
-        status.into_abi_code()
     }
 }
 
@@ -5184,4 +5227,76 @@ mod tests {
             "consumed element dropped by the consumer; queued element by teardown"
         );
     }
+}
+
+/// Traverse the unique receiving Pipe provider, never producer endpoint aliases.
+/// # Safety
+/// The descriptor retains the live Stream slot and provider through this walk.
+#[no_mangle]
+pub unsafe extern "C" fn hew_managed_visit_stream(
+    slot: *const c_void,
+    visitor: *const hew_cabi::managed::HewManagedStorageVisitor,
+) -> i32 {
+    // SAFETY: the compiler's Stream descriptor supplies its exact handle slot.
+    let stream = unsafe { *slot.cast::<*mut HewStream>() };
+    // SAFETY: the enclosing descriptor retains this optional live handle.
+    let Some(stream) = (unsafe { stream.as_mut() }) else {
+        return 0;
+    };
+    if !stream.inner.managed_supported() {
+        return hew_cabi::managed::UNDESCRIBED;
+    }
+    if let Some(core) = stream.typed_core() {
+        // SAFETY: the Stream's unique provider lifetime pins its queue during this walk.
+        return unsafe { core.visit_typed(visitor) };
+    }
+    if let Some(generator) = stream.inner.generator() {
+        // SAFETY: common provider transfer freezes generator execution before publication.
+        return unsafe { generator.visit(visitor) };
+    }
+    // File/socket content and legacy host channels contain no typed queued values.
+    0
+}
+
+pub(crate) unsafe fn prepare_stream_release(
+    stream: *mut HewStream,
+    state: *const crate::coro_state::HewCoroState,
+) -> bool {
+    // SAFETY: the consuming cursor retains this unique optional Stream handle.
+    let Some(core) = (unsafe { stream.as_ref() }).and_then(HewStream::typed_core) else {
+        return true;
+    };
+    let waker = if state.is_null() {
+        None
+    } else {
+        // SAFETY: the polling invocation retains this wake descriptor through registration.
+        Some(unsafe {
+            crate::wake::OwnedWaker::retain(&*crate::coro_state::hew_coro_state_waker(state))
+        })
+    };
+    core.prepare_typed_close(waker)
+}
+
+pub(crate) unsafe fn expand_stream_release(
+    stream: *mut HewStream,
+    pending: &mut Vec<crate::release_walker::ReleaseItem>,
+) {
+    use crate::release_walker::ReleaseItem;
+    unsafe fn free(owner: *mut c_void) {
+        // SAFETY: the cursor drained every queued child and owns this original Box.
+        unsafe { drop(Box::from_raw(owner.cast::<HewStream>())) };
+    }
+    // SAFETY: expansion borrows the cursor's unique Stream before final retirement.
+    let Some(stream_ref) = (unsafe { stream.as_mut() }) else {
+        return;
+    };
+    let core = stream_ref.typed_core().expect("typed Stream release core");
+    // The allocation pins the core identity until its queued children and flat
+    // payload finish; its destructor must not start another content close.
+    stream_ref.closed = true;
+    pending.push(ReleaseItem::Storage {
+        owner: stream.cast(),
+        free,
+    });
+    core.expand_typed_close(pending);
 }

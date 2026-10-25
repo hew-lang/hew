@@ -84,6 +84,7 @@ impl RaceGroup {
         // readiness observation borrows it through a separate runtime reference.
         let tasks = members
             .iter()
+            // SAFETY: the group retains every checked member until this ownership traversal completes.
             .map(|member| unsafe {
                 super::retain(*member);
                 HewCheckedTaskWait::new(*member, waker, false)

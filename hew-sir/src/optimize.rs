@@ -118,6 +118,7 @@ fn canonicalize_verified_function(
                 }
             }),
             SemTerminator::Return { .. }
+            | SemTerminator::Materialize { .. }
             | SemTerminator::CheckedBinary { .. }
             | SemTerminator::SwitchVariant { .. }
             | SemTerminator::Call { .. }
@@ -204,7 +205,7 @@ fn canonicalize_verified_function(
 
 fn direct_bool_constants(function: &SemFunction) -> BTreeMap<ValueId, bool> {
     let mut constants = BTreeMap::new();
-    for operation in function.blocks.iter().flat_map(|block| &block.ops) {
+    for operation in function.blocks.iter().flat_map(crate::SemBlock::operations) {
         if let (SemOpKind::ConstBool(value), [result]) =
             (&operation.kind, operation.results.as_slice())
         {
@@ -389,6 +390,32 @@ fn transfer_dead_local_reads(
             continue;
         };
         let mut after = live_out.clone();
+        // A dead local can move out without acquiring storage. Once that
+        // checked copy becomes a take, its failure edge no longer exists.
+        let checked_take = match &mut block.terminator {
+            SemTerminator::Materialize {
+                operation, normal, ..
+            } => {
+                let take = match operation.kind {
+                    SemOpKind::LoadCopy { place }
+                        if roots.contains(&place) && !after.contains(&place) =>
+                    {
+                        Some(place)
+                    }
+                    _ => None,
+                };
+                if let Some(place) = take {
+                    operation.kind = SemOpKind::LoadTake { place };
+                    transferred.push(operation.id);
+                    flow.step(&operation.kind, &mut after);
+                    Some((operation.as_ref().clone(), normal.clone()))
+                } else {
+                    flow.step(&operation.kind, &mut after);
+                    None
+                }
+            }
+            _ => None,
+        };
         for operation in block.ops.iter_mut().rev() {
             if let SemOpKind::LoadCopy { place } = operation.kind {
                 if roots.contains(&place) && !after.contains(&place) {
@@ -398,6 +425,14 @@ fn transfer_dead_local_reads(
             }
             flow.step(&operation.kind, &mut after);
         }
+        if let Some((operation, normal)) = checked_take {
+            block.ops.push(operation);
+            block.terminator = SemTerminator::Goto(normal);
+        }
+    }
+    if !transferred.is_empty() {
+        let reachable = build_cfg_index(function).rpo().iter().copied().collect();
+        compact_unreachable(function, &reachable);
     }
     transferred.sort_unstable();
     transferred
@@ -418,7 +453,7 @@ fn transferable_roots(
     let mut open_borrows: BTreeSet<crate::PlaceId> = BTreeSet::new();
     let mut closed = BTreeSet::new();
     let mut borrow_roots = BTreeMap::new();
-    for operation in function.blocks.iter().flat_map(|block| &block.ops) {
+    for operation in function.blocks.iter().flat_map(crate::SemBlock::operations) {
         match (&operation.kind, operation.results.as_slice()) {
             (SemOpKind::LoadBorrow { place }, results) => {
                 let Some(root) = local_root(*place) else {
@@ -491,7 +526,7 @@ impl<'a> PlaceFlow<'a> {
             }
         }
         let mut borrow_root = BTreeMap::new();
-        for operation in function.blocks.iter().flat_map(|block| &block.ops) {
+        for operation in function.blocks.iter().flat_map(crate::SemBlock::operations) {
             if let (SemOpKind::LoadBorrow { place }, [result]) =
                 (&operation.kind, operation.results.as_slice())
             {
@@ -577,7 +612,7 @@ impl<'a> PlaceFlow<'a> {
                     }
                 }
                 let mut state = out.clone();
-                for operation in block.ops.iter().rev() {
+                for operation in block.operations().rev() {
                     self.step(&operation.kind, &mut state);
                 }
                 if live_out.get(&id) != Some(&out) {

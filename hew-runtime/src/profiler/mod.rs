@@ -29,12 +29,13 @@ use std::sync::{
     mpsc, Arc, Mutex,
 };
 use std::thread::{self, JoinHandle};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 #[cfg(unix)]
 use std::{os::unix::fs::PermissionsExt as _, path::PathBuf};
 
 use metrics::MetricsRing;
 pub use server::{run_tcp_with_listener, ProfilerContext, OBSERVE_SCHEMA_VERSION};
+pub use tokio::sync::oneshot;
 
 /// Global state for running profiler threads.
 ///
@@ -56,6 +57,8 @@ struct ProfilerThreads {
     sampler_handle: JoinHandle<()>,
     /// HTTP server thread handle.
     server_handle: JoinHandle<()>,
+    /// Wake the server's accept loop during shutdown.
+    server_shutdown: tokio::sync::oneshot::Sender<()>,
 }
 
 /// How the profiler should listen for connections.
@@ -69,14 +72,18 @@ enum ListenMode {
 
 fn stop_sampler_after_startup_failure(sampler_handle: JoinHandle<()>) {
     PROFILER_SHUTDOWN.store(true, Ordering::Release);
+    sampler_handle.thread().unpark();
     crate::util::report_join_panic("hew profiler sampler thread", sampler_handle.join());
 }
 
 fn stop_threads_after_startup_failure(
     sampler_handle: JoinHandle<()>,
     server_handle: JoinHandle<()>,
+    server_shutdown: tokio::sync::oneshot::Sender<()>,
 ) {
     PROFILER_SHUTDOWN.store(true, Ordering::Release);
+    let _ = server_shutdown.send(());
+    sampler_handle.thread().unpark();
     crate::util::report_join_panic("hew profiler server thread", server_handle.join());
     crate::util::report_join_panic("hew profiler sampler thread", sampler_handle.join());
 }
@@ -176,6 +183,7 @@ pub fn maybe_start() {
     // the server to finish every fallible runtime/listener conversion before
     // tracing is enabled or discovery is published.
     let (ready_tx, ready_rx) = mpsc::sync_channel(0);
+    let (server_shutdown, shutdown_rx) = tokio::sync::oneshot::channel();
     #[cfg(unix)]
     let mut unix_discovery = None;
     let server_handle = match mode {
@@ -192,7 +200,9 @@ pub fn maybe_start() {
             };
             thread::Builder::new()
                 .name("hew-pprof-server".into())
-                .spawn(move || server::run_tcp_with_listener_ready(listener, ctx, ready_tx))
+                .spawn(move || {
+                    server::run_tcp_with_listener_ready(listener, ctx, ready_tx, shutdown_rx);
+                })
         }
         #[cfg(unix)]
         ListenMode::Unix => {
@@ -208,7 +218,9 @@ pub fn maybe_start() {
 
             thread::Builder::new()
                 .name("hew-pprof-server".into())
-                .spawn(move || server::run_unix_with_listener_ready(listener, ctx, ready_tx))
+                .spawn(move || {
+                    server::run_unix_with_listener_ready(listener, ctx, ready_tx, shutdown_rx);
+                })
         }
     };
 
@@ -223,7 +235,7 @@ pub fn maybe_start() {
     };
 
     if !await_server_startup(&ready_rx) {
-        stop_threads_after_startup_failure(sampler_handle, server_handle);
+        stop_threads_after_startup_failure(sampler_handle, server_handle, server_shutdown);
         #[cfg(unix)]
         if let Some((disc_dir, _)) = unix_discovery.as_ref() {
             discovery::cleanup(disc_dir);
@@ -236,7 +248,7 @@ pub fn maybe_start() {
     if let Some((disc_dir, sock_path)) = unix_discovery.as_ref() {
         if let Err(error) = discovery::write_discovery_file(disc_dir, sock_path) {
             eprintln!("[hew-pprof] failed to write discovery file: {error}");
-            stop_threads_after_startup_failure(sampler_handle, server_handle);
+            stop_threads_after_startup_failure(sampler_handle, server_handle, server_shutdown);
             discovery::cleanup(disc_dir);
             return;
         }
@@ -252,6 +264,7 @@ pub fn maybe_start() {
     let threads = ProfilerThreads {
         sampler_handle,
         server_handle,
+        server_shutdown,
     };
     PROFILER_STATE.access(|state| *state = Some(threads));
 }
@@ -303,14 +316,22 @@ fn normalise_tcp_bind_address(addr: &str) -> (String, bool) {
 /// Sampler loop: captures a snapshot every second.
 fn sampler_loop(ring: &Arc<Mutex<MetricsRing>>) {
     loop {
-        // Check shutdown signal before sleeping.
         if PROFILER_SHUTDOWN.load(Ordering::Acquire) {
             break;
         }
 
-        thread::sleep(Duration::from_secs(1));
+        let deadline = Instant::now() + Duration::from_secs(1);
+        loop {
+            if PROFILER_SHUTDOWN.load(Ordering::Acquire) {
+                break;
+            }
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                break;
+            }
+            thread::park_timeout(remaining);
+        }
 
-        // Check again after sleeping (thread could have been signaled during sleep).
         if PROFILER_SHUTDOWN.load(Ordering::Acquire) {
             break;
         }
@@ -375,14 +396,15 @@ pub fn maybe_write_on_exit() {
 ///
 /// Safe to call multiple times or when no profiler was started (no-op).
 pub(crate) fn shutdown() {
-    // Signal all threads to stop. The server's tokio accept loop checks
-    // this flag every 200ms via `tokio::select!` with a sleep timeout.
+    // Set shared shutdown state before waking either profiler thread.
     PROFILER_SHUTDOWN.store(true, Ordering::Release);
 
     // Take the thread handles out of the global; release the lock before
     // joining so no other path is blocked while we wait for the threads.
     let threads = PROFILER_STATE.access(Option::take);
     if let Some(threads) = threads {
+        let _ = threads.server_shutdown.send(());
+        threads.sampler_handle.thread().unpark();
         crate::util::report_join_panic("hew profiler server thread", threads.server_handle.join());
         crate::util::report_join_panic(
             "hew profiler sampler thread",
@@ -433,6 +455,29 @@ mod tests {
 
         assert_eq!(bind_addr, "0.0.0.0:6060");
         assert!(warns_on_wildcard);
+    }
+
+    #[test]
+    fn sampler_shutdown_interrupts_its_wait() {
+        let _guard = PROFILER_TEST_MUTEX.lock_or_recover();
+        shutdown();
+        PROFILER_SHUTDOWN.store(false, Ordering::Release);
+
+        let ring = Arc::new(Mutex::new(MetricsRing::new()));
+        let sampler_ring = Arc::clone(&ring);
+        let (done_tx, done_rx) = mpsc::channel();
+        let sampler = thread::spawn(move || {
+            sampler_loop(&sampler_ring);
+            let _ = done_tx.send(());
+        });
+
+        thread::sleep(Duration::from_millis(20));
+        PROFILER_SHUTDOWN.store(true, Ordering::Release);
+        sampler.thread().unpark();
+        done_rx
+            .recv_timeout(Duration::from_millis(500))
+            .expect("shutdown should wake the sampler before its next sample");
+        sampler.join().expect("sampler should exit cleanly");
     }
 
     #[test]
@@ -529,6 +574,7 @@ mod tests {
         PROFILER_SHUTDOWN.store(false, Ordering::Release);
         PROFILER_STATE.access(|state| {
             *state = Some(ProfilerThreads {
+                server_shutdown: tokio::sync::oneshot::channel().0,
                 server_handle: std::thread::spawn(|| {
                     panic!("profiler server intentional panic");
                 }),
@@ -559,6 +605,7 @@ mod tests {
         PROFILER_SHUTDOWN.store(false, Ordering::Release);
         PROFILER_STATE.access(|state| {
             *state = Some(ProfilerThreads {
+                server_shutdown: tokio::sync::oneshot::channel().0,
                 server_handle: std::thread::spawn(|| {}),
                 sampler_handle: std::thread::spawn(|| {
                     panic!("profiler sampler intentional panic");

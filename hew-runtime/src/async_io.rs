@@ -321,6 +321,10 @@ impl HewAsyncIo {
     }
 
     #[cfg(not(target_arch = "wasm32"))]
+    #[allow(
+        clippy::option_option,
+        reason = "None is a non-stream operation; Some(None) is an unbounded stream read"
+    )]
     unsafe fn with_net(
         waker: *const HewWaker,
         net: Option<net::NetOp>,
@@ -445,17 +449,19 @@ impl HewAsyncIo {
         let result = Some(result);
         let (waker, discarded) = {
             let mut state = self.state.lock_or_recover();
-            if matches!(*state, State::Pending(_)) && result.is_some() {
-                let result = result.expect("ready publication");
-                let State::Pending(waker) = std::mem::replace(&mut *state, State::Ready(result))
-                else {
-                    unreachable!("pending state was checked under this lock")
-                };
-                (waker, None)
-            } else {
-                // The producer still owns result. In particular, a late accept
-                // closes its connection here instead of stranding a table entry.
-                (None, result)
+            match (matches!(*state, State::Pending(_)), result) {
+                (true, Some(result)) => {
+                    let State::Pending(waker) =
+                        std::mem::replace(&mut *state, State::Ready(result))
+                    else {
+                        unreachable!("pending state was checked under this lock")
+                    };
+                    (waker, None)
+                }
+                (_, result) => {
+                    // A late accept closes its connection instead of stranding a table entry.
+                    (None, result)
+                }
             }
         };
         drop(discarded);
@@ -822,7 +828,9 @@ pub(crate) unsafe fn take_stream_item(operation: *const HewAsyncIo) -> (i32, Opt
 pub(crate) unsafe fn take_managed_stream_item(
     operation: *const HewAsyncIo,
 ) -> (i32, Option<Arc<content::Content>>) {
+    // SAFETY: the caller retains this live operation through readiness inspection and result transfer.
     unsafe { HewAsyncIo::advance_if_ready(operation) };
+    // SAFETY: the caller retains this live operation through readiness inspection and result transfer.
     let operation = unsafe { &*operation };
     let mut state = operation.state.lock_or_recover();
     if matches!(*state, State::Pending(_) | State::Unpublished { .. }) {
@@ -842,6 +850,7 @@ pub(crate) unsafe fn take_managed_stream_item(
 /// Retain the authored fault category of a failed managed result publication.
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) unsafe fn failure_trap(operation: *const HewAsyncIo) -> Option<i32> {
+    // SAFETY: the caller retains this live operation through readiness inspection and result transfer.
     let operation = unsafe { &*operation };
     match &*operation.state.lock_or_recover() {
         State::Ready(Err(failure)) => failure.trap,

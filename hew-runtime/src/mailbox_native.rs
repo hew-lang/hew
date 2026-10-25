@@ -99,6 +99,10 @@ pub unsafe extern "C" fn hew_actor_send_wait_new(
     unsafe {
         (*envelope).release_start = payload_release;
         crate::cow_envelope::set_layout(envelope, payload_layout);
+        (*envelope).transfer_waker = Some(match &waker {
+            CapacityWake::Direct(waker) => waker.clone(),
+            CapacityWake::Registered(waker) => (**waker).clone(),
+        });
     };
     Box::into_raw(Box::new(HewNativeSend {
         // SAFETY: the caller retains its explicit stamp through this constructor.
@@ -124,6 +128,40 @@ pub struct HewNativeAsk {
     envelope: *mut super::HewMsgEnvelope,
     channel: *mut std::ffi::c_void,
     wake: CapacityWake,
+}
+
+/// Walk the actual unpublished request until accepted admission takes it.
+/// # Safety
+/// The operation is pinned outside its exclusive admission poll or destruction.
+pub(crate) unsafe fn visit_managed_request(
+    wait: *const HewNativeAsk,
+    visitor: *const hew_cabi::managed::HewManagedStorageVisitor,
+) -> i32 {
+    // SAFETY: the affine admission owner pins its envelope outside concurrent polls.
+    unsafe {
+        let Some(wait) = wait.as_ref() else {
+            return 0;
+        };
+        if wait.envelope.is_null() {
+            return 0;
+        }
+        crate::cow_envelope::visit_managed(wait.envelope.cast(), visitor)
+    }
+}
+
+pub(crate) unsafe fn request_transfer_pending(wait: *const HewNativeAsk) -> bool {
+    // SAFETY: this synchronous query borrows the same exclusively polled operation.
+    unsafe {
+        wait.as_ref()
+            .and_then(|wait| wait.envelope.as_ref())
+            .is_some_and(|envelope| {
+                envelope.admission_pending
+                    || envelope
+                        .transfer
+                        .as_ref()
+                        .is_some_and(|transfer| transfer.pending)
+            })
+    }
 }
 
 impl Drop for HewNativeAsk {
@@ -271,6 +309,9 @@ pub unsafe extern "C" fn hew_actor_ask_wait_take_request(
         // SAFETY: the unadmitted request owns one channel reference. A later
         // resubmission creates its own channel; the old reply cannot escape.
         unsafe {
+            (*envelope).transfer.take();
+            (*envelope).transfer_waker = None;
+            (*envelope).admission_pending = false;
             (*envelope).request = None;
             crate::reply_channel::hew_reply_channel_free(wait.channel.cast());
         }
@@ -347,6 +388,10 @@ pub(crate) unsafe fn request_wait_resume(
     // A resumed request receives the new invocation's exact immutable state.
     // SAFETY: the unpublished envelope is exclusive.
     unsafe { (*envelope).request = state };
+    // SAFETY: the resumed operation uniquely owns this envelope and retains its new wake target.
+    unsafe {
+        (*envelope).transfer_waker = Some(OwnedWaker::retain(&*waker));
+    }
     // SAFETY: the completion call supplies live channel and waker references.
     let waker = unsafe {
         crate::reply_channel::hew_reply_channel_retain(channel.cast());

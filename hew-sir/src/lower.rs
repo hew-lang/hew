@@ -1875,6 +1875,7 @@ struct ControlState {
     bindings: HashMap<BindingId, BindingTarget>,
     binding_declarations: HashMap<BindingId, usize>,
     owned_live: BTreeMap<ValueId, ResolvedTy>,
+    live_loans: BTreeSet<ValueId>,
     loans: Vec<ValueId>,
     scopes: Vec<Vec<BindingId>>,
     scope_loans: Vec<ValueId>,
@@ -2053,6 +2054,10 @@ struct Builder<'hir, 'service> {
     bindings: HashMap<BindingId, BindingTarget>,
     binding_declarations: HashMap<BindingId, usize>,
     owned_live: BTreeMap<ValueId, ResolvedTy>,
+    /// All emitted local loans still live on this construction path. Lexical
+    /// lists group normal cleanup; this also covers argument-local loans
+    /// before their caller has registered that group.
+    live_loans: BTreeSet<ValueId>,
     /// Definition ancestry derived once from `SemOpKind::borrow_parent`.
     borrow_parents: HashMap<ValueId, crate::PlaceBase>,
     /// Lexical declarations only. Storage activity and payload availability

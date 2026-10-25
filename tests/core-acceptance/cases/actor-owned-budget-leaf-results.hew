@@ -1,0 +1,125 @@
+import std.encoding.utf8;
+
+#[max_heap(5)]
+actor NumberEnough {
+    receive fn format() {
+        let value = 12345;
+        let text = to_string(value);
+        println(text.len());
+    }
+}
+
+#[max_heap(4)]
+actor NumberSmall {
+    receive fn format() {
+        let value = 12345;
+        let text = to_string(value);
+        println(text.len());
+    }
+}
+
+#[max_heap(44)]
+actor SliceEnough {
+    var text: string;
+    receive fn slice() {
+        let piece = text[0..4];
+        println(piece.len());
+    }
+}
+
+#[max_heap(43)]
+actor SliceSmall {
+    var text: string;
+    receive fn slice() {
+        let piece = text[0..4];
+        println(piece.len());
+    }
+}
+
+#[max_heap(44)]
+actor OptionalEnough {
+    var text: string;
+    receive fn slice() {
+        match text.get(0..4) {
+            .Some(piece) => println(piece.len()),
+            .None => panic("missing range"),
+        }
+    }
+}
+
+#[max_heap(43)]
+actor OptionalSmall {
+    var text: string;
+    receive fn slice() {
+        match text.get(0..4) {
+            .Some(piece) => println(piece.len()),
+            .None => panic("missing range"),
+        }
+    }
+}
+
+// A nonempty byte literal retains its canonical minimum capacity of 16 bytes.
+#[max_heap(19)]
+actor DecodeEnough {
+    receive fn decode() {
+        let input = b"abc";
+        let text = utf8.decode(input) handle error { panic(error.fmt()); };
+        println(text.len());
+    }
+}
+
+#[max_heap(18)]
+actor DecodeSmall {
+    receive fn decode() {
+        let input = b"abc";
+        let text = utf8.decode(input) handle error { panic(error.fmt()); };
+        println(text.len());
+    }
+}
+
+fn main() -> i64 {
+    let number = spawn NumberEnough;
+    number.format().expect("format fits");
+    stop(number);
+    stopped(number);
+    let small_number = spawn NumberSmall;
+    match small_number.format() {
+        .Err(.Trapped) => println("number limit"),
+        _ => return 2,
+    }
+    stopped(small_number);
+
+    let slice = spawn SliceEnough { text: "0123456789abcdef0123456789abcdef" };
+    slice.slice().expect("slice fits");
+    stop(slice);
+    stopped(slice);
+    let small_slice = spawn SliceSmall { text: "0123456789abcdef0123456789abcdef" };
+    match small_slice.slice() {
+        .Err(.Trapped) => println("string slice limit"),
+        _ => return 3,
+    }
+    stopped(small_slice);
+
+    let optional = spawn OptionalEnough { text: "0123456789abcdef0123456789abcdef" };
+    optional.slice().expect("optional slice fits");
+    stop(optional);
+    stopped(optional);
+    let small_optional = spawn OptionalSmall { text: "0123456789abcdef0123456789abcdef" };
+    match small_optional.slice() {
+        .Err(.Trapped) => println("optional slice limit"),
+        _ => return 4,
+    }
+    stopped(small_optional);
+
+    let decoder = spawn DecodeEnough;
+    decoder.decode().expect("decode fits");
+    stop(decoder);
+    stopped(decoder);
+    let small_decoder = spawn DecodeSmall;
+    match small_decoder.decode() {
+        .Err(.Trapped) => println("decode limit"),
+        _ => return 5,
+    }
+    stopped(small_decoder);
+    0
+}

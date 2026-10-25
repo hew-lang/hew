@@ -44,6 +44,7 @@ enum Action {
 
 enum WriteData {
     Owned(Arc<super::content::Content>),
+    Pending(hew_cabi::sink::PendingBytes),
     /// The caller's bytes, borrowed until the operation is freed. Only the
     /// owning task writes from them, inside its own status poll.
     Borrowed {
@@ -60,6 +61,7 @@ impl WriteData {
     fn bytes(&self) -> &[u8] {
         match self {
             Self::Owned(bytes) => bytes,
+            Self::Pending(bytes) => bytes,
             // SAFETY: see the variant's contract.
             Self::Borrowed { ptr, len } => unsafe { std::slice::from_raw_parts(*ptr, *len) },
         }
@@ -327,6 +329,10 @@ fn admit(slot: &Slot, action: &Action, direction: Direction) -> Result<(), IoFai
     })
 }
 
+#[allow(
+    clippy::option_option,
+    reason = "None is a non-stream operation; Some(None) is an unbounded stream read"
+)]
 unsafe fn start(
     handle: i32,
     action: Action,
@@ -370,6 +376,10 @@ pub(super) unsafe fn start_stdin_line(
     unsafe { start_on(slot, Action::StdinLine, Direction::Read, waker, None) }
 }
 
+#[allow(
+    clippy::option_option,
+    reason = "None is a non-stream operation; Some(None) is an unbounded stream read"
+)]
 unsafe fn start_on(
     slot: Arc<Slot>,
     action: Action,
@@ -532,12 +542,12 @@ pub(crate) unsafe fn start_tcp_stream_write(
 
 pub(super) unsafe fn start_tcp_sink_finish(
     connection: i32,
-    bytes: Vec<u8>,
+    bytes: hew_cabi::sink::PendingBytes,
     pending: hew_cabi::sink::PendingFinish,
     waker: *const HewWaker,
 ) -> *const HewAsyncIo {
     let action = Action::Write {
-        data: WriteData::Owned(super::content::Content::unbounded(bytes)),
+        data: WriteData::Pending(bytes),
         written: 0,
         finish: Some(pending),
     };

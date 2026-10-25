@@ -1,0 +1,44 @@
+// Two state handles cost 16 bytes, map capacity costs 256, and set capacity
+// costs 128. One four-slot i64 snapshot costs 32 and its reply costs eight.
+#[max_heap(440)]
+actor TableStore {
+    var values: HashMap<i64, i64>;
+    var members: HashSet<i64>;
+
+    receive fn fill() {
+        values.insert(1, 7);
+        members.insert(1);
+    }
+
+    receive fn snapshots() -> i64 {
+        var total = 0;
+        {
+            let keys = values.keys();
+            total += keys.len();
+        }
+        {
+            let elements = members.to_vec();
+            total += elements.len();
+        }
+        total
+    }
+
+    receive fn retain_two() -> i64 {
+        let keys = values.keys();
+        let copied_values = values.values();
+        keys.len() + copied_values.len()
+    }
+}
+
+fn main() -> i64 {
+    let index = spawn TableStore { values: HashMap.new(), members: HashSet.new() };
+    index.fill().expect("fill");
+    println(index.snapshots().expect("snapshots"));
+    println(index.snapshots().expect("refunded snapshots"));
+    match index.retain_two() {
+        .Err(.Trapped) => println("snapshot limit"),
+        _ => return 2,
+    }
+    stopped(index);
+    0
+}

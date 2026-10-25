@@ -1,0 +1,36 @@
+#[max_heap(56)]
+actor Enough {
+    var text: string;
+    receive fn grow() -> i64 {
+        let held = text;
+        text.push('x');
+        let length = text.len();
+        text.clear();
+        println(held.len());
+        length
+    }
+}
+
+#[max_heap(55)]
+actor Small {
+    var text: string;
+    receive fn grow() -> i64 {
+        let held = text;
+        text.push('x');
+        text.len() + held.len()
+    }
+}
+
+fn main() -> i64 {
+    let enough = spawn Enough { text: "0123456789abcdef" };
+    println(enough.grow().expect("string growth fits"));
+    stop(enough);
+    stopped(enough);
+    let small = spawn Small { text: "0123456789abcdef" };
+    match small.grow() {
+        .Err(.Trapped) => println("string limit"),
+        _ => return 2,
+    }
+    stopped(small);
+    0
+}

@@ -36,6 +36,10 @@ pub(crate) enum ReleaseItem {
     RcSurvivors(Box<crate::rc::RcSurvivors>),
     /// Expand endpoint owners after its final I/O operation is quiescent.
     Sink { sink: *mut crate::stream::HewSink },
+    /// Wait for unpublished Pipe admission, then drain the receiving provider.
+    Stream {
+        stream: *mut crate::stream::HewStream,
+    },
     /// One initialized value; the descriptor consumes its semantic owners.
     Value {
         slot: *mut c_void,
@@ -61,6 +65,8 @@ pub(crate) enum ReleaseItem {
         pointer: *mut c_void,
         size: usize,
         align: usize,
+        /// Canonical payload width, absent for uncharged scratch storage.
+        managed_bytes: Option<u64>,
     },
     /// Expand a vector into its elements and then its own storage.
     Vector { vec: *mut HewVec },
@@ -308,8 +314,14 @@ unsafe fn expand(
             ReleaseItem::CodeRoot(root) => drop(root),
             ReleaseItem::RcSurvivors(wave) => return wave.step(pending),
             ReleaseItem::Sink { sink } => crate::stream::expand_sink(sink, pending),
+            ReleaseItem::Stream { stream } => {
+                if !crate::stream::prepare_stream_release(stream, ptr::null()) {
+                    std::process::abort();
+                }
+                crate::stream::expand_stream_release(stream, pending);
+            }
             ReleaseItem::Value { .. } => pending.push(item),
-            ReleaseItem::String { value } => hew_cabi::string::string_release(value),
+            ReleaseItem::String { value } => crate::string::hew_string_drop_managed(value),
             ReleaseItem::Storage { owner, free } => free(owner),
             ReleaseItem::ManagedBacking {
                 pointer,
@@ -325,7 +337,13 @@ unsafe fn expand(
                 pointer,
                 size,
                 align,
+                managed_bytes,
             } => {
+                if let (Some(owner), Some(bytes)) =
+                    (crate::owned_value_budget::current_owner(), managed_bytes)
+                {
+                    owner.release_backing(pointer, bytes);
+                }
                 crate::mem::hew_dealloc(pointer.cast(), size as u64, align as u64);
             }
             ReleaseItem::Vector { vec } => crate::vec::expand_vector(vec, pending),
@@ -352,6 +370,10 @@ pub struct HewReleaseCursor {
     current_slot: *mut c_void,
     remaining: usize,
     rc_sweep: Option<hew_observe_protocol::RcSweep>,
+    #[allow(
+        clippy::option_option,
+        reason = "absence preserves the invocation owner; Some(None) explicitly selects unbounded ownership"
+    )]
     value_owner: Option<Option<crate::owned_value_budget::ValueOwner>>,
 }
 
@@ -380,6 +402,7 @@ impl HewReleaseCursor {
                     pointer: storage.cast(),
                     size,
                     align: layout.align,
+                    managed_bytes: None,
                 },
                 ReleaseItem::Value {
                     slot: storage.cast(),
@@ -465,6 +488,10 @@ impl HewReleaseCursor {
         cursors: impl IntoIterator<Item = *mut Self, IntoIter: DoubleEndedIterator>,
     ) -> *mut Self {
         let mut pending = Vec::new();
+        #[allow(
+            clippy::option_option,
+            reason = "absence preserves the invocation owner; Some(None) explicitly selects unbounded ownership"
+        )]
         let mut value_owner: Option<Option<crate::owned_value_budget::ValueOwner>> = None;
         for cursor in cursors.into_iter().rev() {
             if !cursor.is_null() {
@@ -543,8 +570,8 @@ pub(crate) struct ReleaseDriver {
     fault: *mut crate::fault::HewFault,
     done: bool,
     rc_sweep: Option<hew_observe_protocol::RcSweep>,
-    active_code: Option<crate::code_owner::CodeRoot>,
     value_owner: Option<crate::owned_value_budget::ValueOwner>,
+    active_code: Option<crate::code_owner::CodeRoot>,
 }
 
 impl ReleaseDriver {
@@ -586,8 +613,8 @@ impl ReleaseDriver {
             fault: ptr::null_mut(),
             done: cursor.is_null(),
             rc_sweep: None,
-            active_code: None,
             value_owner,
+            active_code: None,
         })
     }
 
@@ -597,6 +624,7 @@ impl ReleaseDriver {
     pub(crate) unsafe fn poll(&mut self, parent: *mut crate::coro_state::HewCoroState) -> bool {
         // SAFETY: the caller owns this driver and its parent through the poll.
         let owner = self.value_owner.clone();
+        // SAFETY: the release driver exclusively owns these cursor items and retains their descriptor and source storage.
         crate::owned_value_budget::with_value_owner(&owner, || unsafe {
             self.poll_inner(parent, None)
         })
@@ -612,6 +640,7 @@ impl ReleaseDriver {
     ) -> bool {
         // SAFETY: activation ownership pins the actor and both invocations.
         let owner = self.value_owner.clone();
+        // SAFETY: the release driver exclusively owns these cursor items and retains their descriptor and source storage.
         crate::owned_value_budget::with_value_owner(&owner, || unsafe {
             self.poll_inner(parent, Some(actor))
         })
@@ -683,7 +712,10 @@ impl ReleaseDriver {
                     if self.state.is_null() {
                         std::process::abort();
                     }
-                    (*self.state).execution_mut().value_owner = self.value_owner.clone();
+                    (*self.state)
+                        .execution_mut()
+                        .value_owner
+                        .clone_from(&self.value_owner);
                     {
                         let _binding = terminal_actor.map(|actor| {
                             crate::actor_native::bind_checked_invocation(actor, self.state)
@@ -755,6 +787,18 @@ pub unsafe extern "C" fn hew_release_driver_fault(
 pub unsafe extern "C" fn hew_release_driver_free(driver: *mut c_void) {
     // SAFETY: the caller transfers this terminal allocation exactly once.
     drop(unsafe { Box::from_raw(driver.cast::<ReleaseDriver>()) });
+}
+
+/// Typed protocol-slot adapter for a cleanup driver.
+/// # Safety
+/// The slot retains one frozen optional driver pointer during this walk.
+#[no_mangle]
+pub unsafe extern "C" fn hew_managed_visit_release_driver_slot(
+    slot: *const c_void,
+    visitor: *const hew_cabi::managed::HewManagedStorageVisitor,
+) -> i32 {
+    // SAFETY: this canonical protocol descriptor matches the compiler's slot.
+    unsafe { hew_managed_visit_release_driver(slot.cast::<*mut c_void>().read(), visitor) }
 }
 
 /// Visit the typed obligations still owned by one suspended cleanup driver.
@@ -847,10 +891,29 @@ pub(crate) unsafe fn visit_cursor(
                 ReleaseItem::MapStorage { map } => {
                     visit::visit_map_range(*map, (**map).cap, true, visitor)
                 }
-                ReleaseItem::RcSurvivors(_) | ReleaseItem::Sink { .. } => UNDESCRIBED,
+                ReleaseItem::Sink { sink } => crate::stream::sender::hew_managed_visit_sink(
+                    (sink as *const *mut crate::stream::HewSink).cast(),
+                    visitor,
+                ),
+                ReleaseItem::Stream { stream } => crate::stream::hew_managed_visit_stream(
+                    (stream as *const *mut crate::stream::HewStream).cast(),
+                    visitor,
+                ),
+                ReleaseItem::Allocation {
+                    pointer,
+                    managed_bytes: Some(bytes),
+                    ..
+                } => match visit::storage(visitor, *pointer, *bytes) {
+                    hew_cabi::managed::DESCEND | hew_cabi::managed::SKIP_DESCENDANTS => 0,
+                    failure => failure,
+                },
+                ReleaseItem::RcSurvivors(_) => UNDESCRIBED,
                 ReleaseItem::CodeRoot(_)
                 | ReleaseItem::Storage { .. }
-                | ReleaseItem::Allocation { .. } => 0,
+                | ReleaseItem::Allocation {
+                    managed_bytes: None,
+                    ..
+                } => 0,
             };
             if status != 0 {
                 return status;
@@ -971,6 +1034,16 @@ pub unsafe extern "C" fn hew_release_poll(
             unsafe { slot.write(value) };
             return 1;
         }
+        if let ReleaseItem::Stream { stream } = item {
+            // SAFETY: this unique cursor pins the provider and its invocation.
+            if !unsafe { crate::stream::prepare_stream_release(stream, state) } {
+                cursor.pending.push(ReleaseItem::Stream { stream });
+                return 0;
+            }
+            // SAFETY: the release driver exclusively owns these cursor items and retains their descriptor and source storage.
+            unsafe { crate::stream::expand_stream_release(stream, &mut cursor.pending) };
+            continue;
+        }
         // SAFETY: expansion consumes only one cursor-owned structural step.
         if let Some(summary) = unsafe { expand(item, &mut cursor.pending) } {
             cursor.rc_sweep = Some(summary);
@@ -1029,8 +1102,9 @@ pub unsafe extern "C-unwind" fn hew_release_sync(cursor: *mut HewReleaseCursor) 
         ..
     } = *cursor;
     let owner = value_owner.unwrap_or_else(crate::owned_value_budget::current_owner);
+    // SAFETY: the release driver exclusively owns these cursor items and retains their descriptor and source storage.
     crate::owned_value_budget::with_value_owner(&owner, || unsafe {
-        release_sync_items(pending.into_iter().rev())
+        release_sync_items(pending.into_iter().rev());
     });
 }
 
@@ -1135,7 +1209,7 @@ mod tests {
             unsafe {
                 crate::string::hew_string_drop_managed(
                     slot.cast::<*mut hew_cabi::string::HewString>().read(),
-                )
+                );
             };
         }
         unsafe fn free(pointer: *mut c_void) {
@@ -1154,7 +1228,7 @@ mod tests {
             drop_fn: Some(drop_string),
             release_start: None,
             code_owner: ptr::null(),
-            managed: &STRING_MANAGED,
+            managed: &raw const STRING_MANAGED,
         };
         static DRIVER_MANAGED: HewManagedValueDescriptor = HewManagedValueDescriptor {
             slot_bytes: 0,
@@ -1168,7 +1242,7 @@ mod tests {
             drop_fn: None,
             release_start: None,
             code_owner: ptr::null(),
-            managed: &DRIVER_MANAGED,
+            managed: &raw const DRIVER_MANAGED,
         };
         // SAFETY: each value/backing has one semantic release and stays pinned
         // while the refused and successful transfer inspect the same worklist.
@@ -1200,7 +1274,7 @@ mod tests {
             assert!(ValueTransfer::prepare(
                 Some(source.clone()),
                 Some(small.clone()),
-                &DRIVER,
+                &raw const DRIVER,
                 (&raw const handle).cast()
             )
             .is_err());
@@ -1210,7 +1284,7 @@ mod tests {
             ValueTransfer::prepare(
                 Some(source.clone()),
                 Some(destination.clone()),
-                &DRIVER,
+                &raw const DRIVER,
                 (&raw const handle).cast(),
             )
             .unwrap()

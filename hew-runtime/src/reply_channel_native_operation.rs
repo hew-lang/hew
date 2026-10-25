@@ -51,7 +51,7 @@ static PAYLOAD_LAYOUT: HewValueLayout = HewValueLayout {
     clone_fn: None,
     drop_fn: None,
     release_start: None,
-    managed: &PAYLOAD_MANAGED,
+    managed: &raw const PAYLOAD_MANAGED,
     code_owner: ptr::null(),
 };
 
@@ -71,6 +71,9 @@ pub struct HewNativeReply {
 /// # Safety
 /// The result matches the immutable layout and remains owned by the caller on
 /// a null return. A successful return consumes it into the returned operation.
+///
+/// # Panics
+/// Panics if the retained reply operation violates its internal lifecycle contract.
 #[no_mangle]
 pub unsafe extern "C" fn hew_actor_reply_start_native(
     value: *mut c_void,
@@ -93,16 +96,13 @@ pub unsafe extern "C" fn hew_actor_reply_start_native(
         } else {
             0
         };
-        let reservation = match owner
+        let Ok(reservation) = owner
             .as_ref()
             .map(|owner| owner.reserve_new(width))
             .transpose()
-        {
-            Ok(reservation) => reservation,
-            Err(_) => {
-                out_status.write(hew_cabi::managed::HEAP_EXCEEDED);
-                return ptr::null_mut();
-            }
+        else {
+            out_status.write(hew_cabi::managed::HEAP_EXCEEDED);
+            return ptr::null_mut();
         };
         let copied = if (*layout).size == 0 {
             ptr::null_mut()
@@ -156,6 +156,9 @@ pub unsafe extern "C" fn hew_actor_reply_start_native(
 /// Recipient quota refusal terminates normally and leaves the value for cleanup.
 /// # Safety
 /// Operation and parent invocation remain exclusively borrowed through the poll.
+///
+/// # Panics
+/// Panics if the retained reply operation violates its internal lifecycle contract.
 #[no_mangle]
 pub unsafe extern "C" fn hew_actor_reply_poll_native(
     operation: *mut HewNativeReply,
@@ -201,7 +204,7 @@ pub unsafe extern "C" fn hew_actor_reply_poll_native(
             let mut transfer = ValueTransfer::begin(
                 operation.owner.clone(),
                 destination.clone(),
-                &PAYLOAD_LAYOUT,
+                &raw const PAYLOAD_LAYOUT,
                 ptr::from_ref(&operation.payload).cast(),
             );
             transfer.set_destination_binding(binding);
@@ -231,7 +234,7 @@ pub unsafe extern "C" fn hew_actor_reply_poll_native(
         let wake = {
             let mut owner = (*channel).native.lock_or_recover();
             if !(*channel).cancelled.load(Ordering::Acquire) {
-                (*channel).value = ptr::replace(&mut operation.payload.value, ptr::null_mut());
+                (*channel).value = ptr::replace(&raw mut operation.payload.value, ptr::null_mut());
                 (*channel).value_size = (*operation.payload.layout).size;
                 owner.payload_owned = true;
                 (*channel).ready.store(true, Ordering::Release);
@@ -256,6 +259,9 @@ unsafe fn free_reply_storage(value: *mut c_void) {
 /// Hand an unpublished result to the existing typed consuming cleanup walker.
 /// # Safety
 /// Publication is terminal and this function is called once before free.
+///
+/// # Panics
+/// Panics if the retained reply operation violates its internal lifecycle contract.
 #[no_mangle]
 pub unsafe extern "C" fn hew_actor_reply_take_cleanup_native(
     operation: *mut HewNativeReply,
@@ -268,7 +274,7 @@ pub unsafe extern "C" fn hew_actor_reply_take_cleanup_native(
             return ptr::null_mut();
         }
         operation.taken = true;
-        let value = ptr::replace(&mut operation.payload.value, ptr::null_mut());
+        let value = ptr::replace(&raw mut operation.payload.value, ptr::null_mut());
         if value.is_null() {
             return ptr::null_mut();
         }
@@ -311,6 +317,9 @@ pub(super) unsafe fn release_payload(
 /// Release a terminal operation after taking its remaining cleanup obligations.
 /// # Safety
 /// The caller owns this operation and has stopped polling it.
+///
+/// # Panics
+/// Panics if the retained reply operation violates its internal lifecycle contract.
 #[no_mangle]
 pub unsafe extern "C" fn hew_actor_reply_free_native(operation: *mut HewNativeReply) {
     if operation.is_null() {

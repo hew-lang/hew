@@ -1,0 +1,14 @@
+[[case]]
+id = "actor-owned-budget-alias"
+intent = "Same-owner aliases retain one backing and checked detach preserves the old value on refusal."
+source = "cases/actor-owned-budget-alias.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 30
+
+[case.env]
+HEW_WORKERS = "2"
+
+[case.expected]
+stdout = "8\nretained backing\n"
+stderr = "hew: failure: HeapExceeded (200)\nhew: actor crash in Buffer.detach (actor 1): HeapExceeded\n"
+exit = 1

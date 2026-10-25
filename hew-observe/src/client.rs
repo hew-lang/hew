@@ -1336,11 +1336,12 @@ mod tests {
             )),
         });
 
-        std::thread::Builder::new()
+        let (shutdown, shutdown_rx) = hew_runtime::profiler::oneshot::channel();
+        let server = std::thread::Builder::new()
             .name("observe-live-smoke-profiler".into())
             .spawn({
                 let ctx = std::sync::Arc::clone(&ctx);
-                move || hew_runtime::profiler::run_tcp_with_listener(listener, ctx)
+                move || hew_runtime::profiler::run_tcp_with_listener(listener, ctx, shutdown_rx)
             })
             .expect("spawn live profiler server");
 
@@ -1399,6 +1400,8 @@ mod tests {
             "successful live fetch must leave no client error, got {:?}",
             client.last_error
         );
+        shutdown.send(()).expect("signal profiler shutdown");
+        server.join().expect("profiler server should exit cleanly");
     }
 
     /// Poll until the live profiler serves metrics; the test runner's

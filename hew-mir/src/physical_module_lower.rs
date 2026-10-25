@@ -269,6 +269,25 @@ pub fn lower_physical_module(
         coverage: module.coverage.clone(),
         releases: ReleaseEffects::default(),
         actor_recipes: actor_value_recipes(module, &ids)?,
+        managed_types: super::physical_type_inventory(module)
+            .types()
+            .map(|ty| {
+                let slot = hew_sir::managed_slot(module, ty).map_err(|error| {
+                    PhysicalError::new(format!("managed payload width for {ty:?}: {error:?}"))
+                })?;
+                let shape = hew_sir::managed_storage_shape(module, ty).map_err(|error| {
+                    PhysicalError::new(format!("managed storage shape for {ty:?}: {error:?}"))
+                })?;
+                Ok((
+                    ty.clone(),
+                    super::PhysicalManagedType {
+                        slot_bytes: slot.bytes,
+                        shape,
+                        recipe: physical_value_recipe(module, &ids, ty)?,
+                    },
+                ))
+            })
+            .collect::<Result<_, PhysicalError>>()?,
         actors: module.actors.clone(),
         supervisors: module.supervisors.clone(),
         resources,
@@ -782,7 +801,7 @@ pub fn physical_type_inventory(module: &SemModule) -> PhysicalTypeInventory {
         types.extend(function.places.iter().map(|place| place.ty.clone()));
         for block in &function.blocks {
             types.extend(block.args.iter().map(|argument| argument.ty.clone()));
-            for operation in &block.ops {
+            for operation in block.operations() {
                 types.extend(operation.results.iter().map(|result| result.ty.clone()));
             }
             if let Some(result) = terminator_result(&block.terminator) {
@@ -1404,6 +1423,7 @@ pub(crate) fn function_attribution(
 
 pub(crate) fn terminator_result(terminator: &SemTerminator) -> Option<&hew_sir::ValueDef> {
     match terminator {
+        SemTerminator::Materialize { operation, .. } => operation.results.first(),
         SemTerminator::Call {
             result: CallResult::Value(result),
             ..

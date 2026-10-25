@@ -128,16 +128,28 @@ pub(super) fn operation_storage(
     }
 }
 
+pub(super) fn terminator_storage(term: &PhysicalTerminator, used: &mut BTreeSet<StorageId>) {
+    terminator_effects(term, used, &mut BTreeSet::new(), &mut BTreeSet::new());
+}
+
+/// Storage references, result writes and argument loans from one exhaustive
+/// terminator contract. Borrowed includes shared loans as well as mutable ones.
 #[expect(
     clippy::too_many_lines,
-    reason = "one exhaustive physical storage reference contract"
+    reason = "one exhaustive physical storage reference and result contract"
 )]
-pub(super) fn terminator_storage(term: &PhysicalTerminator, used: &mut BTreeSet<StorageId>) {
-    let source = |arg: &ArgumentTransfer| match arg {
-        ArgumentTransfer::Borrow(id)
-        | ArgumentTransfer::BorrowMut(id)
-        | ArgumentTransfer::Move(id)
-        | ArgumentTransfer::Clone { source: id, .. } => *id,
+pub(super) fn terminator_effects(
+    term: &PhysicalTerminator,
+    used: &mut BTreeSet<StorageId>,
+    defined: &mut BTreeSet<StorageId>,
+    borrowed: &mut BTreeSet<StorageId>,
+) {
+    let mut source = |arg: &ArgumentTransfer| match arg {
+        ArgumentTransfer::Borrow(id) | ArgumentTransfer::BorrowMut(id) => {
+            borrowed.insert(*id);
+            *id
+        }
+        ArgumentTransfer::Move(id) | ArgumentTransfer::Clone { source: id, .. } => *id,
     };
     for edge in super::defer::edges(term) {
         used.extend(
@@ -148,6 +160,11 @@ pub(super) fn terminator_storage(term: &PhysicalTerminator, used: &mut BTreeSet<
         );
     }
     match term {
+        PhysicalTerminator::Materialize { operations, .. } => {
+            for operation in operations {
+                operation_storage(operation, used, defined, &mut BTreeSet::new());
+            }
+        }
         PhysicalTerminator::StreamNext { stream, result, .. }
         | PhysicalTerminator::GeneratorNext {
             generator: stream,
@@ -155,6 +172,7 @@ pub(super) fn terminator_storage(term: &PhysicalTerminator, used: &mut BTreeSet<
             ..
         } => {
             used.extend([source(stream), *result]);
+            defined.insert(*result);
         }
         PhysicalTerminator::StreamSend {
             sink,
@@ -164,6 +182,7 @@ pub(super) fn terminator_storage(term: &PhysicalTerminator, used: &mut BTreeSet<
         } => {
             used.extend([source(sink), source(value)]);
             used.extend(committed);
+            defined.extend(committed);
         }
         PhysicalTerminator::ActorAsk { args, result, .. }
         | PhysicalTerminator::NativeIo { args, result, .. }
@@ -172,6 +191,7 @@ pub(super) fn terminator_storage(term: &PhysicalTerminator, used: &mut BTreeSet<
         | PhysicalTerminator::ValueCall { args, result, .. } => {
             used.extend(args.iter().map(source));
             used.insert(*result);
+            defined.insert(*result);
         }
         PhysicalTerminator::TaskSelect {
             sources,
@@ -182,6 +202,7 @@ pub(super) fn terminator_storage(term: &PhysicalTerminator, used: &mut BTreeSet<
             used.extend(sources.iter().map(|input| source(&input.transfer())));
             used.extend(timeout);
             used.insert(*result);
+            defined.insert(*result);
         }
         PhysicalTerminator::GeneratorYield { value, .. } => {
             used.insert(source(value));
@@ -189,23 +210,23 @@ pub(super) fn terminator_storage(term: &PhysicalTerminator, used: &mut BTreeSet<
         PhysicalTerminator::TaskAwait { task, result, .. } => {
             used.insert(source(task));
             used.extend(result);
+            defined.extend(result);
         }
         PhysicalTerminator::Offload { args, result, .. }
         | PhysicalTerminator::ActorCall { args, result, .. } => {
             used.extend(args.iter().map(source));
             used.extend(result);
+            defined.extend(result);
         }
         PhysicalTerminator::ExternCall { args, result, .. }
         | PhysicalTerminator::RuntimeCall { args, result, .. } => {
             used.extend(args.iter().map(source));
             used.extend(result);
+            defined.extend(result);
         }
         PhysicalTerminator::Sleep { duration, .. }
         | PhysicalTerminator::SleepUntil {
             deadline: duration, ..
-        }
-        | PhysicalTerminator::RecoverFault {
-            result: duration, ..
         }
         | PhysicalTerminator::Branch {
             condition: duration,
@@ -213,16 +234,22 @@ pub(super) fn terminator_storage(term: &PhysicalTerminator, used: &mut BTreeSet<
         } => {
             used.insert(*duration);
         }
+        PhysicalTerminator::RecoverFault { result, .. } => {
+            used.insert(*result);
+            defined.insert(*result);
+        }
         PhysicalTerminator::CheckedBinary {
             lhs, rhs, result, ..
         } => {
             used.extend([*lhs, *rhs, *result]);
+            defined.insert(*result);
         }
         PhysicalTerminator::SwitchVariant {
             scrutinee, arms, ..
         } => {
             used.insert(*scrutinee);
             used.extend(arms.iter().flat_map(|arm| arm.fields.iter()).copied());
+            defined.extend(arms.iter().flat_map(|arm| arm.fields.iter()).copied());
         }
         PhysicalTerminator::Call {
             args,
@@ -232,10 +259,13 @@ pub(super) fn terminator_storage(term: &PhysicalTerminator, used: &mut BTreeSet<
         } => {
             used.extend(args.iter().map(source));
             used.extend(result);
+            defined.extend(result);
             used.extend(handback);
+            defined.extend(handback);
         }
         PhysicalTerminator::WireCodec { input, result, .. } => {
             used.extend([source(input), *result]);
+            defined.insert(*result);
         }
         PhysicalTerminator::IndirectCall {
             callee,
@@ -252,6 +282,7 @@ pub(super) fn terminator_storage(term: &PhysicalTerminator, used: &mut BTreeSet<
             used.insert(source(callee));
             used.extend(args.iter().map(source));
             used.extend(result);
+            defined.extend(result);
         }
         PhysicalTerminator::Panic {
             message, assertion, ..

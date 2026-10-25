@@ -1163,7 +1163,7 @@ fn lowers_scalar_tuple_construction_and_projection_to_explicit_ops() {
         .functions
         .iter()
         .flat_map(|function| &function.blocks)
-        .flat_map(|block| &block.ops)
+        .flat_map(|block| block.operations())
         .collect::<Vec<_>>();
     assert!(operations.iter().any(|operation| matches!(
         operation,
@@ -1216,7 +1216,7 @@ fn main() {
         .functions
         .iter()
         .flat_map(|function| &function.blocks)
-        .flat_map(|block| &block.ops)
+        .flat_map(|block| block.operations())
         .collect::<Vec<_>>();
     assert!(operations
         .iter()
@@ -1235,7 +1235,7 @@ fn main() {
             function
                 .blocks
                 .iter()
-                .flat_map(|block| &block.ops)
+                .flat_map(|block| block.operations())
                 .filter_map(|operation| {
                     let PhysicalOp::Clone {
                         source,
@@ -1274,7 +1274,7 @@ fn borrowed_aggregate_fields_retain_exact_sir_parent_dependencies() {
     let physical = borrowed_aggregate_fixture();
     let function = &physical.functions[0];
     let mut loans = 0;
-    for operation in function.blocks.iter().flat_map(|block| &block.ops) {
+    for operation in function.blocks.iter().flat_map(|block| block.operations()) {
         if let PhysicalOp::AggregateProjectBorrow {
             dest, aggregate, ..
         } = operation
@@ -1378,7 +1378,7 @@ fn physical_field_loans_refuse_wrong_fields_and_forged_dependencies() {
         let operation = function
             .blocks
             .iter_mut()
-            .flat_map(|block| &mut block.ops)
+            .flat_map(|block| block.operations_mut())
             .find(|op| matches!(op, PhysicalOp::AggregateProjectBorrow { .. }))
             .unwrap();
         let PhysicalOp::AggregateProjectBorrow { dest, field, .. } = operation else {
@@ -1439,7 +1439,10 @@ fn physical_fault_cleanup_must_end_its_field_loans() {
             matches!(
                 block.terminator,
                 PhysicalTerminator::CheckedRaiseFault { .. }
-            )
+            ) && block
+                .ops
+                .iter()
+                .any(|op| matches!(op, PhysicalOp::EndBorrow { .. }))
         })
         .unwrap();
     let before = fault.ops.len();
@@ -1487,7 +1490,7 @@ fn borrowed_variant_payloads_retain_their_enum_dependency() {
     let physical = borrowed_variant_fixture();
     let mut loans = 0;
     for function in &physical.functions {
-        for operation in function.blocks.iter().flat_map(|block| &block.ops) {
+        for operation in function.blocks.iter().flat_map(|block| block.operations()) {
             if let PhysicalOp::VariantProjectBorrow { dest, source, .. } = operation {
                 loans += 1;
                 let slot = &function.storage[dest.0 as usize];
@@ -1514,14 +1517,14 @@ fn physical_variant_loans_refuse_forged_dependencies_and_fields() {
                 function
                     .blocks
                     .iter()
-                    .flat_map(|block| &block.ops)
+                    .flat_map(|block| block.operations())
                     .any(|op| matches!(op, PhysicalOp::VariantProjectBorrow { .. }))
             })
             .unwrap();
         let operation = function
             .blocks
             .iter_mut()
-            .flat_map(|block| &mut block.ops)
+            .flat_map(|block| block.operations_mut())
             .find(|op| matches!(op, PhysicalOp::VariantProjectBorrow { .. }))
             .unwrap();
         let PhysicalOp::VariantProjectBorrow { dest, field, .. } = operation else {
@@ -1650,7 +1653,7 @@ fn main() {
         .functions
         .iter_mut()
         .flat_map(|function| &mut function.blocks)
-        .flat_map(|block| &mut block.ops)
+        .flat_map(|block| block.operations_mut())
         .find_map(|operation| match operation {
             PhysicalOp::AggregateMake { fields, .. } => Some(fields),
             _ => None,
@@ -1671,7 +1674,7 @@ fn main() {
     let (source, action) = function
         .blocks
         .iter_mut()
-        .flat_map(|block| &mut block.ops)
+        .flat_map(|block| block.operations_mut())
         .find_map(|operation| match operation {
             PhysicalOp::Clone { source, action, .. } if projected_sources.contains(source) => {
                 Some((*source, action))
@@ -1714,7 +1717,7 @@ fn verifier_rejects_owned_or_out_of_bounds_tuple_operations() {
     let tuple_dest = owned_tuple.functions[0]
         .blocks
         .iter()
-        .flat_map(|block| &block.ops)
+        .flat_map(|block| block.operations())
         .find_map(|operation| match operation {
             PhysicalOp::TupleMake { dest, .. } => Some(*dest),
             _ => None,
@@ -1731,7 +1734,7 @@ fn verifier_rejects_owned_or_out_of_bounds_tuple_operations() {
     let index = bad_index.functions[0]
         .blocks
         .iter_mut()
-        .flat_map(|block| &mut block.ops)
+        .flat_map(|block| block.operations_mut())
         .find_map(|operation| match operation {
             PhysicalOp::TupleGet { index, .. } => Some(index),
             _ => None,
@@ -2085,7 +2088,7 @@ fn verifier_checks_assign_source_before_initialization_analysis() {
     let operation = physical.functions[0]
         .blocks
         .iter_mut()
-        .flat_map(|block| &mut block.ops)
+        .flat_map(|block| block.operations_mut())
         .find(|operation| {
             matches!(
                 operation,
@@ -2136,7 +2139,7 @@ fn verifier_checks_binary_result_and_constant_payload_types() {
     let destination = wrong_binary.functions[0]
         .blocks
         .iter_mut()
-        .flat_map(|block| &mut block.ops)
+        .flat_map(|block| block.operations_mut())
         .find_map(|operation| match operation {
             PhysicalOp::Binary {
                 op: BinaryOp::WrappingAdd,
@@ -2155,7 +2158,7 @@ fn verifier_checks_binary_result_and_constant_payload_types() {
     let constant = wrong_constant.functions[0]
         .blocks
         .iter_mut()
-        .flat_map(|block| &mut block.ops)
+        .flat_map(|block| block.operations_mut())
         .find_map(|operation| match operation {
             PhysicalOp::Const {
                 value: value @ PhysicalConst::IntegerBits(_),
@@ -2179,7 +2182,7 @@ fn full_range_u64_literal_lowers_to_its_exact_bit_pattern() {
     let bits = physical.functions[0]
         .blocks
         .iter()
-        .flat_map(|block| &block.ops)
+        .flat_map(|block| block.operations())
         .find_map(|operation| match operation {
             PhysicalOp::Const {
                 value: PhysicalConst::IntegerBits(bits),
@@ -2200,7 +2203,7 @@ fn negative_signed_literal_lowers_to_its_destination_width_twos_complement() {
     let bits = physical.functions[0]
         .blocks
         .iter()
-        .flat_map(|block| &block.ops)
+        .flat_map(|block| block.operations())
         .find_map(|operation| match operation {
             PhysicalOp::Const {
                 value: PhysicalConst::IntegerBits(bits),
@@ -2223,7 +2226,7 @@ fn verifier_rejects_a_constant_with_bits_above_its_destination_width() {
     let constant = malformed.functions[0]
         .blocks
         .iter_mut()
-        .flat_map(|block| &mut block.ops)
+        .flat_map(|block| block.operations_mut())
         .find_map(|operation| match operation {
             PhysicalOp::Const {
                 value: value @ PhysicalConst::IntegerBits(_),
@@ -2249,7 +2252,7 @@ fn verifier_rejects_missing_physical_literal_pool_entries() {
     let literal = physical.functions[0]
         .blocks
         .iter_mut()
-        .flat_map(|block| &mut block.ops)
+        .flat_map(|block| block.operations_mut())
         .find_map(|operation| match operation {
             PhysicalOp::Const {
                 value: PhysicalConst::String(id),
@@ -2479,6 +2482,7 @@ fn verifier_rejects_overwriting_a_maybe_live_owner() {
         actors: Vec::new(),
         supervisors: Vec::new(),
         actor_recipes: BTreeMap::new(),
+        managed_types: BTreeMap::new(),
         resources: vec![],
         closures: vec![],
         callable_specializations: Vec::new(),
@@ -2890,7 +2894,7 @@ fn vector_values_use_shared_copy_drop_recipes_for_every_element_shape() {
                 .functions
                 .iter()
                 .flat_map(|function| &function.blocks)
-                .flat_map(|block| &block.ops)
+                .flat_map(|block| block.operations())
                 .any(|op| matches!(
                     op,
                     PhysicalOp::Clone {
@@ -3641,7 +3645,7 @@ fn scalar_loop_chunks_leave_checked_failures_and_calls_in_the_caller() {
                 module.defs.path(callable.declaration) == name
             })
             .unwrap()
-            .loop_chunks()
+            .loop_chunks(module)
     };
     let scalar = chunks("scalar");
     assert_eq!(scalar.len(), 1);
@@ -3676,5 +3680,251 @@ fn scalar_loop_chunks_leave_checked_failures_and_calls_in_the_caller() {
         chunks("nested").len(),
         1,
         "only the innermost scheduling boundary is batched"
+    );
+}
+
+#[test]
+fn vector_loop_chunks_borrow_only_invariant_scalar_receivers() {
+    let semantic = lower_source(
+        r#"
+        fn scan(values: Vec<i64>, limit: i64) -> i64 {
+            var sum: i64 = 0;
+            for index in 0..limit { sum += values[index]; }
+            sum
+        }
+        fn mutating(limit: i64) -> i64 {
+            var values: Vec<i64> = Vec.new();
+            values.push(1);
+            var sum: i64 = 0;
+            for index in 0..limit {
+                values.set(0, index);
+                sum += values[0];
+            }
+            sum
+        }
+        fn owned(values: Vec<string>, limit: i64) -> string {
+            var last = "";
+            for index in 0..limit { last = values[index]; }
+            last
+        }
+        fn main() -> i64 {
+            var values: Vec<i64> = Vec.new();
+            values.push(1);
+            var strings: Vec<string> = Vec.new();
+            strings.push("one");
+            let last = owned(strings, 1);
+            scan(values, 1) + mutating(1) + last.len()
+        }
+        "#,
+    );
+    let verified = lower_physical_module(&semantic, target_for_inventory(&semantic)).unwrap();
+    let module = verified.module();
+    let function = |name: &str| {
+        module
+            .functions
+            .iter()
+            .find(|function| {
+                let callable = &module.callables[function.callable.0 as usize];
+                module.defs.path(callable.declaration) == name
+            })
+            .unwrap()
+    };
+    let scan = function("scan");
+    let chunks = scan.loop_chunks(module);
+    assert_eq!(chunks.len(), 1);
+    let chunk = &chunks[0];
+    let read = scan
+        .blocks
+        .iter()
+        .find(|block| {
+            matches!(
+                block.terminator,
+                PhysicalTerminator::RuntimeCall {
+                    action: PhysicalRuntimeAction {
+                        carrier: PhysicalRuntimeCarrier::Vector {
+                            operation: PhysicalVectorOp::Index,
+                            ..
+                        },
+                        ..
+                    },
+                    ..
+                }
+            )
+        })
+        .unwrap();
+    assert!(chunk.blocks.contains(&read.id));
+    let PhysicalTerminator::RuntimeCall {
+        failure: Some(failure),
+        ..
+    } = &read.terminator
+    else {
+        panic!("indexed read must preserve its bounds failure");
+    };
+    assert!(chunk.exits.contains_key(&failure.target));
+    assert!(function("mutating").loop_chunks(module).is_empty());
+    assert!(function("owned").loop_chunks(module).is_empty());
+}
+
+#[test]
+fn loop_chunks_retain_immutable_aggregate_constants_without_freezing_mutable_fields() {
+    let semantic = lower_source(
+        r"
+        type Facts { increment: i64; }
+        fn fixed(limit: i64) -> i64 {
+            let facts = Facts { increment: 7 };
+            let step = facts.increment;
+            var sum: i64 = 0;
+            for index in 0..limit { sum += step; }
+            sum
+        }
+        fn dynamic(limit: i64, increment: i64) -> i64 {
+            let facts = Facts { increment: increment };
+            let step = facts.increment;
+            var sum: i64 = 0;
+            for index in 0..limit { sum += step; }
+            sum
+        }
+        fn changed(limit: i64, increment: i64) -> i64 {
+            var facts = Facts { increment: 7 };
+            facts.increment = increment;
+            let step = facts.increment;
+            var sum: i64 = 0;
+            for index in 0..limit { sum += step; }
+            sum
+        }
+        fn main() -> i64 { fixed(2) + dynamic(2, 3) + changed(2, 3) }
+        ",
+    );
+    let verified = lower_physical_module(&semantic, target_for_inventory(&semantic)).unwrap();
+    let module = verified.module();
+    for (name, constant) in [("fixed", true), ("dynamic", false), ("changed", false)] {
+        let function = module
+            .functions
+            .iter()
+            .find(|function| {
+                let callable = &module.callables[function.callable.0 as usize];
+                module.defs.path(callable.declaration) == name
+            })
+            .unwrap();
+        let chunks = function.loop_chunks(module);
+        assert_eq!(chunks.len(), 1, "{name}");
+        assert_eq!(
+            chunks[0].constants.iter().any(|op| matches!(
+                op,
+                PhysicalOp::Const {
+                    value: PhysicalConst::IntegerBits(7),
+                    ..
+                }
+            )),
+            constant,
+            "{name}"
+        );
+        // Every ascending source range also carries immutable direction and
+        // step fields; they must remain facts inside the outlined recurrence.
+        assert!(
+            chunks[0].constants.iter().any(|op| matches!(
+                op,
+                PhysicalOp::Const {
+                    value: PhysicalConst::Bool(false),
+                    ..
+                }
+            )),
+            "{name}: ascending direction"
+        );
+        assert!(
+            chunks[0].constants.iter().any(|op| matches!(
+                op,
+                PhysicalOp::Const {
+                    value: PhysicalConst::IntegerBits(1),
+                    ..
+                }
+            )),
+            "{name}: unit step"
+        );
+    }
+}
+
+#[test]
+fn loop_constants_respect_accepted_physical_terminator_overwrites() {
+    let semantic = lower_source(
+        r"
+        fn probe(first: i64, limit: i64) -> i64 {
+            let increment: i64 = 7;
+            let computed = first + 1;
+            var sum: i64 = computed;
+            for index in 0..limit { sum += increment; }
+            sum
+        }
+        fn main() -> i64 { probe(4, 3) }
+        ",
+    );
+    let mut module = lower_physical_module(&semantic, target_for_inventory(&semantic))
+        .unwrap()
+        .into_unverified();
+    let callable = module
+        .callables
+        .iter()
+        .find(|callable| module.defs.path(callable.declaration) == "probe")
+        .unwrap()
+        .id;
+    let function = module
+        .functions
+        .iter_mut()
+        .find(|function| function.callable == callable)
+        .unwrap();
+    let constant = function
+        .blocks
+        .iter()
+        .flat_map(|block| block.operations())
+        .find_map(|op| {
+            if let PhysicalOp::Const {
+                dest,
+                value: PhysicalConst::IntegerBits(7),
+            } = op
+            {
+                Some(*dest)
+            } else {
+                None
+            }
+        })
+        .unwrap();
+    let checked = function
+        .blocks
+        .iter_mut()
+        .find_map(|block| {
+            if let PhysicalTerminator::CheckedBinary { result, normal, .. } = &mut block.terminator
+            {
+                Some((result, normal))
+            } else {
+                None
+            }
+        })
+        .unwrap();
+    let previous = *checked.0;
+    *checked.0 = constant;
+    for (source, _) in &mut checked.1.transfers {
+        if *source == previous {
+            *source = constant;
+        }
+    }
+    // Physical scalar storage may be reused even though source lowering gives
+    // every expression a fresh ID. The verifier permits this overwrite.
+    verify_physical_module(&module).unwrap();
+    let function = module
+        .functions
+        .iter()
+        .find(|function| function.callable == callable)
+        .unwrap();
+    let chunks = function.loop_chunks(&module);
+    assert_eq!(chunks.len(), 1);
+    assert!(
+        !chunks[0].constants.iter().any(|op| matches!(
+            op,
+            PhysicalOp::Const {
+                value: PhysicalConst::IntegerBits(7),
+                ..
+            }
+        )),
+        "a checked result must supersede the earlier constant fact"
     );
 }

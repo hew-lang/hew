@@ -250,6 +250,7 @@ fn collection_operation_module(family: hew_types::RuntimeCallFamily) -> SemModul
         module.variant_shapes = seed.variant_shapes;
     }
     let mut facts = TypeFactService::new(TypeFactContext::default(), module.type_facts);
+    facts.require(&ResolvedTy::Unit).unwrap();
     facts.require(&result_ty).unwrap();
     let mut copies = Vec::new();
     let mut operands = Vec::new();
@@ -1030,8 +1031,8 @@ fn owned_record_layout_and_recursive_glue_emit_verified_llvm() {
     );
     assert!(module.get_function("hew_string_clone").is_some());
     assert!(module.get_function("hew_bytes_clone_ref").is_some());
-    assert!(module.get_function("hew_string_drop").is_some());
-    assert!(module.get_function("hew_bytes_drop").is_some());
+    assert!(module.get_function("hew_string_drop_managed").is_some());
+    assert!(module.get_function("hew_bytes_drop_managed").is_some());
 }
 
 #[test]
@@ -1106,7 +1107,7 @@ fn main() -> i64 {
         assert!(ir.contains("call void @llvm.trap"));
         assert!(module.get_function("llvm.trap").is_some());
         assert!(module.get_function("hew_string_clone").is_some());
-        assert!(module.get_function("hew_string_drop").is_some());
+        assert!(module.get_function("hew_string_drop_managed").is_some());
         for callable in &verified.module().callables {
             let function = module
                 .get_function(&emitted_symbol(verified.module(), callable))

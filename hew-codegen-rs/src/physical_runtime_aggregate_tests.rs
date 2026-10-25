@@ -73,18 +73,28 @@ unsafe extern "C" fn drop_string(pointer: *mut c_void) {
     }
 }
 
-unsafe extern "C" fn vector_index(vector: *const c_void, index: i64, out: *mut c_void) -> bool {
+unsafe extern "C" fn vector_index(
+    vector: *const c_void,
+    index: i64,
+    out: *mut c_void,
+    invocation: *const hew_runtime::coro_state::HewCoroState,
+    status: *mut i32,
+) -> bool {
     INDEX_ACTIVE.set(true);
     // SAFETY: preserve the generated call's checked vector and writable result ABI.
-    let found = unsafe { hew_runtime::vec::hew_vec_get_clone(vector.cast(), index, out) };
+    let found = unsafe {
+        hew_runtime::vec::hew_vec_get_clone_managed(vector.cast(), index, out, invocation, status)
+    };
     INDEX_ACTIVE.set(false);
     found
 }
 
-unsafe extern "C" fn map_index(probe: *mut c_void, out: *mut c_void) -> bool {
+unsafe extern "C" fn map_index(probe: *mut c_void, out: *mut c_void, status: *mut i32) -> bool {
     INDEX_ACTIVE.set(true);
     // SAFETY: preserve the generated probe commit and writable output ABI.
-    let found = unsafe { hew_runtime::hashmap::hew_hashmap_probe_get_clone(probe.cast(), out) };
+    let found = unsafe {
+        hew_runtime::hashmap::hew_hashmap_probe_get_clone_checked(probe.cast(), out, status)
+    };
     INDEX_ACTIVE.set(false);
     found
 }
@@ -159,17 +169,20 @@ fn run_index(map: bool, failed: bool) {
             for (name, address) in [
                 ("hew_string_literal_new", literal as *const () as usize),
                 ("hew_string_clone", copy as *const () as usize),
-                ("hew_string_drop", drop_string as *const () as usize),
+                ("hew_string_drop_managed", drop_string as *const () as usize),
             ] {
                 engine.add_global_mapping(&llvm.get_function(name).unwrap(), address);
             }
             let (name, address) = if map {
                 (
-                    "hew_hashmap_probe_get_clone",
+                    "hew_hashmap_probe_get_clone_checked",
                     map_index as *const () as usize,
                 )
             } else {
-                ("hew_vec_get_clone", vector_index as *const () as usize)
+                (
+                    "hew_vec_get_clone_managed",
+                    vector_index as *const () as usize,
+                )
             };
             engine.add_global_mapping(&llvm.get_function(name).unwrap(), address);
             type Inspect = unsafe extern "C" fn(i64, u8, *mut i64, *mut *mut c_void) -> i32;

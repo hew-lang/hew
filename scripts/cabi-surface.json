@@ -17622,6 +17622,21 @@
         "native",
         "wasm32-wasip1"
       ],
+      "classification": "unclassified-stdlib",
+      "extent": "no-in-signature-extent",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
+        "native": "fn hew_stream_read_ready_native( *mut HewStream, *const HewValueLayout, *mut c_void, *mut *mut HewFault, ) -> i32",
+        "wasm32-wasip1": "fn hew_stream_read_ready_native( *mut HewStream, *const HewValueLayout, *mut c_void, *mut *mut HewFault, ) -> i32"
+      },
+      "symbol": "hew_stream_read_ready_native"
+    },
+    {
+      "availability": [
+        "native",
+        "wasm32-wasip1"
+      ],
       "classification": "non-declarable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",

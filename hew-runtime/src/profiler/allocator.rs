@@ -4,6 +4,12 @@
 //! The legacy profiler cumulative counters stay live at all times; observe's
 //! hot cumulative counters are routed through the observe tier and only counted
 //! when `HEW_OBSERVE` enables them.
+//!
+//! Successful reallocation retires one old allocation and creates one new
+//! allocation event, even when the system allocator reuses the address. Live
+//! bytes change by the size difference; peak tracks live requested storage,
+//! excluding any temporary storage internal to the system allocator. Failed
+//! allocation/reallocation leaves every counter unchanged.
 
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -46,44 +52,89 @@ fn cumulative_counters() -> &'static CumulativeCounters {
     &CUMULATIVE[crate::observe::current_shard()]
 }
 
+fn update_peak(live: u64) {
+    let mut peak = PEAK_BYTES_LIVE.load(Ordering::Relaxed);
+    while live > peak {
+        match PEAK_BYTES_LIVE.compare_exchange_weak(
+            peak,
+            live,
+            Ordering::Relaxed,
+            Ordering::Relaxed,
+        ) {
+            Ok(_) => break,
+            Err(actual) => peak = actual,
+        }
+    }
+}
+
+fn record_allocation(size: u64) {
+    let counters = cumulative_counters();
+    counters.alloc_count.fetch_add(1, Ordering::Relaxed);
+    counters.bytes_allocated.fetch_add(size, Ordering::Relaxed);
+    let live = BYTES_LIVE
+        .fetch_add(size, Ordering::Relaxed)
+        .saturating_add(size);
+    crate::observe::record_heap_alloc(size);
+    update_peak(live);
+}
+
 // ── Allocator wrapper ───────────────────────────────────────────────────
 
 /// A thin allocator wrapper that delegates to [`System`] while counting
-/// allocations and tracking live bytes.
+/// allocation events and tracking live requested bytes.
 #[derive(Debug)]
 pub struct ProfilingAllocator;
 
-// SAFETY: We delegate all allocation to `System` (which is a valid
-// `GlobalAlloc` implementation) and only add atomic counter increments.
+// SAFETY: Every allocation operation delegates to System with the caller's
+// original contract. Bookkeeping uses only static atomics and non-allocating
+// worker-local identity; failure leaves the original allocation and totals intact.
 unsafe impl GlobalAlloc for ProfilingAllocator {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
-        // SAFETY: Caller upholds `GlobalAlloc::alloc` safety contract;
-        // we forward directly to `System`.
+        // SAFETY: the caller supplies the valid allocation layout.
         let ptr = unsafe { System.alloc(layout) };
         if !ptr.is_null() {
-            let size = layout.size() as u64;
-            let counters = cumulative_counters();
-            counters.alloc_count.fetch_add(1, Ordering::Relaxed);
-            counters.bytes_allocated.fetch_add(size, Ordering::Relaxed);
-            let live = BYTES_LIVE
-                .fetch_add(size, Ordering::Relaxed)
-                .saturating_add(size);
-            crate::observe::record_heap_alloc(size);
-            // Update peak with a CAS loop (only grows).
-            let mut peak = PEAK_BYTES_LIVE.load(Ordering::Relaxed);
-            while live > peak {
-                match PEAK_BYTES_LIVE.compare_exchange_weak(
-                    peak,
-                    live,
-                    Ordering::Relaxed,
-                    Ordering::Relaxed,
-                ) {
-                    Ok(_) => break,
-                    Err(actual) => peak = actual,
-                }
-            }
+            record_allocation(layout.size() as u64);
         }
         ptr
+    }
+
+    unsafe fn alloc_zeroed(&self, layout: Layout) -> *mut u8 {
+        // SAFETY: the caller supplies the valid allocation layout; System
+        // supplies the zeroed storage directly rather than a separate memset.
+        let ptr = unsafe { System.alloc_zeroed(layout) };
+        if !ptr.is_null() {
+            record_allocation(layout.size() as u64);
+        }
+        ptr
+    }
+
+    unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
+        // SAFETY: the caller supplies a live allocation with this layout and
+        // a non-zero new size satisfying GlobalAlloc::realloc's contract.
+        let replacement = unsafe { System.realloc(ptr, layout, new_size) };
+        if !replacement.is_null() {
+            let old_size = layout.size() as u64;
+            let new_size = new_size as u64;
+            let counters = cumulative_counters();
+            counters.alloc_count.fetch_add(1, Ordering::Relaxed);
+            counters.dealloc_count.fetch_add(1, Ordering::Relaxed);
+            counters
+                .bytes_allocated
+                .fetch_add(new_size, Ordering::Relaxed);
+            counters.bytes_freed.fetch_add(old_size, Ordering::Relaxed);
+            if new_size > old_size {
+                let growth = new_size - old_size;
+                let live = BYTES_LIVE
+                    .fetch_add(growth, Ordering::Relaxed)
+                    .saturating_add(growth);
+                update_peak(live);
+            } else if new_size < old_size {
+                BYTES_LIVE.fetch_sub(old_size - new_size, Ordering::Relaxed);
+            }
+            crate::observe::record_heap_alloc(new_size);
+            crate::observe::record_heap_free(old_size);
+        }
+        replacement
     }
 
     unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
@@ -93,8 +144,7 @@ unsafe impl GlobalAlloc for ProfilingAllocator {
         counters.bytes_freed.fetch_add(size, Ordering::Relaxed);
         BYTES_LIVE.fetch_sub(size, Ordering::Relaxed);
         crate::observe::record_heap_free(size);
-        // SAFETY: Caller upholds `GlobalAlloc::dealloc` safety contract;
-        // we forward directly to `System`.
+        // SAFETY: the caller supplies a live allocation with this exact layout.
         unsafe { System.dealloc(ptr, layout) };
     }
 }
@@ -104,9 +154,9 @@ unsafe impl GlobalAlloc for ProfilingAllocator {
 /// Current snapshot of allocator statistics.
 #[derive(Debug, Clone, Copy)]
 pub struct AllocStats {
-    /// Total allocation calls.
+    /// Successful allocation events, including replacement blocks from reallocation.
     pub alloc_count: u64,
-    /// Total deallocation calls.
+    /// Retired allocation events, including old blocks from reallocation.
     pub dealloc_count: u64,
     /// Cumulative bytes allocated.
     pub bytes_allocated: u64,
@@ -132,7 +182,7 @@ pub fn snapshot() -> AllocStats {
 
 // ── C ABI ───────────────────────────────────────────────────────────────
 
-/// Return the total number of allocations since startup.
+/// Return successful allocation events, including reallocation, since startup.
 #[no_mangle]
 pub extern "C" fn hew_memory_alloc_count() -> u64 {
     CUMULATIVE.iter().fold(0_u64, |total, counters| {
@@ -140,7 +190,7 @@ pub extern "C" fn hew_memory_alloc_count() -> u64 {
     })
 }
 
-/// Return the total number of deallocations since startup.
+/// Return retired allocation events, including reallocation, since startup.
 #[no_mangle]
 pub extern "C" fn hew_memory_dealloc_count() -> u64 {
     CUMULATIVE.iter().fold(0_u64, |total, counters| {
@@ -179,6 +229,63 @@ pub extern "C" fn hew_memory_bytes_freed() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn zeroed_growth_shrink_and_same_size_reallocation_keep_accounting_balanced() {
+        let _guard = crate::runtime_test_guard();
+        let before = snapshot();
+        let layout = Layout::from_size_align(64, 16).unwrap();
+        let grown_size = 64 * 1024;
+        // SAFETY: all layouts/sizes are valid; each successful reallocation
+        // transfers the original owner, and its final layout frees it once.
+        unsafe {
+            let ptr = ProfilingAllocator.alloc_zeroed(layout);
+            assert!(!ptr.is_null());
+            assert_eq!(ptr as usize % layout.align(), 0);
+            assert!(std::slice::from_raw_parts(ptr, layout.size())
+                .iter()
+                .all(|byte| *byte == 0));
+            std::ptr::write_bytes(ptr, 0x5a, layout.size());
+            let grown = ProfilingAllocator.realloc(ptr, layout, grown_size);
+            assert!(!grown.is_null());
+            assert_eq!(grown as usize % layout.align(), 0);
+            assert!(std::slice::from_raw_parts(grown, layout.size())
+                .iter()
+                .all(|byte| *byte == 0x5a));
+            let peak = snapshot();
+            assert_eq!(peak.bytes_live, before.bytes_live + grown_size as u64);
+            assert_eq!(
+                peak.peak_bytes_live,
+                before
+                    .peak_bytes_live
+                    .max(before.bytes_live + grown_size as u64)
+            );
+            let grown_layout = Layout::from_size_align(grown_size, layout.align()).unwrap();
+            let smaller = ProfilingAllocator.realloc(grown, grown_layout, 16);
+            assert!(!smaller.is_null());
+            let small_layout = Layout::from_size_align(16, layout.align()).unwrap();
+            let same = ProfilingAllocator.realloc(smaller, small_layout, 16);
+            assert!(!same.is_null());
+            assert!(std::slice::from_raw_parts(same, 16)
+                .iter()
+                .all(|byte| *byte == 0x5a));
+            assert_eq!(snapshot().bytes_live, before.bytes_live + 16);
+            ProfilingAllocator.dealloc(same, small_layout);
+            let after = snapshot();
+            assert_eq!(after.alloc_count - before.alloc_count, 4);
+            assert_eq!(after.dealloc_count - before.dealloc_count, 4);
+            assert_eq!(
+                after.bytes_allocated - before.bytes_allocated,
+                grown_size as u64 + 96
+            );
+            assert_eq!(
+                after.bytes_freed - before.bytes_freed,
+                grown_size as u64 + 96
+            );
+            assert_eq!(after.bytes_live, before.bytes_live);
+            assert_eq!(after.peak_bytes_live, peak.peak_bytes_live);
+        }
+    }
 
     #[test]
     fn counts_survive_thread_exit_and_cross_thread_deallocation() {

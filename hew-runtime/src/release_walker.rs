@@ -432,20 +432,25 @@ impl HewReleaseCursor {
     pub(crate) unsafe fn join(
         cursors: impl IntoIterator<Item = *mut Self, IntoIter: DoubleEndedIterator>,
     ) -> *mut Self {
-        let mut pending = Vec::new();
+        let mut joined: Option<Box<Self>> = None;
         for cursor in cursors.into_iter().rev() {
             if !cursor.is_null() {
                 // SAFETY: each cursor is uniquely transferred before its first step.
                 let cursor = unsafe { Box::from_raw(cursor) };
                 assert!(cursor.current_layout.is_none());
-                pending.extend(cursor.pending);
+                if cursor.pending.is_empty() {
+                    continue;
+                }
+                if let Some(joined) = &mut joined {
+                    joined.pending.extend(cursor.pending);
+                } else {
+                    // The last source cursor already has the bottom of the
+                    // stack. Retain its allocation and worklist for the join.
+                    joined = Some(cursor);
+                }
             }
         }
-        if pending.is_empty() {
-            std::ptr::null_mut()
-        } else {
-            Self::new(pending)
-        }
+        joined.map_or(ptr::null_mut(), Box::into_raw)
     }
 
     pub(crate) fn envelopes(
@@ -836,6 +841,56 @@ mod tests {
 
         release_start: Some(selected_release),
     };
+
+    #[test]
+    fn joined_cursors_keep_source_order_and_pin_storage_across_yields() {
+        unsafe fn record_storage(owner: *mut c_void) {
+            // SAFETY: the test retains each borrowed record until completion.
+            let (events, id) = unsafe { &*owner.cast::<(&RefCell<Vec<i32>>, i32)>() };
+            events.borrow_mut().push(*id);
+        }
+        let events = RefCell::new(Vec::<i32>::new());
+        let mut first_storage = (&events, 1);
+        let mut second_storage = (&events, 2);
+        let mut first = 11_i64;
+        let mut second = 22_i64;
+        let cursor = |slot: *mut i64, owner: *mut c_void| {
+            HewReleaseCursor::new(vec![
+                ReleaseItem::Storage {
+                    owner,
+                    free: record_storage,
+                },
+                ReleaseItem::Value {
+                    slot: slot.cast(),
+                    layout: LAYOUT,
+                },
+            ])
+        };
+        // SAFETY: each fresh cursor transfers distinct borrowed storage, all
+        // retained through the final step. Each yielded value finishes before
+        // the next step, standing in for a suspending consuming callback.
+        unsafe {
+            let first_cursor = cursor(&raw mut first, (&raw mut first_storage).cast());
+            let second_cursor = cursor(&raw mut second, (&raw mut second_storage).cast());
+            let joined = HewReleaseCursor::join([
+                ptr::null_mut(),
+                first_cursor,
+                HewReleaseCursor::new(Vec::new()),
+                second_cursor,
+                ptr::null_mut(),
+            ]);
+            assert_eq!(hew_release_next(joined), (&raw mut first).cast());
+            assert!(events.borrow().is_empty());
+            first = 0;
+            assert_eq!(hew_release_next(joined), (&raw mut second).cast());
+            assert_eq!(*events.borrow(), [1]);
+            second = 0;
+            assert!(hew_release_next(joined).is_null());
+            assert_eq!(*events.borrow(), [1, 2]);
+            hew_release_finish(joined);
+        }
+        assert_eq!((first, second), (0, 0));
+    }
 
     #[test]
     fn consuming_cursor_retains_slots_between_forward_release_steps() {

@@ -3,7 +3,7 @@
 use super::HewSink;
 use crate::callable::HewCallableValue;
 use crate::vec::HewValueLayout;
-use crate::wake::{OwnedWaker, ReadinessRegistrations};
+use crate::wake::{ReadinessRegistrations, WakeTarget};
 use hew_cabi::sink::SinkOwners;
 use std::ffi::c_void;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -48,7 +48,7 @@ impl SharedSender {
     pub(crate) fn idle(&self) -> bool {
         !self.busy.load(Ordering::Acquire)
     }
-    pub(crate) fn observe(&self, waker: &Arc<OwnedWaker>) {
+    pub(crate) fn observe<T: WakeTarget + 'static>(&self, waker: &Arc<T>) {
         self.waiters.register(waker);
     }
     pub(super) fn claim(&self) -> bool {
@@ -117,11 +117,11 @@ impl SharedWrite {
         }
     }
 
-    pub(super) unsafe fn poll(
+    pub(super) unsafe fn poll<T: WakeTarget + 'static>(
         &mut self,
         envelope: &mut Option<Vec<u8>>,
         layout: &HewValueLayout,
-        waker: &Arc<OwnedWaker>,
+        waker: &Arc<T>,
     ) -> i32 {
         if !self.fault.is_null() {
             return 3;
@@ -201,7 +201,7 @@ impl SharedWrite {
             self.child = unsafe {
                 super::native::start_underlying(
                     self.owner.sink,
-                    waker.descriptor(),
+                    waker.owned_waker().descriptor(),
                     data,
                     item_layout,
                     self.parent,

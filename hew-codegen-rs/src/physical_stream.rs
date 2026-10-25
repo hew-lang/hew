@@ -363,6 +363,159 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
         self.emit_edge(normal)
     }
 
+    /// Complete ready pipe receives before allocating parked-operation state.
+    /// Pending pipes and other backings continue through the native lifecycle.
+    fn emit_stream_ready(
+        &self,
+        block: &PhysicalBlock,
+        handle: BasicValueEnum<'ctx>,
+        slot: PointerValue<'ctx>,
+        element: &PhysicalLayout,
+        witness: PointerValue<'ctx>,
+        option: PhysicalVariantId,
+    ) -> CodegenResult<()> {
+        let PhysicalTerminator::StreamNext {
+            element: recipe,
+            result,
+            normal,
+            cancel,
+            unwind,
+            ..
+        } = &block.terminator
+        else {
+            unreachable!("ready receive belongs to StreamNext")
+        };
+        let frame = self.stream_frame()?;
+        let pointer = self.ctx.ptr_type(AddressSpace::default());
+        let start = self.ctx.append_basic_block(self.value, "stream.next.start");
+        let probe = self
+            .ctx
+            .append_basic_block(self.value, "stream.next.ready.probe");
+        let completed = self
+            .ctx
+            .append_basic_block(self.value, "stream.next.ready.completed");
+        let stopping = self
+            .ctx
+            .append_basic_block(self.value, "stream.next.ready.cancel");
+        let admitted = self
+            .ctx
+            .append_basic_block(self.value, "stream.next.ready.admitted");
+        let some = self
+            .ctx
+            .append_basic_block(self.value, "stream.next.ready.some");
+        let none = self
+            .ctx
+            .append_basic_block(self.value, "stream.next.ready.none");
+        let failed = self
+            .ctx
+            .append_basic_block(self.value, "stream.next.ready.failed");
+        let cancelled = self.stream_cancelled(frame, "stream.ready.cancelled.before")?;
+        self.builder
+            .build_conditional_branch(cancelled, start, probe)
+            .llvm_ctx("preserve cancellation before receive")?;
+        self.builder.position_at_end(probe);
+        let fault_out = self
+            .value_emitter()
+            .entry_scratch(pointer.into(), "stream.ready.fault")?;
+        let read = get_or_declare_external(
+            self.llvm,
+            "hew_stream_read_ready_native",
+            self.ctx.i32_type().fn_type(&[pointer.into(); 4], false),
+        )?;
+        let status = suspend::call_value(
+            &self.builder,
+            read,
+            &[handle.into(), witness.into(), slot.into(), fault_out.into()],
+            "stream.ready.status",
+        )?
+        .into_int_value();
+        let pending = self
+            .builder
+            .build_int_compare(
+                IntPredicate::EQ,
+                status,
+                self.ctx.i32_type().const_zero(),
+                "stream.ready.pending",
+            )
+            .llvm_ctx("test immediate receive completion")?;
+        self.builder
+            .build_conditional_branch(pending, start, completed)
+            .llvm_ctx("select parked receive lifecycle")?;
+        self.builder.position_at_end(completed);
+        let fault = self
+            .builder
+            .build_load(pointer, fault_out, "stream.ready.fault.value")
+            .llvm_ctx("load ready receive fault")?;
+        let cancelled = self.stream_cancelled(frame, "stream.ready.cancelled.after")?;
+        self.builder
+            .build_conditional_branch(cancelled, stopping, admitted)
+            .llvm_ctx("admit ready receive after cancellation check")?;
+        self.builder.position_at_end(stopping);
+        self.initialize_cancellation_fault()?;
+        let drop_fault = get_or_declare_external(
+            self.llvm,
+            "hew_fault_drop",
+            self.ctx.void_type().fn_type(&[pointer.into()], false),
+        )?;
+        self.builder
+            .build_call(drop_fault, &[fault.into()], "")
+            .llvm_ctx("release unobserved ready receive fault")?;
+        if let Some(action) = recipe.destroy {
+            let release = self
+                .ctx
+                .append_basic_block(self.value, "stream.next.ready.release");
+            let done = self
+                .ctx
+                .append_basic_block(self.value, "stream.next.ready.released");
+            let received = self
+                .builder
+                .build_int_compare(
+                    IntPredicate::EQ,
+                    status,
+                    self.ctx.i32_type().const_int(1, false),
+                    "stream.ready.received",
+                )
+                .llvm_ctx("test cancelled receive ownership")?;
+            self.builder
+                .build_conditional_branch(received, release, done)
+                .llvm_ctx("release only received element ownership")?;
+            self.builder.position_at_end(release);
+            release::slot(&self.value_emitter(), frame, slot, element, action)?;
+            self.builder
+                .build_unconditional_branch(done)
+                .llvm_ctx("finish cancelled receive release")?;
+            self.builder.position_at_end(done);
+        }
+        self.emit_edge(cancel)?;
+        self.builder.position_at_end(admitted);
+        self.builder
+            .build_switch(
+                status,
+                failed,
+                &[
+                    (self.ctx.i32_type().const_int(1, false), some),
+                    (self.ctx.i32_type().const_int(2, false), none),
+                ],
+            )
+            .llvm_ctx("dispatch ready pipe receive")?;
+        self.builder.position_at_end(some);
+        let value = self
+            .value_emitter()
+            .load_value(slot, element, "stream.element")?;
+        self.write_variant_value(self.slots[result.0 as usize], 0, &[value], option)?;
+        self.set_place_initialized(*result, true)?;
+        self.emit_edge(normal)?;
+        self.builder.position_at_end(none);
+        self.write_variant_value(self.slots[result.0 as usize], 1, &[], option)?;
+        self.set_place_initialized(*result, true)?;
+        self.emit_edge(normal)?;
+        self.builder.position_at_end(failed);
+        self.store_active_fault(fault, HEW_TRAP_USER_PANIC)?;
+        self.emit_edge(unwind)?;
+        self.builder.position_at_end(start);
+        Ok(())
+    }
+
     pub(super) fn emit_stream_next(&self, block: &PhysicalBlock) -> CodegenResult<()> {
         let PhysicalTerminator::StreamNext {
             park,
@@ -409,6 +562,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
                 handle, slot, element, witness, result, option.id, normal, unwind,
             );
         }
+        self.emit_stream_ready(block, handle, slot, element, witness, option.id)?;
         let frame = self.stream_frame()?;
         let waker = self.task_pointer_call("hew_coro_state_waker", &[frame.state.into()])?;
         let start = get_or_declare_external(

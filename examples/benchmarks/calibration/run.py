@@ -22,7 +22,7 @@ import time
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parents[2]
 PRIMITIVES = ("hew-o0", "hew", "rust", "rust-checked", "go", "c")
-CONCURRENCY = ("hew-o0", "hew", "go", "tokio", "beam")
+CONCURRENCY = ("hew-o0", "hew", "go", "tokio", "beam", "dotnet")
 
 
 def execute(command, *, timeout, env=None, cwd=HERE):
@@ -143,6 +143,8 @@ def command_for(output, group, language, workload, iterations, size, workers):
     arguments = [workload, str(iterations), str(size)]
     if language == "tokio":
         return [str(output / "tokio-target/release/calibration-tokio"), *arguments]
+    if language == "dotnet":
+        return ["dotnet", str(output / "dotnet/calibration-dotnet.dll"), *arguments]
     if language == "beam":
         return [
             "erl",
@@ -224,6 +226,7 @@ def available_languages(requested):
         "go": "go",
         "tokio": "cargo",
         "beam": "erl",
+        "dotnet": "dotnet",
     }
     present, missing = [], []
     for language in requested:
@@ -241,6 +244,7 @@ def metadata(hew):
         ("hew", [hew, "--version"]),
         ("rustc", ["rustc", "--version"]),
         ("go", ["go", "version"]),
+        ("dotnet", ["dotnet", "--version"]),
         ("clang", ["clang", "--version"]),
         (
             "beam",
@@ -280,7 +284,17 @@ def metadata(hew):
         ]
         for name in sorted(files):
             path = Path(directory) / name
-            if path.suffix in (".hew", ".rs", ".go", ".c", ".erl", ".toml", ".lock"):
+            if path.suffix in (
+                ".hew",
+                ".rs",
+                ".go",
+                ".c",
+                ".erl",
+                ".cs",
+                ".csproj",
+                ".toml",
+                ".lock",
+            ):
                 fixture_hashes[str(path.relative_to(HERE))] = hashlib.sha256(
                     path.read_bytes()
                 ).hexdigest()
@@ -416,11 +430,13 @@ def runtime(args, languages, receipt):
             for language in (PRIMITIVES if group == "primitives" else CONCURRENCY)
             if language in languages
         ]
-        if workload.startswith("stream_roundtrip"):
+        if "dotnet" in choices and not workload.startswith("stream_"):
+            choices = [language for language in choices if language != "dotnet"]
+        if workload.startswith("stream_"):
             choices = [
                 language
                 for language in choices
-                if language in ("hew", "hew-o0", "tokio")
+                if language in ("hew", "hew-o0", "tokio", "go", "beam", "dotnet")
             ]
         if not choices:
             continue
@@ -434,6 +450,8 @@ def runtime(args, languages, receipt):
                         GOMAXPROCS=str(workers),
                         BENCH_WORKERS=str(workers),
                     )
+                    if language == "dotnet":
+                        env["DOTNET_PROCESSOR_COUNT"] = str(workers)
                     command = command_for(
                         args.output,
                         group,
@@ -469,6 +487,8 @@ def runtime(args, languages, receipt):
                         sample=sample,
                         process_elapsed_ns=process_ns,
                     )
+                    if language == "dotnet":
+                        value["dotnet_processor_count"] = workers
                     if has_rss:
                         value["process_peak_rss_kib"] = int(
                             rss_path.read_text().strip()

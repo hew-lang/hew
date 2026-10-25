@@ -605,6 +605,142 @@ fn source_argument_fault_releases_capture_loan_at_o0_o2() {
     assert_source_outcome("argument fault", "fn increment(value: i64) -> i64 { value + 1 } fn main() -> i64 { let callback = increment; let outer = move |divisor: i64| callback(100 / divisor); outer(0) }", None);
 }
 
+#[test]
+fn expect_literal_diagnostics_are_cold_and_preserve_owned_payloads_at_o0_o2() {
+    let source = r#"
+        fn take_option(consume value: Option<string>) -> string { value.expect("option missing") }
+        fn take_result(consume value: Result<string, string>) -> string { value.expect("result missing") }
+        fn main() -> i64 {
+            let option: Option<string> = .Some("ready");
+            let result: Result<string, string> = .Ok("ready");
+            if take_option(option) == take_result(result) { 42 } else { 0 }
+        }
+    "#;
+    let semantic = physical(source);
+    for name in ["take_option", "take_result"] {
+        let callable = semantic
+            .callables
+            .iter()
+            .find(|callable| semantic.defs.path(callable.declaration) == name)
+            .unwrap();
+        let function = semantic
+            .functions
+            .iter()
+            .find(|function| function.callable == callable.id)
+            .unwrap();
+        let mut prefix = function.entry;
+        let (glue, arms) = loop {
+            let block = &function.blocks[prefix.0 as usize];
+            assert!(
+                !block.ops.iter().any(|op| matches!(
+                    op,
+                    PhysicalOp::Const {
+                        value: PhysicalConst::String(_),
+                        ..
+                    }
+                )),
+                "successful expect must not construct its diagnostic"
+            );
+            match &block.terminator {
+                PhysicalTerminator::Goto(edge) => prefix = edge.target,
+                PhysicalTerminator::SwitchVariant { glue, arms, .. } => break (glue, arms),
+                other => panic!("expect must switch before calling or allocating: {other:?}"),
+            }
+        };
+        let glue = &semantic.variant_glue[glue.0 as usize];
+        let failed = glue
+            .runtime_tag(if name == "take_option" {
+                sir::RuntimeVariantRole::OptionNone
+            } else {
+                sir::RuntimeVariantRole::ResultErr
+            })
+            .unwrap();
+        let failure = arms
+            .iter()
+            .find(|arm| arm.variant == failed)
+            .unwrap()
+            .target
+            .target;
+        let literal_blocks: Vec<_> = function
+            .blocks
+            .iter()
+            .filter(|block| {
+                block.ops.iter().any(|op| {
+                    matches!(
+                        op,
+                        PhysicalOp::Const {
+                            value: PhysicalConst::String(_),
+                            ..
+                        }
+                    )
+                })
+            })
+            .map(|block| block.id)
+            .collect();
+        assert_eq!(
+            literal_blocks,
+            [failure],
+            "diagnostic belongs only to failed variant"
+        );
+    }
+    assert_source_outcome("owned expect payloads", source, Some(42));
+    assert_source_outcome(
+        "unit expect payload",
+        r#"fn main() -> i64 { let value: Result<(), string> = .Ok(()); value.expect("send failed"); 42 }"#,
+        Some(42),
+    );
+}
+
+#[test]
+fn expect_failure_literals_and_eager_message_effects_survive_at_o0_o2() {
+    for (name, source, message) in [
+        (
+            "option missing",
+            r#"fn main() -> i64 { let value: Option<i64> = .None; value.expect("missing option") }"#,
+            "missing option",
+        ),
+        (
+            "result missing",
+            r#"fn main() -> i64 { let value: Result<i64, string> = .Err("detail"); value.expect("missing result") }"#,
+            "missing result: detail",
+        ),
+        (
+            "eager nonliteral",
+            r#"fn message() -> string { panic("message evaluated") } fn main() -> i64 { let value: Option<i64> = .Some(42); value.expect(message()) }"#,
+            "message evaluated",
+        ),
+    ] {
+        let physical = physical(source);
+        let main = physical
+            .callables
+            .iter()
+            .find(|row| physical.defs.path(row.declaration) == "main")
+            .unwrap();
+        let symbol = emitted_symbol(&physical, main);
+        for optimized in [false, true] {
+            let ctx = Context::create();
+            let llvm = llvm(&ctx, &physical);
+            let engine = engine(&llvm, optimized);
+            // SAFETY: the checked entry transfers its fault through distinct output slots.
+            unsafe {
+                let main = engine
+                    .get_function::<unsafe extern "C" fn(*mut i64, *mut *mut c_void) -> i32>(
+                        &symbol,
+                    )
+                    .unwrap();
+                let mut result = -77;
+                let mut fault = std::ptr::null_mut();
+                assert_ne!(main.call(&raw mut result, &raw mut fault), 0, "{name}");
+                assert_eq!(result, -77, "{name}");
+                assert!(!fault.is_null(), "{name}");
+                let text = hew_runtime::fault::hew_fault_take_message(fault.cast());
+                assert_eq!(hew_cabi::string::string_as_str(text), message, "{name}");
+                hew_cabi::string::string_release(text);
+            }
+        }
+    }
+}
+
 fn assert_source_outcome(name: &str, source: &str, expected: Option<i64>) {
     let physical = physical(source);
     let main = physical

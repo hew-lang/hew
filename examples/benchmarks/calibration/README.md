@@ -1,8 +1,9 @@
 # Behaviour calibration
 
 This suite explores the costs and shapes of ordinary Hew programs alongside
-Rust, C, Go and Erlang/OTP. It helps identify surprising overhead, understand
-language and runtime tradeoffs, and choose useful follow-up investigations.
+Rust, C, Go, Erlang/OTP and C#/.NET. It helps identify surprising overhead,
+understand language and runtime tradeoffs, and choose useful follow-up
+investigations.
 It is not a language ranking or a performance promise.
 
 The [25 October cloud-informed follow-up](results/2026-10-25-cloud-informed.md)
@@ -19,7 +20,8 @@ includes the first measured shapes, distributions and follow-up questions.
 ## Run
 
 The runner currently requires a POSIX host; this suite has been executed on
-Linux. Install the normal Hew development prerequisites, Rust, Clang, Go and Erlang/OTP.
+Linux. Install the normal Hew development prerequisites, Rust, Clang, Go,
+Erlang/OTP and the .NET 10 SDK.
 Tokio is pinned in `tokio/Cargo.lock`. GNU time supplies process peak RSS on
 Linux; optional Valgrind profiling measures native allocator growth.
 
@@ -78,9 +80,10 @@ directory exercises failure controls for those boundaries.
 
 Primitives run at several iteration counts or buffer sizes. Concurrency uses
 batch/actor counts of 1, 16 and 64 with one and two workers. Hew runs at O0 and
-O2, Rust and C at O2, and Go with its ordinary optimized build. A second Rust
-primitive build enables overflow checks at O2: this separates some arithmetic
-safety cost from other code-generation differences. The O0 Hew
+O2, Rust and C at O2, Go with its ordinary optimized build, and C# in Release
+configuration. A second Rust primitive build enables overflow checks at O2:
+this separates some arithmetic safety cost from other code-generation
+differences. The O0 Hew
 results describe development execution overhead rather than a competitor's
 optimized baseline.
 
@@ -122,8 +125,9 @@ look across sizes and repeat a suspicious result before drawing conclusions.
   sharing and explicit allocation/copy/free for mutation. Sharing a Go slice
   does not provide Hew's snapshot guarantee.
 - Hew and Rust/C release values as scopes end. Go reclaims through its normal
-  garbage collector. The timed batch includes reclamation only when the runtime
-  actually performs it; process RSS helps expose retained storage separately.
+  garbage collector; .NET uses its normal garbage collector. The timed batch
+  includes reclamation only when the runtime actually performs it; process RSS
+  helps expose retained storage separately.
 - Ready tasks are Hew tasks, Tokio tasks, Go goroutines or monitored BEAM
   processes. BEAM processes bring isolated heaps and monitoring semantics.
   These are idiomatic analogous operations with different guarantees.
@@ -131,10 +135,17 @@ look across sizes and repeat a suspicious result before drawing conclusions.
   request; Go reuses each client's reply channel; BEAM sends tagged messages.
   Root-to-actor latency is distinct from arbitrary task-to-task scheduling
   latency. Fanout measures worker-client throughput, without per-request tails.
+- The stream comparators use capacity-one Go channels and .NET
+  `System.Threading.Channels` in wait-on-full mode. Erlang mailboxes are
+  unbounded, so its pipeline producer waits for a per-message consumer
+  acknowledgement before sending the next item. That credit/ack protocol caps
+  outstanding work at one item per pair, but adds acknowledgement messages to
+  the BEAM operation. Pipeline latency samples measure receive wait; only the
+  ping-pong case samples a complete request/reply.
 - GNU time's peak RSS covers the entire process, including startup and JSON
-  output after the timed interval. BEAM virtual-machine startup and Go/Tokio
-  runtime storage belong to that ecosystem footprint. RSS is not live payload
-  size or the number of allocations.
+  output after the timed interval. BEAM virtual-machine startup, Go/Tokio
+  runtime storage and .NET process startup belong to that ecosystem footprint.
+  RSS is not live payload size or the number of allocations.
 - Valgrind counts native allocations for Hew, Rust/Tokio and C. Differences
   between two operation counts give an approximate incremental cost. Go and
   BEAM internal allocation strategies cannot be compared through that oracle.

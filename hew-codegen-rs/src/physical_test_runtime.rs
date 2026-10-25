@@ -43,6 +43,7 @@ pub(super) fn bind_runtime<'ctx>(llvm: &Module<'ctx>, engine: &ExecutionEngine<'
         string::hew_string_is_empty,
         string::hew_string_literal_new,
         string::hew_string_clone,
+        string::hew_string_concat,
         string::hew_string_drop,
         string::hew_string_length,
         string::hew_string_byte_length,

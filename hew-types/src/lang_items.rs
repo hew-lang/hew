@@ -136,13 +136,11 @@ pub const LANG_ITEM_DISPLAY_FMT: &str = LangItem::DisplayFmt.key();
 /// method-level tags, the method's surface name.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LangItemBinding {
-    /// Surface name of the trait carrying the tag (or owning the tagged
-    /// method).
+    /// Surface name of the trait or canonical impl owning the lang item.
     pub trait_name: String,
-    /// Canonical declaration identity of `trait_name`, allocated by checker
-    /// registration. Downstream consumers must use this rather than rebuild it
-    /// from the display spelling.
-    pub trait_id: DefId,
+    /// Canonical identity of the declaring trait, when this is a trait item.
+    /// Canonical inherent methods have no declaring trait.
+    pub trait_id: Option<DefId>,
     /// `Some(method_name)` for method-level entries; `None` for trait-level
     /// entries.
     pub method_name: Option<String>,
@@ -151,7 +149,7 @@ pub struct LangItemBinding {
     pub method_id: Option<DefId>,
 }
 
-/// Lang-item lookup table populated during trait registration and surfaced
+/// Lang-item lookup table populated during canonical registration and surfaced
 /// through [`crate::TypeCheckOutput::lang_items`].
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct LangItemRegistry {
@@ -216,7 +214,7 @@ impl LangItemRegistry {
     #[must_use]
     pub fn display_method_identity(&self) -> Option<(DefId, DefId)> {
         let binding = self.entries.get(LANG_ITEM_DISPLAY_FMT)?;
-        Some((binding.trait_id, binding.method_id?))
+        Some((binding.trait_id?, binding.method_id?))
     }
 
     /// Iterate registered (key, binding) pairs in arbitrary order.

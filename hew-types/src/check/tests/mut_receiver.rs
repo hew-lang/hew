@@ -536,7 +536,10 @@ fn builtin_iterator_lang_item_publishes_exact_next_identity() {
         .expect("the prelude Iterator::next must publish its lang-item identity");
     assert_eq!(binding.trait_name, "Iterator");
     assert_eq!(binding.method_name.as_deref(), Some("next"));
-    assert_eq!(output.defs.path(binding.trait_id), "std.builtins.Iterator");
+    assert_eq!(
+        output.defs.path(binding.trait_id.unwrap()),
+        "std.builtins.Iterator"
+    );
     assert_eq!(
         binding.method_id.map(|id| output.defs.path(id)),
         Some("std.builtins.Iterator::next")

@@ -1821,9 +1821,6 @@ impl Checker {
                     self.check_against(&index.0, &index.1, &Ty::I64);
                 }
                 if matches!(ctx, IndexContext::Read) {
-                    if !self.validate_vec_index_borrow_surface(&args[0], span) {
-                        return Ty::Error;
-                    }
                     // D432: an element with no clone is read as a loan of the
                     // slot the vector still owns, never copied out.
                     match self.vec_iteration_element_mode(&args[0], span) {

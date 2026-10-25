@@ -43,13 +43,14 @@ use hew_cabi::sink::TrySendResult;
 #[cfg(test)]
 use hew_cabi::vec::HewTypeOwnershipKind;
 use hew_cabi::vec::HewValueLayout;
+use smallvec::SmallVec;
 
 use crate::actor::HewActor;
 use crate::lifetime::live_actors::ActorIncarnation;
 use crate::read_slot::{
     hew_read_slot_free, read_slot_deposit_status, read_slot_retain, HewReadSlot, ReadStatus,
 };
-use crate::wake::{HewWaker, OwnedWaker};
+use crate::wake::{HewWaker, OwnedWaker, WakeTarget};
 
 /// Whether a producer blocked on a full ring must abandon its send because the
 /// runtime is shutting down.
@@ -102,7 +103,7 @@ struct Waiter {
 /// clearing a later registration on the same queue.
 enum NativeRegistration {
     Retained(Arc<OwnedWaker>),
-    Observe(std::sync::Weak<OwnedWaker>),
+    Observe(std::sync::Weak<dyn WakeTarget>),
 }
 
 impl NativeRegistration {
@@ -113,7 +114,7 @@ impl NativeRegistration {
         }
     }
 
-    fn into_waker(self) -> Option<Arc<OwnedWaker>> {
+    fn into_waker(self) -> Option<Arc<dyn WakeTarget>> {
         match self {
             Self::Retained(waker) => Some(waker),
             Self::Observe(waker) => waker.upgrade(),
@@ -160,7 +161,9 @@ struct Inner {
     /// The checked consumer parked by [`ChannelCore::poll_recv_envelope`].
     native_consumer: Option<NativeRegistration>,
     /// Checked producers parked on a full ring by [`ChannelCore::poll_send_envelope`].
-    native_producers: Vec<NativeRegistration>,
+    /// A single blocked producer stays inline when its wake batch moves out
+    /// of the lock; concurrent producers spill without limiting registration.
+    native_producers: SmallVec<[NativeRegistration; 1]>,
     /// The one checked actor invocation that owns this pipe's producer sink.
     /// Its registration retains only cancellation and a waker, never a frame.
     actor_stream_cancellation: Option<Arc<crate::coro_state::ActorStreamCancellation>>,
@@ -217,7 +220,7 @@ impl ChannelCore {
                 producers: VecDeque::new(),
                 elem_layout: None,
                 native_consumer: None,
-                native_producers: Vec::new(),
+                native_producers: SmallVec::new(),
                 actor_stream_cancellation: None,
                 actor_stream_bound: false,
             }),
@@ -299,7 +302,7 @@ impl ChannelCore {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
-    fn wake_native(registrations: Vec<NativeRegistration>) {
+    fn wake_native(registrations: SmallVec<[NativeRegistration; 1]>) {
         for registration in registrations {
             if let Some(waker) = registration.into_waker() {
                 waker.wake();
@@ -385,14 +388,28 @@ impl ChannelCore {
         // SAFETY: the caller lends a live descriptor for this retain.
         let registration =
             NativeRegistration::Retained(Arc::new(unsafe { OwnedWaker::retain(waker) }));
-        self.poll_recv_registered(registration)
+        self.poll_recv_registered(Some(registration))
     }
 
-    pub(crate) fn poll_recv_observed(&self, waker: &Arc<OwnedWaker>) -> (i32, Option<Vec<u8>>) {
-        self.poll_recv_registered(NativeRegistration::Observe(Arc::downgrade(waker)))
+    pub(crate) fn poll_recv_observed<T: WakeTarget + 'static>(
+        &self,
+        waker: &Arc<T>,
+    ) -> (i32, Option<Vec<u8>>) {
+        self.poll_recv_registered(Some(NativeRegistration::Observe({
+            let weak: std::sync::Weak<T> = Arc::downgrade(waker);
+            weak
+        })))
     }
 
-    fn poll_recv_registered(&self, registration: NativeRegistration) -> (i32, Option<Vec<u8>>) {
+    /// Run the ordinary receive transition without installing a pending waiter.
+    pub(crate) fn try_recv_native(&self) -> (i32, Option<Vec<u8>>) {
+        self.poll_recv_registered(None)
+    }
+
+    fn poll_recv_registered(
+        &self,
+        registration: Option<NativeRegistration>,
+    ) -> (i32, Option<Vec<u8>>) {
         let item;
         let producer_wake;
         let native_producers;
@@ -407,9 +424,11 @@ impl ChannelCore {
                 None if inner.sink_fault => return (3, None),
                 None if inner.sink_closed => return (2, None),
                 None => {
-                    let previous = inner.native_consumer.replace(registration);
-                    drop(inner);
-                    drop(previous);
+                    if let Some(registration) = registration {
+                        let previous = inner.native_consumer.replace(registration);
+                        drop(inner);
+                        drop(previous);
+                    }
                     return (0, None);
                 }
             }
@@ -442,9 +461,10 @@ impl ChannelCore {
         if inner.sink_closed {
             return 2;
         }
-        let previous = inner
-            .native_consumer
-            .replace(NativeRegistration::Observe(Arc::downgrade(waker)));
+        let previous = inner.native_consumer.replace(NativeRegistration::Observe({
+            let weak: std::sync::Weak<OwnedWaker> = Arc::downgrade(waker);
+            weak
+        }));
         drop(inner);
         drop(previous);
         0
@@ -470,12 +490,18 @@ impl ChannelCore {
         self.poll_send_registered(registration, envelope)
     }
 
-    pub(crate) fn poll_send_observed(
+    pub(crate) fn poll_send_observed<T: WakeTarget + 'static>(
         &self,
-        waker: &Arc<OwnedWaker>,
+        waker: &Arc<T>,
         envelope: Vec<u8>,
     ) -> (i32, Option<Vec<u8>>) {
-        self.poll_send_registered(NativeRegistration::Observe(Arc::downgrade(waker)), envelope)
+        self.poll_send_registered(
+            NativeRegistration::Observe({
+                let weak: std::sync::Weak<T> = Arc::downgrade(waker);
+                weak
+            }),
+            envelope,
+        )
     }
 
     fn poll_send_registered(
@@ -491,7 +517,9 @@ impl ChannelCore {
                 return (2, Some(envelope));
             }
             if inner.queue.len() >= inner.capacity {
-                inner.native_producers.retain(NativeRegistration::is_live);
+                inner
+                    .native_producers
+                    .retain(|registration| registration.is_live());
                 inner.native_producers.push(registration);
                 return (0, Some(envelope));
             }
@@ -579,7 +607,7 @@ impl ChannelCore {
             native_producers = if item.is_some() {
                 std::mem::take(&mut inner.native_producers)
             } else {
-                Vec::new()
+                SmallVec::new()
             };
         }
         if let Some(w) = producer_wake {
@@ -636,7 +664,7 @@ impl ChannelCore {
             native_producers = if item.is_some() {
                 std::mem::take(&mut inner.native_producers)
             } else {
-                Vec::new()
+                SmallVec::new()
             };
         }
         if let Some(w) = producer_wake {
@@ -1291,6 +1319,87 @@ mod tests {
         core.close_sink();
         assert!(!target.take_ready());
         assert_eq!(Arc::strong_count(&target), 1);
+    }
+
+    #[test]
+    fn producer_wake_can_register_a_successor_outside_the_channel_lock() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        struct WakeTarget {
+            core: Arc<ChannelCore>,
+            successor: Arc<OwnedWaker>,
+            registered: AtomicBool,
+        }
+        unsafe extern "C" fn retain(context: *mut std::ffi::c_void) {
+            unsafe { Arc::increment_strong_count(context.cast::<WakeTarget>()) };
+        }
+        unsafe extern "C" fn release(context: *mut std::ffi::c_void) {
+            unsafe { Arc::decrement_strong_count(context.cast::<WakeTarget>()) };
+        }
+        unsafe extern "C" fn wake(context: *mut std::ffi::c_void) {
+            let target = unsafe { &*context.cast::<WakeTarget>() };
+            // Do not block the test if notification accidentally holds the lock.
+            if target.core.inner.try_lock().is_err() {
+                return;
+            }
+            let accepted = target.core.poll_send_observed(&target.successor, vec![2]);
+            let pending = target.core.poll_send_observed(&target.successor, vec![3]);
+            target.registered.store(
+                accepted == (1, None) && pending == (0, Some(vec![3])),
+                Ordering::Relaxed,
+            );
+        }
+        let core = Arc::new(ChannelCore::new(1));
+        assert_eq!(core.try_send(vec![1]), TrySendResult::Accepted);
+        let (ready, successor) = crate::wake::blocking::Readiness::new();
+        let target = Arc::new(WakeTarget {
+            core: Arc::clone(&core),
+            successor: Arc::new(successor),
+            registered: AtomicBool::new(false),
+        });
+        let descriptor = HewWaker {
+            context: Arc::as_ptr(&target).cast_mut().cast(),
+            wake,
+            retain,
+            release,
+        };
+        // SAFETY: target retains the descriptor context throughout registration.
+        let observer = Arc::new(unsafe { OwnedWaker::retain(&descriptor) });
+        assert_eq!(
+            core.poll_send_observed(&observer, vec![4]),
+            (0, Some(vec![4]))
+        );
+        assert_eq!(core.pop(), Some(vec![1]));
+        assert!(target.registered.load(Ordering::Relaxed));
+        assert!(!ready.take_ready());
+        assert_eq!(core.pop(), Some(vec![2]));
+        assert!(ready.take_ready());
+        assert!(core.pop().is_none());
+    }
+
+    #[test]
+    fn producer_wake_batch_keeps_all_live_observers_after_cancellation() {
+        let core = ChannelCore::new(1);
+        assert_eq!(core.try_send(vec![1]), TrySendResult::Accepted);
+        let (first_ready, first) = crate::wake::blocking::Readiness::new();
+        let first = Arc::new(first);
+        let (cancelled_ready, cancelled) = crate::wake::blocking::Readiness::new();
+        let cancelled = Arc::new(cancelled);
+        let (last_ready, last) = crate::wake::blocking::Readiness::new();
+        let last = Arc::new(last);
+        for observer in [&first, &cancelled, &last] {
+            assert_eq!(
+                core.poll_send_observed(observer, vec![2]),
+                (0, Some(vec![2]))
+            );
+        }
+        drop(cancelled);
+        assert_eq!(Arc::strong_count(&cancelled_ready), 1);
+        assert_eq!(core.pop(), Some(vec![1]));
+        assert!(first_ready.take_ready());
+        assert!(last_ready.take_ready());
+        assert!(!cancelled_ready.take_ready());
+        assert!(core.pop().is_none());
     }
 
     #[test]

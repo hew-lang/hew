@@ -2981,7 +2981,7 @@ impl Checker {
         let from = self
             .lang_items
             .get(crate::LangItem::From.key())
-            .map(|binding| binding.trait_id);
+            .and_then(|binding| binding.trait_id);
         from.is_some() && self.resolve_trait_path(&bound.path) == from
     }
 

@@ -92,7 +92,9 @@ pub fn current_owner() -> Option<ValueOwner> {
 /// Install a borrowed account on the canonical execution carrier for one
 /// synchronous poll. The driver retains it across suspension and reinstalls it
 /// on each worker; no thread-local account or value graph survives this call.
-pub(crate) fn with_value_owner<R>(owner: &Option<ValueOwner>, run: impl FnOnce() -> R) -> R {
+/// `None` explicitly describes unpublished internal storage, independent of an
+/// enclosing bounded actor. The previous binding is restored on return or panic.
+pub fn with_value_owner<R>(owner: &Option<ValueOwner>, run: impl FnOnce() -> R) -> R {
     use crate::execution_context::{current_context, set_current_context, HewExecutionContext};
     let previous = current_context();
     let mut fallback = HewExecutionContext::default();

@@ -146,7 +146,8 @@ pub struct HirSessionEntry {
 pub struct HirSessionBinding {
     pub binding: HirBinding,
     pub slot: u32,
-    pub initialized: bool,
+    pub retained: bool,
+    pub contents: hew_types::session::SessionContents,
 }
 
 #[derive(Debug, Clone, PartialEq)]

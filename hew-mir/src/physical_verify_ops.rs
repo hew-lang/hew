@@ -596,10 +596,6 @@ pub(crate) fn verify_initialization(
         if matches!(
             slot.origin,
             StorageOrigin::Capture { .. }
-                | StorageOrigin::Session {
-                    initialized: true,
-                    ..
-                }
                 | StorageOrigin::ActorState {
                     initialized: true,
                     ..
@@ -609,6 +605,7 @@ pub(crate) fn verify_initialization(
             partial::set_leaves(function, &mut entry, slot.id, InitState::Initialized);
         }
     }
+    partial::initialize_session_contents(function, &mut entry)?;
     let borrows = &BorrowDependents::of(function);
     let mut incoming = BTreeMap::from([(function.entry, vec![entry])]);
     // Visit blocks in loop-aware reverse postorder, lowest rank first, each at

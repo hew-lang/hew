@@ -235,6 +235,8 @@ pub fn place_plan(
     }
     let expanded = verify_partition_coverage(defs, function, &plan, &values, shapes, facts)?;
     install_partitions(&mut plan, &expanded);
+    verify_session_contents(function, &plan)?;
+
     let targets = function
         .blocks
         .iter()
@@ -257,6 +259,43 @@ pub fn place_plan(
         }
     }
     Ok(plan)
+}
+
+fn verify_session_contents(function: &SemFunction, plan: &PlacePlan) -> Result<(), String> {
+    for place in &function.places {
+        let PlaceOrigin::Session {
+            contents: hew_types::session::SessionContents::Partial(paths),
+            ..
+        } = &place.origin
+        else {
+            continue;
+        };
+        let leaves = plan
+            .leaves(OwnerRoot::Session(place.id))
+            .ok_or_else(|| "session contents lack a canonical partition".to_string())?;
+        let canonical: BTreeSet<Vec<u32>> = leaves
+            .iter()
+            .map(|leaf| {
+                plan.projections[leaf]
+                    .path
+                    .iter()
+                    .map(|step| step.field)
+                    .collect()
+            })
+            .collect();
+        let held: BTreeSet<_> = paths.iter().cloned().collect();
+        if paths.is_empty()
+            || paths.len() != held.len()
+            || held.len() >= canonical.len()
+            || !held.is_subset(&canonical)
+        {
+            return Err(
+                "partial session contents must select distinct proper canonical leaves".into(),
+            );
+        }
+    }
+
+    Ok(())
 }
 
 fn plain_field_recipes(

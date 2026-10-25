@@ -31,8 +31,29 @@ impl Session {
         checked: &TypeCheckOutput,
         entry: DefId,
         input_slots: &[u32],
+        next_slot: u32,
+    ) -> Result<LiveSubmission, SessionError> {
+        let inputs: Vec<_> = input_slots
+            .iter()
+            .map(|slot| (*slot, hew_types::session::SessionContents::Full))
+            .collect();
+        self.lower_live_program_with_contents(program, checked, entry, &inputs, next_slot)
+    }
+
+    /// Lower against the actual retained leaf contents from the preceding execution.
+    /// The caller must execute only while that session snapshot remains current.
+    ///
+    /// # Errors
+    /// Returns ordinary checked lowering diagnostics or invalid input identities.
+    pub fn lower_live_program_with_contents(
+        &self,
+        program: &hew_parser::ast::Program,
+        checked: &TypeCheckOutput,
+        entry: DefId,
+        inputs: &[(u32, hew_types::session::SessionContents)],
         mut next_slot: u32,
     ) -> Result<LiveSubmission, SessionError> {
+        let input_slots: Vec<_> = inputs.iter().map(|(slot, _)| *slot).collect();
         let program = checked
             .normalized_program
             .as_ref()
@@ -78,11 +99,12 @@ impl Session {
         let mut bindings: Vec<_> = function
             .params
             .iter()
-            .zip(input_slots)
-            .map(|(binding, slot)| HirSessionBinding {
+            .zip(inputs)
+            .map(|(binding, (slot, contents))| HirSessionBinding {
                 binding: binding.clone(),
                 slot: *slot,
-                initialized: true,
+                retained: true,
+                contents: contents.clone(),
             })
             .collect();
         for statement in &function.body.statements {
@@ -103,7 +125,8 @@ impl Session {
                 bindings.push(HirSessionBinding {
                     binding: binding.clone(),
                     slot,
-                    initialized: false,
+                    retained: false,
+                    contents: hew_types::session::SessionContents::Empty,
                 });
             }
         }

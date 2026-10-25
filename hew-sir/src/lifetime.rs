@@ -245,16 +245,25 @@ pub(crate) fn verify(
             .iter()
             .map(|(id, owner)| {
                 if let OwnerRoot::Session(root) = owner {
-                    if function.places.iter().any(|place| {
-                        place.id == *root
-                            && matches!(
-                                place.origin,
-                                crate::PlaceOrigin::Session {
-                                    initialized: true,
-                                    ..
-                                }
-                            )
-                    }) {
+                    if function
+                        .places
+                        .iter()
+                        .find(|place| place.id == *root)
+                        .is_some_and(|place| {
+                            let crate::PlaceOrigin::Session { contents, .. } = &place.origin else {
+                                return false;
+                            };
+                            let path: Vec<_> = flow
+                                .projections
+                                .projection(*id)
+                                .into_iter()
+                                .flat_map(|projection| {
+                                    projection.path.iter().map(|step| step.field)
+                                })
+                                .collect();
+                            contents.contains(&path)
+                        })
+                    {
                         LIVE
                     } else {
                         DEAD

@@ -439,6 +439,17 @@ live-component-bindings: ## Generate: C guest bindings for the portable referenc
 	@test -n "$(COMPONENT_BINDINGS_DIR)" || { echo 'Set COMPONENT_BINDINGS_DIR to the output directory'; exit 1; }
 	cargo run -p hew-live --features component --example component_bindings -- "$(COMPONENT_BINDINGS_DIR)"
 
+.PHONY: live-node
+live-node: ## Build: typed node adapter for the portable component host
+	cargo build -p hew-live --features component --bin hew-live-node
+
+.PHONY: test-live-network
+test-live-network: hew-native live-node wasm-runtime-debug ## Test: source replacement through authenticated QUIC nodes
+	HEW_LIVE_COMPILER="$(abspath $(DEBUG_HEW))" \
+	HEW_LIVE_RUNTIME_DIR="$(abspath $(DEBUG_DIR))" \
+	HEW_LIVE_WASM_LIB_DIR="$(abspath $(WASM_DEBUG_DIR))" \
+		$(TEST_RUN_ENV) cargo nextest run --profile ci -p hew-live --features component --test network
+
 .PHONY: test-live-component live-component-foreign
 live-component-foreign:
 	cargo build --manifest-path hew-live/tests/fixtures/foreign-router/Cargo.toml --target wasm32-wasip1

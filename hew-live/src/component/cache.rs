@@ -60,13 +60,20 @@ impl ArtifactCache {
     }
 
     fn path(&self, digest: [u8; 32]) -> PathBuf {
-        let mut name = String::with_capacity(69);
-        for byte in digest {
-            write!(name, "{byte:02x}").expect("writing to a String cannot fail");
-        }
+        let mut name = format_digest(digest);
         name.push_str(".wasm");
         self.directory.join(name)
     }
+}
+
+/// Encode a portable component's content identity.
+#[must_use]
+pub fn format_digest(digest: [u8; 32]) -> String {
+    let mut text = String::with_capacity(64);
+    for byte in digest {
+        let _ = write!(text, "{byte:02x}");
+    }
+    text
 }
 
 pub(super) fn digest(bytes: &[u8]) -> [u8; 32] {

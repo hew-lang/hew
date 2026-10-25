@@ -59,5 +59,9 @@ tokio = { version = "1", features = ["rt", "macros", "time"] }
 name = "component_bindings"
 required-features = ["component"]
 
+[[bin]]
+name = "hew-live-node"
+required-features = ["component"]
+
 [lints]
 workspace = true

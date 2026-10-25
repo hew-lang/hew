@@ -141,5 +141,69 @@ inside a Tokio runtime.
 The host oracle exercises admission drain, caller cancellation, snapshot expiry,
 non-terminating candidate initialization, retained-state recovery, predecessor
 fencing, autonomous service calls without ingress, cache reopening and disposal.
-The cache also rejects corrupt entries without overwriting them. Fenced network
-deployment remains active implementation work.
+The cache also rejects corrupt entries without overwriting them.
+
+### Authenticated source deployment
+
+`make live-node` builds the experimental `hew-live-node` companion. Its native
+transport is ordinary Hew source using `Node`, authenticated peer sessions and a
+`#[wire]` control actor. The companion loads that code against one shared native
+runtime; each portable deployment keeps its own component Store and guest runtime.
+Only the explicitly authorized peer receives the control actor grant.
+
+Prepare the same-build transport once in an unused output directory:
+
+```sh
+hew-live-node prepare-transport --compiler /path/to/hew \
+  --runtime /path/to/libhew.so --output /path/to/live-node
+```
+
+Use ordinary `HEW_NODE_CONFIG` or `HEW_NODE_*` settings for each node's identity,
+cluster enrolment, transport and bind address. Set `HEW_LIVE_NODE_MODULE` to the
+prepared directory. `HEW_LIVE_RUNTIME` selects the shared runtime when it is not
+beside the companion or under the SDK's `lib/hew` directory.
+
+```sh
+hew-live-node serve --cache component-cache --allow-peer AUTHORIZED_NODE_ID
+hew-live-node attach --endpoint HOST:PORT --node SERVER_NODE_ID
+```
+
+`serve` provides reference router services: destination lookup returns the source
+name, and emitted deliveries go to standard error. Embed `network::Server::open`
+with application `Services` implementations to provide real destinations and
+emission. Closing standard input shuts down the reference server. Its peer grant
+owner cancels its observation turn, revokes the export and waits for cleanup.
+A new authenticated session for the same authorized identity can reconnect.
+
+`attach` reads and writes JSON lines for a local editor. Its remote operations
+use the typed control actor. Every request has `id` and `op`; successful replies
+have the same `id`, `ok: true` and `result`. Failures have `ok: false` and `error`.
+Standard output contains only protocol replies. The operations are:
+
+- `build_prepare`: `source` names an ordinary Hew router source file. The SDK
+  generates service bindings and lifecycle glue, builds a portable component,
+  uploads it and returns its `digest`. This never activates the candidate.
+- `prepare`: `component` names an already built portable component.
+- `status`: returns the current `epoch` and `digest`; epoch zero means no active
+  deployment.
+- `replace`: supplies `digest`, the observed `predecessor` epoch and `within_ms`.
+  A successful reply includes the new `epoch`, `digest` and retained `accepted`
+  count. A stale predecessor leaves the active instance unchanged.
+- `route`: supplies an event's `source` and `body` and returns `accepted`.
+
+Source builds use `HEW_LIVE_COMPILER`, `HEW_WASI_SDK` and
+`HEW_LIVE_WASM_LIB_DIR`, with corresponding command-line options and SDK-relative
+fallbacks. The compiler defaults to the sibling `hew` executable. Generated C
+headers travel with the companion. The current source builder includes sibling
+Hew files and nested source directories; package dependencies outside that source
+directory are not yet staged. The reference contract requires public `create`,
+`route`, `snapshot` and `dispose` functions, as shown in
+`tests/fixtures/router.hew`. `hew-live-node build --source router.hew --output
+router.wasm` runs this build without connecting to a node.
+
+The Linux native QUIC regression, `HEW_WASI_SDK=/path/to/wasi-sdk make
+test-live-network`, executes source preparation, activation, state-preserving
+replacement, stale-predecessor refusal, client reconnection, cache reuse after
+host restart and orderly shutdown with or without a connected peer. The protocol
+must not automatically retry an unconfirmed replacement after disconnect; query
+status after reconnecting and reconcile its epoch and digest first.

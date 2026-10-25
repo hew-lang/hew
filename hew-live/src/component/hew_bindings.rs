@@ -76,6 +76,44 @@ pub(super) fn generate(resolve: &Resolve, world: WorldId) -> Result<(String, Str
     Ok((hew, c))
 }
 
+pub(super) fn wire_records(resolve: &Resolve, world: WorldId) -> Result<String> {
+    let (interface, events) = resolve
+        .interfaces
+        .iter()
+        .find(|(_, interface)| interface.name.as_deref() == Some("events"))
+        .ok_or("router contract must declare events")?;
+    let key = WorldKey::Interface(interface);
+    let mut generator = Bindings {
+        resolve,
+        world: &resolve.worlds[world].name,
+        interface,
+        key: &key,
+        names: HashMap::new(),
+    };
+    for (name, id) in &events.types {
+        generator.names.insert(generator.dealias(*id), pascal(name));
+    }
+    let mut source = String::from("// Generated from the component's WIT event records.\n");
+    for id in events.types.values() {
+        let id = generator.dealias(*id);
+        let TypeDefKind::Record(record) = &resolve.types[id].kind else {
+            return Err("node event contracts require WIT records".into());
+        };
+        writeln!(source, "\n#[wire]\npub type {} {{", generator.names[&id])?;
+        for (index, field) in record.fields.iter().enumerate() {
+            writeln!(
+                source,
+                "    {}: {} @{};",
+                ident(&field.name),
+                generator.hew_type(field.ty)?,
+                index + 1
+            )?;
+        }
+        source.push_str("}\n");
+    }
+    Ok(source)
+}
+
 fn ident(name: &str) -> String {
     wit_bindgen_c::to_c_ident(name)
 }

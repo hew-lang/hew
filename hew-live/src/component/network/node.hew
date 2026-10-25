@@ -1,0 +1,242 @@
+import std.net;
+import std.net.cluster;
+import std.stream;
+import std.fs;
+import network_records;
+
+#[wire]
+pub type Status {
+    epoch: u64 @1;
+    digest: string @2;
+}
+
+#[wire]
+pub type Replacement {
+    predecessor: u64 @1;
+    digest: string @2;
+    within_ms: u64 @3;
+}
+
+#[wire]
+pub type Receipt {
+    epoch: u64 @1;
+    digest: string @2;
+    accepted: u64 @3;
+}
+
+// The SDK owns these asynchronous carriers. Applications use the typed actor.
+extern "C" {
+    fn live_control_prepare(artifact: bytes, consume status: Sink<i64>, consume digest: Sink<string>, consume error: Sink<string>);
+    fn live_control_replace(digest: string, predecessor: u64, within_ms: u64, consume status: Sink<i64>, consume epoch: Sink<u64>, consume identity: Sink<string>, consume accepted: Sink<u64>, consume error: Sink<string>);
+    fn live_control_status(consume status: Sink<i64>, consume epoch: Sink<u64>, consume digest: Sink<string>, consume error: Sink<string>);
+    fn live_control_route(source: string, body: string, consume status: Sink<i64>, consume accepted: Sink<bool>, consume error: Sink<string>);
+}
+
+pub actor Control {
+    #[wire]
+    receive fn prepare(artifact: bytes) -> Result<string, string> {
+        let (status, statuses): (Sink<i64>, Stream<i64>) = stream.pipe(1).expect("prepare status");
+        let (digest, digests): (Sink<string>, Stream<string>) = stream.pipe(1).expect("prepare identity");
+        let (error, errors): (Sink<string>, Stream<string>) = stream.pipe(1).expect("prepare error");
+        unsafe { live_control_prepare(artifact, status, digest, error); };
+        if statuses.recv().expect("prepare completion") == 0 {
+            .Ok(digests.recv().expect("prepared identity"))
+        } else {
+            .Err(errors.recv().expect("prepare refusal"))
+        }
+    }
+
+    #[wire]
+    receive fn replace(request: Replacement) -> Result<Receipt, string> {
+        let (status, statuses): (Sink<i64>, Stream<i64>) = stream.pipe(1).expect("replace status");
+        let (epoch, epochs): (Sink<u64>, Stream<u64>) = stream.pipe(1).expect("replace epoch");
+        let (digest, digests): (Sink<string>, Stream<string>) = stream.pipe(1).expect("replace identity");
+        let (accepted, snapshots): (Sink<u64>, Stream<u64>) = stream.pipe(1).expect("replace snapshot");
+        let (error, errors): (Sink<string>, Stream<string>) = stream.pipe(1).expect("replace error");
+        unsafe { live_control_replace(request.digest, request.predecessor, request.within_ms, status, epoch, digest, accepted, error); };
+        if statuses.recv().expect("replace completion") == 0 {
+            .Ok(Receipt { epoch: epochs.recv().expect("committed epoch"), digest: digests.recv().expect("committed identity"), accepted: snapshots.recv().expect("retained snapshot") })
+        } else {
+            .Err(errors.recv().expect("replace refusal"))
+        }
+    }
+
+    #[wire]
+    receive fn status() -> Result<Status, string> {
+        let (status, statuses): (Sink<i64>, Stream<i64>) = stream.pipe(1).expect("status completion");
+        let (epoch, epochs): (Sink<u64>, Stream<u64>) = stream.pipe(1).expect("status epoch");
+        let (digest, digests): (Sink<string>, Stream<string>) = stream.pipe(1).expect("status identity");
+        let (error, errors): (Sink<string>, Stream<string>) = stream.pipe(1).expect("status error");
+        unsafe { live_control_status(status, epoch, digest, error); };
+        if statuses.recv().expect("status completion") == 0 {
+            .Ok(Status { epoch: epochs.recv().expect("active epoch"), digest: digests.recv().expect("active identity") })
+        } else {
+            .Err(errors.recv().expect("status refusal"))
+        }
+    }
+
+    #[wire]
+    receive fn route(event: network_records.Event) -> Result<bool, string> {
+        let (status, statuses): (Sink<i64>, Stream<i64>) = stream.pipe(1).expect("route status");
+        let (accepted, results): (Sink<bool>, Stream<bool>) = stream.pipe(1).expect("route result");
+        let (error, errors): (Sink<string>, Stream<string>) = stream.pipe(1).expect("route error");
+        unsafe { live_control_route(event.source, event.body, status, accepted, error); };
+        if statuses.recv().expect("route completion") == 0 {
+            .Ok(results.recv().expect("route result"))
+        } else {
+            .Err(errors.recv().expect("route refusal"))
+        }
+    }
+}
+
+fn authenticated_peer(identity: string) -> net.PeerSession {
+    let peers = cluster.watch().expect("watch authenticated peers");
+    loop {
+        for member in peers.snapshot().expect("peer snapshot").members {
+            if member.id.display() == identity && member.state == cluster.State.Alive {
+                match Node.peer(member.id) {
+                    .Ok(peer) => return peer,
+                    .Err(_) => {}
+                }
+            }
+        }
+        peers.changes.recv().expect("peer observation");
+    }
+}
+
+#[resource]
+type NodeOwner {
+    active: bool;
+}
+
+impl NodeOwner {
+    fn close(consume self) {
+        Node.shutdown();
+    }
+}
+
+fn open_node() -> NodeOwner {
+    Node.start(NodeConfig.load().expect("node configuration")).expect("start node");
+    NodeOwner { active: true }
+}
+
+#[resource]
+pub type Server {
+    control: Control;
+    node: NodeOwner;
+}
+
+impl Server {
+    fn close(consume self) {
+        stop(self.control);
+        stopped(self.control);
+    }
+}
+
+pub fn start() -> Server {
+    let node = open_node();
+    Server { control: spawn Control, node: node }
+}
+
+actor GrantKeeper {
+    let control: Control;
+    let identity: string;
+
+    #[every(10ms)]
+    receive fn maintain() {
+        let peers = cluster.watch().expect("watch authorized peer");
+        loop {
+            var granted = false;
+            for member in peers.snapshot().expect("authorized peer snapshot").members {
+                if member.id.display() == identity && member.state == cluster.State.Alive {
+                    match Node.peer(member.id) {
+                        .Ok(peer) => {
+                            match peer.export(control) {
+                                .Ok(grant) => {
+                                    granted = true;
+                                    loop {
+                                        var alive = false;
+                                        for current in peers.snapshot().expect("granted peer snapshot").members {
+                                            if current.id == member.id && current.session == member.session && current.state == cluster.State.Alive {
+                                                alive = true;
+                                            }
+                                        }
+                                        if !alive { break; }
+                                        peers.changes.recv().expect("granted peer observation");
+                                    }
+                                }
+                                .Err(_) => {}
+                            }
+                        }
+                        .Err(_) => {}
+                    }
+                }
+            }
+            if !granted {
+                peers.changes.recv().expect("authorized peer observation");
+            }
+        }
+    }
+}
+
+#[resource]
+pub type Grant {
+    keeper: GrantKeeper;
+}
+
+impl Grant {
+    fn close(consume self) {
+        // The observation turn is intentionally live until this owner closes.
+        terminate(self.keeper);
+        stopped(self.keeper);
+    }
+}
+
+pub fn grant(server: Server, identity: string) -> Grant {
+    Grant { keeper: spawn GrantKeeper { control: server.control, identity: identity } }
+}
+
+pub fn revoke(consume grant: Grant) {}
+pub fn close_server(consume server: Server) {}
+
+#[resource]
+pub type Client {
+    control: Control;
+    node: NodeOwner;
+}
+
+impl Client {
+    fn close(consume self) {}
+}
+
+pub fn connect(endpoint: string, identity: string) -> Client {
+    let node = open_node();
+    Node.connect(endpoint).expect("connect deployment node");
+    let peer = authenticated_peer(identity);
+    Client { control: peer.receive_service<Control>().expect("deployment control grant"), node: node }
+}
+
+pub fn close_client(consume client: Client) {}
+
+pub fn client_prepare(client: Client, path: string) -> string {
+    let artifact = fs.read_bytes(path).expect("component artefact");
+    client.control.prepare(artifact).expect("prepare call").expect("prepare component")
+}
+
+pub fn client_replace(client: Client, digest: string, predecessor: u64, within_ms: u64) -> Receipt {
+    client.control.replace(Replacement { predecessor: predecessor, digest: digest, within_ms: within_ms }).expect("replace call").expect("replace component")
+}
+
+pub fn client_status(client: Client) -> Status {
+    client.control.status().expect("status call").expect("deployment status")
+}
+
+pub fn client_route(client: Client, source: string, body: string) -> bool {
+    client.control.route(network_records.Event { source: source, body: body }).expect("route call").expect("route event")
+}
+
+pub fn status_epoch(status: Status) -> u64 { status.epoch }
+pub fn status_digest(status: Status) -> string { status.digest }
+pub fn receipt_epoch(receipt: Receipt) -> u64 { receipt.epoch }
+pub fn receipt_digest(receipt: Receipt) -> string { receipt.digest }
+pub fn receipt_accepted(receipt: Receipt) -> u64 { receipt.accepted }

@@ -299,7 +299,7 @@ pub struct HewExecutionContext {
     pub request_deadline: crate::request_deadline::RequestDeadline,
     /// Borrowed explicit account during typed release. A null pointer leaves
     /// dispatch lookup active; a pointer to `None` is explicitly unbounded.
-    pub(crate) value_owner: *const Option<crate::owned_value_budget::ValueOwner>,
+    pub value_owner: *const Option<crate::owned_value_budget::ValueOwner>,
 }
 
 thread_local! {

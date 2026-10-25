@@ -162,10 +162,10 @@ impl RaceGroup {
                 }
                 if self.winner && !self.fault.is_null() {
                     let result = checked(self.task).lock_or_recover();
-                    self.release = Some(ReleaseDriver::new(HewReleaseCursor::values([(
-                        result.result,
-                        *result.layout,
-                    )])));
+                    self.release = Some(ReleaseDriver::with_value_owner(
+                        HewReleaseCursor::values([(result.result, *result.layout)]),
+                        self.value_owner.clone(),
+                    ));
                 }
             }
             if let Some(release) = &mut self.release {

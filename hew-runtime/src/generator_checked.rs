@@ -66,7 +66,6 @@ impl WakeRelay {
 pub struct HewCheckedGenerator {
     callable: Option<HewCallableValue>,
     invocation_slot_bytes: u64,
-    provider_layout: *const HewValueLayout,
     value_owner: Option<crate::owned_value_budget::ValueOwner>,
     yielded: *const HewValueLayout,
     returned: *const HewValueLayout,
@@ -98,7 +97,10 @@ impl HewCheckedGenerator {
                         HewReleaseCursor::values([(self.output, *layout)])
                     })
                 };
-                self.release = Some(ReleaseDriver::new(cursor));
+                self.release = Some(ReleaseDriver::with_value_owner(
+                    cursor,
+                    self.value_owner.clone(),
+                ));
             }
             let driver = self.release.as_mut().expect("generator release owner");
             if !driver.poll(parent) {
@@ -107,6 +109,12 @@ impl HewCheckedGenerator {
             self.fault = crate::fault::hew_fault_combine(self.fault, driver.take_fault());
             self.release = None;
             if lazy {
+                if let (Some(owner), Some(callable)) = (&self.value_owner, &self.callable) {
+                    owner.release_backing(
+                        ptr::from_ref(callable).cast(),
+                        self.invocation_slot_bytes,
+                    );
+                }
                 self.callable = None;
             }
             true
@@ -171,7 +179,6 @@ pub unsafe extern "C" fn hew_checked_generator_new(
         _code: code,
         callable: Some(callable),
         invocation_slot_bytes,
-        provider_layout,
         value_owner: crate::owned_value_budget::current_owner(),
         yielded,
         returned,
@@ -367,6 +374,12 @@ pub unsafe extern "C" fn hew_checked_generator_poll(
             context.partition_policy = parent_context.partition_policy;
         }
         let _previous = set_current_context(&raw mut context);
+        if let (Some(owner), Some(callable)) = (&generator.value_owner, &generator.callable) {
+            owner.release_backing(
+                ptr::from_ref(callable).cast(),
+                generator.invocation_slot_bytes,
+            );
+        }
         if let Some(callable) = generator.callable.take() {
             // SAFETY: the compiler's once adapter owns environment cleanup on
             // every terminal path; output/state remain live until frame release.
@@ -507,6 +520,16 @@ pub unsafe extern "C" fn hew_checked_generator_free(generator: *mut HewCheckedGe
     unsafe {
         hew_fault_drop(generator.fault);
         hew_coro_state_free(generator.state);
+        if let Some(owner) = &generator.value_owner {
+            let width = crate::owned_value_budget::visit::slot_bytes(&*generator.yielded)
+                .and_then(|yielded| {
+                    crate::owned_value_budget::visit::slot_bytes(&*generator.returned)
+                        .map(|returned| yielded.max(returned))
+                })
+                .unwrap_or_else(|_| std::process::abort());
+            owner.release_backing(generator.output, width);
+            owner.release_backing(ptr::from_ref(&*generator).cast(), 0);
+        }
         dealloc(generator.output.cast(), generator.allocation);
     }
 }

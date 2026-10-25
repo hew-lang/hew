@@ -694,11 +694,16 @@ impl FunctionLowerer<'_> {
                 operation,
                 normal,
                 failure,
-            } => Ok(PhysicalTerminator::Materialize {
-                operations: self.lower_op(operation, (block.id, block.ops.len()))?,
-                normal: self.lower_edge(normal)?,
-                failure: self.lower_edge(failure)?,
-            }),
+            } => {
+                let operations = self.lower_op(operation, (block.id, block.ops.len()))?;
+                let acquisition = self.managed_acquisition(&operations)?;
+                Ok(PhysicalTerminator::Materialize {
+                    operations,
+                    acquisition,
+                    normal: self.lower_edge(normal)?,
+                    failure: self.lower_edge(failure)?,
+                })
+            }
             SemTerminator::EnterDefer { defer, park, body } => Ok(PhysicalTerminator::EnterDefer {
                 defer: *defer,
                 park: *park,

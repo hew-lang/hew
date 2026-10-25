@@ -11,7 +11,32 @@ pub(super) fn bind_runtime<'ctx>(llvm: &Module<'ctx>, engine: &ExecutionEngine<'
             }
         })*};
     }
+    macro_rules! bind_budget {
+        ($($module:ident :: $name:ident),* $(,)?) => {$({
+            if let Some(function) = llvm.get_function(stringify!($name)) {
+                engine.add_global_mapping(&function, hew_runtime::owned_value_budget::$module::$name as *const () as usize);
+            }
+        })*};
+    }
+    bind_budget!(
+        frame::hew_budget_bind_frame,
+        frame::hew_managed_visit_invocation,
+        materialize::hew_budget_materialize_begin,
+        materialize::hew_budget_materialize_commit,
+        materialize::hew_budget_materialize_abort,
+        materialize::hew_budget_materialize_overflow,
+        visit::hew_managed_visit_backing,
+        visit::hew_managed_visit_string,
+        visit::hew_managed_visit_bytes,
+        visit::hew_managed_visit_vector,
+        visit::hew_managed_visit_map,
+        visit::hew_managed_visit_set,
+        visit::hew_managed_visit_callable,
+        visit::hew_managed_visit_shared,
+        visit::hew_managed_visit_dynamic,
+    );
     bind!(
+        bytes::hew_bytes_literal_capacity,
         cont::hew_cont_frame_alloc,
         cont::hew_cont_frame_free,
         cont::hew_cont_resume,

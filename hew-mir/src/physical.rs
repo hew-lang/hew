@@ -121,6 +121,8 @@ pub use module_lower::*;
 
 #[path = "physical_function_lower.rs"]
 mod function_lower;
+#[path = "physical_managed.rs"]
+mod managed;
 
 #[path = "physical_verify_structural.rs"]
 mod verify_structural;

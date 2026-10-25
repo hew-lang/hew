@@ -5,6 +5,12 @@ use super::*;
 impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
     pub(super) fn emit_terminator(&self, block: &PhysicalBlock) -> CodegenResult<()> {
         match &block.terminator {
+            PhysicalTerminator::Materialize {
+                operations,
+                acquisition,
+                normal,
+                failure,
+            } => self.emit_materialization(operations, acquisition, normal, failure),
             PhysicalTerminator::ActorAsk {
                 actor,
                 message,

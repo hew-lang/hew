@@ -80,6 +80,7 @@ pub(crate) fn terminator_successors(
             operations,
             normal,
             failure,
+            ..
         } => {
             if state.fault != FaultState::None {
                 return Err(PhysicalError::new(
@@ -983,6 +984,7 @@ pub(crate) fn verify_terminator(
             operations,
             normal,
             failure,
+            ..
         } => {
             if operations.is_empty() {
                 return Err(PhysicalError::new(

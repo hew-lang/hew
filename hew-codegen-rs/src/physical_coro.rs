@@ -96,6 +96,7 @@ fn invocation_type(ctx: &Context) -> inkwell::types::StructType<'_> {
             ctx.i8_type().into(),
             ctx.i8_type().into(),
             ctx.i8_type().into(),
+            ctx.ptr_type(AddressSpace::default()).into(),
         ],
         false,
     )
@@ -244,6 +245,14 @@ pub(super) fn begin<'ctx>(
         ))
     };
     builder.position_at_end(finish);
+    let unbind = get_or_declare_external(
+        module,
+        "hew_budget_bind_frame",
+        ctx.void_type().fn_type(&[pointer.into(); 2], false),
+    )?;
+    builder
+        .build_call(unbind, &[state.into(), pointer.const_null().into()], "")
+        .llvm_ctx("retire the completed invocation root view")?;
     let is_destroying = builder
         .build_load(ctx.bool_type(), destroying, "frame.is.destroying")
         .llvm_ctx("inspect destruction entry")?
@@ -386,6 +395,15 @@ impl<'ctx> Frame<'ctx> {
             self.storage(ctx, pointer.into(), "call.child.state")?,
             self.storage(ctx, pointer.into(), "call.child.frame")?,
         );
+        let builder = ctx.create_builder();
+        if let Some(terminator) = self.entry.get_terminator() {
+            builder.position_before(&terminator);
+        } else {
+            builder.position_at_end(self.entry);
+        }
+        builder
+            .build_store(slots.0, pointer.const_null())
+            .llvm_ctx("initialize child root view")?;
         self.child.set(Some(slots));
         Ok(slots)
     }
@@ -524,6 +542,10 @@ mod abi_tests {
             (
                 offset_of!(HewCoroInvocation, cleanup_abandon_io),
                 field_size(|record: &HewCoroInvocation| &record.cleanup_abandon_io),
+            ),
+            (
+                offset_of!(HewCoroInvocation, managed_frame),
+                field_size(|record: &HewCoroInvocation| &record.managed_frame),
             ),
         ];
         let ctx = Context::create();

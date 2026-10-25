@@ -759,6 +759,9 @@ pub(super) fn await_child<'ctx>(
     builder.position_at_end(outcome);
     let status = state_value(true)?;
     free_handle("hew_coro_state_free", state_slot)?;
+    builder
+        .build_store(state_slot, pointer.const_null())
+        .llvm_ctx("clear completed child root")?;
     Ok(status)
 }
 

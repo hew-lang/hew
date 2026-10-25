@@ -1111,6 +1111,42 @@ pub struct PhysicalWireDecodeResult {
     pub error_ty: ResolvedTy,
 }
 
+/// Exact source slot selected before a checked construction executes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PhysicalManagedSource {
+    Value(StorageId),
+    AggregateField {
+        source: StorageId,
+        field: u32,
+    },
+    VariantField {
+        source: StorageId,
+        variant: u32,
+        field: u32,
+        glue: PhysicalVariantId,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PhysicalManagedInput {
+    pub source: PhysicalManagedSource,
+    pub ty: ResolvedTy,
+    pub copies: u64,
+    pub consume: bool,
+}
+
+/// Owning-stage storage plan. LLVM supplies addresses, never accounting policy.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PhysicalMaterialization {
+    pub result: StorageId,
+    /// `None` is canonical arithmetic overflow and refuses bounded acquisition.
+    pub fresh_bytes: Option<u64>,
+    /// The bytes substrate supplies its actual literal capacity policy.
+    pub bytes_literal_length: Option<u32>,
+    pub inputs: Vec<PhysicalManagedInput>,
+    pub start_task: bool,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum PhysicalTerminator {
     /// Execute the already selected physical value construction only after
@@ -1118,6 +1154,7 @@ pub enum PhysicalTerminator {
     /// publication occur on the failure edge.
     Materialize {
         operations: Vec<PhysicalOp>,
+        acquisition: PhysicalMaterialization,
         normal: PhysicalEdge,
         failure: PhysicalEdge,
     },

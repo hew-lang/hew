@@ -829,11 +829,7 @@ pub unsafe extern "C" fn hew_bytes_from_static(data: *const u8, len: u32) -> Byt
         };
     }
 
-    let cap = if len < MIN_CAPACITY {
-        MIN_CAPACITY
-    } else {
-        len
-    };
+    let cap = u32::try_from(hew_bytes_literal_capacity(len)).expect("literal capacity fits u32");
     // SAFETY: cap > 0.
     let ptr = unsafe { alloc_buf(cap) };
     // SAFETY: data is valid for len bytes; ptr is freshly allocated with cap >= len.
@@ -844,6 +840,12 @@ pub unsafe extern "C" fn hew_bytes_from_static(data: *const u8, len: u32) -> Byt
         offset: 0,
         len,
     }
+}
+
+/// Exact backing capacity selected by the bytes literal constructor.
+#[no_mangle]
+pub extern "C" fn hew_bytes_literal_capacity(len: u32) -> u64 {
+    u64::from(if len == 0 { 0 } else { len.max(MIN_CAPACITY) })
 }
 
 /// Initialize a compiler literal's output with one owned byte value.

@@ -3,6 +3,7 @@
 use std::collections::{btree_map::Entry, BTreeMap};
 
 use hew_mir::physical::{LeafContents, PhysicalCleanup, SemParamPassing, StorageOrigin};
+use hew_sir::OwnKind;
 use inkwell::builder::Builder;
 use inkwell::values::{FunctionValue, IntValue, PointerValue};
 
@@ -203,6 +204,37 @@ pub(super) fn allocate_flags<'ctx>(
             )?);
         }
     }
+    if module.module.callables[function.callable.0 as usize].is_resumable {
+        for storage in &function.storage {
+            if storage.own != OwnKind::Owned
+                || matches!(
+                    storage.origin,
+                    StorageOrigin::Capture { .. } | StorageOrigin::ActorState { .. }
+                )
+                || function.place_storage.contains_key(&storage.id)
+            {
+                continue;
+            }
+            if let Entry::Vacant(entry) = flags.entry(storage.id) {
+                let flag = super::coro::entry_storage(
+                    module.ctx,
+                    entry_block,
+                    module.ctx.bool_type().into(),
+                    &format!("s{}.initialized", storage.id.0),
+                )?;
+                builder
+                    .build_store(
+                        flag,
+                        module
+                            .ctx
+                            .bool_type()
+                            .const_int(u64::from(function.parameters.contains(&storage.id)), false),
+                    )
+                    .llvm_ctx("initialize owned invocation slot")?;
+                entry.insert(flag);
+            }
+        }
+    }
     Ok(flags)
 }
 
@@ -254,6 +286,15 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
                     )
                     .llvm_ctx("publish aggregate leaf initialization")?;
             }
+        } else if let Some(flag) = self.place_flags.get(&id) {
+            self.builder
+                .build_store(
+                    *flag,
+                    self.ctx
+                        .bool_type()
+                        .const_int(u64::from(initialized), false),
+                )
+                .llvm_ctx("publish owned invocation slot initialization")?;
         }
         Ok(())
     }

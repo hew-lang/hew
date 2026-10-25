@@ -51,6 +51,7 @@ pub(super) fn build_module_with_host<'ctx>(
         debug,
     };
     emitter.declare_functions()?;
+    emitter.emit_managed_descriptors()?;
     emitter.emit_regex_lifecycle()?;
     emitter.emit_collection_value_descriptors()?;
     emitter.emit_task_descriptors()?;
@@ -515,7 +516,7 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
             }
             .into(),
             pointer.const_null().into(),
-            pointer.const_null().into(),
+            self.managed_descriptor(&recipe.ty)?.into(),
         ]))
     }
 

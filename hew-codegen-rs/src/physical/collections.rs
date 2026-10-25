@@ -206,6 +206,13 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
             ));
         };
         let array = self.new_array_storage(glue)?;
+        if *length == 0 {
+            if let Some(action) = descriptor.element.destroy {
+                self.destroy_owned_operand(seed, action)?;
+            }
+            self.clear_owned(seed)?;
+            return self.store(dest, array.into());
+        }
         let pointer = self.ctx.ptr_type(AddressSpace::default());
         let push_ty = self
             .ctx

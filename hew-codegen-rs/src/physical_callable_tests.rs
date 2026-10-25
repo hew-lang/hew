@@ -282,6 +282,7 @@ fn environment_llvm<'ctx>(ctx: &'ctx Context, physical: &PhysicalModule) -> Modu
         value_callbacks: BTreeMap::new(),
         debug: None,
     };
+    emitter.emit_managed_descriptors().unwrap();
     emitter.emit_collection_value_descriptors().unwrap();
     emitter.emit_environment_descriptors().unwrap();
     let llvm = emitter.llvm;
@@ -395,6 +396,21 @@ fn failed_nested_callable_clone_rolls_back_completed_fields_and_preserves_output
     physical
         .target
         .insert_layout(nested.clone(), target.layout(&nested).unwrap().clone());
+    let nested_recipe = PhysicalValueRecipe {
+        ty: nested.clone(),
+        managed_slot_bytes: hew_sir::managed_callable_carrier().bytes,
+        own: OwnKind::Owned,
+        clone: Some(CloneAction::Callable),
+        destroy: Some(DestroyAction::Callable),
+    };
+    physical.managed_types.insert(
+        nested.clone(),
+        hew_mir::physical::PhysicalManagedType {
+            slot_bytes: nested_recipe.managed_slot_bytes,
+            shape: hew_sir::ManagedStorageShape::Callable { captures: None },
+            recipe: nested_recipe,
+        },
+    );
     let env = &mut physical.environment_glue[0];
     env.fields[1] = PhysicalValueRecipe {
         ty: nested.clone(),

@@ -164,6 +164,20 @@ pub unsafe extern "C" fn hew_budget_materialize_begin(
     0
 }
 
+/// Refuse canonical payload arithmetic overflow before executing construction.
+///
+/// # Safety
+/// A non-null invocation is retained by the current execution.
+#[no_mangle]
+pub unsafe extern "C" fn hew_budget_materialize_overflow(state: *const HewCoroState) -> i32 {
+    // SAFETY: caller retains its optional canonical invocation.
+    if unsafe { invocation_owner(state) }.is_some() {
+        hew_cabi::managed::HEAP_EXCEEDED
+    } else {
+        0
+    }
+}
+
 /// Adopt the real result and finish moved input obligations. A failed budget
 /// preflight never reaches this boundary; disagreement here is a descriptor bug.
 ///
@@ -183,7 +197,10 @@ pub unsafe extern "C" fn hew_budget_materialize_commit(
     // SAFETY: result is still unpublished and matches layout.
     match unsafe { permit.commit(&*layout, result) } {
         Ok(()) => 0,
-        Err(status) => status,
+        // The checked plan already reserved every possible new byte before
+        // construction consumed an input. A disagreement is an invalid native
+        // descriptor, not a recoverable acquisition failure after consumption.
+        Err(_) => std::process::abort(),
     }
 }
 

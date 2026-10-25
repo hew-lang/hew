@@ -4190,6 +4190,10 @@ class ExecutorV1 {
         let cancelTimer = () => {};
         const wake = this.park(act, term, () => cancelTimer());
         cancelTimer = this.scheduler.after(nanos, () => wake(UNIT));
+        // Admission can publish a fault synchronously before this sleep parks.
+        // Deliver that latch after arming, so cancellation also removes the timer.
+        if (act.context.pendingCancellation)
+          act.context.cancel?.(act.context.pendingCancellation);
         return;
       }
       default: {

@@ -277,29 +277,8 @@ pub unsafe extern "C" fn hew_managed_visit_shared(
     slot: *const c_void,
     visitor: *const HewManagedStorageVisitor,
 ) -> i32 {
-    // SAFETY: the strong reference retains both layout and payload storage.
-    unsafe {
-        let data = slot.cast::<*mut u8>().read();
-        if data.is_null() {
-            return 0;
-        }
-        let layout = crate::rc::managed_payload_layout(data);
-        let width = match slot_bytes(&layout) {
-            Ok(width) => width,
-            Err(status) => return status,
-        };
-        match storage(visitor, data.cast(), width) {
-            SKIP_DESCENDANTS => return 0,
-            DESCEND => {}
-            failure => return failure,
-        }
-        // Copying Rc retains its existing payload; it never deep-copies it.
-        let mut payload_visitor = *visitor;
-        if payload_visitor.kind == HewManagedWalkKind::ClonePlan {
-            payload_visitor.kind = HewManagedWalkKind::Retain;
-        }
-        visit_value(&layout, data.cast(), &raw const payload_visitor)
-    }
+    // SAFETY: the strong reference retains this exact cell throughout the typed walk.
+    unsafe { crate::rc::visit_managed(slot.cast::<*mut u8>().read(), visitor) }
 }
 
 /// # Safety

@@ -840,7 +840,7 @@ pub(crate) unsafe fn visit_cursor(
     visit_current: bool,
 ) -> i32 {
     use crate::owned_value_budget::{transfer, visit};
-    use hew_cabi::managed::{visit_value, HewManagedWalkKind, UNDESCRIBED};
+    use hew_cabi::managed::{visit_value, HewManagedWalkKind};
     // SAFETY: the provider retains and freezes the exact pending cursor items.
     unsafe {
         let Some(cursor) = cursor.as_mut() else {
@@ -907,7 +907,7 @@ pub(crate) unsafe fn visit_cursor(
                     hew_cabi::managed::DESCEND | hew_cabi::managed::SKIP_DESCENDANTS => 0,
                     failure => failure,
                 },
-                ReleaseItem::RcSurvivors(_) => UNDESCRIBED,
+                ReleaseItem::RcSurvivors(wave) => wave.visit(visitor),
                 ReleaseItem::CodeRoot(_)
                 | ReleaseItem::Storage { .. }
                 | ReleaseItem::Allocation {
@@ -1042,6 +1042,18 @@ pub unsafe extern "C" fn hew_release_poll(
             }
             // SAFETY: the release driver exclusively owns these cursor items and retains their descriptor and source storage.
             unsafe { crate::stream::expand_stream_release(stream, &mut cursor.pending) };
+            continue;
+        }
+        if let ReleaseItem::RcSurvivors(mut wave) = item {
+            // SAFETY: this cursor retains the wave and invocation through transfer quiescence.
+            if !unsafe { wave.prepare(state) } {
+                cursor.pending.push(ReleaseItem::RcSurvivors(wave));
+                return 0;
+            }
+            // SAFETY: membership exclusion has completed before this structural step.
+            if let Some(summary) = unsafe { wave.step(&mut cursor.pending) } {
+                cursor.rc_sweep = Some(summary);
+            }
             continue;
         }
         // SAFETY: expansion consumes only one cursor-owned structural step.

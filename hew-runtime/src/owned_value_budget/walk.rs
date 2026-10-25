@@ -49,7 +49,10 @@ impl Walk<'_> {
         if previous.is_some_and(|retained| retained.bytes != bytes) {
             return UNDESCRIBED;
         }
-        if self.kind == HewManagedWalkKind::Release {
+        if matches!(
+            self.kind,
+            HewManagedWalkKind::Release | HewManagedWalkKind::ReleaseTransferredPayload
+        ) {
             let Some(previous) = previous else {
                 return UNDESCRIBED;
             };
@@ -155,11 +158,36 @@ impl ValueOwner {
         layout: &HewValueLayout,
         slot: *const c_void,
     ) -> Result<(), i32> {
+        // SAFETY: the public contract retains the exact typed value through this walk.
+        unsafe { self.release_with_kind(layout, slot, HewManagedWalkKind::Release) }
+    }
+
+    /// Release one rehomed cell's old payload. Nested Rc cells retain their own
+    /// separately visited payload graphs until their graph-wide commit step.
+    /// # Safety
+    /// The complete transfer graph remains frozen, and this cell is visited once.
+    pub(crate) unsafe fn release_transferred_payload(
+        &self,
+        layout: &HewValueLayout,
+        slot: *const c_void,
+    ) -> Result<(), i32> {
+        // SAFETY: the owning transfer pins this payload until every rebind completes.
+        unsafe {
+            self.release_with_kind(layout, slot, HewManagedWalkKind::ReleaseTransferredPayload)
+        }
+    }
+
+    unsafe fn release_with_kind(
+        &self,
+        layout: &HewValueLayout,
+        slot: *const c_void,
+        kind: HewManagedWalkKind,
+    ) -> Result<(), i32> {
         let mut ledger = self.ledger();
         let mut walk = Walk {
             owner: self,
             ledger: &mut ledger,
-            kind: HewManagedWalkKind::Release,
+            kind,
             undo: Vec::new(),
             edges: Vec::new(),
             fresh: 0,

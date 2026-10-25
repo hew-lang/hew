@@ -1389,6 +1389,13 @@ pub(crate) fn activate_queued_actor(actor: *mut HewActor) {
         return;
     }
 
+    // An idle native actor can be faulted before its first handler starts.
+    // Its stop latch must publish that deferred crash after draining, rather
+    // than finalizing the activation as an ordinary clean stop.
+    if publish_deferred_external_trap(actor, a) {
+        return;
+    }
+
     // Check if actor transitioned to Stopping during dispatch (self-stop).
     let cur_state = a.actor_state.load(Ordering::Acquire);
     if cur_state == HewActorState::Stopping as i32 {
@@ -1910,6 +1917,21 @@ pub(crate) unsafe fn settle_native_cleanup(actor: *mut HewActor) {
     settle_after_activation(actor, 0);
 }
 
+fn publish_deferred_external_trap(actor: *mut HewActor, a: &HewActor) -> bool {
+    let Some(code) = crate::actor::take_deferred_external_trap(a) else {
+        return false;
+    };
+    debug_assert!(
+        a.checked_invocation.load(Ordering::Acquire).is_null(),
+        "a deferred external trap must wait for the checked turn to drain"
+    );
+    // SAFETY: the activation has completed its checked cancellation and still
+    // owns the mailbox consumer. The existing terminal path publishes both
+    // the originally requested crash and its supervision outcome.
+    unsafe { crate::actor::hew_actor_trap_from_activation(actor, code) };
+    true
+}
+
 #[expect(
     clippy::too_many_lines,
     reason = "mailbox and consuming cleanup share one atomic idle recheck protocol"
@@ -1919,15 +1941,7 @@ fn settle_after_activation(actor: *mut HewActor, msgs_processed: u32) {
     let a = unsafe { &*actor };
     let mailbox = a.mailbox.cast::<HewMailbox>();
 
-    if let Some(code) = crate::actor::take_deferred_external_trap(a) {
-        debug_assert!(
-            a.checked_invocation.load(Ordering::Acquire).is_null(),
-            "a deferred external trap must wait for the checked turn to drain"
-        );
-        // SAFETY: this activation has completed its checked cancellation and
-        // still owns the mailbox consumer. Publish the originally requested
-        // crash through the ordinary activation-owned terminal path.
-        unsafe { crate::actor::hew_actor_trap_from_activation(actor, code) };
+    if publish_deferred_external_trap(actor, a) {
         return;
     }
 

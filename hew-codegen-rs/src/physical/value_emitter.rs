@@ -257,6 +257,31 @@ impl<'a, 'ctx> ValueEmitter<'a, 'ctx> {
         layout: &PhysicalVariantLayout,
     ) -> CodegenResult<()> {
         let size_ty = self.ctx.i64_type();
+        let hew_mir::physical::ManagedStorageShape::Variant { payload_bytes, .. } =
+            self.module.managed_types[&layout.ty].shape
+        else {
+            return Err(CodegenError::FailClosed(
+                "indirect variant lacks canonical backing width".into(),
+            ));
+        };
+        let refund = get_or_declare_external(
+            self.llvm,
+            "hew_budget_release_backing",
+            self.ctx.void_type().fn_type(
+                &[
+                    self.ctx.ptr_type(AddressSpace::default()).into(),
+                    size_ty.into(),
+                ],
+                false,
+            ),
+        )?;
+        self.builder
+            .build_call(
+                refund,
+                &[node.into(), size_ty.const_int(payload_bytes, false).into()],
+                "",
+            )
+            .llvm_ctx("refund variant backing after its children finish")?;
         let dealloc = get_or_declare_external(
             self.llvm,
             "hew_dealloc",
@@ -903,7 +928,7 @@ impl<'a, 'ctx> ValueEmitter<'a, 'ctx> {
                 let symbol = if matches!(action, DestroyAction::WeakRelease) {
                     RuntimeCallFamily::WeakDropRc.row().symbol
                 } else {
-                    RuntimeCallFamily::RcDrop.row().symbol
+                    "hew_rc_drop_managed"
                 };
                 let function = external_drop(self.ctx, self.llvm, symbol)?;
                 self.emit_release_in_sink(|| {
@@ -943,11 +968,13 @@ impl<'a, 'ctx> ValueEmitter<'a, 'ctx> {
                     }
                 };
                 let symbol = match action {
-                    DestroyAction::Encoding(format) => {
-                        hew_mir::physical::EncodingOp::Free.c_symbol(format)
-                    }
-                    DestroyAction::StringRelease => "hew_string_drop",
-                    DestroyAction::BytesRelease => "hew_bytes_drop",
+                    DestroyAction::Encoding(format) => match format {
+                        hew_mir::physical::EncodingFormat::Json => "hew_json_free_managed",
+                        hew_mir::physical::EncodingFormat::Yaml => "hew_yaml_free_managed",
+                        hew_mir::physical::EncodingFormat::Toml => "hew_toml_free_managed",
+                    },
+                    DestroyAction::StringRelease => "hew_string_drop_managed",
+                    DestroyAction::BytesRelease => "hew_bytes_drop_managed",
                     DestroyAction::Resource(_)
                     | DestroyAction::Callable
                     | DestroyAction::TraitObject

@@ -5,29 +5,17 @@
 // the caller reassigns.
 fn h1(key: i64, m: i64) -> i64 {
     let h = key % m;
-    if h < 0 {
-        h + m
-    } else {
-        h
-    }
+    if h < 0 { h + m } else { h }
 }
 
 fn h2(key: i64, m: i64) -> i64 {
     let h = (key * 7 + 13) % m;
-    if h < 0 {
-        h + m
-    } else {
-        h
-    }
+    if h < 0 { h + m } else { h }
 }
 
 fn h3(key: i64, m: i64) -> i64 {
     let h = (key * 31 + 17) % m;
-    if h < 0 {
-        h + m
-    } else {
-        h
-    }
+    if h < 0 { h + m } else { h }
 }
 
 fn make_bloom(size: i64) -> Vec<i64> {

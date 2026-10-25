@@ -1191,11 +1191,7 @@ fn fmt_uses_four_space_indent() {
 fn fmt_already_formatted_is_idempotent() {
     // This code is already well-formatted; the formatter should not change it.
     let src = r"fn fibonacci(n: i32) -> i32 {
-    if n <= 1 {
-        n
-    } else {
-        fibonacci(n - 1) + fibonacci(n - 2)
-    }
+    if n <= 1 { n } else { fibonacci(n - 1) + fibonacci(n - 2) }
 }
 ";
     let out = roundtrip(src);

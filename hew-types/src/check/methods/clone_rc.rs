@@ -511,7 +511,7 @@ impl Checker {
         &self,
         head: crate::TypeHead,
         type_args: &[Ty],
-        skip_channel_handles: bool,
+        local_message_layouts: bool,
         walk: &mut StructuralTypeWalk,
     ) -> Option<String> {
         let mut found = None;
@@ -520,7 +520,7 @@ impl Checker {
                 let field_ty =
                     Self::instantiate_type_def_member(field_ty, &type_def.type_params, type_args);
                 if let Some(opaque) =
-                    self.ty_field_contains_opaque_on_graph(&field_ty, skip_channel_handles, walk)
+                    self.ty_field_contains_opaque_on_graph(&field_ty, local_message_layouts, walk)
                 {
                     found = Some(opaque);
                     break;
@@ -544,7 +544,7 @@ impl Checker {
         &self,
         head: crate::TypeHead,
         type_args: &[Ty],
-        skip_channel_handles: bool,
+        local_message_layouts: bool,
         walk: &mut StructuralTypeWalk,
     ) -> Option<String> {
         let mut found = None;
@@ -563,7 +563,7 @@ impl Checker {
                     );
                     if let Some(opaque) = self.ty_field_contains_opaque_on_graph(
                         &payload_ty,
-                        skip_channel_handles,
+                        local_message_layouts,
                         walk,
                     ) {
                         found = Some(opaque);
@@ -576,8 +576,8 @@ impl Checker {
     }
 
     /// Return the first opaque message-payload type, exempting compiler-built-in
-    /// channel endpoints and actor references that local actor delivery
-    /// transfers as handle values.
+    /// channel endpoints, actor references and canonical encoding values that
+    /// local actor delivery transfers through their owned value layouts.
     pub(in crate::check) fn ty_message_payload_contains_opaque(&self, ty: &Ty) -> Option<String> {
         self.ty_field_contains_opaque_on_graph(ty, true, &mut StructuralTypeWalk::default())
     }
@@ -585,7 +585,7 @@ impl Checker {
     fn ty_field_contains_opaque_on_graph(
         &self,
         ty: &Ty,
-        skip_channel_handles: bool,
+        local_message_layouts: bool,
         walk: &mut StructuralTypeWalk,
     ) -> Option<String> {
         // Resolve inference vars so a field whose type is still a `Ty::Var`
@@ -598,7 +598,7 @@ impl Checker {
         if walk.growing(&resolved) {
             if let Ty::Named { args, .. } = &resolved {
                 return args.iter().find_map(|arg| {
-                    self.ty_field_contains_opaque_on_graph(arg, skip_channel_handles, walk)
+                    self.ty_field_contains_opaque_on_graph(arg, local_message_layouts, walk)
                 });
             }
         }
@@ -608,7 +608,13 @@ impl Checker {
                 Ty::Named { head, args, .. } => {
                     let name = head.registry_key();
                     let builtin = head.builtin();
-                    if skip_channel_handles
+                    if local_message_layouts
+                        && builtin.is_some_and(crate::BuiltinType::is_encoding_value)
+                        && self.type_is_send(&resolved)
+                    {
+                        return None;
+                    }
+                    if local_message_layouts
                         && matches!(
                             builtin,
                             Some(
@@ -631,7 +637,7 @@ impl Checker {
                     // Recurse into type args (e.g. `Vec<Handle>`, `Option<Handle>`).
                     for arg in args {
                         if let Some(n) =
-                            self.ty_field_contains_opaque_on_graph(arg, skip_channel_handles, walk)
+                            self.ty_field_contains_opaque_on_graph(arg, local_message_layouts, walk)
                         {
                             return Some(n);
                         }
@@ -641,7 +647,7 @@ impl Checker {
                     if let Some(n) = self.record_field_contains_opaque_on_graph(
                         *head,
                         args,
-                        skip_channel_handles,
+                        local_message_layouts,
                         walk,
                     ) {
                         return Some(n);
@@ -655,7 +661,7 @@ impl Checker {
                     if let Some(n) = self.enum_variant_contains_opaque_on_graph(
                         *head,
                         args,
-                        skip_channel_handles,
+                        local_message_layouts,
                         walk,
                     ) {
                         return Some(n);
@@ -664,9 +670,11 @@ impl Checker {
                 }
                 Ty::Tuple(items) => {
                     for item in items {
-                        if let Some(n) =
-                            self.ty_field_contains_opaque_on_graph(item, skip_channel_handles, walk)
-                        {
+                        if let Some(n) = self.ty_field_contains_opaque_on_graph(
+                            item,
+                            local_message_layouts,
+                            walk,
+                        ) {
                             return Some(n);
                         }
                     }

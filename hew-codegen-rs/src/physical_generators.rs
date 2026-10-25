@@ -13,7 +13,7 @@ fn descriptor(callable: CallableId, storage: StorageId, part: &str) -> String {
 impl ModuleEmitter<'_, '_> {
     pub(super) fn emit_generator_descriptors(&self) -> CodegenResult<()> {
         for function in &self.module.functions {
-            for operation in function.blocks.iter().flat_map(|block| &block.ops) {
+            for operation in function.blocks.iter().flat_map(|block| block.operations()) {
                 if let PhysicalOp::GeneratorMake {
                     dest,
                     yielded,
@@ -61,6 +61,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
         &self,
         callable: StorageId,
         dest: StorageId,
+        callable_slot_bytes: u64,
     ) -> CodegenResult<()> {
         let pointer = self.ctx.ptr_type(AddressSpace::default());
         let yielded = self
@@ -78,7 +79,16 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
         let make = get_or_declare_external(
             self.llvm,
             "hew_checked_generator_new",
-            pointer.fn_type(&[pointer.into(); 3], false),
+            pointer.fn_type(
+                &[
+                    pointer.into(),
+                    pointer.into(),
+                    pointer.into(),
+                    self.ctx.i64_type().into(),
+                    pointer.into(),
+                ],
+                false,
+            ),
         )?;
         let generator = suspend::call_value(
             &self.builder,
@@ -87,6 +97,11 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
                 self.slots[callable.0 as usize].into(),
                 yielded.as_pointer_value().into(),
                 returned.as_pointer_value().into(),
+                self.ctx
+                    .i64_type()
+                    .const_int(callable_slot_bytes, false)
+                    .into(),
+                self.managed_value_layout(&self.storage(dest)?.ty)?.into(),
             ],
             "generator",
         )?;

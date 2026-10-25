@@ -63,7 +63,9 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
             };
             let mut frame = coro::begin(ctx, &module.llvm, &builder, value, execution)?;
             frame.completion_state = state;
-            frame.owns_state = callable.is_authored_close;
+            if callable.is_authored_close {
+                frame.bind_cleanup_execution(ctx, &module.llvm, &builder)?;
+            }
             Some(frame)
         } else {
             None
@@ -136,6 +138,9 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                     ctx.ptr_type(AddressSpace::default()).into(),
                     &format!("task.scope.{}", scope.0),
                 )?;
+                builder
+                    .build_store(slot, ctx.ptr_type(AddressSpace::default()).const_null())
+                    .llvm_ctx("initialize inactive lexical scope root")?;
                 task_scopes.insert(*scope, slot);
             }
         }
@@ -204,6 +209,17 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                 )
             })
             .collect::<BTreeMap<_, _>>();
+        if let Some(frame) = &frame {
+            super::managed::bind_frame_roots(
+                module,
+                function,
+                &builder,
+                frame,
+                &slots,
+                &place_flags,
+                &task_scopes,
+            )?;
+        }
         builder
             .build_unconditional_branch(blocks[&function.entry])
             .llvm_ctx("branch to physical entry")?;
@@ -235,7 +251,7 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
         let inspectable = self.debug.is_some();
         let value = self.value;
         let chunks = if self.frame.is_some() && !inspectable && self.module.coverage.is_empty() {
-            self.function.loop_chunks()
+            self.function.loop_chunks(self.module)
         } else {
             Vec::new()
         };
@@ -423,9 +439,12 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
     )]
     pub(super) fn emit_op(&self, operation: &PhysicalOp) -> CodegenResult<()> {
         match operation {
-            PhysicalOp::GeneratorMake { callable, dest, .. } => {
-                self.emit_generator_make(*callable, *dest)
-            }
+            PhysicalOp::GeneratorMake {
+                callable,
+                dest,
+                callable_slot_bytes,
+                ..
+            } => self.emit_generator_make(*callable, *dest, *callable_slot_bytes),
             PhysicalOp::StreamPipe {
                 capacity,
                 stream,
@@ -444,21 +463,24 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                 scope,
                 members,
                 dest,
+                member_slot_bytes,
                 ..
-            } => self.emit_task_race(*scope, members, *dest),
+            } => self.emit_task_race(*scope, members, *dest, *member_slot_bytes),
             PhysicalOp::TaskSpawn {
                 scope,
                 callable,
                 dest,
+                callable_slot_bytes,
                 ..
-            } => self.emit_task_spawn(*scope, *callable, *dest),
+            } => self.emit_task_spawn(*scope, *callable, *dest, *callable_slot_bytes),
             PhysicalOp::TaskInvoke {
                 scope,
                 callee,
                 args,
                 dest,
+                callable_slot_bytes,
                 ..
-            } => self.emit_task_invoke(*scope, callee, args, *dest),
+            } => self.emit_task_invoke(*scope, callee, args, *dest, *callable_slot_bytes),
             PhysicalOp::ClosureMake {
                 dest,
                 closure,
@@ -921,7 +943,7 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
     }
 
     /// The payload a field projection reads; a projected case always has one.
-    fn variant_field_payload(
+    pub(super) fn variant_field_payload(
         &self,
         source: StorageId,
         variant: u32,

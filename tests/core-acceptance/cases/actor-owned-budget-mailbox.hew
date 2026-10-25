@@ -1,0 +1,23 @@
+#[max_heap(39)]
+actor Small {
+    receive fn accept(values: Vec<i64>) -> i64 {
+        values.len()
+    }
+}
+
+fn main() -> i64 {
+    var values: Vec<i64> = Vec.new();
+    for i in 0..4 {
+        values.push(i);
+    }
+    let small = spawn Small;
+    match small.accept(values) {
+        .Err(.Trapped) => println("admission limit"),
+        _ => return 2,
+    }
+    stopped(small);
+    assert(values.len() == 4);
+    values.push(4);
+    println(values.len());
+    0
+}

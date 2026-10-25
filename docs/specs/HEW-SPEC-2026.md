@@ -808,7 +808,51 @@ two deliberate acts: `expect(reason)` makes a failure a trap, and a `fails`
 handler submitted one way, with no caller to receive its error, faults with
 the error's text (§2.1.1).
 
-Actors may declare `#[max_heap(N)]` to cap their per-actor arena. If an arena allocation would exceed that cap, the runtime fails closed with the `ExitReason::HeapExceeded` crash variant and the `HEW_TRAP_HEAP_EXCEEDED` trap-kind discriminator. Supervisors receive that heap-exhaustion payload through the same crash-report routing path as other traps, so restart policy, escalation, and `#[on(crash)]` observation all see the cap breach as an unrecoverable actor failure rather than a recoverable `Result`.
+Actors may declare `#[max_heap(N)]` to limit their owned managed payload to
+`N` bytes. The budget covers actor state, collection storage, temporary owned
+values and typed values retained by tasks, generators and streams. Collection
+storage is charged by retained capacity, using compiler-defined payload sizes
+that are the same on native and browser execution. Primitive stack locals and
+runtime, allocator and foreign-resource bookkeeping are outside this budget.
+Use host process isolation for a total process memory limit.
+
+Aliases within one actor share a backing-storage charge. If several actors
+retain the same immutable backing, each actor pays for it. Suspended frames
+retain their live owned values; moving a value into a frame does not add another
+charge for the frame's physical slots. Values remain charged throughout their
+cleanup, including suspended cleanup. A restarted actor receives a fresh budget
+after the previous incarnation's terminal cleanup.
+
+An operation that would exceed the budget faults the owning actor with
+`ExitReason::HeapExceeded` and the `HEW_TRAP_HEAP_EXCEEDED` trap discriminator.
+Restart, escalation and `#[on(crash)]` observation follow ordinary supervision.
+Mailbox admission reserves the recipient's budget before transferring ownership;
+a budget refusal faults the recipient and a waiting caller receives the existing
+`ActorError.Trapped`. Ordinary mailbox rejection keeps its existing
+`ActorError.Rejected` request-recovery contract (§2.1.1).
+
+```hew
+#[max_heap(48)]
+actor Buffer {
+    var values: Vec<i64>;
+
+    receive fn fill_four() -> i64 {
+        for i in 0..4 { values.push(i); }
+        values.len()
+    }
+}
+
+fn main() {
+    let buffer = spawn Buffer { values: Vec.new() };
+    println(buffer.fill_four().expect("fill buffer"));
+    stop(buffer);
+    stopped(buffer);
+}
+```
+
+This actor owns an eight-byte state slot and a 32-byte vector backing after the
+four pushes. Its eight-byte reply fits the remaining budget. A fifth push would
+require a 64-byte vector backing and fault before publishing that growth.
 
 > **Error propagation:** `Result<T, E>` and `Option<T>` are first-class values. `?` on a `Result` leaves through the enclosing callable's failure edge; `?` on an `Option` propagates absence only into an enclosing `Option` return (§2.2.1). Neither converts absence into an error or discards an error as absence.
 
@@ -6367,7 +6411,7 @@ Hew's supervision is modeled after OTP concepts with first-class language syntax
 - Restart classification: `permanent`, `transient`, `temporary`. ([Erlang.org][2])
 - Supervisor strategy: `one_for_one`, `one_for_all`, `rest_for_one`, `simple_one_for_one`.
 - Crash isolation covers traps raised by the program — `panic`, an arithmetic
-  or bounds fault the runtime detects, an exhausted `#[max_heap(N)]` arena.
+  or bounds fault the runtime detects, an exhausted `#[max_heap(N)]` value budget.
   Synchronous hardware faults (SEGV, SIGBUS, SIGFPE, SIGILL) are process-fatal
   and are NOT converted into a supervised crash (§5.7).
 
@@ -8759,7 +8803,7 @@ refuses the name it does not know rather than dropping it.
 | `#[every(<duration>)]` | actor `receive fn` | Periodic receive handler (§2.1.2). |
 | `#[intercept]` | actor or supervisor method | Typed receive interceptor (§2.1.4). |
 | `#[confined]` | actor declaration, free function | Rejects transitive ambient authority acquisition and opaque raw escapes; supplied-service operations remain permitted (§4.7.1). |
-| `#[max_heap(N)]` | actor declaration | Per-actor arena ceiling; a breach is an unrecoverable actor failure (§2.1). |
+| `#[max_heap(N)]` | actor declaration | Actor-owned managed-payload budget in bytes; excess faults with `HeapExceeded` (§2.2). |
 | `#[extern_symbol(name)]` | `fn` inside an `extern "C"` block or an `impl` block | Binds the declaration to a named C-ABI symbol (§3.9.1). Not legal on an actor member. |
 | `#[offload]` | `fn` inside an `extern "C"` block | A call parks its task while the function runs on the blocking pool (§3.9.1, §4.7). Takes no arguments. |
 | `#[export("...")]` | free `fn` | Makes the function callable from C (§3.9.4). |

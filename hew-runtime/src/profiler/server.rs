@@ -8,7 +8,6 @@ use std::convert::Infallible;
 use std::fmt::Write as _;
 use std::sync::mpsc::SyncSender;
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
 
 pub use hew_observe_protocol::OBSERVE_SCHEMA_VERSION;
 use hew_observe_protocol::{
@@ -26,6 +25,7 @@ use std::os::unix::net::UnixListener as StdUnixListener;
 use tokio::net::TcpListener;
 #[cfg(unix)]
 use tokio::net::UnixListener;
+use tokio::sync::oneshot;
 
 use crate::profiler::allocator;
 use crate::profiler::metrics::MetricsRing;
@@ -54,9 +54,14 @@ pub struct ProfilerContext {
 /// The caller owns the bind step so startup can fail before tracing is enabled,
 /// and tests can discover an ephemeral port (`bind("127.0.0.1:0")`) before any
 /// client connects. The listener is set to non-blocking and converted to a
-/// tokio listener inside the runtime.
-pub fn run_tcp_with_listener(listener: std::net::TcpListener, ctx: Arc<ProfilerContext>) {
-    run_tcp_with_listener_inner(listener, ctx, None);
+/// tokio listener inside the runtime. Sending or dropping the caller-owned
+/// shutdown signal stops the server and releases its listener.
+pub fn run_tcp_with_listener(
+    listener: std::net::TcpListener,
+    ctx: Arc<ProfilerContext>,
+    shutdown: oneshot::Receiver<()>,
+) {
+    run_tcp_with_listener_inner(listener, ctx, None, shutdown);
 }
 
 /// Start the TCP server and report when all fallible listener/runtime setup is
@@ -67,14 +72,16 @@ pub(super) fn run_tcp_with_listener_ready(
     listener: std::net::TcpListener,
     ctx: Arc<ProfilerContext>,
     ready: SyncSender<Result<(), String>>,
+    shutdown: oneshot::Receiver<()>,
 ) {
-    run_tcp_with_listener_inner(listener, ctx, Some(ready));
+    run_tcp_with_listener_inner(listener, ctx, Some(ready), shutdown);
 }
 
 fn run_tcp_with_listener_inner(
     listener: std::net::TcpListener,
     ctx: Arc<ProfilerContext>,
     mut ready: Option<SyncSender<Result<(), String>>>,
+    shutdown: oneshot::Receiver<()>,
 ) {
     let Some(rt) = build_runtime() else {
         report_startup(&mut ready, Err("failed to create tokio runtime".to_owned()));
@@ -99,7 +106,7 @@ fn run_tcp_with_listener_inner(
             }
         };
         report_startup(&mut ready, Ok(()));
-        serve_loop(Listener::Tcp(tokio_listener), ctx).await;
+        serve_loop(Listener::Tcp(tokio_listener), ctx, shutdown).await;
     });
 }
 
@@ -110,6 +117,7 @@ pub(super) fn run_unix_with_listener_ready(
     listener: StdUnixListener,
     ctx: Arc<ProfilerContext>,
     ready: SyncSender<Result<(), String>>,
+    shutdown: oneshot::Receiver<()>,
 ) {
     let mut ready = Some(ready);
     let Some(rt) = build_runtime() else {
@@ -138,7 +146,7 @@ pub(super) fn run_unix_with_listener_ready(
             }
         };
         report_startup(&mut ready, Ok(()));
-        serve_loop(Listener::Unix(listener), ctx).await;
+        serve_loop(Listener::Unix(listener), ctx, shutdown).await;
     });
 }
 
@@ -169,20 +177,20 @@ enum Listener {
 }
 
 /// Accept loop that works with both TCP and Unix socket listeners.
-async fn serve_loop(listener: Listener, ctx: Arc<ProfilerContext>) {
+async fn serve_loop(
+    listener: Listener,
+    ctx: Arc<ProfilerContext>,
+    mut shutdown: oneshot::Receiver<()>,
+) {
     loop {
-        if super::PROFILER_SHUTDOWN.load(std::sync::atomic::Ordering::Acquire) {
-            break;
-        }
-
-        // Accept with a timeout so we can check the shutdown flag.
         match &listener {
             Listener::Tcp(l) => {
                 let result = tokio::select! {
-                    r = l.accept() => Some(r),
-                    () = tokio::time::sleep(Duration::from_millis(200)) => None,
+                    biased;
+                    _ = &mut shutdown => break,
+                    r = l.accept() => r,
                 };
-                if let Some(Ok((stream, _))) = result {
+                if let Ok((stream, _)) = result {
                     let io = TokioIo::new(stream);
                     spawn_connection(io, ctx.clone());
                 }
@@ -190,10 +198,11 @@ async fn serve_loop(listener: Listener, ctx: Arc<ProfilerContext>) {
             #[cfg(unix)]
             Listener::Unix(l) => {
                 let result = tokio::select! {
-                    r = l.accept() => Some(r),
-                    () = tokio::time::sleep(Duration::from_millis(200)) => None,
+                    biased;
+                    _ = &mut shutdown => break,
+                    r = l.accept() => r,
                 };
-                if let Some(Ok((stream, _))) = result {
+                if let Ok((stream, _)) = result {
                     let io = TokioIo::new(stream);
                     spawn_connection(io, ctx.clone());
                 }

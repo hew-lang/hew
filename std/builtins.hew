@@ -745,18 +745,10 @@ impl DoubleEndedIterator for StringIter {
 
 impl string {
     fn first(self) -> Option<char> {
-        if self.len() == 0 {
-            .None
-        } else {
-            .Some(self[0])
-        }
+        if self.len() == 0 { .None } else { .Some(self[0]) }
     }
     fn last(self) -> Option<char> {
-        if self.len() == 0 {
-            .None
-        } else {
-            .Some(self[self.len() - 1])
-        }
+        if self.len() == 0 { .None } else { .Some(self[self.len() - 1]) }
     }
     fn iter(self) -> StringIter {
         StringIter { text: self, front: 0, back: self.len() }
@@ -911,11 +903,7 @@ impl<T: Clone> Index<i64> for Vec<T> {
 impl Index<i64> for string {
     type Output = char;
     fn get(self, index: i64) -> Option<char> {
-        if index < 0 || index >= self.len() {
-            .None
-        } else {
-            .Some(self[index])
-        }
+        if index < 0 || index >= self.len() { .None } else { .Some(self[index]) }
     }
     fn at(self, index: i64) -> char {
         self[index]
@@ -1237,11 +1225,7 @@ impl duration {
     /// Whole milliseconds rounded upward, preserving positive sub-millisecond waits.
     fn millis_ceil(self) -> i64 {
         let millis = self.millis();
-        if self > 0ns && self % 1ms != 0ns {
-            millis + 1
-        } else {
-            millis
-        }
+        if self > 0ns && self % 1ms != 0ns { millis + 1 } else { millis }
     }
 }
 

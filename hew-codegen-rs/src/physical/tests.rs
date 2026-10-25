@@ -166,6 +166,15 @@ fn utf8_decode_emits_typed_outcomes_with_reusable_scratch() {
         vec![ctx.ptr_type(AddressSpace::default()).into(); 4]
     );
     for function in module.get_functions() {
+        // Typed destruction adds helper callbacks with bounded invocation-local
+        // scratch. Only the source body's loop can accumulate decoder scratch.
+        if !function
+            .get_basic_blocks()
+            .iter()
+            .any(|block| block.get_name().to_bytes() == b"physical.prologue")
+        {
+            continue;
+        }
         for block in function.get_basic_blocks() {
             if block.get_name().to_bytes() == b"physical.prologue" {
                 continue;
@@ -241,6 +250,7 @@ fn collection_operation_module(family: hew_types::RuntimeCallFamily) -> SemModul
         module.variant_shapes = seed.variant_shapes;
     }
     let mut facts = TypeFactService::new(TypeFactContext::default(), module.type_facts);
+    facts.require(&ResolvedTy::Unit).unwrap();
     facts.require(&result_ty).unwrap();
     let mut copies = Vec::new();
     let mut operands = Vec::new();
@@ -1021,8 +1031,8 @@ fn owned_record_layout_and_recursive_glue_emit_verified_llvm() {
     );
     assert!(module.get_function("hew_string_clone").is_some());
     assert!(module.get_function("hew_bytes_clone_ref").is_some());
-    assert!(module.get_function("hew_string_drop").is_some());
-    assert!(module.get_function("hew_bytes_drop").is_some());
+    assert!(module.get_function("hew_string_drop_managed").is_some());
+    assert!(module.get_function("hew_bytes_drop_managed").is_some());
 }
 
 #[test]
@@ -1097,7 +1107,7 @@ fn main() -> i64 {
         assert!(ir.contains("call void @llvm.trap"));
         assert!(module.get_function("llvm.trap").is_some());
         assert!(module.get_function("hew_string_clone").is_some());
-        assert!(module.get_function("hew_string_drop").is_some());
+        assert!(module.get_function("hew_string_drop_managed").is_some());
         for callable in &verified.module().callables {
             let function = module
                 .get_function(&emitted_symbol(verified.module(), callable))
@@ -1363,7 +1373,7 @@ fn build_info_record_survives_optimization_only_when_requested() {
 }
 
 #[test]
-fn scalar_loop_chunks_preserve_the_shared_budget_across_serial_calls() {
+fn scalar_and_vector_loop_chunks_preserve_the_shared_budget_across_serial_calls() {
     use std::cell::Cell;
     thread_local! {
         static BUDGET: Cell<u32> = const { Cell::new(0) };
@@ -1390,8 +1400,12 @@ fn scalar_loop_chunks_preserve_the_shared_budget_across_serial_calls() {
     let semantic = lower_source(
         r"
         fn short(limit: i64) -> i64 {
+            var values: Vec<i64> = Vec.new();
+            values.push(0);
+            values.push(1);
+            values.push(2);
             var sum: i64 = 0;
-            for index in 0..limit { sum += index; }
+            for index in 0..limit { sum += values[index]; }
             sum
         }
         fn main() -> i64 {
@@ -1458,5 +1472,70 @@ fn scalar_loop_chunks_preserve_the_shared_budget_across_serial_calls() {
         assert_eq!(BUDGET.get(), 17, "suppression leaves the budget untouched");
         assert_eq!(POLLS.get(), 0);
         SUPPRESSED.set(false);
+    }
+}
+
+#[test]
+fn vector_loop_chunks_preserve_empty_scans_bounds_and_overflow_at_o0_o2() {
+    let semantic = lower_source(
+        r"
+        fn probe(first: i64, limit: i64) -> i64 {
+            var values: Vec<i64> = Vec.new();
+            values.push(first);
+            values.push(1);
+            var sum: i64 = 0;
+            for index in 0..limit { sum += values[index]; }
+            sum
+        }
+        fn main() -> i64 { probe(2, 2) }
+        ",
+    );
+    let triple = native_emission_triple();
+    let target = physical_target_for_inventory(
+        &triple,
+        &hew_mir::physical::physical_type_inventory(&semantic),
+    )
+    .unwrap();
+    let verified = hew_mir::lower_physical_module(&semantic, target).unwrap();
+    for opt in [OptLevel::O0, OptLevel::O2] {
+        let ctx = Context::create();
+        let machine = crate::llvm::target_machine_for_triple_with_opt_level(&triple, opt).unwrap();
+        let llvm = build_module(&ctx, verified.module(), "vector_loop_bounds", &machine).unwrap();
+        crate::llvm::run_module_pipeline(&llvm, &machine, opt).unwrap();
+        let engine = llvm
+            .create_jit_execution_engine(inkwell::OptimizationLevel::None)
+            .unwrap();
+        super::test_runtime::bind_runtime(&llvm, &engine);
+        type Probe =
+            unsafe extern "C" fn(i64, i64, *mut i64, *mut *mut hew_runtime::fault::HewFault) -> i32;
+        // SAFETY: the source function has two i64 arguments and the verified
+        // private result/fault ABI. All output slots live through each call.
+        let probe = unsafe { engine.get_function::<Probe>("__hew_fn_probe").unwrap() };
+        for (first, limit, expected, status) in [
+            (2, 0, 0, 0),
+            (2, 2, 3, 0),
+            (2, 3, 0, HEW_TRAP_INDEX_OUT_OF_BOUNDS),
+            (i64::MAX, 2, 0, HEW_TRAP_INTEGER_OVERFLOW),
+        ] {
+            let mut result = -77;
+            let mut fault = std::ptr::null_mut();
+            // SAFETY: the output carriers remain live through the synchronous root.
+            assert_eq!(
+                unsafe { probe.call(first, limit, &raw mut result, &raw mut fault) },
+                status,
+                "{opt:?}, first={first}, limit={limit}"
+            );
+            if status == 0 {
+                assert_eq!(result, expected);
+                assert!(fault.is_null());
+            } else {
+                assert_eq!(result, -77, "failed scans must not publish a result");
+                assert!(!fault.is_null());
+                // SAFETY: a failed call publishes one owned runtime fault.
+                unsafe {
+                    hew_runtime::fault::hew_fault_drop(fault);
+                }
+            }
+        }
     }
 }

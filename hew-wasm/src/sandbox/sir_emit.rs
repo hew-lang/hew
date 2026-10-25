@@ -155,10 +155,164 @@ struct Walker<'m> {
     /// arithmetic op names the operand type SIR already proved rather than
     /// letting the VM assume one.
     value_types: BTreeMap<hew_sir::ValueId, hew_types::ResolvedTy>,
+    managed_ids: BTreeMap<hew_types::ResolvedTy, u32>,
     suspend_kinds: Vec<String>,
 }
 
 impl<'m> Walker<'m> {
+    /// Project exact semantic children and canonical language widths before
+    /// emitting any instruction that refers to a managed descriptor.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one exhaustive wire projection consumes the canonical SIR storage families"
+    )]
+    fn managed_types(&mut self) -> Result<Vec<ManagedType>, EmitError> {
+        use hew_sir::{ManagedHandleKind as H, ManagedProviderKind as P, ManagedStorageShape as S};
+        use hew_types::ResolvedTy as T;
+        let inventory = hew_mir::physical::physical_type_inventory(self.module);
+        self.managed_ids = inventory
+            .types()
+            .enumerate()
+            .map(|(index, ty)| (ty.clone(), table_index(index)))
+            .collect();
+        let child = |ty: &T| {
+            self.managed_ids.get(ty).copied().ok_or_else(|| {
+                EmitError::new(format!("managed child has no semantic descriptor: {ty:?}"))
+            })
+        };
+        inventory
+            .types()
+            .map(|ty| {
+                let width = hew_sir::managed_slot(self.module, ty).map_err(|error| {
+                    EmitError::new(format!("managed width for {ty:?}: {error:?}"))
+                })?;
+                let shape = hew_sir::managed_storage_shape(self.module, ty).map_err(|error| {
+                    EmitError::new(format!("managed shape for {ty:?}: {error:?}"))
+                })?;
+                let children = |types: &[T]| types.iter().map(child).collect::<Result<Vec<_>, _>>();
+                let layout = match shape {
+                    S::Scalar => ManagedLayout::Scalar,
+                    S::Handle(kind) => ManagedLayout::Handle {
+                        category: match kind {
+                            H::Actor => ManagedHandle::Actor,
+                            H::Pointer => ManagedHandle::Pointer,
+                            H::Borrow => ManagedHandle::Borrow,
+                            H::Cancellation => ManagedHandle::Cancellation,
+                        },
+                    },
+                    S::String => ManagedLayout::String,
+                    S::Bytes => ManagedLayout::Bytes,
+                    S::Vector {
+                        element,
+                        share_on_copy,
+                    } => ManagedLayout::Vector {
+                        element: child(&element)?,
+                        share_on_copy,
+                    },
+                    S::Array {
+                        element,
+                        length,
+                        share_on_copy,
+                    } => ManagedLayout::Array {
+                        element: child(&element)?,
+                        length: length.to_string(),
+                        share_on_copy,
+                    },
+                    S::Slice {
+                        element,
+                        share_on_copy,
+                    } => ManagedLayout::Slice {
+                        element: child(&element)?,
+                        share_on_copy,
+                    },
+                    S::Map { key, value } => ManagedLayout::Map {
+                        key: child(&key)?,
+                        value: child(&value)?,
+                    },
+                    S::Set { element } => ManagedLayout::Set {
+                        element: child(&element)?,
+                    },
+                    S::Aggregate { fields } => ManagedLayout::Aggregate {
+                        fields: children(&fields)?,
+                    },
+                    S::Variant {
+                        indirect,
+                        payload_bytes,
+                        cases,
+                    } => ManagedLayout::Variant {
+                        shape: self
+                            .module
+                            .variant_shape_for_type(ty)
+                            .ok_or_else(|| {
+                                EmitError::new("managed variant has no canonical shape")
+                            })?
+                            .id
+                            .0,
+                        indirect,
+                        payload_bytes: payload_bytes.to_string(),
+                        cases: cases
+                            .iter()
+                            .map(|fields| children(fields))
+                            .collect::<Result<_, _>>()?,
+                    },
+                    S::Callable { captures } => ManagedLayout::Callable {
+                        captures: captures.as_deref().map(children).transpose()?,
+                    },
+                    S::Shared { payload, weak } => ManagedLayout::Shared {
+                        payload: child(&payload)?,
+                        weak,
+                    },
+                    S::Dynamic => ManagedLayout::Dynamic,
+                    S::Generator {
+                        yielded,
+                        returned,
+                        payload_bytes,
+                    } => ManagedLayout::Generator {
+                        yielded: child(&yielded)?,
+                        returned: child(&returned)?,
+                        payload_bytes: payload_bytes.to_string(),
+                    },
+                    S::ActorCall {
+                        completion,
+                        reply,
+                        declared_failure,
+                    } => ManagedLayout::ActorCall {
+                        completion: child(&completion)?,
+                        reply: child(&reply)?,
+                        declared_failure,
+                    },
+                    S::Provider {
+                        kind,
+                        children: payloads,
+                    } => ManagedLayout::Provider {
+                        invocation_slot_bytes: matches!(kind, P::Task)
+                            .then(|| hew_sir::managed_callable_carrier().bytes.to_string()),
+                        provider: match kind {
+                            P::Task => ManagedProvider::Task,
+                            P::Stream => ManagedProvider::Stream,
+                            P::Sink => ManagedProvider::Sink,
+                            P::Encoding(hew_types::BuiltinType::JsonValue) => ManagedProvider::Json,
+                            P::Encoding(hew_types::BuiltinType::YamlValue) => ManagedProvider::Yaml,
+                            P::Encoding(hew_types::BuiltinType::TomlValue) => ManagedProvider::Toml,
+                            P::Encoding(other) => {
+                                return Err(EmitError::new(format!(
+                                    "unexpected encoding provider {other:?}"
+                                )))
+                            }
+                            P::Opaque => ManagedProvider::Opaque,
+                        },
+                        children: children(&payloads)?,
+                    },
+                };
+                Ok(ManagedType {
+                    id: child(ty)?,
+                    slot_bytes: width.bytes.to_string(),
+                    layout,
+                })
+            })
+            .collect()
+    }
+
     fn new(module: &'m SemModule) -> Self {
         let strings = module
             .string_literals
@@ -196,6 +350,7 @@ impl<'m> Walker<'m> {
             externs: Vec::new(),
             extern_index: BTreeMap::new(),
             value_types: BTreeMap::new(),
+            managed_ids: BTreeMap::new(),
             suspend_kinds: Vec::new(),
         }
     }
@@ -221,7 +376,7 @@ impl<'m> Walker<'m> {
             for arg in &block.args {
                 self.value_types.insert(arg.value, arg.ty.clone());
             }
-            for op in &block.ops {
+            for op in block.operations() {
                 for result in &op.results {
                     self.value_types.insert(result.id, result.ty.clone());
                 }
@@ -262,7 +417,8 @@ impl<'m> Walker<'m> {
                 | SemTerminator::Panic { .. }
                 | SemTerminator::Trap { .. }
                 | SemTerminator::ResumeUnwind { .. }
-                | SemTerminator::Unreachable => {}
+                | SemTerminator::Unreachable
+                | SemTerminator::Materialize { .. } => {}
             }
             if let SemTerminator::Call {
                 handback: Some(handback),
@@ -492,6 +648,7 @@ impl<'m> Walker<'m> {
         hew_version: &str,
         compiler_version: &str,
     ) -> Result<Package, EmitError> {
+        let managed_types = self.managed_types()?;
         let functions = self
             .module
             .functions
@@ -517,6 +674,7 @@ impl<'m> Walker<'m> {
         };
 
         Ok(Package {
+            managed_types,
             codecs: self.codecs.clone(),
             structural_render: self.structural_render()?,
             resources: self.resources()?,
@@ -690,6 +848,7 @@ impl<'m> Walker<'m> {
                 Ok(Actor {
                     id: actor.id.0,
                     name: head.registry_key().to_owned(),
+                    state_type: self.managed_ids.get(&actor.state_ty).copied(),
                     state_fields: actor
                         .fields
                         .iter()
@@ -762,7 +921,7 @@ impl<'m> Walker<'m> {
                             })
                             .collect(),
                     }),
-                    max_heap_bytes: actor.max_heap_bytes,
+                    max_heap_bytes: actor.max_heap_bytes.map(|bytes| bytes.to_string()),
                 })
             })
             .collect()
@@ -1020,12 +1179,16 @@ impl<'m> Walker<'m> {
             ),
             id,
             name: function.name.clone(),
-            params: function.params.iter().map(block_arg).collect(),
+            params: function
+                .params
+                .iter()
+                .map(|arg| block_arg(arg, &self.managed_ids))
+                .collect(),
             entry: function.entry.0,
             places: function
                 .places
                 .iter()
-                .map(place_decl)
+                .map(|place| place_decl(place, &self.managed_ids))
                 .collect::<Result<_, _>>()?,
             blocks: function
                 .blocks
@@ -1049,6 +1212,7 @@ impl<'m> Walker<'m> {
             ops.insert(
                 0,
                 wire::OpV1 {
+                    definitions: Vec::new(),
                     kind: wire::OpKind::CoverageHit {
                         counter: counter.id,
                     },
@@ -1059,7 +1223,11 @@ impl<'m> Walker<'m> {
         }
         Ok(Block {
             id: block.id.0,
-            params: block.args.iter().map(block_arg).collect(),
+            params: block
+                .args
+                .iter()
+                .map(|arg| block_arg(arg, &self.managed_ids))
+                .collect(),
             ops,
             term: self.terminator(&block.terminator, &block.terminator_provenance)?,
         })
@@ -1242,7 +1410,6 @@ impl<'m> Walker<'m> {
             SemOpKind::ArrayRepeat { value } => wire::OpKind::ArrayRepeat {
                 dst: output()?,
                 value: operand(value),
-                count: None,
             },
 
             SemOpKind::VariantMake {
@@ -1370,7 +1537,11 @@ impl<'m> Walker<'m> {
             SemOpKind::StreamPipe { capacity } => wire::OpKind::StreamPipe {
                 dst: Some(dst),
                 capacity: *capacity,
-                results: op.results.iter().map(value_def).collect::<Vec<_>>(),
+                results: op
+                    .results
+                    .iter()
+                    .map(|def| value_def(def, &self.managed_ids))
+                    .collect::<Vec<_>>(),
             },
             SemOpKind::TaskScopeEnter {
                 scope,
@@ -1390,6 +1561,7 @@ impl<'m> Walker<'m> {
                 dst: output()?,
                 scope: scope.0,
                 members: members.iter().map(operand).collect::<Vec<_>>(),
+                member_slot_bytes: hew_sir::managed_callable_carrier().bytes.to_string(),
             },
             SemOpKind::TaskSpawn { scope, callable } => wire::OpKind::TaskSpawn {
                 dst: output()?,
@@ -1445,6 +1617,11 @@ impl<'m> Walker<'m> {
             },
         };
         Ok(wire::OpV1 {
+            definitions: op
+                .results
+                .iter()
+                .map(|def| value_def(def, &self.managed_ids))
+                .collect(),
             kind,
             own: op
                 .results
@@ -1466,6 +1643,15 @@ impl<'m> Walker<'m> {
     ) -> Result<wire::TermV1, EmitError> {
         let span = self.span(provenance);
         let kind = match terminator {
+            SemTerminator::Materialize {
+                operation,
+                normal,
+                failure,
+            } => wire::TermKind::Materialize {
+                operation: Box::new(self.op(operation)?),
+                normal: encode_edge(normal),
+                failure: encode_edge(failure),
+            },
             SemTerminator::Return { value } => wire::TermKind::Return {
                 value: value.as_ref().map(boundary),
             },
@@ -1493,7 +1679,11 @@ impl<'m> Walker<'m> {
                     .iter()
                     .map(|arm| wire::SwitchArm {
                         variant: arm.variant,
-                        fields: arm.fields.iter().map(value_def).collect(),
+                        fields: arm
+                            .fields
+                            .iter()
+                            .map(|def| value_def(def, &self.managed_ids))
+                            .collect(),
                         edge: encode_edge(&arm.target),
                     })
                     .collect::<Vec<_>>(),
@@ -1541,7 +1731,7 @@ impl<'m> Walker<'m> {
                     rhs_timestamp: self.value_types[&rhs.value]
                         .is_builtin(hew_types::BuiltinType::Timestamp),
                     shape,
-                    result: value_def(result),
+                    result: value_def(result, &self.managed_ids),
                     normal: encode_edge(normal),
                     failures: failures
                         .iter()
@@ -1564,7 +1754,7 @@ impl<'m> Walker<'m> {
                 binary_op: format!("{op:?}"),
                 lhs: operand(lhs),
                 rhs: operand(rhs),
-                result: value_def(result),
+                result: value_def(result, &self.managed_ids),
                 normal: encode_edge(normal),
                 failures: failures
                     .iter()
@@ -1587,12 +1777,14 @@ impl<'m> Walker<'m> {
                 ..
             } => wire::TermKind::Call {
                 args: boundaries(args),
-                result: call_result(result),
+                result: call_result(result, &self.managed_ids),
                 normal: Some(normal.as_ref().map(encode_edge)),
                 unwind: encode_unwind(unwind),
                 request_shapes: None,
                 callee: self.function_id(*callee)?,
-                handback: handback.as_ref().map(|value| Some(value_def(value))),
+                handback: handback
+                    .as_ref()
+                    .map(|value| Some(value_def(value, &self.managed_ids))),
             },
             SemTerminator::IndirectCall {
                 callee,
@@ -1604,7 +1796,7 @@ impl<'m> Walker<'m> {
                 ..
             } => wire::TermKind::IndirectCall {
                 args: boundaries(args),
-                result: call_result(result),
+                result: call_result(result, &self.managed_ids),
                 normal: Some(normal.as_ref().map(encode_edge)),
                 unwind: encode_unwind(unwind),
                 request_shapes: None,
@@ -1621,7 +1813,7 @@ impl<'m> Walker<'m> {
                 ..
             } => wire::TermKind::DynCall {
                 args: boundaries(args),
-                result: call_result(result),
+                result: call_result(result, &self.managed_ids),
                 normal: Some(normal.as_ref().map(encode_edge)),
                 unwind: encode_unwind(unwind),
                 request_shapes: None,
@@ -1638,7 +1830,7 @@ impl<'m> Walker<'m> {
                 ..
             } => wire::TermKind::ValueCall {
                 args: boundaries(args),
-                result: call_result(result),
+                result: call_result(result, &self.managed_ids),
                 normal: Some(Some(encode_edge(normal))),
                 unwind: encode_unwind(unwind),
                 request_shapes: None,
@@ -1696,7 +1888,7 @@ impl<'m> Walker<'m> {
                 wire::TermKind::RuntimeCall {
                     aggregate_result_shape: self.aggregate_result_shape(result).map(Some),
                     args: boundaries(args),
-                    result: call_result(result),
+                    result: call_result(result, &self.managed_ids),
                     normal: Some(Some(encode_edge(normal))),
                     unwind: encode_unwind(unwind),
                     request_shapes: None,
@@ -1734,7 +1926,7 @@ impl<'m> Walker<'m> {
                 result_resource: self.result_resource(result),
                 aggregate_result_shape: self.aggregate_result_shape(result).map(Some),
                 args: boundaries(args),
-                result: call_result(result),
+                result: call_result(result, &self.managed_ids),
                 normal: Some(Some(encode_edge(normal))),
                 unwind: encode_unwind(unwind),
                 request_shapes: None,
@@ -1791,7 +1983,7 @@ impl<'m> Walker<'m> {
                         .variant_shape_for_type(&result.ty)
                         .map(|shape| shape.id.0),
                 ),
-                result: value_def(result),
+                result: value_def(result, &self.managed_ids),
                 deadline_variant: *deadline_variant,
                 fault_variant: *fault_variant,
                 normal: encode_edge(normal),
@@ -1834,7 +2026,7 @@ impl<'m> Walker<'m> {
                     result_resource: self.result_resource(result),
                     aggregate_result_shape: None,
                     args: boundaries(inputs),
-                    result: call_result(result),
+                    result: call_result(result, &self.managed_ids),
                     normal: Some(Some(encode_edge(normal))),
                     unwind: None,
                     request_shapes: None,
@@ -1858,7 +2050,7 @@ impl<'m> Walker<'m> {
                     result_shape: Some(self.result_shape(result)),
                     error_shape: Some(self.error_shape(result)),
                     inputs: boundaries(inputs),
-                    result: call_result(result),
+                    result: call_result(result, &self.managed_ids),
                     resumes: resumes.iter().map(encode_edge).collect::<Vec<_>>(),
                     cancel: Some(encode_edge(cancel)),
                     unwind: Some(encode_edge(unwind)),
@@ -1888,7 +2080,7 @@ impl<'m> Walker<'m> {
                 }
                 wire::TermKind::ActorCall {
                     args: boundaries(args),
-                    result: call_result(result),
+                    result: call_result(result, &self.managed_ids),
                     normal: Some(Some(encode_edge(normal))),
                     unwind: encode_unwind(unwind),
                     request_shapes: Some(self.request_shapes(result)),
@@ -1953,7 +2145,7 @@ impl<'m> Walker<'m> {
                 });
                 wire::TermKind::WireCodec {
                     args: boundaries(args),
-                    result: call_result(result),
+                    result: call_result(result, &self.managed_ids),
                     normal: Some(Some(encode_edge(normal))),
                     unwind: encode_unwind(unwind),
                     request_shapes: None,
@@ -2030,18 +2222,23 @@ fn structural_enum(shape: &hew_sir::SemVariantShape, members: &[u32]) -> Structu
     StructuralRecipe::Enum { cases }
 }
 
-fn place_decl(place: &hew_sir::PlaceDecl) -> Result<Place, EmitError> {
+fn place_decl(
+    place: &hew_sir::PlaceDecl,
+    managed_ids: &BTreeMap<hew_types::ResolvedTy, u32>,
+) -> Result<Place, EmitError> {
     let id = place.id.0;
+    let managed_type = managed_ids.get(&place.ty).copied();
     Ok(match &place.origin {
         hew_sir::PlaceOrigin::Session { .. } => {
             return Err(EmitError::new(
                 "persistent session places are not yet supported by sandbox packages",
             ))
         }
-        hew_sir::PlaceOrigin::Local => Place::Local { id },
-        hew_sir::PlaceOrigin::Runtime => Place::Runtime { id },
+        hew_sir::PlaceOrigin::Local => Place::Local { id, managed_type },
+        hew_sir::PlaceOrigin::Runtime => Place::Runtime { id, managed_type },
         hew_sir::PlaceOrigin::Aggregate { base, shape, field } => Place::Aggregate {
             id,
+            managed_type,
             base: match base {
                 hew_sir::PlaceBase::Value(value) => PlaceBase::Value(value.0),
                 hew_sir::PlaceBase::Place(place) => PlaceBase::Place(place.0),
@@ -2051,6 +2248,7 @@ fn place_decl(place: &hew_sir::PlaceDecl) -> Result<Place, EmitError> {
         },
         hew_sir::PlaceOrigin::Capture { environment, field } => Place::Capture {
             id,
+            managed_type,
             environment: environment.0,
             field: *field,
         },
@@ -2061,6 +2259,7 @@ fn place_decl(place: &hew_sir::PlaceDecl) -> Result<Place, EmitError> {
             ..
         } => Place::ActorState {
             id,
+            managed_type,
             environment: state.0,
             field: *field,
             initialized: *initialized,
@@ -2080,11 +2279,14 @@ fn table_index(index: usize) -> u32 {
     u32::try_from(index).expect("sandbox package table exceeds u32")
 }
 
-fn call_result(result: &CallResult) -> wire::CallResult {
+fn call_result(
+    result: &CallResult,
+    managed_ids: &BTreeMap<hew_types::ResolvedTy, u32>,
+) -> wire::CallResult {
     match result {
         CallResult::Unit => wire::CallResult::Unit(()),
         CallResult::Never => wire::CallResult::Never(wire::CallResultNever::Never),
-        CallResult::Value(def) => wire::CallResult::ValueDef(value_def(def)),
+        CallResult::Value(def) => wire::CallResult::ValueDef(value_def(def, managed_ids)),
     }
 }
 fn encode_edge(edge: &Edge) -> wire::Edge {
@@ -2099,17 +2301,19 @@ fn encode_unwind(unwind: &CallUnwind) -> Option<wire::Edge> {
         CallUnwind::Cleanup(target) => Some(encode_edge(target)),
     }
 }
-fn block_arg(arg: &hew_sir::BlockArg) -> Value {
+fn block_arg(arg: &hew_sir::BlockArg, managed_ids: &BTreeMap<hew_types::ResolvedTy, u32>) -> Value {
     Value {
         value: arg.value.0,
         own: own_kind(arg.own),
+        managed_type: managed_ids.get(&arg.ty).copied(),
     }
 }
 
-fn value_def(def: &ValueDef) -> wire::ValueDef {
+fn value_def(def: &ValueDef, managed_ids: &BTreeMap<hew_types::ResolvedTy, u32>) -> wire::ValueDef {
     wire::ValueDef {
         value: def.id.0,
         own: own_kind(def.own),
+        managed_type: managed_ids.get(&def.ty).copied(),
     }
 }
 fn operand(operand: &Operand) -> u32 {
@@ -2309,6 +2513,7 @@ const fn capability_name(capability: hew_types::ValueCapability) -> Capability {
 /// status.
 const fn trap_kind(kind: TrapKind) -> wire::TrapName {
     match kind {
+        TrapKind::HeapExceeded => wire::TrapName::HeapExceeded,
         TrapKind::IntegerOverflow | TrapKind::SignedMinDivNegOne => wire::TrapName::IntegerOverflow,
         TrapKind::DivideByZero => wire::TrapName::DivideByZero,
         TrapKind::ShiftOutOfRange => wire::TrapName::ShiftOutOfRange,

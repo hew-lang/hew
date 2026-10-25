@@ -262,6 +262,7 @@ fn spawn_bounded_test_actor(
             None,
             ptr::null_mut(),
             construction,
+            0,
             ptr::null(),
         )
     };

@@ -136,11 +136,7 @@ fn main() {
     // Test 6: set modifies value
     total = total + 1;
     arr = da_set(arr, 2, 99);
-    let r6 = if da_get(arr, 2) == 99 {
-        1
-    } else {
-        0
-    };
+    let r6 = if da_get(arr, 2) == 99 { 1 } else { 0 };
     passed = passed + run_test("set modifies value", r6);
 
     // Test 7: pop

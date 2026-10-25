@@ -6,11 +6,7 @@
 // returns both levels in parameter order and the caller reassigns each one.
 fn hash_pos(key: i64, ring_size: i64) -> i64 {
     let h = key * 2654435761 % ring_size;
-    if h < 0 {
-        h + ring_size
-    } else {
-        h
-    }
+    if h < 0 { h + ring_size } else { h }
 }
 
 fn node_hash(node_id: i64, replica: i64, ring_size: i64) -> i64 {

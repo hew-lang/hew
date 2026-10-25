@@ -1,0 +1,1433 @@
+{
+  "schema_version": 1,
+  "report_date": "2026-10-25",
+  "evidence_url": "https://storage.cloud.google.com/hew-bench-results/runs/20261025t013117z-ec6f16/local-followup/e43397fb0e8ca37234134e1bbff67a2ea96251be/evidence.tar.zst",
+  "source_revisions": {
+    "baseline": "d828d316274f0b7d0b05ca40d41283bf1c8da636",
+    "candidate": "e43397fb0e8ca37234134e1bbff67a2ea96251be"
+  },
+  "source_sha256": {
+    "baseline": {
+      "vec": {
+        "vec.hew": "08c72f4cb559204df4275940f0dca402a0dbaee45ac6f66faa38b1ba736b27f0"
+      },
+      "observe": {
+        "observe.hew": "b84af03001cfc12364f24f573dce2a1e5dbd9e5866538865de790ba5f7d70e65"
+      }
+    },
+    "candidate": {
+      "vec": {
+        "vec.hew": "08c72f4cb559204df4275940f0dca402a0dbaee45ac6f66faa38b1ba736b27f0"
+      },
+      "observe": {
+        "observe.hew": "b84af03001cfc12364f24f573dce2a1e5dbd9e5866538865de790ba5f7d70e65"
+      }
+    }
+  },
+  "bundle_sha256": {
+    "baseline": {
+      "vec": {
+        "sdk_manifest_sha256": "bd392bc23211378fe175e123a7535a46df81a9b580cf9e49882db9ff06fe3eac",
+        "bundle_manifest_sha256": "cbee98ccae627eef1f0163f69ac3fdcc760f1288a76f14516213e219c1bc56e4"
+      },
+      "observe": {
+        "sdk_manifest_sha256": "bd392bc23211378fe175e123a7535a46df81a9b580cf9e49882db9ff06fe3eac",
+        "bundle_manifest_sha256": "e7b3b2ae460ea4bee2b1dd126ddcf89ab36182443b2a5b5b3af2d376cfb35458"
+      }
+    },
+    "candidate": {
+      "vec": {
+        "sdk_manifest_sha256": "fb53e5a9a38f8e355f0a4392a0bb0b2de944b01e631289151027e006893ef453",
+        "bundle_manifest_sha256": "0646f2a728730f6eec6726c6c1c4eef907b3c81f4614832f8437c1ea5a128151"
+      },
+      "observe": {
+        "sdk_manifest_sha256": "fb53e5a9a38f8e355f0a4392a0bb0b2de944b01e631289151027e006893ef453",
+        "bundle_manifest_sha256": "343b34b0396f31c0839e0b5b9190e341a3b0594adad5fed63d90faca7a370168"
+      }
+    }
+  },
+  "evidence_sha256": {
+    "comparison": "880d2db9fbd213baf0ae27468bf1b2ba6d6bd08db8ce90f3be4b8dccb6cc219b",
+    "counters": "47108d333affa485c21c8d2cef04ad7efbb490e546e0c19273a7d5345046573d",
+    "allocations": "9cf13b9a8a412300ea4145593f963f0128818061f1ebaa322f86f2f4d05ee69a"
+  },
+  "host": {
+    "os": "Linux",
+    "cpu": "AMD Ryzen 9 7950X",
+    "physical_cores": 16,
+    "measurement_affinity_cpus": [
+      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15
+    ],
+    "measurement_affinity_core_count": 15
+  },
+  "toolchain": {
+    "llvm": "22.1.8",
+    "rust": "1.96.0"
+  },
+  "measurement_methods": {
+    "timing_pairs_per_row": 21,
+    "confidence_interval": "Pointwise 95% paired bootstrap interval",
+    "pmu": {
+      "events": ["cycles:u", "instructions:u", "branches:u", "branch-misses:u"],
+      "captures_per_edition_case": 3,
+      "multiplexed": false,
+      "scope": "User execution including inherited worker threads and launch/runuser startup; longer work amortizes launcher overhead. No host settings changed."
+    },
+    "allocations": {
+      "captures_per_edition_case": 3,
+      "scope": "Counters sampled before checksum formatting and before runtime teardown; not exact steady-state counts.",
+      "checked_units_definition": "rounds * case.size; first stdout line independently checked with suite_common.expected_stdout."
+    }
+  },
+  "rows": [
+    {
+      "id": "vec-scan-4096--off--revision",
+      "control": false,
+      "lane": "vec",
+      "workload": {
+        "id": "vec-scan-4096",
+        "family": "vec",
+        "kernel": "scan",
+        "size": 4096,
+        "workers": 1
+      },
+      "mode": "off",
+      "rounds": 28795,
+      "checked_units": 117944320,
+      "cpu_affinity": [1],
+      "timing": {
+        "baseline": {
+          "wall_seconds_median": 0.166063828,
+          "cpu_user_seconds_median": 0.16239999999999988,
+          "cpu_system_seconds_median": 0.0019299999999999873
+        },
+        "candidate": {
+          "wall_seconds_median": 0.142300226,
+          "cpu_user_seconds_median": 0.1381269999999999,
+          "cpu_system_seconds_median": 0.001901999999999987
+        },
+        "pairs": 21,
+        "baseline_over_candidate_speedup_median": 1.2549597602980698,
+        "pointwise_bootstrap_95_ci": [1.2402026480593573, 1.4931655524005831]
+      },
+      "pmu": {
+        "baseline": {
+          "capture_rounds": 86385,
+          "checked_units": 353832960,
+          "captures": 3,
+          "event_counts_per_work_unit_median": {
+            "cycles:u": 5.042354,
+            "instructions:u": 23.074122,
+            "branches:u": 6.017382,
+            "branch-misses:u": 0.000772
+          },
+          "branch_miss_percent_median": 0.012834
+        },
+        "candidate": {
+          "capture_rounds": 86385,
+          "checked_units": 353832960,
+          "captures": 3,
+          "event_counts_per_work_unit_median": {
+            "cycles:u": 3.470379,
+            "instructions:u": 16.104738,
+            "branches:u": 5.021339,
+            "branch-misses:u": 0.000764
+          },
+          "branch_miss_percent_median": 0.015219
+        }
+      },
+      "allocations": {
+        "baseline": {
+          "alloc_count_median": 141,
+          "bytes_allocated_median": 73048,
+          "bytes_freed_median": 71716,
+          "bytes_live_median": 1332,
+          "peak_bytes_median": 50756,
+          "captures": 3
+        },
+        "candidate": {
+          "alloc_count_median": 141,
+          "bytes_allocated_median": 73198,
+          "bytes_freed_median": 71869,
+          "bytes_live_median": 1329,
+          "peak_bytes_median": 50921,
+          "captures": 3
+        }
+      }
+    },
+    {
+      "id": "vec-grow-4096--off--revision",
+      "control": false,
+      "lane": "vec",
+      "workload": {
+        "id": "vec-grow-4096",
+        "family": "vec",
+        "kernel": "grow",
+        "size": 4096,
+        "workers": 1
+      },
+      "mode": "off",
+      "rounds": 4860,
+      "checked_units": 19906560,
+      "cpu_affinity": [1],
+      "timing": {
+        "baseline": {
+          "wall_seconds_median": 0.218049305,
+          "cpu_user_seconds_median": 0.21614899999999793,
+          "cpu_system_seconds_median": 0.001792999999999989
+        },
+        "candidate": {
+          "wall_seconds_median": 0.231089307,
+          "cpu_user_seconds_median": 0.22846999999999973,
+          "cpu_system_seconds_median": 0.0017630000000000146
+        },
+        "pairs": 21,
+        "baseline_over_candidate_speedup_median": 0.9350942231178183,
+        "pointwise_bootstrap_95_ci": [0.9308483213793028, 0.9662478343152469]
+      },
+      "pmu": {
+        "baseline": {
+          "capture_rounds": 14580,
+          "checked_units": 59719680,
+          "captures": 3,
+          "event_counts_per_work_unit_median": {
+            "cycles:u": 38.444991,
+            "instructions:u": 144.791956,
+            "branches:u": 36.333244,
+            "branch-misses:u": 0.00542
+          },
+          "branch_miss_percent_median": 0.014918
+        },
+        "candidate": {
+          "capture_rounds": 14580,
+          "checked_units": 59719680,
+          "captures": 3,
+          "event_counts_per_work_unit_median": {
+            "cycles:u": 40.411408,
+            "instructions:u": 137.854056,
+            "branches:u": 35.343053,
+            "branch-misses:u": 0.005872
+          },
+          "branch_miss_percent_median": 0.016614
+        }
+      },
+      "allocations": {
+        "baseline": {
+          "alloc_count_median": 58435,
+          "bytes_allocated_median": 319328095,
+          "bytes_freed_median": 319326764,
+          "bytes_live_median": 1331,
+          "peak_bytes_median": 50755,
+          "captures": 3
+        },
+        "candidate": {
+          "alloc_count_median": 58435,
+          "bytes_allocated_median": 319328237,
+          "bytes_freed_median": 319326909,
+          "bytes_live_median": 1328,
+          "peak_bytes_median": 50912,
+          "captures": 3
+        }
+      }
+    },
+    {
+      "id": "vec-reuse-4096--off--revision",
+      "control": false,
+      "lane": "vec",
+      "workload": {
+        "id": "vec-reuse-4096",
+        "family": "vec",
+        "kernel": "reuse",
+        "size": 4096,
+        "workers": 1
+      },
+      "mode": "off",
+      "rounds": 4682,
+      "checked_units": 19177472,
+      "cpu_affinity": [1],
+      "timing": {
+        "baseline": {
+          "wall_seconds_median": 0.274455061,
+          "cpu_user_seconds_median": 0.27329699999999946,
+          "cpu_system_seconds_median": 0.0017380000000000173
+        },
+        "candidate": {
+          "wall_seconds_median": 0.163786606,
+          "cpu_user_seconds_median": 0.16238999999999848,
+          "cpu_system_seconds_median": 0.001646999999999954
+        },
+        "pairs": 21,
+        "baseline_over_candidate_speedup_median": 1.3510755111618264,
+        "pointwise_bootstrap_95_ci": [1.3334575076759252, 1.4480560316718523]
+      },
+      "pmu": {
+        "baseline": {
+          "capture_rounds": 14046,
+          "checked_units": 57532416,
+          "captures": 3,
+          "event_counts_per_work_unit_median": {
+            "cycles:u": 53.581951,
+            "instructions:u": 191.87211,
+            "branches:u": 44.355297,
+            "branch-misses:u": 0.004287
+          },
+          "branch_miss_percent_median": 0.009664
+        },
+        "candidate": {
+          "capture_rounds": 14046,
+          "checked_units": 57532416,
+          "captures": 3,
+          "event_counts_per_work_unit_median": {
+            "cycles:u": 41.655406,
+            "instructions:u": 136.310681,
+            "branches:u": 35.067901,
+            "branch-misses:u": 0.003772
+          },
+          "branch_miss_percent_median": 0.010756
+        }
+      },
+      "allocations": {
+        "baseline": {
+          "alloc_count_median": 51643,
+          "bytes_allocated_median": 306827828,
+          "bytes_freed_median": 306826496,
+          "bytes_live_median": 1332,
+          "peak_bytes_median": 83596,
+          "captures": 3
+        },
+        "candidate": {
+          "alloc_count_median": 130,
+          "bytes_allocated_median": 72754,
+          "bytes_freed_median": 71425,
+          "bytes_live_median": 1329,
+          "peak_bytes_median": 51009,
+          "captures": 3
+        }
+      }
+    },
+    {
+      "id": "vec-scan-65536--off--revision",
+      "control": false,
+      "lane": "vec",
+      "workload": {
+        "id": "vec-scan-65536",
+        "family": "vec",
+        "kernel": "scan",
+        "size": 65536,
+        "workers": 1
+      },
+      "mode": "off",
+      "rounds": 3391,
+      "checked_units": 222232576,
+      "cpu_affinity": [1],
+      "timing": {
+        "baseline": {
+          "wall_seconds_median": 0.328234532,
+          "cpu_user_seconds_median": 0.32554399999999717,
+          "cpu_system_seconds_median": 0.0018670000000000075
+        },
+        "candidate": {
+          "wall_seconds_median": 0.264562563,
+          "cpu_user_seconds_median": 0.26217099999999505,
+          "cpu_system_seconds_median": 0.001994999999999969
+        },
+        "pairs": 21,
+        "baseline_over_candidate_speedup_median": 1.2670427009556262,
+        "pointwise_bootstrap_95_ci": [1.2534409556975383, 1.359191362891411]
+      },
+      "pmu": {
+        "baseline": {
+          "capture_rounds": 10173,
+          "checked_units": 666697728,
+          "captures": 3,
+          "event_counts_per_work_unit_median": {
+            "cycles:u": 4.937164,
+            "instructions:u": 23.056187,
+            "branches:u": 6.014172,
+            "branch-misses:u": 0.000413
+          },
+          "branch_miss_percent_median": 0.006873
+        },
+        "candidate": {
+          "capture_rounds": 10173,
+          "checked_units": 666697728,
+          "captures": 3,
+          "event_counts_per_work_unit_median": {
+            "cycles:u": 3.583084,
+            "instructions:u": 16.070972,
+            "branches:u": 5.016289,
+            "branch-misses:u": 0.000407
+          },
+          "branch_miss_percent_median": 0.008121
+        }
+      },
+      "allocations": {
+        "baseline": {
+          "alloc_count_median": 136,
+          "bytes_allocated_median": 1055679,
+          "bytes_freed_median": 1054347,
+          "bytes_live_median": 1332,
+          "peak_bytes_median": 788036,
+          "captures": 3
+        },
+        "candidate": {
+          "alloc_count_median": 136,
+          "bytes_allocated_median": 1055829,
+          "bytes_freed_median": 1054500,
+          "bytes_live_median": 1329,
+          "peak_bytes_median": 788201,
+          "captures": 3
+        }
+      }
+    },
+    {
+      "id": "vec-grow-65536--off--revision",
+      "control": false,
+      "lane": "vec",
+      "workload": {
+        "id": "vec-grow-65536",
+        "family": "vec",
+        "kernel": "grow",
+        "size": 65536,
+        "workers": 1
+      },
+      "mode": "off",
+      "rounds": 187,
+      "checked_units": 12255232,
+      "cpu_affinity": [1],
+      "timing": {
+        "baseline": {
+          "wall_seconds_median": 0.162410537,
+          "cpu_user_seconds_median": 0.10925899999999444,
+          "cpu_system_seconds_median": 0.050907000000000036
+        },
+        "candidate": {
+          "wall_seconds_median": 0.17611186,
+          "cpu_user_seconds_median": 0.11746800000000235,
+          "cpu_system_seconds_median": 0.05695600000000001
+        },
+        "pairs": 21,
+        "baseline_over_candidate_speedup_median": 0.9646899396021573,
+        "pointwise_bootstrap_95_ci": [0.9378216736368603, 0.9758256060880952]
+      },
+      "pmu": {
+        "baseline": {
+          "capture_rounds": 561,
+          "checked_units": 36765696,
+          "captures": 3,
+          "event_counts_per_work_unit_median": {
+            "cycles:u": 41.293728,
+            "instructions:u": 143.821548,
+            "branches:u": 36.133843,
+            "branch-misses:u": 0.011229
+          },
+          "branch_miss_percent_median": 0.031077
+        },
+        "candidate": {
+          "capture_rounds": 561,
+          "checked_units": 36765696,
+          "captures": 3,
+          "event_counts_per_work_unit_median": {
+            "cycles:u": 43.169896,
+            "instructions:u": 136.839102,
+            "branches:u": 35.136366,
+            "branch-misses:u": 0.011802
+          },
+          "branch_miss_percent_median": 0.03359
+        }
+      },
+      "allocations": {
+        "baseline": {
+          "alloc_count_median": 3111,
+          "bytes_allocated_median": 196127963,
+          "bytes_freed_median": 196126632,
+          "bytes_live_median": 1331,
+          "peak_bytes_median": 788035,
+          "captures": 3
+        },
+        "candidate": {
+          "alloc_count_median": 3111,
+          "bytes_allocated_median": 196128105,
+          "bytes_freed_median": 196126777,
+          "bytes_live_median": 1328,
+          "peak_bytes_median": 788192,
+          "captures": 3
+        }
+      }
+    },
+    {
+      "id": "vec-reuse-65536--off--revision",
+      "control": false,
+      "lane": "vec",
+      "workload": {
+        "id": "vec-reuse-65536",
+        "family": "vec",
+        "kernel": "reuse",
+        "size": 65536,
+        "workers": 1
+      },
+      "mode": "off",
+      "rounds": 189,
+      "checked_units": 12386304,
+      "cpu_affinity": [1],
+      "timing": {
+        "baseline": {
+          "wall_seconds_median": 0.200884658,
+          "cpu_user_seconds_median": 0.1471700000000027,
+          "cpu_system_seconds_median": 0.05090899999999987
+        },
+        "candidate": {
+          "wall_seconds_median": 0.096253571,
+          "cpu_user_seconds_median": 0.09294500000000028,
+          "cpu_system_seconds_median": 0.0017519999999997538
+        },
+        "pairs": 21,
+        "baseline_over_candidate_speedup_median": 1.9265743769584396,
+        "pointwise_bootstrap_95_ci": [1.8575628261988717, 2.0580895950478073]
+      },
+      "pmu": {
+        "baseline": {
+          "capture_rounds": 567,
+          "checked_units": 37158912,
+          "captures": 3,
+          "event_counts_per_work_unit_median": {
+            "cycles:u": 58.044343,
+            "instructions:u": 191.093025,
+            "branches:u": 44.197641,
+            "branch-misses:u": 0.008183
+          },
+          "branch_miss_percent_median": 0.018514
+        },
+        "candidate": {
+          "capture_rounds": 567,
+          "checked_units": 37158912,
+          "captures": 3,
+          "event_counts_per_work_unit_median": {
+            "cycles:u": 40.617059,
+            "instructions:u": 136.52708,
+            "branches:u": 35.125844,
+            "branch-misses:u": 0.003652
+          },
+          "branch_miss_percent_median": 0.010396
+        }
+      },
+      "allocations": {
+        "baseline": {
+          "alloc_count_median": 2988,
+          "bytes_allocated_median": 200279224,
+          "bytes_freed_median": 200277892,
+          "bytes_live_median": 1332,
+          "peak_bytes_median": 1312396,
+          "captures": 3
+        },
+        "candidate": {
+          "alloc_count_median": 138,
+          "bytes_allocated_median": 1056022,
+          "bytes_freed_median": 1054693,
+          "bytes_live_median": 1329,
+          "peak_bytes_median": 788289,
+          "captures": 3
+        }
+      }
+    },
+    {
+      "id": "actor-roundtrip-w1--off--revision",
+      "control": false,
+      "lane": "observe",
+      "workload": {
+        "id": "actor-roundtrip-w1",
+        "family": "observe",
+        "kernel": "roundtrip",
+        "size": 1,
+        "workers": 1
+      },
+      "mode": "off",
+      "rounds": 12792,
+      "checked_units": 12792,
+      "cpu_affinity": [1],
+      "timing": {
+        "baseline": {
+          "wall_seconds_median": 0.144190391,
+          "cpu_user_seconds_median": 0.028124000000005367,
+          "cpu_system_seconds_median": 0.06742000000000026
+        },
+        "candidate": {
+          "wall_seconds_median": 0.143095709,
+          "cpu_user_seconds_median": 0.029287000000003616,
+          "cpu_system_seconds_median": 0.06676799999999972
+        },
+        "pairs": 21,
+        "baseline_over_candidate_speedup_median": 1.0018684209337123,
+        "pointwise_bootstrap_95_ci": [0.9726546691936226, 1.0533481568491994]
+      },
+      "pmu": {
+        "baseline": {
+          "capture_rounds": 38376,
+          "checked_units": 38376,
+          "captures": 3,
+          "event_counts_per_work_unit_median": {
+            "cycles:u": 5906.558891,
+            "instructions:u": 9278.412862,
+            "branches:u": 1832.229388,
+            "branch-misses:u": 28.47772
+          },
+          "branch_miss_percent_median": 1.55284
+        },
+        "candidate": {
+          "capture_rounds": 38376,
+          "checked_units": 38376,
+          "captures": 3,
+          "event_counts_per_work_unit_median": {
+            "cycles:u": 6511.241114,
+            "instructions:u": 9408.853268,
+            "branches:u": 1856.298676,
+            "branch-misses:u": 28.636935
+          },
+          "branch_miss_percent_median": 1.540156
+        }
+      },
+      "allocations": {
+        "baseline": {
+          "alloc_count_median": 140913,
+          "bytes_allocated_median": 14864887,
+          "bytes_freed_median": 14770733,
+          "bytes_live_median": 94154,
+          "peak_bytes_median": 96239,
+          "captures": 3
+        },
+        "candidate": {
+          "alloc_count_median": 140913,
+          "bytes_allocated_median": 14864866,
+          "bytes_freed_median": 14770715,
+          "bytes_live_median": 94151,
+          "peak_bytes_median": 96236,
+          "captures": 3
+        }
+      }
+    },
+    {
+      "id": "actor-roundtrip-w1--hot--revision",
+      "control": false,
+      "lane": "observe",
+      "workload": {
+        "id": "actor-roundtrip-w1",
+        "family": "observe",
+        "kernel": "roundtrip",
+        "size": 1,
+        "workers": 1
+      },
+      "mode": "hot",
+      "rounds": 13350,
+      "checked_units": 13350,
+      "cpu_affinity": [1],
+      "timing": {
+        "baseline": {
+          "wall_seconds_median": 0.148554868,
+          "cpu_user_seconds_median": 0.028621000000001118,
+          "cpu_system_seconds_median": 0.07121199999999916
+        },
+        "candidate": {
+          "wall_seconds_median": 0.141834808,
+          "cpu_user_seconds_median": 0.028829999999999245,
+          "cpu_system_seconds_median": 0.06904299999999886
+        },
+        "pairs": 21,
+        "baseline_over_candidate_speedup_median": 1.014540329521857,
+        "pointwise_bootstrap_95_ci": [0.9913573505223257, 1.0520155477836324]
+      },
+      "pmu": {
+        "baseline": {
+          "capture_rounds": 40050,
+          "checked_units": 40050,
+          "captures": 3,
+          "event_counts_per_work_unit_median": {
+            "cycles:u": 6062.806792,
+            "instructions:u": 9836.229413,
+            "branches:u": 1904.584245,
+            "branch-misses:u": 28.652959
+          },
+          "branch_miss_percent_median": 1.492699
+        },
+        "candidate": {
+          "capture_rounds": 40050,
+          "checked_units": 40050,
+          "captures": 3,
+          "event_counts_per_work_unit_median": {
+            "cycles:u": 6085.794332,
+            "instructions:u": 9904.348739,
+            "branches:u": 1914.04779,
+            "branch-misses:u": 28.747815
+          },
+          "branch_miss_percent_median": 1.503636
+        }
+      },
+      "allocations": {
+        "baseline": {
+          "alloc_count_median": 147044,
+          "bytes_allocated_median": 15508577,
+          "bytes_freed_median": 15414275,
+          "bytes_live_median": 94302,
+          "peak_bytes_median": 96387,
+          "captures": 3
+        },
+        "candidate": {
+          "alloc_count_median": 147044,
+          "bytes_allocated_median": 15508556,
+          "bytes_freed_median": 15414257,
+          "bytes_live_median": 94299,
+          "peak_bytes_median": 96384,
+          "captures": 3
+        }
+      }
+    },
+    {
+      "id": "actor-fanout64-w1--off--revision",
+      "control": false,
+      "lane": "observe",
+      "workload": {
+        "id": "actor-fanout64-w1",
+        "family": "observe",
+        "kernel": "fanout",
+        "size": 64,
+        "workers": 1
+      },
+      "mode": "off",
+      "rounds": 453,
+      "checked_units": 28992,
+      "cpu_affinity": [1],
+      "timing": {
+        "baseline": {
+          "wall_seconds_median": 0.142914054,
+          "cpu_user_seconds_median": 0.041855000000005305,
+          "cpu_system_seconds_median": 0.056044999999999234
+        },
+        "candidate": {
+          "wall_seconds_median": 0.145980823,
+          "cpu_user_seconds_median": 0.04654099999999772,
+          "cpu_system_seconds_median": 0.053907999999999845
+        },
+        "pairs": 21,
+        "baseline_over_candidate_speedup_median": 0.9870011730580907,
+        "pointwise_bootstrap_95_ci": [0.9690568918791477, 1.0136597457767087]
+      },
+      "pmu": {
+        "baseline": {
+          "capture_rounds": 1359,
+          "checked_units": 86976,
+          "captures": 3,
+          "event_counts_per_work_unit_median": {
+            "cycles:u": 5319.040793,
+            "instructions:u": 9613.660148,
+            "branches:u": 1874.080666,
+            "branch-misses:u": 16.933786
+          },
+          "branch_miss_percent_median": 0.903647
+        },
+        "candidate": {
+          "capture_rounds": 1359,
+          "checked_units": 86976,
+          "captures": 3,
+          "event_counts_per_work_unit_median": {
+            "cycles:u": 5814.136371,
+            "instructions:u": 9734.763257,
+            "branches:u": 1896.057533,
+            "branch-misses:u": 15.051577
+          },
+          "branch_miss_percent_median": 0.793843
+        }
+      },
+      "allocations": {
+        "baseline": {
+          "alloc_count_median": 321747,
+          "bytes_allocated_median": 34304234,
+          "bytes_freed_median": 34086677,
+          "bytes_live_median": 217557,
+          "peak_bytes_median": 323110,
+          "captures": 3
+        },
+        "candidate": {
+          "alloc_count_median": 321747,
+          "bytes_allocated_median": 34304213,
+          "bytes_freed_median": 34086659,
+          "bytes_live_median": 217554,
+          "peak_bytes_median": 323107,
+          "captures": 3
+        }
+      }
+    },
+    {
+      "id": "actor-fanout64-w1--hot--revision",
+      "control": false,
+      "lane": "observe",
+      "workload": {
+        "id": "actor-fanout64-w1",
+        "family": "observe",
+        "kernel": "fanout",
+        "size": 64,
+        "workers": 1
+      },
+      "mode": "hot",
+      "rounds": 454,
+      "checked_units": 29056,
+      "cpu_affinity": [1],
+      "timing": {
+        "baseline": {
+          "wall_seconds_median": 0.168352922,
+          "cpu_user_seconds_median": 0.061850999999997214,
+          "cpu_system_seconds_median": 0.060289000000000925
+        },
+        "candidate": {
+          "wall_seconds_median": 0.162753664,
+          "cpu_user_seconds_median": 0.055503000000001634,
+          "cpu_system_seconds_median": 0.05871099999999885
+        },
+        "pairs": 21,
+        "baseline_over_candidate_speedup_median": 1.0589103556182606,
+        "pointwise_bootstrap_95_ci": [0.9835635906674163, 1.0808269186549198]
+      },
+      "pmu": {
+        "baseline": {
+          "capture_rounds": 1362,
+          "checked_units": 87168,
+          "captures": 3,
+          "event_counts_per_work_unit_median": {
+            "cycles:u": 5851.548137,
+            "instructions:u": 10133.926705,
+            "branches:u": 1935.349681,
+            "branch-misses:u": 14.97483
+          },
+          "branch_miss_percent_median": 0.773714
+        },
+        "candidate": {
+          "capture_rounds": 1362,
+          "checked_units": 87168,
+          "captures": 3,
+          "event_counts_per_work_unit_median": {
+            "cycles:u": 5590.398139,
+            "instructions:u": 10244.718807,
+            "branches:u": 1957.483446,
+            "branch-misses:u": 18.257985
+          },
+          "branch_miss_percent_median": 0.932727
+        }
+      },
+      "allocations": {
+        "baseline": {
+          "alloc_count_median": 322441,
+          "bytes_allocated_median": 34378906,
+          "bytes_freed_median": 34161233,
+          "bytes_live_median": 217673,
+          "peak_bytes_median": 323258,
+          "captures": 3
+        },
+        "candidate": {
+          "alloc_count_median": 322441,
+          "bytes_allocated_median": 34378885,
+          "bytes_freed_median": 34161215,
+          "bytes_live_median": 217670,
+          "peak_bytes_median": 323255,
+          "captures": 3
+        }
+      }
+    },
+    {
+      "id": "actor-fanout64-w2--off--revision",
+      "control": false,
+      "lane": "observe",
+      "workload": {
+        "id": "actor-fanout64-w2",
+        "family": "observe",
+        "kernel": "fanout",
+        "size": 64,
+        "workers": 2
+      },
+      "mode": "off",
+      "rounds": 722,
+      "checked_units": 46208,
+      "cpu_affinity": [1, 2],
+      "timing": {
+        "baseline": {
+          "wall_seconds_median": 0.145856158,
+          "cpu_user_seconds_median": 0.0957870000000014,
+          "cpu_system_seconds_median": 0.08340800000000215
+        },
+        "candidate": {
+          "wall_seconds_median": 0.147431691,
+          "cpu_user_seconds_median": 0.10166199999999037,
+          "cpu_system_seconds_median": 0.08694799999999958
+        },
+        "pairs": 21,
+        "baseline_over_candidate_speedup_median": 0.9955514328712796,
+        "pointwise_bootstrap_95_ci": [0.9590793475761087, 1.038182953601873]
+      },
+      "pmu": {
+        "baseline": {
+          "capture_rounds": 2166,
+          "checked_units": 138624,
+          "captures": 3,
+          "event_counts_per_work_unit_median": {
+            "cycles:u": 8181.717596,
+            "instructions:u": 9663.21748,
+            "branches:u": 1884.010972,
+            "branch-misses:u": 16.396151
+          },
+          "branch_miss_percent_median": 0.871242
+        },
+        "candidate": {
+          "capture_rounds": 2166,
+          "checked_units": 138624,
+          "captures": 3,
+          "event_counts_per_work_unit_median": {
+            "cycles:u": 7941.123788,
+            "instructions:u": 9784.750505,
+            "branches:u": 1906.07353,
+            "branch-misses:u": 16.037396
+          },
+          "branch_miss_percent_median": 0.842276
+        }
+      },
+      "allocations": {
+        "baseline": {
+          "alloc_count_median": 511438,
+          "bytes_allocated_median": 54538988,
+          "bytes_freed_median": 54247138,
+          "bytes_live_median": 291850,
+          "peak_bytes_median": 398749,
+          "captures": 3
+        },
+        "candidate": {
+          "alloc_count_median": 511426,
+          "bytes_allocated_median": 54538439,
+          "bytes_freed_median": 54246592,
+          "bytes_live_median": 291847,
+          "peak_bytes_median": 398746,
+          "captures": 3
+        }
+      }
+    },
+    {
+      "id": "actor-fanout64-w2--hot--revision",
+      "control": false,
+      "lane": "observe",
+      "workload": {
+        "id": "actor-fanout64-w2",
+        "family": "observe",
+        "kernel": "fanout",
+        "size": 64,
+        "workers": 2
+      },
+      "mode": "hot",
+      "rounds": 738,
+      "checked_units": 47232,
+      "cpu_affinity": [1, 2],
+      "timing": {
+        "baseline": {
+          "wall_seconds_median": 0.157235142,
+          "cpu_user_seconds_median": 0.10566300000000695,
+          "cpu_system_seconds_median": 0.09059600000000145
+        },
+        "candidate": {
+          "wall_seconds_median": 0.152596401,
+          "cpu_user_seconds_median": 0.09848900000000071,
+          "cpu_system_seconds_median": 0.08683500000000066
+        },
+        "pairs": 21,
+        "baseline_over_candidate_speedup_median": 1.0091413481613865,
+        "pointwise_bootstrap_95_ci": [0.9527614624627924, 1.0508902739480146]
+      },
+      "pmu": {
+        "baseline": {
+          "capture_rounds": 2214,
+          "checked_units": 141696,
+          "captures": 3,
+          "event_counts_per_work_unit_median": {
+            "cycles:u": 9578.173124,
+            "instructions:u": 10180.808738,
+            "branches:u": 1944.579925,
+            "branch-misses:u": 16.827215
+          },
+          "branch_miss_percent_median": 0.865339
+        },
+        "candidate": {
+          "capture_rounds": 2214,
+          "checked_units": 141696,
+          "captures": 3,
+          "event_counts_per_work_unit_median": {
+            "cycles:u": 8275.378402,
+            "instructions:u": 10291.147393,
+            "branches:u": 1966.677366,
+            "branch-misses:u": 18.035682
+          },
+          "branch_miss_percent_median": 0.917064
+        }
+      },
+      "allocations": {
+        "baseline": {
+          "alloc_count_median": 522736,
+          "bytes_allocated_median": 55738850,
+          "bytes_freed_median": 55446852,
+          "bytes_live_median": 291998,
+          "peak_bytes_median": 399162,
+          "captures": 3
+        },
+        "candidate": {
+          "alloc_count_median": 522732,
+          "bytes_allocated_median": 55752261,
+          "bytes_freed_median": 55460266,
+          "bytes_live_median": 291995,
+          "peak_bytes_median": 399159,
+          "captures": 3
+        }
+      }
+    },
+    {
+      "id": "actor-fanout64-w2--full--revision",
+      "control": false,
+      "lane": "observe",
+      "workload": {
+        "id": "actor-fanout64-w2",
+        "family": "observe",
+        "kernel": "fanout",
+        "size": 64,
+        "workers": 2
+      },
+      "mode": "full",
+      "rounds": 321,
+      "checked_units": 20544,
+      "cpu_affinity": [1, 2],
+      "timing": {
+        "baseline": {
+          "wall_seconds_median": 1.011860473,
+          "cpu_user_seconds_median": 0.08100100000000054,
+          "cpu_system_seconds_median": 0.08924200000000226
+        },
+        "candidate": {
+          "wall_seconds_median": 0.134268211,
+          "cpu_user_seconds_median": 0.07309300000000007,
+          "cpu_system_seconds_median": 0.09288600000000002
+        },
+        "pairs": 21,
+        "baseline_over_candidate_speedup_median": 7.5208580603999815,
+        "pointwise_bootstrap_95_ci": [7.3499179262293115, 7.696924825587141]
+      },
+      "pmu": {
+        "baseline": {
+          "capture_rounds": 963,
+          "checked_units": 61632,
+          "captures": 3,
+          "event_counts_per_work_unit_median": {
+            "cycles:u": 13880.194444,
+            "instructions:u": 13842.794279,
+            "branches:u": 2405.649516,
+            "branch-misses:u": 50.252272
+          },
+          "branch_miss_percent_median": 2.087089
+        },
+        "candidate": {
+          "capture_rounds": 963,
+          "checked_units": 61632,
+          "captures": 3,
+          "event_counts_per_work_unit_median": {
+            "cycles:u": 12146.682762,
+            "instructions:u": 13974.309125,
+            "branches:u": 2432.415758,
+            "branch-misses:u": 51.484748
+          },
+          "branch_miss_percent_median": 2.116295
+        }
+      },
+      "allocations": {
+        "baseline": {
+          "alloc_count_median": 270014,
+          "bytes_allocated_median": 29363619,
+          "bytes_freed_median": 24497929,
+          "bytes_live_median": 4865690,
+          "peak_bytes_median": 4972260,
+          "captures": 3
+        },
+        "candidate": {
+          "alloc_count_median": 270016,
+          "bytes_allocated_median": 29361150,
+          "bytes_freed_median": 24495391,
+          "bytes_live_median": 4865759,
+          "peak_bytes_median": 4972241,
+          "captures": 3
+        }
+      }
+    },
+    {
+      "id": "actor-fanout64-w8--off--revision",
+      "control": false,
+      "lane": "observe",
+      "workload": {
+        "id": "actor-fanout64-w8",
+        "family": "observe",
+        "kernel": "fanout",
+        "size": 64,
+        "workers": 8
+      },
+      "mode": "off",
+      "rounds": 1840,
+      "checked_units": 117760,
+      "cpu_affinity": [1, 2, 3, 4, 5, 6, 7, 8],
+      "timing": {
+        "baseline": {
+          "wall_seconds_median": 0.197364344,
+          "cpu_user_seconds_median": 0.811166,
+          "cpu_system_seconds_median": 0.259011000000001
+        },
+        "candidate": {
+          "wall_seconds_median": 0.171885109,
+          "cpu_user_seconds_median": 0.6309250000000048,
+          "cpu_system_seconds_median": 0.2576079999999976
+        },
+        "pairs": 21,
+        "baseline_over_candidate_speedup_median": 1.1803569034325792,
+        "pointwise_bootstrap_95_ci": [1.144644509432638, 1.225107237183647]
+      },
+      "pmu": {
+        "baseline": {
+          "capture_rounds": 5520,
+          "checked_units": 353280,
+          "captures": 3,
+          "event_counts_per_work_unit_median": {
+            "cycles:u": 32461.159774,
+            "instructions:u": 10079.038346,
+            "branches:u": 1986.965274,
+            "branch-misses:u": 26.963278
+          },
+          "branch_miss_percent_median": 1.361661
+        },
+        "candidate": {
+          "capture_rounds": 5520,
+          "checked_units": 353280,
+          "captures": 3,
+          "event_counts_per_work_unit_median": {
+            "cycles:u": 24182.411011,
+            "instructions:u": 10204.420363,
+            "branches:u": 2010.112234,
+            "branch-misses:u": 28.061305
+          },
+          "branch_miss_percent_median": 1.38008
+        }
+      },
+      "allocations": {
+        "baseline": {
+          "alloc_count_median": 1300027,
+          "bytes_allocated_median": 138994201,
+          "bytes_freed_median": 138286496,
+          "bytes_live_median": 707705,
+          "peak_bytes_median": 821871,
+          "captures": 3
+        },
+        "candidate": {
+          "alloc_count_median": 1299913,
+          "bytes_allocated_median": 138874468,
+          "bytes_freed_median": 138166766,
+          "bytes_live_median": 707702,
+          "peak_bytes_median": 819305,
+          "captures": 3
+        }
+      }
+    },
+    {
+      "id": "actor-fanout64-w8--hot--revision",
+      "control": false,
+      "lane": "observe",
+      "workload": {
+        "id": "actor-fanout64-w8",
+        "family": "observe",
+        "kernel": "fanout",
+        "size": 64,
+        "workers": 8
+      },
+      "mode": "hot",
+      "rounds": 1239,
+      "checked_units": 79296,
+      "cpu_affinity": [1, 2, 3, 4, 5, 6, 7, 8],
+      "timing": {
+        "baseline": {
+          "wall_seconds_median": 0.16342567,
+          "cpu_user_seconds_median": 0.5631089999999972,
+          "cpu_system_seconds_median": 0.1835530000000034
+        },
+        "candidate": {
+          "wall_seconds_median": 0.13361164,
+          "cpu_user_seconds_median": 0.42616499999999746,
+          "cpu_system_seconds_median": 0.16808800000000446
+        },
+        "pairs": 21,
+        "baseline_over_candidate_speedup_median": 1.2479329682092464,
+        "pointwise_bootstrap_95_ci": [1.1617527239311125, 1.2878183659292268]
+      },
+      "pmu": {
+        "baseline": {
+          "capture_rounds": 3717,
+          "checked_units": 237888,
+          "captures": 3,
+          "event_counts_per_work_unit_median": {
+            "cycles:u": 38577.237074,
+            "instructions:u": 10661.454659,
+            "branches:u": 2061.122322,
+            "branch-misses:u": 27.984657
+          },
+          "branch_miss_percent_median": 1.357739
+        },
+        "candidate": {
+          "capture_rounds": 3717,
+          "checked_units": 237888,
+          "captures": 3,
+          "event_counts_per_work_unit_median": {
+            "cycles:u": 26355.610985,
+            "instructions:u": 10779.062336,
+            "branches:u": 2086.040364,
+            "branch-misses:u": 30.067376
+          },
+          "branch_miss_percent_median": 1.44248
+        }
+      },
+      "allocations": {
+        "baseline": {
+          "alloc_count_median": 876289,
+          "bytes_allocated_median": 93953002,
+          "bytes_freed_median": 93245149,
+          "bytes_live_median": 707853,
+          "peak_bytes_median": 819556,
+          "captures": 3
+        },
+        "candidate": {
+          "alloc_count_median": 876236,
+          "bytes_allocated_median": 93903021,
+          "bytes_freed_median": 93195171,
+          "bytes_live_median": 707850,
+          "peak_bytes_median": 819966,
+          "captures": 3
+        }
+      }
+    },
+    {
+      "id": "actor-fanout64-w8--full--revision",
+      "control": false,
+      "lane": "observe",
+      "workload": {
+        "id": "actor-fanout64-w8",
+        "family": "observe",
+        "kernel": "fanout",
+        "size": 64,
+        "workers": 8
+      },
+      "mode": "full",
+      "rounds": 738,
+      "checked_units": 47232,
+      "cpu_affinity": [1, 2, 3, 4, 5, 6, 7, 8],
+      "timing": {
+        "baseline": {
+          "wall_seconds_median": 1.009875326,
+          "cpu_user_seconds_median": 0.42376999999999043,
+          "cpu_system_seconds_median": 0.23225800000000163
+        },
+        "candidate": {
+          "wall_seconds_median": 0.128426746,
+          "cpu_user_seconds_median": 0.33126799999999434,
+          "cpu_system_seconds_median": 0.2304980000000043
+        },
+        "pairs": 21,
+        "baseline_over_candidate_speedup_median": 7.899785524426508,
+        "pointwise_bootstrap_95_ci": [7.7327799696591155, 8.024871368919305]
+      },
+      "pmu": {
+        "baseline": {
+          "capture_rounds": 2214,
+          "checked_units": 141696,
+          "captures": 3,
+          "event_counts_per_work_unit_median": {
+            "cycles:u": 40739.625254,
+            "instructions:u": 14449.074116,
+            "branches:u": 2558.733676,
+            "branch-misses:u": 60.749231
+          },
+          "branch_miss_percent_median": 2.381923
+        },
+        "candidate": {
+          "capture_rounds": 2214,
+          "checked_units": 141696,
+          "captures": 3,
+          "event_counts_per_work_unit_median": {
+            "cycles:u": 20720.201763,
+            "instructions:u": 14520.805901,
+            "branches:u": 2566.892883,
+            "branch-misses:u": 56.602812
+          },
+          "branch_miss_percent_median": 2.208588
+        }
+      },
+      "allocations": {
+        "baseline": {
+          "alloc_count_median": 617619,
+          "bytes_allocated_median": 61525313,
+          "bytes_freed_median": 56243577,
+          "bytes_live_median": 5281736,
+          "peak_bytes_median": 5390920,
+          "captures": 3
+        },
+        "candidate": {
+          "alloc_count_median": 617573,
+          "bytes_allocated_median": 61483588,
+          "bytes_freed_median": 56201783,
+          "bytes_live_median": 5281805,
+          "peak_bytes_median": 5390459,
+          "captures": 3
+        }
+      }
+    },
+    {
+      "id": "task-ready64-w8--off--revision",
+      "control": false,
+      "lane": "observe",
+      "workload": {
+        "id": "task-ready64-w8",
+        "family": "observe",
+        "kernel": "task_ready",
+        "size": 64,
+        "workers": 8
+      },
+      "mode": "off",
+      "rounds": 16,
+      "checked_units": 1024,
+      "cpu_affinity": [1, 2, 3, 4, 5, 6, 7, 8],
+      "timing": {
+        "baseline": {
+          "wall_seconds_median": 0.046892004,
+          "cpu_user_seconds_median": 0.004959999999982756,
+          "cpu_system_seconds_median": 0.005226000000007502
+        },
+        "candidate": {
+          "wall_seconds_median": 0.046859948,
+          "cpu_user_seconds_median": 0.004472999999990179,
+          "cpu_system_seconds_median": 0.006917000000001394
+        },
+        "pairs": 21,
+        "baseline_over_candidate_speedup_median": 1.0022147088171778,
+        "pointwise_bootstrap_95_ci": [0.9827454994188214, 1.0176387188848954]
+      },
+      "pmu": {
+        "baseline": {
+          "capture_rounds": 48,
+          "checked_units": 3072,
+          "captures": 3,
+          "event_counts_per_work_unit_median": {
+            "cycles:u": 13944.692057,
+            "instructions:u": 14041.848958,
+            "branches:u": 2974.391927,
+            "branch-misses:u": 63.100586
+          },
+          "branch_miss_percent_median": 2.107238
+        },
+        "candidate": {
+          "capture_rounds": 48,
+          "checked_units": 3072,
+          "captures": 3,
+          "event_counts_per_work_unit_median": {
+            "cycles:u": 13923.816406,
+            "instructions:u": 14185.649089,
+            "branches:u": 3000.484701,
+            "branch-misses:u": 64.682617
+          },
+          "branch_miss_percent_median": 2.155739
+        }
+      },
+      "allocations": {
+        "baseline": {
+          "alloc_count_median": 12986,
+          "bytes_allocated_median": 1673643,
+          "bytes_freed_median": 1091464,
+          "bytes_live_median": 582091,
+          "peak_bytes_median": 853363,
+          "captures": 3
+        },
+        "candidate": {
+          "alloc_count_median": 12985,
+          "bytes_allocated_median": 1673702,
+          "bytes_freed_median": 1091486,
+          "bytes_live_median": 582216,
+          "peak_bytes_median": 853488,
+          "captures": 3
+        }
+      }
+    },
+    {
+      "id": "vec-scan-65536--off--self",
+      "control": true,
+      "lane": "vec",
+      "workload": {
+        "id": "vec-scan-65536",
+        "family": "vec",
+        "kernel": "scan",
+        "size": 65536,
+        "workers": 1
+      },
+      "mode": "off",
+      "rounds": 3281,
+      "checked_units": 215023616,
+      "cpu_affinity": [1],
+      "timing": {
+        "baseline": {
+          "wall_seconds_median": 0.251971358,
+          "cpu_user_seconds_median": 0.24895499999999515,
+          "cpu_system_seconds_median": 0.002004999999996926
+        },
+        "candidate": {
+          "wall_seconds_median": 0.247811094,
+          "cpu_user_seconds_median": 0.24571699999998486,
+          "cpu_system_seconds_median": 0.0020779999999973597
+        },
+        "pairs": 21,
+        "baseline_over_candidate_speedup_median": 1.0065042372579045,
+        "pointwise_bootstrap_95_ci": [0.9973175049478935, 1.0450959053798146]
+      }
+    },
+    {
+      "id": "actor-fanout64-w8--off--self",
+      "control": true,
+      "lane": "observe",
+      "workload": {
+        "id": "actor-fanout64-w8",
+        "family": "observe",
+        "kernel": "fanout",
+        "size": 64,
+        "workers": 8
+      },
+      "mode": "off",
+      "rounds": 1374,
+      "checked_units": 87936,
+      "cpu_affinity": [1, 2, 3, 4, 5, 6, 7, 8],
+      "timing": {
+        "baseline": {
+          "wall_seconds_median": 0.139057738,
+          "cpu_user_seconds_median": 0.4921950000000095,
+          "cpu_system_seconds_median": 0.19628600000000063
+        },
+        "candidate": {
+          "wall_seconds_median": 0.136998977,
+          "cpu_user_seconds_median": 0.4799889999999891,
+          "cpu_system_seconds_median": 0.19990999999998849
+        },
+        "pairs": 21,
+        "baseline_over_candidate_speedup_median": 0.9999254680338597,
+        "pointwise_bootstrap_95_ci": [0.9785515930394281, 1.0873927553221556]
+      }
+    }
+  ],
+  "benchmark_cloud_revision": "e48e664db7ef89611636f855becedaef0ffd115c",
+  "phase_wall_seconds": {
+    "final_incremental_release_build": 304.41,
+    "paired_timing": 251.5,
+    "pmu": 47.72,
+    "allocation_build_and_capture": 30.91
+  },
+  "validation": {
+    "executed_platforms": ["Linux x86_64"],
+    "inspected_platforms": ["Windows", "macOS", "wasm"],
+    "receipt_in_evidence": "artifacts/final-validation.json"
+  }
+}

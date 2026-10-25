@@ -1,3 +1,6 @@
+#[path = "support/checked.rs"]
+mod checked;
+
 use hew_hir::{lower_program_host_target, ResolutionCtx};
 use hew_sir::{
     lower_module, verify_module, AggregateShapeRef, BoundaryDecision, CallResult, SemOpKind,
@@ -79,7 +82,7 @@ fn main() {
     let borrowed = main
         .blocks
         .iter()
-        .flat_map(|block| &block.ops)
+        .flat_map(hew_sir::SemBlock::operations)
         .find_map(|op| match op.kind {
             SemOpKind::LoadBorrow { place } => Some(place),
             _ => None,
@@ -88,7 +91,7 @@ fn main() {
     let replacement = main
         .blocks
         .iter_mut()
-        .flat_map(|block| &mut block.ops)
+        .flat_map(hew_sir::SemBlock::operations_mut)
         .find_map(|op| match &mut op.kind {
             SemOpKind::StoreAssign { place, .. } => Some(place),
             _ => None,
@@ -132,15 +135,19 @@ fn owned_tuple_construction_and_repeated_borrows_are_explicit() {
         .iter()
         .find(|function| lowered.module.defs.path(function.declaration) == "main")
         .expect("main must have a body");
-    assert!(main.blocks.iter().flat_map(|block| &block.ops).any(|op| {
-        matches!(
-            op.kind,
-            SemOpKind::AggregateMake {
-                shape: AggregateShapeRef::Tuple,
-                ..
-            }
-        )
-    }));
+    assert!(main
+        .blocks
+        .iter()
+        .flat_map(hew_sir::SemBlock::operations)
+        .any(|op| {
+            matches!(
+                op.kind,
+                SemOpKind::AggregateMake {
+                    shape: AggregateShapeRef::Tuple,
+                    ..
+                }
+            )
+        }));
     let plan = hew_sir::place_plan(
         &lowered.module.defs,
         main,
@@ -151,7 +158,7 @@ fn owned_tuple_construction_and_repeated_borrows_are_explicit() {
     let fields: Vec<_> = main
         .blocks
         .iter()
-        .flat_map(|b| &b.ops)
+        .flat_map(hew_sir::SemBlock::operations)
         .filter_map(|op| match &op.kind {
             SemOpKind::LoadBorrow { place } => {
                 let projection = plan.projection(*place).unwrap();
@@ -239,7 +246,7 @@ fn main() {
     let fields: Vec<_> = main
         .blocks
         .iter()
-        .flat_map(|b| &b.ops)
+        .flat_map(hew_sir::SemBlock::operations)
         .filter_map(|op| match &op.kind {
             SemOpKind::LoadBorrow { place } => {
                 let projection = plan.projection(*place).unwrap();
@@ -271,7 +278,7 @@ fn main() {
             function
                 .blocks
                 .iter()
-                .flat_map(|block| &block.ops)
+                .flat_map(hew_sir::SemBlock::operations)
                 .any(|op| {
                     matches!(op.kind, SemOpKind::LoadCopy { .. })
                         && op.results.first().is_some_and(|result| {
@@ -304,7 +311,7 @@ fn main() {
         .functions
         .iter()
         .flat_map(|function| &function.blocks)
-        .flat_map(|block| &block.ops)
+        .flat_map(hew_sir::SemBlock::operations)
         .find(|op| matches!(op.kind, SemOpKind::LoadCopy { .. }))
         .expect("source must produce an aggregate projection")
         .id;
@@ -372,7 +379,7 @@ fn main() {
     assert!(echo_body
         .blocks
         .iter()
-        .flat_map(|block| &block.ops)
+        .flat_map(hew_sir::SemBlock::operations)
         .any(|op| {
             matches!(op.kind, SemOpKind::CopyValue { .. })
                 && op.results.first().is_some_and(|result| {
@@ -467,7 +474,7 @@ fn main() {
     let field_reads = main
         .blocks
         .iter()
-        .flat_map(|block| &block.ops)
+        .flat_map(hew_sir::SemBlock::operations)
         .filter(|operation| match operation.kind {
             SemOpKind::LoadCopy { place } => matches!(
                 main.places[place.0 as usize].origin,
@@ -483,7 +490,7 @@ fn main() {
     assert!(
         main.blocks
             .iter()
-            .flat_map(|block| &block.ops)
+            .flat_map(hew_sir::SemBlock::operations)
             .all(|operation| !matches!(operation.kind, SemOpKind::Destructure { .. })),
         "a place destructure must preserve independently readable fields"
     );
@@ -507,7 +514,7 @@ fn main() {
         .functions
         .iter_mut()
         .flat_map(|function| &mut function.blocks)
-        .flat_map(|block| &mut block.ops)
+        .flat_map(hew_sir::SemBlock::operations_mut)
         .find(|operation| matches!(operation.kind, SemOpKind::Destructure { .. }))
         .expect("source must produce an aggregate destructure");
     let operation = destructure.id;
@@ -555,7 +562,7 @@ fn main() -> i64 {
     let loans: Vec<_> = main
         .blocks
         .iter()
-        .flat_map(|b| &b.ops)
+        .flat_map(hew_sir::SemBlock::operations)
         .filter(|op| matches!(op.kind, SemOpKind::LoadBorrow { .. }))
         .map(|op| {
             assert_eq!(op.results[0].own, hew_sir::OwnKind::Guaranteed);
@@ -577,7 +584,7 @@ fn main() -> i64 {
     let place = main
         .blocks
         .iter()
-        .flat_map(|b| &b.ops)
+        .flat_map(hew_sir::SemBlock::operations)
         .find_map(|op| match &op.kind {
             SemOpKind::LoadBorrow { place } if op.results[0].id == loans[0] => Some(*place),
             _ => None,
@@ -670,7 +677,7 @@ fn main() -> i64 {
     assert_eq!(
         main.blocks
             .iter()
-            .flat_map(|b| &b.ops)
+            .flat_map(hew_sir::SemBlock::operations)
             .filter(|op| { matches!(op.kind, SemOpKind::AggregateProjectBorrow { .. }) })
             .count(),
         2
@@ -682,10 +689,13 @@ fn main() -> i64 {
         .find(|f| lowered.module.defs.path(f.declaration) == "echo")
         .unwrap();
     assert!(
-        echo.blocks.iter().flat_map(|b| &b.ops).any(|op| {
-            matches!(op.kind, SemOpKind::CopyValue { .. })
-                && op.results[0].own == hew_sir::OwnKind::Owned
-        }),
+        echo.blocks
+            .iter()
+            .flat_map(hew_sir::SemBlock::operations)
+            .any(|op| {
+                matches!(op.kind, SemOpKind::CopyValue { .. })
+                    && op.results[0].own == hew_sir::OwnKind::Owned
+            }),
         "the callee must copy the guaranteed parameter before returning it"
     );
 }
@@ -729,11 +739,14 @@ fn earlier_arguments_capture_owned_fields_before_later_effects() {
             })
             .unwrap();
         assert!(
-            main.blocks.iter().flat_map(|b| &b.ops).any(|op| {
-                matches!(op.kind, SemOpKind::LoadCopy { .. })
-                    && op.results[0].id == captured
-                    && op.results[0].own == hew_sir::OwnKind::Owned
-            }),
+            main.blocks
+                .iter()
+                .flat_map(hew_sir::SemBlock::operations)
+                .any(|op| {
+                    matches!(op.kind, SemOpKind::LoadCopy { .. })
+                        && op.results[0].id == checked::source(main, captured)
+                        && op.results[0].own == hew_sir::OwnKind::Owned
+                }),
             "later mutation or failure requires a captured independent value"
         );
     }
@@ -768,7 +781,11 @@ fn main() -> i64 {
         .iter()
         .find(|f| lowered.module.defs.path(f.declaration) == "main")
         .unwrap();
-    let operations: Vec<_> = main.blocks.iter().flat_map(|b| &b.ops).collect();
+    let operations: Vec<_> = main
+        .blocks
+        .iter()
+        .flat_map(hew_sir::SemBlock::operations)
+        .collect();
     let plan = hew_sir::place_plan(
         &lowered.module.defs,
         main,
@@ -837,10 +854,13 @@ fn main() -> i64 {
         .find(|f| lowered.module.defs.path(f.declaration) == "main")
         .unwrap();
     assert!(
-        main.blocks.iter().flat_map(|b| &b.ops).any(|op| {
-            matches!(op.kind, SemOpKind::LoadCopy { .. })
-                && op.results[0].own == hew_sir::OwnKind::Owned
-        }),
+        main.blocks
+            .iter()
+            .flat_map(hew_sir::SemBlock::operations)
+            .any(|op| {
+                matches!(op.kind, SemOpKind::LoadCopy { .. })
+                    && op.results[0].own == hew_sir::OwnKind::Owned
+            }),
         "the receiver must be captured before the index expression replaces it"
     );
 }
@@ -858,7 +878,7 @@ fn count_ops(function: &hew_sir::SemFunction, matches: impl Fn(&SemOpKind) -> bo
     function
         .blocks
         .iter()
-        .flat_map(|block| &block.ops)
+        .flat_map(hew_sir::SemBlock::operations)
         .filter(|op| matches(&op.kind))
         .count()
 }

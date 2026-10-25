@@ -1,0 +1,38 @@
+#[max_heap(56)]
+actor Enough {
+    var payload: bytes;
+    receive fn mutate() -> i64 {
+        var alias = payload[0..1];
+        alias.push(120);
+        alias.set(0, 121);
+        alias.pop();
+        alias.clear();
+        alias.push(122);
+        println(payload.len());
+        alias.len()
+    }
+}
+
+#[max_heap(55)]
+actor Small {
+    var payload: bytes;
+    receive fn mutate() -> i64 {
+        var alias = payload[0..1];
+        alias.push(120);
+        alias.len()
+    }
+}
+
+fn main() -> i64 {
+    let enough = spawn Enough { payload: b"0123456789abcdef0123456789abcdef" };
+    println(enough.mutate().expect("byte detach fits"));
+    stop(enough);
+    stopped(enough);
+    let small = spawn Small { payload: b"0123456789abcdef0123456789abcdef" };
+    match small.mutate() {
+        .Err(.Trapped) => println("bytes limit"),
+        _ => return 2,
+    }
+    stopped(small);
+    0
+}

@@ -484,6 +484,10 @@ unsafe fn spawn(
 }
 
 #[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one task creation, execution and scope-release lifecycle"
+)]
 fn managed_task_starts_after_adoption_and_keeps_result_slot_through_scope() {
     use hew_cabi::managed::HewManagedValueDescriptor;
     static CALLS: AtomicU64 = AtomicU64::new(0);
@@ -500,19 +504,19 @@ fn managed_task_starts_after_adoption_and_keeps_result_slot_through_scope() {
         visit: Some(hew_managed_visit_task),
     };
     static RESULT_LAYOUT: HewValueLayout = HewValueLayout {
-        managed: &PLAIN,
+        managed: &raw const PLAIN,
         ..RESULT
     };
     static ENV_LAYOUT: HewValueLayout = HewValueLayout {
         size: 0,
         align: 1,
-        managed: &EMPTY,
+        managed: &raw const EMPTY,
         ..RESULT
     };
     static TASK_LAYOUT: HewValueLayout = HewValueLayout {
         size: size_of::<*mut HewTask>(),
         align: align_of::<*mut HewTask>(),
-        managed: &TASK,
+        managed: &raw const TASK,
         ..RESULT
     };
     unsafe extern "C" fn run(
@@ -531,7 +535,7 @@ fn managed_task_starts_after_adoption_and_keeps_result_slot_through_scope() {
         ptr::null_mut()
     }
     const CALLABLE: HewCallableDescriptor = HewCallableDescriptor {
-        environment: &ENV_LAYOUT,
+        environment: &raw const ENV_LAYOUT,
         invoke_once: Some(run),
         ..DESCRIPTOR
     };
@@ -548,8 +552,13 @@ fn managed_task_starts_after_adoption_and_keeps_result_slot_through_scope() {
             descriptor: &CALLABLE,
         };
         let reservation = owner.reserve_new(16).unwrap();
-        let task =
-            hew_checked_task_spawn(scope, &raw mut callable, &RESULT_LAYOUT, 8, &TASK_LAYOUT);
+        let task = hew_checked_task_spawn(
+            scope,
+            &raw mut callable,
+            &raw const RESULT_LAYOUT,
+            8,
+            &raw const TASK_LAYOUT,
+        );
         assert_eq!(CALLS.load(Ordering::SeqCst), 0);
         reservation
             .commit_value(&TASK_LAYOUT, (&raw const task).cast())
@@ -1029,7 +1038,7 @@ fn transfer_waits_for_running_task_and_abort_preserves_sender_execution() {
         visit: Some(hew_managed_visit_task),
     };
     static TASK_LAYOUT: HewValueLayout = HewValueLayout {
-        managed: &TASK_MANAGED,
+        managed: &raw const TASK_MANAGED,
         ..RESULT
     };
     static RESULT_MANAGED: HewManagedValueDescriptor = HewManagedValueDescriptor {
@@ -1037,7 +1046,7 @@ fn transfer_waits_for_running_task_and_abort_preserves_sender_execution() {
         visit: None,
     };
     static MANAGED_RESULT: HewValueLayout = HewValueLayout {
-        managed: &RESULT_MANAGED,
+        managed: &raw const RESULT_MANAGED,
         ..RESULT
     };
     let _runtime = TaskRuntime::new();
@@ -1061,16 +1070,16 @@ fn transfer_waits_for_running_task_and_abort_preserves_sender_execution() {
         let execution = {
             let mut state = checked(task).lock_or_recover();
             // The fixture produces the same i64 slot; supply its budget witness.
-            state.layout = &MANAGED_RESULT;
+            state.layout = &raw const MANAGED_RESULT;
             state.execution.upgrade().unwrap()
         };
         let mut transfer = crate::owned_value_budget::transfer::ValueTransfer::begin(
             None,
             Some(destination.clone()),
-            &TASK_LAYOUT,
+            &raw const TASK_LAYOUT,
             (&raw const task).cast(),
         );
-        transfer.set_waker(OwnedWaker::retain(&*waker.descriptor()));
+        transfer.set_waker(OwnedWaker::retain(waker.descriptor()));
         assert!(
             !transfer.poll_prepare().unwrap(),
             "a running frame is never inspected"

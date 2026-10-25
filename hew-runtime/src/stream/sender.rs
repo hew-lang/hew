@@ -497,15 +497,8 @@ impl SharedWrite {
                     pointer: slot,
                     size: allocation.size(),
                     align: allocation.align(),
+                    managed_bytes: Some(self.input_slot_bytes),
                 }];
-                if self.value_owner.is_some() {
-                    unsafe fn keep_allocation(_pointer: *mut c_void) {}
-                    pending.push(ReleaseItem::ManagedBacking {
-                        pointer: slot,
-                        bytes: self.input_slot_bytes,
-                        free: keep_allocation,
-                    });
-                }
                 if owned {
                     pending.push(ReleaseItem::Value { slot, layout });
                 }
@@ -881,14 +874,20 @@ mod tests {
     use hew_cabi::managed::HewManagedValueDescriptor;
 
     unsafe extern "C-unwind" fn drop_sink(slot: *mut c_void) {
+        // SAFETY: this descriptor receives an initialized owning Sink slot.
         unsafe { super::super::hew_sink_close(slot.cast::<*mut HewSink>().read()) };
     }
 
     unsafe extern "C-unwind" fn drop_callable(slot: *mut c_void) {
+        // SAFETY: this descriptor receives an initialized owning callable slot.
         unsafe { crate::callable::hew_callable_drop(slot.cast()) };
     }
 
     #[test]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one two-account ownership lifecycle control"
+    )]
     fn shared_encoder_reserves_before_move_and_releases_each_actor_interest() {
         let sink_layout = HewValueLayout {
             size: size_of::<*mut HewSink>(),
@@ -930,7 +929,7 @@ mod tests {
             },
         };
         let descriptor = crate::callable::HewCallableDescriptor {
-            environment: &empty_layout,
+            environment: &raw const empty_layout,
             invoke_borrow: None,
             invoke_once: None,
             invoke_borrow_sync: None,
@@ -939,7 +938,7 @@ mod tests {
         };
         let mut encoder = HewCallableValue {
             environment: std::ptr::null_mut(),
-            descriptor: &descriptor,
+            descriptor: &raw const descriptor,
         };
         let closes = Arc::new(AtomicUsize::new(0));
         let sink = super::super::into_sink_ptr(
@@ -958,9 +957,9 @@ mod tests {
                 hew_sink_from_encoder(
                     sink,
                     &raw mut encoder,
-                    &sink_layout,
-                    &callable_layout,
-                    &mut status,
+                    &raw const sink_layout,
+                    &raw const callable_layout,
+                    &raw mut status,
                 )
             });
             assert!(refused.is_null());
@@ -973,16 +972,16 @@ mod tests {
                 hew_sink_from_encoder(
                     sink,
                     &raw mut encoder,
-                    &sink_layout,
-                    &callable_layout,
-                    &mut status,
+                    &raw const sink_layout,
+                    &raw const callable_layout,
+                    &raw mut status,
                 )
             });
             assert!(!endpoint.is_null());
             assert_eq!(status, 0);
             assert_eq!(source.live_bytes(), 16);
             let copy = with_value_owner(&Some(source.clone()), || {
-                hew_sink_clone_checked(endpoint, &sink_layout, &mut status)
+                hew_sink_clone_checked(endpoint, &raw const sink_layout, &raw mut status)
             });
             assert_eq!(status, 0);
             assert_eq!(source.live_bytes(), 16);
@@ -990,7 +989,7 @@ mod tests {
             crate::owned_value_budget::transfer::ValueTransfer::prepare(
                 Some(source.clone()),
                 Some(destination.clone()),
-                &sink_layout,
+                &raw const sink_layout,
                 (&raw const copy).cast(),
             )
             .unwrap()
@@ -999,13 +998,13 @@ mod tests {
             assert_eq!(source.live_bytes(), 16);
             assert_eq!(destination.live_bytes(), 16);
             with_value_owner(&Some(source.clone()), || {
-                super::super::hew_sink_close(endpoint)
+                super::super::hew_sink_close(endpoint);
             });
             assert_eq!(source.live_bytes(), 0);
             assert_eq!(destination.live_bytes(), 16);
             assert_eq!(closes.load(Ordering::SeqCst), 0);
             with_value_owner(&Some(destination.clone()), || {
-                super::super::hew_sink_close(copy)
+                super::super::hew_sink_close(copy);
             });
             assert_eq!(destination.live_bytes(), 0);
             assert_eq!(closes.load(Ordering::SeqCst), 1);

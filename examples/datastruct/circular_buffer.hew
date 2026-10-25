@@ -26,19 +26,11 @@ fn cb_count(buf: Vec<i64>) -> i64 {
 }
 
 fn cb_is_empty(buf: Vec<i64>) -> i64 {
-    if buf[3] == 0 {
-        1
-    } else {
-        0
-    }
+    if buf[3] == 0 { 1 } else { 0 }
 }
 
 fn cb_is_full(buf: Vec<i64>) -> i64 {
-    if buf[3] == buf[0] {
-        1
-    } else {
-        0
-    }
+    if buf[3] == buf[0] { 1 } else { 0 }
 }
 
 // Returns the buffer and 1 on success, 0 when the buffer is already full.
@@ -108,20 +100,12 @@ fn main() {
     // Test 2: push and count
     total = total + 1;
     buf = cb_push_all(buf, [10, 20, 30]);
-    let r2 = if cb_count(buf) == 3 {
-        1
-    } else {
-        0
-    };
+    let r2 = if cb_count(buf) == 3 { 1 } else { 0 };
     passed = passed + run_test("push 3 items, count=3", r2);
 
     // Test 3: peek
     total = total + 1;
-    let r3 = if cb_peek(buf) == 10 {
-        1
-    } else {
-        0
-    };
+    let r3 = if cb_peek(buf) == 10 { 1 } else { 0 };
     passed = passed + run_test("peek returns first", r3);
 
     // Test 4: pop FIFO
@@ -141,22 +125,14 @@ fn main() {
     total = total + 1;
     // count is now 1 (30 remains), fill 4 more
     buf = cb_push_all(buf, [40, 50, 60, 70]);
-    let r5 = if cb_is_full(buf) == 1 {
-        1
-    } else {
-        0
-    };
+    let r5 = if cb_is_full(buf) == 1 { 1 } else { 0 };
     passed = passed + run_test("fill to capacity", r5);
 
     // Test 6: push when full returns 0
     total = total + 1;
     let (after_full, ok) = cb_push(buf, 99);
     buf = after_full;
-    let r6 = if ok == 0 {
-        1
-    } else {
-        0
-    };
+    let r6 = if ok == 0 { 1 } else { 0 };
     passed = passed + run_test("push when full fails", r6);
 
     // Test 7: wraparound - pop all then refill

@@ -18,6 +18,7 @@ mod lifetime;
 mod linear;
 mod lower;
 mod lower_error;
+mod managed_storage;
 mod model;
 mod optimize;
 mod ownership;
@@ -55,6 +56,11 @@ pub use lower::{
     SirLoweringDemand, SirLoweringStatus, SirRootSelectionError, SirSourceStatus,
 };
 pub use lower_error::{SirLoweringError, SirOwnershipError};
+pub use managed_storage::{
+    managed_array_payload, managed_callable_carrier, managed_generator_payload, managed_slot,
+    managed_slot_is_plain, managed_storage_shape, managed_variant_payload, ManagedHandleKind,
+    ManagedLayoutError, ManagedProviderKind, ManagedSlot, ManagedStorageShape,
+};
 pub use model::{
     runtime_variant_shape_refs, AggregateShapeId, AggregateShapeRef, BlockArg, BlockId,
     BoundaryOperand, CallResult, CallUnwind, CallableId, CallableInstance, CheckedFailure, DeferId,

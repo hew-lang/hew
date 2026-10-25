@@ -26,6 +26,10 @@ pub const TRANSFER_PENDING: i32 = 4;
 pub enum HewManagedWalkKind {
     Retain,
     Release,
+    /// Move one creator-owned Rc payload graph after its ordinary handle
+    /// transfer. Nested Rc edges release their cell edge only; graph-wide
+    /// commit visits each reached cell's owned payload separately.
+    ReleaseTransferredPayload,
     /// Preflight a semantic copy. A null storage identity describes fresh
     /// private capacity, while an existing identity describes a shared retain.
     ClonePlan,
@@ -83,6 +87,16 @@ pub struct HewManagedFrame {
     pub slots: *const HewManagedFrameSlot,
     pub count: usize,
     pub child: *const *const crate::coro::HewCoroInvocation,
+    pub operation: *const HewManagedFrameOperation,
+}
+
+/// The current compiler-owned protocol handle, using its canonical provider
+/// descriptor. Protocol bookkeeping contributes no payload of its own.
+#[repr(C)]
+#[derive(Debug)]
+pub struct HewManagedFrameOperation {
+    pub layout: *const crate::value::HewValueLayout,
+    pub slot: *const c_void,
 }
 
 /// Visit the managed descendants described by one canonical value layout.

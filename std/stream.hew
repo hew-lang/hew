@@ -71,21 +71,18 @@ pub fn pipe<T>(capacity: i64) -> Result<(Sink<T>, Stream<T>), string> {
     if capacity < 0 {
         return .Err(f"stream.pipe: invalid capacity {capacity} (must be >= 0)");
     }
-    unsafe {
-        let pair = hew_stream_channel(capacity as i64);
-        if !hew_stream_pair_is_valid(pair) {
-            let detail = hew_stream_last_error();
-            if detail == "" {
-                return .Err("stream.pipe: pipe allocation failed");
-            }
-            return .Err(detail);
-        }
-        let sink = pair_sink(pair);
-        let input = pair_stream(pair);
-        hew_stream_pair_free(pair);
-        .Ok((sink, input))
+    let (sink, input, valid): (Sink<T>, Stream<T>, bool) = pipe_halves(capacity);
+    if !valid {
+        return .Err(unsafe {
+            hew_stream_last_error()
+        });
     }
+    .Ok((sink, input))
 }
+
+/// Construct endpoints with the compiler's exact element descriptor.
+#[intrinsic("stream.pipe")]
+fn pipe_halves<T>(capacity: i64) -> (Sink<T>, Stream<T>, bool) {}
 
 /// Open a file as a chunked `Stream<bytes>`.
 ///
@@ -419,11 +416,7 @@ impl Codec<bytes> for Slip {
                 damaged = false;
             } else if !damaged {
                 if byte == 0xDB {
-                    let next = if i + 1 < buf.len() {
-                        buf[i + 1] as i64
-                    } else {
-                        -1
-                    };
+                    let next = if i + 1 < buf.len() { buf[i + 1] as i64 } else { -1 };
                     if next == 0xDC {
                         frame.push(0xC0);
                         i = i + 1;

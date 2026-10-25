@@ -1046,6 +1046,8 @@ pub struct ToolCommand {
 
 #[derive(Debug, Subcommand)]
 pub enum ToolSubcommand {
+    /// Experimental persistent native session using a same-build shared runtime.
+    Live(LiveArgs),
     /// Show macro-expanded source with hygiene context annotations.
     Expand(ExpandArgs),
     /// Compile a .hew file through the v0.5 IR ladder.
@@ -1054,6 +1056,28 @@ pub enum ToolSubcommand {
     /// against the checked-in `.expected` file.
     #[command(name = "playground-verify")]
     PlaygroundVerify(PlaygroundVerifyArgs),
+}
+
+#[derive(Debug, Args)]
+pub struct LiveArgs {
+    /// Shared libhew from this compiler build.
+    #[arg(long)]
+    pub runtime: PathBuf,
+    /// Execution worker. Defaults to hew-live-host beside this compiler.
+    #[arg(long)]
+    pub worker: Option<PathBuf>,
+    /// Source directory for ordinary package and module resolution.
+    #[arg(long)]
+    pub project: Option<PathBuf>,
+    /// Maximum time to wait for one worker operation; an uncertain run is never retried.
+    #[arg(long, default_value = "5m")]
+    pub timeout: String,
+    /// Optimize prepared submissions with the ordinary O2 pipeline.
+    #[arg(long)]
+    pub release: bool,
+    /// Show compiler-generated submission wrappers on stderr.
+    #[arg(long)]
+    pub show_wrapper: bool,
 }
 
 #[derive(Debug, Args)]

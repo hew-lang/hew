@@ -734,9 +734,13 @@ impl StreamBacking for ChunksStream {
 // ── Helper: box stream / sink into raw pointers ───────────────────────────────
 
 fn into_stream_ptr(backing: impl StreamBacking + 'static) -> *mut HewStream {
+    into_boxed_stream_ptr(Box::new(backing))
+}
+
+fn into_boxed_stream_ptr(backing: Box<dyn StreamBacking>) -> *mut HewStream {
     Box::into_raw(Box::new(HewStream {
         // ALLOCATOR-PAIRING: GlobalAlloc
-        inner: Box::new(backing),
+        inner: backing,
         closed: false,
         remaining: None,
         channel: None,
@@ -902,7 +906,14 @@ pub unsafe extern "C" fn hew_stream_pipe_native(
     let layout = unsafe {
         crate::channel_common::move_elem_layout_witness(layout, "hew_stream_pipe_native")
     };
-    let cap = usize::try_from(capacity.max(1)).expect("verified Pipe capacity");
+    // SAFETY: the caller supplies its uninitialized sink result slot.
+    unsafe { *sink_out = ptr::null_mut() };
+    let Ok(cap) = usize::try_from(capacity.max(1)) else {
+        set_last_error(format!(
+            "hew_stream_channel: capacity {capacity} exceeds platform maximum"
+        ));
+        return ptr::null_mut();
+    };
     // SAFETY: no endpoint is exposed before its canonical empty root is bound.
     let core = unsafe { crate::channel_core::ChannelCore::new_typed(cap, *layout) };
     let core_raw = Arc::as_ptr(&core).cast::<c_void>();
@@ -2065,6 +2076,20 @@ pub unsafe extern "C" fn hew_stream_release_begin(
         unsafe { (*cursor).set_value_owner(core.typed_owner()) };
         return cursor;
     }
+    // SAFETY: the consuming boundary uniquely retains this provider and its stable backing.
+    if let Some(backing) = unsafe { stream.as_mut() }.and_then(|stream| stream.inner.generator()) {
+        let owner = backing.owner();
+        let mut pending = vec![ReleaseItem::Storage {
+            owner: stream.cast(),
+            free: free_stream,
+        }];
+        // SAFETY: the cursor pins the provider until generator cleanup and flat refund finish.
+        unsafe { backing.expand_release(&mut pending) };
+        let cursor = HewReleaseCursor::new(pending);
+        // SAFETY: this fresh cursor retains the provider's actual incarnation account.
+        unsafe { (*cursor).set_value_owner(owner) };
+        return cursor;
+    }
     // SAFETY: the caller supplies an exclusive live handle or null.
     let (layout, discarded) = unsafe { stream.as_ref() }
         .and_then(|stream| stream.channel.as_ref())
@@ -2923,6 +2948,78 @@ pub extern "C" fn hew_stream_take_error_fault() -> *mut crate::fault::HewFault {
         crate::internal::types::HEW_TRAP_USER_PANIC,
         take_last_error().unwrap_or_else(|| "stream write failed".into()),
     )))
+}
+
+/// Traverse the unique receiving Pipe provider, never producer endpoint aliases.
+/// # Safety
+/// The descriptor retains the live Stream slot and provider through this walk.
+#[no_mangle]
+pub unsafe extern "C" fn hew_managed_visit_stream(
+    slot: *const c_void,
+    visitor: *const hew_cabi::managed::HewManagedStorageVisitor,
+) -> i32 {
+    // SAFETY: the compiler's Stream descriptor supplies its exact handle slot.
+    let stream = unsafe { *slot.cast::<*mut HewStream>() };
+    // SAFETY: the enclosing descriptor retains this optional live handle.
+    let Some(stream) = (unsafe { stream.as_mut() }) else {
+        return 0;
+    };
+    if !stream.inner.managed_supported() {
+        return hew_cabi::managed::UNDESCRIBED;
+    }
+    if let Some(core) = stream.typed_core() {
+        // SAFETY: the Stream's unique provider lifetime pins its queue during this walk.
+        return unsafe { core.visit_typed(visitor) };
+    }
+    if let Some(generator) = stream.inner.generator() {
+        // SAFETY: common provider transfer freezes generator execution before publication.
+        return unsafe { generator.visit(visitor) };
+    }
+    // File/socket content and legacy host channels contain no typed queued values.
+    0
+}
+
+pub(crate) unsafe fn prepare_stream_release(
+    stream: *mut HewStream,
+    state: *const crate::coro_state::HewCoroState,
+) -> bool {
+    // SAFETY: the consuming cursor retains this unique optional Stream handle.
+    let Some(core) = (unsafe { stream.as_ref() }).and_then(HewStream::typed_core) else {
+        return true;
+    };
+    let waker = if state.is_null() {
+        None
+    } else {
+        // SAFETY: the polling invocation retains this wake descriptor through registration.
+        Some(unsafe {
+            crate::wake::OwnedWaker::retain(&*crate::coro_state::hew_coro_state_waker(state))
+        })
+    };
+    core.prepare_typed_close(waker)
+}
+
+pub(crate) unsafe fn expand_stream_release(
+    stream: *mut HewStream,
+    pending: &mut Vec<crate::release_walker::ReleaseItem>,
+) {
+    use crate::release_walker::ReleaseItem;
+    unsafe fn free(owner: *mut c_void) {
+        // SAFETY: the cursor drained every queued child and owns this original Box.
+        unsafe { drop(Box::from_raw(owner.cast::<HewStream>())) };
+    }
+    // SAFETY: expansion borrows the cursor's unique Stream before final retirement.
+    let Some(stream_ref) = (unsafe { stream.as_mut() }) else {
+        return;
+    };
+    let core = stream_ref.typed_core().expect("typed Stream release core");
+    // The allocation pins the core identity until its queued children and flat
+    // payload finish; its destructor must not start another content close.
+    stream_ref.closed = true;
+    pending.push(ReleaseItem::Storage {
+        owner: stream.cast(),
+        free,
+    });
+    core.expand_typed_close(pending);
 }
 
 #[cfg(test)]
@@ -5202,72 +5299,4 @@ mod tests {
             "consumed element dropped by the consumer; queued element by teardown"
         );
     }
-}
-
-/// Traverse the unique receiving Pipe provider, never producer endpoint aliases.
-/// # Safety
-/// The descriptor retains the live Stream slot and provider through this walk.
-#[no_mangle]
-pub unsafe extern "C" fn hew_managed_visit_stream(
-    slot: *const c_void,
-    visitor: *const hew_cabi::managed::HewManagedStorageVisitor,
-) -> i32 {
-    // SAFETY: the compiler's Stream descriptor supplies its exact handle slot.
-    let stream = unsafe { *slot.cast::<*mut HewStream>() };
-    // SAFETY: the enclosing descriptor retains this optional live handle.
-    let Some(stream) = (unsafe { stream.as_ref() }) else {
-        return 0;
-    };
-    if !stream.inner.managed_supported() {
-        return hew_cabi::managed::UNDESCRIBED;
-    }
-    if let Some(core) = stream.typed_core() {
-        // SAFETY: the Stream's unique provider lifetime pins its queue during this walk.
-        return unsafe { core.visit_typed(visitor) };
-    }
-    // File/socket content and legacy host channels contain no typed queued values.
-    0
-}
-
-pub(crate) unsafe fn prepare_stream_release(
-    stream: *mut HewStream,
-    state: *const crate::coro_state::HewCoroState,
-) -> bool {
-    // SAFETY: the consuming cursor retains this unique optional Stream handle.
-    let Some(core) = (unsafe { stream.as_ref() }).and_then(HewStream::typed_core) else {
-        return true;
-    };
-    let waker = if state.is_null() {
-        None
-    } else {
-        // SAFETY: the polling invocation retains this wake descriptor through registration.
-        Some(unsafe {
-            crate::wake::OwnedWaker::retain(&*crate::coro_state::hew_coro_state_waker(state))
-        })
-    };
-    core.prepare_typed_close(waker)
-}
-
-pub(crate) unsafe fn expand_stream_release(
-    stream: *mut HewStream,
-    pending: &mut Vec<crate::release_walker::ReleaseItem>,
-) {
-    use crate::release_walker::ReleaseItem;
-    unsafe fn free(owner: *mut c_void) {
-        // SAFETY: the cursor drained every queued child and owns this original Box.
-        unsafe { drop(Box::from_raw(owner.cast::<HewStream>())) };
-    }
-    // SAFETY: expansion borrows the cursor's unique Stream before final retirement.
-    let Some(stream_ref) = (unsafe { stream.as_mut() }) else {
-        return;
-    };
-    let core = stream_ref.typed_core().expect("typed Stream release core");
-    // The allocation pins the core identity until its queued children and flat
-    // payload finish; its destructor must not start another content close.
-    stream_ref.closed = true;
-    pending.push(ReleaseItem::Storage {
-        owner: stream.cast(),
-        free,
-    });
-    core.expand_typed_close(pending);
 }

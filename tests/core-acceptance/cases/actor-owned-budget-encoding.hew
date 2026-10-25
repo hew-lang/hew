@@ -1,0 +1,39 @@
+import std.encoding.json;
+
+#[max_heap(1024)]
+actor Enough {
+    var values: json.Value;
+
+    receive fn grow() -> i64 {
+        for i in 0..32 {
+            values.push(json.from_int(i)).expect("array");
+        }
+        values.array_len().expect("array")
+    }
+}
+
+#[max_heap(96)]
+actor Small {
+    var values: json.Value;
+
+    receive fn grow() -> i64 {
+        for i in 0..32 {
+            values.push(json.from_int(i)).expect("array");
+        }
+        values.array_len().expect("array")
+    }
+}
+
+fn main() -> i64 {
+    let enough = spawn Enough { values: json.array() };
+    println(enough.grow().expect("growth fits"));
+    stop(enough);
+    stopped(enough);
+    let small = spawn Small { values: json.array() };
+    match small.grow() {
+        .Err(.Trapped) => println("encoding limit"),
+        _ => return 2,
+    }
+    stopped(small);
+    0
+}

@@ -11,10 +11,12 @@ keywords = ["hew", "embedding", "compiler"]
 categories = ["compilers", "api-bindings"]
 
 [dependencies]
+clap.workspace = true
 hew-cabi = { path = "../hew-cabi" }
 libloading = "0.9"
 object = "0.40"
 serde.workspace = true
+serde_json.workspace = true
 sha2.workspace = true
 tempfile.workspace = true
 tokio = { version = "1", optional = true, features = ["rt", "sync", "time"] }

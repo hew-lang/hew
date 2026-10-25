@@ -90,6 +90,8 @@ pub enum RuntimeValueKind {
     /// A freshly extracted pipe half named by the operation, not by the
     /// receiver: `hew_stream_pair_sink` borrows a pair and returns a half.
     PipeHalfResult(PipeHalfKind),
+    /// Both typed endpoints of a newly created pipe.
+    PipePairResult,
     /// The paired pipe allocation `stream.pipe` splits. Its nominal identity
     /// comes from the generated `hew_stream_channel` ownership row.
     StreamPair,
@@ -254,7 +256,7 @@ impl RuntimeValueKind {
                 }
                 receiver.clone()
             }
-            Self::ServiceResult(_) | Self::PipeHalfResult(_) => return None,
+            Self::ServiceResult(_) | Self::PipeHalfResult(_) | Self::PipePairResult => return None,
             Self::StreamPair => ResolvedTy::named_opaque(
                 contract(
                     crate::ffi_contracts::extern_owned_resource_result("hew_stream_channel")?
@@ -543,6 +545,8 @@ pub enum RuntimeResultEffect {
 /// Closed language-visible failures of the initial runtime-operation surface.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum RuntimeLogicalFailure {
+    /// Checked managed payload acquisition refused before input mutation.
+    HeapExceeded,
     IndexOutOfBounds,
     IntegerOverflow,
     /// A selected user callback returns an existing logical fault owner.
@@ -559,15 +563,80 @@ pub struct RuntimeSemanticContract {
 }
 
 impl RuntimeSemanticContract {
+    /// These ordinary runtime constructors return private managed leaf storage,
+    /// directly or inside a closed builtin result carrier.
+    /// Their exact typed payload is acquired before the result becomes visible.
+    #[must_use]
+    pub const fn publishes_managed_leaf(self) -> bool {
+        matches!(
+            self.result,
+            RuntimeResultEffect::FreshOwned(RuntimeValueKind::String | RuntimeValueKind::Bytes)
+                | RuntimeResultEffect::FreshOwnedVariant(RuntimeVariantResultKind::Utf8Decode)
+                | RuntimeResultEffect::IndependentValue(RuntimeValueKind::Applied(
+                    BuiltinType::Option,
+                    &[RuntimeValueKind::String]
+                ))
+        )
+    }
+
+    /// Add the checked publication edge without changing existing failures.
+    ///
+    /// # Panics
+    /// Panics for a failure combination without an explicit checked cleanup contract.
+    #[must_use]
+    pub const fn with_managed_publication(mut self) -> Self {
+        if !self.publishes_managed_leaf() {
+            return self;
+        }
+        self.failures = match self.failures {
+            [] => &[RuntimeLogicalFailure::HeapExceeded],
+            [RuntimeLogicalFailure::HeapExceeded] => self.failures,
+            [RuntimeLogicalFailure::IndexOutOfBounds] => &[
+                RuntimeLogicalFailure::IndexOutOfBounds,
+                RuntimeLogicalFailure::HeapExceeded,
+            ],
+            [RuntimeLogicalFailure::CallbackFault] => &[
+                RuntimeLogicalFailure::CallbackFault,
+                RuntimeLogicalFailure::HeapExceeded,
+            ],
+            _ => panic!("managed leaf publication needs an explicit combined failure contract"),
+        };
+        self
+    }
+
     /// A bounds failure, or a fault from a key callback, happens before a
     /// receiver transform mutates or takes any input: the runtime leaves every
     /// owner with the caller. Its cleanup edge retains those owners for
     /// ordinary cleanup, so a `var self` receiver or an actor seat stays whole.
     #[must_use]
     pub fn preserves_inputs_on_failure(self) -> bool {
-        self.failures == [RuntimeLogicalFailure::RcUnavailable]
-            || (self.failures == [RuntimeLogicalFailure::IndexOutOfBounds]
-                || self.failures == [RuntimeLogicalFailure::CallbackFault])
+        (self.failures == [RuntimeLogicalFailure::HeapExceeded]
+            && matches!(
+                self.result,
+                RuntimeResultEffect::FreshOwned(
+                    RuntimeValueKind::PipeHalf(PipeHalfKind::Sink)
+                        | RuntimeValueKind::Applied(BuiltinType::Sink | BuiltinType::Stream, _)
+                        | RuntimeValueKind::Receiver(BuiltinType::Rc)
+                )
+            ))
+            || (self
+                .failures
+                .contains(&RuntimeLogicalFailure::RcUnavailable)
+                && self.failures.iter().all(|failure| {
+                    matches!(
+                        failure,
+                        RuntimeLogicalFailure::RcUnavailable | RuntimeLogicalFailure::HeapExceeded
+                    )
+                }))
+            || (!self.failures.is_empty()
+                && self.failures.iter().all(|failure| {
+                    matches!(
+                        failure,
+                        RuntimeLogicalFailure::IndexOutOfBounds
+                            | RuntimeLogicalFailure::CallbackFault
+                            | RuntimeLogicalFailure::HeapExceeded
+                    )
+                }))
                 && matches!(
                     self.result,
                     RuntimeResultEffect::UpdatedReceiver(_)
@@ -583,7 +652,9 @@ impl RuntimeSemanticContract {
         self.failures.iter().any(|failure| {
             matches!(
                 failure,
-                RuntimeLogicalFailure::CallbackFault | RuntimeLogicalFailure::RcUnavailable
+                RuntimeLogicalFailure::CallbackFault
+                    | RuntimeLogicalFailure::RcUnavailable
+                    | RuntimeLogicalFailure::HeapExceeded
             )
         })
     }
@@ -740,6 +811,7 @@ impl RuntimeSemanticContract {
                 let resolved = if matches!(kind, RuntimeValueKind::IoHandle(handle) if handle.matches(result_hint))
                     || matches!(kind, RuntimeValueKind::ServiceResult(op) if op.matches_result(result_hint))
                     || matches!(kind, RuntimeValueKind::PipeHalfResult(half) if half.matches(result_hint))
+                    || matches!(kind, RuntimeValueKind::PipePairResult if matches!(result_hint, ResolvedTy::Tuple(fields) if matches!(fields.as_slice(), [sink, stream, ResolvedTy::Bool] if pipe_pair_matches(sink, stream))))
                 {
                     Some(result_hint.clone())
                 } else {
@@ -1269,11 +1341,18 @@ macro_rules! encoding_contract {
 
 impl EncodingOp {
     pub(super) const fn contract(self, format: EncodingFormat) -> RuntimeSemanticContract {
-        match format {
+        let mut contract = match format {
             EncodingFormat::Json => encoding_contract!(JsonValue, self),
             EncodingFormat::Yaml => encoding_contract!(YamlValue, self),
             EncodingFormat::Toml => encoding_contract!(TomlValue, self),
+        };
+        if matches!(
+            contract.result,
+            RuntimeResultEffect::FreshOwned(_) | RuntimeResultEffect::UpdatedReceiver(_)
+        ) {
+            contract.failures = &[RuntimeLogicalFailure::HeapExceeded];
         }
+        contract
     }
 }
 
@@ -1561,3 +1640,11 @@ pub enum PrintKind {
 }
 
 impl PrintKind {}
+
+/// A pipe pair carries one shared concrete element type in its two halves.
+fn pipe_pair_matches(sink: &ResolvedTy, stream: &ResolvedTy) -> bool {
+    matches!((sink, stream),
+        (ResolvedTy::Named { args: sink_args, .. }, ResolvedTy::Named { args: stream_args, .. })
+        if sink.is_builtin(BuiltinType::Sink) && stream.is_builtin(BuiltinType::Stream)
+            && sink_args.len() == 1 && sink_args == stream_args)
+}

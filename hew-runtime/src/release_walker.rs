@@ -65,6 +65,8 @@ pub(crate) enum ReleaseItem {
         pointer: *mut c_void,
         size: usize,
         align: usize,
+        /// Canonical payload width, absent for uncharged scratch storage.
+        managed_bytes: Option<u64>,
     },
     /// Expand a vector into its elements and then its own storage.
     Vector { vec: *mut HewVec },
@@ -335,7 +337,13 @@ unsafe fn expand(
                 pointer,
                 size,
                 align,
+                managed_bytes,
             } => {
+                if let (Some(owner), Some(bytes)) =
+                    (crate::owned_value_budget::current_owner(), managed_bytes)
+                {
+                    owner.release_backing(pointer, bytes);
+                }
                 crate::mem::hew_dealloc(pointer.cast(), size as u64, align as u64);
             }
             ReleaseItem::Vector { vec } => crate::vec::expand_vector(vec, pending),
@@ -394,6 +402,7 @@ impl HewReleaseCursor {
                     pointer: storage.cast(),
                     size,
                     align: layout.align,
+                    managed_bytes: None,
                 },
                 ReleaseItem::Value {
                     slot: storage.cast(),
@@ -561,8 +570,8 @@ pub(crate) struct ReleaseDriver {
     fault: *mut crate::fault::HewFault,
     done: bool,
     rc_sweep: Option<hew_observe_protocol::RcSweep>,
-    active_code: Option<crate::code_owner::CodeRoot>,
     value_owner: Option<crate::owned_value_budget::ValueOwner>,
+    active_code: Option<crate::code_owner::CodeRoot>,
 }
 
 impl ReleaseDriver {
@@ -604,8 +613,8 @@ impl ReleaseDriver {
             fault: ptr::null_mut(),
             done: cursor.is_null(),
             rc_sweep: None,
-            active_code: None,
             value_owner,
+            active_code: None,
         })
     }
 
@@ -780,6 +789,18 @@ pub unsafe extern "C" fn hew_release_driver_free(driver: *mut c_void) {
     drop(unsafe { Box::from_raw(driver.cast::<ReleaseDriver>()) });
 }
 
+/// Typed protocol-slot adapter for a cleanup driver.
+/// # Safety
+/// The slot retains one frozen optional driver pointer during this walk.
+#[no_mangle]
+pub unsafe extern "C" fn hew_managed_visit_release_driver_slot(
+    slot: *const c_void,
+    visitor: *const hew_cabi::managed::HewManagedStorageVisitor,
+) -> i32 {
+    // SAFETY: this canonical protocol descriptor matches the compiler's slot.
+    unsafe { hew_managed_visit_release_driver(slot.cast::<*mut c_void>().read(), visitor) }
+}
+
 /// Visit the typed obligations still owned by one suspended cleanup driver.
 /// # Safety
 /// Its provider freezes execution and retains the driver throughout this walk.
@@ -819,7 +840,7 @@ pub(crate) unsafe fn visit_cursor(
     visit_current: bool,
 ) -> i32 {
     use crate::owned_value_budget::{transfer, visit};
-    use hew_cabi::managed::{visit_value, HewManagedWalkKind, UNDESCRIBED};
+    use hew_cabi::managed::{visit_value, HewManagedWalkKind};
     // SAFETY: the provider retains and freezes the exact pending cursor items.
     unsafe {
         let Some(cursor) = cursor.as_mut() else {
@@ -878,10 +899,21 @@ pub(crate) unsafe fn visit_cursor(
                     (stream as *const *mut crate::stream::HewStream).cast(),
                     visitor,
                 ),
-                ReleaseItem::RcSurvivors(_) => UNDESCRIBED,
+                ReleaseItem::Allocation {
+                    pointer,
+                    managed_bytes: Some(bytes),
+                    ..
+                } => match visit::storage(visitor, *pointer, *bytes) {
+                    hew_cabi::managed::DESCEND | hew_cabi::managed::SKIP_DESCENDANTS => 0,
+                    failure => failure,
+                },
+                ReleaseItem::RcSurvivors(wave) => wave.visit(visitor),
                 ReleaseItem::CodeRoot(_)
                 | ReleaseItem::Storage { .. }
-                | ReleaseItem::Allocation { .. } => 0,
+                | ReleaseItem::Allocation {
+                    managed_bytes: None,
+                    ..
+                } => 0,
             };
             if status != 0 {
                 return status;
@@ -1010,6 +1042,18 @@ pub unsafe extern "C" fn hew_release_poll(
             }
             // SAFETY: the release driver exclusively owns these cursor items and retains their descriptor and source storage.
             unsafe { crate::stream::expand_stream_release(stream, &mut cursor.pending) };
+            continue;
+        }
+        if let ReleaseItem::RcSurvivors(mut wave) = item {
+            // SAFETY: this cursor retains the wave and invocation through transfer quiescence.
+            if !unsafe { wave.prepare(state) } {
+                cursor.pending.push(ReleaseItem::RcSurvivors(wave));
+                return 0;
+            }
+            // SAFETY: membership exclusion has completed before this structural step.
+            if let Some(summary) = unsafe { wave.step(&mut cursor.pending) } {
+                cursor.rc_sweep = Some(summary);
+            }
             continue;
         }
         // SAFETY: expansion consumes only one cursor-owned structural step.
@@ -1177,7 +1221,7 @@ mod tests {
             unsafe {
                 crate::string::hew_string_drop_managed(
                     slot.cast::<*mut hew_cabi::string::HewString>().read(),
-                )
+                );
             };
         }
         unsafe fn free(pointer: *mut c_void) {
@@ -1196,7 +1240,7 @@ mod tests {
             drop_fn: Some(drop_string),
             release_start: None,
             code_owner: ptr::null(),
-            managed: &STRING_MANAGED,
+            managed: &raw const STRING_MANAGED,
         };
         static DRIVER_MANAGED: HewManagedValueDescriptor = HewManagedValueDescriptor {
             slot_bytes: 0,
@@ -1210,7 +1254,7 @@ mod tests {
             drop_fn: None,
             release_start: None,
             code_owner: ptr::null(),
-            managed: &DRIVER_MANAGED,
+            managed: &raw const DRIVER_MANAGED,
         };
         // SAFETY: each value/backing has one semantic release and stays pinned
         // while the refused and successful transfer inspect the same worklist.
@@ -1242,7 +1286,7 @@ mod tests {
             assert!(ValueTransfer::prepare(
                 Some(source.clone()),
                 Some(small.clone()),
-                &DRIVER,
+                &raw const DRIVER,
                 (&raw const handle).cast()
             )
             .is_err());
@@ -1252,7 +1296,7 @@ mod tests {
             ValueTransfer::prepare(
                 Some(source.clone()),
                 Some(destination.clone()),
-                &DRIVER,
+                &raw const DRIVER,
                 (&raw const handle).cast(),
             )
             .unwrap()

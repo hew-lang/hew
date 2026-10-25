@@ -1,5 +1,7 @@
 //! Compiler-owned binding storage for a prepared interactive submission.
 
+pub mod frontend;
+
 use hew_hir::{HirItem, HirSessionBinding, HirSessionEntry, HirStmtKind};
 use hew_types::{DefId, TypeCheckOutput};
 

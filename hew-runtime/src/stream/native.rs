@@ -634,13 +634,14 @@ pub unsafe extern "C" fn hew_stream_read_poll_native(operation: *mut HewNativeSt
         }
         Backing::Generator { stream, parent, .. } => {
             // SAFETY: the operation retains the exclusive stream and parent loans.
-            unsafe {
+            let status = unsafe {
                 (**stream)
                     .inner
                     .generator()
                     .expect("generator backing")
-                    .poll(*parent, &operation.layout)
-            }
+                    .poll_native(*parent)
+            };
+            (status, None)
         }
         // A read never begins on a finished backing; report end of data.
         Backing::Finished => (2, None),
@@ -740,6 +741,16 @@ pub unsafe extern "C" fn hew_stream_read_take_native(
     if let Backing::TypedRead(read) = &mut operation.backing {
         // SAFETY: out is writable storage of the operation's exact element descriptor.
         return i32::from(unsafe { read.take(out) });
+    }
+    if let Backing::Generator { stream, .. } = &mut operation.backing {
+        // SAFETY: the operation retains the unique Stream loan and out has its exact yield layout.
+        return i32::from(unsafe {
+            (**stream)
+                .inner
+                .generator()
+                .expect("generator backing")
+                .take_native(out)
+        });
     }
     #[cfg(not(target_arch = "wasm32"))]
     if let Some(content) = &operation.read_content {
@@ -1162,7 +1173,7 @@ mod tests {
             };
         HewValueLayout {
             code_owner: core::ptr::null(),
-            managed: &MANAGED,
+            managed: &raw const MANAGED,
             size: size_of::<usize>(),
             align: align_of::<usize>(),
             ownership_kind: HewTypeOwnershipKind::LayoutManaged,
@@ -1192,8 +1203,8 @@ mod tests {
                 &raw const layout,
                 std::ptr::null(),
                 true,
-            )
-            .unwrap();
+            );
+            let first_op = first_op.unwrap();
             assert_eq!(hew_stream_write_poll_native(first_op), 1);
             hew_stream_operation_free_native(first_op);
             let mut second = Box::into_raw(Box::new(Arc::clone(&drops)));
@@ -1204,8 +1215,8 @@ mod tests {
                 &raw const layout,
                 std::ptr::null(),
                 true,
-            )
-            .unwrap();
+            );
+            let second_op = second_op.unwrap();
             assert_eq!(hew_stream_write_poll_native(second_op), 0);
             // Earlier admission may already have signalled the shared test waker.
             while notifications.try_recv().is_ok() {}
@@ -1243,20 +1254,23 @@ mod tests {
         let mut sink = std::ptr::null_mut();
         // SAFETY: cancellation drains the operation before either endpoint closes.
         unsafe {
-            let stream = super::super::hew_stream_pipe_native(1, &layout, &mut sink);
+            let stream = super::super::hew_stream_pipe_native(1, &raw const layout, &raw mut sink);
             let mut value = Box::into_raw(Box::new(Arc::clone(&drops)));
             let operation = hew_stream_write_start_native(
                 sink,
-                &wake,
+                &raw const wake,
                 (&raw mut value).cast(),
-                &layout,
+                &raw const layout,
                 std::ptr::null(),
                 true,
-                &sink_layout,
+                &raw const sink_layout,
                 &mut 0,
             );
             hew_stream_cancel_native(operation);
-            assert_eq!(hew_stream_cleanup_status_native(operation, &wake), 1);
+            assert_eq!(
+                hew_stream_cleanup_status_native(operation, &raw const wake),
+                1
+            );
             crate::release_walker::hew_release_sync(hew_stream_operation_release_begin(operation));
             assert_eq!(drops.load(Ordering::SeqCst), 1);
             super::super::hew_sink_close(sink);
@@ -1275,7 +1289,7 @@ mod tests {
             visit: None,
         };
         let layout = HewValueLayout {
-            managed: &managed,
+            managed: &raw const managed,
             ..owned_layout()
         };
         let sink_layout = HewValueLayout {
@@ -1284,23 +1298,24 @@ mod tests {
         };
         // SAFETY: all descriptors, slots and endpoints remain live through cancellation.
         unsafe {
-            let state = crate::coro_state::hew_coro_state_new(&wake, std::ptr::null_mut());
+            let state =
+                crate::coro_state::hew_coro_state_new(&raw const wake, std::ptr::null_mut());
             let owner = crate::owned_value_budget::ValueOwner::new(Some(7));
             (*state).execution_mut().value_owner = Some(owner.clone());
             let mut sink = std::ptr::null_mut();
-            let stream = super::super::hew_stream_pipe_native(1, &layout, &mut sink);
+            let stream = super::super::hew_stream_pipe_native(1, &raw const layout, &raw mut sink);
             let mut value = Box::into_raw(Box::new(Arc::clone(&drops)));
             let original = value;
             let mut status = 0;
             let refused = hew_stream_write_start_native(
                 sink,
-                &wake,
+                &raw const wake,
                 (&raw mut value).cast(),
-                &layout,
+                &raw const layout,
                 state,
                 true,
-                &sink_layout,
-                &mut status,
+                &raw const sink_layout,
+                &raw mut status,
             );
             assert!(refused.is_null());
             assert_eq!(status, hew_cabi::managed::HEAP_EXCEEDED);
@@ -1311,19 +1326,22 @@ mod tests {
             (*state).execution_mut().value_owner = Some(owner.clone());
             let operation = hew_stream_write_start_native(
                 sink,
-                &wake,
+                &raw const wake,
                 (&raw mut value).cast(),
-                &layout,
+                &raw const layout,
                 state,
                 true,
-                &sink_layout,
-                &mut status,
+                &raw const sink_layout,
+                &raw mut status,
             );
             assert!(!operation.is_null());
             assert_eq!(status, 0);
             assert_eq!(owner.live_bytes(), 8);
             hew_stream_cancel_native(operation);
-            assert_eq!(hew_stream_cleanup_status_native(operation, &wake), 1);
+            assert_eq!(
+                hew_stream_cleanup_status_native(operation, &raw const wake),
+                1
+            );
             crate::release_walker::hew_release_sync(hew_stream_operation_release_begin(operation));
             assert_eq!(drops.load(Ordering::SeqCst), 1);
             assert_eq!(owner.live_bytes(), 0);
@@ -1385,13 +1403,14 @@ mod tests {
             visit: Some(hew_managed_visit_stream_operation),
         };
         let operation_layout = HewValueLayout {
-            managed: &managed,
+            managed: &raw const managed,
             drop_fn: None,
             ..owned_layout()
         };
         // SAFETY: this test pins the operation and excludes its polls while transfer runs.
         unsafe {
-            let state = crate::coro_state::hew_coro_state_new(&wake, std::ptr::null_mut());
+            let state =
+                crate::coro_state::hew_coro_state_new(&raw const wake, std::ptr::null_mut());
             let source = crate::owned_value_budget::ValueOwner::new(Some(1024));
             (*state).execution_mut().value_owner = Some(source.clone());
             let mut value = hew_cabi::string::string_from_str("content");
@@ -1399,9 +1418,15 @@ mod tests {
                 .acquire_value(layout, (&raw const value).cast())
                 .unwrap()
                 .commit();
-            let operation =
-                start_underlying(sink, &wake, (&raw mut value).cast(), layout, state, true)
-                    .unwrap();
+            let operation = start_underlying(
+                sink,
+                &raw const wake,
+                (&raw mut value).cast(),
+                layout,
+                state,
+                true,
+            )
+            .unwrap();
             started.recv_timeout(Duration::from_secs(5)).unwrap();
             let capacity = source.live_bytes();
             assert!(capacity >= 8);
@@ -1409,7 +1434,7 @@ mod tests {
             crate::owned_value_budget::transfer::ValueTransfer::prepare(
                 Some(source.clone()),
                 Some(destination.clone()),
-                &operation_layout,
+                &raw const operation_layout,
                 (&raw const operation).cast(),
             )
             .unwrap()
@@ -1418,7 +1443,7 @@ mod tests {
             assert_eq!(source.live_bytes(), 0);
             assert_eq!(destination.live_bytes(), capacity);
             drop(release);
-            while hew_stream_cleanup_status_native(operation, &wake) == 0 {
+            while hew_stream_cleanup_status_native(operation, &raw const wake) == 0 {
                 notifications.recv_timeout(Duration::from_secs(5)).unwrap();
             }
             assert_eq!(destination.live_bytes(), 0);
@@ -1441,10 +1466,12 @@ mod tests {
             let layout = &crate::layout_intrinsics::hew_layout_val_string;
             // SAFETY: this test retains every source, result and invocation until producer drain.
             unsafe {
-                let state = crate::coro_state::hew_coro_state_new(&wake, std::ptr::null_mut());
+                let state =
+                    crate::coro_state::hew_coro_state_new(&raw const wake, std::ptr::null_mut());
                 let owner = crate::owned_value_budget::ValueOwner::new(Some(limit));
                 (*state).execution_mut().value_owner = Some(owner.clone());
-                let operation = hew_stream_read_start_native(stream, &wake, layout, state);
+                let operation =
+                    hew_stream_read_start_native(stream, &raw const wake, layout, state);
                 loop {
                     let status = hew_stream_read_poll_native(operation);
                     if status == 1 {
@@ -1453,7 +1480,7 @@ mod tests {
                     assert_eq!(status, 0);
                     notifications.recv_timeout(Duration::from_secs(5)).unwrap();
                 }
-                while hew_stream_cleanup_status_native(operation, &wake) == 0 {
+                while hew_stream_cleanup_status_native(operation, &raw const wake) == 0 {
                     notifications.recv_timeout(Duration::from_secs(5)).unwrap();
                 }
                 assert_eq!(owner.live_bytes(), 6);

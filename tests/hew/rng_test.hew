@@ -1,0 +1,32 @@
+import std.random;
+
+#[test]
+fn independent_generators_preserve_values_and_full_width_ranges() {
+    var rng = random.Rng.new(42);
+    assert(rng.next_u64() == 15021278609987233951);
+    var saved = rng;
+    assert(rng.next_u64() == 5881210131331364753);
+    assert(saved.next_u64() == 5881210131331364753);
+    assert(rng.next_f64() == saved.next_f64());
+    let minimum: i64 = -9223372036854775807 - 1;
+    let maximum: i64 = 9223372036854775807;
+    var negative = random.Rng.new(-1);
+    var copy = negative;
+    for _ in 0..32 {
+        let draw = negative.range(minimum, maximum).expect("wide interval");
+        assert(draw >= minimum && draw < maximum);
+        assert(copy.range(minimum, maximum).expect("same interval") == draw);
+    }
+    let position = negative;
+    assert(negative.range(maximum - 1, maximum).expect("one value") == maximum - 1);
+    assert(negative.range(1, 1).is_err());
+    assert(negative.range(2, 1).is_err());
+    var unchanged = position;
+    assert(negative.next_u64() == unchanged.next_u64());
+    let input: Vec<string> = ["a", "b", "c", "d"];
+    let shuffled = rng.shuffle(input);
+    assert(input == ["a", "b", "c", "d"]);
+    assert(shuffled.len() == input.len());
+    assert(shuffled.contains("a") && shuffled.contains("b"));
+    assert(shuffled.contains("c") && shuffled.contains("d"));
+}

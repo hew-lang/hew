@@ -76,6 +76,13 @@ pub(crate) struct Cleanup {
     pub(crate) rc: std::sync::Arc<crate::rc::RcAllocations>,
     pub(crate) code: Option<crate::code_owner::CodeRoot>,
     pub(crate) value_owner: Option<crate::owned_value_budget::ValueOwner>,
+    #[expect(
+        clippy::option_option,
+        reason = "pending adoption differs from an explicitly unbounded source owner"
+    )]
+    pub(crate) state_source_owner: Mutex<Option<Option<crate::owned_value_budget::ValueOwner>>>,
+    pub(crate) state_layout: AtomicPtr<hew_cabi::value::HewValueLayout>,
+    pub(crate) state_backing_charged: std::sync::atomic::AtomicBool,
 }
 
 impl Cleanup {
@@ -374,7 +381,16 @@ pub(crate) unsafe fn drive_actor_cleanup(actor: &HewActor) -> bool {
                 if start.is_null() {
                     if let Some(drop) = actor.state_drop_fn {
                         // SAFETY: this cleanup owns the exact initialized state.
-                        unsafe { drop(actor.state) };
+                        let owner = cleanup
+                            .state_source_owner
+                            .lock_or_recover()
+                            .as_ref()
+                            .cloned()
+                            .unwrap_or_else(|| cleanup.value_owner.clone());
+                        // SAFETY: this cleanup owns the initialized state until drop returns.
+                        crate::owned_value_budget::with_value_owner(&owner, || unsafe {
+                            drop(actor.state);
+                        });
                     }
                 } else {
                     // SAFETY: this pointer was installed from the exact callback type.
@@ -384,9 +400,24 @@ pub(crate) unsafe fn drive_actor_cleanup(actor: &HewActor) -> bool {
                     let cursor = unsafe {
                         HewReleaseCursor::payload(actor.state, actor.state_size, start, false)
                     };
-                    work.driver = Some(ReleaseDriver::new(cursor));
+                    let owner = cleanup
+                        .state_source_owner
+                        .lock_or_recover()
+                        .as_ref()
+                        .cloned()
+                        .unwrap_or_else(|| cleanup.value_owner.clone());
+                    work.driver = Some(ReleaseDriver::with_value_owner(cursor, owner));
                     continue;
                 }
+            }
+        }
+        if cleanup.state_backing_charged.swap(false, Ordering::AcqRel) {
+            if let Some(owner) = &cleanup.value_owner {
+                // SAFETY: defining descriptor remains pinned by terminal cleanup.
+                let bytes = unsafe {
+                    (*(*cleanup.state_layout.load(Ordering::Acquire)).managed).slot_bytes
+                };
+                owner.release_backing(actor.state, bytes);
             }
         }
         // State release may have left cycles or created fresh Rc values while

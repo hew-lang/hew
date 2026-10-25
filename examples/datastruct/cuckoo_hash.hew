@@ -6,22 +6,14 @@
 // reassigns each one.
 fn hash1(key: i64, capacity: i64) -> i64 {
     let h = key % capacity;
-    if h < 0 {
-        h + capacity
-    } else {
-        h
-    }
+    if h < 0 { h + capacity } else { h }
 }
 
 fn hash2(key: i64, capacity: i64) -> i64 {
     // Use capacity-1 as modulus to avoid systematic collisions
     let m = capacity - 1;
     let h = (key * 11 + 7) % m;
-    if h < 0 {
-        h + m
-    } else {
-        h
-    }
+    if h < 0 { h + m } else { h }
 }
 
 fn make_table(capacity: i64) -> Vec<i64> {

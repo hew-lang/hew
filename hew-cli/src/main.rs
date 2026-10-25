@@ -39,6 +39,7 @@ mod generate;
 mod help;
 mod host;
 mod link;
+mod live;
 mod machine;
 mod migrate_checks;
 mod migrate_fails;

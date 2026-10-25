@@ -34,7 +34,34 @@ pub unsafe extern "C" fn hew_managed_visit_invocation(
     }
     // SAFETY: the canonical record and pinned view outlive this frozen walk.
     let record = unsafe { &*state.cast::<hew_cabi::coro::HewCoroInvocation>() };
+    // SAFETY: the frozen invocation retains its compiler-bound frame view.
     if let Some(frame) = unsafe { record.managed_frame.as_ref() } {
+        // Settle pending protocol ownership before freezing endpoints retained
+        // by ordinary slots. A typed write can hold its receiver's admission
+        // gate until this operation view cancels or quiesces that write.
+        // SAFETY: the frame pins its active operation until semantic take.
+        if let Some(operation) = unsafe { frame.operation.as_ref() } {
+            // SAFETY: the active operation retains its exact descriptor.
+            if let Some(layout) = unsafe { operation.layout.as_ref() } {
+                // SAFETY: the active protocol owns this typed handle until
+                // its emitter clears the same root before consumption/free.
+                let status = unsafe { visit_value(layout, operation.slot, visitor) };
+                if status != 0 {
+                    return status;
+                }
+            }
+        }
+        if !frame.child.is_null() {
+            // SAFETY: a non-null child remains pinned by its suspended parent.
+            let child = unsafe { frame.child.read() }
+                .cast_mut()
+                .cast::<HewCoroState>();
+            // SAFETY: the frozen parent pins this child throughout the walk.
+            let status = unsafe { hew_managed_visit_invocation(child, visitor) };
+            if status != 0 {
+                return status;
+            }
+        }
         let slots = if frame.count == 0 {
             &[][..]
         } else {
@@ -52,22 +79,16 @@ pub unsafe extern "C" fn hew_managed_visit_invocation(
                 return status;
             }
         }
-        if !frame.child.is_null() {
-            // SAFETY: a non-null child remains pinned by its suspended parent.
-            let child = unsafe { frame.child.read() }
-                .cast_mut()
-                .cast::<HewCoroState>();
-            let status = unsafe { hew_managed_visit_invocation(child, visitor) };
-            if status != 0 {
-                return status;
-            }
-        }
     }
     // Rebinding is a commit-only mutation after destination quota acquisition.
     // Provider freeze protects this invocation and its retained contexts.
+    // SAFETY: the synchronous visitor is pinned by the owning transfer.
     if unsafe { (*visitor).kind } == HewManagedWalkKind::CommitTransfer {
+        // SAFETY: CommitTransfer carries the canonical destination account.
         let owner = unsafe { super::transfer::destination_owner(visitor) };
+        // SAFETY: the same transfer pins its destination execution binding.
         let binding = unsafe { super::transfer::destination_binding(visitor) };
+        // SAFETY: provider quiescence excludes execution and teardown.
         unsafe { crate::coro_state::rebind_value_owner(state, owner, binding) };
     }
     0
@@ -90,7 +111,7 @@ mod tests {
     }
 
     #[test]
-    fn frozen_frame_visits_only_live_roots_and_its_suspended_child() {
+    fn frozen_frame_visits_live_slots_operation_and_suspended_child() {
         let (_ready, waker) = crate::wake::blocking::Readiness::new();
         // SAFETY: all stack views and real string values outlive their bound
         // invocations; both invocations are idle during each account walk.
@@ -101,6 +122,7 @@ mod tests {
                 crate::coro_state::hew_coro_state_new(waker.descriptor(), core::ptr::null_mut());
             let text = hew_cabi::string::string_from_str("roots");
             let child_text = hew_cabi::string::string_from_str("nested");
+            let operation_text = hew_cabi::string::string_from_str("protocol");
             let live = 1_u8;
             let absent = 0_u8;
             let text_layout = &crate::layout_intrinsics::hew_layout_val_string;
@@ -123,6 +145,7 @@ mod tests {
                 initialized: &raw const live,
             };
             let child_view = HewManagedFrame {
+                operation: core::ptr::null(),
                 slots: &raw const child_entry,
                 count: 1,
                 child: core::ptr::null(),
@@ -130,7 +153,12 @@ mod tests {
             let child_record = child
                 .cast::<hew_cabi::coro::HewCoroInvocation>()
                 .cast_const();
+            let operation = hew_cabi::managed::HewManagedFrameOperation {
+                layout: text_layout,
+                slot: (&raw const operation_text).cast(),
+            };
             let view = HewManagedFrame {
+                operation: &raw const operation,
                 slots: entries.as_ptr(),
                 count: entries.len(),
                 child: &raw const child_record,
@@ -151,18 +179,18 @@ mod tests {
                 code_owner: core::ptr::null(),
                 managed: &raw const managed,
             };
-            let small = ValueOwner::new(Some(10));
+            let small = ValueOwner::new(Some(18));
             assert!(matches!(
                 small.acquire_value(&layout, (&raw const root).cast()),
                 Err(HEAP_EXCEEDED)
             ));
             assert_eq!(small.live_bytes(), 0);
-            let exact = ValueOwner::new(Some(11));
+            let exact = ValueOwner::new(Some(19));
             exact
                 .acquire_value(&layout, (&raw const root).cast())
                 .unwrap()
                 .commit();
-            assert_eq!(exact.live_bytes(), 11);
+            assert_eq!(exact.live_bytes(), 19);
             exact
                 .release_value(&layout, (&raw const root).cast())
                 .unwrap();
@@ -173,6 +201,7 @@ mod tests {
             crate::coro_state::hew_coro_state_free(root);
             hew_cabi::string::string_release(text);
             hew_cabi::string::string_release(child_text);
+            hew_cabi::string::string_release(operation_text);
         }
     }
 }

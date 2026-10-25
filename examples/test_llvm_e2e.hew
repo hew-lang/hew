@@ -8,11 +8,7 @@ fn add(x: i32, y: i32) -> i32 {
 }
 
 fn factorial(n: i32) -> i32 {
-    if n <= 1 {
-        1
-    } else {
-        n * factorial(n - 1)
-    }
+    if n <= 1 { 1 } else { n * factorial(n - 1) }
 }
 
 fn test_arithmetic() -> i32 {
@@ -21,11 +17,7 @@ fn test_arithmetic() -> i32 {
     let sum = a + b;
     let prod = a * b;
     if sum == 30 {
-        if prod == 200 {
-            1
-        } else {
-            0
-        }
+        if prod == 200 { 1 } else { 0 }
     } else {
         0
     }
@@ -36,11 +28,7 @@ fn test_control_flow() -> i32 {
     for i in 0..10 {
         result = result + i;
     }
-    if result == 45 {
-        1
-    } else {
-        0
-    }
+    if result == 45 { 1 } else { 0 }
 }
 
 fn main() -> i32 {
@@ -51,11 +39,7 @@ fn main() -> i32 {
     if r1 == 7 {
         if r2 == 120 {
             if r3 == 1 {
-                if r4 == 1 {
-                    0
-                } else {
-                    1
-                }
+                if r4 == 1 { 0 } else { 1 }
             } else {
                 1
             }

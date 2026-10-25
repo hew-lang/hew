@@ -6,6 +6,8 @@
 //! All returned [`HewYamlValue`] pointers are heap-allocated handles and must
 //! be freed with [`hew_yaml_free`]. Logical copies share their immutable tree
 //! until one handle is mutated.
+mod checked;
+
 use base64::Engine as _;
 use hew_cabi::string::{string_as_str, string_from_str, string_release, HewString};
 use hew_runtime::bytes::{hew_bytes_from_static, BytesTriple};
@@ -21,25 +23,131 @@ pub struct HewYamlValue {
     inner: Arc<serde_yaml::Value>,
 }
 
+/// Visit one shared immutable YAML tree's canonical payload.
+///
+/// # Safety
+/// `slot` contains a live YAML handle (or null); visitor/context remain live.
+#[no_mangle]
+pub unsafe extern "C" fn hew_managed_visit_yaml(
+    slot: *const core::ffi::c_void,
+    visitor: *const hew_cabi::managed::HewManagedStorageVisitor,
+) -> i32 {
+    // SAFETY: the compiler's descriptor supplies this concrete handle slot.
+    let value = unsafe { slot.cast::<*const HewYamlValue>().read().as_ref() };
+    let Some(value) = value else {
+        return 0;
+    };
+    // SAFETY: the Arc keeps its complete immutable tree and visitor live.
+    unsafe {
+        crate::managed_tree::tree(visitor, Arc::as_ptr(&value.inner).cast(), true, |_| {
+            hew_codec::managed_tree::yaml_payload_bytes(value.value())
+                .ok_or(hew_cabi::managed::HEAP_EXCEEDED)
+        })
+    }
+}
+
+#[cfg(test)]
+mod managed_tests {
+    use super::*;
+    use crate::managed_tree::tests::Capture;
+    use hew_cabi::managed::HewManagedWalkKind;
+
+    #[test]
+    fn managed_yaml_shared_copy_and_detachment_keep_distinct_roots() {
+        let mut values = Vec::with_capacity(8);
+        values.push(serde_yaml::Value::Bool(true));
+        let value = boxed_value(serde_yaml::Value::Sequence(values));
+        // SAFETY: the handles and visitors remain live; mutation is exclusive.
+        unsafe {
+            let mut retained = Capture::default();
+            assert_eq!(
+                hew_managed_visit_yaml(
+                    (&raw const value).cast(),
+                    &retained.visitor(HewManagedWalkKind::Retain)
+                ),
+                0
+            );
+            assert_eq!(retained.entries[0].1, 12 + 8 * 12);
+            let copy = hew_yaml_clone(value);
+            let mut plan = Capture::default();
+            assert_eq!(
+                hew_managed_visit_yaml(
+                    (&raw const copy).cast(),
+                    &plan.visitor(HewManagedWalkKind::ClonePlan)
+                ),
+                0
+            );
+            assert_eq!(plan.entries, retained.entries);
+            (*copy)
+                .sequence_mut()
+                .unwrap()
+                .push(serde_yaml::Value::Bool(false));
+            let mut detached = Capture::default();
+            assert_eq!(
+                hew_managed_visit_yaml(
+                    (&raw const copy).cast(),
+                    &detached.visitor(HewManagedWalkKind::Retain)
+                ),
+                0
+            );
+            assert_ne!(detached.entries[0].0, retained.entries[0].0);
+            assert_eq!((*value).value().as_sequence().unwrap().len(), 1);
+            assert_eq!((*copy).value().as_sequence().unwrap().len(), 2);
+            hew_yaml_free(copy);
+            hew_yaml_free(value);
+        }
+    }
+
+    #[test]
+    fn managed_yaml_retains_tags_and_mapping_capacity() {
+        let tag = serde_yaml::value::TaggedValue {
+            tag: serde_yaml::value::Tag::new("Kind"),
+            value: serde_yaml::Value::String("x".to_owned()),
+        };
+        let mut tagged = serde_yaml::Value::Tagged(Box::new(tag));
+        hew_codec::managed_tree::normalize_yaml_tags(&mut tagged);
+        let value = boxed_value(tagged);
+        let mut mapping = serde_yaml::Mapping::with_capacity(32);
+        mapping.insert(serde_yaml::Value::Bool(true), serde_yaml::Value::Null);
+        let capacity = mapping.capacity() as u64;
+        let map = boxed_value(serde_yaml::Value::Mapping(mapping));
+        // SAFETY: handle slots, providers and visitors are live until free.
+        unsafe {
+            let mut tags = Capture::default();
+            assert_eq!(
+                hew_managed_visit_yaml(
+                    (&raw const value).cast(),
+                    &tags.visitor(HewManagedWalkKind::Retain)
+                ),
+                0
+            );
+            assert_eq!(tags.entries[0].1, 12 + 8 + 12 + 5 + 1);
+            let mut entries = Capture::default();
+            assert_eq!(
+                hew_managed_visit_yaml(
+                    (&raw const map).cast(),
+                    &entries.visitor(HewManagedWalkKind::Retain)
+                ),
+                0
+            );
+            assert_eq!(entries.entries[0].1, 12 + capacity * 24);
+            hew_yaml_free(map);
+            hew_yaml_free(value);
+        }
+    }
+}
+
 impl HewYamlValue {
     fn value(&self) -> &serde_yaml::Value {
         self.inner.as_ref()
     }
 
+    #[cfg(test)]
     fn value_mut(&mut self) -> &mut serde_yaml::Value {
         Arc::make_mut(&mut self.inner)
     }
 
-    fn mapping_mut(&mut self) -> Option<&mut serde_yaml::Mapping> {
-        if !matches!(self.value(), serde_yaml::Value::Mapping(_)) {
-            return None;
-        }
-        let serde_yaml::Value::Mapping(mapping) = self.value_mut() else {
-            unreachable!("YAML value kind changed while borrowed")
-        };
-        Some(mapping)
-    }
-
+    #[cfg(test)]
     fn sequence_mut(&mut self) -> Option<&mut Vec<serde_yaml::Value>> {
         if !matches!(self.value(), serde_yaml::Value::Sequence(_)) {
             return None;
@@ -157,12 +265,13 @@ pub unsafe extern "C" fn hew_yaml_eq(lhs: *const HewYamlValue, rhs: *const HewYa
 /// # Safety
 ///
 /// `yaml_str` must be a live managed string handle (null means empty).
-#[no_mangle]
+#[must_use]
 pub unsafe extern "C" fn hew_yaml_parse(yaml_str: *const HewString) -> *mut HewYamlValue {
     // SAFETY: the caller borrows a live managed string or canonical empty handle.
     let s = unsafe { string_as_str(yaml_str) };
     match hew_codec::yaml_value::parse(s) {
-        Ok(val) => {
+        Ok(mut val) => {
+            hew_codec::managed_tree::normalize_yaml_tags(&mut val);
             clear_parse_last_error();
             boxed_value(val)
         }
@@ -180,7 +289,7 @@ pub unsafe extern "C" fn hew_yaml_parse(yaml_str: *const HewString) -> *mut HewY
 ///
 /// Errors are keyed per (actor, parser-kind), so a different parser's success
 /// does not clear this slot.
-#[no_mangle]
+#[must_use]
 pub extern "C" fn hew_yaml_last_error() -> *mut HewString {
     string_from_str(&get_parse_last_error())
 }
@@ -196,7 +305,7 @@ pub extern "C" fn hew_yaml_last_error() -> *mut HewString {
 /// # Safety
 ///
 /// `val` must be a valid pointer to a [`HewYamlValue`], or null (an error).
-#[no_mangle]
+#[must_use]
 pub unsafe extern "C" fn hew_yaml_stringify(val: *const HewYamlValue) -> *mut HewString {
     if val.is_null() {
         set_parse_last_error("yaml stringify failed: invalid value handle");
@@ -396,7 +505,7 @@ pub unsafe extern "C" fn hew_yaml_get_float(val: *const HewYamlValue) -> f64 {
 /// # Safety
 ///
 /// `val` must be a valid pointer to a [`HewYamlValue`], or null.
-#[no_mangle]
+#[must_use]
 pub unsafe extern "C" fn hew_yaml_get_string(val: *const HewYamlValue) -> *mut HewString {
     if val.is_null() {
         return std::ptr::null_mut();
@@ -419,7 +528,7 @@ pub unsafe extern "C" fn hew_yaml_get_string(val: *const HewYamlValue) -> *mut H
 /// # Safety
 ///
 /// `val` must be a valid pointer to a [`HewYamlValue`], or null.
-#[no_mangle]
+#[must_use]
 pub unsafe extern "C" fn hew_yaml_get_bytes(val: *const HewYamlValue) -> BytesTriple {
     if val.is_null() {
         set_parse_last_error("invalid YAML bytes: value was null or key not found");
@@ -477,7 +586,7 @@ pub unsafe extern "C" fn hew_yaml_get_bytes(val: *const HewYamlValue) -> BytesTr
 ///
 /// `val` must be a valid pointer to a [`HewYamlValue`], or null.
 /// `key` must be a live managed string handle (null means empty).
-#[no_mangle]
+#[must_use]
 pub unsafe extern "C" fn hew_yaml_get_field(
     val: *const HewYamlValue,
     key: *const HewString,
@@ -509,7 +618,7 @@ pub unsafe extern "C" fn hew_yaml_get_field(
 /// # Safety
 ///
 /// `val` must be a valid pointer to a [`HewYamlValue`], or null.
-#[no_mangle]
+#[must_use]
 pub unsafe extern "C" fn hew_yaml_object_keys(val: *const HewYamlValue) -> *mut HewYamlValue {
     if val.is_null() {
         return std::ptr::null_mut();
@@ -557,7 +666,7 @@ pub unsafe extern "C" fn hew_yaml_array_len(val: *const HewYamlValue) -> i32 {
 /// # Safety
 ///
 /// `val` must be a valid pointer to a [`HewYamlValue`], or null.
-#[no_mangle]
+#[must_use]
 pub unsafe extern "C" fn hew_yaml_array_get(
     val: *const HewYamlValue,
     index: i32,
@@ -619,7 +728,7 @@ pub unsafe extern "C" fn hew_yaml_string_free(s: *mut HewString) {
 ///
 /// Returns a heap-allocated [`HewYamlValue`] wrapping an empty YAML mapping.
 /// Must be freed with [`hew_yaml_free`].
-#[no_mangle]
+#[must_use]
 pub extern "C" fn hew_yaml_object_new() -> *mut HewYamlValue {
     boxed_value(serde_yaml::Value::Mapping(serde_yaml::Mapping::new()))
 }
@@ -632,23 +741,19 @@ pub extern "C" fn hew_yaml_object_new() -> *mut HewYamlValue {
 ///
 /// `obj` must be a valid non-null [`HewYamlValue`] pointer. `key` must be a
 /// live managed string handle (null means empty).
-#[no_mangle]
 pub unsafe extern "C" fn hew_yaml_object_set_bool(
     obj: *mut HewYamlValue,
     key: *const HewString,
     val: i32,
 ) {
-    if obj.is_null() {
-        return;
-    }
-    // SAFETY: caller guarantees obj is valid; key is a live managed string handle (null means empty).
-    let key_str = unsafe { string_as_str(key) }.to_owned();
-    // SAFETY: obj is non-null (checked above) and valid per caller contract.
-    if let Some(map) = unsafe { &mut *obj }.mapping_mut() {
-        map.insert(
-            serde_yaml::Value::String(key_str),
-            serde_yaml::Value::Bool(val != 0),
-        );
+    let mut status = 0;
+    // Physical host callers use the same edit path without a Hew account.
+    hew_runtime::owned_value_budget::with_value_owner(&None, || {
+        // SAFETY: this wrapper preserves the checked operation's input contract.
+        unsafe { checked::hew_yaml_object_set_bool_checked(obj, key, val, &raw mut status) };
+    });
+    if status != 0 {
+        std::process::abort();
     }
 }
 
@@ -657,23 +762,19 @@ pub unsafe extern "C" fn hew_yaml_object_set_bool(
 /// # Safety
 ///
 /// Same as [`hew_yaml_object_set_bool`].
-#[no_mangle]
 pub unsafe extern "C" fn hew_yaml_object_set_int(
     obj: *mut HewYamlValue,
     key: *const HewString,
     val: i64,
 ) {
-    if obj.is_null() {
-        return;
-    }
-    // SAFETY: caller guarantees obj is valid; key is a live managed string handle (null means empty).
-    let key_str = unsafe { string_as_str(key) }.to_owned();
-    // SAFETY: obj is non-null (checked above) and valid per caller contract.
-    if let Some(map) = unsafe { &mut *obj }.mapping_mut() {
-        map.insert(
-            serde_yaml::Value::String(key_str),
-            serde_yaml::Value::Number(serde_yaml::Number::from(val)),
-        );
+    let mut status = 0;
+    // Physical host callers use the same edit path without a Hew account.
+    hew_runtime::owned_value_budget::with_value_owner(&None, || {
+        // SAFETY: this wrapper preserves the checked operation's input contract.
+        unsafe { checked::hew_yaml_object_set_int_checked(obj, key, val, &raw mut status) };
+    });
+    if status != 0 {
+        std::process::abort();
     }
 }
 
@@ -682,23 +783,19 @@ pub unsafe extern "C" fn hew_yaml_object_set_int(
 /// # Safety
 ///
 /// Same as [`hew_yaml_object_set_bool`].
-#[no_mangle]
 pub unsafe extern "C" fn hew_yaml_object_set_float(
     obj: *mut HewYamlValue,
     key: *const HewString,
     val: f64,
 ) {
-    if obj.is_null() {
-        return;
-    }
-    // SAFETY: caller guarantees obj is valid; key is a live managed string handle (null means empty).
-    let key_str = unsafe { string_as_str(key) }.to_owned();
-    // SAFETY: obj is non-null (checked above) and valid per caller contract.
-    if let Some(map) = unsafe { &mut *obj }.mapping_mut() {
-        map.insert(
-            serde_yaml::Value::String(key_str),
-            serde_yaml::Value::Number(serde_yaml::Number::from(val)),
-        );
+    let mut status = 0;
+    // Physical host callers use the same edit path without a Hew account.
+    hew_runtime::owned_value_budget::with_value_owner(&None, || {
+        // SAFETY: this wrapper preserves the checked operation's input contract.
+        unsafe { checked::hew_yaml_object_set_float_checked(obj, key, val, &raw mut status) };
+    });
+    if status != 0 {
+        std::process::abort();
     }
 }
 
@@ -707,25 +804,19 @@ pub unsafe extern "C" fn hew_yaml_object_set_float(
 /// # Safety
 ///
 /// Same as [`hew_yaml_object_set_bool`]. `val` must be a live managed string handle (null means empty).
-#[no_mangle]
 pub unsafe extern "C" fn hew_yaml_object_set_string(
     obj: *mut HewYamlValue,
     key: *const HewString,
     val: *const HewString,
 ) {
-    if obj.is_null() {
-        return;
-    }
-    // SAFETY: caller guarantees obj is valid; key and val are live managed string handles (null means empty).
-    let key_str = unsafe { string_as_str(key) }.to_owned();
-    // SAFETY: val is a live managed string or canonical empty per caller contract.
-    let val_str = unsafe { string_as_str(val) }.to_owned();
-    // SAFETY: obj is non-null (checked above) and valid per caller contract.
-    if let Some(map) = unsafe { &mut *obj }.mapping_mut() {
-        map.insert(
-            serde_yaml::Value::String(key_str),
-            serde_yaml::Value::String(val_str),
-        );
+    let mut status = 0;
+    // Physical host callers use the same edit path without a Hew account.
+    hew_runtime::owned_value_budget::with_value_owner(&None, || {
+        // SAFETY: this wrapper preserves the checked operation's input contract.
+        unsafe { checked::hew_yaml_object_set_string_checked(obj, key, val, &raw mut status) };
+    });
+    if status != 0 {
+        std::process::abort();
     }
 }
 
@@ -737,14 +828,20 @@ pub unsafe extern "C" fn hew_yaml_object_set_string(
 /// # Safety
 ///
 /// Same as [`hew_yaml_object_set_bool`].
-#[no_mangle]
 pub unsafe extern "C" fn hew_yaml_object_set_char(
     obj: *mut HewYamlValue,
     key: *const HewString,
     val: i64,
 ) {
-    // SAFETY: delegates to set_int under the same null-or-valid-pointer contract.
-    unsafe { hew_yaml_object_set_int(obj, key, val) }
+    let mut status = 0;
+    // Physical host callers use the same edit path without a Hew account.
+    hew_runtime::owned_value_budget::with_value_owner(&None, || {
+        // SAFETY: this wrapper preserves the checked operation's input contract.
+        unsafe { checked::hew_yaml_object_set_char_checked(obj, key, val, &raw mut status) };
+    });
+    if status != 0 {
+        std::process::abort();
+    }
 }
 
 /// Set a `duration` (nanoseconds as i64) field on a YAML mapping as an integer.
@@ -755,14 +852,20 @@ pub unsafe extern "C" fn hew_yaml_object_set_char(
 /// # Safety
 ///
 /// Same as [`hew_yaml_object_set_bool`].
-#[no_mangle]
 pub unsafe extern "C" fn hew_yaml_object_set_duration(
     obj: *mut HewYamlValue,
     key: *const HewString,
     val: i64,
 ) {
-    // SAFETY: delegates to set_int under the same null-or-valid-pointer contract.
-    unsafe { hew_yaml_object_set_int(obj, key, val) }
+    let mut status = 0;
+    // Physical host callers use the same edit path without a Hew account.
+    hew_runtime::owned_value_budget::with_value_owner(&None, || {
+        // SAFETY: this wrapper preserves the checked operation's input contract.
+        unsafe { checked::hew_yaml_object_set_duration_checked(obj, key, val, &raw mut status) };
+    });
+    if status != 0 {
+        std::process::abort();
+    }
 }
 
 /// Get the `char` (Unicode codepoint) from a [`HewYamlValue`] integer field.
@@ -806,28 +909,19 @@ pub unsafe extern "C" fn hew_yaml_get_duration(val: *const HewYamlValue) -> i64 
 /// `obj` must be a valid [`HewYamlValue`] pointer or null. `key` must be a
 /// live managed string handle or null (the empty string). `val` must be a valid
 /// [`HewYamlValue`] pointer that the caller relinquishes ownership of, or null.
-#[no_mangle]
 pub unsafe extern "C" fn hew_yaml_object_set(
     obj: *mut HewYamlValue,
     key: *const HewString,
     val: *mut HewYamlValue,
 ) {
-    if val.is_null() {
-        return;
-    }
-    // SAFETY: val was allocated with Box::into_raw and caller transfers
-    // ownership at the ABI boundary, even if insertion is rejected.
-    let child = unsafe { Box::from_raw(val) };
-    #[cfg(test)]
-    record_value_box_consumed();
-    if obj.is_null() {
-        return;
-    }
-    // SAFETY: caller guarantees obj is valid; key is a live managed string handle (null means empty).
-    let key_str = unsafe { string_as_str(key) }.to_owned();
-    // SAFETY: obj is non-null (checked above) and valid per caller contract.
-    if let Some(map) = unsafe { &mut *obj }.mapping_mut() {
-        map.insert(serde_yaml::Value::String(key_str), (*child).into_value());
+    let mut status = 0;
+    // Physical host callers use the same edit path without a Hew account.
+    hew_runtime::owned_value_budget::with_value_owner(&None, || {
+        // SAFETY: this wrapper preserves the checked operation's input contract.
+        unsafe { checked::hew_yaml_object_set_checked(obj, key, val, &raw mut status) };
+    });
+    if status != 0 {
+        std::process::abort();
     }
 }
 
@@ -838,16 +932,15 @@ pub unsafe extern "C" fn hew_yaml_object_set(
 /// # Safety
 ///
 /// Same as [`hew_yaml_object_set_bool`].
-#[no_mangle]
 pub unsafe extern "C" fn hew_yaml_object_set_null(obj: *mut HewYamlValue, key: *const HewString) {
-    if obj.is_null() {
-        return;
-    }
-    // SAFETY: caller guarantees obj is valid; key is a live managed string handle (null means empty).
-    let key_str = unsafe { string_as_str(key) }.to_owned();
-    // SAFETY: obj is non-null (checked above) and valid per caller contract.
-    if let Some(map) = unsafe { &mut *obj }.mapping_mut() {
-        map.insert(serde_yaml::Value::String(key_str), serde_yaml::Value::Null);
+    let mut status = 0;
+    // Physical host callers use the same edit path without a Hew account.
+    hew_runtime::owned_value_budget::with_value_owner(&None, || {
+        // SAFETY: this wrapper preserves the checked operation's input contract.
+        unsafe { checked::hew_yaml_object_set_null_checked(obj, key, &raw mut status) };
+    });
+    if status != 0 {
+        std::process::abort();
     }
 }
 
@@ -859,7 +952,7 @@ pub unsafe extern "C" fn hew_yaml_object_set_null(obj: *mut HewYamlValue, key: *
 ///
 /// Returns a heap-allocated [`HewYamlValue`] wrapping an empty YAML sequence.
 /// Must be freed with [`hew_yaml_free`].
-#[no_mangle]
+#[must_use]
 pub extern "C" fn hew_yaml_array_new() -> *mut HewYamlValue {
     boxed_value(serde_yaml::Value::Sequence(Vec::new()))
 }
@@ -871,14 +964,15 @@ pub extern "C" fn hew_yaml_array_new() -> *mut HewYamlValue {
 /// # Safety
 ///
 /// `arr` must be a valid non-null [`HewYamlValue`] pointer.
-#[no_mangle]
 pub unsafe extern "C" fn hew_yaml_array_push_bool(arr: *mut HewYamlValue, val: i32) {
-    if arr.is_null() {
-        return;
-    }
-    // SAFETY: arr is non-null (checked above) and valid per caller contract.
-    if let Some(seq) = unsafe { &mut *arr }.sequence_mut() {
-        seq.push(serde_yaml::Value::Bool(val != 0));
+    let mut status = 0;
+    // Physical host callers use the same edit path without a Hew account.
+    hew_runtime::owned_value_budget::with_value_owner(&None, || {
+        // SAFETY: this wrapper preserves the checked operation's input contract.
+        unsafe { checked::hew_yaml_array_push_bool_checked(arr, val, &raw mut status) };
+    });
+    if status != 0 {
+        std::process::abort();
     }
 }
 
@@ -889,14 +983,15 @@ pub unsafe extern "C" fn hew_yaml_array_push_bool(arr: *mut HewYamlValue, val: i
 /// # Safety
 ///
 /// `arr` must be a valid non-null [`HewYamlValue`] pointer.
-#[no_mangle]
 pub unsafe extern "C" fn hew_yaml_array_push_int(arr: *mut HewYamlValue, val: i64) {
-    if arr.is_null() {
-        return;
-    }
-    // SAFETY: arr is non-null (checked above) and valid per caller contract.
-    if let Some(seq) = unsafe { &mut *arr }.sequence_mut() {
-        seq.push(serde_yaml::Value::Number(serde_yaml::Number::from(val)));
+    let mut status = 0;
+    // Physical host callers use the same edit path without a Hew account.
+    hew_runtime::owned_value_budget::with_value_owner(&None, || {
+        // SAFETY: this wrapper preserves the checked operation's input contract.
+        unsafe { checked::hew_yaml_array_push_int_checked(arr, val, &raw mut status) };
+    });
+    if status != 0 {
+        std::process::abort();
     }
 }
 
@@ -907,14 +1002,15 @@ pub unsafe extern "C" fn hew_yaml_array_push_int(arr: *mut HewYamlValue, val: i6
 /// # Safety
 ///
 /// `arr` must be a valid non-null [`HewYamlValue`] pointer.
-#[no_mangle]
 pub unsafe extern "C" fn hew_yaml_array_push_float(arr: *mut HewYamlValue, val: f64) {
-    if arr.is_null() {
-        return;
-    }
-    // SAFETY: arr is non-null (checked above) and valid per caller contract.
-    if let Some(seq) = unsafe { &mut *arr }.sequence_mut() {
-        seq.push(serde_yaml::Value::Number(serde_yaml::Number::from(val)));
+    let mut status = 0;
+    // Physical host callers use the same edit path without a Hew account.
+    hew_runtime::owned_value_budget::with_value_owner(&None, || {
+        // SAFETY: this wrapper preserves the checked operation's input contract.
+        unsafe { checked::hew_yaml_array_push_float_checked(arr, val, &raw mut status) };
+    });
+    if status != 0 {
+        std::process::abort();
     }
 }
 
@@ -926,16 +1022,15 @@ pub unsafe extern "C" fn hew_yaml_array_push_float(arr: *mut HewYamlValue, val: 
 ///
 /// `arr` must be a valid non-null [`HewYamlValue`] pointer. `val` must be a
 /// live managed string handle (null means empty).
-#[no_mangle]
 pub unsafe extern "C" fn hew_yaml_array_push_string(arr: *mut HewYamlValue, val: *const HewString) {
-    if arr.is_null() {
-        return;
-    }
-    // SAFETY: val is a live managed string or canonical empty per caller contract.
-    let val_str = unsafe { string_as_str(val) }.to_owned();
-    // SAFETY: arr is non-null (checked above) and valid per caller contract.
-    if let Some(seq) = unsafe { &mut *arr }.sequence_mut() {
-        seq.push(serde_yaml::Value::String(val_str));
+    let mut status = 0;
+    // Physical host callers use the same edit path without a Hew account.
+    hew_runtime::owned_value_budget::with_value_owner(&None, || {
+        // SAFETY: this wrapper preserves the checked operation's input contract.
+        unsafe { checked::hew_yaml_array_push_string_checked(arr, val, &raw mut status) };
+    });
+    if status != 0 {
+        std::process::abort();
     }
 }
 
@@ -946,14 +1041,15 @@ pub unsafe extern "C" fn hew_yaml_array_push_string(arr: *mut HewYamlValue, val:
 /// # Safety
 ///
 /// `arr` must be a valid non-null [`HewYamlValue`] pointer.
-#[no_mangle]
 pub unsafe extern "C" fn hew_yaml_array_push_null(arr: *mut HewYamlValue) {
-    if arr.is_null() {
-        return;
-    }
-    // SAFETY: arr is non-null (checked above) and valid per caller contract.
-    if let Some(seq) = unsafe { &mut *arr }.sequence_mut() {
-        seq.push(serde_yaml::Value::Null);
+    let mut status = 0;
+    // Physical host callers use the same edit path without a Hew account.
+    hew_runtime::owned_value_budget::with_value_owner(&None, || {
+        // SAFETY: this wrapper preserves the checked operation's input contract.
+        unsafe { checked::hew_yaml_array_push_null_checked(arr, &raw mut status) };
+    });
+    if status != 0 {
+        std::process::abort();
     }
 }
 
@@ -968,22 +1064,15 @@ pub unsafe extern "C" fn hew_yaml_array_push_null(arr: *mut HewYamlValue) {
 /// `arr` must be a valid [`HewYamlValue`] pointer or null. `val` must be a
 /// valid [`HewYamlValue`] pointer that the caller relinquishes ownership of, or
 /// null.
-#[no_mangle]
 pub unsafe extern "C" fn hew_yaml_array_push(arr: *mut HewYamlValue, val: *mut HewYamlValue) {
-    if val.is_null() {
-        return;
-    }
-    // SAFETY: val was allocated with Box::into_raw and caller transfers
-    // ownership at the ABI boundary, even if insertion is rejected.
-    let child = unsafe { Box::from_raw(val) };
-    #[cfg(test)]
-    record_value_box_consumed();
-    if arr.is_null() {
-        return;
-    }
-    // SAFETY: arr is non-null (checked above) and valid per caller contract.
-    if let Some(seq) = unsafe { &mut *arr }.sequence_mut() {
-        seq.push((*child).into_value());
+    let mut status = 0;
+    // Physical host callers use the same edit path without a Hew account.
+    hew_runtime::owned_value_budget::with_value_owner(&None, || {
+        // SAFETY: this wrapper preserves the checked operation's input contract.
+        unsafe { checked::hew_yaml_array_push_checked(arr, val, &raw mut status) };
+    });
+    if status != 0 {
+        std::process::abort();
     }
 }
 
@@ -995,7 +1084,7 @@ pub unsafe extern "C" fn hew_yaml_array_push(arr: *mut HewYamlValue, val: *mut H
 ///
 /// Returns a heap-allocated [`HewYamlValue`]. Must be freed with
 /// [`hew_yaml_free`].
-#[no_mangle]
+#[must_use]
 pub extern "C" fn hew_yaml_from_bool(val: i32) -> *mut HewYamlValue {
     boxed_value(serde_yaml::Value::Bool(val != 0))
 }
@@ -1004,13 +1093,13 @@ pub extern "C" fn hew_yaml_from_bool(val: i32) -> *mut HewYamlValue {
 ///
 /// Returns a heap-allocated [`HewYamlValue`]. Must be freed with
 /// [`hew_yaml_free`].
-#[no_mangle]
+#[must_use]
 pub extern "C" fn hew_yaml_from_int(val: i64) -> *mut HewYamlValue {
     boxed_value(serde_yaml::Value::Number(serde_yaml::Number::from(val)))
 }
 
 /// Create a [`HewYamlValue`] containing an exact unsigned integer.
-#[no_mangle]
+#[must_use]
 pub extern "C" fn hew_yaml_from_u64(val: u64) -> *mut HewYamlValue {
     boxed_value(serde_yaml::Value::Number(serde_yaml::Number::from(val)))
 }
@@ -1019,7 +1108,7 @@ pub extern "C" fn hew_yaml_from_u64(val: u64) -> *mut HewYamlValue {
 ///
 /// Returns a heap-allocated [`HewYamlValue`]. Must be freed with
 /// [`hew_yaml_free`].
-#[no_mangle]
+#[must_use]
 pub extern "C" fn hew_yaml_from_float(val: f64) -> *mut HewYamlValue {
     boxed_value(serde_yaml::Value::Number(serde_yaml::Number::from(val)))
 }
@@ -1032,7 +1121,7 @@ pub extern "C" fn hew_yaml_from_float(val: f64) -> *mut HewYamlValue {
 /// # Safety
 ///
 /// `val` must be a live managed string handle or null (the empty string).
-#[no_mangle]
+#[must_use]
 pub unsafe extern "C" fn hew_yaml_from_string(val: *const HewString) -> *mut HewYamlValue {
     // SAFETY: val is non-null (checked above) and valid per caller contract.
     let s = unsafe { string_as_str(val) }.to_owned();
@@ -1043,7 +1132,7 @@ pub unsafe extern "C" fn hew_yaml_from_string(val: *const HewString) -> *mut Hew
 ///
 /// Returns a heap-allocated [`HewYamlValue`]. Must be freed with
 /// [`hew_yaml_free`].
-#[no_mangle]
+#[must_use]
 pub extern "C" fn hew_yaml_from_null() -> *mut HewYamlValue {
     boxed_value(serde_yaml::Value::Null)
 }

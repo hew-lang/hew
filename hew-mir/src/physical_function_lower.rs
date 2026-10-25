@@ -370,6 +370,12 @@ impl FunctionLowerer<'_> {
                     return Err(PhysicalError::new("race has no exact output type"));
                 };
                 one(PhysicalOp::TaskRace {
+                    member_slot_bytes: hew_sir::managed_slot(
+                        self.module,
+                        &self.storage[dest.0 as usize].ty,
+                    )
+                    .map_err(|_| PhysicalError::new("race member lacks canonical slot width"))?
+                    .bytes,
                     scope: *scope,
                     members: members
                         .iter()
@@ -393,6 +399,7 @@ impl FunctionLowerer<'_> {
                     return Err(PhysicalError::new("prepared call has no exact task output"));
                 };
                 one(PhysicalOp::TaskInvoke {
+                    callable_slot_bytes: hew_sir::managed_callable_carrier().bytes,
                     scope: *scope,
                     callee: match callee {
                         hew_sir::InvocationCallee::Direct(target) => {
@@ -459,6 +466,7 @@ impl FunctionLowerer<'_> {
                     return Err(PhysicalError::new("task spawn has no exact output type"));
                 };
                 one(PhysicalOp::TaskSpawn {
+                    callable_slot_bytes: hew_sir::managed_callable_carrier().bytes,
                     scope: *scope,
                     callable: self.value(callable.value)?,
                     dest,
@@ -682,6 +690,20 @@ impl FunctionLowerer<'_> {
         block: &hew_sir::SemBlock,
     ) -> Result<PhysicalTerminator, PhysicalError> {
         match &block.terminator {
+            SemTerminator::Materialize {
+                operation,
+                normal,
+                failure,
+            } => {
+                let operations = self.lower_op(operation, (block.id, block.ops.len()))?;
+                let acquisition = self.managed_acquisition(&operations)?;
+                Ok(PhysicalTerminator::Materialize {
+                    operations,
+                    acquisition,
+                    normal: self.lower_edge(normal)?,
+                    failure: self.lower_edge(failure)?,
+                })
+            }
             SemTerminator::EnterDefer { defer, park, body } => Ok(PhysicalTerminator::EnterDefer {
                 defer: *defer,
                 park: *park,

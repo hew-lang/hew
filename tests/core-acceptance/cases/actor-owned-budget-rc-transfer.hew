@@ -1,0 +1,51 @@
+import std.stream;
+
+fn retained_cell(consume ready: stream.Sink<i64>, consume gate: stream.Stream<i64>) -> i64 {
+    let value = Rc.new(7);
+    ready.send(1).expect("cell allocated");
+    ready.close();
+    gate.recv().expect("new owner ready");
+    gate.close();
+    let alias = value.clone();
+    let weak = value.downgrade();
+    let upgraded = weak.upgrade().expect("live cell");
+    assert(alias.get() == 7);
+    assert(upgraded.get() == 7);
+    value.set(9);
+    assert(alias.get() == 9);
+    upgraded.get()
+}
+
+gen fn producer(consume ready: stream.Sink<i64>, consume gate: stream.Stream<i64>) -> i64 {
+    scope {
+        let child = fork retained_cell(ready, gate);
+        yield 1;
+        yield await child;
+    }
+}
+
+#[max_heap(512)]
+actor Drain {
+    receive fn total(consume input: Generator<i64, ()>, consume release: stream.Sink<i64>) -> i64 {
+        release.send(1).expect("release task");
+        release.close();
+        var total = 0;
+        for value in input {
+            total += value;
+        }
+        total
+    }
+}
+
+fn main() {
+    let drain = spawn Drain;
+    let (ready, started): (stream.Sink<i64>, stream.Stream<i64>) = stream.pipe(1).expect("ready pipe");
+    let (release, gate): (stream.Sink<i64>, stream.Stream<i64>) = stream.pipe(1).expect("gate pipe");
+    let values = producer(ready, gate);
+    assert(values.next() == .Some(1));
+    started.recv().expect("cell ready");
+    started.close();
+    println(drain.total(values, release).expect("drain generator"));
+    stop(drain);
+    stopped(drain);
+}

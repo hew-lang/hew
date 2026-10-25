@@ -28,6 +28,65 @@ fn lower_source(source: &str) -> hew_sir::LoweredModule {
     lower_module(&hir, &type_facts)
 }
 
+#[test]
+fn task_publication_has_a_refusal_cleanup_before_consuming_inputs() {
+    use hew_sir::SemOpKind;
+    let module = lower_source(
+        r#"
+        fn echo(value: string) -> string { value }
+        fn main() {
+            let text = "retained";
+            let first = fork echo(text);
+            let second = fork { echo("capture") };
+            let group = race [first, second, echo("last")];
+            println(await group);
+            select {
+                result from echo(text) => println(result),
+            }
+        }
+        "#,
+    )
+    .module;
+    assert!(
+        verify_module(&module).is_empty(),
+        "{:?}",
+        verify_module(&module)
+    );
+    let mut kinds = std::collections::BTreeSet::new();
+    for function in &module.functions {
+        for block in &function.blocks {
+            let SemTerminator::Materialize {
+                operation, failure, ..
+            } = &block.terminator
+            else {
+                assert!(!block.ops.iter().any(|operation| matches!(
+                    operation.kind,
+                    SemOpKind::TaskInvoke { .. }
+                        | SemOpKind::TaskSpawn { .. }
+                        | SemOpKind::TaskRace { .. }
+                )));
+                continue;
+            };
+            let kind = match operation.kind {
+                SemOpKind::TaskInvoke { .. } => "invoke",
+                SemOpKind::TaskSpawn { .. } => "spawn",
+                SemOpKind::TaskRace { .. } => "race",
+                _ => continue,
+            };
+            kinds.insert(kind);
+            let refusal = &function.blocks[failure.target.0 as usize];
+            assert!(matches!(
+                refusal.terminator,
+                SemTerminator::CheckedRaiseFault {
+                    kind: hew_sir::TrapKind::HeapExceeded,
+                    ..
+                }
+            ));
+        }
+    }
+    assert_eq!(kinds, ["invoke", "race", "spawn"].into_iter().collect());
+}
+
 fn direct_calls(
     function: &SemFunction,
 ) -> impl Iterator<Item = (CallableId, &CallResult, &Edge, &CallUnwind)> + '_ {

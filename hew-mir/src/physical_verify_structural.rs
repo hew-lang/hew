@@ -391,6 +391,15 @@ pub(crate) fn verify_value_recipe(
     field: &PhysicalValueRecipe,
 ) -> Result<(), PhysicalError> {
     let facts = semantic_type_facts(module, &field.ty)?;
+    if module
+        .managed_types
+        .get(&field.ty)
+        .is_some_and(|row| row.slot_bytes != field.managed_slot_bytes)
+    {
+        return Err(PhysicalError::new(
+            "physical managed width disagrees with its owning type descriptor",
+        ));
+    }
     if field.own != OwnKind::of_class(facts.class)
         || field.clone.is_some() != (facts.clone != CloneKind::None)
         || field.destroy.is_some() != (field.own == OwnKind::Owned)

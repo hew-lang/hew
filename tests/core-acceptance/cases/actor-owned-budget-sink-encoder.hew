@@ -1,0 +1,51 @@
+import std.stream;
+
+type EmptyCodec {}
+impl stream.Codec<i64> for EmptyCodec {
+    fn decode(self, buf: bytes) -> Result<stream.Decoded<i64>, stream.CodecError> {
+        .Ok(stream.Decoded.Incomplete(buf))
+    }
+    fn encode(self, item: i64) -> bytes { bytes.new() }
+}
+
+// The actor's Sink state costs8. The framed endpoint owns a Sink slot8
+// and callable slot8; this empty codec adds no capture payload. Same-account
+// aliases retain one shared carrier, for a total of24 managed bytes.
+fn build(consume output: stream.Sink<bytes>) {
+    let framed: stream.Sink<i64> = output.framed(EmptyCodec {});
+    let sibling = framed.clone();
+    framed.close();
+    sibling.close();
+}
+
+#[max_heap(24)]
+actor Encoder {
+    var output: stream.Sink<bytes>;
+    receive fn ready() { build(output.clone()); }
+}
+#[max_heap(23)]
+actor Small {
+    var output: stream.Sink<bytes>;
+    receive fn ready() { build(output.clone()); }
+}
+
+fn main() -> i64 {
+    let (sink, input): (stream.Sink<bytes>, stream.Stream<bytes>) = stream.pipe(1).expect("pipe");
+    let encoder = spawn Encoder { output: sink };
+    encoder.ready().expect("encoder");
+    encoder.ready().expect("encoder reuse after final cleanup");
+    println("encoder ready");
+    stop(encoder);
+    stopped(encoder);
+    input.close();
+
+    let (small_sink, small_input): (stream.Sink<bytes>, stream.Stream<bytes>) = stream.pipe(1).expect("small pipe");
+    let small = spawn Small { output: small_sink };
+    match small.ready() {
+        .Err(.Trapped) => println("encoder limit"),
+        _ => return 2,
+    }
+    stopped(small);
+    small_input.close();
+    0
+}

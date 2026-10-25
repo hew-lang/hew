@@ -21,11 +21,7 @@ fn main() {
     total = total + 1;
     data.push(5);
     mins.push(5);
-    let r1 = if mins[mins.len() - 1] == 5 {
-        1
-    } else {
-        0
-    };
+    let r1 = if mins[mins.len() - 1] == 5 { 1 } else { 0 };
     passed = passed + run_test("single element min", r1);
 
     // Test 2: push smaller, min updates
@@ -37,11 +33,7 @@ fn main() {
     } else {
         mins.push(cur_min1);
     }
-    let r2 = if mins[mins.len() - 1] == 3 {
-        1
-    } else {
-        0
-    };
+    let r2 = if mins[mins.len() - 1] == 3 { 1 } else { 0 };
     passed = passed + run_test("push smaller updates min", r2);
 
     // Test 3: push larger, min stays
@@ -53,11 +45,7 @@ fn main() {
     } else {
         mins.push(cur_min2);
     }
-    let r3 = if mins[mins.len() - 1] == 3 {
-        1
-    } else {
-        0
-    };
+    let r3 = if mins[mins.len() - 1] == 3 { 1 } else { 0 };
     passed = passed + run_test("push larger keeps min", r3);
 
     // Test 4: push even smaller
@@ -69,11 +57,7 @@ fn main() {
     } else {
         mins.push(cur_min3);
     }
-    let r4 = if mins[mins.len() - 1] == 1 {
-        1
-    } else {
-        0
-    };
+    let r4 = if mins[mins.len() - 1] == 1 { 1 } else { 0 };
     passed = passed + run_test("push even smaller", r4);
 
     // Stack is now: [5, 3, 7, 1], mins: [5, 3, 3, 1]
@@ -82,33 +66,21 @@ fn main() {
     total = total + 1;
     data.pop();
     mins.pop();
-    let r5 = if mins[mins.len() - 1] == 3 {
-        1
-    } else {
-        0
-    };
+    let r5 = if mins[mins.len() - 1] == 3 { 1 } else { 0 };
     passed = passed + run_test("pop reverts min to 3", r5);
 
     // Test 6: pop again
     total = total + 1;
     data.pop();
     mins.pop();
-    let r6 = if mins[mins.len() - 1] == 3 {
-        1
-    } else {
-        0
-    };
+    let r6 = if mins[mins.len() - 1] == 3 { 1 } else { 0 };
     passed = passed + run_test("pop again min still 3", r6);
 
     // Test 7: pop the 3, min becomes 5
     total = total + 1;
     data.pop();
     mins.pop();
-    let r7 = if mins[mins.len() - 1] == 5 {
-        1
-    } else {
-        0
-    };
+    let r7 = if mins[mins.len() - 1] == 5 { 1 } else { 0 };
     passed = passed + run_test("pop 3 min becomes 5", r7);
 
     // Test 8: many elements min tracking
@@ -140,11 +112,7 @@ fn main() {
             }
         }
     }
-    let r8 = if mins2[mins2.len() - 1] == 10 {
-        1
-    } else {
-        0
-    };
+    let r8 = if mins2[mins2.len() - 1] == 10 { 1 } else { 0 };
     passed = passed + run_test("many elements min=10", r8);
 
     // Test 9: pop back to min=30
@@ -158,11 +126,7 @@ fn main() {
     mins2.pop();
     data2.pop();
     mins2.pop();
-    let r9 = if mins2[mins2.len() - 1] == 30 {
-        1
-    } else {
-        0
-    };
+    let r9 = if mins2[mins2.len() - 1] == 30 { 1 } else { 0 };
     passed = passed + run_test("pop 4 min becomes 30", r9);
 
     // Summary

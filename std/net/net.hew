@@ -497,11 +497,7 @@ impl ConnectionMethods for Connection {
                 let detail = hew_stream_last_error();
                 panic(f"net.Connection.recv: {to_string(net_error_from_errno(errno as i64))}: {detail}");
             }
-            if data.len() == 0 {
-                .None
-            } else {
-                .Some(data)
-            }
+            if data.len() == 0 { .None } else { .Some(data) }
         }
     }
     /// Send raw bytes. `Closed` means the peer is gone; `WriteTimedOut(n)` means

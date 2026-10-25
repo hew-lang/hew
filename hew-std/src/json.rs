@@ -7,6 +7,8 @@
 //! via `Box` and must be freed with [`hew_json_free`].
 pub mod host_api;
 
+mod checked;
+
 use base64::Engine as _;
 use hew_cabi::string::{string_as_str, string_from_str, string_release, HewString};
 use hew_runtime::bytes::{hew_bytes_from_static, BytesTriple};
@@ -19,6 +21,93 @@ use hew_runtime::bytes::{hew_bytes_from_static, BytesTriple};
 #[derive(Debug)]
 pub struct HewJsonValue {
     inner: serde_json::Value,
+}
+
+/// Visit the canonical payload of a JSON value without copying or mutating it.
+///
+/// # Safety
+/// `slot` contains a live JSON handle (or null); visitor/context remain live.
+#[no_mangle]
+pub unsafe extern "C" fn hew_managed_visit_json(
+    slot: *const core::ffi::c_void,
+    visitor: *const hew_cabi::managed::HewManagedStorageVisitor,
+) -> i32 {
+    // SAFETY: the compiler's descriptor supplies this concrete handle slot.
+    let value = unsafe { slot.cast::<*const HewJsonValue>().read().as_ref() };
+    let Some(value) = value else {
+        return 0;
+    };
+    // SAFETY: the borrowed tree and visitor remain live throughout traversal.
+    unsafe {
+        crate::managed_tree::tree(visitor, core::ptr::from_ref(value).cast(), false, |copy| {
+            hew_codec::managed_tree::json_payload_bytes(&value.inner, copy)
+                .ok_or(hew_cabi::managed::HEAP_EXCEEDED)
+        })
+    }
+}
+
+#[cfg(test)]
+mod managed_tests {
+    use super::*;
+    use crate::managed_tree::tests::Capture;
+    use hew_cabi::managed::{HewManagedWalkKind, HEAP_EXCEEDED};
+
+    #[test]
+    fn managed_json_capacity_and_copy_plan_match_actual_clone() {
+        let mut text = String::with_capacity(64);
+        text.push_str("hew");
+        let mut values = Vec::with_capacity(8);
+        values.push(serde_json::Value::String(text));
+        let value = boxed_value(serde_json::Value::Array(values));
+        // SAFETY: both handle slots and all visitors remain live until free.
+        unsafe {
+            let mut retained = Capture::default();
+            assert_eq!(
+                hew_managed_visit_json(
+                    (&raw const value).cast(),
+                    &retained.visitor(HewManagedWalkKind::Retain)
+                ),
+                0
+            );
+            assert_eq!(retained.entries, vec![(value as usize, 12 + 8 * 12 + 64)]);
+
+            let mut plan = Capture::default();
+            assert_eq!(
+                hew_managed_visit_json(
+                    (&raw const value).cast(),
+                    &plan.visitor(HewManagedWalkKind::ClonePlan)
+                ),
+                0
+            );
+            assert_eq!(plan.entries, vec![(0, 12 + 12 + 3)]);
+            let copy = hew_json_clone(value);
+            let mut copied = Capture::default();
+            assert_eq!(
+                hew_managed_visit_json(
+                    (&raw const copy).cast(),
+                    &copied.visitor(HewManagedWalkKind::Retain)
+                ),
+                0
+            );
+            assert_eq!(copied.entries, vec![(copy as usize, plan.entries[0].1)]);
+            assert_ne!(value, copy);
+
+            let mut refused = Capture {
+                status: HEAP_EXCEEDED,
+                ..Capture::default()
+            };
+            assert_eq!(
+                hew_managed_visit_json(
+                    (&raw const value).cast(),
+                    &refused.visitor(HewManagedWalkKind::Retain)
+                ),
+                HEAP_EXCEEDED
+            );
+            assert_eq!((*value).inner, serde_json::json!(["hew"]));
+            hew_json_free(copy);
+            hew_json_free(value);
+        }
+    }
 }
 
 #[cfg(test)]
@@ -131,7 +220,7 @@ pub unsafe extern "C" fn hew_json_eq(lhs: *const HewJsonValue, rhs: *const HewJs
 /// # Safety
 ///
 /// `json_str` must be a live managed string handle (null means empty).
-#[no_mangle]
+#[must_use]
 pub unsafe extern "C" fn hew_json_parse(json_str: *const HewString) -> *mut HewJsonValue {
     // SAFETY: the caller borrows a live managed string or canonical empty handle.
     let s = unsafe { string_as_str(json_str) };
@@ -154,7 +243,7 @@ pub unsafe extern "C" fn hew_json_parse(json_str: *const HewString) -> *mut HewJ
 ///
 /// Errors are keyed per (actor, parser-kind), so a different parser's success
 /// does not clear this slot.
-#[no_mangle]
+#[must_use]
 pub extern "C" fn hew_json_last_error() -> *mut HewString {
     string_from_str(&get_parse_last_error())
 }
@@ -170,7 +259,7 @@ pub extern "C" fn hew_json_last_error() -> *mut HewString {
 /// # Safety
 ///
 /// `val` must be a valid pointer to a [`HewJsonValue`], or null (an error).
-#[no_mangle]
+#[must_use]
 pub unsafe extern "C" fn hew_json_stringify(val: *const HewJsonValue) -> *mut HewString {
     if val.is_null() {
         set_parse_last_error("json stringify failed: invalid value handle");
@@ -352,7 +441,7 @@ pub unsafe extern "C" fn hew_json_get_float(val: *const HewJsonValue) -> f64 {
 /// # Safety
 ///
 /// `val` must be a valid pointer to a [`HewJsonValue`], or null.
-#[no_mangle]
+#[must_use]
 pub unsafe extern "C" fn hew_json_get_string(val: *const HewJsonValue) -> *mut HewString {
     if val.is_null() {
         return std::ptr::null_mut();
@@ -375,7 +464,7 @@ pub unsafe extern "C" fn hew_json_get_string(val: *const HewJsonValue) -> *mut H
 /// # Safety
 ///
 /// `val` must be a valid pointer to a [`HewJsonValue`], or null.
-#[no_mangle]
+#[must_use]
 pub unsafe extern "C" fn hew_json_get_bytes(val: *const HewJsonValue) -> BytesTriple {
     if val.is_null() {
         set_parse_last_error("invalid JSON bytes: value was null or key not found");
@@ -433,7 +522,7 @@ pub unsafe extern "C" fn hew_json_get_bytes(val: *const HewJsonValue) -> BytesTr
 ///
 /// `val` must be a valid pointer to a [`HewJsonValue`], or null.
 /// `key` must be a live managed string handle (null means empty).
-#[no_mangle]
+#[must_use]
 pub unsafe extern "C" fn hew_json_get_field(
     val: *const HewJsonValue,
     key: *const HewString,
@@ -485,7 +574,7 @@ pub unsafe extern "C" fn hew_json_array_len(val: *const HewJsonValue) -> i32 {
 /// # Safety
 ///
 /// `val` must be a valid pointer to a [`HewJsonValue`], or null.
-#[no_mangle]
+#[must_use]
 pub unsafe extern "C" fn hew_json_array_get(
     val: *const HewJsonValue,
     index: i32,
@@ -514,7 +603,7 @@ pub unsafe extern "C" fn hew_json_array_get(
 /// # Safety
 ///
 /// `val` must be a valid pointer to a [`HewJsonValue`], or null.
-#[no_mangle]
+#[must_use]
 pub unsafe extern "C" fn hew_json_object_keys(val: *const HewJsonValue) -> *mut HewJsonValue {
     if val.is_null() {
         return std::ptr::null_mut();
@@ -572,7 +661,7 @@ pub unsafe extern "C" fn hew_json_string_free(s: *mut HewString) {
 ///
 /// Returns a heap-allocated [`HewJsonValue`] wrapping an empty JSON object.
 /// Must be freed with [`hew_json_free`].
-#[no_mangle]
+#[must_use]
 pub extern "C" fn hew_json_object_new() -> *mut HewJsonValue {
     boxed_value(serde_json::Value::Object(serde_json::Map::new()))
 }
@@ -585,20 +674,19 @@ pub extern "C" fn hew_json_object_new() -> *mut HewJsonValue {
 ///
 /// `obj` must be a valid non-null [`HewJsonValue`] pointer. `key` must be a
 /// live managed string handle (null means empty).
-#[no_mangle]
 pub unsafe extern "C" fn hew_json_object_set_bool(
     obj: *mut HewJsonValue,
     key: *const HewString,
     val: i32,
 ) {
-    if obj.is_null() {
-        return;
-    }
-    // SAFETY: caller guarantees obj is valid; key is a live managed string handle (null means empty).
-    let key = unsafe { string_as_str(key) }.to_owned();
-    // SAFETY: obj is non-null (checked above) and valid per caller contract.
-    if let serde_json::Value::Object(map) = &mut unsafe { &mut *obj }.inner {
-        map.insert(key, serde_json::Value::Bool(val != 0));
+    let mut status = 0;
+    // Physical host callers use the same edit path without a Hew account.
+    hew_runtime::owned_value_budget::with_value_owner(&None, || {
+        // SAFETY: this wrapper preserves the checked operation's input contract.
+        unsafe { checked::hew_json_object_set_bool_checked(obj, key, val, &raw mut status) };
+    });
+    if status != 0 {
+        std::process::abort();
     }
 }
 
@@ -607,23 +695,19 @@ pub unsafe extern "C" fn hew_json_object_set_bool(
 /// # Safety
 ///
 /// Same as [`hew_json_object_set_bool`].
-#[no_mangle]
 pub unsafe extern "C" fn hew_json_object_set_int(
     obj: *mut HewJsonValue,
     key: *const HewString,
     val: i64,
 ) {
-    if obj.is_null() {
-        return;
-    }
-    // SAFETY: caller guarantees obj is valid; key is a live managed string handle (null means empty).
-    let key = unsafe { string_as_str(key) }.to_owned();
-    // SAFETY: obj is non-null (checked above) and valid per caller contract.
-    if let serde_json::Value::Object(map) = &mut unsafe { &mut *obj }.inner {
-        map.insert(
-            key,
-            serde_json::Value::Number(serde_json::Number::from(val)),
-        );
+    let mut status = 0;
+    // Physical host callers use the same edit path without a Hew account.
+    hew_runtime::owned_value_budget::with_value_owner(&None, || {
+        // SAFETY: this wrapper preserves the checked operation's input contract.
+        unsafe { checked::hew_json_object_set_int_checked(obj, key, val, &raw mut status) };
+    });
+    if status != 0 {
+        std::process::abort();
     }
 }
 
@@ -632,22 +716,19 @@ pub unsafe extern "C" fn hew_json_object_set_int(
 /// # Safety
 ///
 /// Same as [`hew_json_object_set_bool`].
-#[no_mangle]
 pub unsafe extern "C" fn hew_json_object_set_float(
     obj: *mut HewJsonValue,
     key: *const HewString,
     val: f64,
 ) {
-    if obj.is_null() {
-        return;
-    }
-    // SAFETY: caller guarantees obj is valid; key is a live managed string handle (null means empty).
-    let key = unsafe { string_as_str(key) }.to_owned();
-    // SAFETY: obj is non-null (checked above) and valid per caller contract.
-    if let serde_json::Value::Object(map) = &mut unsafe { &mut *obj }.inner {
-        if let Some(n) = serde_json::Number::from_f64(val) {
-            map.insert(key, serde_json::Value::Number(n));
-        }
+    let mut status = 0;
+    // Physical host callers use the same edit path without a Hew account.
+    hew_runtime::owned_value_budget::with_value_owner(&None, || {
+        // SAFETY: this wrapper preserves the checked operation's input contract.
+        unsafe { checked::hew_json_object_set_float_checked(obj, key, val, &raw mut status) };
+    });
+    if status != 0 {
+        std::process::abort();
     }
 }
 
@@ -656,22 +737,19 @@ pub unsafe extern "C" fn hew_json_object_set_float(
 /// # Safety
 ///
 /// Same as [`hew_json_object_set_bool`]. `val` must be a live managed string handle (null means empty).
-#[no_mangle]
 pub unsafe extern "C" fn hew_json_object_set_string(
     obj: *mut HewJsonValue,
     key: *const HewString,
     val: *const HewString,
 ) {
-    if obj.is_null() {
-        return;
-    }
-    // SAFETY: caller guarantees obj is valid; key and val are live managed string handles (null means empty).
-    let key = unsafe { string_as_str(key) }.to_owned();
-    // SAFETY: val is a live managed string or canonical empty per caller contract.
-    let val = unsafe { string_as_str(val) }.to_owned();
-    // SAFETY: obj is non-null (checked above) and valid per caller contract.
-    if let serde_json::Value::Object(map) = &mut unsafe { &mut *obj }.inner {
-        map.insert(key, serde_json::Value::String(val));
+    let mut status = 0;
+    // Physical host callers use the same edit path without a Hew account.
+    hew_runtime::owned_value_budget::with_value_owner(&None, || {
+        // SAFETY: this wrapper preserves the checked operation's input contract.
+        unsafe { checked::hew_json_object_set_string_checked(obj, key, val, &raw mut status) };
+    });
+    if status != 0 {
+        std::process::abort();
     }
 }
 
@@ -683,14 +761,20 @@ pub unsafe extern "C" fn hew_json_object_set_string(
 /// # Safety
 ///
 /// Same as [`hew_json_object_set_bool`].
-#[no_mangle]
 pub unsafe extern "C" fn hew_json_object_set_char(
     obj: *mut HewJsonValue,
     key: *const HewString,
     val: i64,
 ) {
-    // SAFETY: delegates under the same resource and borrowed-string contract as set_bool.
-    unsafe { hew_json_object_set_int(obj, key, val) }
+    let mut status = 0;
+    // Physical host callers use the same edit path without a Hew account.
+    hew_runtime::owned_value_budget::with_value_owner(&None, || {
+        // SAFETY: this wrapper preserves the checked operation's input contract.
+        unsafe { checked::hew_json_object_set_char_checked(obj, key, val, &raw mut status) };
+    });
+    if status != 0 {
+        std::process::abort();
+    }
 }
 
 /// Set a `duration` (nanoseconds as i64) field on a JSON object as an integer.
@@ -701,14 +785,20 @@ pub unsafe extern "C" fn hew_json_object_set_char(
 /// # Safety
 ///
 /// Same as [`hew_json_object_set_bool`].
-#[no_mangle]
 pub unsafe extern "C" fn hew_json_object_set_duration(
     obj: *mut HewJsonValue,
     key: *const HewString,
     val: i64,
 ) {
-    // SAFETY: delegates under the same resource and borrowed-string contract as set_bool.
-    unsafe { hew_json_object_set_int(obj, key, val) }
+    let mut status = 0;
+    // Physical host callers use the same edit path without a Hew account.
+    hew_runtime::owned_value_budget::with_value_owner(&None, || {
+        // SAFETY: this wrapper preserves the checked operation's input contract.
+        unsafe { checked::hew_json_object_set_duration_checked(obj, key, val, &raw mut status) };
+    });
+    if status != 0 {
+        std::process::abort();
+    }
 }
 
 /// Get the `char` (Unicode codepoint) from a [`HewJsonValue`] integer field.
@@ -751,16 +841,15 @@ pub unsafe extern "C" fn hew_json_get_duration(val: *const HewJsonValue) -> i64 
 ///
 /// `obj` must be a valid non-null [`HewJsonValue`] pointer. `key` must be a
 /// live managed string handle (null means empty).
-#[no_mangle]
 pub unsafe extern "C" fn hew_json_object_set_null(obj: *mut HewJsonValue, key: *const HewString) {
-    if obj.is_null() {
-        return;
-    }
-    // SAFETY: caller guarantees obj is valid; key is a live managed string handle (null means empty).
-    let key = unsafe { string_as_str(key) }.to_owned();
-    // SAFETY: obj is non-null (checked above) and valid per caller contract.
-    if let serde_json::Value::Object(map) = &mut unsafe { &mut *obj }.inner {
-        map.insert(key, serde_json::Value::Null);
+    let mut status = 0;
+    // Physical host callers use the same edit path without a Hew account.
+    hew_runtime::owned_value_budget::with_value_owner(&None, || {
+        // SAFETY: this wrapper preserves the checked operation's input contract.
+        unsafe { checked::hew_json_object_set_null_checked(obj, key, &raw mut status) };
+    });
+    if status != 0 {
+        std::process::abort();
     }
 }
 
@@ -775,28 +864,19 @@ pub unsafe extern "C" fn hew_json_object_set_null(obj: *mut HewJsonValue, key: *
 /// `obj` must be a valid [`HewJsonValue`] pointer or null. `key` must be a
 /// live managed string handle or null (the empty string). `val` must be a heap-allocated
 /// [`HewJsonValue`] that this function takes ownership of, or null.
-#[no_mangle]
 pub unsafe extern "C" fn hew_json_object_set(
     obj: *mut HewJsonValue,
     key: *const HewString,
     val: *mut HewJsonValue,
 ) {
-    if val.is_null() {
-        return;
-    }
-    // SAFETY: val was allocated with Box::into_raw; ownership transfers at the
-    // ABI boundary even when the parent precondition rejects insertion.
-    let child = unsafe { Box::from_raw(val) };
-    #[cfg(test)]
-    record_value_box_consumed();
-    if obj.is_null() {
-        return;
-    }
-    // SAFETY: caller guarantees obj is valid; key is a live managed string handle (null means empty).
-    let key = unsafe { string_as_str(key) }.to_owned();
-    // SAFETY: obj is non-null (checked above) and valid per caller contract.
-    if let serde_json::Value::Object(map) = &mut unsafe { &mut *obj }.inner {
-        map.insert(key, child.inner);
+    let mut status = 0;
+    // Physical host callers use the same edit path without a Hew account.
+    hew_runtime::owned_value_budget::with_value_owner(&None, || {
+        // SAFETY: this wrapper preserves the checked operation's input contract.
+        unsafe { checked::hew_json_object_set_checked(obj, key, val, &raw mut status) };
+    });
+    if status != 0 {
+        std::process::abort();
     }
 }
 
@@ -808,7 +888,7 @@ pub unsafe extern "C" fn hew_json_object_set(
 ///
 /// Returns a heap-allocated [`HewJsonValue`] wrapping an empty JSON array.
 /// Must be freed with [`hew_json_free`].
-#[no_mangle]
+#[must_use]
 pub extern "C" fn hew_json_array_new() -> *mut HewJsonValue {
     boxed_value(serde_json::Value::Array(Vec::new()))
 }
@@ -820,14 +900,15 @@ pub extern "C" fn hew_json_array_new() -> *mut HewJsonValue {
 /// # Safety
 ///
 /// `arr` must be a valid non-null [`HewJsonValue`] pointer.
-#[no_mangle]
 pub unsafe extern "C" fn hew_json_array_push_bool(arr: *mut HewJsonValue, val: i32) {
-    if arr.is_null() {
-        return;
-    }
-    // SAFETY: arr is non-null (checked above) and valid per caller contract.
-    if let serde_json::Value::Array(vec) = &mut unsafe { &mut *arr }.inner {
-        vec.push(serde_json::Value::Bool(val != 0));
+    let mut status = 0;
+    // Physical host callers use the same edit path without a Hew account.
+    hew_runtime::owned_value_budget::with_value_owner(&None, || {
+        // SAFETY: this wrapper preserves the checked operation's input contract.
+        unsafe { checked::hew_json_array_push_bool_checked(arr, val, &raw mut status) };
+    });
+    if status != 0 {
+        std::process::abort();
     }
 }
 
@@ -838,14 +919,15 @@ pub unsafe extern "C" fn hew_json_array_push_bool(arr: *mut HewJsonValue, val: i
 /// # Safety
 ///
 /// `arr` must be a valid non-null [`HewJsonValue`] pointer.
-#[no_mangle]
 pub unsafe extern "C" fn hew_json_array_push_int(arr: *mut HewJsonValue, val: i64) {
-    if arr.is_null() {
-        return;
-    }
-    // SAFETY: arr is non-null (checked above) and valid per caller contract.
-    if let serde_json::Value::Array(vec) = &mut unsafe { &mut *arr }.inner {
-        vec.push(serde_json::Value::Number(serde_json::Number::from(val)));
+    let mut status = 0;
+    // Physical host callers use the same edit path without a Hew account.
+    hew_runtime::owned_value_budget::with_value_owner(&None, || {
+        // SAFETY: this wrapper preserves the checked operation's input contract.
+        unsafe { checked::hew_json_array_push_int_checked(arr, val, &raw mut status) };
+    });
+    if status != 0 {
+        std::process::abort();
     }
 }
 
@@ -856,16 +938,15 @@ pub unsafe extern "C" fn hew_json_array_push_int(arr: *mut HewJsonValue, val: i6
 /// # Safety
 ///
 /// `arr` must be a valid non-null [`HewJsonValue`] pointer.
-#[no_mangle]
 pub unsafe extern "C" fn hew_json_array_push_float(arr: *mut HewJsonValue, val: f64) {
-    if arr.is_null() {
-        return;
-    }
-    // SAFETY: arr is non-null (checked above) and valid per caller contract.
-    if let serde_json::Value::Array(vec) = &mut unsafe { &mut *arr }.inner {
-        if let Some(n) = serde_json::Number::from_f64(val) {
-            vec.push(serde_json::Value::Number(n));
-        }
+    let mut status = 0;
+    // Physical host callers use the same edit path without a Hew account.
+    hew_runtime::owned_value_budget::with_value_owner(&None, || {
+        // SAFETY: this wrapper preserves the checked operation's input contract.
+        unsafe { checked::hew_json_array_push_float_checked(arr, val, &raw mut status) };
+    });
+    if status != 0 {
+        std::process::abort();
     }
 }
 
@@ -877,16 +958,15 @@ pub unsafe extern "C" fn hew_json_array_push_float(arr: *mut HewJsonValue, val: 
 ///
 /// `arr` must be a valid non-null [`HewJsonValue`] pointer. `val` must be a
 /// live managed string handle (null means empty).
-#[no_mangle]
 pub unsafe extern "C" fn hew_json_array_push_string(arr: *mut HewJsonValue, val: *const HewString) {
-    if arr.is_null() {
-        return;
-    }
-    // SAFETY: val is a live managed string handle (null means empty) per caller contract.
-    let s = unsafe { string_as_str(val) }.to_owned();
-    // SAFETY: arr is non-null (checked above) and valid per caller contract.
-    if let serde_json::Value::Array(vec) = &mut unsafe { &mut *arr }.inner {
-        vec.push(serde_json::Value::String(s));
+    let mut status = 0;
+    // Physical host callers use the same edit path without a Hew account.
+    hew_runtime::owned_value_budget::with_value_owner(&None, || {
+        // SAFETY: this wrapper preserves the checked operation's input contract.
+        unsafe { checked::hew_json_array_push_string_checked(arr, val, &raw mut status) };
+    });
+    if status != 0 {
+        std::process::abort();
     }
 }
 
@@ -897,14 +977,15 @@ pub unsafe extern "C" fn hew_json_array_push_string(arr: *mut HewJsonValue, val:
 /// # Safety
 ///
 /// `arr` must be a valid non-null [`HewJsonValue`] pointer.
-#[no_mangle]
 pub unsafe extern "C" fn hew_json_array_push_null(arr: *mut HewJsonValue) {
-    if arr.is_null() {
-        return;
-    }
-    // SAFETY: arr is non-null (checked above) and valid per caller contract.
-    if let serde_json::Value::Array(vec) = &mut unsafe { &mut *arr }.inner {
-        vec.push(serde_json::Value::Null);
+    let mut status = 0;
+    // Physical host callers use the same edit path without a Hew account.
+    hew_runtime::owned_value_budget::with_value_owner(&None, || {
+        // SAFETY: this wrapper preserves the checked operation's input contract.
+        unsafe { checked::hew_json_array_push_null_checked(arr, &raw mut status) };
+    });
+    if status != 0 {
+        std::process::abort();
     }
 }
 
@@ -919,22 +1000,15 @@ pub unsafe extern "C" fn hew_json_array_push_null(arr: *mut HewJsonValue) {
 /// `arr` must be a valid [`HewJsonValue`] pointer or null. `val` must be a
 /// heap-allocated [`HewJsonValue`] that this function takes ownership of, or
 /// null.
-#[no_mangle]
 pub unsafe extern "C" fn hew_json_array_push(arr: *mut HewJsonValue, val: *mut HewJsonValue) {
-    if val.is_null() {
-        return;
-    }
-    // SAFETY: val was allocated with Box::into_raw; ownership transfers at the
-    // ABI boundary even when the parent precondition rejects insertion.
-    let child = unsafe { Box::from_raw(val) };
-    #[cfg(test)]
-    record_value_box_consumed();
-    if arr.is_null() {
-        return;
-    }
-    // SAFETY: arr is non-null (checked above) and valid per caller contract.
-    if let serde_json::Value::Array(vec) = &mut unsafe { &mut *arr }.inner {
-        vec.push(child.inner);
+    let mut status = 0;
+    // Physical host callers use the same edit path without a Hew account.
+    hew_runtime::owned_value_budget::with_value_owner(&None, || {
+        // SAFETY: this wrapper preserves the checked operation's input contract.
+        unsafe { checked::hew_json_array_push_checked(arr, val, &raw mut status) };
+    });
+    if status != 0 {
+        std::process::abort();
     }
 }
 
@@ -945,19 +1019,19 @@ pub unsafe extern "C" fn hew_json_array_push(arr: *mut HewJsonValue, val: *mut H
 /// Create a [`HewJsonValue`] containing a boolean.
 ///
 /// `val` is interpreted as C boolean: 0 = false, non-zero = true.
-#[no_mangle]
+#[must_use]
 pub extern "C" fn hew_json_from_bool(val: i32) -> *mut HewJsonValue {
     boxed_value(serde_json::Value::Bool(val != 0))
 }
 
 /// Create a [`HewJsonValue`] containing an integer.
-#[no_mangle]
+#[must_use]
 pub extern "C" fn hew_json_from_int(val: i64) -> *mut HewJsonValue {
     boxed_value(serde_json::Value::Number(serde_json::Number::from(val)))
 }
 
 /// Create a [`HewJsonValue`] containing an exact unsigned integer.
-#[no_mangle]
+#[must_use]
 pub extern "C" fn hew_json_from_u64(val: u64) -> *mut HewJsonValue {
     boxed_value(serde_json::Value::Number(serde_json::Number::from(val)))
 }
@@ -965,7 +1039,7 @@ pub extern "C" fn hew_json_from_u64(val: u64) -> *mut HewJsonValue {
 /// Create a [`HewJsonValue`] containing a float.
 ///
 /// Returns null if the float is NaN or infinity (not representable in JSON).
-#[no_mangle]
+#[must_use]
 pub extern "C" fn hew_json_from_float(val: f64) -> *mut HewJsonValue {
     match serde_json::Number::from_f64(val) {
         Some(n) => boxed_value(serde_json::Value::Number(n)),
@@ -980,7 +1054,7 @@ pub extern "C" fn hew_json_from_float(val: f64) -> *mut HewJsonValue {
 /// # Safety
 ///
 /// `val` must be a live managed string handle or null (the empty string).
-#[no_mangle]
+#[must_use]
 pub unsafe extern "C" fn hew_json_from_string(val: *const HewString) -> *mut HewJsonValue {
     // SAFETY: val is a live managed string handle (null means empty) per caller contract.
     let s = unsafe { string_as_str(val) }.to_owned();
@@ -988,7 +1062,7 @@ pub unsafe extern "C" fn hew_json_from_string(val: *const HewString) -> *mut Hew
 }
 
 /// Create a [`HewJsonValue`] containing null.
-#[no_mangle]
+#[must_use]
 pub extern "C" fn hew_json_from_null() -> *mut HewJsonValue {
     boxed_value(serde_json::Value::Null)
 }

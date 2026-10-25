@@ -12,6 +12,7 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, MutexGuard};
 
+pub mod actor;
 pub mod frame;
 pub mod materialize;
 pub mod transfer;
@@ -64,20 +65,23 @@ pub struct ValueOwner(Arc<Account>);
 #[must_use]
 pub fn current_owner() -> Option<ValueOwner> {
     let context = crate::execution_context::current_context();
-    if !context.is_null() {
-        // SAFETY: explicit release bindings live through this synchronous poll.
-        if let Some(owner) = unsafe { (*context).value_owner.as_ref() } {
-            return owner.clone();
-        }
-        // SAFETY: the canonical execution context pins its active task scope.
-        let scope = unsafe { (*context).task_scope };
-        if !scope.is_null() {
-            // An unbounded scope is authoritative too; do not substitute a
-            // different actor merely because its account is disabled.
-            return unsafe { (*scope).value_owner.clone() };
-        }
+    if context.is_null() {
+        return None;
     }
-    let actor = crate::actor::hew_actor_self();
+    // SAFETY: explicit release bindings live through this synchronous poll.
+    if let Some(owner) = unsafe { (*context).value_owner.as_ref() } {
+        return owner.clone();
+    }
+    // SAFETY: the canonical execution context pins its active task scope.
+    let scope = unsafe { (*context).task_scope };
+    if !scope.is_null() {
+        // An unbounded scope is authoritative too; do not substitute a
+        // different actor merely because its account is disabled.
+        // SAFETY: the installed execution context retains its lexical scope.
+        return unsafe { (*scope).value_owner.clone() };
+    }
+    // SAFETY: a present carrier retains its actor through this synchronous poll.
+    let actor = unsafe { (*context).actor };
     if actor.is_null() {
         return None;
     }
@@ -91,17 +95,10 @@ pub fn current_owner() -> Option<ValueOwner> {
 /// Install a borrowed account on the canonical execution carrier for one
 /// synchronous poll. The driver retains it across suspension and reinstalls it
 /// on each worker; no thread-local account or value graph survives this call.
-pub(crate) fn with_value_owner<R>(owner: &Option<ValueOwner>, run: impl FnOnce() -> R) -> R {
+/// `None` explicitly describes unpublished internal storage, independent of an
+/// enclosing bounded actor. The previous binding is restored on return or panic.
+pub fn with_value_owner<R>(owner: &Option<ValueOwner>, run: impl FnOnce() -> R) -> R {
     use crate::execution_context::{current_context, set_current_context, HewExecutionContext};
-    let previous = current_context();
-    let mut fallback = HewExecutionContext::default();
-    let context = if previous.is_null() {
-        &raw mut fallback
-    } else {
-        previous
-    };
-    // SAFETY: this thread exclusively lends the installed carrier for this poll.
-    let old = unsafe { std::mem::replace(&mut (*context).value_owner, owner) };
     struct Restore {
         context: *mut HewExecutionContext,
         previous: *mut HewExecutionContext,
@@ -114,6 +111,15 @@ pub(crate) fn with_value_owner<R>(owner: &Option<ValueOwner>, run: impl FnOnce()
             let _ = set_current_context(self.previous);
         }
     }
+    let previous = current_context();
+    let mut fallback = HewExecutionContext::default();
+    let context = if previous.is_null() {
+        &raw mut fallback
+    } else {
+        previous
+    };
+    // SAFETY: this thread exclusively lends the installed carrier for this poll.
+    let old = unsafe { std::mem::replace(&mut (*context).value_owner, owner) };
     let _restore = Restore {
         context,
         previous,
@@ -121,6 +127,18 @@ pub(crate) fn with_value_owner<R>(owner: &Option<ValueOwner>, run: impl FnOnce()
     };
     let _ = set_current_context(context);
     run()
+}
+
+/// Refund one compiler-described allocation immediately before physical free.
+///
+/// # Safety
+/// The current account owns this exact canonical backing edge, retained through
+/// completed child cleanup. Unpublished candidates run with an explicit `None`.
+#[no_mangle]
+pub unsafe extern "C" fn hew_budget_release_backing(identity: *const std::ffi::c_void, bytes: u64) {
+    if let Some(owner) = current_owner() {
+        owner.release_backing(identity, bytes);
+    }
 }
 
 impl ValueOwner {
@@ -163,7 +181,7 @@ impl ValueOwner {
                 crate::actor::hew_actor_trap(
                     pin.as_ptr(),
                     crate::internal::types::HEW_TRAP_HEAP_EXCEEDED,
-                )
+                );
             };
         });
     }
@@ -253,6 +271,8 @@ impl ValueOwner {
     /// Acquire an entire typed ownership graph atomically. Repeated backing
     /// identities add references but charge their payload once. No language
     /// callback runs while the account lock is held.
+    /// # Errors
+    /// Returns a quota refusal if the complete acquisition cannot fit.
     pub fn acquire(&self, storage: &[ManagedStorage]) -> Result<Acquisition, BudgetExceeded> {
         let pending = storage_counts(storage);
         let mut ledger = self.ledger();
@@ -282,6 +302,8 @@ impl ValueOwner {
 
     /// Release exactly the graph whose ownership obligation has ended, even
     /// when cleanup runs on a different worker from the acquisition.
+    /// # Panics
+    /// Panics if a backing, capacity or reference count differs from its retained ownership.
     pub fn release(&self, storage: &[ManagedStorage]) {
         let pending = storage_counts(storage);
         let mut ledger = self.ledger();
@@ -312,6 +334,8 @@ impl ValueOwner {
     /// A refused recipient acquisition leaves the sender's ownership intact.
     /// Commit the destination before disposing the original request according
     /// to the actor operation's established admission/completion contract.
+    /// # Errors
+    /// Returns the destination quota refusal, leaving source ownership intact.
     pub fn transfer(
         &self,
         destination: &Self,
@@ -328,6 +352,8 @@ impl ValueOwner {
 
     /// Reserve exact new payload capacity before allocating private storage.
     /// The descriptor's post-construction walk supplies its actual identities.
+    /// # Errors
+    /// Returns a quota refusal if the additional payload cannot fit.
     pub fn reserve_new(&self, bytes: u64) -> Result<StorageReservation, BudgetExceeded> {
         let mut ledger = self.ledger();
         self.check(&ledger, bytes)?;
@@ -411,6 +437,10 @@ impl ValueOwner {
     /// Reserve a unique backing's growth before its allocator can relocate it.
     /// Native COW uniqueness remains the container's authority; a retained
     /// alias also refuses this path and must acquire a distinct backing.
+    /// # Errors
+    /// Returns shared-storage or quota refusal without changing the backing.
+    /// # Panics
+    /// Panics if the supplied backing identity or capacity is stale.
     pub fn prepare_resize(
         &self,
         storage: ManagedStorage,
@@ -575,6 +605,8 @@ pub struct StorageReservation {
 impl StorageReservation {
     /// Publish only already-reserved new payload. Identity sharing discovered
     /// by the actual typed walk refunds the unused part of the reservation.
+    /// # Panics
+    /// Panics if the published payload exceeds its reservation or changes retained backing geometry.
     pub fn commit(mut self, storage: &[ManagedStorage]) {
         let pending = storage_counts(storage);
         let mut ledger = self.owner.ledger();
@@ -614,6 +646,8 @@ pub struct ResizePermit<'a> {
     committed: bool,
 }
 impl ResizePermit<'_> {
+    /// # Panics
+    /// Panics if the reserved backing changed ownership or its replacement identity collides.
     pub fn commit(mut self, identity: usize) {
         let ledger = &mut self.ledger;
         let previous = ledger

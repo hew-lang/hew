@@ -6,11 +6,7 @@
 // or the pool returns the level it wrote and the caller reassigns.
 fn hash(key: i64, capacity: i64) -> i64 {
     let h = key % capacity;
-    if h < 0 {
-        h + capacity
-    } else {
-        h
-    }
+    if h < 0 { h + capacity } else { h }
 }
 
 fn make_ht(capacity: i64) -> Vec<i64> {

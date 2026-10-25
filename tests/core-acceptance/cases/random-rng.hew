@@ -9,8 +9,7 @@ fn main() {
     // Reference sequence computed independently in Python from the published
     // splitmix64 seed-expansion and xoshiro256++ step algorithms (not derived
     // from this compiler or its runtime) for seed 42. See
-    // hew-runtime/src/random.rs for the algorithms and the matching pinned
-    // Rust unit test.
+    // std/random/random.hew for the source implementation.
     var rng = random.Rng.new(42);
     assert(rng.next_u64() == 15021278609987233951);
     assert(rng.next_u64() == 5881210131331364753);

@@ -1,6 +1,7 @@
 import type { RuntimeContinuation } from "./shims.js";
 import {
   UNIT,
+  mutableVector,
   cloneValue,
   compareUtf8,
   type VmValue,
@@ -17,7 +18,13 @@ import { actorIdentical } from "./actor-identity.js";
 export type ValueRequest =
   | { kind: "fault"; message: string }
   | { kind: "call"; callee: number; args: VmValue[] }
-  | { kind: "release"; value: VmValue; onFault?: VmValue };
+  | {
+      kind: "release";
+      value: VmValue;
+      onFault?: VmValue;
+      retained?: readonly VmValue[];
+      retainedType?: number;
+    };
 export type ValueProgram = Generator<ValueRequest, VmValue, VmValue>;
 
 const OFFSET = 0xcbf29ce484222325n;
@@ -383,6 +390,7 @@ export function* collectionOperation(
   args: VmValue[],
   callbacks: number[],
   shape: number | null | undefined,
+  elementType?: number,
 ): ValueProgram {
   const { family, operation } = request;
   if (family === "Vector") {
@@ -390,10 +398,13 @@ export function* collectionOperation(
     if (receiver?.kind !== "vector")
       throw new Error("vector operation has no vector");
     if (operation === "Clear") {
+      mutableVector(receiver);
       const items = receiver.items.splice(0);
       yield {
         kind: "release",
         value: { kind: "vector", elementType: receiver.elementType, items },
+        retained: items,
+        retainedType: elementType,
       };
       return receiver;
     }
@@ -404,9 +415,10 @@ export function* collectionOperation(
       const at = Number(index.value);
       if (at < 0 || at >= receiver.items.length)
         throw new ShimFault("vector_bounds", "vector index out of bounds");
+      mutableVector(receiver);
       const old = receiver.items[at]!;
       receiver.items[at] = args[2]!;
-      yield { kind: "release", value: old };
+      yield { kind: "release", value: old, retainedType: elementType };
       return receiver;
     }
     for (const item of receiver.items) {
@@ -434,6 +446,7 @@ export function* collectionOperation(
     receiver.tombstones = new Set();
     yield {
       kind: "release",
+      retained: entries.flatMap((entry) => [entry.key, entry.value]),
       value: {
         kind: "vector",
         elementType: "",
@@ -448,17 +461,23 @@ export function* collectionOperation(
     operation === "Elements" ||
     operation === "Entries"
   ) {
-    return {
+    const result: Extract<VmValue, { kind: "vector" }> = {
       kind: "vector",
       elementType: "",
-      items: [...receiver.entries.values()].map(({ key, value }) =>
-        operation === "Values"
-          ? cloneValue(value)
-          : operation === "Entries"
-            ? tuple(cloneValue(key), cloneValue(value))
-            : cloneValue(key),
-      ),
+      items: [],
     };
+    const items = [...receiver.entries.values()].map(({ key, value }) =>
+      operation === "Values"
+        ? cloneValue(value)
+        : operation === "Entries"
+          ? tuple(cloneValue(key), cloneValue(value))
+          : cloneValue(key),
+    );
+    // Native snapshots push into an initially empty Vec, retaining its normal
+    // growth capacity. A later semantic clone may use exact live length.
+    mutableVector(result, items.length);
+    for (const item of items) result.items.push(item);
+    return result;
   }
   let staged = receiver;
   if (
@@ -500,6 +519,13 @@ export function* collectionOperation(
     return cloneValue(entry.value);
   }
   if (operation === "Insert") {
+    receiver.prepareInsert?.(
+      staged,
+      result.slot,
+      entry?.key ?? args[1]!,
+      family === "Set" ? UNIT : args[2]!,
+      family !== "Set" && !entry,
+    );
     receiver.entries = staged.entries;
     receiver.capacity = staged.capacity;
     receiver.tombstones = staged.tombstones;

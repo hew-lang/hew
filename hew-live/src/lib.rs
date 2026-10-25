@@ -5,6 +5,7 @@
 //! Native code is trusted; these checks are compatibility checks, not a sandbox.
 
 pub mod native;
+pub mod session;
 
 #[cfg(feature = "component")]
 pub mod component;

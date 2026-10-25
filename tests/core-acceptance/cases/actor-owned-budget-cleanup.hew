@@ -1,0 +1,36 @@
+#[resource]
+type Ticket {
+    values: Vec<i64>;
+}
+
+impl Ticket {
+    fn close(consume self) {
+        if self.values.len() == 4 {
+            sleep(1ms);
+            var scratch: Vec<i64> = Vec.new();
+            scratch.push(1);
+        }
+    }
+}
+
+#[max_heap(64)]
+actor Holder {
+    var ticket: Ticket;
+    receive fn replace() {
+        ticket = Ticket { values: Vec.new() };
+    }
+}
+
+fn main() -> i64 {
+    var values: Vec<i64> = Vec.new();
+    for i in 0..4 {
+        values.push(i);
+    }
+    let holder = spawn Holder { ticket: Ticket { values: values } };
+    match holder.replace() {
+        .Err(.Trapped) => println("cleanup limit"),
+        _ => return 2,
+    }
+    stopped(holder);
+    0
+}

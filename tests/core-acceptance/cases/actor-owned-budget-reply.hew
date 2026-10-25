@@ -1,0 +1,46 @@
+actor Worker {
+    receive fn ready() -> i64 {
+        7
+    }
+}
+
+#[max_heap(16)]
+actor Enough {
+    let worker: Worker;
+    receive fn run() -> i64 {
+        select {
+            value from worker.ready() => value.expect("reply"),
+        }
+    }
+}
+
+#[max_heap(15)]
+actor Small {
+    let worker: Worker;
+    receive fn run() -> i64 {
+        select {
+            value from worker.ready() => value.expect("reply"),
+        }
+    }
+}
+
+fn main() -> i64 {
+    let worker = spawn Worker;
+    let enough = spawn Enough { worker: worker };
+    match enough.run() {
+        .Ok(n) => println(n),
+        _ => return 2,
+    }
+    stop(enough);
+    stopped(enough);
+    let small = spawn Small { worker: worker };
+    match small.run() {
+        .Err(.Trapped) => println("reply limit"),
+        _ => return 3,
+    }
+    stopped(small);
+    println(worker.ready().expect("sender survived"));
+    stop(worker);
+    stopped(worker);
+    0
+}

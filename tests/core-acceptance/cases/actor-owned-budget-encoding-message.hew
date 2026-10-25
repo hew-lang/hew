@@ -1,0 +1,34 @@
+import std.encoding.json;
+import std.encoding.yaml;
+import std.encoding.toml;
+
+#[max_heap(128)]
+actor Collector {
+    var sum: i64 = 0;
+
+    receive fn add_json(value: json.Value) -> i64 {
+        sum += value.get_int().expect("integer");
+        sum
+    }
+
+    receive fn add_yaml(value: yaml.Value) -> i64 {
+        sum += value.get_int().expect("integer");
+        sum
+    }
+
+    receive fn add_toml(value: toml.Value) -> i64 {
+        sum += value.get_int().expect("integer");
+        sum
+    }
+}
+
+fn main() {
+    let collector = spawn Collector;
+    let value = json.from_int(40);
+    println(collector.add_json(value).expect("JSON delivery"));
+    println(collector.add_yaml(yaml.from_int(1)).expect("YAML delivery"));
+    println(collector.add_toml(toml.from_int(1)).expect("TOML delivery"));
+    assert(value.get_int().expect("original") == 40);
+    stop(collector);
+    stopped(collector);
+}

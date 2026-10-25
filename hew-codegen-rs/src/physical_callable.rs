@@ -206,7 +206,7 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
             }
             .into(),
             self.code_owner().into(),
-            pointer.const_null().into(),
+            self.emit_environment_managed(name, glue, layout)?.into(),
         ]);
         let global = self.llvm.add_global(descriptor_ty, None, name);
         global.set_linkage(Linkage::Internal);
@@ -384,7 +384,7 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
     }
 }
 
-fn environment_field<'ctx>(
+pub(super) fn environment_field<'ctx>(
     ctx: &'ctx Context,
     builder: &Builder<'ctx>,
     layout: &PhysicalLayout,
@@ -651,7 +651,7 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
         }
         let mut functions = BTreeMap::new();
         for function in &self.module.functions {
-            for op in function.blocks.iter().flat_map(|block| &block.ops) {
+            for op in function.blocks.iter().flat_map(|block| block.operations()) {
                 if let PhysicalOp::FunctionMake { dest, callee } = op {
                     functions.insert(*callee, &function.storage[dest.0 as usize].ty);
                 }
@@ -670,7 +670,7 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
             .functions
             .iter()
             .flat_map(|function| &function.blocks)
-            .flat_map(|block| &block.ops)
+            .flat_map(|block| block.operations())
             .filter_map(|op| {
                 if let PhysicalOp::TaskInvoke {
                     callee: hew_mir::physical::PhysicalInvocationCallee::Direct(target),
@@ -685,7 +685,7 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
             .collect::<std::collections::BTreeSet<_>>();
         let mut dynamic = Vec::new();
         for function in &self.module.functions {
-            for op in function.blocks.iter().flat_map(|block| &block.ops) {
+            for op in function.blocks.iter().flat_map(|block| block.operations()) {
                 if let PhysicalOp::TaskInvoke {
                     callee: callee @ hew_mir::physical::PhysicalInvocationCallee::Dyn { .. },
                     dest,
@@ -705,7 +705,7 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
             .functions
             .iter()
             .flat_map(|function| &function.blocks)
-            .flat_map(|block| &block.ops)
+            .flat_map(|block| block.operations())
         {
             if let PhysicalOp::TaskInvoke {
                 callee:
@@ -1589,7 +1589,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             .function
             .blocks
             .iter()
-            .flat_map(|block| &block.ops)
+            .flat_map(|block| block.operations())
             .find_map(|op| {
                 if let PhysicalOp::AggregateProjectBorrow {
                     dest,

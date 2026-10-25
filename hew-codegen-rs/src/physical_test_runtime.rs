@@ -11,7 +11,79 @@ pub(super) fn bind_runtime<'ctx>(llvm: &Module<'ctx>, engine: &ExecutionEngine<'
             }
         })*};
     }
+    macro_rules! bind_budget {
+        ($($module:ident :: $name:ident),* $(,)?) => {$({
+            if let Some(function) = llvm.get_function(stringify!($name)) {
+                engine.add_global_mapping(&function, hew_runtime::owned_value_budget::$module::$name as *const () as usize);
+            }
+        })*};
+    }
+    if let Some(function) = llvm.get_function("hew_budget_release_backing") {
+        engine.add_global_mapping(
+            &function,
+            hew_runtime::owned_value_budget::hew_budget_release_backing as *const () as usize,
+        );
+    }
+    for (name, address) in [
+        (
+            "hew_code_root_acquire",
+            hew_cabi::code::hew_code_root_acquire as *const () as usize,
+        ),
+        (
+            "hew_code_root_release",
+            hew_cabi::code::hew_code_root_release as *const () as usize,
+        ),
+    ] {
+        if let Some(function) = llvm.get_function(name) {
+            engine.add_global_mapping(&function, address);
+        }
+    }
+    bind_budget!(
+        frame::hew_budget_bind_frame,
+        frame::hew_managed_visit_invocation,
+        materialize::hew_budget_materialize_begin,
+        materialize::hew_budget_materialize_commit,
+        materialize::hew_budget_materialize_abort,
+        materialize::hew_budget_materialize_overflow,
+        materialize::hew_budget_publish_value,
+        visit::hew_managed_visit_backing,
+        visit::hew_managed_visit_string,
+        visit::hew_managed_visit_bytes,
+        visit::hew_managed_visit_vector,
+        visit::hew_managed_visit_map,
+        visit::hew_managed_visit_set,
+        visit::hew_managed_visit_callable,
+        visit::hew_managed_visit_shared,
+        visit::hew_managed_visit_dynamic,
+    );
     bind!(
+        release_walker::hew_managed_visit_release_driver_slot,
+        bytes::hew_bytes_literal_capacity,
+        bytes::hew_bytes_push_checked,
+        bytes::hew_bytes_append_checked,
+        bytes::hew_bytes_pop_checked,
+        bytes::hew_bytes_set_checked,
+        bytes::hew_bytes_clear_managed,
+        bytes::hew_bytes_drop_managed,
+        string::hew_string_append_checked,
+        string::hew_string_push_checked,
+        string::hew_string_clear_managed,
+        string::hew_string_drop_managed,
+        release_walker::hew_release_driver_new,
+        release_walker::hew_release_driver_poll,
+        release_walker::hew_release_driver_fault,
+        release_walker::hew_release_driver_free,
+        hashmap::hew_hashmap_new_with_layout_checked,
+        hashmap::hew_hashmap_keys_layout_checked,
+        hashmap::hew_hashmap_values_layout_checked,
+        hashmap::hew_hashmap_entries_layout_checked,
+        hashmap::hew_hashmap_probe_get_clone_checked,
+        hashmap::hew_hashmap_probe_insert_clone_checked,
+        hashmap::hew_hashmap_probe_insert_take_checked,
+        hashset::hew_hashset_new_with_layout_checked,
+        hashset::hew_hashset_to_vec_layout_checked,
+        hashmap::hew_hashset_probe_insert_clone_checked,
+        hashmap::hew_hashset_probe_insert_take_checked,
         cont::hew_cont_frame_alloc,
         cont::hew_cont_frame_free,
         cont::hew_cont_resume,
@@ -89,6 +161,11 @@ pub(super) fn bind_runtime<'ctx>(llvm: &Module<'ctx>, engine: &ExecutionEngine<'
         hashset::hew_hashset_iter_next_layout,
         hashset::hew_hashset_iter_free_layout,
         vec::hew_vec_new_with_elem_layout,
+        vec::hew_vec_push_managed,
+        vec::hew_vec_make_unique_managed,
+        vec::hew_vec_set_managed,
+        vec::hew_vec_append_managed,
+        vec::hew_vec_get_clone_managed,
         vec::hew_vec_make_unique,
         vec::hew_vec_free_owned,
         vec::hew_vec_free_owned_walk,

@@ -40,13 +40,12 @@ fn profiler_api_responses_carry_observe_schema_version_envelope() {
         )),
     });
 
-    // The server thread will outlive this test — cargo runs each integration
-    // test in its own process, so the thread is reaped when the process exits.
-    thread::Builder::new()
+    let (shutdown, shutdown_rx) = hew_runtime::profiler::oneshot::channel();
+    let server = thread::Builder::new()
         .name("observe-envelope-e2e-server".into())
         .spawn({
             let ctx = Arc::clone(&ctx);
-            move || run_tcp_with_listener(listener, ctx)
+            move || run_tcp_with_listener(listener, ctx, shutdown_rx)
         })
         .expect("spawn profiler server thread");
 
@@ -104,6 +103,8 @@ fn profiler_api_responses_carry_observe_schema_version_envelope() {
         Some(OBSERVE_SCHEMA_VERSION),
         "X-Hew-Schema-Version response header must echo the canonical version",
     );
+    shutdown.send(()).expect("signal profiler shutdown");
+    server.join().expect("profiler server should exit cleanly");
 }
 
 fn http_get(url: &str) -> String {

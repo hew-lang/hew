@@ -120,11 +120,7 @@ fn sign_extend(u: i64, width: i64) -> i64 {
         return u;
     }
     let half: i64 = 1 << (8 * width - 1);
-    if u >= half {
-        u - (half << 1)
-    } else {
-        u
-    }
+    if u >= half { u - (half << 1) } else { u }
 }
 
 // ── Checked slices ─────────────────────────────────────────────────────

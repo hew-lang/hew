@@ -8,8 +8,8 @@ use super::{
     require_type_facts, BindingTarget, BlockArg, Builder, CallResult, CallTarget, CallUnwind, Edge,
     FaultHandback, HirExpr, HirExprKind, IntentKind, OpId, Operand, OwnKind, OwnedBindingUse,
     PlaceId, PlaceOrigin, PreparedCallee, Provenance, ResolvedRef, ResolvedTy, SemAbiParam,
-    SemCallableKind, SemOp, SemOpKind, SemParamPassing, SemSignature, SemTerminator,
-    TypeInstanceKey, ValueDef, ValueId, WritableRoot,
+    SemCallableKind, SemOpKind, SemParamPassing, SemSignature, SemTerminator, TypeInstanceKey,
+    ValueDef, ValueId, WritableRoot,
 };
 
 impl Builder<'_, '_> {
@@ -218,16 +218,12 @@ impl Builder<'_, '_> {
             if self.ended_loans.contains(&value) {
                 continue;
             }
-            let op = SemOp {
-                id: OpId(self.ops),
-                results: Vec::new(),
-                kind: SemOpKind::EndBorrow {
+            self.emit_place_operation(
+                SemOpKind::EndBorrow {
                     borrow: Operand { value },
                 },
-                provenance: Provenance::Synthesized,
-            };
-            self.current_block_mut().append_op(op)?;
-            self.ops += 1;
+                Provenance::Synthesized,
+            )?;
         }
         Ok(())
     }

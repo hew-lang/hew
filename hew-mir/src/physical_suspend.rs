@@ -6,7 +6,11 @@ use std::collections::{BTreeMap, BTreeSet};
 pub(super) fn verify_task_scopes(function: &super::PhysicalFunction) -> Result<(), PhysicalError> {
     use super::{PhysicalOp, TaskScopeId};
     let mut declared = BTreeSet::new();
-    for op in function.blocks.iter().flat_map(|block| &block.ops) {
+    for op in function
+        .blocks
+        .iter()
+        .flat_map(super::types::PhysicalBlock::operations)
+    {
         if let PhysicalOp::TaskScopeEnter { scope, .. } = op {
             if !declared.insert(*scope) {
                 return Err(PhysicalError::new(
@@ -28,7 +32,7 @@ pub(super) fn verify_task_scopes(function: &super::PhysicalFunction) -> Result<(
             continue;
         };
         let mut stack = states[&id].clone();
-        for op in &block.ops {
+        for op in block.operations() {
             match op {
                 PhysicalOp::TaskScopeEnter { scope, parent, .. } => {
                     if stack.last().map(|(scope, _)| scope) != parent.as_ref()
@@ -240,7 +244,7 @@ pub(super) fn semantic_callables(checked: &hew_sir::CheckedModule<'_>) -> BTreeS
             for parameter in &block.args {
                 types.insert(parameter.value, parameter.ty.clone());
             }
-            for operation in &block.ops {
+            for operation in block.operations() {
                 for result in &operation.results {
                     types.insert(result.id, result.ty.clone());
                 }
@@ -274,7 +278,7 @@ pub(super) fn semantic_callables(checked: &hew_sir::CheckedModule<'_>) -> BTreeS
             .iter()
             .filter(|block| lifetimes.is_reachable(block.id))
         {
-            for operation in &block.ops {
+            for operation in block.operations() {
                 // A scope's runtime handle lives in the resumable frame even
                 // when `exit` leaves its drain unreachable.
                 if matches!(operation.kind, hew_sir::SemOpKind::TaskScopeEnter { .. }) {
@@ -550,7 +554,7 @@ pub(super) fn verify_callables(module: &PhysicalModule) -> Result<(), PhysicalEr
             resumable.insert(function.callable);
         }
         for block in &function.blocks {
-            for operation in &block.ops {
+            for operation in block.operations() {
                 let action = match operation {
                     super::PhysicalOp::Destroy { action, .. } => Some(*action),
                     super::PhysicalOp::Assign { destroy_old, .. } => *destroy_old,

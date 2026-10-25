@@ -296,6 +296,7 @@ pub enum RuntimeCallFamily {
     /// `stream.forward(from, to)`: drain `from` into `to`, finishing `to` at
     /// EOF. Both halves are consumed.
     StreamForward,
+    StreamPipe,
     StreamFromGenerator,
     SinkFromEncoder,
     StreamLines,
@@ -1092,6 +1093,7 @@ impl RuntimeCallFamily {
     #[must_use]
     pub fn source_intrinsic_declaration(self) -> Option<&'static str> {
         match self {
+            Self::StreamPipe => Some("std.stream.pipe_halves"),
             Self::StreamPairSink => Some("std.stream.pair_sink"),
             Self::StreamPairStream => Some("std.stream.pair_stream"),
             Self::StreamForward => Some("std.stream.forward"),
@@ -1107,7 +1109,8 @@ impl RuntimeCallFamily {
     #[must_use]
     pub const fn source_intrinsic_type_params(self) -> &'static [&'static str] {
         match self {
-            Self::StreamPairSink
+            Self::StreamPipe
+            | Self::StreamPairSink
             | Self::StreamPairStream
             | Self::StreamForward
             | Self::StreamFromGenerator
@@ -1126,6 +1129,7 @@ impl RuntimeCallFamily {
             "hew_location_node_id" => Some(Self::LocationNodeId),
             "hew_location_incarnation" => Some(Self::LocationIncarnation),
             "hew_location_display" => Some(Self::LocationDisplay),
+            "stream.pipe" => Some(Self::StreamPipe),
             "stream.pair_sink" => Some(Self::StreamPairSink),
             "stream.pair_stream" => Some(Self::StreamPairStream),
             "stream.forward" => Some(Self::StreamForward),

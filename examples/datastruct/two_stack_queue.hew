@@ -41,11 +41,7 @@ fn tsq_size(inbox: Vec<i64>, outbox: Vec<i64>) -> i64 {
 }
 
 fn tsq_is_empty(inbox: Vec<i64>, outbox: Vec<i64>) -> i64 {
-    if tsq_size(inbox, outbox) == 0 {
-        1
-    } else {
-        0
-    }
+    if tsq_size(inbox, outbox) == 0 { 1 } else { 0 }
 }
 
 fn run_test(name: string, passed: i64) -> i64 {
@@ -64,11 +60,7 @@ fn main() {
     var outbox: Vec<i64> = Vec.new();
     // Test 1: empty
     total = total + 1;
-    let r1 = if tsq_is_empty(inbox, outbox) == 1 {
-        1
-    } else {
-        0
-    };
+    let r1 = if tsq_is_empty(inbox, outbox) == 1 { 1 } else { 0 };
     passed = passed + run_test("new queue is empty", r1);
 
     // Test 2: enqueue and size
@@ -77,20 +69,12 @@ fn main() {
     for seed in seeds {
         inbox = tsq_enqueue(inbox, seed);
     }
-    let r2 = if tsq_size(inbox, outbox) == 3 {
-        1
-    } else {
-        0
-    };
+    let r2 = if tsq_size(inbox, outbox) == 3 { 1 } else { 0 };
     passed = passed + run_test("enqueue 3 size=3", r2);
 
     // Test 3: peek returns first enqueued (FIFO)
     total = total + 1;
-    let r3 = if tsq_peek(inbox, outbox) == 10 {
-        1
-    } else {
-        0
-    };
+    let r3 = if tsq_peek(inbox, outbox) == 10 { 1 } else { 0 };
     passed = passed + run_test("peek returns first", r3);
 
     // Test 4: dequeue FIFO order
@@ -112,11 +96,7 @@ fn main() {
 
     // Test 5: empty after all dequeued
     total = total + 1;
-    let r5 = if tsq_is_empty(inbox, outbox) == 1 {
-        1
-    } else {
-        0
-    };
+    let r5 = if tsq_is_empty(inbox, outbox) == 1 { 1 } else { 0 };
     passed = passed + run_test("empty after dequeue all", r5);
 
     // Test 6: interleaved enqueue/dequeue

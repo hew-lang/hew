@@ -113,6 +113,9 @@ pub(super) type Plan = BTreeMap<BlockId, Region>;
 )]
 pub(super) fn edges(term: &PhysicalTerminator) -> Vec<&PhysicalEdge> {
     match term {
+        PhysicalTerminator::Materialize {
+            normal, failure, ..
+        } => vec![normal, failure],
         PhysicalTerminator::StreamSend {
             normal,
             closed,
@@ -429,6 +432,16 @@ pub(super) fn verify_regions(
                 }
             }
             match &block.terminator {
+                PhysicalTerminator::Materialize { operations, .. } => {
+                    for operation in operations {
+                        operation_storage(
+                            operation,
+                            &mut used,
+                            &mut region.values,
+                            &mut region.locals,
+                        );
+                    }
+                }
                 PhysicalTerminator::CheckedBinary { result, .. }
                 | PhysicalTerminator::NativeIo { result, .. }
                 | PhysicalTerminator::SemaphoreAcquire { result, .. }
@@ -634,6 +647,9 @@ fn raise_origin(
             }
             found = true;
             let valid = match &block.terminator {
+                PhysicalTerminator::Materialize { .. } => {
+                    slot == 1 && kind == TrapKind::HeapExceeded
+                }
                 PhysicalTerminator::CheckedBinary { failures, .. } => {
                     slot > 0 && failures.get(slot - 1).is_some_and(|f| f.kind == kind)
                 }

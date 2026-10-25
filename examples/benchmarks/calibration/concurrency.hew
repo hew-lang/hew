@@ -43,11 +43,7 @@ fn task_ready(iterations: i64, size: i64) -> Measurement {
     let start = instant.now();
     var offset = 0;
     while offset < iterations {
-        let end = if offset + size < iterations {
-            offset + size
-        } else {
-            iterations
-        };
+        let end = if offset + size < iterations { offset + size } else { iterations };
         var tasks = [fork ready(offset)];
         for index in (offset + 1) .. end {
             tasks.push(fork ready(index));
@@ -115,11 +111,7 @@ fn timer(iterations: i64) -> Measurement {
         sleep(1ms);
         let overshoot = before.elapsed().nanos() - 1000000;
         if index < 10000 {
-            samples.push(if overshoot > 0 {
-                overshoot
-            } else {
-                0
-            });
+            samples.push(if overshoot > 0 { overshoot } else { 0 });
         }
     }
     Measurement { elapsed_ns: start.elapsed().nanos(), checksum: iterations, latencies_ns: samples }

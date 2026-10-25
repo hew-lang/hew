@@ -24,6 +24,7 @@ hew-codec = { path = "../hew-codec" }
 hew-compile = { path = "../hew-compile" }
 hew-wasm = { path = "../hew-wasm" }
 hew-hir = { path = "../hew-hir" }
+hew-live = { path = "../hew-live" }
 hew-sir = { path = "../hew-sir" }
 hew-lexer = { path = "../hew-lexer" }
 hew-mir = { path = "../hew-mir" }

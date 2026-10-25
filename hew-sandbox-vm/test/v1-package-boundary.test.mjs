@@ -160,7 +160,7 @@ test("actor heap limits reject before execution when accounting is unavailable",
       "utf8",
     ),
   );
-  counter.actors[0].max_heap_bytes = 1024;
+  counter.actors[0].max_heap_bytes = "1024";
   const trace = await runBytecode(counter);
   assert.equal(trace.result, "sandbox_rejected");
   assert.equal(

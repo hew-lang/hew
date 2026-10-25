@@ -10,6 +10,8 @@ Build and exercise the native execution path with:
 
 ```sh
 make test-live-native
+make test-live-host
+make test-live-authoring
 ```
 
 The test compiles ordinary Hew into a native module, retains a resource owning
@@ -34,8 +36,55 @@ roots are reclaimed together. The unsafe symbol API requires the generated
 header's exact signature and ownership contract. A native runtime lifetime token
 still follows the existing `hew_runtime_new` / `hew_runtime_release` contract.
 
-Native preparation supports ELF and Mach-O linker drivers; the execution oracle
-has been run on Linux. Windows module linking remains unimplemented.
+`NativeSession` executes compiler-generated submissions over persistent typed
+places. Each result reports actual initialization and write/move revisions,
+including work completed before a fault. Clearing a session runs ordinary Hew
+cleanup in reverse declaration order and collects cleanup failures. The typed
+places retain their defining code until their values and cleanup are released.
+
+The `hew-live-host` worker runs these sessions separately from the compiler,
+which already statically links a runtime. One local control connection carries
+ordered prepare, execute, inspect, retire and cleanup commands; ordinary Hew
+stdio remains available to the program. A lost reply leaves the caller with an
+uncertain outcome. The worker never retries or replays a submission.
+
+Preparation supports ELF and Mach-O linker drivers; execution has been tested
+on Linux. `hew_compile::live::frontend::LiveFrontend` prepares source inputs
+against immutable declaration snapshots and the retained bindings' exact types.
+Publish a prepared input using the worker's actual occupancy, even after a
+fault, and release the superseded slots it returns. Earlier values and closures
+keep their original declarations when a later input replaces a same-name type
+or function. Expanded syntax retains macro hygiene and source spans.
+
+An experimental source prompt is available with the matching compiler, worker
+and shared runtime:
+
+```sh
+make hew-native live-host
+target/debug/hew tool live --runtime target/debug/libhew.so
+```
+
+On macOS the library is `libhew.dylib`. Enter declarations, statements or
+expressions using ordinary Hew syntax. Values persist between inputs;
+initializers execute once. `:type expression` checks without execution,
+`:session` lists retained bindings, and `:clear` completes cleanup before
+forgetting them. Logical failures preserve completed mutations and actual field
+ownership. If the worker disconnects or an operation times out, the prompt ends
+with an uncertain-outcome diagnostic and never replays the input. Retired code
+artefacts are removed when the worker reports them unloaded; active artefacts
+live in the session's scoped temporary directory.
+
+Source snippets and `:load` resolve imports relative to `--project` (the current
+directory by default). Ordinary Hew imports retain each imported file's own
+resolution context. The worker owns program stdout and stderr; the prompt owns
+stdin. Source diagnostics and exact fixes use the original input's offsets;
+compiler-generated scaffolding retains its own diagnostic context.
+Use `--show-wrapper` to inspect each checked submission's generated source on
+stderr before execution.
+
+Deployment migration and editor integration remain in progress.
+
+## Portable components
 
 The optional `component` feature provides typed bindings for the portable
 reference router in `wit/router.wit`. Its Hew implementation uses ordinary
@@ -84,5 +133,4 @@ These operations run inside a Tokio runtime.
 The host oracle exercises admission drain, caller cancellation, snapshot expiry,
 non-terminating candidate initialization, retained-state recovery, predecessor
 fencing and disposal. Fenced network deployment, idle guest driving and durable
-artefact caching remain separate implementation
-work; this is not yet the complete live-execution host.
+artefact caching remain active implementation work.

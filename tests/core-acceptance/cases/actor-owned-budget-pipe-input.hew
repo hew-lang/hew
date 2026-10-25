@@ -1,0 +1,34 @@
+import std.stream;
+
+// A Sink state slot costs8. A pending write owns an actual i64 input slot8;
+// the empty protocol and a unit reply do not add payload.
+#[max_heap(16)]
+actor Sender {
+    var output: stream.Sink<i64>;
+    receive fn emit() { let _ = output.send(7); }
+}
+
+#[max_heap(15)]
+actor Small {
+    var output: stream.Sink<i64>;
+    receive fn emit() { let _ = output.send(7); }
+}
+
+fn main() -> i64 {
+    let (sink, input): (stream.Sink<i64>, stream.Stream<i64>) = stream.pipe(1).expect("pipe");
+    let sender = spawn Sender { output: sink };
+    sender.emit().expect("accepted");
+    println(input.recv().expect("sent item"));
+    stop(sender);
+    stopped(sender);
+
+    let (small_sink, small_input): (stream.Sink<i64>, stream.Stream<i64>) = stream.pipe(1).expect("small pipe");
+    let small = spawn Small { output: small_sink };
+    match small.emit() {
+        .Err(.Trapped) => println("input limit"),
+        _ => return 3,
+    }
+    stopped(small);
+    small_input.close();
+    0
+}

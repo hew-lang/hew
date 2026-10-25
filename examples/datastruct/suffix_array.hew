@@ -21,11 +21,7 @@ fn compare_suffixes(text: Vec<i64>, a: i64, b: i64) -> i64 {
         i = i + 1;
         j = j + 1;
     }
-    if j < n {
-        0 - 1
-    } else {
-        0
-    }
+    if j < n { 0 - 1 } else { 0 }
 }
 
 // Build suffix array using insertion sort (O(n^2 * n) but simple)

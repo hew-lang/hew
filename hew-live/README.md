@@ -67,6 +67,19 @@ cooperative cancellation. Its borrowed state stays retained until release; a
 new snapshot or disposal cannot bypass that cleanup. Ordinary calls may resume
 without waiting for the abandoned snapshot's result.
 
-Independent replacement deadlines, fenced network deployment and durable
-artefact caching remain separate implementation work; this is not yet the
-complete live-execution host.
+`component::host` runs each Store in a persistent task and keeps deployment
+admission outside that task. `Host::prepare` compiles immutable bytes before the
+fence. `Deployment::replace` drains admitted calls, snapshots the retained
+instance and initializes an ungranted candidate within one host deadline. Fuel
+yields let the deadline expire even when candidate initialization loops. Expiry
+withdraws the attempt and resumes the old instance; commit enables the candidate
+and returns a separate retirement handle for old-instance cleanup. A caller
+cancelled after admission does not release its running guest call's lease.
+`Deployment::dispose` consumes the deployment and retains its cleanup task.
+These operations run inside a Tokio runtime.
+
+The host oracle exercises admission drain, caller cancellation, snapshot expiry,
+non-terminating candidate initialization, retained-state recovery, predecessor
+fencing and disposal. Fenced network deployment, generated Hew service bindings,
+idle guest driving and durable artefact caching remain separate implementation
+work; this is not yet the complete live-execution host.

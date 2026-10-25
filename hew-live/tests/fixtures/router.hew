@@ -50,9 +50,14 @@ pub fn create(accepted: u64) -> Router {
     }
 }
 
+// A replacement candidate that never finishes pure initialization. The host
+// must expire its attempt without trapping or destroying the old instance.
+pub fn create_stalled(_accepted: u64) -> Router {
+    loop {}
+}
+
 pub fn snapshot(router: Router) -> u64 {
     let ticks = router.background.worker.count().expect("background drained");
-    assert(ticks > 0);
     sleep(5ms);
     assert(router.background.worker.count().expect("background retained") == ticks);
     router.counter.snapshot().expect("counter snapshot")

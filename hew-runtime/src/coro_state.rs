@@ -66,6 +66,17 @@ pub(crate) struct InvocationContext {
     pub(crate) actor_stream: Option<ActorStreamBinding>,
 }
 
+/// Rebind a provider-frozen invocation after checked destination adoption.
+/// # Safety
+/// Execution and teardown are excluded for this invocation and borrowed context.
+pub(crate) unsafe fn rebind_value_owner(
+    state: *mut HewCoroState,
+    owner: Option<crate::owned_value_budget::ValueOwner>,
+) {
+    // SAFETY: the transferring provider exclusively freezes the live context.
+    unsafe { (*(*state).invocation.context.cast::<InvocationContext>()).value_owner = owner };
+}
+
 /// Retained cancellation token and wake target for an invocation that may be
 /// cancelled by an owner other than the suspended invocation itself.
 /// It never points into a coroutine frame or invocation state.
@@ -204,6 +215,7 @@ impl HewCoroState {
                 flags,
                 cleanup_fault: std::sync::atomic::AtomicU8::new(CleanupFault::None as u8),
                 cleanup_abandon_io: std::sync::atomic::AtomicU8::new(CleanupIo::Normal as u8),
+                managed_frame: std::ptr::null(),
             },
         }
     }

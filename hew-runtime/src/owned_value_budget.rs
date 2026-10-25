@@ -12,6 +12,7 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, MutexGuard};
 
+pub mod frame;
 pub mod materialize;
 pub mod transfer;
 pub mod visit;

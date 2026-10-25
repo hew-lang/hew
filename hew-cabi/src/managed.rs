@@ -62,6 +62,24 @@ pub struct HewManagedValueDescriptor {
     pub visit: Option<HewManagedValueVisit>,
 }
 
+/// Borrowed live root view, pinned by its suspended native invocation.
+/// Slot occupancy is the compiler's ordinary ownership initialization bit.
+#[repr(C)]
+#[derive(Debug)]
+pub struct HewManagedFrameSlot {
+    pub layout: *const crate::value::HewValueLayout,
+    pub slot: *const c_void,
+    pub initialized: *const u8,
+}
+
+#[repr(C)]
+#[derive(Debug)]
+pub struct HewManagedFrame {
+    pub slots: *const HewManagedFrameSlot,
+    pub count: usize,
+    pub child: *const *const crate::coro::HewCoroInvocation,
+}
+
 /// Visit the managed descendants described by one canonical value layout.
 ///
 /// # Safety

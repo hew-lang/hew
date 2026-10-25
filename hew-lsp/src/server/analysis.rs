@@ -56,6 +56,7 @@ pub(super) fn source_for_path(
 pub(super) fn build_module_source_map(
     program: &hew_parser::ast::Program,
     documents: &DashMap<Url, DocumentState>,
+    sources: Option<&hew_compile::SourceSet>,
 ) -> HashMap<String, DiagnosticSource> {
     let Some(ref module_graph) = program.module_graph else {
         return HashMap::new();
@@ -75,7 +76,11 @@ pub(super) fn build_module_source_map(
         let Some(uri) = Url::from_checked_file_path(source_path) else {
             continue;
         };
-        let Some(source) = source_for_path(source_path, documents) else {
+        let Some(source) = sources
+            .and_then(|sources| sources.get(source_path))
+            .map(str::to_owned)
+            .or_else(|| source_for_path(source_path, documents))
+        else {
             continue;
         };
         module_sources.insert(
@@ -210,12 +215,15 @@ pub(super) fn analyze_document(
     analyze_document_with_batch(uri, source, documents, extra_pkg_paths, None)
 }
 
-fn analyze_document_with_batch(
+pub(super) fn analyze_document_with_batch(
     uri: &Url,
     source: &str,
     documents: &DashMap<Url, DocumentState>,
     extra_pkg_paths: &[std::path::PathBuf],
-    batch: Option<&mut hew_compile::SourceAnalysisBatch>,
+    batch: Option<(
+        &mut hew_compile::SourceAnalysisBatch,
+        &hew_compile::SourceSet,
+    )>,
 ) -> DocumentState {
     let line_offsets = compute_line_offsets(source);
     // An untitled buffer has no file to anchor module resolution, so it is
@@ -228,7 +236,8 @@ fn analyze_document_with_batch(
     );
 
     let label = root_path.display().to_string();
-    let mut state = if let Some(batch) = batch {
+    let source_snapshot = batch.as_ref().map(|(_, sources)| *sources);
+    let mut state = if let Some((batch, _)) = batch {
         batch.run_source_frontend(source, &label)
     } else {
         let options = frontend_options(&root_path, source, documents, extra_pkg_paths);
@@ -254,7 +263,7 @@ fn analyze_document_with_batch(
     let mut type_output = state.typecheck_result.take().and_then(|result| result.tco);
     // HIR and semantic diagnostics below read the checker's own indices; only
     // the stored copy that position queries use is re-keyed afterwards.
-    let module_sources = build_module_source_map(&state.program, documents);
+    let module_sources = build_module_source_map(&state.program, documents, source_snapshot);
     // HIR lowering and ownership-SIR verification run only on a program the
     // checker accepted: a module already rejected upstream is not worth
     // lowering, and the upstream errors are the actionable signal.
@@ -389,7 +398,7 @@ pub(super) fn refresh_open_importers(
     let mut batch = (!rejected).then(|| {
         hew_compile::SourceAnalysisBatch::new(hew_compile::FrontendOptions {
             pkg_path: extra_pkg_paths.first().cloned(),
-            documents: sources,
+            documents: sources.clone(),
             ..hew_compile::FrontendOptions::default()
         })
     });
@@ -437,7 +446,7 @@ pub(super) fn refresh_open_importers(
                 &importer_source,
                 documents,
                 extra_pkg_paths,
-                batch.as_mut(),
+                batch.as_mut().map(|batch| (batch, &sources)),
             );
             documents.insert(importer_uri.clone(), document);
             // Enqueue this importer so its own importers are refreshed too.

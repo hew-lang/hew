@@ -24,6 +24,18 @@ pub mod bindings {
     });
 }
 
+/// Return the ordinary Hew service module generated from the canonical WIT.
+/// Editors and portable builds consume this same source, without a disk module.
+///
+/// # Errors
+/// Returns WIT parsing or unsupported service-type diagnostics.
+pub fn service_module_source() -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
+    let mut resolve = Resolve::default();
+    let package = resolve.push_str("router.wit", ROUTER_WIT)?;
+    let world = resolve.select_world(&[package], Some("router"))?;
+    Ok(hew_bindings::generate(&resolve, world)?.0)
+}
+
 /// Generate canonical C bindings, ordinary Hew service functions and the SDK
 /// lifecycle adapter, including async callbacks and subtasks.
 ///

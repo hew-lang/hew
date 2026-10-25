@@ -13,6 +13,33 @@ pub struct Toolchain {
     pub wasm_lib_dir: PathBuf,
 }
 
+/// One compiler source overlay, shared verbatim with editor analysis.
+#[derive(Clone, Debug, serde::Serialize)]
+pub struct ContextSource {
+    pub path: PathBuf,
+    pub source: String,
+}
+
+/// The selected source's canonical, generated service context.
+///
+/// # Errors
+/// Returns source path or binding generation diagnostics. Authored modules are
+/// never silently replaced by the generated service contract.
+pub fn source_context(source: &Path) -> Result<Vec<ContextSource>> {
+    let source = source.canonicalize()?;
+    let path = source
+        .parent()
+        .ok_or("source has no parent")?
+        .join("router_services.hew");
+    if path.exists() {
+        return Err(format!("generated service module would shadow {}", path.display()).into());
+    }
+    Ok(vec![ContextSource {
+        path,
+        source: super::service_module_source()?,
+    }])
+}
+
 /// Compile ordinary router source in its existing project context. Generated
 /// services use the compiler source overlay; lifecycle glue remains temporary.
 ///
@@ -22,17 +49,8 @@ pub fn build(source: &Path, toolchain: &Toolchain) -> Result<Vec<u8>> {
     let source = source.canonicalize()?;
     let directory = tempfile::tempdir()?;
     super::write_guest_bindings(directory.path())?;
-    let services = source
-        .parent()
-        .ok_or("source has no parent")?
-        .join("router_services.hew");
-    if services.exists() {
-        return Err(format!(
-            "generated service module would shadow {}",
-            services.display()
-        )
-        .into());
-    }
+    let context = source_context(&source)?;
+    let services = &context[0];
     run(Command::new(&toolchain.compiler)
         .args(["build", "--target", "wasm32-wasip1", "--emit-obj"])
         .args(["--export-c", "create=guest_create"])
@@ -42,7 +60,7 @@ pub fn build(source: &Path, toolchain: &Toolchain) -> Result<Vec<u8>> {
         .arg("--source-overlay")
         .arg(format!(
             "{}={}",
-            services.display(),
+            services.path.display(),
             directory.path().join("router_services.hew").display()
         ))
         .arg(&source)
@@ -81,4 +99,43 @@ fn run(command: &mut Command) -> Result<()> {
         .into());
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn editor_context_matches_portable_bindings_without_authored_files() {
+        let project = tempfile::tempdir().unwrap();
+        let source = project.path().join("router.hew");
+        std::fs::write(&source, "import router_services;\n").unwrap();
+        let context = super::source_context(&source).unwrap();
+        let generated = tempfile::tempdir().unwrap();
+        crate::component::write_guest_bindings(generated.path()).unwrap();
+        assert_eq!(
+            context[0].source,
+            std::fs::read_to_string(generated.path().join("router_services.hew")).unwrap()
+        );
+        assert_eq!(
+            context[0].path,
+            project
+                .path()
+                .canonicalize()
+                .unwrap()
+                .join("router_services.hew")
+        );
+        assert!(!context[0].path.exists());
+        assert_eq!(
+            std::fs::read_to_string(&source).unwrap(),
+            "import router_services;\n"
+        );
+        std::fs::write(&context[0].path, "// authored module\n").unwrap();
+        assert!(super::source_context(&source)
+            .unwrap_err()
+            .to_string()
+            .contains("would shadow"));
+        assert_eq!(
+            std::fs::read_to_string(&context[0].path).unwrap(),
+            "// authored module\n"
+        );
+    }
 }

@@ -184,6 +184,9 @@ enum RequestOperation {
     BuildPrepare {
         source: PathBuf,
     },
+    Context {
+        source: PathBuf,
+    },
     Replace {
         digest: String,
         predecessor: u64,
@@ -242,6 +245,15 @@ async fn request(
     tools: &BuildTools,
 ) -> Result<Value> {
     match operation {
+        RequestOperation::Context { source } => {
+            let compiler = configured(
+                tools.compiler.as_ref(),
+                "HEW_LIVE_COMPILER",
+                &[sdk_bin()?.join(executable("hew"))],
+            )?
+            .canonicalize()?;
+            Ok(json!({"version":1, "compiler":compiler, "sources":build::source_context(&source)?}))
+        }
         RequestOperation::Prepare { component } => {
             Ok(json!({"digest":client.prepare(component).await?}))
         }

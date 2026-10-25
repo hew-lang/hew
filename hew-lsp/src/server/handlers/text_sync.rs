@@ -162,6 +162,7 @@ pub(crate) async fn did_open(server: &HewLanguageServer, params: DidOpenTextDocu
             },
         );
     }
+    server.suspend_context_source(&uri);
     server.reanalyze(&uri, &source);
 }
 
@@ -199,11 +200,28 @@ pub(crate) async fn did_close(server: &HewLanguageServer, params: DidCloseTextDo
         reports.remove(&params.text_document.uri);
     }
     server.test_diagnostics.remove(&params.text_document.uri);
-    let published = close_document_and_dependents(
-        &params.text_document.uri,
-        &server.documents,
-        &server.extra_pkg_paths,
-    );
+    let published =
+        if let Some((generated, source)) = server.context_source(&params.text_document.uri) {
+            if generated != params.text_document.uri {
+                server.documents.remove(&params.text_document.uri);
+            }
+            let mut published = super::super::analysis::refresh_document_and_dependents(
+                &generated,
+                &source,
+                &server.documents,
+                &server.extra_pkg_paths,
+            );
+            if generated != params.text_document.uri {
+                published.push((params.text_document.uri.clone(), Vec::new()));
+            }
+            published
+        } else {
+            close_document_and_dependents(
+                &params.text_document.uri,
+                &server.documents,
+                &server.extra_pkg_paths,
+            )
+        };
     for (updated_uri, diagnostics) in
         super::super::with_test_diagnostics(published, &server.test_diagnostics)
     {

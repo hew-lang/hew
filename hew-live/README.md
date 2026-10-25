@@ -221,6 +221,10 @@ use the typed control actor. Every request has `id` and `op`; successful replies
 have the same `id`, `ok: true` and `result`. Failures have `ok: false` and `error`.
 Standard output contains only protocol replies. The operations are:
 
+- `context`: `source` names the ordinary source entry. This local operation
+  returns `version: 1`, the selected SDK `compiler` path and exact generated
+  `sources: [{path, source}]`. Editors register them with that compiler's LSP
+  as virtual analysis inputs; no generated module is written into the project.
 - `build_prepare`: `source` names an ordinary Hew router source file. The SDK
   generates service bindings and lifecycle glue, builds a portable component,
   uploads it and returns its `digest`. This never activates the candidate.

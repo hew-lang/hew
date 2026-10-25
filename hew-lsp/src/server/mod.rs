@@ -1,7 +1,9 @@
 //! LSP server implementation for the Hew language.
 
 mod analysis;
+mod context;
 mod convert;
+pub use context::AnalysisContextParams;
 mod generation;
 mod handlers;
 mod hierarchy;
@@ -327,7 +329,7 @@ fn build_server_capabilities() -> ServerCapabilities {
         // `ServerCapabilities`. Advertise via `experimental` so clients that
         // inspect `experimental.typeHierarchyProvider` can reach the three
         // implemented handlers. The field survives capability serialization.
-        experimental: Some(json!({"typeHierarchyProvider": true})),
+        experimental: Some(json!({"typeHierarchyProvider": true, "hewAnalysisContext": 1})),
         ..Default::default()
     }
 }
@@ -465,6 +467,7 @@ pub struct HewLanguageServer {
     /// Document states shared with spawned analysis tasks via `Arc`.
     documents: Arc<DashMap<Url, DocumentState>>,
     open_documents: RwLock<HashMap<Url, OpenDocument>>,
+    analysis_contexts: RwLock<context::AnalysisContexts>,
     rename_document_changes: RwLock<bool>,
     watched_files_supported: RwLock<bool>,
     diagnostic_refresh_supported: RwLock<bool>,
@@ -501,6 +504,7 @@ impl HewLanguageServer {
             client,
             documents: Arc::new(DashMap::new()),
             open_documents: RwLock::new(HashMap::new()),
+            analysis_contexts: RwLock::new(HashMap::new()),
             rename_document_changes: RwLock::new(false),
             watched_files_supported: RwLock::new(false),
             diagnostic_refresh_supported: RwLock::new(false),

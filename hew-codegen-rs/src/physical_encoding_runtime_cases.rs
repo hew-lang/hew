@@ -47,6 +47,20 @@ fn bind_runtime(llvm: &Module<'_>, engine: &ExecutionEngine<'_>) {
     if let Some(function) = llvm.get_function(&managed_free_symbol) {
         engine.add_global_mapping(&function, trace_free as *const () as usize);
     }
+    let (visitor, address) = match FORMAT {
+        EncodingFormat::Json => (
+            "hew_managed_visit_json",
+            hew_std::json::hew_managed_visit_json as *const () as usize,
+        ),
+        EncodingFormat::Yaml => (
+            "hew_managed_visit_yaml",
+            hew_std::yaml::hew_managed_visit_yaml as *const () as usize,
+        ),
+        EncodingFormat::Toml => unreachable!(),
+    };
+    if let Some(function) = llvm.get_function(visitor) {
+        engine.add_global_mapping(&function, address);
+    }
 }
 
 fn register(value: *mut Value) -> *mut Value {
@@ -100,7 +114,7 @@ unsafe extern "C" fn trace_object_set(
     // SAFETY: status is the generated caller's live output slot.
     if unsafe { *status } == 0 {
         TRACE.with_borrow_mut(|trace| trace.children.push(child as usize));
-        assert!(remove(child));
+        remove(child);
     }
 }
 unsafe extern "C" fn trace_array_push(value: *mut Value, child: *mut Value, status: *mut i32) {
@@ -109,7 +123,7 @@ unsafe extern "C" fn trace_array_push(value: *mut Value, child: *mut Value, stat
     // SAFETY: status is the generated caller's live output slot.
     if unsafe { *status } == 0 {
         TRACE.with_borrow_mut(|trace| trace.children.push(child as usize));
-        assert!(remove(child));
+        remove(child);
     }
 }
 fn finish() {

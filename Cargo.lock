@@ -2209,6 +2209,7 @@ version = "0.9.4"
 dependencies = [
  "clap",
  "hew-cabi",
+ "hew-observe-protocol",
  "libloading",
  "object 0.40.0",
  "serde",

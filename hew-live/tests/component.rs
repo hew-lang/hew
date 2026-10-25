@@ -232,7 +232,12 @@ async fn exercise_deployment(bytes: &[u8], stalled: &[u8]) {
         release: Arc::default(),
         delivered: Arc::default(),
     });
-    let host = Arc::new(Host::new(services.clone()).unwrap());
+    let observation = Arc::new(Observed::default());
+    let host = Arc::new(
+        Host::new(services.clone())
+            .unwrap()
+            .with_observer(observation.clone()),
+    );
     let cache_directory = tempfile::tempdir().unwrap();
     let identity = {
         let cache =
@@ -345,6 +350,113 @@ async fn exercise_deployment(bytes: &[u8], stalled: &[u8]) {
         .await
         .unwrap()
         .unwrap();
+    let events = observation.0.lock().unwrap();
+    for admitted in events.iter().filter(|event| event.phase == "admitted") {
+        let terminal: Vec<_> = events
+            .iter()
+            .filter(|event| {
+                event.deployment_id == admitted.deployment_id
+                    && event.invocation_id == admitted.invocation_id
+                    && matches!(event.phase.as_str(), "completed" | "faulted")
+            })
+            .collect();
+        assert_eq!(
+            terminal.len(),
+            1,
+            "caller cancellation must retain terminal attribution"
+        );
+        assert_eq!(terminal[0].code_id, admitted.code_id);
+        assert_eq!(terminal[0].activation_epoch, admitted.activation_epoch);
+    }
+    assert!(events.iter().any(|event| event.phase == "rejected"));
+    assert!(events
+        .iter()
+        .any(|event| event.phase == "committed" && event.activation_epoch == 3));
+}
+
+#[derive(Default)]
+struct Observed(Mutex<Vec<hew_observe_protocol::LiveExecution>>);
+
+impl hew_live::component::host::Observer for Observed {
+    fn record(&self, event: &hew_observe_protocol::LiveExecution) {
+        self.0.lock().unwrap().push(event.clone());
+    }
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn controlled_preview_requires_matching_services_and_never_calls_production() {
+    use hew_live::component::host::{Host, Preview, ServiceFixture};
+    use std::time::Duration;
+    struct NoProduction;
+    impl hew_live::component::host::Services for NoProduction {
+        fn destination(&self, _: String) -> hew_live::component::host::ServiceCall<Option<String>> {
+            panic!("preview reached a production service");
+        }
+        fn emit(&self, _: Delivery) -> hew_live::component::host::ServiceCall<()> {
+            panic!("preview emitted a production delivery");
+        }
+    }
+    let observed = Arc::new(Observed::default());
+    let host = Arc::new(
+        Host::new(Arc::new(NoProduction))
+            .unwrap()
+            .with_observer(observed.clone()),
+    );
+    let bytes = std::fs::read(environment("HEW_LIVE_FOREIGN_COMPONENT")).unwrap();
+    let prepared = host.prepare(&component_bytes(&bytes)).unwrap();
+    let preview = |fixtures| Preview {
+        state: Snapshot { accepted: 9 },
+        input: Event {
+            source: "private-source".into(),
+            body: "private-body".into(),
+        },
+        fixtures,
+    };
+    let destination = ServiceFixture::Destination {
+        source: "private-source".into(),
+        result: Ok(Some("test-route".into())),
+    };
+    let emit = ServiceFixture::Emit {
+        message: Delivery {
+            destination: "test-route".into(),
+            body: "private-body".into(),
+        },
+        result: Ok(()),
+    };
+    let matched = host
+        .preview(
+            prepared.clone(),
+            preview(vec![destination.clone(), emit.clone()]),
+            Duration::from_secs(10),
+        )
+        .await
+        .unwrap();
+    assert_eq!(matched.accepted, Some(true));
+    assert!(matched.needs_input.is_none());
+    assert_eq!(matched.used_fixtures, 2);
+    let missing = host
+        .preview(
+            prepared.clone(),
+            preview(vec![destination]),
+            Duration::from_secs(10),
+        )
+        .await
+        .unwrap();
+    assert_eq!(missing.accepted, None);
+    assert!(missing.needs_input.unwrap().starts_with("emit("));
+    assert_eq!(missing.used_fixtures, 1);
+    let mismatch = host
+        .preview(prepared, preview(vec![emit]), Duration::from_secs(10))
+        .await
+        .unwrap();
+    assert_eq!(mismatch.accepted, None);
+    assert!(mismatch.needs_input.unwrap().starts_with("destination("));
+    assert_eq!(mismatch.used_fixtures, 0);
+    let records = observed.0.lock().unwrap();
+    assert!(records.iter().all(|event| event.mode == "preview"));
+    let recorded = serde_json::to_string(&*records).unwrap();
+    assert!(!recorded.contains("private-source"));
+    assert!(!recorded.contains("private-body"));
 }
 
 #[allow(

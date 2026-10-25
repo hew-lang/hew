@@ -16,10 +16,10 @@ struct hew_cabi_manifest_row {
   enum hew_cabi_manifest_ownership ownership;
 };
 
-#define HEW_CABI_MANIFEST_FUNCTION_COUNT 1742u
+#define HEW_CABI_MANIFEST_FUNCTION_COUNT 1743u
 #define HEW_CABI_MANIFEST_STATIC_COUNT 24u
 
-static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1742] = {
+static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1743] = {
     {"hew_actor_abort_construction",
      "{\"native\": \"fn hew_actor_abort_construction( HewLocalPidId, *mut "
      "HewCoroState, )\", \"wasm32-wasip1\": \"fn hew_actor_abort_construction( "
@@ -8372,6 +8372,12 @@ static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1742] = {
      "\"fn hew_trace_lifecycle( u64, i32)\"}",
      "native,wasm32-wasip1", "stable", "not-applicable", "not-applicable",
      HEW_CABI_OWNERSHIP_UNMEASURED},
+    {"hew_trace_live_execution",
+     "{\"native\": \"fn hew_trace_live_execution( *const u8, usize) -> i32\", "
+     "\"wasm32-wasip1\": \"fn hew_trace_live_execution( *const u8, usize) -> "
+     "i32\"}",
+     "native,wasm32-wasip1", "non-declarable", "not-applicable",
+     "no-in-signature-extent", HEW_CABI_OWNERSHIP_UNMEASURED},
     {"hew_trace_new_id",
      "{\"native\": \"fn hew_trace_new_id( *mut u64, *mut u64)\", "
      "\"wasm32-wasip1\": \"fn hew_trace_new_id( *mut u64, *mut u64)\"}",

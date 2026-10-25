@@ -1444,6 +1444,7 @@ fn demo_trace_event(
         handler_name: None,
         reason: None,
         rc_sweep: None,
+        live_execution: None,
     }
 }
 

@@ -101,6 +101,7 @@ public let actionableTraceEventTypes: Set<String> = [
     "supervisor_backoff",
     "actor.delivery_refused",
     "actor.rc_sweep",
+    "live.execution",
     "send",
     "spawn",
     "crash",
@@ -1049,6 +1050,72 @@ public struct RcSweep: Codable, Sendable {
     }
 }
 
+public struct LiveExecution: Codable, Sendable {
+    public let deploymentId: UInt64
+    public let invocationId: UInt64?
+    public let activationEpoch: UInt64
+    public let codeId: String
+    public let phase: String
+    public let mode: String
+    public let semanticProfile: String
+    public let coverage: String
+
+    enum CodingKeys: String, CodingKey {
+        case deploymentId = "deployment_id"
+        case invocationId = "invocation_id"
+        case activationEpoch = "activation_epoch"
+        case codeId = "code_id"
+        case phase
+        case mode
+        case semanticProfile = "semantic_profile"
+        case coverage
+    }
+
+    public init(
+        deploymentId: UInt64 = 0,
+        invocationId: UInt64? = nil,
+        activationEpoch: UInt64 = 0,
+        codeId: String = "",
+        phase: String = "",
+        mode: String = "",
+        semanticProfile: String = "",
+        coverage: String = ""
+    ) {
+        self.deploymentId = deploymentId
+        self.invocationId = invocationId
+        self.activationEpoch = activationEpoch
+        self.codeId = codeId
+        self.phase = phase
+        self.mode = mode
+        self.semanticProfile = semanticProfile
+        self.coverage = coverage
+    }
+
+    public init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        deploymentId = try decodeUInt64Decimal(from: values, forKey: .deploymentId)
+        invocationId = try decodeOptionalUInt64Decimal(from: values, forKey: .invocationId)
+        activationEpoch = try decodeUInt64Decimal(from: values, forKey: .activationEpoch)
+        codeId = try values.decode(String.self, forKey: .codeId)
+        phase = try values.decode(String.self, forKey: .phase)
+        mode = try values.decode(String.self, forKey: .mode)
+        semanticProfile = try values.decode(String.self, forKey: .semanticProfile)
+        coverage = try values.decode(String.self, forKey: .coverage)
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var values = encoder.container(keyedBy: CodingKeys.self)
+        try values.encode(String(deploymentId), forKey: .deploymentId)
+        try values.encode(invocationId.map(String.init), forKey: .invocationId)
+        try values.encode(String(activationEpoch), forKey: .activationEpoch)
+        try values.encode(codeId, forKey: .codeId)
+        try values.encode(phase, forKey: .phase)
+        try values.encode(mode, forKey: .mode)
+        try values.encode(semanticProfile, forKey: .semanticProfile)
+        try values.encode(coverage, forKey: .coverage)
+    }
+}
+
 public struct TraceEvent: Codable, Sendable {
     public let sequence: UInt64
     public let traceId: String
@@ -1064,6 +1131,7 @@ public struct TraceEvent: Codable, Sendable {
     public let timestampNs: UInt64
     public let handlerName: String?
     public let rcSweep: RcSweep?
+    public let liveExecution: LiveExecution?
     public let reason: String?
 
     enum CodingKeys: String, CodingKey {
@@ -1081,6 +1149,7 @@ public struct TraceEvent: Codable, Sendable {
         case timestampNs = "timestamp_ns"
         case handlerName = "handler_name"
         case rcSweep = "rc_sweep"
+        case liveExecution = "live_execution"
         case reason
     }
 
@@ -1099,6 +1168,7 @@ public struct TraceEvent: Codable, Sendable {
         timestampNs: UInt64 = 0,
         handlerName: String? = nil,
         rcSweep: RcSweep? = nil,
+        liveExecution: LiveExecution? = nil,
         reason: String? = nil
     ) {
         self.sequence = sequence
@@ -1115,6 +1185,7 @@ public struct TraceEvent: Codable, Sendable {
         self.timestampNs = timestampNs
         self.handlerName = handlerName
         self.rcSweep = rcSweep
+        self.liveExecution = liveExecution
         self.reason = reason
     }
 
@@ -1137,6 +1208,11 @@ public struct TraceEvent: Codable, Sendable {
             rcSweep = try values.decode(RcSweep?.self, forKey: .rcSweep)
         } else {
             rcSweep = nil
+        }
+        if values.contains(.liveExecution) {
+            liveExecution = try values.decode(LiveExecution?.self, forKey: .liveExecution)
+        } else {
+            liveExecution = nil
         }
         if values.contains(.reason) {
             reason = try values.decode(String?.self, forKey: .reason)
@@ -1173,6 +1249,7 @@ public struct TraceEvent: Codable, Sendable {
         try values.encode(String(timestampNs), forKey: .timestampNs)
         try values.encode(handlerName, forKey: .handlerName)
         try values.encode(rcSweep, forKey: .rcSweep)
+        try values.encode(liveExecution, forKey: .liveExecution)
         try values.encode(reason, forKey: .reason)
     }
 }

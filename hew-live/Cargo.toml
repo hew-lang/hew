@@ -13,6 +13,7 @@ categories = ["compilers", "api-bindings"]
 [dependencies]
 clap.workspace = true
 hew-cabi = { path = "../hew-cabi" }
+hew-observe-protocol = { path = "../hew-observe-protocol" }
 libloading = "0.9"
 object = "0.40"
 serde.workspace = true

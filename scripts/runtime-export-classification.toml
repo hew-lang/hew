@@ -1277,6 +1277,7 @@ non-declarable = [
   "hew_managed_visit_json",
   "hew_managed_visit_map",
   "hew_managed_visit_opaque",
+  "hew_trace_live_execution",
   "hew_managed_visit_release_driver",
   "hew_managed_visit_release_driver_slot",
   "hew_managed_visit_scope_wait",

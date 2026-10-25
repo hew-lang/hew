@@ -21544,6 +21544,21 @@
         "native",
         "wasm32-wasip1"
       ],
+      "classification": "non-declarable",
+      "extent": "no-in-signature-extent",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
+        "native": "fn hew_trace_live_execution( *const u8, usize) -> i32",
+        "wasm32-wasip1": "fn hew_trace_live_execution( *const u8, usize) -> i32"
+      },
+      "symbol": "hew_trace_live_execution"
+    },
+    {
+      "availability": [
+        "native",
+        "wasm32-wasip1"
+      ],
       "classification": "stable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",

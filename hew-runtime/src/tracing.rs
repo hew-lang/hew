@@ -125,6 +125,8 @@ pub const SPAN_SUPERVISOR_BACKOFF: i32 = 21;
 pub const SPAN_DELIVERY_REFUSED: i32 = 22;
 /// Actor-terminal Rc survivors consumed by the typed release walker.
 pub const SPAN_RC_SWEEP: i32 = 23;
+/// Host-authored component code, activation and invocation attribution.
+pub const SPAN_LIVE_EXECUTION: i32 = 24;
 
 /// Closed taxonomy of v0.5 concurrency trace event names emitted by this
 /// runtime. The entries pair each `SPAN_*` constant with the canonical
@@ -167,6 +169,7 @@ pub const EVENT_TYPE_NAMES: &[(i32, &str)] = &[
     (SPAN_SUPERVISOR_BACKOFF, "supervisor_backoff"),
     (SPAN_DELIVERY_REFUSED, "actor.delivery_refused"),
     (SPAN_RC_SWEEP, "actor.rc_sweep"),
+    (SPAN_LIVE_EXECUTION, "live.execution"),
 ];
 
 /// Resolve a span code to its canonical taxonomy name. Returns `None` for
@@ -280,6 +283,8 @@ pub struct TraceEventRecord {
     pub reason: Option<std::sync::Arc<str>>,
     /// Optional typed Rc reclamation summary for actor-terminal events.
     pub rc_sweep: Option<hew_observe_protocol::RcSweep>,
+    /// Host attribution without input, output or service payloads.
+    pub live_execution: Option<hew_observe_protocol::LiveExecution>,
 }
 
 /// Correlation between the producer's monotonic clock and Unix wall time.
@@ -865,6 +870,7 @@ fn record_event_with_attribution(
     destination_attribution: TraceActorAttribution,
     reason: Option<&str>,
     rc_sweep: Option<hew_observe_protocol::RcSweep>,
+    live_execution: Option<hew_observe_protocol::LiveExecution>,
 ) {
     #[cfg(test)]
     if let Some(barrier) = RECORD_PRE_LOCK_BARRIER.access(|slot| slot.clone()) {
@@ -910,6 +916,7 @@ fn record_event_with_attribution(
             destination_dispatch_ptr,
             reason: reason.map(std::sync::Arc::from),
             rc_sweep,
+            live_execution,
         });
     });
 }
@@ -952,6 +959,7 @@ fn record_event_for_generation(generation: u64, event: HewTraceEvent) {
         0,
         TraceActorAttribution::NotApplicable,
         TraceActorAttribution::NotApplicable,
+        None,
         None,
         None,
     );
@@ -1026,6 +1034,7 @@ pub(crate) fn record_rc_survivors(
         TraceActorAttribution::NotApplicable,
         None,
         Some(summary),
+        None,
     );
 }
 
@@ -1087,10 +1096,73 @@ pub(crate) fn record_delivery_refused(
         TraceActorAttribution::NotApplicable,
         Some(reason),
         None,
+        None,
     );
 }
 
 // ── C ABI ──────────────────────────────────────────────────────────────
+
+/// Append host-authored live execution metadata to the ordinary trace stream.
+/// No invocation inputs, outputs or service bodies are accepted by this model.
+/// Returns zero when recorded or tracing is disabled, and -1 for malformed or
+/// oversized metadata. The caller need not link another runtime into its host.
+///
+/// # Safety
+/// `json` addresses `length` readable bytes for this synchronous call.
+#[no_mangle]
+pub unsafe extern "C" fn hew_trace_live_execution(json: *const u8, length: usize) -> i32 {
+    let Some(generation) = recording_generation() else {
+        return 0;
+    };
+    if json.is_null() || length > 16 * 1024 {
+        return -1;
+    }
+    // SAFETY: the caller retains these bytes until this synchronous call returns.
+    let bytes = unsafe { std::slice::from_raw_parts(json, length) };
+    let Ok(metadata) = serde_json::from_slice::<hew_observe_protocol::LiveExecution>(bytes) else {
+        return -1;
+    };
+    if metadata.code_id.len() != 64
+        || !metadata
+            .code_id
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+        || !matches!(metadata.mode.as_str(), "production" | "preview")
+        || metadata.phase.len() > 64
+    {
+        return -1;
+    }
+    record_event_with_attribution(
+        generation,
+        HewTraceEvent {
+            event_type: SPAN_LIVE_EXECUTION,
+            timestamp_ns: monotonic_ns(),
+            trace_id_hi: 0,
+            trace_id_lo: 0,
+            span_id: 0,
+            parent_span_id: 0,
+            actor_id: 0,
+            msg_type: 0,
+        },
+        None,
+        None,
+        None,
+        None,
+        0,
+        None,
+        None,
+        None,
+        None,
+        0,
+        0,
+        TraceActorAttribution::NotApplicable,
+        TraceActorAttribution::NotApplicable,
+        None,
+        None,
+        Some(metadata),
+    );
+    0
+}
 
 /// Generate a new 128-bit trace ID (returned as two u64 values).
 ///
@@ -1380,6 +1452,7 @@ pub(crate) fn record_send(
         destination_dispatch_ptr,
         source_attribution,
         TraceActorAttribution::LocalActor,
+        None,
         None,
         None,
     );
@@ -1890,6 +1963,47 @@ mod tests {
     use super::*;
     use crate::execution_context::{HewExecutionContext, TestExecutionContext};
 
+    #[test]
+    fn live_execution_metadata_uses_the_existing_stream_without_payloads() {
+        let _guard = tracing_test_guard();
+        hew_trace_reset();
+        hew_trace_enable(1);
+        let metadata = serde_json::json!({
+            "deployment_id": "18446744073709551615", "invocation_id": "9",
+            "activation_epoch": "2", "code_id": "ab".repeat(32),
+            "phase": "admitted", "mode": "production",
+            "semantic_profile": "hew:live-router@0.1.0", "coverage": "metadata_only",
+            "input": "must never enter the trace", "service_response": "private"
+        })
+        .to_string();
+        // SAFETY: this immutable JSON allocation lives throughout each synchronous call.
+        unsafe {
+            assert_eq!(
+                hew_trace_live_execution(metadata.as_ptr(), metadata.len()),
+                0
+            );
+            assert_eq!(hew_trace_live_execution(b"{}".as_ptr(), 2), -1);
+            assert_eq!(
+                hew_trace_live_execution(metadata.as_ptr(), 16 * 1024 + 1),
+                -1
+            );
+        }
+        let snapshot = trace_snapshot(None, None, 4).unwrap();
+        assert_eq!(snapshot.events.len(), 1);
+        let event = &snapshot.events[0];
+        assert_eq!(
+            event_type_name(event.event.event_type),
+            Some("live.execution")
+        );
+        let recorded = event.live_execution.as_ref().unwrap();
+        assert_eq!(recorded.deployment_id, u64::MAX);
+        assert_eq!(recorded.invocation_id, Some(9));
+        let json = serde_json::to_string(recorded).unwrap();
+        assert!(!json.contains("private"));
+        assert!(!json.contains("must never"));
+        hew_trace_reset();
+    }
+
     #[cfg(not(target_arch = "wasm32"))]
     #[test]
     fn dormant_session_reset_does_not_initialize_trace_storage() {
@@ -1972,6 +2086,7 @@ mod tests {
             SPAN_SUPERVISOR_BACKOFF,
             SPAN_DELIVERY_REFUSED,
             SPAN_RC_SWEEP,
+            SPAN_LIVE_EXECUTION,
         ];
         for code in all_spans {
             assert!(
@@ -1993,7 +2108,7 @@ mod tests {
         assert!(event_type_name(i32::MAX).is_none());
         assert!(event_type_name(-1).is_none());
         // Any code beyond the last assigned SPAN_* must not resolve.
-        assert!(event_type_name(SPAN_RC_SWEEP + 1).is_none());
+        assert!(event_type_name(SPAN_LIVE_EXECUTION + 1).is_none());
     }
 
     /// S1 fail-closed: the producer drain must NEVER serialise an `event_type`

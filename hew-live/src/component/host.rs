@@ -3,7 +3,7 @@
 use std::fmt;
 use std::future::{poll_fn, Future};
 use std::pin::Pin;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::task::Poll;
 use std::time::Duration;
@@ -18,6 +18,19 @@ use wasmtime_wasi::{WasiCtx, WasiCtxBuilder, WasiCtxView, WasiView};
 use super::bindings;
 use super::cache::{self, ArtifactCache};
 pub use bindings::hew::live_router::events::{Delivery, Event, Snapshot};
+
+mod inspection;
+pub use inspection::{Observer, Preview, PreviewOutcome, ServiceFixture};
+
+static NEXT_IDENTITY: AtomicU64 = AtomicU64::new(1);
+
+fn next_identity() -> Result<u64, Error> {
+    NEXT_IDENTITY
+        .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |value| {
+            value.checked_add(1)
+        })
+        .map_err(|_| Error::IdentityExhausted)
+}
 
 /// An asynchronous operation on a granted service.
 pub type ServiceCall<T> = Pin<Box<dyn Future<Output = Result<T, String>> + Send>>;
@@ -38,6 +51,7 @@ pub enum Error {
     Expired(Stage),
     PredecessorChanged,
     InvalidDeadline,
+    IdentityExhausted,
 }
 
 /// Work that owned the fenced interval when its deadline expired.
@@ -46,6 +60,7 @@ pub enum Stage {
     Admission,
     Snapshot,
     Initialization,
+    Preview,
 }
 
 impl fmt::Display for Error {
@@ -55,6 +70,9 @@ impl fmt::Display for Error {
             Self::Cache(error) => error.fmt(formatter),
             Self::Guest(error) => formatter.write_str(error),
             Self::Closed => formatter.write_str("component host closed"),
+            Self::Expired(Stage::Preview) => {
+                formatter.write_str("preview deadline expired; guest cleanup is unconfirmed")
+            }
             Self::Expired(stage) => {
                 write!(formatter, "replacement attempt expired during {stage:?}")
             }
@@ -62,6 +80,7 @@ impl fmt::Display for Error {
             Self::InvalidDeadline => {
                 formatter.write_str("replacement duration exceeds the host clock")
             }
+            Self::IdentityExhausted => formatter.write_str("host execution identity exhausted"),
         }
     }
 }
@@ -102,6 +121,8 @@ impl fmt::Debug for Prepared {
 pub struct Host {
     engine: Engine,
     services: Arc<dyn Services>,
+    observer: Option<Arc<dyn Observer>>,
+    mode: &'static str,
 }
 
 impl fmt::Debug for Host {
@@ -121,7 +142,16 @@ impl Host {
         Ok(Self {
             engine: Engine::new(&config)?,
             services,
+            observer: None,
+            mode: "production",
         })
+    }
+
+    /// Attach metadata-only observation without granting control or services.
+    #[must_use]
+    pub fn with_observer(mut self, observer: Arc<dyn Observer>) -> Self {
+        self.observer = Some(observer);
+        self
     }
 
     /// Compile immutable bytes before fencing any active deployment.
@@ -166,10 +196,13 @@ impl Host {
         let instance = self.instantiate(prepared).await?;
         instance.initialize(state).await?;
         instance.activate();
-        Ok(Deployment {
+        let deployment = Deployment {
             host: Arc::clone(self),
+            id: next_identity()?,
             active: Arc::new(RwLock::new(Arc::new(Activation { epoch: 1, instance }))),
-        })
+        };
+        deployment.record(deployment.status().await, None, "active");
+        Ok(deployment)
     }
 
     async fn instantiate(&self, prepared: Prepared) -> Result<Arc<Instance>, Error> {
@@ -214,6 +247,7 @@ impl Host {
 pub struct Deployment {
     host: Arc<Host>,
     active: Arc<RwLock<Arc<Activation>>>,
+    id: u64,
 }
 
 /// One consistent observation of the active deployment authority.
@@ -233,15 +267,30 @@ impl Deployment {
         let lease = Arc::clone(&self.active).read_owned().await;
         let instance = Arc::clone(&lease.instance);
         let (reply, result) = oneshot::channel();
-        instance
+        // Reserve command capacity before assigning the immutable admission.
+        // Cancellation while waiting leaves this work unadmitted.
+        let permit = instance
             .commands
-            .send(Command::Route {
-                event,
-                reply,
-                lease,
-            })
+            .reserve()
             .await
             .map_err(|_| Error::Closed)?;
+        let invocation = next_identity()?;
+        let identity = self.identity(
+            Status {
+                epoch: lease.epoch,
+                digest: instance.digest,
+            },
+            Some(invocation),
+            "admitted",
+        );
+        let observation =
+            inspection::InvocationObservation::new(self.host.observer.clone(), identity);
+        permit.send(Command::Route {
+            event,
+            reply,
+            lease,
+            observation,
+        });
         result.await.map_err(|_| Error::Closed)?
     }
 
@@ -272,12 +321,24 @@ impl Deployment {
         predecessor: u64,
         within: Duration,
     ) -> Result<Committed, Error> {
-        let candidate = self.host.instantiate(prepared).await?;
+        let candidate_status = Status {
+            epoch: predecessor,
+            digest: prepared.digest,
+        };
+        self.record(candidate_status, None, "preparing");
+        let candidate = match self.host.instantiate(prepared).await {
+            Ok(candidate) => candidate,
+            Err(error) => {
+                self.record(candidate_status, None, "rejected");
+                return Err(error);
+            }
+        };
         let deadline = Instant::now()
             .checked_add(within)
             .ok_or(Error::InvalidDeadline)?;
         let mut stage = Stage::Admission;
-        tokio::time::timeout_at(deadline, async {
+        self.record(candidate_status, None, "waiting");
+        let result = tokio::time::timeout_at(deadline, async {
             let active = Arc::clone(&self.active).write_owned().await;
             if active.epoch != predecessor {
                 return Err(Error::PredecessorChanged);
@@ -293,8 +354,10 @@ impl Deployment {
             };
             let old = Arc::clone(&fence.active.instance);
             stage = Stage::Snapshot;
+            self.record(candidate_status, None, "snapshot");
             let snapshot = old.snapshot(attempt).await?;
             stage = Stage::Initialization;
+            self.record(candidate_status, None, "initializing");
             candidate.initialize(snapshot).await?;
             if Instant::now() >= deadline {
                 return Err(Error::Expired(stage));
@@ -306,6 +369,14 @@ impl Deployment {
             });
             fence.committed = true;
             candidate.activate();
+            self.record(
+                Status {
+                    epoch,
+                    digest: candidate.digest,
+                },
+                None,
+                "committed",
+            );
             let retirement = tokio::spawn(async move { old.dispose().await });
             Ok(Committed {
                 epoch,
@@ -315,7 +386,11 @@ impl Deployment {
             })
         })
         .await
-        .map_err(|_| Error::Expired(stage))?
+        .unwrap_or_else(|_| Err(Error::Expired(stage)));
+        if result.is_err() {
+            self.record(candidate_status, None, "rejected");
+        }
+        result
     }
 
     /// Consume this deployment and retain its cleanup task until completion,
@@ -439,6 +514,7 @@ enum Command {
         event: Event,
         reply: oneshot::Sender<Result<bool, Error>>,
         lease: OwnedRwLockReadGuard<Arc<Activation>>,
+        observation: inspection::InvocationObservation,
     },
     Snapshot {
         attempt: Arc<Mutex<Attempt>>,
@@ -575,6 +651,7 @@ async fn serve(
                 event,
                 reply,
                 lease,
+                observation,
             } => {
                 accessor.spawn(Route {
                     router: Arc::clone(&router),
@@ -582,6 +659,7 @@ async fn serve(
                     reply,
                     _lease: lease,
                     wake: Arc::clone(&wake),
+                    observation,
                 })?;
             }
             Command::Snapshot {
@@ -651,16 +729,22 @@ struct Route {
     reply: oneshot::Sender<Result<bool, Error>>,
     _lease: OwnedRwLockReadGuard<Arc<Activation>>,
     wake: Arc<tokio::sync::Notify>,
+    observation: inspection::InvocationObservation,
 }
 
 impl AccessorTask<Context> for Route {
-    async fn run(self, accessor: &Accessor<Context>) -> wasmtime::Result<()> {
+    async fn run(mut self, accessor: &Accessor<Context>) -> wasmtime::Result<()> {
         let result = self
             .router
             .hew_live_router_handler()
             .call_route(accessor, self.event)
             .await;
         self.wake.notify_one();
+        self.observation.finish(if matches!(&result, Ok(Ok(_))) {
+            "completed"
+        } else {
+            "faulted"
+        });
         let _ = self.reply.send(
             result
                 .map_err(Error::Engine)

@@ -1,4 +1,4 @@
-import std.stream;
+import router_services;
 
 actor Counter {
     var accepted: u64;
@@ -21,7 +21,9 @@ actor Background {
         ticks += 1;
     }
 
-    receive fn count() -> u64 { ticks }
+    receive fn count() -> u64 {
+        ticks
+    }
 }
 
 supervisor BackgroundTree {
@@ -44,10 +46,7 @@ impl Router {
 }
 
 pub fn create(accepted: u64) -> Router {
-    Router {
-        counter: spawn Counter { accepted: accepted },
-        background: spawn BackgroundTree,
-    }
+    Router { counter: spawn Counter { accepted: accepted }, background: spawn BackgroundTree }
 }
 
 // A replacement candidate that never finishes pure initialization. The host
@@ -65,46 +64,15 @@ pub fn snapshot(router: Router) -> u64 {
 
 pub fn dispose(consume router: Router) {}
 
-extern "C" {
-    fn router_destination(source: string, consume status: Sink<i64>, consume value: Sink<string>);
-    fn router_emit(destination: string, body: string, consume status: Sink<i64>, consume value: Sink<string>);
-}
-
-fn destination(source: string) -> Result<Option<string>, string> {
-    let (status, status_input): (Sink<i64>, Stream<i64>) = stream.pipe(1).expect("status pipe");
-    let (value, value_input): (Sink<string>, Stream<string>) = stream.pipe(1).expect("value pipe");
-    unsafe {
-        router_destination(source, status, value);
-    };
-    match status_input.recv().expect("destination reply") {
-        0 => .Ok(.None),
-        1 => .Ok(.Some(value_input.recv().expect("destination value"))),
-        _ => .Err(value_input.recv().expect("destination error")),
-    }
-}
-
-fn emit(destination: string, body: string) -> Result<(), string> {
-    let (status, status_input): (Sink<i64>, Stream<i64>) = stream.pipe(1).expect("status pipe");
-    let (value, value_input): (Sink<string>, Stream<string>) = stream.pipe(1).expect("value pipe");
-    unsafe {
-        router_emit(destination, body, status, value);
-    };
-    if status_input.recv().expect("emit reply") == 0 {
-        .Ok(())
-    } else {
-        .Err(value_input.recv().expect("emit error"))
-    }
-}
-
 pub fn route(router: Router, source: string, body: string) -> bool {
     let ticks = router.background.worker.count().expect("background running");
     while router.background.worker.count().expect("background resumed") <= ticks {
         sleep(1ms);
     }
-    match destination(source).expect("destination service") {
+    match router_services.destination(source).expect("destination service") {
         .None => false,
         .Some(target) => {
-            emit(target, body).expect("delivery service");
+            router_services.emit(router_services.Delivery { destination: target, body: body }).expect("delivery service");
             router.counter.record().expect("counter record");
             true
         }

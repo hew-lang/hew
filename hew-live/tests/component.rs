@@ -33,13 +33,14 @@ fn build_component(directory: &Path, constructor: &str) -> Vec<u8> {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
     let fixture = root.join("tests/fixtures");
     write_guest_bindings(directory).unwrap();
+    std::fs::copy(fixture.join("router.hew"), directory.join("router_app.hew")).unwrap();
     run(Command::new(environment("HEW_LIVE_COMPILER"))
         .args(["build", "--target", "wasm32-wasip1", "--emit-obj"])
         .args(["--export-c", &format!("{constructor}=guest_create")])
         .args(["--export-c-async", "route=guest_route"])
         .args(["--export-c-async", "snapshot=guest_snapshot"])
         .args(["--export-c-async", "dispose=guest_dispose"])
-        .arg(fixture.join("router.hew"))
+        .arg(directory.join("router_app.hew"))
         .arg("-o")
         .arg(directory.join("guest.o")));
     let sdk = environment("HEW_WASI_SDK");
@@ -51,7 +52,7 @@ fn build_component(directory: &Path, constructor: &str) -> Vec<u8> {
         .arg(root.join("../hew-cabi/include"))
         .arg(directory.join("router.c"))
         .arg(directory.join("router_component_type.o"))
-        .arg(fixture.join("router_adapter.c"))
+        .arg(directory.join("router_adapter.c"))
         .arg(directory.join("guest.o"))
         .arg("-L")
         .arg(environment("HEW_LIVE_WASM_LIB_DIR"))

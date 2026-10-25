@@ -1,4 +1,4 @@
-// Reference adapter: WIT service subtasks complete ordinary typed Hew pipes.
+// SDK lifecycle adapter. Service carriers are generated from the WIT contract.
 #include "router.h"
 #include "guest.h"
 #include <assert.h>
@@ -15,16 +15,12 @@ extern void hew_sink_write_string(void *, const HewText *);
 extern void hew_sink_close(void *);
 
 typedef struct Pending {
-    bool emit;
     bool has_handle;
     uint32_t handle;
     void *status;
-    void *value;
-    hew_live_router_events_delivery_t input;
-    union {
-        hew_live_router_services_result_option_string_string_t destination;
-        hew_live_router_services_result_void_string_t emit;
-    } result;
+    void *ok;
+    void *error;
+    void (*settle)(struct Pending *, bool);
 } Pending;
 
 typedef enum { ROUTE, SNAPSHOT, DISPOSE } TaskKind;
@@ -87,39 +83,10 @@ static void failure(Task *task, HewError *error) {
 
 static void complete_pending(Task *task, bool cancelled) {
     Pending *pending = task->pending;
-    if (!cancelled) {
-        int64_t status;
-        router_string_t *value = NULL;
-        if (pending->emit) {
-            status = pending->result.emit.is_err ? 1 : 0;
-            if (status != 0) value = &pending->result.emit.val.err;
-        } else if (pending->result.destination.is_err) {
-            status = 2;
-            value = &pending->result.destination.val.err;
-        } else if (pending->result.destination.val.ok.is_some) {
-            status = 1;
-            value = &pending->result.destination.val.ok.val;
-        } else {
-            status = 0;
-        }
-        // Each fresh capacity-one pipe receives at most one item. The host
-        // callback is outside Hew execution, and the receiving provider owns
-        // admission and its exact element descriptor.
-        if (value != NULL) {
-            HewText *text = hew_text(*value);
-            hew_sink_write_string(pending->value, text);
-            hew_host_text_release(text);
-        }
-        hew_sink_write(pending->status, &status, sizeof(status));
-        if (pending->emit) {
-            hew_live_router_services_result_void_string_free(&pending->result.emit);
-        } else {
-            hew_live_router_services_result_option_string_string_free(&pending->result.destination);
-        }
-    }
+    pending->settle(pending, cancelled);
     hew_sink_close(pending->status);
-    hew_sink_close(pending->value);
-    hew_live_router_events_delivery_free(&pending->input);
+    if (pending->ok != NULL) hew_sink_close(pending->ok);
+    hew_sink_close(pending->error);
     if (pending->has_handle) router_subtask_drop(pending->handle);
     free(pending);
     task->pending = NULL;
@@ -135,33 +102,7 @@ static void await_pending(Task *task, router_subtask_status_t status) {
     }
 }
 
-void router_destination(const HewText *source, void *status, void *value) {
-    Task *task = router_context_get_0();
-    assert(task != NULL && task->pending == NULL);
-    Pending *pending = calloc(1, sizeof(*pending));
-    assert(pending != NULL);
-    pending->status = status;
-    pending->value = value;
-    pending->input.destination = copy_text(source);
-    task->pending = pending;
-    await_pending(task, hew_live_router_services_destination(
-        pending->input.destination, &pending->result.destination));
-}
-
-void router_emit(const HewText *destination, const HewText *body,
-                 void *status, void *value) {
-    Task *task = router_context_get_0();
-    assert(task != NULL && task->pending == NULL);
-    Pending *pending = calloc(1, sizeof(*pending));
-    assert(pending != NULL);
-    pending->emit = true;
-    pending->status = status;
-    pending->value = value;
-    pending->input.destination = copy_text(destination);
-    pending->input.body = copy_text(body);
-    task->pending = pending;
-    await_pending(task, hew_live_router_services_emit(pending->input, &pending->result.emit));
-}
+/* HEW_WIT_SERVICE_BINDINGS */
 
 static router_callback_code_t finish(Task *task) {
     assert(task->pending == NULL);

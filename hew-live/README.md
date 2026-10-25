@@ -40,7 +40,10 @@ has been run on Linux. Windows module linking remains unimplemented.
 The optional `component` feature provides typed bindings for the portable
 reference router in `wit/router.wit`. Its Hew implementation uses ordinary
 typed pipes to await imported services and retains its accepted-event count in
-a guest actor. Each component instance contains its own Hew runtime. The same
+a guest actor. WIT generation supplies ordinary Hew service functions returning
+`Result` and `Option`; the SDK owns their carriers and lifecycle adapter. The
+router source uses those typed functions without authoring foreign-call plumbing.
+Each component instance contains its own Hew runtime. The same
 WIT contract also has an independent Rust implementation.
 
 With an installed WASI SDK, run both implementations through the shared oracle:
@@ -80,6 +83,6 @@ These operations run inside a Tokio runtime.
 
 The host oracle exercises admission drain, caller cancellation, snapshot expiry,
 non-terminating candidate initialization, retained-state recovery, predecessor
-fencing and disposal. Fenced network deployment, generated Hew service bindings,
-idle guest driving and durable artefact caching remain separate implementation
+fencing and disposal. Fenced network deployment, idle guest driving and durable
+artefact caching remain separate implementation
 work; this is not yet the complete live-execution host.

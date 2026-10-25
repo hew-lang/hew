@@ -4,6 +4,7 @@ use std::path::Path;
 
 use wit_bindgen_core::{wit_parser::Resolve, Files};
 
+mod hew_bindings;
 pub mod host;
 
 /// The portable reference service's source contract, shared by guest bindings.
@@ -19,10 +20,11 @@ pub mod bindings {
     });
 }
 
-/// Generate canonical C guest bindings, including async callbacks and subtasks.
+/// Generate canonical C bindings, ordinary Hew service functions and the SDK
+/// lifecycle adapter, including async callbacks and subtasks.
 ///
 /// # Errors
-/// Returns WIT parsing, generation or filesystem errors.
+/// Returns WIT parsing, unsupported service-type, generation or filesystem errors.
 pub fn write_guest_bindings(
     directory: &Path,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
@@ -33,6 +35,11 @@ pub fn write_guest_bindings(
     wit_bindgen_c::Opts::default()
         .build()
         .generate(&mut resolve, world, &mut files)?;
+    let (hew, services) = hew_bindings::generate(&resolve, world)?;
+    files.push("router_services.hew", hew.as_bytes());
+    let adapter = include_str!("component/router_adapter.c")
+        .replace("/* HEW_WIT_SERVICE_BINDINGS */", &services);
+    files.push("router_adapter.c", adapter.as_bytes());
     std::fs::create_dir_all(directory)?;
     for (name, contents) in files.iter() {
         std::fs::write(directory.join(name), contents)?;

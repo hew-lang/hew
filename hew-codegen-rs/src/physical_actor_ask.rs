@@ -37,7 +37,8 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
         let frame = self.frame.as_ref().ok_or_else(|| {
             CodegenError::FailClosed("ask requires a resumable invocation".into())
         })?;
-        let operation = self.emit_actor_call_start(actor, message, policy, sealed, args)?;
+        let operation =
+            self.emit_actor_call_start(actor, message, policy, sealed, args, Some(unwind))?;
         frame.bind_operation(
             self.ctx,
             &self.builder,
@@ -146,6 +147,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
         policy: hew_types::actor_delivery::SendPolicy,
         sealed: bool,
         args: &[ArgumentTransfer],
+        unwind: Option<&PhysicalEdge>,
     ) -> CodegenResult<PointerValue<'ctx>> {
         let frame = self.frame.as_ref().ok_or_else(|| {
             CodegenError::FailClosed("completion start requires an invocation state".into())
@@ -332,6 +334,17 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
                 .as_pointer_value()
                 .into(),
         );
+        let quota_status = if sealed {
+            None
+        } else {
+            let status = frame.storage(self.ctx, self.ctx.i32_type().into(), "ask.seal.status")?;
+            self.builder
+                .build_store(status, self.ctx.i32_type().const_zero())
+                .llvm_ctx("initialize checked request sealing")?;
+            types.push(ptr.into());
+            arguments.push(status.into());
+            Some(status)
+        };
         let start = get_or_declare_external(
             self.llvm,
             if sealed {
@@ -343,6 +356,53 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
         )?;
         let operation =
             call_value(&self.builder, start, &arguments, "ask.operation")?.into_pointer_value();
+        if let Some(status) = quota_status {
+            let status = self
+                .builder
+                .build_load(self.ctx.i32_type(), status, "ask.seal.status")
+                .llvm_ctx("read request quota admission")?
+                .into_int_value();
+            let accepted = self.ctx.append_basic_block(self.value, "ask.sealed");
+            let refused = self.ctx.append_basic_block(self.value, "ask.quota.refused");
+            let ok = self
+                .builder
+                .build_int_compare(
+                    IntPredicate::EQ,
+                    status,
+                    self.ctx.i32_type().const_zero(),
+                    "ask.quota.ok",
+                )
+                .llvm_ctx("inspect checked request ownership")?;
+            self.builder
+                .build_conditional_branch(ok, accepted, refused)
+                .llvm_ctx("preserve request inputs until reservation")?;
+            self.builder.position_at_end(refused);
+            // The SIR actor boundary consumes these operands on either exit.
+            // A refused acquisition leaves them initialized for this cleanup.
+            let free = external_drop(self.ctx, self.llvm, "hew_actor_payload_free")?;
+            self.builder
+                .build_call(free, &[wrapper.into()], "")
+                .llvm_ctx("free refused shallow request wrapper")?;
+            self.initialize_active_fault(hew_runtime::internal::types::HEW_TRAP_HEAP_EXCEEDED)?;
+            for source in sources.iter().skip(1) {
+                if let Some(action) = self
+                    .module
+                    .actor_recipes
+                    .get(&self.storage(*source)?.ty)
+                    .and_then(|recipe| recipe.destroy)
+                {
+                    self.destroy_owned_operand(*source, action)?;
+                } else {
+                    self.clear_owned(*source)?;
+                }
+            }
+            if let Some(unwind) = unwind {
+                self.emit_edge(unwind)?;
+            } else {
+                self.emit_propagate_fault()?;
+            }
+            self.builder.position_at_end(accepted);
+        }
         for source in sources.iter().skip(1) {
             self.clear_owned(*source)?;
         }

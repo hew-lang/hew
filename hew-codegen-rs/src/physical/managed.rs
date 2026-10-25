@@ -179,6 +179,87 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
 }
 
 impl<'ctx> ModuleEmitter<'ctx, '_> {
+    pub(super) fn emit_actor_message_managed(
+        &self,
+        actor: &hew_mir::physical::SemActor,
+        handler: &hew_mir::physical::SemActorHandler,
+        structure: inkwell::types::StructType<'ctx>,
+    ) -> CodegenResult<PointerValue<'ctx>> {
+        let pointer = self.ctx.ptr_type(AddressSpace::default());
+        let name = format!(
+            "hew.actor.{}.message.{}.managed",
+            actor.id.0, handler.message_id
+        );
+        let function = self.llvm.add_function(
+            &format!("{name}.visit"),
+            self.ctx.i32_type().fn_type(&[pointer.into(); 2], false),
+            Some(Linkage::Internal),
+        );
+        let builder = self.ctx.create_builder();
+        builder.position_at_end(self.ctx.append_basic_block(function, "entry"));
+        let source = function.get_nth_param(0).unwrap().into_pointer_value();
+        let visitor = function.get_nth_param(1).unwrap().into_pointer_value();
+        let active = builder
+            .build_load(self.ctx.i8_type(), source, "message.active")
+            .llvm_ctx("read canonical request ownership")?
+            .into_int_value();
+        let live = builder
+            .build_int_compare(
+                IntPredicate::NE,
+                active,
+                self.ctx.i8_type().const_zero(),
+                "message.live",
+            )
+            .llvm_ctx("test retained request fields")?;
+        let visit = self.ctx.append_basic_block(function, "message.fields");
+        let done = self.ctx.append_basic_block(function, "message.done");
+        builder
+            .build_conditional_branch(live, visit, done)
+            .llvm_ctx("visit initialized request payload")?;
+        builder.position_at_end(visit);
+        let values = ValueEmitter {
+            module: self.module,
+            ctx: self.ctx,
+            llvm: &self.llvm,
+            builder: &builder,
+            value: function,
+            fault_sink: None,
+        };
+        let mut bytes = 0_u64;
+        for (index, ty) in handler.params.iter().enumerate() {
+            let row = self.module.managed_types.get(ty).ok_or_else(|| {
+                CodegenError::FailClosed("request field lacks canonical managed row".into())
+            })?;
+            bytes = bytes.checked_add(row.slot_bytes).ok_or_else(|| {
+                CodegenError::FailClosed("request payload width overflows".into())
+            })?;
+            if let Some(callback) = self.managed_visit(ty)? {
+                let slot = builder
+                    .build_struct_gep(structure, source, (index + 1) as u32, "message.field")
+                    .llvm_ctx("address initialized request field")?;
+                self.managed_child(&values, callback, slot, visitor)?;
+            }
+        }
+        builder
+            .build_unconditional_branch(done)
+            .llvm_ctx("finish retained request fields")?;
+        builder.position_at_end(done);
+        builder
+            .build_return(Some(&self.ctx.i32_type().const_zero()))
+            .llvm_ctx("complete typed request visit")?;
+        let descriptor_ty = self
+            .ctx
+            .struct_type(&[self.ctx.i64_type().into(), pointer.into()], false);
+        let descriptor = self.llvm.add_global(descriptor_ty, None, &name);
+        descriptor.set_linkage(Linkage::Internal);
+        descriptor.set_constant(true);
+        descriptor.set_initializer(&descriptor_ty.const_named_struct(&[
+            self.ctx.i64_type().const_int(bytes, false).into(),
+            function.as_global_value().as_pointer_value().into(),
+        ]));
+        Ok(descriptor.as_pointer_value())
+    }
+
     pub(super) fn emit_actor_state_managed(
         &self,
         actor: &hew_mir::physical::SemActor,

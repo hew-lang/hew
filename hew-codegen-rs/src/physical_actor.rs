@@ -1232,6 +1232,7 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
         );
         descriptor.set_linkage(Linkage::Internal);
         descriptor.set_constant(true);
+        let managed = self.emit_actor_message_managed(actor, handler, message_ty)?;
         descriptor.set_initializer(
             &descriptor_ty.const_named_struct(&[
                 size.const_int(target.get_abi_size(&message_ty), false)
@@ -1246,7 +1247,7 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
                 function.as_global_value().as_pointer_value().into(),
                 message_release(&self.llvm, self.ctx, actor.id, handler.message_id).into(),
                 self.code_owner().into(),
-                ptr.const_null().into(),
+                managed.into(),
             ]),
         );
         Ok(())
@@ -1765,6 +1766,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
                     protocol.policy,
                     protocol.sealed,
                     transfers,
+                    unwind,
                 )?;
                 self.store(result, value.into())?;
                 return self.emit_result_edge(Some(result), normal);

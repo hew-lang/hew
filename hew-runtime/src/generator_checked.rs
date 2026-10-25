@@ -77,6 +77,7 @@ pub struct HewCheckedGenerator {
     producer_fault: *mut HewFault,
     closed: bool,
     release: Option<Box<ReleaseDriver>>,
+    _code: [crate::code_owner::CodeRoot; 3],
 }
 
 impl HewCheckedGenerator {
@@ -147,7 +148,17 @@ pub unsafe extern "C" fn hew_checked_generator_new(
             },
         )
     };
+    // SAFETY: the transferred callable and borrowed layouts are live at entry.
+    // Independent roots cover producer suspension after its carrier is consumed.
+    let code = unsafe {
+        [
+            crate::code_owner::CodeRoot::acquire((*(*callable.descriptor).environment).code_owner),
+            crate::code_owner::CodeRoot::acquire(yield_layout.code_owner),
+            crate::code_owner::CodeRoot::acquire(return_layout.code_owner),
+        ]
+    };
     Box::into_raw(Box::new(HewCheckedGenerator {
+        _code: code,
         callable: Some(callable),
         yielded,
         returned,

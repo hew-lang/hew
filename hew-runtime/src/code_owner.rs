@@ -10,6 +10,19 @@ pub(crate) struct CodeRoot {
 
 // SAFETY: the descriptor contract requires thread-safe retain/release callbacks.
 unsafe impl Send for CodeRoot {}
+// SAFETY: shared roots only call the immutable thread-safe retain callback.
+unsafe impl Sync for CodeRoot {}
+
+impl Clone for CodeRoot {
+    fn clone(&self) -> Self {
+        // SAFETY: this live root retains its immutable lease through acquisition.
+        if let Some(lease) = unsafe { self.lease.as_ref() } {
+            // SAFETY: callbacks are thread-safe under the lease contract.
+            unsafe { (lease.retain)(lease.context) };
+        }
+        Self { lease: self.lease }
+    }
+}
 
 impl CodeRoot {
     /// Transfer a root into a carrier whose descriptor records its lease.
@@ -44,6 +57,28 @@ impl CodeRoot {
         }
         Self { lease }
     }
+}
+
+/// Retain a defining-code lease for a checked native carrier or active frame.
+/// # Safety
+/// The caller retains the immutable slot until this acquisition completes.
+#[no_mangle]
+pub unsafe extern "C" fn hew_code_root_acquire(
+    slot: *const HewCodeLeaseSlot,
+) -> *const HewCodeLease {
+    // SAFETY: forwarded slot and caller-root obligations.
+    let root = unsafe { CodeRoot::acquire(slot) };
+    let lease = root.lease;
+    std::mem::forget(root);
+    lease
+}
+
+/// Release one acquired root after all generated callbacks and frame teardown.
+/// # Safety
+/// `lease` is null or one outstanding root returned by `hew_code_root_acquire`.
+#[no_mangle]
+pub unsafe extern "C" fn hew_code_root_release(lease: *const HewCodeLease) {
+    drop(CodeRoot { lease });
 }
 
 impl Drop for CodeRoot {

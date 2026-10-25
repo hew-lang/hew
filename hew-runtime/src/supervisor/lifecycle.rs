@@ -386,6 +386,7 @@ pub unsafe extern "C" fn hew_supervisor_new(
             config_buf: ptr::null_mut(),
             config_size: 0,
             config_drop_fn: None,
+            native_code: None,
         }),
         restart_epoch: (Mutex::new(0), Condvar::new()),
         native_restart_wakers: crate::wake::ReadinessRegistrations::default(),

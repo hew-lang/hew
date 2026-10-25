@@ -157,6 +157,7 @@ struct Inner {
     /// `None` for Plain/String/Bytes elements — their envelopes own no heap
     /// beyond the `Vec<u8>` itself.
     elem_layout: Option<HewValueLayout>,
+    elem_code: Option<crate::code_owner::CodeRoot>,
     /// The checked consumer parked by [`ChannelCore::poll_recv_envelope`].
     native_consumer: Option<NativeRegistration>,
     /// Checked producers parked on a full ring by [`ChannelCore::poll_send_envelope`].
@@ -216,6 +217,7 @@ impl ChannelCore {
                 consumer: None,
                 producers: VecDeque::new(),
                 elem_layout: None,
+                elem_code: None,
                 native_consumer: None,
                 native_producers: Vec::new(),
                 actor_stream_cancellation: None,
@@ -319,7 +321,13 @@ impl ChannelCore {
     pub fn stamp_elem_layout(&self, layout: &HewValueLayout) {
         let mut inner = self.locked();
         match &inner.elem_layout {
-            None => inner.elem_layout = Some(*layout),
+            None => {
+                // SAFETY: the sending owner retains this exact descriptor while
+                // stamping; the queue retains it through all envelope cleanup.
+                inner.elem_code =
+                    Some(unsafe { crate::code_owner::CodeRoot::acquire(layout.code_owner) });
+                inner.elem_layout = Some(*layout);
+            }
             Some(existing) => {
                 if existing.size != layout.size || existing.ownership_kind != layout.ownership_kind
                 {

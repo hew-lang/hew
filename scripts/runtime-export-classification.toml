@@ -1933,6 +1933,9 @@ non-declarable = [
   "hew_host_value_forget",
   "hew_host_value_release",
   # Same-build interactive entries address compiler-owned persistent slots.
+  "hew_dyn_box_release",
+  "hew_code_root_acquire",
+  "hew_code_root_release",
   "hew_live_slot_initialized",
   "hew_live_slot_release",
   "hew_live_slot_revision",

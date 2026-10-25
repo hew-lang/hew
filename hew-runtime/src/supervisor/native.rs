@@ -213,6 +213,7 @@ pub struct HewSupervisorConstruction {
     fault: *mut HewFault,
     final_state: bool,
     taken: bool,
+    code: crate::code_owner::CodeRoot,
 }
 
 impl HewSupervisorConstruction {
@@ -251,6 +252,7 @@ pub unsafe extern "C" fn hew_supervisor_native_spawn_new(
     backoff_maximum_ns: i64,
     pool_count: i64,
     waker: *const HewWaker,
+    code_owner: *const hew_cabi::code::HewCodeLeaseSlot,
 ) -> *mut HewSupervisorConstruction {
     // SAFETY: The caller transfers config and lends readable descriptors and a retained waker; this operation owns the private parent.
     unsafe {
@@ -258,6 +260,7 @@ pub unsafe extern "C" fn hew_supervisor_native_spawn_new(
         let waker = Arc::new(OwnedWaker::retain(&*waker));
         let children = std::slice::from_raw_parts(children, child_count).to_vec();
         let mut op = Box::new(HewSupervisorConstruction {
+            code: crate::code_owner::CodeRoot::acquire(code_owner),
             supervisor: ptr::null_mut(),
             children,
             order: Vec::new(),
@@ -324,6 +327,7 @@ pub unsafe extern "C" fn hew_supervisor_native_spawn_new(
             ));
             roster.config_buf = config;
             roster.config_drop_fn = config_drop;
+            roster.native_code = Some(op.code.clone());
             if valid_order {
                 pool::register_native_roster(
                     &mut roster,
@@ -665,6 +669,7 @@ pub(super) struct NativeReconstruction {
     roles: Vec<RestartChildRole>,
     next: usize,
     invocation: Option<(NativePublication, Box<NativeInvocation>)>,
+    _code: Option<crate::code_owner::CodeRoot>,
 }
 
 impl NativeReconstruction {
@@ -684,6 +689,7 @@ impl NativeReconstruction {
             // as it was during a synchronous supervisor turn.
             (*sup).constructing.store(true, Ordering::Release);
             Self {
+                _code: roster.native_code.clone(),
                 roles,
                 next: 0,
                 invocation: None,
@@ -805,6 +811,7 @@ pub(crate) unsafe fn native_spawn_for_test(
             0,
             pool_count,
             waker.descriptor(),
+            ptr::null(),
         );
         while hew_supervisor_native_spawn_poll(op, 0) == 0 {
             ready.wait();
@@ -990,6 +997,7 @@ mod tests {
                     0,
                     0,
                     waker.descriptor(),
+                    ptr::null(),
                 );
                 assert_eq!(hew_supervisor_native_spawn_poll(op, 0), 0);
                 assert_eq!(destroyed.load(Ordering::Acquire), 0);
@@ -1068,6 +1076,7 @@ mod tests {
                     0,
                     0,
                     waker.descriptor(),
+                    ptr::null(),
                 );
                 assert_eq!(hew_supervisor_native_spawn_poll(op, 0), 0);
                 assert_eq!(hew_supervisor_native_spawn_poll(op, 0), 1);

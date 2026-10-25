@@ -27,6 +27,7 @@ pub(crate) struct TaskExecution {
 }
 
 struct Driver {
+    code: Option<crate::code_owner::CodeRoot>,
     task: *mut HewTask,
     state: *mut HewCoroState,
     frame: *mut c_void,
@@ -55,6 +56,7 @@ impl TaskExecution {
         let execution = Arc::new(Self {
             phase: ReadyState::queued(),
             driver: UnsafeCell::new(Driver {
+                code: None,
                 task,
                 state: ptr::null_mut(),
                 frame: ptr::null_mut(),
@@ -131,10 +133,12 @@ impl Driver {
                 };
                 match invocation {
                     CheckedTaskInvocation::Callable {
+                        code,
                         value: callable,
                         arguments,
                         consuming,
                     } => {
+                        self.code = Some(code);
                         let descriptor = &*callable.descriptor;
                         let invoke = if consuming {
                             descriptor.invoke_once
@@ -181,6 +185,7 @@ impl Driver {
                 hew_cont_destroy(self.frame);
                 self.frame = ptr::null_mut();
             }
+            self.code = None;
             self.group = None;
             let status = hew_coro_state_private_status(self.state);
             hew_coro_state_free(self.state);

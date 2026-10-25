@@ -289,7 +289,7 @@ fn native_session_places_retain_emitted_defining_code() {
     compile_with_ownership(
         directory.path(),
         "initial",
-        "pub fn submission() { let value: i64 = 40; }",
+        "pub fn submission() { let value: i64 = 40; let next = || value + 1; let answer = number; } fn number() -> i64 { 42 }",
         &[],
         0,
         true,
@@ -312,13 +312,57 @@ int main(void) {
     int roots = 0;
     Lease lease = { &roots, retain, release };
     HewLiveCodeOwner = &lease;
+    void *runtime = hew_runtime_new(), *slots[3] = {0}, *error = 0;
+    Session session = { slots, 3 };
+    assert(initial(&session, &error) == 0 && !error);
+    assert(roots == 5);
+    assert(hew_live_slot_release(&session, 0, &error) == 0 && !error);
+    assert(roots == 4);
+    assert(hew_live_slot_release(&session, 1, &error) == 0 && !error);
+    assert(roots == 2);
+    assert(hew_live_slot_release(&session, 2, &error) == 0 && !error);
+    assert(roots == 0);
+    hew_runtime_release(runtime);
+}
+"#,
+    )
+    .unwrap();
+    execute(directory.path(), &["initial"]);
+}
+
+#[test]
+fn native_session_places_actor_retains_code_after_host_slot_release() {
+    let directory = tempfile::tempdir().unwrap();
+    compile_with_ownership(directory.path(), "initial",
+        "actor Count { var total: i64; receive fn read() -> i64 { total } } pub fn submission() { let counter = spawn Count { total: 40 }; }",
+        &[], 0, true);
+    std::fs::write(
+        directory.path().join("host.c"),
+        r#"
+#include <assert.h>
+#include <stddef.h>
+#include <stdatomic.h>
+typedef struct { void **slots; size_t len; } Session;
+typedef struct { void *context; void (*retain)(void *); void (*release)(void *); } Lease;
+extern const Lease *HewLiveCodeOwner;
+extern void *hew_runtime_new(void);
+extern void hew_runtime_release(void *);
+extern int hew_live_slot_release(Session *, size_t, void **);
+extern int initial(void *, void **);
+static void retain(void *context) { atomic_fetch_add((atomic_int *)context, 1); }
+static void release(void *context) { assert(atomic_fetch_sub((atomic_int *)context, 1) > 0); }
+int main(void) {
+    atomic_int roots = 0;
+    Lease lease = { &roots, retain, release };
+    HewLiveCodeOwner = &lease;
     void *runtime = hew_runtime_new(), *slots[1] = {0}, *error = 0;
     Session session = { slots, 1 };
     assert(initial(&session, &error) == 0 && !error);
-    assert(roots == 1);
+    assert(atomic_load(&roots) >= 2);
     assert(hew_live_slot_release(&session, 0, &error) == 0 && !error);
-    assert(roots == 0);
+    assert(atomic_load(&roots) >= 1);
     hew_runtime_release(runtime);
+    assert(atomic_load(&roots) == 0);
 }
 "#,
     )

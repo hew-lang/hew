@@ -26,3 +26,10 @@ unsafe impl Sync for HewCodeLease {}
 pub struct HewCodeLeaseSlot {
     pub lease: *const HewCodeLease,
 }
+
+extern "C" {
+    /// Acquire one native defining-code root from a loader-published slot.
+    pub fn hew_code_root_acquire(slot: *const HewCodeLeaseSlot) -> *const HewCodeLease;
+    /// Release one acquired defining-code root after callback/frame completion.
+    pub fn hew_code_root_release(lease: *const HewCodeLease);
+}

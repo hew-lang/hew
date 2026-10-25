@@ -30,6 +30,8 @@ use crate::hashmap::HewLayoutHashMap;
 /// sinks remain thread-local.
 #[derive(Debug)]
 pub(crate) enum ReleaseItem {
+    /// Defining code retained until all preceding value and storage work finishes.
+    CodeRoot(crate::code_owner::CodeRoot),
     /// Prepare and consume one actor-owned Rc survivor wave incrementally.
     RcSurvivors(Box<crate::rc::RcSurvivors>),
     /// Expand endpoint owners after its final I/O operation is quiescent.
@@ -297,6 +299,7 @@ unsafe fn expand(
     // SAFETY: the caller owns the item and retains queued storage until release.
     unsafe {
         match item {
+            ReleaseItem::CodeRoot(root) => drop(root),
             ReleaseItem::RcSurvivors(wave) => return wave.step(pending),
             ReleaseItem::Sink { sink } => crate::stream::expand_sink(sink, pending),
             ReleaseItem::Value { .. } => pending.push(item),

@@ -56,6 +56,7 @@ pub struct HewNativeStream {
     read_stream: Option<*mut HewStream>,
     #[cfg(not(target_arch = "wasm32"))]
     write_prefix: usize,
+    _code: crate::code_owner::CodeRoot,
 }
 
 /// The item a reactor read produces, fixed when the read starts.
@@ -205,6 +206,8 @@ pub unsafe extern "C" fn hew_stream_read_start_native(
         }
     };
     Box::into_raw(Box::new(HewNativeStream {
+        // SAFETY: the caller's descriptor owner remains live during construction.
+        _code: unsafe { crate::code_owner::CodeRoot::acquire(layout.code_owner) },
         layout,
         // SAFETY: waker is borrowed during this call.
         waker: Arc::new(unsafe { OwnedWaker::retain(&*waker) }),
@@ -267,6 +270,8 @@ unsafe fn try_underlying(
         _ => std::process::abort(),
     };
     Box::into_raw(Box::new(HewNativeStream {
+        // SAFETY: the caller's descriptor owner remains live during construction.
+        _code: unsafe { crate::code_owner::CodeRoot::acquire(layout.code_owner) },
         layout,
         // SAFETY: the descriptor remains borrowed during construction.
         waker: Arc::new(unsafe { OwnedWaker::retain(&*waker) }),
@@ -310,6 +315,8 @@ pub(super) unsafe fn start_underlying(
     // SAFETY: sink is a live exclusive loan.
     if unsafe { (*sink).is_closed() } {
         return Box::into_raw(Box::new(HewNativeStream {
+            // SAFETY: the caller retains this descriptor until the operation owns it.
+            _code: unsafe { crate::code_owner::CodeRoot::acquire(layout.code_owner) },
             layout,
             // SAFETY: waker is borrowed during this call.
             waker: Arc::new(unsafe { OwnedWaker::retain(&*waker) }),
@@ -325,6 +332,8 @@ pub(super) unsafe fn start_underlying(
     // SAFETY: an adapter endpoint pins its shared sender through this exclusive loan.
     if let Some(owner) = owner {
         return Box::into_raw(Box::new(HewNativeStream {
+            // SAFETY: the caller retains this descriptor until the operation owns it.
+            _code: unsafe { crate::code_owner::CodeRoot::acquire(layout.code_owner) },
             layout,
             // SAFETY: the caller retains this descriptor during operation construction.
             waker: Arc::new(unsafe { OwnedWaker::retain(&*waker) }),
@@ -377,6 +386,8 @@ pub(super) unsafe fn start_underlying(
         None => reactor_backing_unreachable("write"),
     };
     Box::into_raw(Box::new(HewNativeStream {
+        // SAFETY: the caller's descriptor owner remains live during construction.
+        _code: unsafe { crate::code_owner::CodeRoot::acquire(layout.code_owner) },
         layout,
         // SAFETY: waker is borrowed during this call.
         waker: Arc::new(unsafe { OwnedWaker::retain(&*waker) }),

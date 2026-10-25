@@ -261,6 +261,7 @@ fn spawn_bounded_test_actor(
             None,
             ptr::null_mut(),
             construction,
+            ptr::null(),
         )
     };
     // SAFETY: test state is initialized and construction has no suspended borrower.

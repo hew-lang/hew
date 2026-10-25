@@ -64,6 +64,7 @@ pub(super) struct CheckedTaskState {
     fault: *mut HewFault,
     order: u64,
     waiters: Vec<Weak<TaskWake>>,
+    _result_code: crate::code_owner::CodeRoot,
 }
 
 // SAFETY: the compiler establishes Send for captures and the result. A mutex
@@ -293,6 +294,7 @@ pub unsafe extern "C" fn hew_checked_scope_deadline(scope: *mut HewTaskScope, du
 
 enum CheckedTaskInvocation {
     Callable {
+        code: crate::code_owner::CodeRoot,
         value: HewCallableValue,
         arguments: *const *mut c_void,
         consuming: bool,
@@ -322,6 +324,11 @@ unsafe fn spawn_invocation(
     unsafe {
         let task = hew_task_new();
         (*task).checked = Some(Mutex::new(CheckedTaskState {
+            _result_code: crate::code_owner::CodeRoot::acquire(
+                layout
+                    .as_ref()
+                    .map_or(ptr::null(), |layout| layout.code_owner),
+            ),
             invocation: Some(invocation),
             accounting: TaskAccounting::Scope,
             layout,
@@ -361,6 +368,9 @@ pub unsafe extern "C" fn hew_checked_task_spawn(
         spawn_invocation(
             scope,
             CheckedTaskInvocation::Callable {
+                code: crate::code_owner::CodeRoot::acquire(
+                    (*(*owner.descriptor).environment).code_owner,
+                ),
                 value: owner,
                 arguments: ptr::null(),
                 consuming: true,
@@ -394,6 +404,9 @@ pub unsafe extern "C" fn hew_checked_task_invoke(
         spawn_invocation(
             scope,
             CheckedTaskInvocation::Callable {
+                code: crate::code_owner::CodeRoot::acquire(
+                    (*(*value.descriptor).environment).code_owner,
+                ),
                 value,
                 arguments,
                 consuming: consuming != 0,

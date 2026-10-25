@@ -33,13 +33,14 @@ fn build_component(directory: &Path, constructor: &str) -> Vec<u8> {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
     let fixture = root.join("tests/fixtures");
     write_guest_bindings(directory).unwrap();
+    std::fs::copy(fixture.join("router.hew"), directory.join("router_app.hew")).unwrap();
     run(Command::new(environment("HEW_LIVE_COMPILER"))
         .args(["build", "--target", "wasm32-wasip1", "--emit-obj"])
         .args(["--export-c", &format!("{constructor}=guest_create")])
         .args(["--export-c-async", "route=guest_route"])
         .args(["--export-c-async", "snapshot=guest_snapshot"])
         .args(["--export-c-async", "dispose=guest_dispose"])
-        .arg(fixture.join("router.hew"))
+        .arg(directory.join("router_app.hew"))
         .arg("-o")
         .arg(directory.join("guest.o")));
     let sdk = environment("HEW_WASI_SDK");
@@ -51,7 +52,7 @@ fn build_component(directory: &Path, constructor: &str) -> Vec<u8> {
         .arg(root.join("../hew-cabi/include"))
         .arg(directory.join("router.c"))
         .arg(directory.join("router_component_type.o"))
-        .arg(fixture.join("router_adapter.c"))
+        .arg(directory.join("router_adapter.c"))
         .arg(directory.join("guest.o"))
         .arg("-L")
         .arg(environment("HEW_LIVE_WASM_LIB_DIR"))
@@ -128,6 +129,7 @@ async fn activate(
         },
     );
     store.set_fuel(100_000_000).unwrap();
+    store.fuel_async_yield_interval(Some(100_000)).unwrap();
     let router = bindings::Router::instantiate_async(&mut store, component, &linker)
         .await
         .unwrap();
@@ -163,9 +165,25 @@ async fn hew_and_foreign_components_share_services_and_snapshot_contracts() {
 }
 
 struct DeploymentServices {
+    idle: Arc<tokio::sync::Notify>,
+    idle_calls: Arc<std::sync::atomic::AtomicUsize>,
     started: Arc<tokio::sync::Notify>,
     release: Arc<tokio::sync::Notify>,
     delivered: Arc<Mutex<Vec<Delivery>>>,
+}
+
+impl DeploymentServices {
+    async fn observe_idle_turn(&self) {
+        use std::sync::atomic::Ordering;
+        let previous = self.idle_calls.load(Ordering::Acquire);
+        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            while self.idle_calls.load(Ordering::Acquire) == previous {
+                self.idle.notified().await;
+            }
+        })
+        .await
+        .expect("autonomous actor must call its service without host ingress");
+    }
 }
 
 impl hew_live::component::host::Services for DeploymentServices {
@@ -173,9 +191,15 @@ impl hew_live::component::host::Services for DeploymentServices {
         &self,
         source: String,
     ) -> hew_live::component::host::ServiceCall<Option<String>> {
+        let idle = Arc::clone(&self.idle);
+        let idle_calls = Arc::clone(&self.idle_calls);
         let started = Arc::clone(&self.started);
         let release = Arc::clone(&self.release);
         Box::pin(async move {
+            if source == "idle" {
+                idle_calls.fetch_add(1, std::sync::atomic::Ordering::Release);
+                idle.notify_one();
+            }
             if source == "held" {
                 started.notify_one();
                 release.notified().await;
@@ -193,11 +217,17 @@ impl hew_live::component::host::Services for DeploymentServices {
     }
 }
 
+#[allow(
+    clippy::too_many_lines,
+    reason = "one replacement oracle checks admission, expiry, autonomous recovery and retirement"
+)]
 async fn exercise_deployment(bytes: &[u8], stalled: &[u8]) {
     use hew_live::component::host::{Error, Host, Stage};
     use std::time::Duration;
 
     let services = Arc::new(DeploymentServices {
+        idle: Arc::default(),
+        idle_calls: Arc::default(),
         started: Arc::default(),
         release: Arc::default(),
         delivered: Arc::default(),
@@ -210,6 +240,7 @@ async fn exercise_deployment(bytes: &[u8], stalled: &[u8]) {
             .await
             .unwrap(),
     );
+    services.observe_idle_turn().await;
     assert!(deployment
         .route(Event {
             source: "first".into(),
@@ -272,6 +303,7 @@ async fn exercise_deployment(bytes: &[u8], stalled: &[u8]) {
         Err(Error::Expired(Stage::Initialization))
     ));
     assert_eq!(deployment.epoch().await, 2);
+    services.observe_idle_turn().await;
     assert!(deployment
         .route(Event {
             source: "after-expiry".into(),

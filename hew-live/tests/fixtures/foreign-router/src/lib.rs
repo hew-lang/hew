@@ -33,6 +33,10 @@ impl Guest for Foreign {
         Ok(())
     }
 
+    async fn drive() -> Option<u64> {
+        None
+    }
+
     async fn route(message: Event) -> Result<bool, String> {
         if !INITIALIZED.load(Ordering::Relaxed) || DRAINING.load(Ordering::Relaxed) {
             return Err("router is not accepting events".into());

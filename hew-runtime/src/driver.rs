@@ -524,6 +524,31 @@ pub extern "C" fn hew_guest_step() -> bool {
     }
 }
 
+/// Delay until the existing guest driver's next timer, or -1 with none pending.
+/// The embedding host waits for this delay or new ingress before driving again.
+#[cfg(target_arch = "wasm32")]
+#[no_mangle]
+pub extern "C" fn hew_guest_next_timer_ms() -> i64 {
+    if has_queued_work() {
+        return 0;
+    }
+    let wheel = global_wheel();
+    // SAFETY: the process-owned wheel is live; both queries take its lock.
+    let (remaining, cursor) = unsafe {
+        (
+            hew_timer_wheel_next_deadline_ms(wheel),
+            timer_wheel_cursor_ms(wheel),
+        )
+    };
+    if remaining < 0 {
+        return -1;
+    }
+    let delay = cursor
+        .saturating_add(remaining.cast_unsigned())
+        .saturating_sub(now_ms());
+    i64::try_from(delay).unwrap_or(i64::MAX)
+}
+
 #[cfg(target_arch = "wasm32")]
 static GUEST_INGRESS_OPEN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
 

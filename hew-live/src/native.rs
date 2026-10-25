@@ -64,7 +64,9 @@ pub fn prepare(
     let mut link = Command::new("cc");
     match format {
         object::BinaryFormat::Elf => {
-            link.args(["-shared", "-Wl,-z,defs"]);
+            // Even an empty declaration submission belongs to this runtime.
+            // Keep that dependency when the object needs no runtime symbols.
+            link.args(["-shared", "-Wl,-z,defs", "-Wl,--no-as-needed"]);
         }
         object::BinaryFormat::MachO => {
             link.arg("-dynamiclib");

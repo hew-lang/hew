@@ -164,9 +164,32 @@ impl NativeSession {
     /// Cleanup completes before its slot is discarded. A failed close does not
     /// prevent cleanup of the remaining places. The emptied session can be reused.
     pub fn clear(&mut self) -> Vec<Fault> {
+        let faults = self.release_slots((0..self.slots.len()).rev());
+        self.slots.clear();
+        faults
+    }
+
+    /// Semantically release bindings hidden by a later submission. Slot indices
+    /// stay stable for surviving bindings and future submissions.
+    ///
+    /// # Errors
+    /// Rejects repeated or out-of-bounds indices before starting any cleanup.
+    pub fn release(&mut self, slots: &[usize]) -> Result<Vec<Fault>> {
+        let mut slots = slots.to_vec();
+        slots.sort_unstable();
+        if slots.last().is_some_and(|&slot| slot >= self.slots.len()) {
+            return Err("release refers to an unknown session slot".into());
+        }
+        if slots.windows(2).any(|pair| pair[0] == pair[1]) {
+            return Err("release repeats a session slot".into());
+        }
+        Ok(self.release_slots(slots.into_iter().rev()))
+    }
+
+    fn release_slots(&mut self, slots: impl Iterator<Item = usize>) -> Vec<Fault> {
         let mut context = self.context();
         let mut faults = Vec::new();
-        for index in (0..self.slots.len()).rev() {
+        for index in slots {
             let mut error = ptr::null_mut();
             // SAFETY: no invocation can overlap this exclusive borrow. Runtime
             // release owns suspension and final semantic cleanup of each slot.
@@ -181,7 +204,6 @@ impl NativeSession {
                 }),
             }
         }
-        self.slots.clear();
         faults
     }
 

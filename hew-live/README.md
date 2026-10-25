@@ -48,5 +48,12 @@ stdio remains available to the program. A lost reply leaves the caller with an
 uncertain outcome. The worker never retries or replays a submission.
 
 Preparation supports ELF and Mach-O linker drivers; execution has been tested
-on Linux. The persistent source frontend, portable components, deployment
-migration and authoring integration remain in progress.
+on Linux. `hew_compile::live::frontend::LiveFrontend` prepares source inputs
+against immutable declaration snapshots and the retained bindings' exact types.
+Publish a prepared input using the worker's actual occupancy, even after a
+fault, and release the superseded slots it returns. Earlier values and closures
+keep their original declarations when a later input replaces a same-name type
+or function. Expanded syntax retains macro hygiene and source spans.
+
+Portable components, deployment migration and interactive authoring integration
+remain in progress.

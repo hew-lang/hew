@@ -426,7 +426,7 @@ live-host: ## Build: isolated persistent native execution worker
 
 .PHONY: test-live-host
 test-live-host: live-host ## Test: execute persistent submissions through the native worker
-	$(TEST_RUN_ENV) cargo nextest run --profile ci -p hew-codegen-rs --lib -E 'test(native_session_places_host)'
+	$(TEST_RUN_ENV) cargo nextest run --profile ci -p hew-codegen-rs -p hew-compile --lib -E 'test(native_session_places_host) | test(live_frontend)'
 
 test-live-places: hew-native live-host ## Test: preserve compiler-owned slots across native submissions
 	$(TEST_RUN_ENV) cargo nextest run --profile ci -p hew-codegen-rs -p hew-compile --lib -E 'test(native_session_places) | test(live_retained_type)'

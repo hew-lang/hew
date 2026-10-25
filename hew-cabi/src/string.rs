@@ -131,6 +131,7 @@ unsafe fn header(value: *const HewString) -> *const HewStringHeader {
 ///
 /// # Safety
 /// A non-null handle must remain live throughout this read.
+#[must_use]
 pub unsafe fn string_payload_capacity(value: *const HewString) -> usize {
     if value.is_null() {
         return 0;

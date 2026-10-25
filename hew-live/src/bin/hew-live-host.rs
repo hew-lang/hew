@@ -45,6 +45,9 @@ enum Request {
         slot_count: usize,
     },
     Inspect,
+    Release {
+        slots: Vec<usize>,
+    },
     Clear,
     Retire {
         id: u64,
@@ -98,6 +101,10 @@ fn run(args: &Args) -> Result<()> {
                     json!({ "execution": execution })
                 }
                 Request::Inspect => json!({ "slots": session.states() }),
+                Request::Release { slots } => json!({
+                    "cleanup_faults": session.release(&slots)?,
+                    "slots": session.states(),
+                }),
                 Request::Clear | Request::Quit => json!({ "cleanup_faults": session.clear() }),
                 Request::Retire { id } => {
                     generations.remove(&id).ok_or("unknown generation")?;

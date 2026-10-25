@@ -8,6 +8,7 @@ fn native_session_places_host_retains_mutations_and_fault_occupancy() {
     use std::net::TcpListener;
     use std::process::{Command, Stdio};
 
+    use hew_compile::live::frontend::{InputKind, LiveFrontend};
     use serde_json::{json, Value};
 
     struct Worker(Option<std::process::Child>);
@@ -31,28 +32,6 @@ fn native_session_places_host_retains_mutations_and_fault_occupancy() {
     }
 
     let directory = tempfile::tempdir().unwrap();
-    for (name, source, inputs, next) in [
-        (
-            "initial",
-            "pub fn submission() { var count: i64 = 40; let text = \"retained\"; }",
-            &[][..],
-            0,
-        ),
-        (
-            "failing",
-            "pub fn submission(var count: i64, text: string) { count += 2; panic(\"stop\"); }",
-            &[0, 1][..],
-            2,
-        ),
-        (
-            "resume",
-            "pub fn submission(var count: i64, text: string) { assert(count == 42); assert(text == \"retained\"); count += 1; assert(count == 43); }",
-            &[0, 1][..],
-            2,
-        ),
-    ] {
-        compile_with_ownership(directory.path(), name, source, inputs, next, true);
-    }
     let binaries = std::env::current_exe()
         .unwrap()
         .parent()
@@ -65,7 +44,7 @@ fn native_session_places_host_retains_mutations_and_fault_occupancy() {
     } else {
         "libhew.so"
     });
-    for suffix in ["", "_o2"] {
+    for (suffix, opt_level) in [("", OptLevel::O0), ("_o2", OptLevel::O2)] {
         let listener = TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0)).unwrap();
         let mut child = Worker(Some(
             Command::new(binaries.join("hew-live-host"))
@@ -86,7 +65,26 @@ fn native_session_places_host_retains_mutations_and_fault_occupancy() {
             .set_read_timeout(Some(std::time::Duration::from_secs(30)))
             .unwrap();
         let mut connection = BufReader::new(control);
-        for (id, name) in ["initial", "failing", "resume"].into_iter().enumerate() {
+        let mut frontend = LiveFrontend::new(
+            directory.path().to_path_buf(),
+            hew_compile::FrontendOptions::default(),
+        );
+        let compiler = hew_compile::Session::new(
+            hew_compile::SessionTarget::native(),
+            hew_compile::DiagnosticPolicy::default(),
+        );
+        for (id, (kind, input)) in [
+            (InputKind::Declarations, "type Token { value: i64; } fn read_token(value: Token) -> i64 { value.value } #[resource] type Handle { value: i64; } impl Handle { fn close(consume self) { println(self.value); } } macro create { ($name:ident, $n:literal) => items { fn hidden() -> i64 { $n } fn $name() -> i64 { hidden() } } } create!(first, 3) create!(second, 7)"),
+            (InputKind::Statements, "println(\"initialize\"); assert(first() == 3); assert(second() == 7); var count: i64 = 40; let text = \"retained\"; let old = Token { value: 7 }; let read = || read_token(old); let handle = Handle { value: 11 };"),
+            (InputKind::Statements, "count += 2; panic(\"stop\");"),
+            (InputKind::Declarations, "type Token { value: string; } fn read_token(value: Token) -> string { value.value }"),
+            (InputKind::Statements, "let recent = Token { value: \"new\" }; assert(count == 42); assert(text == \"retained\"); assert(old.value == 7); assert(read() == 7); assert(read_token(recent) == \"new\"); count += 1;"),
+            (InputKind::Statements, "assert(count == 43); assert(recent.value == \"new\"); let handle = Handle { value: 12 };"),
+            (InputKind::Expression, "count"),
+        ].into_iter().enumerate() {
+            let prepared = frontend.prepare(&compiler, input, kind).unwrap();
+            let name = format!("input_{id}");
+            emit_live(directory.path(), &name, &prepared.live, true, &[(suffix, opt_level)]);
             let module = directory.path().join(format!("{name}{suffix}.so"));
             let manifest = hew_live::native::prepare(
                 &directory.path().join(format!("{name}{suffix}.o")),
@@ -108,54 +106,39 @@ fn native_session_places_host_retains_mutations_and_fault_occupancy() {
                     .unwrap()
                     .contains("already prepared"));
             }
+            let result = exchange(&mut connection, json!({ "op": "execute", "id": id, "entry": name, "slot_count": prepared.slot_count() }));
+            let execution = &result["execution"];
+            if id == 2 {
+                assert!(execution["fault"]["message"].as_str().unwrap().contains("stop"), "{result}");
+            } else {
+                assert!(execution["fault"].is_null(), "{id}: {result}");
+            }
+            let initialized: Vec<_> = execution["slots"].as_array().unwrap().iter().map(|slot| slot["initialized"].as_bool().unwrap()).collect();
+            assert_eq!(exchange(&mut connection, json!({ "op": "inspect" }))["slots"], execution["slots"]);
+            let retired = frontend.commit(prepared, &initialized).unwrap();
+            if id == 5 {
+                assert_eq!(retired.len(), 1);
+                let before = exchange(&mut connection, json!({ "op": "inspect" }));
+                assert!(exchange(&mut connection, json!({ "op": "release", "slots": [retired[0], u32::MAX] }))["error"].is_string());
+                assert_eq!(exchange(&mut connection, json!({ "op": "inspect" })), before);
+                let released = exchange(&mut connection, json!({ "op": "release", "slots": retired }));
+                assert_eq!(released["cleanup_faults"], json!([]));
+                assert_eq!(released["slots"][retired[0] as usize]["initialized"], false);
+            } else {
+                assert!(retired.is_empty());
+            }
         }
-        let initial = exchange(
-            &mut connection,
-            json!({ "op": "execute", "id": 0, "entry": "initial", "slot_count": 2 }),
-        );
-        assert!(initial["execution"]["fault"].is_null(), "{initial}");
-        assert_eq!(initial["execution"]["slots"].as_array().unwrap().len(), 2);
-        assert!(initial["execution"]["slots"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .all(|slot| slot["initialized"] == true));
-        let failed = exchange(
-            &mut connection,
-            json!({ "op": "execute", "id": 1, "entry": "failing", "slot_count": 2 }),
-        );
-        assert!(
-            failed["execution"]["fault"]["message"]
-                .as_str()
-                .unwrap()
-                .contains("stop"),
-            "{failed}"
-        );
-        assert!(failed["execution"]["slots"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .all(|slot| slot["initialized"] == true));
-        assert_eq!(
-            exchange(&mut connection, json!({ "op": "inspect" }))["slots"],
-            failed["execution"]["slots"]
-        );
         assert!(exchange(
             &mut connection,
-            json!({ "op": "execute", "id": 2, "entry": "resume", "slot_count": 1 })
+            json!({ "op": "execute", "id": 2, "entry": "input_2", "slot_count": 1 })
         )["error"]
             .as_str()
             .unwrap()
             .contains("cannot discard"));
-        let resumed = exchange(
-            &mut connection,
-            json!({ "op": "execute", "id": 2, "entry": "resume", "slot_count": 2 }),
-        );
-        assert!(resumed["execution"]["fault"].is_null(), "{resumed}");
         // The initial descriptor remains executable after its explicit root is
         // retired; the live String slot retains its defining generation.
         assert!(
-            exchange(&mut connection, json!({ "op": "retire", "id": 0 }))["collected"]
+            exchange(&mut connection, json!({ "op": "retire", "id": 1 }))["collected"]
                 .as_array()
                 .unwrap()
                 .is_empty()
@@ -179,6 +162,10 @@ fn native_session_places_host_retains_mutations_and_fault_occupancy() {
             json!({ "cleanup_faults": [] })
         );
         let output = child.0.take().unwrap().wait_with_output().unwrap();
+        assert_eq!(
+            String::from_utf8_lossy(&output.stdout),
+            "initialize\n11\n43\n12\n"
+        );
         assert!(
             output.status.success(),
             "{}",
@@ -251,6 +238,22 @@ fn compile_with_ownership(
     let live = session
         .lower_live_program(&parsed.program, &checked, roots[0], inputs, next)
         .unwrap();
+    emit_live(
+        directory,
+        name,
+        &live,
+        code_owner,
+        &[("", OptLevel::O0), ("_o2", OptLevel::O2)],
+    );
+}
+
+fn emit_live(
+    directory: &Path,
+    name: &str,
+    live: &hew_compile::live::LiveSubmission,
+    code_owner: bool,
+    optimizations: &[(&str, OptLevel)],
+) {
     let triple = native_emission_triple();
     let target = physical_target_for_inventory(
         &triple,
@@ -269,7 +272,7 @@ fn compile_with_ownership(
     } else {
         export
     };
-    for (suffix, opt_level) in [("", OptLevel::O0), ("_o2", OptLevel::O2)] {
+    for &(suffix, opt_level) in optimizations {
         emit_host_object(
             &export,
             &PhysicalEmitOptions {

@@ -13,6 +13,169 @@ use crate::wake::{HewWaker, OwnedWaker};
 use hew_cabi::value::HewValueReleaseStart;
 use std::{ffi::c_void, ptr, sync::atomic::Ordering};
 
+#[path = "reply_channel_native_operation.rs"]
+mod operation;
+pub use operation::{
+    hew_actor_reply_free_native, hew_actor_reply_poll_native, hew_actor_reply_start_native,
+    hew_actor_reply_take_cleanup_native, HewNativeReply,
+};
+
+#[derive(Default)]
+pub(super) struct NativeReplyOwner {
+    pub(super) waker: Option<OwnedWaker>,
+    value_owner: Option<crate::owned_value_budget::ValueOwner>,
+    payload_owned: bool,
+    binding: Option<crate::owned_value_budget::transfer::DestinationBinding>,
+    gate: Option<usize>,
+    waiters: Vec<(usize, OwnedWaker)>,
+}
+
+impl NativeReplyOwner {
+    fn claim(&mut self, identity: usize, waker: Option<OwnedWaker>) -> bool {
+        if !self.waiters.iter().any(|(id, _)| *id == identity) {
+            if let Some(waker) = waker {
+                self.waiters.push((identity, waker));
+            }
+        }
+        if self.gate.is_some_and(|owner| owner != identity) {
+            return false;
+        }
+        self.gate = Some(identity);
+        true
+    }
+}
+
+unsafe fn release_gate(channel: *const HewReplyChannel, identity: usize) {
+    // SAFETY: every gate owner retains its receiving or sending channel reference.
+    let wakes = unsafe {
+        let mut owner = (*channel).native.lock_or_recover();
+        owner.waiters.retain(|(id, _)| *id != identity);
+        if owner.gate != Some(identity) {
+            return;
+        }
+        owner.gate = None;
+        std::mem::take(&mut owner.waiters)
+    };
+    for (_, wake) in wakes {
+        wake.wake();
+    }
+}
+
+pub(super) unsafe fn wake_publishers(channel: *const HewReplyChannel) {
+    // SAFETY: the cancelling owner retains this channel through notification.
+    let wakes = unsafe {
+        (*channel)
+            .native
+            .lock_or_recover()
+            .waiters
+            .iter()
+            .map(|(_, wake)| wake.clone())
+            .collect::<Vec<_>>()
+    };
+    for wake in wakes {
+        wake.wake();
+    }
+}
+
+/// Inspect only an actually deposited typed reply, never its expected width.
+/// # Safety
+/// The receiving operation retains the channel and excludes concurrent takes.
+pub(crate) unsafe fn visit_managed_reply(
+    channel: *const HewReplyChannel,
+    visitor: *const hew_cabi::managed::HewManagedStorageVisitor,
+) -> i32 {
+    use crate::owned_value_budget::transfer::{
+        destination_binding, destination_owner, transfer_identity, transfer_waker,
+    };
+    use crate::owned_value_budget::visit::{slot_bytes, storage};
+    use hew_cabi::managed::{
+        visit_value, HewManagedWalkKind, DESCEND, SKIP_DESCENDANTS, TRANSFER_PENDING, UNDESCRIBED,
+    };
+    // SAFETY: the receiving owner retains the channel through this synchronous walk.
+    unsafe {
+        let Some(channel) = channel.as_ref() else {
+            return 0;
+        };
+        let kind = (*visitor).kind;
+        let transfer = matches!(
+            kind,
+            HewManagedWalkKind::PrepareTransfer
+                | HewManagedWalkKind::CommitTransfer
+                | HewManagedWalkKind::ResumeTransfer
+                | HewManagedWalkKind::AbortTransfer
+        );
+        let identity = if transfer {
+            transfer_identity(visitor) as usize
+        } else {
+            0
+        };
+        let mut owner = channel.native.lock_or_recover();
+        if kind == HewManagedWalkKind::PrepareTransfer
+            && !owner.claim(identity, transfer_waker(visitor))
+        {
+            return TRANSFER_PENDING;
+        }
+        if kind == HewManagedWalkKind::AbortTransfer && owner.gate != Some(identity) {
+            drop(owner);
+            release_gate(channel, identity);
+            return 0;
+        }
+        if kind == HewManagedWalkKind::CommitTransfer {
+            owner.value_owner = destination_owner(visitor);
+            owner.binding = destination_binding(visitor);
+        }
+        // A transfer gate pins publication across this entire graph walk.
+        // Ordinary account visits occur before admission or after a frozen walk.
+        let status = if channel.ready.load(Ordering::Acquire) && !channel.value.is_null() {
+            match channel.native_layout.as_ref() {
+                Some(layout) => match slot_bytes(layout) {
+                    Ok(bytes) => match storage(visitor, channel.value, bytes) {
+                        DESCEND => visit_value(layout, channel.value, visitor),
+                        SKIP_DESCENDANTS => 0,
+                        failure => failure,
+                    },
+                    Err(failure) => failure,
+                },
+                None => UNDESCRIBED,
+            }
+        } else {
+            0
+        };
+        drop(owner);
+        if matches!(
+            kind,
+            HewManagedWalkKind::ResumeTransfer | HewManagedWalkKind::AbortTransfer
+        ) {
+            release_gate(channel, identity);
+        }
+        status
+    }
+}
+
+pub(super) unsafe fn drop_reply_value(channel: *mut HewReplyChannel, value: *mut c_void) {
+    // SAFETY: final channel destruction owns the published value exclusively.
+    unsafe {
+        let owner = {
+            let mut native = (*channel).native.lock_or_recover();
+            std::mem::take(&mut native.payload_owned).then(|| native.value_owner.clone())
+        };
+        match owner {
+            Some(owner) => {
+                crate::owned_value_budget::with_value_owner(&owner, || {
+                    super::run_registered_reply_drop_on_value(channel, value)
+                });
+                if let Some(owner) = owner {
+                    let width =
+                        crate::owned_value_budget::visit::slot_bytes(&*(*channel).native_layout)
+                            .unwrap_or_else(|_| std::process::abort());
+                    owner.release_backing(value, width);
+                }
+            }
+            None => super::run_registered_reply_drop_on_value(channel, value),
+        }
+    }
+}
+
 /// Create a receiver reference and register its retained readiness target and
 /// typed reply destructor before any sender can publish a result.
 ///
@@ -29,7 +192,12 @@ pub unsafe extern "C" fn hew_reply_channel_new_native(
     let channel = hew_reply_channel_new();
     // SAFETY: the new channel is exclusively owned and the descriptor is live.
     unsafe {
-        *(*channel).native_waker.lock_or_recover() = Some(OwnedWaker::retain(&*waker));
+        {
+            let mut owner = (*channel).native.lock_or_recover();
+            owner.waker = Some(OwnedWaker::retain(&*waker));
+            owner.value_owner = crate::owned_value_budget::current_owner();
+            owner.binding = crate::owned_value_budget::transfer::current_binding();
+        }
         hew_reply_channel_set_reply_drop_fn(channel, drop_reply);
         (*channel).native_reply_release = layout
             .as_ref()
@@ -66,6 +234,15 @@ pub unsafe extern "C" fn hew_reply_channel_poll_native(
         let value = take_ready_reply(channel, None);
         if expected_size != 0 {
             ptr::copy_nonoverlapping(value.cast::<u8>(), output.cast::<u8>(), expected_size);
+        }
+        let owner = {
+            let mut native = (*channel).native.lock_or_recover();
+            std::mem::take(&mut native.payload_owned).then(|| native.value_owner.clone())
+        };
+        if let Some(Some(owner)) = owner.filter(|_| !value.is_null()) {
+            let width = crate::owned_value_budget::visit::slot_bytes(&*(*channel).native_layout)
+                .unwrap_or_else(|_| std::process::abort());
+            owner.release_backing(value, width);
         }
         hew_reply_payload_free(value.cast(), expected_size);
     }
@@ -156,7 +333,7 @@ unsafe fn fail_native_request(channel: *mut HewReplyChannel, failure: i32) {
     let Some(channel_ref) = (unsafe { channel.as_ref() }) else {
         return;
     };
-    let mut guard = channel_ref.native_waker.lock_or_recover();
+    let mut guard = channel_ref.native.lock_or_recover();
     if channel_ref.ready.load(Ordering::Acquire)
         || channel_ref.fail_reason.load(Ordering::Acquire) != HEW_REPLY_FAIL_NONE
     {
@@ -177,8 +354,9 @@ unsafe fn fail_native_request(channel: *mut HewReplyChannel, failure: i32) {
     // SAFETY: this retained channel is still awaiting terminal publication.
     unsafe { super::withdraw_native_request(channel) };
     channel_ref.cancelled.store(true, Ordering::Release);
-    let waker = guard.take();
+    let waker = guard.waker.take();
     drop(guard);
+    unsafe { wake_publishers(channel) };
     if let Some(waker) = waker {
         waker.wake();
     }
@@ -242,16 +420,27 @@ pub(crate) unsafe fn cancel_take_release(channel: *mut HewReplyChannel) -> *mut 
     }
     // SAFETY: the operation retains the receiving reference through detachment.
     unsafe {
-        let mut guard = (*channel).native_waker.lock_or_recover();
+        let mut guard = (*channel).native.lock_or_recover();
         (*channel).cancelled.store(true, Ordering::Release);
-        let waker = guard.take();
+        let waker = guard.waker.take();
         let value = std::mem::replace(&mut (*channel).value, ptr::null_mut());
         let size = (*channel).value_size;
         let start = (*channel).native_reply_release;
+        let value_owner =
+            std::mem::take(&mut guard.payload_owned).then(|| guard.value_owner.clone());
         drop(guard);
         drop(waker);
+        wake_publishers(channel);
         if value.is_null() {
             return ptr::null_mut();
+        }
+        if let Some(owner) = value_owner {
+            return operation::release_payload(
+                value,
+                &*(*channel).native_layout,
+                owner,
+                (*channel).native_code.as_ref().unwrap().clone(),
+            );
         }
         if let Some(start) = start {
             let cursor = HewReleaseCursor::payload(value, size, start, true);
@@ -286,7 +475,7 @@ pub unsafe extern "C" fn hew_actor_reply_native(
     unsafe {
         if !channel.is_null() {
             crate::execution_context::mark_current_reply_channel_consumed(channel.cast());
-            let mut guard = (*channel).native_waker.lock_or_recover();
+            let mut guard = (*channel).native.lock_or_recover();
             if !(*channel).cancelled.load(Ordering::Acquire) {
                 let copied = if size == 0 {
                     ptr::null_mut()
@@ -305,7 +494,7 @@ pub unsafe extern "C" fn hew_actor_reply_native(
                 }
                 (*channel).ready.store(true, Ordering::Release);
             }
-            let waker = guard.take();
+            let waker = guard.waker.take();
             drop(guard);
             if let Some(waker) = waker {
                 waker.wake();

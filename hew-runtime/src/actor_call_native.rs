@@ -69,6 +69,32 @@ pub struct HewActorCall {
     rejected_payload: *mut HewReleaseCursor,
 }
 
+/// Visit typed reply storage currently retained by a scoped actor call.
+/// # Safety
+/// The slot contains a live call operation outside a concurrent poll or take.
+#[no_mangle]
+pub unsafe extern "C" fn hew_managed_visit_actor_call(
+    slot: *const c_void,
+    visitor: *const hew_cabi::managed::HewManagedStorageVisitor,
+) -> i32 {
+    // SAFETY: the select/invocation owner retains its affine operation.
+    unsafe {
+        let pointer = slot.cast::<*const HewActorCall>().read();
+        let Some(call) = pointer.as_ref() else {
+            return 0;
+        };
+        match &call.route {
+            CallRoute::Local(local) => {
+                crate::reply_channel::native::visit_managed_reply(local.channel, visitor)
+            }
+            // Wire bytes belong to the transport. This route decodes directly
+            // into the selected caller result, retaining no typed reply slot.
+            #[cfg(not(target_arch = "wasm32"))]
+            CallRoute::Imported { .. } => 0,
+        }
+    }
+}
+
 impl HewActorCall {
     unsafe fn prepare_cleanup(&mut self) {
         if self.cleanup_started {

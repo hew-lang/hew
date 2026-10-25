@@ -119,6 +119,10 @@ pub(super) fn decode_module() -> SemModule {
     let mut type_facts = BTreeMap::new();
     for (ty, row) in [
         (
+            ResolvedTy::Unit,
+            facts(ValueClass::BitCopy, CloneKind::Bits),
+        ),
+        (
             ResolvedTy::Bytes,
             facts(ValueClass::CowValue, CloneKind::Retain),
         ),

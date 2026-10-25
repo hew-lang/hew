@@ -370,6 +370,12 @@ impl FunctionLowerer<'_> {
                     return Err(PhysicalError::new("race has no exact output type"));
                 };
                 one(PhysicalOp::TaskRace {
+                    member_slot_bytes: hew_sir::managed_slot(
+                        self.module,
+                        &self.storage[dest.0 as usize].ty,
+                    )
+                    .map_err(|_| PhysicalError::new("race member lacks canonical slot width"))?
+                    .bytes,
                     scope: *scope,
                     members: members
                         .iter()
@@ -393,6 +399,7 @@ impl FunctionLowerer<'_> {
                     return Err(PhysicalError::new("prepared call has no exact task output"));
                 };
                 one(PhysicalOp::TaskInvoke {
+                    callable_slot_bytes: hew_sir::managed_callable_carrier().bytes,
                     scope: *scope,
                     callee: match callee {
                         hew_sir::InvocationCallee::Direct(target) => {
@@ -459,6 +466,7 @@ impl FunctionLowerer<'_> {
                     return Err(PhysicalError::new("task spawn has no exact output type"));
                 };
                 one(PhysicalOp::TaskSpawn {
+                    callable_slot_bytes: hew_sir::managed_callable_carrier().bytes,
                     scope: *scope,
                     callable: self.value(callable.value)?,
                     dest,

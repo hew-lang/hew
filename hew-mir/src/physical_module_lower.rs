@@ -283,6 +283,7 @@ pub fn lower_physical_module(
                     super::PhysicalManagedType {
                         slot_bytes: slot.bytes,
                         shape,
+                        recipe: physical_value_recipe(module, &ids, ty)?,
                     },
                 ))
             })

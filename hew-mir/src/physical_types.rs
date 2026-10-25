@@ -402,6 +402,7 @@ pub struct PhysicalValueRecipe {
 pub struct PhysicalManagedType {
     pub slot_bytes: u64,
     pub shape: hew_sir::ManagedStorageShape,
+    pub recipe: PhysicalValueRecipe,
 }
 
 /// One value an `#[offload]` job's environment owns.
@@ -732,6 +733,7 @@ pub enum PhysicalOp {
         dest: StorageId,
         yielded: PhysicalValueRecipe,
         returned: PhysicalValueRecipe,
+        callable_slot_bytes: u64,
     },
     TaskScopeEnter {
         scope: hew_sir::TaskScopeId,
@@ -746,6 +748,7 @@ pub enum PhysicalOp {
         members: Vec<StorageId>,
         dest: StorageId,
         output: Option<PhysicalValueRecipe>,
+        member_slot_bytes: u64,
     },
     TaskInvoke {
         scope: hew_sir::TaskScopeId,
@@ -753,6 +756,7 @@ pub enum PhysicalOp {
         args: Vec<ArgumentTransfer>,
         dest: StorageId,
         output: Option<PhysicalValueRecipe>,
+        callable_slot_bytes: u64,
     },
     TaskSpawn {
         scope: hew_sir::TaskScopeId,
@@ -760,6 +764,7 @@ pub enum PhysicalOp {
         dest: StorageId,
         /// Absent only for the uninhabited result of Task<!>.
         output: Option<PhysicalValueRecipe>,
+        callable_slot_bytes: u64,
     },
     /// Static scheduling marker; dependencies alias existing storage.
     RegisterDefer {

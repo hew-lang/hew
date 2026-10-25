@@ -325,6 +325,22 @@ pub unsafe extern "C" fn hew_bytes_drop(data_ptr: *mut u8) {
     }
 }
 
+/// Release one accounted byte backing and its physical reference.
+///
+/// # Safety
+/// The pointer is null or one initialized, accounted byte backing owner.
+#[no_mangle]
+pub unsafe extern "C" fn hew_bytes_drop_managed(pointer: *mut u8) {
+    if !pointer.is_null() {
+        if let Some(owner) = crate::owned_value_budget::current_owner() {
+            // SAFETY: the backing remains allocated until the physical drop below.
+            owner.release_backing(pointer.cast(), u64::from(unsafe { capacity(pointer) }));
+        }
+    }
+    // SAFETY: the caller transfers this physical reference.
+    unsafe { hew_bytes_drop(pointer) };
+}
+
 /// Push a single byte onto the buffer, using copy-on-write if shared.
 ///
 /// On the copy-on-write path this CONSUMES `triple`'s reference to the old

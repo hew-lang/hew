@@ -7,5 +7,5 @@ timeout_seconds = 15
 
 [case.expected]
 stdout = "pair Z 2 1\nlocal C B\nclose 1 2 C\nclose 1 2 A\nclose 2 2 Z\n"
-stderr = "hew: failure: IndexOutOfBounds (205)\n"
+stderr = "hew: failure: IndexOutOfBounds (205): vector index 5 out of bounds for length 2\n"
 exit = 1

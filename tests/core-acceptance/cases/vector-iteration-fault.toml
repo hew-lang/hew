@@ -8,4 +8,4 @@ timeout_seconds = 15
 [case.expected]
 stdout = ""
 exit = 1
-stderr = "hew: failure: IndexOutOfBounds (205)\n"
+stderr = "hew: failure: IndexOutOfBounds (205): vector index 3 out of bounds for length 1\n"

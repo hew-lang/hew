@@ -7,5 +7,5 @@ timeout_seconds = 30
 
 [case.expected]
 stdout = "before trap\nclose 1\n"
-stderr = "hew: failure: IndexOutOfBounds (205)\n"
+stderr = "hew: failure: IndexOutOfBounds (205): vector index 3 out of bounds for length 0\n"
 exit = 1

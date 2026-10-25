@@ -65,21 +65,23 @@ pub struct ValueOwner(Arc<Account>);
 #[must_use]
 pub fn current_owner() -> Option<ValueOwner> {
     let context = crate::execution_context::current_context();
-    if !context.is_null() {
-        // SAFETY: explicit release bindings live through this synchronous poll.
-        if let Some(owner) = unsafe { (*context).value_owner.as_ref() } {
-            return owner.clone();
-        }
-        // SAFETY: the canonical execution context pins its active task scope.
-        let scope = unsafe { (*context).task_scope };
-        if !scope.is_null() {
-            // An unbounded scope is authoritative too; do not substitute a
-            // different actor merely because its account is disabled.
-            // SAFETY: the installed execution context retains its lexical scope.
-            return unsafe { (*scope).value_owner.clone() };
-        }
+    if context.is_null() {
+        return None;
     }
-    let actor = crate::actor::hew_actor_self();
+    // SAFETY: explicit release bindings live through this synchronous poll.
+    if let Some(owner) = unsafe { (*context).value_owner.as_ref() } {
+        return owner.clone();
+    }
+    // SAFETY: the canonical execution context pins its active task scope.
+    let scope = unsafe { (*context).task_scope };
+    if !scope.is_null() {
+        // An unbounded scope is authoritative too; do not substitute a
+        // different actor merely because its account is disabled.
+        // SAFETY: the installed execution context retains its lexical scope.
+        return unsafe { (*scope).value_owner.clone() };
+    }
+    // SAFETY: a present carrier retains its actor through this synchronous poll.
+    let actor = unsafe { (*context).actor };
     if actor.is_null() {
         return None;
     }

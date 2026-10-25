@@ -7521,6 +7521,21 @@
       "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
+        "native": "fn hew_fault_new_vector_bounds( i64, i64, u32) -> *mut HewFault",
+        "wasm32-wasip1": "fn hew_fault_new_vector_bounds( i64, i64, u32) -> *mut HewFault"
+      },
+      "symbol": "hew_fault_new_vector_bounds"
+    },
+    {
+      "availability": [
+        "native",
+        "wasm32-wasip1"
+      ],
+      "classification": "non-declarable",
+      "extent": "no-in-signature-extent",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
         "native": "fn hew_fault_report( *const HewFault) -> i32",
         "wasm32-wasip1": "fn hew_fault_report( *const HewFault) -> i32"
       },

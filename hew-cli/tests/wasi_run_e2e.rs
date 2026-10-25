@@ -518,8 +518,12 @@ fn supplied_directory_preopens_preserve_rooted_owners_under_wasi() {
             if target != "native" {
                 build.args(["--target", target]);
             }
-            let compiled =
-                support::run_bounded_command(build, format!("directory {target} O{level}"));
+            let compiled = support::try_run_bounded_command(
+                build,
+                format!("directory {target} O{level}"),
+                hew_testutil::DEFAULT_COMPILE_TIMEOUT,
+            )
+            .unwrap_or_else(|error| panic!("{error}"));
             support::assert_success(&compiled, "compile directory capability");
             let mut run = if target == "native" {
                 Command::new(&binary)

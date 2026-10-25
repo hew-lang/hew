@@ -237,6 +237,7 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
             fault_out,
             active_fault,
             active_status,
+            fault_site: std::cell::Cell::new(None),
             fault_parks,
             functions: &module.functions,
             value_callbacks: &module.value_callbacks,

@@ -294,6 +294,22 @@ pub extern "C" fn hew_fault_new(code: i32) -> *mut HewFault {
     Box::into_raw(Box::new(HewFault::new(code, None)))
 }
 
+/// Create an owned checked vector-bounds fault with its operation detail.
+/// `swap` distinguishes the two-index operation from ordinary indexing.
+#[no_mangle]
+#[must_use]
+pub extern "C" fn hew_fault_new_vector_bounds(index: i64, length: i64, swap: u32) -> *mut HewFault {
+    let detail = if swap != 0 {
+        "vector swap index out of bounds".to_owned()
+    } else {
+        format!("vector index {index} out of bounds for length {length}")
+    };
+    Box::into_raw(Box::new(HewFault::with_message(
+        crate::internal::types::HEW_TRAP_INDEX_OUT_OF_BOUNDS,
+        detail,
+    )))
+}
+
 /// Copy a borrowed managed string into one owned logical panic fault.
 /// The caller may release the original string immediately after this returns.
 /// Allocation failure remains process-fatal, as with [`hew_fault_new`].

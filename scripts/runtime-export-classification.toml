@@ -1869,6 +1869,7 @@ non-declarable = [
   "hew_fault_new_assertion",
   "hew_fault_new_panic",
   "hew_fault_new_unhandled_failure",
+  "hew_fault_new_vector_bounds",
   "hew_fault_report",
   "hew_fault_report_entry",
   "hew_fault_set_site",

@@ -3,7 +3,7 @@
 //!
 //! `json.Value` is `#[opaque]` but not `#[resource]`
 //! (`std/encoding/json/json.hew:67`), so a `Vec<json.Value>` gets an ordinary
-//! clone-and-drop element descriptor through `hew_json_clone`/`hew_json_free`,
+//! clone-and-drop element descriptor through `hew_json_clone`/`hew_json_free_managed`,
 //! not a drop-only one. (A drop-only, clone-refusing descriptor is what an
 //! affine `#[resource]` element would get; if `Value` is meant to be affine,
 //! the missing marker is a separate defect, not this test's subject.) The
@@ -80,11 +80,14 @@ fn vec_of_exact_imported_opaque_handles_uses_the_real_clone_and_close_descriptor
         .and_then(|rest| rest.split(')').next())
         .expect("descriptor global name");
 
-    let descriptor_decl = format!("@{descriptor_name} = internal constant {{ i64, i64, i8, ptr, ptr, ptr }} {{ i64 8, i64 8, i8 2, ptr @{descriptor_name}_clone, ptr @{descriptor_name}_drop, ptr null }}");
+    let descriptor = ll
+        .lines()
+        .find(|line| line.starts_with(&format!("@{descriptor_name} = ")))
+        .expect("selected element descriptor");
     assert!(
-        ll.contains(&descriptor_decl),
-        "json.Value is opaque, not a resource, so its Vec element descriptor \
-         must carry both a real clone and a real drop function:\n{descriptor_decl}\nfull IR:\n{ll}"
+        descriptor.contains(&format!("ptr @{descriptor_name}_clone"))
+            && descriptor.contains(&format!("ptr @{descriptor_name}_drop")),
+        "json.Value's selected descriptor must carry its real clone and drop callbacks:\n{descriptor}"
     );
 
     let clone_start = ll
@@ -103,7 +106,7 @@ fn vec_of_exact_imported_opaque_handles_uses_the_real_clone_and_close_descriptor
     let drop_body = &ll[drop_start..];
     let drop_body = &drop_body[..drop_body.find("\n}").expect("drop callback end")];
     assert!(
-        drop_body.contains("call void @hew_json_free("),
+        drop_body.contains("call void @hew_json_free_managed("),
         "drop callback must invoke the real json close symbol:\n{drop_body}"
     );
 

@@ -133,6 +133,8 @@ type CallerStamp =
 const DEFAULT_ACTOR_STOP_NS = 5_000_000_000;
 
 interface FrameContext {
+  activeFrame?: Activation;
+  retainsTransferableFrame?: boolean;
   fileError?: BrowserIoError | null;
   parked?: boolean;
   rcOwner?: RcOwner | null;
@@ -328,6 +330,8 @@ interface Activation {
   owned: Set<number>;
   managedTypes: Map<number, number>;
   managedInputs: ManagedLease[];
+  managedCleanup: Set<{ roots: readonly ManagedRoot[]; lease: ManagedLease }>;
+  managedChildren: Set<Activation>;
   scopes: Map<number, TaskGroup>;
   places: Map<number, Cell>;
   fault: Fault | null;
@@ -671,6 +675,7 @@ class ExecutorV1 {
     this.running = true;
     while (this.running) {
       const act = this.current;
+      act.context.activeFrame = act;
       act.context.cancel = (
         fault = { kind: "panic", message: "task cancelled", cancelled: true },
       ) => {
@@ -788,6 +793,8 @@ class ExecutorV1 {
       owned,
       managedTypes,
       managedInputs: [],
+      managedCleanup: new Set(),
+      managedChildren: new Set(),
       scopes: new Map(),
       places,
       fault: null,
@@ -980,6 +987,10 @@ class ExecutorV1 {
             value: { kind: "task", id: task.id },
             type: task.managedType,
           });
+    for (const lease of frame.managedInputs) roots.push(...(lease.roots ?? []));
+    for (const cleanup of frame.managedCleanup) roots.push(...cleanup.roots);
+    for (const child of frame.managedChildren)
+      roots.push(...this.frameManagedRoots(child.context.activeFrame ?? child));
     if (frame.caller) roots.push(...this.frameManagedRoots(frame.caller));
     return roots;
   }
@@ -1051,16 +1062,43 @@ class ExecutorV1 {
     budget?: ManagedBudget,
   ): ManagedLease | undefined {
     if (!lease?.roots) return lease;
-    const replacement = budget?.retainMany(lease.roots);
+    const replacement = this.retainRoots(lease.roots, budget);
     lease.release();
     return replacement;
   }
 
+  private retainRoots(
+    roots: readonly ManagedRoot[],
+    budget?: ManagedBudget,
+  ): ManagedLease {
+    // Unbounded frames keep typed ownership metadata for a later generator
+    // transfer, without building an allocation graph for an account.
+    return budget?.retainMany(roots) ?? { roots, release() {} };
+  }
+
+  private retainCleanup(
+    frame: Activation,
+    roots: readonly ManagedRoot[],
+  ): ManagedLease {
+    const cleanup = {
+      roots,
+      lease: this.retainRoots(roots, frame.accountActor?.budget),
+    };
+    frame.managedCleanup.add(cleanup);
+    return {
+      roots,
+      release: () => {
+        if (!frame.managedCleanup.delete(cleanup)) return;
+        cleanup.lease.release();
+      },
+    };
+  }
+
   private rehomeTask(task: TaskEntry, actor: ActorInstance): void {
-    if (task.budget === actor.budget && task.frame?.accountActor === actor)
-      return;
+    const frame = task.frame?.context.activeFrame ?? task.frame;
+    if (task.budget === actor.budget && frame?.accountActor === actor) return;
     task.budget = actor.budget;
-    if (task.frame) this.rehomeFrame(task.frame, actor);
+    if (frame) this.rehomeFrame(frame, actor);
     task.managedLease = this.rehomeLease(task.managedLease, actor.budget);
   }
 
@@ -1094,6 +1132,10 @@ class ExecutorV1 {
       const replacement = this.rehomeLease(lease, actor.budget);
       return replacement ? [replacement] : [];
     });
+    for (const cleanup of frame.managedCleanup)
+      cleanup.lease = this.rehomeLease(cleanup.lease, actor.budget)!;
+    for (const child of frame.managedChildren)
+      this.rehomeFrame(child.context.activeFrame ?? child, actor);
     for (const scope of frame.scopes.values())
       for (const task of scope.tasks) this.rehomeTask(task, actor);
     if (frame.caller) this.rehomeFrame(frame.caller, actor);
@@ -1163,7 +1205,11 @@ class ExecutorV1 {
           !task.fault &&
           (!task.actorError || task.actorError === "Failed");
         const children: ManagedRoot[] =
-          task.frame && !task.done ? this.frameManagedRoots(task.frame) : [];
+          task.frame && !task.done
+            ? this.frameManagedRoots(
+                task.frame.context.activeFrame ?? task.frame,
+              )
+            : [];
         if (task.callable?.kind === "closure" && !task.done)
           children.push(typed(task.callable));
         if (reply)
@@ -1304,19 +1350,27 @@ class ExecutorV1 {
     const value = this.read(act, operand.value);
     const budget = act.context.actor?.budget;
     const type = act.managedTypes.get(operand.value);
+    const transferable =
+      act.context.generator || act.context.retainsTransferableFrame;
+    if (!budget && transferable && type != null)
+      this.managed.collect({ value, type }, new Map());
     switch (operand.decision) {
       case "copy":
       case "snapshot": {
         if (budget && type != null)
           budget.check([{ value: this.managed.copy(value, type), type }]);
         const copy = cloneValue(value);
-        if (budget && type != null)
-          act.managedInputs.push(budget.retain({ value: copy, type }));
+        if (!budget && transferable && type != null)
+          this.managed.collect({ value: copy, type }, new Map());
+        if (type != null)
+          act.managedInputs.push(
+            this.retainRoots([{ value: copy, type }], budget),
+          );
         return copy;
       }
       case "move":
-        if (budget && type != null)
-          act.managedInputs.push(budget.retain({ value, type }));
+        if (type != null)
+          act.managedInputs.push(this.retainRoots([{ value, type }], budget));
         this.invalidate(act, operand.value);
         return value;
       default:
@@ -1391,9 +1445,7 @@ class ExecutorV1 {
         const value = this.read(act, op.value);
         const type = act.managedTypes.get(op.value);
         const cleanup =
-          type == null
-            ? undefined
-            : act.context.actor?.budget?.retain({ value, type });
+          type == null ? undefined : this.retainCleanup(act, [{ value, type }]);
         this.invalidate(act, op.value);
         this.releaseOperation(act, value, () => cleanup?.release());
         return;
@@ -1425,7 +1477,7 @@ class ExecutorV1 {
         const cleanup =
           type == null
             ? undefined
-            : act.context.actor?.budget?.retain({ value: previous, type });
+            : this.retainCleanup(act, [{ value: previous, type }]);
         // Retire the old owner before invoking user close code. Publish the
         // replacement after cleanup, including when close records a fault;
         // the following cleanup.dispatch then drains the new owner once.
@@ -1458,9 +1510,7 @@ class ExecutorV1 {
         const value = liveRef(ref) ? readRef(ref) : UNIT;
         const type = act.fn.places[op.place]?.managed_type;
         const cleanup =
-          type == null
-            ? undefined
-            : act.context.actor?.budget?.retain({ value, type });
+          type == null ? undefined : this.retainCleanup(act, [{ value, type }]);
         invalidateRef(ref);
         this.releaseOperation(act, value, () => cleanup?.release());
         return;
@@ -2055,6 +2105,8 @@ class ExecutorV1 {
         const context: FrameContext = {
           id: task.id,
           actor: act.context.actor,
+          retainsTransferableFrame:
+            !!act.context.generator || act.context.retainsTransferableFrame,
           rcOwner: act.rcOwner,
           requestDeadline: this.requestDeadline(act),
           returned: (value, released) => {
@@ -2971,6 +3023,7 @@ class ExecutorV1 {
         },
         act.context.actor,
         act.rcOwner,
+        act,
       );
     };
     const next = (value: VmValue = UNIT) => {
@@ -2999,12 +3052,18 @@ class ExecutorV1 {
         fail({ kind: "panic", message: step.value.message });
       } else if (step.value.kind === "release") {
         const request = step.value;
-        const lease = act.context.actor?.budget?.retainMany(
-          (request.retained ?? [request.value]).map((value) => ({
-            value,
-            type: this.managed.type(value),
-          })),
-        );
+        const lease =
+          act.context.actor?.budget ||
+          act.context.generator ||
+          act.context.retainsTransferableFrame
+            ? this.retainCleanup(
+                act,
+                (request.retained ?? [request.value]).map((value) => ({
+                  value,
+                  type: this.managed.type(value),
+                })),
+              )
+            : undefined;
         this.closeValueAsync(
           request.value,
           this.pipeFault(act),
@@ -3023,6 +3082,7 @@ class ExecutorV1 {
           },
           act.context.actor,
           act.rcOwner,
+          act,
         );
       } else {
         const request = step.value;
@@ -3033,6 +3093,8 @@ class ExecutorV1 {
           next,
           fail,
           act.rcOwner,
+          false,
+          act,
         );
         act.context.cancel = (fault) => child.cancel?.(fault);
       }
@@ -4346,6 +4408,7 @@ class ExecutorV1 {
       },
       act.context.actor,
       act.rcOwner,
+      act,
     );
     synchronous = false;
     if (!completed) this.running = false;
@@ -4401,6 +4464,7 @@ class ExecutorV1 {
     done: (fault: Fault | null) => void,
     actor: ActorInstance | null = this.current.context.actor,
     rcOwner: RcOwner | null = actor?.rcOwner ?? this.current.rcOwner,
+    retainedBy?: Activation,
   ): void {
     const pending: Array<
       | VmValue
@@ -4503,6 +4567,8 @@ class ExecutorV1 {
               () => next(),
               next,
               rcOwner,
+              false,
+              retainedBy,
             );
             return;
           }
@@ -4520,6 +4586,7 @@ class ExecutorV1 {
                 (fault) => next(fault ?? (task.close ? task.fault : null)),
                 actor,
                 rcOwner,
+                retainedBy,
               );
               return;
             }
@@ -4557,6 +4624,8 @@ class ExecutorV1 {
                   () => next(),
                   next,
                   rcOwner,
+                  false,
+                  retainedBy,
                 );
                 return;
               }
@@ -4798,16 +4867,24 @@ class ExecutorV1 {
     failed: (fault: Fault) => void,
     rcOwner: RcOwner | null = actor?.rcOwner ?? null,
     inline = false,
+    retainedBy?: Activation,
   ): FrameContext {
     const context: FrameContext = {
       id: actor?.id ?? "actor:root",
       actor,
+      retainsTransferableFrame:
+        !!retainedBy?.context.generator ||
+        retainedBy?.context.retainsTransferableFrame,
       rcOwner,
       returned: (value, released) => {
+        retainedBy?.managedChildren.delete(frame);
         returned(value);
         released();
       },
-      failed: (fault) => failed(fault),
+      failed: (fault) => {
+        retainedBy?.managedChildren.delete(frame);
+        failed(fault);
+      },
     };
     const frame = this.activate(
       this.functionAt(callable),
@@ -4818,6 +4895,7 @@ class ExecutorV1 {
       null,
       context,
     );
+    retainedBy?.managedChildren.add(frame);
     let cancelled: Fault | null = null;
     context.cancel = (
       fault = { kind: "panic", message: "task cancelled", cancelled: true },

@@ -304,6 +304,23 @@ test("actor-owned generator adoption transfers a live gated task scope", async (
   assert.equal(result.exit_code, 0, JSON.stringify(result));
 });
 
+test("actor-owned generator adoption rebinds suspended authored cleanup", async () => {
+  const source = fs.readFileSync(
+    path.join(
+      repoRoot,
+      "tests/core-acceptance/cases/actor-owned-budget-cleanup-transfer.hew",
+    ),
+    "utf8",
+  );
+  const result = await runProgram(source, "");
+  assert.equal(
+    result.stdout,
+    "cleanup transfer limit\n",
+    JSON.stringify(result),
+  );
+  assert.equal(result.exit_code, 1, JSON.stringify(result));
+});
+
 test("actor-owned supervised restart releases the old incarnation before fresh capacity", async () => {
   const source = fs.readFileSync(
     path.join(

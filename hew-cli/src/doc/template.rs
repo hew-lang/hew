@@ -241,10 +241,15 @@ footer a:hover { color: var(--accent); }
         background: var(--bg);
         border-right: 1px solid var(--border);
         transform: translateX(-105%);
-        transition: transform 0.18s ease;
+        visibility: hidden;
+        transition: transform 0.18s ease, visibility 0s linear 0.18s;
     }
     body.sidebar-open { overflow: hidden; }
-    body.sidebar-open .docs-sidebar { transform: translateX(0); }
+    body.sidebar-open .docs-sidebar {
+        transform: translateX(0);
+        visibility: visible;
+        transition-delay: 0s;
+    }
     .docs-backdrop {
         position: fixed;
         inset: 0;
@@ -288,16 +293,36 @@ const menuButton = document.querySelector('.sidebar-toggle');
 const closeButton = document.querySelector('.sidebar-close');
 const backdrop = document.querySelector('.docs-backdrop');
 const sidebar = document.getElementById('docs-sidebar');
+const mobileSidebar = matchMedia('(max-width: 64rem)');
 let sidebarReturnFocus = null;
+const setSidebarAvailability = (hidden) => {
+  if (!sidebar) return;
+  sidebar.inert = hidden;
+  sidebar.setAttribute('aria-hidden', hidden ? 'true' : 'false');
+};
+const syncSidebar = () => {
+  if (!mobileSidebar.matches) {
+    document.body.classList.remove('sidebar-open');
+    menuButton?.setAttribute('aria-expanded', 'false');
+    setSidebarAvailability(false);
+    sidebarReturnFocus = null;
+    return;
+  }
+  setSidebarAvailability(!document.body.classList.contains('sidebar-open'));
+};
 const closeSidebar = () => {
   if (!document.body.classList.contains('sidebar-open')) return;
   document.body.classList.remove('sidebar-open');
   menuButton?.setAttribute('aria-expanded', 'false');
-  sidebarReturnFocus?.focus();
+  const returnFocus = sidebarReturnFocus;
   sidebarReturnFocus = null;
+  returnFocus?.focus();
+  setSidebarAvailability(true);
 };
 const openSidebar = () => {
+  if (!mobileSidebar.matches) return;
   sidebarReturnFocus = document.activeElement;
+  setSidebarAvailability(false);
   document.body.classList.add('sidebar-open');
   menuButton?.setAttribute('aria-expanded', 'true');
   closeButton?.focus();
@@ -306,14 +331,32 @@ menuButton?.addEventListener('click', openSidebar);
 closeButton?.addEventListener('click', closeSidebar);
 backdrop?.addEventListener('click', closeSidebar);
 sidebar?.addEventListener('click', (event) => {
-  if (event.target.closest('a') && matchMedia('(max-width: 64rem)').matches) closeSidebar();
+  if (event.target.closest('a') && mobileSidebar.matches) closeSidebar();
 });
 document.addEventListener('keydown', (event) => {
-  if (event.key === 'Escape' && document.body.classList.contains('sidebar-open')) {
+  const open = mobileSidebar.matches && document.body.classList.contains('sidebar-open');
+  if (event.key === 'Escape' && open) {
     event.preventDefault();
     closeSidebar();
+    return;
+  }
+  if (event.key === 'Tab' && open && sidebar) {
+    const focusable = [...sidebar.querySelectorAll('a[href], button:not([disabled]), summary')]
+      .filter((element) => element.getClientRects().length > 0);
+    if (!focusable.length) return;
+    const first = focusable[0];
+    const last = focusable[focusable.length - 1];
+    if (event.shiftKey && (document.activeElement === first || !sidebar.contains(document.activeElement))) {
+      event.preventDefault();
+      last.focus();
+    } else if (!event.shiftKey && (document.activeElement === last || !sidebar.contains(document.activeElement))) {
+      event.preventDefault();
+      first.focus();
+    }
   }
 });
+mobileSidebar.addEventListener?.('change', syncSidebar);
+syncSidebar();
 
 const outline = document.querySelector('.docs-outline');
 const outlineList = document.getElementById('docs-outline-list');
@@ -574,6 +617,15 @@ mod tests {
         assert!(html.contains("<title>Index — Example API</title>"));
         assert!(html.contains("https://example.com"));
         assert!(!html.contains("hew.sh"));
+    }
+
+    #[test]
+    fn mobile_sidebar_is_hidden_and_keyboard_contained() {
+        let html = wrap_page_with_sidebar(&DocSiteConfig::default(), "Index", "", None, "");
+        assert!(html.contains("visibility: hidden;"));
+        assert!(html.contains("sidebar.inert = hidden;"));
+        assert!(html.contains("event.key === 'Tab' && open"));
+        assert!(html.contains("mobileSidebar.addEventListener?.('change', syncSidebar)"));
     }
 
     #[test]

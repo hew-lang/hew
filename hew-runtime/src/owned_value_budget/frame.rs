@@ -52,6 +52,16 @@ pub unsafe extern "C" fn hew_managed_visit_invocation(
                 return status;
             }
         }
+        if let Some(operation) = unsafe { frame.operation.as_ref() } {
+            if let Some(layout) = unsafe { operation.layout.as_ref() } {
+                // SAFETY: the active protocol owns this typed handle until
+                // its emitter clears the same root before consumption/free.
+                let status = unsafe { visit_value(layout, operation.slot, visitor) };
+                if status != 0 {
+                    return status;
+                }
+            }
+        }
         if !frame.child.is_null() {
             // SAFETY: a non-null child remains pinned by its suspended parent.
             let child = unsafe { frame.child.read() }
@@ -123,6 +133,7 @@ mod tests {
                 initialized: &raw const live,
             };
             let child_view = HewManagedFrame {
+                operation: core::ptr::null(),
                 slots: &raw const child_entry,
                 count: 1,
                 child: core::ptr::null(),
@@ -131,6 +142,7 @@ mod tests {
                 .cast::<hew_cabi::coro::HewCoroInvocation>()
                 .cast_const();
             let view = HewManagedFrame {
+                operation: core::ptr::null(),
                 slots: entries.as_ptr(),
                 count: entries.len(),
                 child: &raw const child_record,

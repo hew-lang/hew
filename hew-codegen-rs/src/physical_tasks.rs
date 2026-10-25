@@ -499,6 +499,12 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             "hew_checked_task_wait_new",
             &[task_value.into(), waker.into()],
         )?;
+        frame.bind_operation(
+            self.ctx,
+            &self.builder,
+            managed::operation_layout(self.ctx, self.llvm, "hew_managed_visit_task_wait")?,
+            wait,
+        )?;
         self.clear_owned(*task)?;
         let poll = self.ctx.append_basic_block(self.value, "await.poll");
         let request_cancel = self
@@ -560,6 +566,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             .build_conditional_branch(cancellation, abandoned, take)
             .llvm_ctx("choose task result transfer")?;
         self.builder.position_at_end(abandoned);
+        frame.clear_operation(self.ctx, &self.builder)?;
         self.free_handle("hew_checked_task_wait_free", wait)?;
         self.initialize_cancellation_fault()?;
         self.emit_edge(cancel)?;
@@ -654,6 +661,12 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             "hew_checked_scope_wait_new",
             &[handle.into(), waker.into(), frame.state.into()],
         )?;
+        frame.bind_operation(
+            self.ctx,
+            &self.builder,
+            managed::operation_layout(self.ctx, self.llvm, "hew_managed_visit_scope_wait")?,
+            wait,
+        )?;
         if mode == hew_mir::physical::TaskScopeJoinMode::CancelLosers {
             self.free_handle("hew_checked_scope_wait_cancel_losers", wait)?;
         }
@@ -729,6 +742,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             &[wait.into(), child_fault_slot.into()],
             "scope.child.status",
         )?;
+        frame.clear_operation(self.ctx, &self.builder)?;
         self.free_handle("hew_checked_scope_wait_free", wait)?;
         let primary = self
             .builder

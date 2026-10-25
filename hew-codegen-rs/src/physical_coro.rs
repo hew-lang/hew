@@ -25,6 +25,8 @@ pub(super) struct Frame<'ctx> {
     pub invalid_destroy: BasicBlock<'ctx>,
     child: Cell<Option<(PointerValue<'ctx>, PointerValue<'ctx>)>>,
     child_invocation: Cell<Option<PointerValue<'ctx>>>,
+    managed_view: Cell<Option<PointerValue<'ctx>>>,
+    managed_operation: Cell<Option<(PointerValue<'ctx>, PointerValue<'ctx>)>>,
 }
 
 const _: () = {
@@ -330,7 +332,7 @@ pub(super) fn begin<'ctx>(
         .build_unreachable()
         .llvm_ctx("terminate invalid coroutine entry")?;
     builder.position_at_end(body);
-    Ok(Frame {
+    let frame = Frame {
         state,
         completion_state: state,
         owns_state: false,
@@ -343,10 +345,135 @@ pub(super) fn begin<'ctx>(
         invalid_destroy,
         child: Cell::new(None),
         child_invocation: Cell::new(None),
-    })
+        managed_view: Cell::new(None),
+        managed_operation: Cell::new(None),
+    };
+    frame.bind_managed_roots(ctx, module, builder, pointer.const_null(), 0)?;
+    Ok(frame)
 }
 
 impl<'ctx> Frame<'ctx> {
+    pub(super) fn bind_managed_roots(
+        &self,
+        ctx: &'ctx Context,
+        module: &Module<'ctx>,
+        builder: &Builder<'ctx>,
+        table: PointerValue<'ctx>,
+        count: u64,
+    ) -> CodegenResult<()> {
+        let pointer = ctx.ptr_type(AddressSpace::default());
+        let data_layout = module.get_data_layout();
+        let data_layout = data_layout
+            .as_str()
+            .to_str()
+            .map_err(|_| CodegenError::FailClosed("target data layout is not UTF-8".into()))?;
+        let size = ctx.ptr_sized_int_type(&TargetData::create(data_layout), None);
+        let view_ty = ctx.struct_type(
+            &[pointer.into(), size.into(), pointer.into(), pointer.into()],
+            false,
+        );
+        let view = if let Some(view) = self.managed_view.get() {
+            view
+        } else {
+            let view = self.storage(ctx, view_ty.into(), "managed.frame")?;
+            self.managed_view.set(Some(view));
+            view
+        };
+        let (operation, _) = self.operation_storage(ctx)?;
+        let child = self.child_storage(ctx)?.0;
+        let entries: [BasicValueEnum<'ctx>; 4] = [
+            table.into(),
+            size.const_int(count, false).into(),
+            child.into(),
+            operation.into(),
+        ];
+        for (index, entry) in entries.into_iter().enumerate() {
+            let field = builder
+                .build_struct_gep(view_ty, view, index as u32, "managed.frame.field")
+                .llvm_ctx("address canonical invocation roots")?;
+            builder
+                .build_store(field, entry)
+                .llvm_ctx("bind canonical invocation roots")?;
+        }
+        let bind = get_or_declare_external(
+            module,
+            "hew_budget_bind_frame",
+            ctx.void_type().fn_type(&[pointer.into(); 2], false),
+        )?;
+        builder
+            .build_call(bind, &[self.state.into(), view.into()], "")
+            .llvm_ctx("publish canonical invocation roots")?;
+        Ok(())
+    }
+
+    fn operation_storage(
+        &self,
+        ctx: &'ctx Context,
+    ) -> CodegenResult<(PointerValue<'ctx>, PointerValue<'ctx>)> {
+        if let Some(operation) = self.managed_operation.get() {
+            return Ok(operation);
+        }
+        let pointer = ctx.ptr_type(AddressSpace::default());
+        let row = ctx.struct_type(&[pointer.into(); 2], false);
+        let metadata = self.storage(ctx, row.into(), "managed.operation")?;
+        let owner = self.storage(ctx, pointer.into(), "managed.operation.owner")?;
+        let builder = ctx.create_builder();
+        if let Some(end) = self.entry.get_terminator() {
+            builder.position_before(&end);
+        } else {
+            builder.position_at_end(self.entry);
+        }
+        let layout = builder
+            .build_struct_gep(row, metadata, 0, "managed.operation.layout")
+            .llvm_ctx("address active operation descriptor")?;
+        let slot = builder
+            .build_struct_gep(row, metadata, 1, "managed.operation.slot")
+            .llvm_ctx("address active operation owner")?;
+        builder
+            .build_store(layout, pointer.const_null())
+            .llvm_ctx("initialize inactive operation")?;
+        builder
+            .build_store(slot, owner)
+            .llvm_ctx("bind active operation slot")?;
+        builder
+            .build_store(owner, pointer.const_null())
+            .llvm_ctx("initialize protocol owner")?;
+        let result = (metadata, owner);
+        self.managed_operation.set(Some(result));
+        Ok(result)
+    }
+
+    pub(super) fn bind_operation(
+        &self,
+        ctx: &'ctx Context,
+        builder: &Builder<'ctx>,
+        layout: PointerValue<'ctx>,
+        owner: PointerValue<'ctx>,
+    ) -> CodegenResult<()> {
+        let (metadata, slot) = self.operation_storage(ctx)?;
+        let pointer = ctx.ptr_type(AddressSpace::default());
+        let row = ctx.struct_type(&[pointer.into(); 2], false);
+        let field = builder
+            .build_struct_gep(row, metadata, 0, "managed.operation.layout")
+            .llvm_ctx("address active protocol descriptor")?;
+        builder
+            .build_store(slot, owner)
+            .llvm_ctx("retain current protocol handle")?;
+        builder
+            .build_store(field, layout)
+            .llvm_ctx("publish typed protocol owner")?;
+        Ok(())
+    }
+
+    pub(super) fn clear_operation(
+        &self,
+        ctx: &'ctx Context,
+        builder: &Builder<'ctx>,
+    ) -> CodegenResult<()> {
+        let pointer = ctx.ptr_type(AddressSpace::default());
+        self.bind_operation(ctx, builder, pointer.const_null(), pointer.const_null())
+    }
+
     pub fn init_child(
         &self,
         ctx: &'ctx Context,

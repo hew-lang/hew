@@ -83,6 +83,16 @@ pub struct HewManagedFrame {
     pub slots: *const HewManagedFrameSlot,
     pub count: usize,
     pub child: *const *const crate::coro::HewCoroInvocation,
+    pub operation: *const HewManagedFrameOperation,
+}
+
+/// The current compiler-owned protocol handle, using its canonical provider
+/// descriptor. Protocol bookkeeping contributes no payload of its own.
+#[repr(C)]
+#[derive(Debug)]
+pub struct HewManagedFrameOperation {
+    pub layout: *const crate::value::HewValueLayout,
+    pub slot: *const c_void,
 }
 
 /// Visit the managed descendants described by one canonical value layout.

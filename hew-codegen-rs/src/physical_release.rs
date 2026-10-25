@@ -1014,6 +1014,19 @@ fn drain_operation<'ctx>(
     poll_name: &str,
     fault_name: &str,
 ) -> CodegenResult<()> {
+    let visit = match poll_name {
+        "hew_release_driver_poll" => Some("hew_managed_visit_release_driver_slot"),
+        "hew_actor_call_cleanup_poll" => Some("hew_managed_visit_actor_call"),
+        _ => None,
+    };
+    if let Some(visit) = visit {
+        frame.bind_operation(
+            values.ctx,
+            values.builder,
+            managed::operation_layout(values.ctx, values.llvm, visit)?,
+            owner,
+        )?;
+    }
     let pointer = values.ctx.ptr_type(AddressSpace::default());
     let poll = values
         .ctx
@@ -1056,6 +1069,9 @@ fn drain_operation<'ctx>(
         .build_unreachable()
         .llvm_ctx("refuse unfinished operation destruction")?;
     values.builder.position_at_end(done);
+    if visit.is_some() {
+        frame.clear_operation(values.ctx, values.builder)?;
+    }
     let take_fault = get_or_declare_external(
         values.llvm,
         fault_name,

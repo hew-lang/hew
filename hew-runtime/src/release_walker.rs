@@ -739,6 +739,18 @@ pub unsafe extern "C" fn hew_release_driver_free(driver: *mut c_void) {
     drop(unsafe { Box::from_raw(driver.cast::<ReleaseDriver>()) });
 }
 
+/// Typed protocol-slot adapter for a cleanup driver.
+/// # Safety
+/// The slot retains one frozen optional driver pointer during this walk.
+#[no_mangle]
+pub unsafe extern "C" fn hew_managed_visit_release_driver_slot(
+    slot: *const c_void,
+    visitor: *const hew_cabi::managed::HewManagedStorageVisitor,
+) -> i32 {
+    // SAFETY: this canonical protocol descriptor matches the compiler's slot.
+    unsafe { hew_managed_visit_release_driver(slot.cast::<*mut c_void>().read(), visitor) }
+}
+
 /// Visit the typed obligations still owned by one suspended cleanup driver.
 /// # Safety
 /// Its provider freezes execution and retains the driver throughout this walk.

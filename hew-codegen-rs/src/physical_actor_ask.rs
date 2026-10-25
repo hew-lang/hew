@@ -38,6 +38,12 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             CodegenError::FailClosed("ask requires a resumable invocation".into())
         })?;
         let operation = self.emit_actor_call_start(actor, message, policy, sealed, args)?;
+        frame.bind_operation(
+            self.ctx,
+            &self.builder,
+            managed::operation_layout(self.ctx, self.llvm, "hew_managed_visit_actor_call")?,
+            operation,
+        )?;
         let ArgumentTransfer::Borrow(target) = args[0] else {
             return Err(CodegenError::FailClosed(
                 "ask must borrow its target".into(),
@@ -108,6 +114,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
         self.leave(&mut join, suspend::EXIT_UNWIND)?;
         let selected = self.enter_join(&join)?;
         self.free_handle("hew_actor_wait_edge_free", wait_edge)?;
+        frame.clear_operation(self.ctx, &self.builder)?;
         self.release_handle(release::Handle::ActorCall, operation)?;
         let ([normal_block, cancel_block], unwind_block) = self.dispatch_exits(
             selected,

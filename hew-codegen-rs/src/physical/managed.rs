@@ -19,9 +19,6 @@ pub(super) fn bind_frame_roots<'ctx>(
     scopes: &BTreeMap<hew_mir::physical::TaskScopeId, PointerValue<'ctx>>,
 ) -> CodegenResult<()> {
     let pointer = module.ctx.ptr_type(AddressSpace::default());
-    let size_ty = module
-        .ctx
-        .ptr_sized_int_type(&TargetData::create(&module.module.target.data_layout), None);
     let mut roots = flags
         .iter()
         .filter(|(id, _)| {
@@ -96,38 +93,63 @@ pub(super) fn bind_frame_roots<'ctx>(
                 .llvm_ctx("bind typed root metadata")?;
         }
     }
-    let child = frame.child_storage(module.ctx)?.0;
-    let view_ty = module
-        .ctx
-        .struct_type(&[pointer.into(), size_ty.into(), pointer.into()], false);
-    let view = frame.storage(module.ctx, view_ty.into(), "managed.frame")?;
-    let fields: [BasicValueEnum<'ctx>; 3] = [
-        table.into(),
-        size_ty.const_int(u64::from(count), false).into(),
-        child.into(),
-    ];
-    for (index, entry) in fields.into_iter().enumerate() {
-        let field = builder
-            .build_struct_gep(
-                view_ty,
-                view,
-                u32::try_from(index).expect("three view fields"),
-                "managed.frame.view",
-            )
-            .llvm_ctx("address the canonical frame view")?;
-        builder
-            .build_store(field, entry)
-            .llvm_ctx("initialize the canonical frame view")?;
-    }
-    let bind = get_or_declare_external(
-        &module.llvm,
-        "hew_budget_bind_frame",
-        module.ctx.void_type().fn_type(&[pointer.into(); 2], false),
-    )?;
-    builder
-        .build_call(bind, &[frame.state.into(), view.into()], "")
-        .llvm_ctx("publish typed invocation roots")?;
+    frame.bind_managed_roots(module.ctx, &module.llvm, builder, table, u64::from(count))?;
     Ok(())
+}
+
+/// A protocol handle exposes only its existing typed provider descendants.
+pub(super) fn operation_layout<'ctx>(
+    ctx: &'ctx Context,
+    llvm: &Module<'ctx>,
+    visit: &str,
+) -> CodegenResult<PointerValue<'ctx>> {
+    let name = format!("__hew_budget_operation_{visit}");
+    if let Some(layout) = llvm.get_global(&name) {
+        return Ok(layout.as_pointer_value());
+    }
+    let pointer = ctx.ptr_type(AddressSpace::default());
+    let callback = get_or_declare_external(
+        llvm,
+        visit,
+        ctx.i32_type().fn_type(&[pointer.into(); 2], false),
+    )?;
+    let managed_ty = ctx.struct_type(&[ctx.i64_type().into(), pointer.into()], false);
+    let managed = llvm.add_global(managed_ty, None, &format!("{name}_managed"));
+    managed.set_linkage(Linkage::Internal);
+    managed.set_constant(true);
+    managed.set_initializer(&managed_ty.const_named_struct(&[
+        ctx.i64_type().const_zero().into(),
+        callback.as_global_value().as_pointer_value().into(),
+    ]));
+    let data_layout = llvm.get_data_layout();
+    let target = TargetData::create(
+        data_layout
+            .as_str()
+            .to_str()
+            .map_err(|_| CodegenError::FailClosed("invalid target data layout".into()))?,
+    );
+    let size = ctx.ptr_sized_int_type(&target, None);
+    let layout_ty = value_descriptor_type(ctx, &target);
+    let layout = llvm.add_global(layout_ty, None, &name);
+    layout.set_linkage(Linkage::Internal);
+    layout.set_constant(true);
+    layout.set_initializer(
+        &layout_ty.const_named_struct(&[
+            size.const_int(u64::from(target.get_pointer_byte_size(None)), false)
+                .into(),
+            size.const_int(u64::from(target.get_abi_alignment(&pointer)), false)
+                .into(),
+            ctx.i8_type()
+                .const_int(HewTypeOwnershipKind::Plain as u64, false)
+                .into(),
+            pointer.const_null().into(),
+            pointer.const_null().into(),
+            pointer.const_null().into(),
+            pointer.const_null().into(),
+            managed.as_pointer_value().into(),
+        ]),
+    );
+    Ok(layout.as_pointer_value())
 }
 
 pub(super) fn value_layout_symbol(

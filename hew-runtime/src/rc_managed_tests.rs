@@ -146,6 +146,57 @@ unsafe fn release_node(
 }
 
 #[test]
+fn scalar_replacement_succeeds_without_a_cleanup_cursor() {
+    let layout = HewValueLayout {
+        size: size_of::<i64>(),
+        align: align_of::<i64>(),
+        ownership_kind: HewTypeOwnershipKind::Plain,
+        clone_fn: None,
+        drop_fn: None,
+        release_start: None,
+        code_owner: ptr::null(),
+        managed: &HewManagedValueDescriptor {
+            slot_bytes: 8,
+            visit: None,
+        },
+    };
+    let owner = ValueOwner::new(Some(8));
+    // SAFETY: the scalar input/replacement and exact descriptors stay live through cleanup.
+    unsafe {
+        with_value_owner(&Some(owner.clone()), || {
+            let input = 1_i64;
+            let mut status = 0;
+            let value = hew_rc_new_managed(
+                (&raw const input).cast(),
+                &raw const layout,
+                c"i64".as_ptr(),
+                ptr::null(),
+                &raw const RC,
+                &raw mut status,
+            );
+            assert_eq!(status, 0);
+            assert_eq!(owner.live_bytes(), 8);
+            let mut replacement = 9_i64;
+            let cursor = hew_rc_set_release_checked(
+                value,
+                (&raw mut replacement).cast(),
+                &raw const layout,
+                &raw mut status,
+            );
+            assert_eq!(status, 0);
+            assert!(cursor.is_null());
+            assert_eq!(replacement, 1);
+            let mut observed = 0_i64;
+            ptr::copy_nonoverlapping(value, (&raw mut observed).cast(), size_of::<i64>());
+            assert_eq!(observed, 9);
+            assert_eq!(owner.live_bytes(), 8);
+            hew_rc_drop_managed(value);
+        });
+        assert_eq!(owner.live_bytes(), 0);
+    }
+}
+
+#[test]
 fn synchronous_source_release_refunds_before_reuse() {
     // SAFETY: each checked constructor transfers the exact Node input to its cell.
     unsafe {

@@ -1102,7 +1102,9 @@ pub unsafe extern "C-unwind" fn hew_rc_set_release_checked(
             }
         }
         let cursor = hew_rc_set_release(value, replacement, layout);
-        (*cursor).set_value_owner(owner);
+        if let Some(cursor) = cursor.as_mut() {
+            cursor.set_value_owner(owner);
+        }
         cursor
     }
 }

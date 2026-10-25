@@ -15,6 +15,18 @@ pub const DESCEND: i32 = 0;
 pub const SKIP_DESCENDANTS: i32 = 1;
 /// Missing metadata must fail closed rather than describe an empty graph.
 pub const UNDESCRIBED: i32 = 2;
+/// Canonical payload arithmetic overflow is an exceeded budget.
+pub const HEAP_EXCEEDED: i32 = 3;
+
+#[repr(u8)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HewManagedWalkKind {
+    Retain,
+    Release,
+    /// Preflight a semantic copy. A null storage identity describes fresh
+    /// private capacity, while an existing identity describes a shared retain.
+    ClonePlan,
+}
 
 /// Called once for each encountered backing ownership edge. The callback
 /// records that edge and returns `DESCEND`, `SKIP_DESCENDANTS` or a failure status.
@@ -26,6 +38,7 @@ pub type HewManagedStorageVisit =
 pub struct HewManagedStorageVisitor {
     pub context: *mut c_void,
     pub storage: HewManagedStorageVisit,
+    pub kind: HewManagedWalkKind,
 }
 
 /// Traverse a live concrete value slot without transferring or modifying it.

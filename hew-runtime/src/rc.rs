@@ -284,6 +284,14 @@ unsafe fn header_from_data(data_ptr: *mut u8) -> *mut HewRcInner {
     unsafe { data_ptr.sub(offset) }.cast()
 }
 
+/// Exact typed payload witness retained by this shared allocation.
+/// # Safety
+/// `data` is a live strong Rc payload pointer.
+pub(crate) unsafe fn managed_payload_layout(data: *mut u8) -> HewValueLayout {
+    // SAFETY: a retained strong handle keeps its immutable header live.
+    unsafe { (*header_from_data(data)).layout }
+}
+
 /// Normalise the caller-supplied payload alignment into a valid `Layout`
 /// alignment (a non-zero power of two).
 ///

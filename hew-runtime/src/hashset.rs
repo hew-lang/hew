@@ -81,7 +81,10 @@ use crate::vec::HewVec;
 /// heap allocation.
 static VALUE_LAYOUT: HewValueLayout = HewValueLayout {
     code_owner: core::ptr::null(),
-    managed: core::ptr::null(),
+    managed: &hew_cabi::managed::HewManagedValueDescriptor {
+        slot_bytes: 0,
+        visit: None,
+    },
     release_start: None,
     size: 0,
     align: 1,
@@ -114,6 +117,13 @@ static VALUE_LAYOUT: HewValueLayout = HewValueLayout {
 pub struct HewLayoutHashSet {
     /// Underlying layout-backed map. Elements are keys; values are ZST.
     map: *mut HewLayoutHashMap,
+}
+
+/// # Safety
+/// The caller retains the set throughout the borrow.
+pub(crate) unsafe fn managed_map(set: *const HewLayoutHashSet) -> *const HewLayoutHashMap {
+    // SAFETY: the live set owns its map.
+    unsafe { (*set).map }
 }
 
 /// Begin a borrowed set lookup or insertion using the map's shared probe.

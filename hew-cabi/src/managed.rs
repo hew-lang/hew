@@ -43,6 +43,21 @@ pub enum HewManagedWalkKind {
     ResumeTransfer,
 }
 
+impl HewManagedWalkKind {
+    /// Provider transfer follows known typed descendants independently of
+    /// quota accounting. Foreign payloads still refuse bounded acquisition.
+    #[must_use]
+    pub const fn is_transfer(self) -> bool {
+        matches!(
+            self,
+            Self::PrepareTransfer
+                | Self::CommitTransfer
+                | Self::AbortTransfer
+                | Self::ResumeTransfer
+        )
+    }
+}
+
 /// Called once for each encountered backing ownership edge. The callback
 /// records that edge and returns `DESCEND`, `SKIP_DESCENDANTS` or a failure status.
 pub type HewManagedStorageVisit =

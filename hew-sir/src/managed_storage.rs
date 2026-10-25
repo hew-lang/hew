@@ -272,9 +272,9 @@ pub fn managed_storage_shape(
             {
                 match builtin {
                     BuiltinType::NodeId | BuiltinType::Location => S::Scalar,
-                    BuiltinType::ActorHandle | BuiltinType::ActorFn => {
-                        S::Handle(ManagedHandleKind::Actor)
-                    }
+                    BuiltinType::ActorHandle
+                    | BuiltinType::ActorFn
+                    | BuiltinType::SupervisorPool => S::Handle(ManagedHandleKind::Actor),
                     BuiltinType::CancellationToken => S::Handle(ManagedHandleKind::Cancellation),
                     BuiltinType::ActorCall => managed_actor_call_shape(module, ty)?,
                     BuiltinType::Task | BuiltinType::Stream | BuiltinType::Sink => {
@@ -319,7 +319,12 @@ fn managed_structural_shape(
     module: &SemModule,
     ty: &ResolvedTy,
 ) -> Result<ManagedStorageShape, ManagedLayoutError> {
-    if let Some(shape) = module.variant_shape_for_type(ty) {
+    if matches!(ty, ResolvedTy::Named { head: TypeHead::Nominal(head), args, .. }
+        if head.id == hew_types::KnownDecl::SemaphoreHandle.nominal() && args.is_empty())
+    {
+        // The semaphore retains count/waiter bookkeeping, never typed Hew values.
+        Ok(ManagedStorageShape::Handle(ManagedHandleKind::Pointer))
+    } else if let Some(shape) = module.variant_shape_for_type(ty) {
         Ok(ManagedStorageShape::Variant {
             indirect: shape.is_indirect,
             payload_bytes: managed_variant_payload(module, shape)?.bytes,
@@ -442,6 +447,7 @@ fn slot(
                 | BuiltinType::Rc | BuiltinType::Weak | BuiltinType::Task
                 | BuiltinType::ActorCall | BuiltinType::Generator | BuiltinType::Stream
                 | BuiltinType::Sink | BuiltinType::ActorHandle | BuiltinType::ActorFn
+                | BuiltinType::SupervisorPool
                 | BuiltinType::CancellationToken
             ),
             ..
@@ -624,6 +630,45 @@ mod tests {
             managed_storage_shape(&module, &fields).unwrap(),
             ManagedStorageShape::Aggregate {
                 fields: vec![ResolvedTy::U64, ResolvedTy::String]
+            }
+        );
+    }
+
+    #[test]
+    fn pool_roles_and_canonical_semaphores_have_no_retained_payload() {
+        let module = SemModule::default();
+        let pool = ResolvedTy::Named {
+            head: TypeHead::Builtin(BuiltinType::SupervisorPool),
+            args: vec![ResolvedTy::String, ResolvedTy::Bytes],
+            is_opaque: false,
+        };
+        assert_eq!(managed_slot(&module, &pool).unwrap().bytes, 8);
+        assert_eq!(
+            managed_storage_shape(&module, &pool).unwrap(),
+            ManagedStorageShape::Handle(ManagedHandleKind::Actor)
+        );
+        let semaphore = ResolvedTy::Named {
+            head: hew_types::KnownDecl::SemaphoreHandle.head(),
+            args: Vec::new(),
+            is_opaque: true,
+        };
+        assert_eq!(
+            managed_storage_shape(&module, &semaphore).unwrap(),
+            ManagedStorageShape::Handle(ManagedHandleKind::Pointer)
+        );
+        let opaque = ResolvedTy::Named {
+            head: TypeHead::Nominal(hew_types::NominalHead::new(
+                hew_types::KnownDecl::Timer.nominal(),
+                "std.semaphore.SemaphoreHandle",
+            )),
+            args: Vec::new(),
+            is_opaque: true,
+        };
+        assert_eq!(
+            managed_structural_shape(&module, &opaque).unwrap(),
+            ManagedStorageShape::Provider {
+                kind: ManagedProviderKind::Opaque,
+                children: Vec::new()
             }
         );
     }

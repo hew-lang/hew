@@ -524,6 +524,10 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
                     kind: Provider::Encoding(hew_types::BuiltinType::TomlValue),
                     ..
                 } => Some("hew_managed_visit_toml"),
+                Shape::Provider {
+                    kind: Provider::Opaque,
+                    ..
+                } => Some("hew_managed_visit_opaque"),
                 _ => None,
             };
             if let Some(runtime) = runtime {

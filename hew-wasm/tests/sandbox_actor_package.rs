@@ -1245,6 +1245,14 @@ fn pipelines_preserve_order_and_drain_on_every_exit() {
 }
 
 #[test]
+fn bounded_semaphore_handles_retain_only_runtime_bookkeeping() {
+    assert_native_manifest(
+        "actor-owned-budget-semaphore",
+        hew_compile::SourceSet::in_memory(),
+    );
+}
+
+#[test]
 fn pipelines_close_actor_streams_before_next_turn() {
     assert_native_manifest("pipeline-actor-stream", hew_compile::SourceSet::in_memory());
 }

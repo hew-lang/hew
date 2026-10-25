@@ -1053,7 +1053,23 @@ class ExecutorV1 {
       (value, type) => {
         this.bindManagedStream(value, type, actor);
         const row = this.managed.row(type);
-        if (row.kind === "generator")
+        if (value.kind === "rc" && value.cell && !value.closed) {
+          if (row.kind !== "shared")
+            throw new Error("Rc has no canonical payload descriptor");
+          const cell = value.cell;
+          if (cell.owner !== actor.rcOwner && !cell.dying) {
+            cell.owner?.blocks.delete(cell);
+            cell.owner = actor.rcOwner;
+            cell.managedPayload = row.payload;
+            actor.rcOwner.blocks.add(cell);
+            cell.managedLease = this.rehomeLease(
+              cell.managedLease,
+              actor.budget,
+            );
+            if (!cell.managedLease && actor.budget)
+              cell.managedLease = actor.budget.retain({ value, type });
+          }
+        } else if (row.kind === "generator")
           this.rehomeFrame(this.generatorFor(value).frame, actor);
         else if (value.kind === "task")
           this.rehomeTask(this.taskFor(value), actor);
@@ -1120,6 +1136,7 @@ class ExecutorV1 {
     if (frame.accountActor === actor) return;
     const previous = frame.accountActor;
     frame.accountActor = actor;
+    frame.rcOwner = actor.rcOwner;
     frame.context.actor = actor;
     frame.context.id = actor.id;
     const cells = new Set<Cell>();

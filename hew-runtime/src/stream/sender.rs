@@ -87,36 +87,44 @@ pub(super) struct SharedWrite {
 }
 
 impl SharedWrite {
-    pub(super) fn new(
+    pub(super) unsafe fn new(
         owner: Arc<SharedSender>,
         source: *mut HewSink,
         parent: *const crate::coro_state::HewCoroState,
         park: bool,
+        data: *const c_void,
+        layout: &HewValueLayout,
     ) -> Self {
+        let allocation = std::alloc::Layout::from_size_align(layout.size.max(1), layout.align)
+            .unwrap_or_else(|_| std::process::abort());
+        // SAFETY: this operation takes the initialized source into aligned storage.
+        let slot = unsafe { std::alloc::alloc(allocation) }.cast::<c_void>();
+        if slot.is_null() {
+            std::alloc::handle_alloc_error(allocation);
+        }
+        // SAFETY: the caller transfers one complete value without cloning its children.
+        unsafe {
+            std::ptr::copy_nonoverlapping(data.cast::<u8>(), slot.cast(), layout.size);
+        }
         Self {
             owner,
             child: std::ptr::null_mut(),
             claimed: false,
             observed: false,
-            input: None,
+            input: Some((slot, allocation, true)),
             fault: std::ptr::null_mut(),
             source,
             parent,
             park,
             invocation: crate::callable::BorrowedInvocation::new(),
-            argument: std::ptr::null_mut(),
+            argument: slot,
             encoded: std::mem::MaybeUninit::uninit(),
             encoded_live: false,
             cancelled: false,
         }
     }
 
-    pub(super) unsafe fn poll(
-        &mut self,
-        envelope: &mut Option<Vec<u8>>,
-        layout: &HewValueLayout,
-        waker: &Arc<OwnedWaker>,
-    ) -> i32 {
+    pub(super) unsafe fn poll(&mut self, layout: &HewValueLayout, waker: &Arc<OwnedWaker>) -> i32 {
         if !self.fault.is_null() {
             return 3;
         }
@@ -148,24 +156,6 @@ impl SharedWrite {
                 };
             }
             self.claimed = true;
-            let allocation = std::alloc::Layout::from_size_align(layout.size.max(1), layout.align)
-                .unwrap_or_else(|_| std::process::abort());
-            // SAFETY: the runtime transfers its owned envelope into an exact aligned slot.
-            let slot = unsafe { std::alloc::alloc(allocation) }.cast::<c_void>();
-            if slot.is_null() {
-                std::alloc::handle_alloc_error(allocation);
-            }
-            // SAFETY: the owned envelope initializes this exact aligned input slot once.
-            unsafe {
-                crate::channel_common::decode_elem_envelope(
-                    envelope.take(),
-                    slot,
-                    layout,
-                    "shared sink input",
-                )
-            };
-            self.input = Some((slot, allocation, self.owner.encoder.is_some()));
-            self.argument = slot;
         }
         if self.child.is_null() {
             let (data, item_layout) = if let Some(encoder) = &self.owner.encoder {
@@ -202,6 +192,9 @@ impl SharedWrite {
                     self.park,
                 )
             };
+            if self.owner.encoder.is_none() {
+                self.input.as_mut().expect("shared write input").2 = false;
+            }
             self.encoded_live = false;
         }
         // SAFETY: this owner drives its unique underlying operation.

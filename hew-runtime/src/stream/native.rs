@@ -307,6 +307,25 @@ pub(super) unsafe fn start_underlying(
         // SAFETY: the shared gate lends this raw backing for one nonparking capacity attempt.
         return unsafe { try_underlying(sink, waker, data, layout) };
     }
+    // SAFETY: an adapter endpoint pins its shared sender through this exclusive loan.
+    if let Some(owner) = owner {
+        return Box::into_raw(Box::new(HewNativeStream {
+            // SAFETY: the caller retains this descriptor until the operation owns it.
+            _code: unsafe { crate::code_owner::CodeRoot::acquire(layout.code_owner) },
+            layout,
+            // SAFETY: the caller retains this descriptor during operation construction.
+            waker: Arc::new(unsafe { OwnedWaker::retain(&*waker) }),
+            backing: Backing::Shared(Box::new(unsafe {
+                super::sender::SharedWrite::new(owner, sink, parent, park, data, &layout)
+            })),
+            #[cfg(not(target_arch = "wasm32"))]
+            yields: ReadYield::Content,
+            envelope: None,
+            read_stream: None,
+            #[cfg(not(target_arch = "wasm32"))]
+            write_prefix: 0,
+        }));
+    }
     // SAFETY: the source value transfers exactly once at operation construction.
     let envelope = unsafe { move_elem_envelope(data, &layout, "native stream write") };
     // A finished sink has released its backing, so there is nothing left to
@@ -321,25 +340,6 @@ pub(super) unsafe fn start_underlying(
             // SAFETY: waker is borrowed during this call.
             waker: Arc::new(unsafe { OwnedWaker::retain(&*waker) }),
             backing: Backing::Finished,
-            #[cfg(not(target_arch = "wasm32"))]
-            yields: ReadYield::Content,
-            envelope: Some(envelope),
-            read_stream: None,
-            #[cfg(not(target_arch = "wasm32"))]
-            write_prefix: 0,
-        }));
-    }
-    // SAFETY: an adapter endpoint pins its shared sender through this exclusive loan.
-    if let Some(owner) = owner {
-        return Box::into_raw(Box::new(HewNativeStream {
-            // SAFETY: the caller retains this descriptor until the operation owns it.
-            _code: unsafe { crate::code_owner::CodeRoot::acquire(layout.code_owner) },
-            layout,
-            // SAFETY: the caller retains this descriptor during operation construction.
-            waker: Arc::new(unsafe { OwnedWaker::retain(&*waker) }),
-            backing: Backing::Shared(Box::new(super::sender::SharedWrite::new(
-                owner, sink, parent, park,
-            ))),
             #[cfg(not(target_arch = "wasm32"))]
             yields: ReadYield::Content,
             envelope: Some(envelope),
@@ -526,7 +526,7 @@ pub unsafe extern "C" fn hew_stream_write_poll_native(operation: *mut HewNativeS
         Backing::Immediate { status, .. } => *status,
         Backing::Shared(write) => {
             // SAFETY: this operation drives the unique pending frame under shared sender admission.
-            unsafe { write.poll(&mut operation.envelope, &operation.layout, &operation.waker) }
+            unsafe { write.poll(&operation.layout, &operation.waker) }
         }
         Backing::Pipe(core) => {
             let Some(envelope) = operation.envelope.take() else {
@@ -908,6 +908,40 @@ mod tests {
             notifications.try_recv().is_err(),
             "abandoned producer must not wake"
         );
+    }
+
+    #[test]
+    fn shared_write_cancel_before_admission_releases_its_typed_input() {
+        let (signal, _) = mpsc::channel();
+        let signal = Arc::new(signal);
+        let wake = waker(&signal);
+        let drops = Arc::new(AtomicUsize::new(0));
+        let layout = owned_layout();
+        let sink_layout = HewValueLayout {
+            drop_fn: None,
+            ..layout
+        };
+        let mut sink = std::ptr::null_mut();
+        // SAFETY: cancellation drains the operation before either endpoint closes.
+        unsafe {
+            let stream = super::super::hew_stream_pipe_native(1, &layout, &mut sink);
+            let mut value = Box::into_raw(Box::new(Arc::clone(&drops)));
+            let operation = hew_stream_write_start_native(
+                sink,
+                &wake,
+                (&raw mut value).cast(),
+                &layout,
+                std::ptr::null(),
+                true,
+                &sink_layout,
+            );
+            hew_stream_cancel_native(operation);
+            assert_eq!(hew_stream_cleanup_status_native(operation, &wake), 1);
+            crate::release_walker::hew_release_sync(hew_stream_operation_release_begin(operation));
+            assert_eq!(drops.load(Ordering::SeqCst), 1);
+            super::super::hew_sink_close(sink);
+            super::super::hew_stream_close(stream);
+        }
     }
 
     #[derive(Debug)]

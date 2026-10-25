@@ -2,20 +2,20 @@ import std.stream;
 
 fn read_frames() -> i64 {
     let (text_sink, text_input): (stream.Sink<bytes>, stream.Stream<bytes>) = stream.pipe(1).expect("text pipe");
-    let text = text_input.framed(stream.Lines {});
+    let text: stream.Stream<Result<string, stream.CodecError>> = text_input.frames(stream.Lines {});
     text_sink.send([114, 101, 116, 97, 105, 110, 10]).expect("text frame");
-    let length = match text.recv() { .Some(value) => value.len(), .None => -1, };
+    let length = match text.recv() { .Some(.Ok(value)) => value.len(), _ => -1, };
     text.close();
     text_sink.close();
 
     let (data_sink, data_input): (stream.Sink<bytes>, stream.Stream<bytes>) = stream.pipe(1).expect("data pipe");
-    let data = data_input.framed(stream.FixedWidth { width: 1 });
+    let data: stream.Stream<Result<bytes, stream.CodecError>> = data_input.frames(stream.FixedWidth { width: 1 });
     let full: bytes = [1, 2, 3, 4, 5, 6, 7, 8,
                       9, 10, 11, 12, 13, 14, 15, 16,
                       17, 18, 19, 20, 21, 22, 23, 24,
                       25, 26, 27, 28, 29, 30, 31, 32];
     data_sink.send(full).expect("data frame");
-    let size = match data.recv() { .Some(value) => value.len(), .None => -1, };
+    let size = match data.recv() { .Some(.Ok(value)) => value.len(), _ => -1, };
     data.close();
     data_sink.close();
     length + size
@@ -35,12 +35,12 @@ impl stream.Codec<i64> for EmptyCodec {
 }
 
 // The lazy decoder owns its input Stream capture8, callable carrier8 and
-// output slot8. Its Stream adapter adds the retained Generator field8.
-#[max_heap(31)]
+// output slot16. Its Stream adapter adds the retained Generator field8.
+#[max_heap(39)]
 actor Small {
     receive fn wrap() {
         let (output, input): (stream.Sink<bytes>, stream.Stream<bytes>) = stream.pipe(1).expect("empty pipe");
-        let framed = input.framed(EmptyCodec {});
+        let framed: stream.Stream<Result<i64, stream.CodecError>> = input.frames(EmptyCodec {});
         framed.close();
         output.close();
     }

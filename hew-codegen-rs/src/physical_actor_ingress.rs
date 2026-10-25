@@ -8,7 +8,7 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
     pub(in super::super) fn emit_actor_ingress_adapters(&self) -> CodegenResult<()> {
         let mut emitted = std::collections::HashSet::new();
         for function in &self.module.functions {
-            for operation in function.blocks.iter().flat_map(|block| &block.ops) {
+            for operation in function.blocks.iter().flat_map(|block| block.operations()) {
                 if let PhysicalOp::Const {
                     value: PhysicalConst::ActorIngressAdapter(adapter),
                     ..

@@ -66,7 +66,7 @@ impl<'a> HostExport<'a> {
                 || symbol.starts_with("hew_")
                 || symbol.starts_with("HEW_")
                 || ["HewText", "HewJson", "HewError", "HewRuntime", "HewWaker"].contains(&symbol)
-                || symbol == "HewLiveCodeOwner"
+                || ["HewLiveCodeOwner", "HewLiveInitialize", "HewLiveFinalize"].contains(&symbol)
                 || symbol == "main"
                 || C_KEYWORDS
                     .split_ascii_whitespace()

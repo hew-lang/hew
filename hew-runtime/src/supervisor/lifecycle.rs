@@ -3368,6 +3368,7 @@ mod tests {
                 None,
                 1,
                 &raw const caller,
+                core::ptr::null(),
             );
             assert_eq!(
                 hew_actor_send_wait_poll(wait),

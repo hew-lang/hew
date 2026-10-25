@@ -81,6 +81,7 @@ pub unsafe extern "C" fn hew_actor_send_wait_new(
     payload_release: Option<hew_cabi::value::HewValueReleaseStart>,
     obligated: i32,
     caller: *const crate::actor_caller::HewCallerStamp,
+    payload_layout: *const hew_cabi::value::HewValueLayout,
 ) -> *mut HewNativeSend {
     // SAFETY: the caller supplies a unique unpublished wrapper and live waker.
     let (envelope, waker) = unsafe {
@@ -95,7 +96,10 @@ pub unsafe extern "C" fn hew_actor_send_wait_new(
         return std::ptr::null_mut();
     }
     // SAFETY: the unpublished envelope's fields still belong to its source.
-    unsafe { (*envelope).release_start = payload_release };
+    unsafe {
+        (*envelope).release_start = payload_release;
+        crate::cow_envelope::set_layout(envelope, payload_layout);
+    };
     Box::into_raw(Box::new(HewNativeSend {
         // SAFETY: the caller retains its explicit stamp through this constructor.
         caller: unsafe { *caller },
@@ -633,6 +637,7 @@ mod tests {
                     waker.descriptor(),
                     None,
                     None,
+                    core::ptr::null(),
                 );
                 let wait = hew_actor_ask_wait_new(
                     crate::lifetime::local_handles::HewLocalPidId::INVALID,
@@ -658,6 +663,7 @@ mod tests {
                         waker.descriptor(),
                         None,
                         None,
+                        core::ptr::null(),
                     );
                     let wait = hew_actor_ask_wait_resume(
                         crate::lifetime::local_handles::HewLocalPidId::INVALID,
@@ -704,6 +710,7 @@ mod tests {
                     None,
                     0,
                     &crate::actor_caller::local_sender(),
+                    core::ptr::null(),
                 );
                 drop(waker);
                 if poll {

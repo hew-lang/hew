@@ -37,7 +37,7 @@
 //!   frame fails closed (the thunk returns null) rather than fabricating a value.
 
 use std::os::raw::c_void;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 /// Free a buffer returned by a serialize adapter (`hew_ser_finish_raw`).
 ///
@@ -71,19 +71,53 @@ pub type DropThunk = unsafe extern "C" fn(value: *mut c_void);
 
 /// One registered value codec: its two directions, the destructor for a value
 /// the runtime holds but never delivers, and the value's in-memory size.
-#[derive(Clone, Copy)]
-pub(crate) struct ThunkPair {
-    pub(crate) identity: &'static str,
+#[derive(Clone)]
+pub(crate) struct CodecData {
+    pub(crate) identity: Arc<str>,
     pub(crate) serialize: SerializeThunk,
     pub(crate) deserialize: DeserializeThunk,
     pub(crate) drop: Option<DropThunk>,
     pub(crate) size: usize,
+    pub(crate) layout: *const hew_cabi::value::HewValueLayout,
 }
 
-impl ThunkPair {
+// SAFETY: registry protection and explicit unregister retain immutable metadata;
+// callable snapshots additionally retain their defining generation.
+unsafe impl Send for CodecData {}
+// SAFETY: the same immutable metadata contract permits shared reads.
+unsafe impl Sync for CodecData {}
+
+/// A usable codec snapshot always owns an independent defining-code root.
+#[derive(Clone)]
+pub(crate) struct ThunkPair {
+    data: CodecData,
+    _code: crate::code_owner::CodeRoot,
+}
+
+impl std::ops::Deref for ThunkPair {
+    type Target = CodecData;
+    fn deref(&self) -> &Self::Target {
+        &self.data
+    }
+}
+
+impl CodecData {
+    /// Registry protection keeps metadata valid through fallible admission.
+    fn retain(&self) -> Option<ThunkPair> {
+        // SAFETY: the registry entry remains protected until acquisition returns.
+        let slot =
+            unsafe { self.layout.as_ref() }.map_or(std::ptr::null(), |layout| layout.code_owner);
+        // SAFETY: the loader unregisters this entry before dropping its node.
+        let code = unsafe { crate::code_owner::CodeRoot::try_acquire(slot) }?;
+        Some(ThunkPair {
+            data: self.clone(),
+            _code: code,
+        })
+    }
+
     /// Codegen shares these adapters only within one concrete actor type;
     /// interceptor variants share them, distinct generic substitutions do not.
-    pub(crate) fn same_codec(self, other: Self) -> bool {
+    pub(crate) fn same_codec(&self, other: &Self) -> bool {
         self.identity == other.identity
             && self.serialize as usize == other.serialize as usize
             && self.deserialize as usize == other.deserialize as usize
@@ -108,7 +142,7 @@ impl CodecKey {
     }
 }
 
-static THUNK_REGISTRY: Mutex<Vec<(CodecKey, ThunkPair)>> = Mutex::new(Vec::new());
+static THUNK_REGISTRY: Mutex<Vec<(CodecKey, CodecData)>> = Mutex::new(Vec::new());
 
 /// Register the request codec and canonical declaration for one local handler.
 /// Re-registration must agree on identity, layout and adapters.
@@ -128,27 +162,30 @@ pub unsafe extern "C" fn hew_xnode_register_codec(
     deserialize: DeserializeThunk,
     drop: Option<DropThunk>,
     size: usize,
+    layout: *const hew_cabi::value::HewValueLayout,
 ) {
     register_codec_into(
         &THUNK_REGISTRY,
         "request",
         dispatch,
         msg_type,
-        ThunkPair {
+        CodecData {
             // SAFETY: codegen supplies a static NUL-terminated UTF-8 declaration identity.
             identity: unsafe { std::ffi::CStr::from_ptr(identity) }
                 .to_str()
-                .expect("wire identity is UTF-8"),
+                .expect("wire identity is UTF-8")
+                .into(),
             serialize,
             deserialize,
             drop,
             size,
+            layout,
         },
     );
 }
 
 /// Replies use the same local request key; their identity agrees with the request.
-static REPLY_REGISTRY: Mutex<Vec<(CodecKey, ThunkPair)>> = Mutex::new(Vec::new());
+static REPLY_REGISTRY: Mutex<Vec<(CodecKey, CodecData)>> = Mutex::new(Vec::new());
 
 /// Register the reply serialize/deserialize thunk pair for an ask, keyed by
 /// `(dispatch, request msg_type)`. Same fail-closed collision guard as
@@ -170,21 +207,24 @@ pub unsafe extern "C" fn hew_xnode_register_reply_codec(
     deserialize: DeserializeThunk,
     drop: Option<DropThunk>,
     size: usize,
+    layout: *const hew_cabi::value::HewValueLayout,
 ) {
     register_codec_into(
         &REPLY_REGISTRY,
         "reply",
         dispatch,
         msg_type,
-        ThunkPair {
+        CodecData {
             // SAFETY: codegen supplies a static NUL-terminated UTF-8 declaration identity.
             identity: unsafe { std::ffi::CStr::from_ptr(identity) }
                 .to_str()
-                .expect("wire identity is UTF-8"),
+                .expect("wire identity is UTF-8")
+                .into(),
             serialize,
             deserialize,
             drop,
             size,
+            layout,
         },
     );
 }
@@ -196,18 +236,18 @@ pub unsafe extern "C" fn hew_xnode_register_reply_codec(
 /// is unreachable by construction — it guards an invariant, it is not a live
 /// recovery path.
 fn register_codec_into(
-    registry: &Mutex<Vec<(CodecKey, ThunkPair)>>,
+    registry: &Mutex<Vec<(CodecKey, CodecData)>>,
     which: &str,
     dispatch: *const c_void,
     msg_type: i32,
-    codec: ThunkPair,
+    codec: CodecData,
 ) {
     let key = CodecKey::new(dispatch, msg_type);
     let Ok(mut reg) = registry.lock() else {
         return;
     };
     if let Some(slot) = reg.iter_mut().find(|(k, _)| *k == key) {
-        let same = slot.1.same_codec(codec);
+        let same = slot.1.same_codec(&codec);
         // Fail closed in release AND debug: a TRUE collision on the full
         // `(dispatch, msg_type)` key means two distinct codecs claim the same
         // actor-type + discriminant — an unrecoverable wire-routing ambiguity.
@@ -247,7 +287,9 @@ fn register_codec_into(
 pub(crate) fn lookup_request(dispatch: *const c_void, msg_type: i32) -> Option<ThunkPair> {
     let key = CodecKey::new(dispatch, msg_type);
     let reg = THUNK_REGISTRY.lock().ok()?;
-    reg.iter().find(|(k, _)| *k == key).map(|(_, codec)| *codec)
+    reg.iter()
+        .find(|(k, _)| *k == key)
+        .and_then(|(_, codec)| codec.retain())
 }
 
 /// Resolve a portable handler declaration to this actor type's local dispatch index.
@@ -257,7 +299,9 @@ pub(crate) fn local_message(dispatch: *const c_void, identity: &str) -> Option<i
         .lock()
         .ok()?
         .iter()
-        .find(|(key, codec)| key.dispatch == dispatch as usize && codec.identity == identity)
+        .find(|(key, codec)| {
+            key.dispatch == dispatch as usize && codec.identity.as_ref() == identity
+        })
         .map(|(key, _)| key.msg_type)
 }
 
@@ -266,20 +310,9 @@ pub(crate) fn local_message(dispatch: *const c_void, identity: &str) -> Option<i
 pub(crate) fn lookup_reply(dispatch: *const c_void, msg_type: i32) -> Option<ThunkPair> {
     let key = CodecKey::new(dispatch, msg_type);
     let reg = REPLY_REGISTRY.lock().ok()?;
-    reg.iter().find(|(k, _)| *k == key).map(|(_, codec)| *codec)
-}
-
-/// Look up the reply DESERIALIZE thunk for `(dispatch, request msg_type)`.
-#[cfg(not(target_arch = "wasm32"))]
-pub(crate) fn lookup_reply_deserialize(
-    dispatch: *const c_void,
-    msg_type: i32,
-) -> Option<DeserializeThunk> {
-    let key = CodecKey::new(dispatch, msg_type);
-    let reg = REPLY_REGISTRY.lock().ok()?;
     reg.iter()
         .find(|(k, _)| *k == key)
-        .map(|(_, p)| p.deserialize)
+        .and_then(|(_, codec)| codec.retain())
 }
 
 /// Decode an ask REPLY wire payload (keyed by `(dispatch, request msg_type)`)
@@ -296,23 +329,13 @@ pub(crate) unsafe fn decode_reply(
     data: *const u8,
     len: usize,
 ) -> (*mut c_void, usize) {
-    let Some(thunk) = lookup_reply_deserialize(dispatch, msg_type) else {
+    let Some(codec) = lookup_reply(dispatch, msg_type) else {
         return (std::ptr::null_mut(), 0);
     };
     let mut struct_size: usize = 0;
     // SAFETY: thunk is a valid codegen-emitted reply deserialize thunk.
-    let value = unsafe { thunk(data, len, &raw mut struct_size) };
+    let value = unsafe { (codec.deserialize)(data, len, &raw mut struct_size) };
     (value, struct_size)
-}
-
-/// Look up the request SERIALIZE thunk for `(dispatch, msg_type)`, if registered.
-#[cfg(not(target_arch = "wasm32"))]
-pub(crate) fn lookup_serialize(dispatch: *const c_void, msg_type: i32) -> Option<SerializeThunk> {
-    let key = CodecKey::new(dispatch, msg_type);
-    let reg = THUNK_REGISTRY.lock().ok()?;
-    reg.iter()
-        .find(|(k, _)| *k == key)
-        .map(|(_, p)| p.serialize)
 }
 
 /// Encode a cross-node REQUEST/tell payload value (keyed by `(dispatch,
@@ -331,7 +354,7 @@ pub(crate) unsafe fn encode_payload(
     value_ptr: *const c_void,
     out_len: *mut usize,
 ) -> *mut u8 {
-    let Some(thunk) = lookup_serialize(dispatch, msg_type) else {
+    let Some(codec) = lookup_request(dispatch, msg_type) else {
         if !out_len.is_null() {
             // SAFETY: out_len validated non-null.
             unsafe { *out_len = 0 };
@@ -339,7 +362,27 @@ pub(crate) unsafe fn encode_payload(
         return std::ptr::null_mut();
     };
     // SAFETY: thunk is a valid codegen-emitted serialize thunk.
-    unsafe { thunk(value_ptr, out_len) }
+    unsafe { (codec.serialize)(value_ptr, out_len) }
+}
+
+/// Remove one retiring live module's metadata before its image can unload.
+/// # Safety
+/// `owner` is the live module slot. Its loader has closed registry acquisitions
+/// and retains the image until this unregister call has completed.
+#[no_mangle]
+pub unsafe extern "C" fn hew_xnode_unregister_code(owner: *const hew_cabi::code::HewCodeLeaseSlot) {
+    if owner.is_null() {
+        return;
+    }
+    for registry in [&THUNK_REGISTRY, &REPLY_REGISTRY] {
+        let mut entries = registry
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        entries.retain(|(_, codec)| {
+            // SAFETY: all registry entries remain valid until their explicit unregister.
+            unsafe { codec.layout.as_ref() }.is_none_or(|layout| layout.code_owner != owner)
+        });
+    }
 }
 
 /// Clear both codec registries. Test-only: the global registries persist across
@@ -396,6 +439,82 @@ mod tests {
         unsafe { crate::codec::hew_ser_i64(buf, v) };
         // SAFETY: buf consumed; out_len writable.
         unsafe { crate::codec::hew_ser_finish_raw(buf, out_len) }
+    }
+
+    #[test]
+    fn code_owner_codec_snapshot_survives_unregister() {
+        use hew_cabi::code::{HewCodeLease, HewCodeLeaseSlot};
+        use hew_cabi::value::{HewTypeOwnershipKind, HewValueLayout};
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        unsafe extern "C" fn retain(context: *const c_void) {
+            // SAFETY: the test counter outlives registry entries and snapshots.
+            unsafe { &*context.cast::<AtomicUsize>() }.fetch_add(1, Ordering::SeqCst);
+        }
+        unsafe extern "C" fn release(context: *const c_void) {
+            // SAFETY: the test counter outlives registry entries and snapshots.
+            unsafe { &*context.cast::<AtomicUsize>() }.fetch_sub(1, Ordering::SeqCst);
+        }
+        unsafe extern "C" fn admit(context: *const c_void) -> bool {
+            // SAFETY: forwarded lifetime contract; this fixture admits lookups.
+            unsafe { retain(context) };
+            true
+        }
+        let roots = AtomicUsize::new(0);
+        let lease = HewCodeLease {
+            context: (&raw const roots).cast(),
+            retain,
+            release,
+            try_retain: Some(admit),
+        };
+        let owner = HewCodeLeaseSlot {
+            lease: &raw const lease,
+        };
+        let layout = HewValueLayout {
+            size: size_of::<i64>(),
+            align: align_of::<i64>(),
+            ownership_kind: HewTypeOwnershipKind::Plain,
+            clone_fn: None,
+            drop_fn: None,
+            release_start: None,
+            code_owner: &raw const owner,
+            managed: std::ptr::null(),
+        };
+        // SAFETY: all metadata remains live until unregister and snapshot release.
+        unsafe {
+            hew_xnode_register_codec(
+                dispatch_a(),
+                73,
+                c"tests.Live.run".as_ptr(),
+                ser_a,
+                de_a,
+                None,
+                size_of::<i64>(),
+                &raw const layout,
+            );
+        };
+        let codec = lookup_request(dispatch_a(), 73).unwrap();
+        assert_eq!(roots.load(Ordering::SeqCst), 1);
+        // SAFETY: the fixture retains metadata while unregister removes it.
+        unsafe { hew_xnode_unregister_code(&raw const owner) };
+        assert!(lookup_request(dispatch_a(), 73).is_none());
+        let value = 731_i64;
+        let mut len = 0;
+        // SAFETY: the admitted snapshot retains its executable callbacks.
+        let bytes = unsafe { (codec.serialize)((&raw const value).cast(), &raw mut len) };
+        let mut size = 0;
+        // SAFETY: serialize returned valid bytes and the snapshot remains rooted.
+        let decoded = unsafe { (codec.deserialize)(bytes, len, &raw mut size) };
+        // SAFETY: this codec returns a sized-block i64 slot.
+        assert_eq!(unsafe { *decoded.cast::<i64>() }, value);
+        assert_eq!(size, size_of::<i64>());
+        // SAFETY: release each allocator-owned buffer once.
+        unsafe {
+            hew_ser_free_bytes(bytes);
+            crate::mem::buf_free(decoded);
+        }
+        drop(codec);
+        assert_eq!(roots.load(Ordering::SeqCst), 0);
     }
 
     /// Codec A deserialize: reconstruct a single `i64` into a sized-block slot.
@@ -541,6 +660,7 @@ mod tests {
                 de_a,
                 None,
                 8,
+                core::ptr::null(),
             );
             hew_xnode_register_codec(
                 dispatch_b(),
@@ -550,6 +670,7 @@ mod tests {
                 de_b,
                 None,
                 8,
+                core::ptr::null(),
             );
         }
 

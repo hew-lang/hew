@@ -79,7 +79,8 @@ fn granted_target_for_node(
     let location = location_for_test_node(owner, actor_id);
     let handler = crate::xnode_serial::lookup_request(dispatch, message)
         .unwrap()
-        .identity;
+        .identity
+        .clone();
     // SAFETY: both TestNodes own their running managers through this export.
     let manager = unsafe { &*(*owner.as_ptr()).conn_mgr };
     // SAFETY: the recipient TestNode remains live throughout this export.
@@ -95,7 +96,7 @@ fn granted_target_for_node(
             claim.peer_session(),
             1,
             location,
-            vec![handler.into()],
+            vec![handler.to_string()],
         )
         .unwrap();
     GrantedTestTarget {
@@ -304,6 +305,7 @@ fn inbound_test_codec(
             test_u32_deserialize,
             Some(test_u32_drop),
             std::mem::size_of::<u32>(),
+            core::ptr::null(),
         );
         crate::xnode_serial::hew_xnode_register_reply_codec(
             key,
@@ -313,6 +315,7 @@ fn inbound_test_codec(
             test_u32_deserialize,
             Some(test_u32_drop),
             reply_size,
+            core::ptr::null(),
         );
     }
     key
@@ -381,6 +384,7 @@ fn register_test_u32_codec(
             test_u32_deserialize,
             Some(test_u32_drop),
             std::mem::size_of::<u32>(),
+            core::ptr::null(),
         );
         crate::xnode_serial::hew_xnode_register_reply_codec(
             dispatch,
@@ -390,6 +394,7 @@ fn register_test_u32_codec(
             test_u32_deserialize,
             Some(test_u32_drop),
             std::mem::size_of::<u32>(),
+            core::ptr::null(),
         );
     }
 }

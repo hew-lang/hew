@@ -183,7 +183,7 @@ fn setup_remote_ask(
                         Some(target),
                         source,
                         crate::envelope::EnvelopeMessage::Service {
-                            handler: codec.identity.to_owned(),
+                            handler: codec.identity.to_string(),
                             grant_id: grant,
                             kind,
                         },

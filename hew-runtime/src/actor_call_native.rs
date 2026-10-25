@@ -361,6 +361,8 @@ pub unsafe extern "C" fn hew_actor_call_new(
     reply_release: Option<HewValueReleaseStart>,
     caller: *const crate::actor_caller::HewCallerStamp,
     dispatch: *const c_void,
+    payload_layout: *const hew_cabi::value::HewValueLayout,
+    reply_layout: *const hew_cabi::value::HewValueLayout,
 ) -> *mut HewActorCall {
     // SAFETY: forwards the owned request and captures its local sender.
     unsafe {
@@ -385,6 +387,8 @@ pub unsafe extern "C" fn hew_actor_call_new(
             dispatch,
             #[cfg(not(target_arch = "wasm32"))]
             None,
+            payload_layout,
+            reply_layout,
         )
     }
 }
@@ -411,6 +415,8 @@ pub(crate) unsafe fn actor_call_new(
     #[cfg(not(target_arch = "wasm32"))] remote_admission: Option<
         crate::hew_node::service::RemoteAdmission,
     >,
+    payload_layout: *const hew_cabi::value::HewValueLayout,
+    reply_layout: *const hew_cabi::value::HewValueLayout,
 ) -> *mut HewActorCall {
     let mut rejected_payload = ptr::null_mut();
     let envelope = if payload.is_null() {
@@ -431,7 +437,10 @@ pub(crate) unsafe fn actor_call_new(
         }
         if !envelope.is_null() {
             // SAFETY: this unpublished envelope belongs to the operation.
-            unsafe { (*envelope).release_start = payload_release };
+            unsafe {
+                (*envelope).release_start = payload_release;
+                crate::cow_envelope::set_layout(envelope, payload_layout);
+            };
         }
         envelope
     };
@@ -451,6 +460,7 @@ pub(crate) unsafe fn actor_call_new(
             dispatch,
             #[cfg(not(target_arch = "wasm32"))]
             remote_admission,
+            reply_layout,
         );
         (*operation).rejected_payload = rejected_payload;
         operation
@@ -480,6 +490,7 @@ pub unsafe extern "C" fn hew_actor_call_resume(
     reply_release: Option<HewValueReleaseStart>,
     caller: *const crate::actor_caller::HewCallerStamp,
     dispatch: *const c_void,
+    reply_layout: *const hew_cabi::value::HewValueLayout,
 ) -> *mut HewActorCall {
     // SAFETY: forwards the owned request and captures its local sender.
     unsafe {
@@ -501,6 +512,7 @@ pub unsafe extern "C" fn hew_actor_call_resume(
             dispatch,
             #[cfg(not(target_arch = "wasm32"))]
             None,
+            reply_layout,
         )
     }
 }
@@ -525,6 +537,7 @@ pub(crate) unsafe fn actor_call_resume(
     #[cfg(not(target_arch = "wasm32"))] remote_admission: Option<
         crate::hew_node::service::RemoteAdmission,
     >,
+    reply_layout: *const hew_cabi::value::HewValueLayout,
 ) -> *mut HewActorCall {
     #[cfg(not(target_arch = "wasm32"))]
     if let Some(service) = crate::lifetime::local_handles::current_imported_actor(token) {
@@ -567,7 +580,7 @@ pub(crate) unsafe fn actor_call_resume(
     let _ = dispatch;
     let channel = if kind.completion_policy().is_some() {
         // SAFETY: registration precedes any request publication.
-        unsafe { hew_reply_channel_new_native(waker, drop_reply, reply_release) }
+        unsafe { hew_reply_channel_new_native(waker, drop_reply, reply_release, reply_layout) }
     } else {
         ptr::null_mut()
     };
@@ -662,6 +675,7 @@ pub unsafe extern "C" fn hew_actor_submit_new(
     caller: *const crate::actor_caller::HewCallerStamp,
     dispatch: *const c_void,
     owns_target: bool,
+    payload_layout: *const hew_cabi::value::HewValueLayout,
 ) -> *mut HewActorCall {
     let Some(
         kind @ (RequestKind::SendWait | RequestKind::SendReject | RequestKind::SendDropNewest),
@@ -678,6 +692,7 @@ pub unsafe extern "C" fn hew_actor_submit_new(
             return ptr::null_mut();
         }
         (*envelope).release_start = payload_release;
+        crate::cow_envelope::set_layout(envelope, payload_layout);
         let operation = actor_call_resume(
             token,
             message,
@@ -692,6 +707,7 @@ pub unsafe extern "C" fn hew_actor_submit_new(
             dispatch,
             #[cfg(not(target_arch = "wasm32"))]
             None,
+            core::ptr::null(),
         );
         (*operation).owned_target = owns_target.then_some(token);
         operation
@@ -878,8 +894,12 @@ mod tests {
             // SAFETY: the fixture owns the actor/mailbox, request envelope and
             // receiver; successful admission transfers one retained sender debt.
             unsafe {
-                let channel =
-                    hew_reply_channel_new_native(waker.descriptor(), Some(drop_counted), None);
+                let channel = hew_reply_channel_new_native(
+                    waker.descriptor(),
+                    Some(drop_counted),
+                    None,
+                    core::ptr::null(),
+                );
                 crate::reply_channel::configure_native_request(
                     channel,
                     crate::request_deadline::RequestDeadline::from_raw(if expired {
@@ -968,8 +988,12 @@ mod tests {
         // SAFETY: the call has one receiver and one sender; the typed Arc is
         // transferred to the reply and then to the selected output exactly once.
         unsafe {
-            let channel =
-                hew_reply_channel_new_native(waker.descriptor(), Some(drop_counted), None);
+            let channel = hew_reply_channel_new_native(
+                waker.descriptor(),
+                Some(drop_counted),
+                None,
+                core::ptr::null(),
+            );
             crate::reply_channel::configure_native_request(
                 channel,
                 crate::request_deadline::RequestDeadline::default(),

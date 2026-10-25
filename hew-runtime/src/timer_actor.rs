@@ -267,6 +267,7 @@ pub unsafe extern "C" fn hew_actor_timer_new(
     overdue_ns: i64,
     has_overdue: bool,
     invocation: *const crate::coro_state::HewCoroState,
+    payload_layout: *const hew_cabi::value::HewValueLayout,
 ) -> *const OneShot {
     // SAFETY: the caller supplies one unpublished wrapper and its exact destructor.
     let envelope =
@@ -277,7 +278,10 @@ pub unsafe extern "C" fn hew_actor_timer_new(
         return ptr::null();
     }
     // SAFETY: the unpublished envelope belongs to this call.
-    unsafe { (*envelope).release_start = payload_release };
+    unsafe {
+        (*envelope).release_start = payload_release;
+        crate::cow_envelope::set_layout(envelope, payload_layout);
+    };
     let result = crate::timer_periodic::admit_timer(|| {
         let id = crate::lifetime::local_handles::resolve_current_actor(token)?;
         // SAFETY: generated code retains this checked invocation through scheduling.

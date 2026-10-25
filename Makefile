@@ -426,7 +426,7 @@ test-live-places: hew-native ## Test: preserve compiler-owned slots across nativ
 test-live-code-ownership: hew-native ## Test: retain native code through typed ownership and cleanup
 	$(TEST_RUN_ENV) cargo nextest run --profile ci -p hew-runtime --no-default-features --lib -E 'test(code_owner)'
 	HEW_LIVE_COMPILER="$(abspath $(DEBUG_HEW))" HEW_LIVE_RUNTIME_DIR="$(abspath $(DEBUG_DIR))" \
-		$(TEST_RUN_ENV) cargo nextest run --profile ci -p hew-live --test native
+		$(TEST_RUN_ENV) cargo nextest run --profile ci -p hew-live --lib --test native
 
 # Human-facing compiler alias. The shared host transaction is also the
 # inventory builder for the CLI, libhew and runtime archives, preventing Cargo

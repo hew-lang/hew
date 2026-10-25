@@ -300,7 +300,7 @@ fn native_session_places_retain_emitted_defining_code() {
 #include <assert.h>
 #include <stddef.h>
 typedef struct { void **slots; size_t len; } Session;
-typedef struct { void *context; void (*retain)(void *); void (*release)(void *); } Lease;
+typedef struct { void *context; void (*retain)(void *); void (*release)(void *); void *try_retain; } Lease;
 extern const Lease *HewLiveCodeOwner;
 extern void *hew_runtime_new(void);
 extern void hew_runtime_release(void *);
@@ -343,7 +343,7 @@ fn native_session_places_actor_retains_code_after_host_slot_release() {
 #include <stddef.h>
 #include <stdatomic.h>
 typedef struct { void **slots; size_t len; } Session;
-typedef struct { void *context; void (*retain)(void *); void (*release)(void *); } Lease;
+typedef struct { void *context; void (*retain)(void *); void (*release)(void *); void *try_retain; } Lease;
 extern const Lease *HewLiveCodeOwner;
 extern void *hew_runtime_new(void);
 extern void hew_runtime_release(void *);
@@ -368,4 +368,124 @@ int main(void) {
     )
     .unwrap();
     execute(directory.path(), &["initial"]);
+}
+
+#[test]
+fn native_session_places_queued_message_retains_its_producer_code() {
+    let directory = tempfile::tempdir().unwrap();
+    let declarations = r#"
+extern "C" { fn wait_gate(); }
+actor Count {
+    receive fn block() { unsafe { wait_gate(); } }
+    receive fn tick() {}
+}
+"#;
+    compile_with_ownership(directory.path(), "initial", &format!(
+        "{declarations} pub fn submission() {{ let counter = spawn Count; let _ = mailbox(counter, on_full: .Wait).block(); }}"), &[], 0, true);
+    compile_with_ownership(directory.path(), "submit", &format!(
+        "{declarations} pub fn submission(counter: Count) {{ let _ = mailbox(counter, on_full: .Wait).tick(); }}"), &[0], 1, true);
+    std::fs::write(
+        directory.path().join("host.c"),
+        r#"
+#include <assert.h>
+#include <stddef.h>
+#include <stdatomic.h>
+#include <dlfcn.h>
+#include <sched.h>
+#include <unistd.h>
+typedef struct { void **slots; size_t len; } Session;
+typedef struct { void *context; void (*retain)(void *); void (*release)(void *); void *try_retain; } Lease;
+extern void *hew_runtime_new(void);
+extern void hew_runtime_release(void *);
+extern int hew_live_slot_release(Session *, size_t, void **);
+static atomic_int gate = 0, entered = 0;
+void wait_gate(void) {
+    atomic_store(&entered, 1);
+    while (!atomic_load(&gate)) sched_yield();
+}
+static void retain(void *context) { atomic_fetch_add((atomic_int *)context, 1); }
+static void release(void *context) { assert(atomic_fetch_sub((atomic_int *)context, 1) > 0); }
+int main(int argc, char **argv) {
+    assert(argc == 3);
+    alarm(15);
+    atomic_int roots_a = 0, roots_b = 0;
+    Lease a = { &roots_a, retain, release }, b = { &roots_b, retain, release };
+    void *first = dlopen(argv[1], RTLD_NOW | RTLD_LOCAL);
+    void *second = dlopen(argv[2], RTLD_NOW | RTLD_LOCAL);
+    assert(first && second);
+    *(const Lease **)dlsym(first, "HewLiveCodeOwner") = &a;
+    *(const Lease **)dlsym(second, "HewLiveCodeOwner") = &b;
+    int (*initial)(void *, void **) = dlsym(first, "initial");
+    int (*submit)(void *, void **) = dlsym(second, "submit");
+    assert(initial && submit);
+    void *runtime = hew_runtime_new(), *slots[1] = {0}, *error = 0;
+    Session session = { slots, 1 };
+    assert(initial(&session, &error) == 0 && !error);
+    while (!atomic_load(&entered)) sched_yield();
+    assert(submit(&session, &error) == 0 && !error);
+    assert(atomic_load(&roots_b) > 0);
+    atomic_store(&gate, 1);
+    while (atomic_load(&roots_b)) sched_yield();
+    assert(hew_live_slot_release(&session, 0, &error) == 0 && !error);
+    hew_runtime_release(runtime);
+    assert(atomic_load(&roots_a) == 0 && atomic_load(&roots_b) == 0);
+    assert(dlclose(second) == 0 && dlclose(first) == 0);
+}
+"#,
+    )
+    .unwrap();
+    execute_dynamic(directory.path());
+}
+
+fn execute_dynamic(directory: &Path) {
+    let runtime = std::env::current_exe()
+        .unwrap()
+        .parent()
+        .unwrap()
+        .parent()
+        .unwrap()
+        .to_path_buf();
+    for suffix in ["", "_o2"] {
+        for name in ["initial", "submit"] {
+            let linked = std::process::Command::new("cc")
+                .args(["-shared", "-fPIC"])
+                .arg(directory.join(format!("{name}{suffix}.o")))
+                .arg(runtime.join("libhew.so"))
+                .arg(format!("-Wl,-rpath,{}", runtime.display()))
+                .arg("-o")
+                .arg(directory.join(format!("{name}{suffix}.so")))
+                .output()
+                .unwrap();
+            assert!(
+                linked.status.success(),
+                "{}",
+                String::from_utf8_lossy(&linked.stderr)
+            );
+        }
+        let executable = directory.join(format!("host{suffix}"));
+        let linked = std::process::Command::new("cc")
+            .args(["-rdynamic", "-ldl"])
+            .arg(directory.join("host.c"))
+            .arg(runtime.join("libhew.so"))
+            .arg(format!("-Wl,-rpath,{}", runtime.display()))
+            .arg("-o")
+            .arg(&executable)
+            .output()
+            .unwrap();
+        assert!(
+            linked.status.success(),
+            "{}",
+            String::from_utf8_lossy(&linked.stderr)
+        );
+        let run = std::process::Command::new(executable)
+            .arg(directory.join(format!("initial{suffix}.so")))
+            .arg(directory.join(format!("submit{suffix}.so")))
+            .output()
+            .unwrap();
+        assert!(
+            run.status.success(),
+            "{}",
+            String::from_utf8_lossy(&run.stderr)
+        );
+    }
 }

@@ -141,6 +141,34 @@ struct Loaded {
     library: Library,
     _runtime: Arc<Runtime>,
     lease: hew_cabi::code::HewCodeLease,
+    retiring: Mutex<bool>,
+    finalize: Option<unsafe extern "C" fn()>,
+    finalized: AtomicBool,
+}
+
+impl Loaded {
+    fn finalize(&self) {
+        if !self.finalized.swap(true, Ordering::AcqRel) {
+            if let Some(finalize) = self.finalize {
+                // SAFETY: the host retains this image through explicit unregister.
+                unsafe { finalize() };
+            }
+        }
+    }
+}
+
+unsafe extern "C" fn try_retain_code(context: *const std::ffi::c_void) -> bool {
+    // SAFETY: registry protection retains the host node until unregister returns.
+    let loaded = unsafe { &*context.cast::<Loaded>() };
+    let Ok(retiring) = loaded.retiring.lock() else {
+        return false;
+    };
+    if *retiring {
+        return false;
+    }
+    // SAFETY: the host's registry node is retained under this admission gate.
+    unsafe { Arc::increment_strong_count(context.cast::<Loaded>()) };
+    true
 }
 
 unsafe extern "C" fn retain_code(context: *const std::ffi::c_void) {
@@ -157,6 +185,19 @@ unsafe extern "C" fn release_code(context: *const std::ffi::c_void) {
 struct Generations {
     next: u64,
     nodes: BTreeMap<u64, GenerationNode>,
+}
+
+impl Drop for Generations {
+    fn drop(&mut self) {
+        for node in self.nodes.values() {
+            *node
+                .loaded
+                .retiring
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner) = true;
+            node.loaded.finalize();
+        }
+    }
 }
 
 struct GenerationNode {
@@ -243,6 +284,7 @@ impl NativeHost {
     /// code, and platform loader failures.
     pub unsafe fn load(&self, path: &Path, manifest: &Manifest) -> Result<Generation> {
         type RuntimeNew = unsafe extern "C" fn() -> *mut std::ffi::c_void;
+        type ModuleHook = unsafe extern "C" fn();
         if manifest.compiler != self.runtime.compiler
             || manifest.target != self.runtime.target
             || manifest.runtime_sha256 != self.runtime.sha256
@@ -307,6 +349,16 @@ impl NativeHost {
                 });
             }
         }
+        // SAFETY: these optional exports are the compiler's same-build metadata hooks.
+        let initialize = unsafe { library.get::<ModuleHook>(b"HewLiveInitialize") }
+            .ok()
+            .map(|symbol| *symbol);
+        // SAFETY: same explicit metadata hook ABI, invoked while the image is retained.
+        let finalize = unsafe { library.get::<ModuleHook>(b"HewLiveFinalize") }
+            .ok()
+            .map(|symbol| *symbol);
+        let id = generations.next;
+        generations.next = id.checked_add(1).ok_or("generation identity exhausted")?;
         let loaded = Arc::new_cyclic(|owner: &std::sync::Weak<Loaded>| Loaded {
             module_sha256: manifest.module_sha256.clone(),
             library,
@@ -315,14 +367,16 @@ impl NativeHost {
                 context: owner.as_ptr().cast(),
                 retain: retain_code,
                 release: release_code,
+                try_retain: Some(try_retain_code),
             },
+            retiring: Mutex::new(false),
+            finalize,
+            finalized: AtomicBool::new(false),
         });
         if let Some(slot) = code_owner {
             // SAFETY: admission is serialized and this new image is unpublished.
             unsafe { (*slot).lease = &raw const loaded.lease };
         }
-        let id = generations.next;
-        generations.next = id.checked_add(1).ok_or("generation identity exhausted")?;
         generations.nodes.insert(
             id,
             GenerationNode {
@@ -330,6 +384,10 @@ impl NativeHost {
                 dependencies: BTreeSet::new(),
             },
         );
+        if let Some(initialize) = initialize {
+            // SAFETY: lease publication and graph ownership precede registration.
+            unsafe { initialize() };
+        }
         Ok(Generation {
             id,
             loaded,
@@ -346,6 +404,19 @@ impl NativeHost {
             .generations
             .lock()
             .map_err(|_| "generation registry poisoned")?;
+        // Freeze registry-based acquisitions while deciding reachability. Normal
+        // retain already has a caller root and cannot resurrect an unrooted node.
+        let mut admissions = generations
+            .nodes
+            .iter()
+            .map(|(&id, node)| {
+                node.loaded
+                    .retiring
+                    .lock()
+                    .map(|gate| (id, gate))
+                    .map_err(|_| "generation admission poisoned")
+            })
+            .collect::<std::result::Result<Vec<_>, _>>()?;
         let mut pending: Vec<_> = generations
             .nodes
             .iter()
@@ -366,12 +437,21 @@ impl NativeHost {
             .filter(|id| !reachable.contains(id))
             .copied()
             .collect();
+        for (id, gate) in &mut admissions {
+            if !reachable.contains(id) {
+                **gate = true;
+            }
+        }
+        drop(admissions);
         let mut libraries = Vec::new();
         for id in &retired {
             libraries.push(generations.nodes.remove(id));
         }
         // Platform finalizers may call back into the host. Never hold its lock.
         drop(generations);
+        for node in libraries.iter().flatten() {
+            node.loaded.finalize();
+        }
         drop(libraries);
         Ok(retired)
     }
@@ -417,5 +497,81 @@ impl Generation {
     pub unsafe fn symbol<T>(&self, name: &[u8]) -> Result<Symbol<'_, T>> {
         // SAFETY: the caller supplies the checked generated export signature.
         Ok(unsafe { self.loaded.library.get(name)? })
+    }
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::*;
+    use std::time::{Duration, Instant};
+
+    static REGISTRY: Mutex<()> = Mutex::new(());
+    static FINALIZING: AtomicBool = AtomicBool::new(false);
+
+    unsafe extern "C" fn unregister() {
+        FINALIZING.store(true, Ordering::Release);
+        // Match the runtime registry's protection: removal waits for an
+        // in-progress lookup, with no generated code called under this lock.
+        drop(REGISTRY.lock().unwrap());
+    }
+
+    #[test]
+    fn codec_lookup_and_retirement_have_one_admission_order() {
+        let runtime = Arc::new(Runtime {
+            library: libloading::os::unix::Library::this().into(),
+            sha256: String::new(),
+            compiler: String::new(),
+            target: String::new(),
+        });
+        let host = NativeHost {
+            runtime: runtime.clone(),
+            generations: Arc::new(Mutex::new(Generations::default())),
+        };
+        let loaded = Arc::new_cyclic(|owner: &std::sync::Weak<Loaded>| Loaded {
+            module_sha256: String::new(),
+            library: libloading::os::unix::Library::this().into(),
+            _runtime: runtime,
+            lease: hew_cabi::code::HewCodeLease {
+                context: owner.as_ptr().cast(),
+                retain: retain_code,
+                release: release_code,
+                try_retain: Some(try_retain_code),
+            },
+            retiring: Mutex::new(false),
+            finalize: Some(unregister),
+            finalized: AtomicBool::new(false),
+        });
+        let context = loaded.lease.context;
+        host.generations.lock().unwrap().nodes.insert(
+            0,
+            GenerationNode {
+                loaded,
+                dependencies: BTreeSet::new(),
+            },
+        );
+        // A lookup admitted first supplies a real Arc root, so collection must
+        // leave its callback usable even after the lookup releases its lock.
+        // SAFETY: the registry node owns this lease record throughout admission.
+        assert!(unsafe { try_retain_code(context) });
+        assert!(host.collect().unwrap().is_empty());
+        // SAFETY: release exactly the root admitted above.
+        unsafe { release_code(context) };
+
+        let protected_lookup = REGISTRY.lock().unwrap();
+        let retirement = std::thread::spawn(move || host.collect().unwrap());
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !FINALIZING.load(Ordering::Acquire) {
+            assert!(
+                Instant::now() < deadline,
+                "retirement did not reach unregister"
+            );
+            std::thread::yield_now();
+        }
+        // Collection has closed admission, but unregister must wait for this
+        // lookup. The node still exists and refuses resurrection before unload.
+        // SAFETY: the held registry lock keeps unregister and image release pending.
+        assert!(!unsafe { try_retain_code(context) });
+        drop(protected_lookup);
+        assert_eq!(retirement.join().unwrap(), vec![0]);
     }
 }

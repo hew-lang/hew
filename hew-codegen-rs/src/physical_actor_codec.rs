@@ -106,6 +106,20 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
                         .map_or(ptr.const_null(), |drop| {
                             drop.as_global_value().as_pointer_value()
                         });
+                    let layout_name = if reply {
+                        actor::reply_layout_symbol(codec_actor.id, handler.message_id)
+                    } else {
+                        actor::message_layout_symbol(codec_actor.id, handler.message_id)
+                    };
+                    let layout = self
+                        .llvm
+                        .get_global(&layout_name)
+                        .ok_or_else(|| {
+                            CodegenError::FailClosed(
+                                "actor codec lacks its canonical value descriptor".into(),
+                            )
+                        })?
+                        .as_pointer_value();
                     registrations.push((
                         dispatch,
                         handler.message_id,
@@ -115,6 +129,7 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
                         drop,
                         size,
                         reply,
+                        layout,
                     ));
                 }
             }
@@ -122,17 +137,28 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
         if registrations.is_empty() {
             return Ok(());
         }
+        let live_owner = self.llvm.get_global("HewLiveCodeOwner");
         let init = self.llvm.add_function(
-            "hew_module_init_actor_codecs",
+            if live_owner.is_some() {
+                "HewLiveInitialize"
+            } else {
+                "hew_module_init_actor_codecs"
+            },
             self.ctx.void_type().fn_type(&[], false),
-            Some(Linkage::Internal),
+            Some(if live_owner.is_some() {
+                Linkage::External
+            } else {
+                Linkage::Internal
+            }),
         );
         let builder = self.ctx.create_builder();
         builder.position_at_end(self.ctx.append_basic_block(init, "entry"));
         let size_ty = self
             .ctx
             .ptr_sized_int_type(&TargetData::create(&self.module.target.data_layout), None);
-        for (dispatch, message, identity, encode, decode, drop, size, reply) in registrations {
+        for (dispatch, message, identity, encode, decode, drop, size, reply, layout) in
+            registrations
+        {
             let identity = builder
                 .build_global_string_ptr(&identity, "actor.wire.identity")
                 .llvm_ctx("emit wire declaration identity")?;
@@ -155,12 +181,31 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
                     decode.as_global_value().as_pointer_value().into(),
                     drop.into(),
                     size_ty.const_int(size, false).into(),
+                    layout.into(),
                 ],
             )?;
         }
         builder
             .build_return(None)
             .llvm_ctx("finish actor codec registration")?;
+        if let Some(owner) = live_owner {
+            let finalize = self.llvm.add_function(
+                "HewLiveFinalize",
+                self.ctx.void_type().fn_type(&[], false),
+                Some(Linkage::External),
+            );
+            builder.position_at_end(self.ctx.append_basic_block(finalize, "entry"));
+            self.codec_runtime(
+                &builder,
+                "hew_xnode_unregister_code",
+                None,
+                &[owner.as_pointer_value().into()],
+            )?;
+            builder
+                .build_return(None)
+                .llvm_ctx("finish explicit codec retirement")?;
+            return Ok(());
+        }
         let initializer = ptr.const_array(&[init.as_global_value().as_pointer_value()]);
         let global = self
             .llvm

@@ -257,8 +257,8 @@
       "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
-        "native": "fn hew_actor_call_new( HewLocalPidId, i32, *mut c_void, usize, HewMsgEnvelopeDropFn, usize, Option<HewReplyDropFn>, *const HewWaker, i64, i32, Option<HewValueReleaseStart>, Option<HewValueReleaseStart>, *const HewCallerStamp, *const c_void, ) -> *mut HewActorCall",
-        "wasm32-wasip1": "fn hew_actor_call_new( HewLocalPidId, i32, *mut c_void, usize, HewMsgEnvelopeDropFn, usize, Option<HewReplyDropFn>, *const HewWaker, i64, i32, Option<HewValueReleaseStart>, Option<HewValueReleaseStart>, *const HewCallerStamp, *const c_void, ) -> *mut HewActorCall"
+        "native": "fn hew_actor_call_new( HewLocalPidId, i32, *mut c_void, usize, HewMsgEnvelopeDropFn, usize, Option<HewReplyDropFn>, *const HewWaker, i64, i32, Option<HewValueReleaseStart>, Option<HewValueReleaseStart>, *const HewCallerStamp, *const c_void, *const hew_cabi::value::HewValueLayout, *const hew_cabi::value::HewValueLayout, ) -> *mut HewActorCall",
+        "wasm32-wasip1": "fn hew_actor_call_new( HewLocalPidId, i32, *mut c_void, usize, HewMsgEnvelopeDropFn, usize, Option<HewReplyDropFn>, *const HewWaker, i64, i32, Option<HewValueReleaseStart>, Option<HewValueReleaseStart>, *const HewCallerStamp, *const c_void, *const hew_cabi::value::HewValueLayout, *const hew_cabi::value::HewValueLayout, ) -> *mut HewActorCall"
       },
       "symbol": "hew_actor_call_new"
     },
@@ -287,8 +287,8 @@
       "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
-        "native": "fn hew_actor_call_resume( HewLocalPidId, i32, *mut HewMsgEnvelope, usize, Option<HewReplyDropFn>, *const HewWaker, i64, i32, Option<HewValueReleaseStart>, *const HewCallerStamp, *const c_void, ) -> *mut HewActorCall",
-        "wasm32-wasip1": "fn hew_actor_call_resume( HewLocalPidId, i32, *mut HewMsgEnvelope, usize, Option<HewReplyDropFn>, *const HewWaker, i64, i32, Option<HewValueReleaseStart>, *const HewCallerStamp, *const c_void, ) -> *mut HewActorCall"
+        "native": "fn hew_actor_call_resume( HewLocalPidId, i32, *mut HewMsgEnvelope, usize, Option<HewReplyDropFn>, *const HewWaker, i64, i32, Option<HewValueReleaseStart>, *const HewCallerStamp, *const c_void, *const hew_cabi::value::HewValueLayout, ) -> *mut HewActorCall",
+        "wasm32-wasip1": "fn hew_actor_call_resume( HewLocalPidId, i32, *mut HewMsgEnvelope, usize, Option<HewReplyDropFn>, *const HewWaker, i64, i32, Option<HewValueReleaseStart>, *const HewCallerStamp, *const c_void, *const hew_cabi::value::HewValueLayout, ) -> *mut HewActorCall"
       },
       "symbol": "hew_actor_call_resume"
     },
@@ -995,8 +995,8 @@
       "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
-        "native": "fn hew_actor_send_wait_new( HewLocalPidId, i32, *mut c_void, usize, HewMsgEnvelopeDropFn, *const HewWaker, Option<hew_cabi::value::HewValueReleaseStart>, i32, *const HewCallerStamp, ) -> *mut HewNativeSend",
-        "wasm32-wasip1": "fn hew_actor_send_wait_new( HewLocalPidId, i32, *mut c_void, usize, HewMsgEnvelopeDropFn, *const HewWaker, Option<hew_cabi::value::HewValueReleaseStart>, i32, *const HewCallerStamp, ) -> *mut HewNativeSend"
+        "native": "fn hew_actor_send_wait_new( HewLocalPidId, i32, *mut c_void, usize, HewMsgEnvelopeDropFn, *const HewWaker, Option<hew_cabi::value::HewValueReleaseStart>, i32, *const HewCallerStamp, *const hew_cabi::value::HewValueLayout, ) -> *mut HewNativeSend",
+        "wasm32-wasip1": "fn hew_actor_send_wait_new( HewLocalPidId, i32, *mut c_void, usize, HewMsgEnvelopeDropFn, *const HewWaker, Option<hew_cabi::value::HewValueReleaseStart>, i32, *const HewCallerStamp, *const hew_cabi::value::HewValueLayout, ) -> *mut HewNativeSend"
       },
       "symbol": "hew_actor_send_wait_new"
     },
@@ -1285,8 +1285,8 @@
       "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
-        "native": "fn hew_actor_submit_native( HewLocalPidId, i32, *mut c_void, usize, HewMsgEnvelopeDropFn, i32, Option<hew_cabi::value::HewValueReleaseStart>, *mut *mut HewReleaseCursor, *const HewCallerStamp, ) -> i32",
-        "wasm32-wasip1": "fn hew_actor_submit_native( HewLocalPidId, i32, *mut c_void, usize, HewMsgEnvelopeDropFn, i32, Option<hew_cabi::value::HewValueReleaseStart>, *mut *mut HewReleaseCursor, *const HewCallerStamp, ) -> i32"
+        "native": "fn hew_actor_submit_native( HewLocalPidId, i32, *mut c_void, usize, HewMsgEnvelopeDropFn, i32, Option<hew_cabi::value::HewValueReleaseStart>, *mut *mut HewReleaseCursor, *const HewCallerStamp, *const hew_cabi::value::HewValueLayout, ) -> i32",
+        "wasm32-wasip1": "fn hew_actor_submit_native( HewLocalPidId, i32, *mut c_void, usize, HewMsgEnvelopeDropFn, i32, Option<hew_cabi::value::HewValueReleaseStart>, *mut *mut HewReleaseCursor, *const HewCallerStamp, *const hew_cabi::value::HewValueLayout, ) -> i32"
       },
       "symbol": "hew_actor_submit_native"
     },
@@ -1300,8 +1300,8 @@
       "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
-        "native": "fn hew_actor_submit_native_terminal( HewLocalPidId, i32, *mut c_void, usize, HewMsgEnvelopeDropFn, Option<hew_cabi::value::HewValueReleaseStart>, *mut *mut HewReleaseCursor, *const HewCallerStamp, ) -> i32",
-        "wasm32-wasip1": "fn hew_actor_submit_native_terminal( HewLocalPidId, i32, *mut c_void, usize, HewMsgEnvelopeDropFn, Option<hew_cabi::value::HewValueReleaseStart>, *mut *mut HewReleaseCursor, *const HewCallerStamp, ) -> i32"
+        "native": "fn hew_actor_submit_native_terminal( HewLocalPidId, i32, *mut c_void, usize, HewMsgEnvelopeDropFn, Option<hew_cabi::value::HewValueReleaseStart>, *mut *mut HewReleaseCursor, *const HewCallerStamp, *const hew_cabi::value::HewValueLayout, ) -> i32",
+        "wasm32-wasip1": "fn hew_actor_submit_native_terminal( HewLocalPidId, i32, *mut c_void, usize, HewMsgEnvelopeDropFn, Option<hew_cabi::value::HewValueReleaseStart>, *mut *mut HewReleaseCursor, *const HewCallerStamp, *const hew_cabi::value::HewValueLayout, ) -> i32"
       },
       "symbol": "hew_actor_submit_native_terminal"
     },
@@ -1315,8 +1315,8 @@
       "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
-        "native": "fn hew_actor_submit_new( HewLocalPidId, i32, *mut c_void, usize, HewMsgEnvelopeDropFn, *const HewWaker, i64, u8, Option<HewValueReleaseStart>, *const HewCallerStamp, *const c_void, bool, ) -> *mut HewActorCall",
-        "wasm32-wasip1": "fn hew_actor_submit_new( HewLocalPidId, i32, *mut c_void, usize, HewMsgEnvelopeDropFn, *const HewWaker, i64, u8, Option<HewValueReleaseStart>, *const HewCallerStamp, *const c_void, bool, ) -> *mut HewActorCall"
+        "native": "fn hew_actor_submit_new( HewLocalPidId, i32, *mut c_void, usize, HewMsgEnvelopeDropFn, *const HewWaker, i64, u8, Option<HewValueReleaseStart>, *const HewCallerStamp, *const c_void, bool, *const hew_cabi::value::HewValueLayout, ) -> *mut HewActorCall",
+        "wasm32-wasip1": "fn hew_actor_submit_new( HewLocalPidId, i32, *mut c_void, usize, HewMsgEnvelopeDropFn, *const HewWaker, i64, u8, Option<HewValueReleaseStart>, *const HewCallerStamp, *const c_void, bool, *const hew_cabi::value::HewValueLayout, ) -> *mut HewActorCall"
       },
       "symbol": "hew_actor_submit_new"
     },
@@ -1390,8 +1390,8 @@
       "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
-        "native": "fn hew_actor_timer_new( HewLocalPidId, i32, *mut c_void, usize, HewMsgEnvelopeDropFn, Option<hew_cabi::value::HewValueReleaseStart>, i64, i64, bool, *const HewCoroState, ) -> *const OneShot",
-        "wasm32-wasip1": "fn hew_actor_timer_new( HewLocalPidId, i32, *mut c_void, usize, HewMsgEnvelopeDropFn, Option<hew_cabi::value::HewValueReleaseStart>, i64, i64, bool, *const HewCoroState, ) -> *const OneShot"
+        "native": "fn hew_actor_timer_new( HewLocalPidId, i32, *mut c_void, usize, HewMsgEnvelopeDropFn, Option<hew_cabi::value::HewValueReleaseStart>, i64, i64, bool, *const HewCoroState, *const hew_cabi::value::HewValueLayout, ) -> *const OneShot",
+        "wasm32-wasip1": "fn hew_actor_timer_new( HewLocalPidId, i32, *mut c_void, usize, HewMsgEnvelopeDropFn, Option<hew_cabi::value::HewValueReleaseStart>, i64, i64, bool, *const HewCoroState, *const hew_cabi::value::HewValueLayout, ) -> *const OneShot"
       },
       "symbol": "hew_actor_timer_new"
     },
@@ -15442,8 +15442,8 @@
       "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
-        "native": "fn hew_reply_channel_new_native( *const HewWaker, Option<HewReplyDropFn>, Option<HewValueReleaseStart>, ) -> *mut HewReplyChannel",
-        "wasm32-wasip1": "fn hew_reply_channel_new_native( *const HewWaker, Option<HewReplyDropFn>, Option<HewValueReleaseStart>, ) -> *mut HewReplyChannel"
+        "native": "fn hew_reply_channel_new_native( *const HewWaker, Option<HewReplyDropFn>, Option<HewValueReleaseStart>, *const hew_cabi::value::HewValueLayout, ) -> *mut HewReplyChannel",
+        "wasm32-wasip1": "fn hew_reply_channel_new_native( *const HewWaker, Option<HewReplyDropFn>, Option<HewValueReleaseStart>, *const hew_cabi::value::HewValueLayout, ) -> *mut HewReplyChannel"
       },
       "symbol": "hew_reply_channel_new_native"
     },
@@ -23478,8 +23478,8 @@
       "nul": "nul-terminated",
       "ownership": "unmeasured",
       "signature": {
-        "native": "fn hew_xnode_register_codec( *const c_void, i32, *const c_char, SerializeThunk, DeserializeThunk, Option<DropThunk>, usize, )",
-        "wasm32-wasip1": "fn hew_xnode_register_codec( *const c_void, i32, *const c_char, SerializeThunk, DeserializeThunk, Option<DropThunk>, usize, )"
+        "native": "fn hew_xnode_register_codec( *const c_void, i32, *const c_char, SerializeThunk, DeserializeThunk, Option<DropThunk>, usize, *const hew_cabi::value::HewValueLayout, )",
+        "wasm32-wasip1": "fn hew_xnode_register_codec( *const c_void, i32, *const c_char, SerializeThunk, DeserializeThunk, Option<DropThunk>, usize, *const hew_cabi::value::HewValueLayout, )"
       },
       "symbol": "hew_xnode_register_codec"
     },
@@ -23493,10 +23493,25 @@
       "nul": "nul-terminated",
       "ownership": "unmeasured",
       "signature": {
-        "native": "fn hew_xnode_register_reply_codec( *const c_void, i32, *const c_char, SerializeThunk, DeserializeThunk, Option<DropThunk>, usize, )",
-        "wasm32-wasip1": "fn hew_xnode_register_reply_codec( *const c_void, i32, *const c_char, SerializeThunk, DeserializeThunk, Option<DropThunk>, usize, )"
+        "native": "fn hew_xnode_register_reply_codec( *const c_void, i32, *const c_char, SerializeThunk, DeserializeThunk, Option<DropThunk>, usize, *const hew_cabi::value::HewValueLayout, )",
+        "wasm32-wasip1": "fn hew_xnode_register_reply_codec( *const c_void, i32, *const c_char, SerializeThunk, DeserializeThunk, Option<DropThunk>, usize, *const hew_cabi::value::HewValueLayout, )"
       },
       "symbol": "hew_xnode_register_reply_codec"
+    },
+    {
+      "availability": [
+        "native",
+        "wasm32-wasip1"
+      ],
+      "classification": "non-declarable",
+      "extent": "no-in-signature-extent",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
+        "native": "fn hew_xnode_unregister_code( *const hew_cabi::code::HewCodeLeaseSlot)",
+        "wasm32-wasip1": "fn hew_xnode_unregister_code( *const hew_cabi::code::HewCodeLeaseSlot)"
+      },
+      "symbol": "hew_xnode_unregister_code"
     },
     {
       "availability": [

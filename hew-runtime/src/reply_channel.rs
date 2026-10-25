@@ -112,6 +112,8 @@ pub struct HewReplyChannel {
     native_waker: Mutex<Option<crate::wake::OwnedWaker>>,
     /// Immutable request metadata and the claim shared with its owned envelope.
     native_request: Option<Arc<crate::request_state::RequestState>>,
+    native_layout: *const hew_cabi::value::HewValueLayout,
+    native_code: Option<crate::code_owner::CodeRoot>,
 }
 
 // SAFETY: `HewReplyChannel` is designed for cross-thread use. The atomic
@@ -159,6 +161,8 @@ pub extern "C" fn hew_reply_channel_new() -> *mut HewReplyChannel {
         await_cancel: AtomicPtr::new(ptr::null_mut()),
         native_waker: Mutex::new(None),
         native_request: None,
+        native_layout: ptr::null(),
+        native_code: None,
     }))
 }
 
@@ -371,6 +375,12 @@ unsafe fn run_registered_reply_drop_on_value(ch: *mut HewReplyChannel, value: *m
     // SAFETY: caller guarantees `ch` is a live channel and `value` points at a
     // valid `R` the destructor was registered for.
     unsafe {
+        if let Some(layout) = (*ch).native_layout.as_ref() {
+            if let Some(drop) = layout.drop_fn {
+                drop(value);
+            }
+            return;
+        }
         let drop_raw = (*ch).reply_drop_fn.load(Ordering::Acquire);
         if !drop_raw.is_null() {
             let drop_fn = std::mem::transmute::<*mut c_void, HewReplyDropFn>(drop_raw);
@@ -933,11 +943,7 @@ pub unsafe extern "C-unwind" fn hew_reply_channel_free(ch: *mut HewReplyChannel)
             // here: the destructor runs exactly once. A null slot (a bit-copy
             // `R` with no embedded heap) keeps the prior behaviour — the buffer
             // free alone suffices.
-            let drop_raw = (*ch).reply_drop_fn.load(Ordering::Acquire);
-            if !drop_raw.is_null() {
-                let drop_fn = std::mem::transmute::<*mut c_void, HewReplyDropFn>(drop_raw);
-                drop_fn((*ch).value);
-            }
+            run_registered_reply_drop_on_value(ch, (*ch).value);
             crate::mem::buf_free((*ch).value); // ALLOCATOR-PAIRING: GlobalAlloc
         }
         let await_cancel = (*ch).await_cancel.load(Ordering::Acquire);

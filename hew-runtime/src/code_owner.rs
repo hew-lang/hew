@@ -43,6 +43,24 @@ impl CodeRoot {
         Self { lease }
     }
 
+    /// Acquire through registered metadata, refusing a retiring generation.
+    /// # Safety
+    /// Registry protection keeps the slot/lease valid until this call returns;
+    /// the host unregisters that metadata before dropping its loaded owner.
+    pub(crate) unsafe fn try_acquire(slot: *const HewCodeLeaseSlot) -> Option<Self> {
+        // SAFETY: registry protection retains the immutable indirection.
+        let lease = unsafe { slot.as_ref() }.map_or(std::ptr::null(), |slot| slot.lease);
+        // SAFETY: explicit unregister protects this host-owned lease record.
+        if let Some(record) = unsafe { lease.as_ref() } {
+            let retain = record.try_retain?;
+            // SAFETY: the host atomically admits and acquires a new root.
+            if !unsafe { retain(record.context) } {
+                return None;
+            }
+        }
+        Some(Self { lease })
+    }
+
     /// Acquire an independent executable root before invoking descriptor code.
     /// # Safety
     /// A non-null slot and its published lease are valid and immutable. A caller
@@ -145,6 +163,7 @@ mod tests {
             context: (&raw const fixture).cast(),
             retain,
             release,
+            try_retain: None,
         };
         let slot = HewCodeLeaseSlot {
             lease: &raw const lease,
@@ -182,6 +201,7 @@ mod tests {
             context: (&raw const fixture).cast(),
             retain,
             release,
+            try_retain: None,
         };
         let slot = HewCodeLeaseSlot {
             lease: &raw const lease,

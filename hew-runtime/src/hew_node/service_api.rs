@@ -391,7 +391,7 @@ fn imported_actor_target(
         if service
             .offer
             .handlers
-            .binary_search_by(|candidate| candidate.as_str().cmp(handler.identity))
+            .binary_search_by(|candidate| candidate.as_str().cmp(handler.identity.as_ref()))
             .is_err()
         {
             return Err(AskError::Unauthorized);

@@ -11,6 +11,9 @@ pub struct HewCodeLease {
     pub context: *const c_void,
     pub retain: unsafe extern "C" fn(*const c_void),
     pub release: unsafe extern "C" fn(*const c_void),
+    /// Acquire through registered metadata only while the host admits new roots.
+    /// The registry keeps the record valid until explicit unregister completes.
+    pub try_retain: Option<unsafe extern "C" fn(*const c_void) -> bool>,
 }
 
 // SAFETY: the host contract requires immutable data and thread-safe callbacks.

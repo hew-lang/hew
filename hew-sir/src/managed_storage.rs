@@ -428,8 +428,6 @@ fn slot(
                 | BuiltinType::HashSet
                 | BuiltinType::Rc
                 | BuiltinType::Weak
-                | BuiltinType::VecIter
-                | BuiltinType::HashMapIter
                 | BuiltinType::Task
                 | BuiltinType::ActorCall
                 | BuiltinType::Generator

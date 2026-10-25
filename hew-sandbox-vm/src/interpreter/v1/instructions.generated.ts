@@ -322,7 +322,12 @@ export type ManagedType = {
     }
   | { kind: "shared"; payload: number; weak: boolean }
   | { kind: "dynamic" }
-  | { kind: "provider"; provider: ManagedProvider; children: Array<number> }
+  | {
+      kind: "provider";
+      provider: ManagedProvider;
+      children: Array<number>;
+      invocation_slot_bytes?: string;
+    }
 );
 export type MapValueOp =
   | "New"

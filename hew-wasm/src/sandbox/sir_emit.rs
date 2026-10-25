@@ -266,6 +266,8 @@ impl<'m> Walker<'m> {
                         kind,
                         children: payloads,
                     } => ManagedLayout::Provider {
+                        invocation_slot_bytes: matches!(kind, P::Task)
+                            .then(|| hew_sir::managed_callable_carrier().bytes.to_string()),
                         provider: match kind {
                             P::Task => ManagedProvider::Task,
                             P::ActorCall => ManagedProvider::ActorCall,

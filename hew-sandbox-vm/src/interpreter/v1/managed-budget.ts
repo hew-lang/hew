@@ -192,6 +192,8 @@ export class ManagedLayouts {
     allocations: Allocations,
     substitution?: { before: VmValue; after: VmValue },
     stringGrowth?: { value: VmValue; identity: object; capacity: number },
+    retained?: (value: VmValue, type: number) => void,
+    providerGraph = this.retained,
   ): void {
     const active = new Set<object>();
     const visit = (value: VmValue, type: number): void => {
@@ -319,9 +321,10 @@ export class ManagedLayouts {
         }
         case "generator":
         case "provider": {
-          if (!this.retained)
+          retained?.(value, type);
+          if (!providerGraph)
             throw new Error("managed provider has no retained-value visitor");
-          const graph = this.retained(value, type);
+          const graph = providerGraph(value, type);
           if (allocation(graph.identity, graph.bytes))
             for (const child of graph.children) {
               if (child.slots)
@@ -347,6 +350,7 @@ export class ManagedBudget {
   constructor(
     readonly layouts: ManagedLayouts,
     readonly limit: bigint,
+    private readonly acquired?: (root: ManagedRoot) => void,
   ) {}
 
   allocations(
@@ -396,6 +400,7 @@ export class ManagedBudget {
   retainMany(roots: readonly ManagedRoot[]): ManagedLease {
     this.check(roots);
     roots.forEach((root) => this.roots.add(root));
+    roots.forEach((root) => this.acquired?.(root));
     return {
       release: () => {
         roots.forEach((root) => this.roots.delete(root));

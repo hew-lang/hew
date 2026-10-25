@@ -1208,6 +1208,7 @@ const schema19 = {
               },
               type: "array",
             },
+            invocation_slot_bytes: { type: ["string", "null"] },
             kind: { const: "provider", type: "string" },
             provider: { $ref: "#/$defs/ManagedProvider" },
           },
@@ -49976,6 +49977,7 @@ const schema81 = {
           },
           type: "array",
         },
+        invocation_slot_bytes: { type: ["string", "null"] },
         kind: { const: "provider", type: "string" },
         provider: { $ref: "#/$defs/ManagedProvider" },
       },
@@ -52947,18 +52949,28 @@ function validate262(
                                       var valid20 = true;
                                     }
                                     if (valid20) {
-                                      if (data.kind !== undefined) {
-                                        let data42 = data.kind;
+                                      if (
+                                        data.invocation_slot_bytes !== undefined
+                                      ) {
+                                        let data42 = data.invocation_slot_bytes;
                                         const _errs117 = errors;
-                                        if (typeof data42 !== "string") {
+                                        if (
+                                          typeof data42 !== "string" &&
+                                          data42 !== null
+                                        ) {
                                           const err113 = {
                                             instancePath:
-                                              instancePath + "/kind",
+                                              instancePath +
+                                              "/invocation_slot_bytes",
                                             schemaPath:
-                                              "#/oneOf/15/properties/kind/type",
+                                              "#/oneOf/15/properties/invocation_slot_bytes/type",
                                             keyword: "type",
-                                            params: { type: "string" },
-                                            message: "must be string",
+                                            params: {
+                                              type: schema81.oneOf[15]
+                                                .properties
+                                                .invocation_slot_bytes.type,
+                                            },
+                                            message: "must be string,null",
                                           };
                                           if (vErrors === null) {
                                             vErrors = [err113];
@@ -52967,60 +52979,86 @@ function validate262(
                                           }
                                           errors++;
                                         }
-                                        if ("provider" !== data42) {
-                                          const err114 = {
-                                            instancePath:
-                                              instancePath + "/kind",
-                                            schemaPath:
-                                              "#/oneOf/15/properties/kind/const",
-                                            keyword: "const",
-                                            params: {
-                                              allowedValue: "provider",
-                                            },
-                                            message:
-                                              "must be equal to constant",
-                                          };
-                                          if (vErrors === null) {
-                                            vErrors = [err114];
-                                          } else {
-                                            vErrors.push(err114);
-                                          }
-                                          errors++;
-                                        }
                                         var valid20 = _errs117 === errors;
                                       } else {
                                         var valid20 = true;
                                       }
                                       if (valid20) {
-                                        if (data.provider !== undefined) {
+                                        if (data.kind !== undefined) {
+                                          let data43 = data.kind;
                                           const _errs119 = errors;
-                                          if (
-                                            !validate265(data.provider, {
+                                          if (typeof data43 !== "string") {
+                                            const err114 = {
                                               instancePath:
-                                                instancePath + "/provider",
-                                              parentData: data,
-                                              parentDataProperty: "provider",
-                                              rootData,
-                                              dynamicAnchors,
-                                            })
-                                          ) {
-                                            vErrors =
-                                              vErrors === null
-                                                ? validate265.errors
-                                                : vErrors.concat(
-                                                    validate265.errors,
-                                                  );
-                                            errors = vErrors.length;
+                                                instancePath + "/kind",
+                                              schemaPath:
+                                                "#/oneOf/15/properties/kind/type",
+                                              keyword: "type",
+                                              params: { type: "string" },
+                                              message: "must be string",
+                                            };
+                                            if (vErrors === null) {
+                                              vErrors = [err114];
+                                            } else {
+                                              vErrors.push(err114);
+                                            }
+                                            errors++;
+                                          }
+                                          if ("provider" !== data43) {
+                                            const err115 = {
+                                              instancePath:
+                                                instancePath + "/kind",
+                                              schemaPath:
+                                                "#/oneOf/15/properties/kind/const",
+                                              keyword: "const",
+                                              params: {
+                                                allowedValue: "provider",
+                                              },
+                                              message:
+                                                "must be equal to constant",
+                                            };
+                                            if (vErrors === null) {
+                                              vErrors = [err115];
+                                            } else {
+                                              vErrors.push(err115);
+                                            }
+                                            errors++;
                                           }
                                           var valid20 = _errs119 === errors;
                                         } else {
                                           var valid20 = true;
                                         }
+                                        if (valid20) {
+                                          if (data.provider !== undefined) {
+                                            const _errs121 = errors;
+                                            if (
+                                              !validate265(data.provider, {
+                                                instancePath:
+                                                  instancePath + "/provider",
+                                                parentData: data,
+                                                parentDataProperty: "provider",
+                                                rootData,
+                                                dynamicAnchors,
+                                              })
+                                            ) {
+                                              vErrors =
+                                                vErrors === null
+                                                  ? validate265.errors
+                                                  : vErrors.concat(
+                                                      validate265.errors,
+                                                    );
+                                              errors = vErrors.length;
+                                            }
+                                            var valid20 = _errs121 === errors;
+                                          } else {
+                                            var valid20 = true;
+                                          }
+                                        }
                                       }
                                     }
                                   }
                                 } else {
-                                  const err115 = {
+                                  const err116 = {
                                     instancePath,
                                     schemaPath: "#/oneOf/15/type",
                                     keyword: "type",
@@ -53028,9 +53066,9 @@ function validate262(
                                     message: "must be object",
                                   };
                                   if (vErrors === null) {
-                                    vErrors = [err115];
+                                    vErrors = [err116];
                                   } else {
-                                    vErrors.push(err115);
+                                    vErrors.push(err116);
                                   }
                                   errors++;
                                 }
@@ -53046,6 +53084,7 @@ function validate262(
                                   if (props0 !== true) {
                                     props0 = props0 || {};
                                     props0.children = true;
+                                    props0.invocation_slot_bytes = true;
                                     props0.kind = true;
                                     props0.provider = true;
                                   }
@@ -53066,7 +53105,7 @@ function validate262(
     }
   }
   if (!valid0) {
-    const err116 = {
+    const err117 = {
       instancePath,
       schemaPath: "#/oneOf",
       keyword: "oneOf",
@@ -53074,9 +53113,9 @@ function validate262(
       message: "must match exactly one schema in oneOf",
     };
     if (vErrors === null) {
-      vErrors = [err116];
+      vErrors = [err117];
     } else {
-      vErrors.push(err116);
+      vErrors.push(err117);
     }
     errors++;
     validate262.errors = vErrors;
@@ -53115,14 +53154,14 @@ function validate262(
           props0.slot_bytes = true;
         }
         if (data.id !== undefined) {
-          let data44 = data.id;
-          const _errs120 = errors;
+          let data45 = data.id;
+          const _errs122 = errors;
           if (
             !(
-              typeof data44 == "number" &&
-              !(data44 % 1) &&
-              !isNaN(data44) &&
-              isFinite(data44)
+              typeof data45 == "number" &&
+              !(data45 % 1) &&
+              !isNaN(data45) &&
+              isFinite(data45)
             )
           ) {
             validate262.errors = [
@@ -53136,9 +53175,9 @@ function validate262(
             ];
             return false;
           }
-          if (errors === _errs120) {
-            if (typeof data44 == "number" && isFinite(data44)) {
-              if (data44 > 4294967295 || isNaN(data44)) {
+          if (errors === _errs122) {
+            if (typeof data45 == "number" && isFinite(data45)) {
+              if (data45 > 4294967295 || isNaN(data45)) {
                 validate262.errors = [
                   {
                     instancePath: instancePath + "/id",
@@ -53150,7 +53189,7 @@ function validate262(
                 ];
                 return false;
               } else {
-                if (data44 < 0 || isNaN(data44)) {
+                if (data45 < 0 || isNaN(data45)) {
                   validate262.errors = [
                     {
                       instancePath: instancePath + "/id",
@@ -53165,13 +53204,13 @@ function validate262(
               }
             }
           }
-          var valid22 = _errs120 === errors;
+          var valid22 = _errs122 === errors;
         } else {
           var valid22 = true;
         }
         if (valid22) {
           if (data.slot_bytes !== undefined) {
-            const _errs122 = errors;
+            const _errs124 = errors;
             if (typeof data.slot_bytes !== "string") {
               validate262.errors = [
                 {
@@ -53184,7 +53223,7 @@ function validate262(
               ];
               return false;
             }
-            var valid22 = _errs122 === errors;
+            var valid22 = _errs124 === errors;
           } else {
             var valid22 = true;
           }

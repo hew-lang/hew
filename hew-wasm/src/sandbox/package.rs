@@ -115,6 +115,9 @@ pub enum ManagedLayout {
     Provider {
         provider: ManagedProvider,
         children: Vec<u32>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
+        invocation_slot_bytes: Option<String>,
     },
 }
 

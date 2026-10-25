@@ -141,11 +141,12 @@ interface FrameContext {
   requestDeadline?: number;
   caller?: CallerStamp;
   reply?: boolean;
+  replyPayload?: boolean;
   id: string;
   actor: ActorInstance | null;
   cancel?: (fault?: Fault) => void;
   generator?: GeneratorEntry;
-  returned(value: VmValue): void;
+  returned(value: VmValue, released: () => void): void;
   failed(fault: Fault, handback?: VmValue | null): void;
 }
 
@@ -275,6 +276,7 @@ interface RoleSlot {
 }
 
 interface TaskEntry {
+  invocationPending?: boolean;
   frame?: Activation;
   callable?: VmValue;
   managedLease?: ManagedLease;
@@ -596,12 +598,13 @@ class ExecutorV1 {
       {
         id: "actor:root",
         actor: null,
-        returned: (value) => {
+        returned: (value, released) => {
           this.completeRoot();
           this.trace.exitCode =
             pkg.entry?.exit === "status" && value.kind === "i64"
               ? Number(value.value)
               : 0;
+          released();
         },
         failed: (fault) => {
           this.rootFault = fault;
@@ -752,7 +755,7 @@ class ExecutorV1 {
         this.stampManaged(
           args[index]!,
           param.managed_type,
-          executionContext.actor?.budget,
+          executionContext.actor,
         );
     return {
       rcOwner: fn.actor_construction
@@ -833,8 +836,7 @@ class ExecutorV1 {
     try {
       const value = readRef(this.refOf(act, id));
       const type = act.managedTypes.get(id);
-      if (type != null)
-        this.stampManaged(value, type, act.context.actor?.budget);
+      if (type != null) this.stampManaged(value, type, act.context.actor);
       return value;
     } catch (error) {
       throw new Error(
@@ -852,7 +854,7 @@ class ExecutorV1 {
       return;
     }
     const type = act.managedTypes.get(id);
-    if (type != null) this.stampManaged(value, type, act.context.actor?.budget);
+    if (type != null) this.stampManaged(value, type, act.context.actor);
     const budget = act.owned.has(id) ? act.context.actor?.budget : undefined;
     act.env.set(id, ownedRef(value, budget, type));
   }
@@ -860,13 +862,35 @@ class ExecutorV1 {
   private stampManaged(
     value: VmValue,
     type: number,
-    budget?: ManagedBudget,
+    actor: ActorInstance | null,
   ): void {
+    const budget = actor?.budget;
     this.managed.stamp(value, type);
+    if (value.kind === "stream" && !this.generatorStreams.has(value.channelId))
+      this.bindManagedStream(value, type, actor);
     if (value.kind === "generator") this.generatorFor(value).managedType = type;
     if (value.kind === "string") {
       value.prepareGrowth = budget
         ? (capacity) => budget.checkStringGrowth(value, capacity)
+        : undefined;
+    } else if (value.kind === "map") {
+      value.prepareInsert = budget
+        ? (staged, slot, key, item, copyKey) => {
+            const row = this.managed.row(type);
+            if (row.kind !== "map" && row.kind !== "set")
+              throw new Error("map has no canonical entry descriptor");
+            const entries = new Map(staged.entries);
+            entries.set(slot, {
+              key: copyKey
+                ? this.managed.copy(
+                    key,
+                    row.kind === "map" ? row.key : row.element,
+                  )
+                : key,
+              value: item,
+            });
+            budget.checkMutation(value, { ...staged, entries });
+          }
         : undefined;
     } else if (value.kind === "vector") {
       value.prepareMutation = budget
@@ -906,6 +930,61 @@ class ExecutorV1 {
     return roots;
   }
 
+  private bindManagedStream(
+    value: VmValue,
+    type: number,
+    actor: ActorInstance | null,
+  ): void {
+    const row = this.managed.row(type);
+    if (
+      row.kind !== "provider" ||
+      row.provider !== "stream" ||
+      value.kind !== "stream" ||
+      this.generatorStreams.has(value.channelId)
+    )
+      return;
+    const budget = actor?.budget;
+    this.pipes.bind(
+      value,
+      budget && actor
+        ? {
+            owner: actor,
+            acquire: (envelope) => {
+              const lease = budget.retain({
+                value: envelope.value,
+                type: row.children[0]!,
+                slots: true,
+                identity: envelope,
+              });
+              return () => lease.release();
+            },
+            refused: () =>
+              this.crashActor(actor, { kind: "trap", trap: "heap_exceeded" }),
+          }
+        : undefined,
+    );
+  }
+
+  private adoptManaged(root: ManagedRoot, actor: ActorInstance): void {
+    this.managed.collect(
+      root,
+      new Map(),
+      undefined,
+      undefined,
+      (value, type) => this.bindManagedStream(value, type, actor),
+      (value, type) => {
+        const row = this.managed.row(type);
+        // Encoding trees and opaque host providers cannot contain receiving
+        // stream handles. This traversal changes queue ownership only;
+        // their payload accounting keeps its separate canonical visitor.
+        return row.kind === "provider" &&
+          ["json", "yaml", "toml", "opaque"].includes(row.provider)
+          ? { identity: value, bytes: 0n, children: [] }
+          : this.managedRetained(value, type);
+      },
+    );
+  }
+
   private managedRetained(value: VmValue, type: number): ManagedProjection {
     const row = this.managed.row(type);
     const typed = (value: VmValue): ManagedRoot => ({
@@ -938,10 +1017,20 @@ class ExecutorV1 {
         return {
           identity: task,
           bytes:
-            row.provider === "task" ||
+            (task.invocationPending
+              ? BigInt(
+                  row.invocation_slot_bytes ??
+                    (() => {
+                      throw new Error(
+                        "task invocation has no canonical carrier width",
+                      );
+                    })(),
+                )
+              : 0n) +
+            (row.provider === "task" ||
             (task.done && !task.taken && !task.fault && !task.actorError)
               ? this.managed.width(row.children[0]!)
-              : 0n,
+              : 0n),
           children,
         };
       }
@@ -1473,11 +1562,14 @@ class ExecutorV1 {
           actor: act.context.actor,
           rcOwner: act.rcOwner,
           requestDeadline: this.requestDeadline(act),
-          returned: (value) =>
+          returned: (value, released) =>
             this.closeValueAsync(
               value,
               null,
-              (fault) => this.finishGenerator(generator, fault),
+              (fault) => {
+                released();
+                this.finishGenerator(generator, fault);
+              },
               act.context.actor,
               act.rcOwner,
             ),
@@ -1539,6 +1631,7 @@ class ExecutorV1 {
               winner = first;
               value = first.value;
               first.value = UNIT;
+              first.taken = true;
             }
           }
           if (!cancelled) {
@@ -1666,6 +1759,7 @@ class ExecutorV1 {
           act.managedTypes.get(op.dst),
         );
         group.tasks.push(task);
+        let releaseReturn = () => {};
         const settle = (value: VmValue, fault: Fault | null) => {
           if (task.done || task.finishing) return;
           task.finishing = true;
@@ -1679,6 +1773,7 @@ class ExecutorV1 {
             if (!fault || (fault.kind === "panic" && fault.cancelled))
               fault = closeFault ?? fault;
             this.settleTask(task, value, fault);
+            releaseReturn();
             if (
               !task.grouped &&
               fault &&
@@ -1771,7 +1866,8 @@ class ExecutorV1 {
           actor: act.context.actor,
           rcOwner: act.rcOwner,
           requestDeadline: this.requestDeadline(act),
-          returned: (value) => {
+          returned: (value, released) => {
+            releaseReturn = released;
             if (
               dynamicEntry?.receiver_handback &&
               dynamicReceiver?.kind === "dyn"
@@ -1816,6 +1912,7 @@ class ExecutorV1 {
         );
         task.frame = frame;
         task.callable = callable;
+        task.invocationPending = true;
         task.cancel = () => {
           if (task.done || task.finishing) return;
           context.pendingCancellation ??= {
@@ -1827,6 +1924,7 @@ class ExecutorV1 {
         };
         this.scheduler.enqueue(task.id, () => {
           if (task.done || task.finishing) return;
+          task.invocationPending = false;
           this.runFrame(frame);
         });
         this.trace.allocateId("task", task.id, act.context.id);
@@ -2477,6 +2575,40 @@ class ExecutorV1 {
         ]);
         return;
       }
+      case "task.spawn":
+      case "task.invoke":
+      case "task.race": {
+        const row = this.managed.row(type);
+        if (row.kind !== "provider" || row.provider !== "task")
+          throw new Error(
+            "checked task lacks its canonical provider descriptor",
+          );
+        const carrier =
+          op.op === "task.race" ? 0n : BigInt(row.invocation_slot_bytes!);
+        const children: ManagedRoot[] = [];
+        if (op.op === "task.invoke") {
+          const operands = [...op.args];
+          if ("receiver" in op.callee) operands.push(op.callee.receiver);
+          for (const operand of operands) {
+            const type = act.managedTypes.get(operand.value);
+            if (type == null)
+              throw new Error("task input lacks its canonical descriptor");
+            const value = read(operand.value);
+            children.push({
+              value:
+                operand.decision === "copy" || operand.decision === "snapshot"
+                  ? this.managed.copy(value, type)
+                  : value,
+              type,
+            });
+          }
+        }
+        budget.checkPayload(
+          this.managed.width(row.children[0]!) + carrier,
+          children,
+        );
+        return;
+      }
       default:
         throw new Error(`unexpected managed materialization ${op.op}`);
     }
@@ -2921,15 +3053,29 @@ class ExecutorV1 {
       this.running = false;
       let reply: ManagedLease | undefined;
       if (
+        act.context.reply &&
         act.context.actor?.budget &&
         act.block.term.op === "return" &&
         act.block.term.value
       ) {
-        const type = act.managedTypes.get(act.block.term.value.value);
+        let type = act.managedTypes.get(act.block.term.value.value);
         if (type == null)
           throw new Error("actor reply lacks its managed descriptor");
+        let payload = value;
+        if (act.context.replyPayload && value.kind === "enum") {
+          const row = this.managed.row(type);
+          if (row.kind !== "variant")
+            throw new Error("fallible reply lacks its canonical cases");
+          type = row.cases[value.tag]?.[0];
+          payload = value.payload[0] ?? UNIT;
+        }
         try {
-          reply = act.context.actor.budget.retain({ value, type, slots: true });
+          if (type != null)
+            reply = act.context.actor.budget.retain({
+              value: payload,
+              type,
+              slots: true,
+            });
         } catch (error) {
           if (!(error instanceof HeapExceeded)) throw error;
           this.closeValueAsync(
@@ -2947,9 +3093,11 @@ class ExecutorV1 {
           return;
         }
       }
-      act.context.returned(value);
-      reply?.release();
-      for (const lease of act.managedInputs.splice(0)) lease.release();
+      const inputs = act.managedInputs.splice(0);
+      act.context.returned(value, () => {
+        reply?.release();
+        for (const lease of inputs) lease.release();
+      });
       return;
     }
     if (!act.normal) {
@@ -3184,6 +3332,8 @@ class ExecutorV1 {
           term.detail.park,
           act.context.actor,
           (status, fault) => {
+            if (status === 0)
+              for (const lease of act.managedInputs.splice(0)) lease.release();
             wake(UNIT, fault, status);
           },
           act.rcOwner,
@@ -3206,11 +3356,19 @@ class ExecutorV1 {
           return;
         }
         let cancelWait = () => {};
-        const wake = this.park(act, term, () => cancelWait());
+        let releaseEnvelope = () => {};
+        const wake = this.park(
+          act,
+          term,
+          () => cancelWait(),
+          undefined,
+          () => releaseEnvelope(),
+        );
         cancelWait = this.pipes.receive(
           stream,
           term.detail.park,
-          (value, fault) => {
+          (value, fault, released) => {
+            releaseEnvelope = released ?? (() => {});
             if (fault !== null) wake(UNIT, { kind: "panic", message: fault });
             else
               wake(
@@ -3577,6 +3735,7 @@ class ExecutorV1 {
     term: Extract<TermV1, { op: "suspend" }>,
     cleanup: () => void = () => {},
     accepted: () => void = () => {},
+    drained: () => void = () => {},
   ): (value: VmValue, fault?: Fault | null, edgeIndex?: number) => boolean {
     this.running = false;
     act.context.parked = true;
@@ -3612,6 +3771,7 @@ class ExecutorV1 {
             if (!edge) throw new Error(`${term.kind} has no resume edge`);
             this.takeEdge(act, edge);
           }
+          drained();
           this.runFrame(act);
         };
         // A close can arrive after readiness but before this frame runs. Keep
@@ -3995,6 +4155,11 @@ class ExecutorV1 {
       while (pending.length) {
         const entry = pending.pop()!;
         if ("retire" in entry) {
+          if (
+            entry.retire.kind === "stream" &&
+            !this.generatorStreams.has(entry.retire.channelId)
+          )
+            this.pipes.finishClose(entry.retire);
           this.managed.retire(entry.retire);
           continue;
         }
@@ -4238,7 +4403,10 @@ class ExecutorV1 {
       id: actor?.id ?? "actor:root",
       actor,
       rcOwner,
-      returned,
+      returned: (value, released) => {
+        returned(value);
+        released();
+      },
       failed: (fault) => failed(fault),
     };
     const frame = this.activate(
@@ -4479,6 +4647,7 @@ class ExecutorV1 {
           actor.budget = new ManagedBudget(
             this.managed,
             BigInt(layout.max_heap_bytes),
+            (root) => this.adoptManaged(root, actor),
           );
           if (layout.state_type == null)
             throw new Error("limited actor state lacks a managed descriptor");
@@ -5350,21 +5519,22 @@ class ExecutorV1 {
     handler: ActorMessage["handler"],
     payload: VmValue[],
   ): ManagedLease | undefined {
-    if (!actor.budget) return undefined;
+    if (!actor.budget && !this.pipes.hasManagedReceivers) return undefined;
     const params = this.functionAt(handler.callable).params.slice(1);
     if (params.length !== payload.length)
       throw new Error("typed message payload differs from its handler");
-    return actor.budget.retainMany(
-      params.map((param, index) => {
-        if (param.managed_type == null)
-          throw new Error("message parameter lacks its managed descriptor");
-        return {
-          value: payload[index]!,
-          type: param.managed_type,
-          slots: true,
-        };
-      }),
-    );
+    const roots = params.map((param, index) => {
+      if (param.managed_type == null)
+        throw new Error("message parameter lacks its managed descriptor");
+      return {
+        value: payload[index]!,
+        type: param.managed_type,
+        slots: true,
+      };
+    });
+    if (actor.budget) return actor.budget.retainMany(roots);
+    for (const root of roots) this.adoptManaged(root, actor);
+    return undefined;
   }
 
   private admitActorMessage(
@@ -5621,10 +5791,12 @@ class ExecutorV1 {
           caller: message.caller,
           requestDeadline: message.requestDeadline,
           reply: message.reply,
-          returned: (value) => {
+          replyPayload: message.handler.fallible,
+          returned: (value, released) => {
             unwatchStream();
             actor.active = null;
             const drained = (fault: Fault | null) => {
+              released();
               actor.busy = false;
               if (fault) this.crashActor(actor, fault, message.handler);
               else this.dispatchActor(actor);

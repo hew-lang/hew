@@ -503,6 +503,13 @@ export function* collectionOperation(
     return cloneValue(entry.value);
   }
   if (operation === "Insert") {
+    receiver.prepareInsert?.(
+      staged,
+      result.slot,
+      entry?.key ?? args[1]!,
+      family === "Set" ? UNIT : args[2]!,
+      family !== "Set" && !entry,
+    );
     receiver.entries = staged.entries;
     receiver.capacity = staged.capacity;
     receiver.tombstones = staged.tombstones;

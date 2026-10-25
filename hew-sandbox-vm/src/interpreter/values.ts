@@ -80,6 +80,13 @@ export type VmValue =
       entries: Map<string, { key: VmValue; value: VmValue }>;
       capacity?: number;
       tombstones?: Set<number>;
+      prepareInsert?: (
+        staged: Extract<VmValue, { kind: "map" }>,
+        slot: string,
+        key: VmValue,
+        value: VmValue,
+        copyKey: boolean,
+      ) => void;
     }
   /** A trait object: the vtable the checker selected, and the value it wraps.
    *  A `dyn.call` resolves its method through `vtable`, never through the
@@ -284,7 +291,8 @@ export function mutableVector(
   const detached = storage.owners !== 1;
   if (detached && storage.bytes) capacity = Math.max(value.items.length, 16);
   if (needed > capacity) {
-    if (storage.bytes) capacity = Math.max(capacity * 2, needed, 16);
+    if (storage.bytes)
+      capacity = Math.max(Math.min(capacity * 2, 0xffffffff), needed, 16);
     else {
       capacity = capacity || 4;
       while (capacity < needed) capacity *= 2;

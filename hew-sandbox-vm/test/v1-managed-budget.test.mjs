@@ -11,6 +11,7 @@ import {
   stringValue,
   vectorStorage,
 } from "../dist/interpreter/values.js";
+import { Pipes } from "../dist/interpreter/v1/pipes.js";
 
 const rows = [
   { id: 0, slot_bytes: "8", kind: "scalar" },
@@ -81,5 +82,76 @@ test("managed capacity multiplication refuses u64 overflow without acquisition",
   };
   vectorStorage(value);
   assert.throws(() => budget.retain({ value, type: 1 }), HeapExceeded);
+  assert.equal(budget.liveBytes, 0n);
+});
+
+test("managed stream admission faults the recipient without consuming refused input", () => {
+  const pipes = new Pipes();
+  const pair = pipes.create("quota", 3);
+  const sink = pipes.extract(pair, "sink");
+  const stream = pipes.extract(pair, "stream");
+  const budget = new ManagedBudget(new ManagedLayouts(rows), 18n);
+  let faults = 0;
+  pipes.bind(stream, {
+    owner: budget,
+    acquire: (item) => {
+      const lease = budget.retain({ value: item.value, type: 1, slots: true, identity: item });
+      return () => lease.release();
+    },
+    refused: () => { faults++; },
+  });
+  const statuses = [];
+  const accepted = stringValue("a");
+  const second = stringValue("b");
+  const refused = stringValue("c");
+  pipes.send(sink, accepted, false, (status) => statuses.push(status));
+  pipes.send(sink, second, false, (status) => statuses.push(status));
+  pipes.send(sink, refused, false, (status) => statuses.push(status));
+  assert.deepEqual(statuses, [0, 0, 1]);
+  assert.equal(faults, 1);
+  assert.equal(refused.value, "c");
+  assert.equal(budget.liveBytes, 18n);
+  assert.deepEqual(pipes.close(stream), [accepted, second]);
+  // Payloads stay owned until their actual asynchronous drain completes.
+  assert.equal(budget.liveBytes, 18n);
+  pipes.finishClose(stream);
+  assert.equal(budget.liveBytes, 0n);
+});
+
+test("managed stream waiting admission keeps producer ownership until a slot opens", () => {
+  const pipes = new Pipes();
+  const pair = pipes.create("waiting", 1);
+  const sink = pipes.extract(pair, "sink");
+  const stream = pipes.extract(pair, "stream");
+  const budget = new ManagedBudget(new ManagedLayouts(rows), 18n);
+  let acquisitions = 0;
+  pipes.bind(stream, {
+    owner: budget,
+    acquire: (item) => {
+      acquisitions++;
+      const lease = budget.retain({ value: item.value, type: 1, slots: true, identity: item });
+      return () => lease.release();
+    },
+    refused: () => assert.fail("admitted values fit the receiver"),
+  });
+  const statuses = [];
+  pipes.send(sink, stringValue("a"), true, (status) => statuses.push(status));
+  pipes.send(sink, stringValue("b"), true, (status) => statuses.push(status));
+  assert.deepEqual(statuses, [0]);
+  assert.equal(acquisitions, 1);
+  assert.equal(budget.liveBytes, 9n);
+  let release;
+  pipes.receive(stream, false, (value, fault, released) => {
+    assert.equal(value.value, "a");
+    assert.equal(fault, null);
+    release = released;
+  });
+  assert.deepEqual(statuses, [0, 0]);
+  assert.equal(acquisitions, 2);
+  assert.equal(budget.liveBytes, 18n);
+  release();
+  assert.equal(budget.liveBytes, 9n);
+  pipes.close(stream);
+  pipes.finishClose(stream);
   assert.equal(budget.liveBytes, 0n);
 });

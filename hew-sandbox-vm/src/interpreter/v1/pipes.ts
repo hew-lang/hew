@@ -1,4 +1,5 @@
 import { type VmValue } from "../values.js";
+import { HeapExceeded } from "./managed-budget.js";
 
 interface PendingSend {
   value: VmValue;
@@ -6,12 +7,28 @@ interface PendingSend {
 }
 
 interface PendingRead {
-  complete(value: VmValue | null, fault: string | null): void;
+  complete(
+    value: VmValue | null,
+    fault: string | null,
+    released?: () => void,
+  ): void;
+}
+
+interface Envelope {
+  value: VmValue;
+  release?: () => void;
+}
+
+interface Receiver {
+  owner: object;
+  acquire(envelope: Envelope): () => void;
+  refused(): void;
 }
 
 interface Pipe {
   capacity: number;
-  queue: Array<{ value: VmValue }>;
+  queue: Envelope[];
+  receiver?: Receiver;
   sinks: number;
   readerOpen: boolean;
   fault: string | null;
@@ -24,6 +41,7 @@ interface Half {
   pipe: Pipe;
   kind: "sink" | "stream";
   open: boolean;
+  retiring?: Array<() => void>;
 }
 
 /// The VM's one bounded pipe substrate. Selection observes readiness; only
@@ -32,6 +50,11 @@ export class Pipes {
   private readonly pairs = new Map<string, Pipe>();
   private readonly halves = new Map<string, Half>();
   private next = 0;
+  private managedReceivers = 0;
+
+  get hasManagedReceivers(): boolean {
+    return this.managedReceivers !== 0;
+  }
 
   create(id: string, capacity: number): VmValue {
     this.pairs.set(id, {
@@ -94,10 +117,55 @@ export class Pipes {
       half.pipe.fault ??= fault;
     } else {
       half.pipe.readerOpen = false;
-      discarded.push(...half.pipe.queue.splice(0).map((item) => item.value));
+      if (half.pipe.receiver) this.managedReceivers--;
+      half.pipe.receiver = undefined;
+      for (const item of half.pipe.queue.splice(0)) {
+        discarded.push(item.value);
+        if (item.release) (half.retiring ??= []).push(item.release);
+      }
     }
     this.flush(half.pipe);
     return discarded;
+  }
+
+  finishClose(value: VmValue): void {
+    if (value.kind !== "stream" && value.kind !== "sink") return;
+    for (const release of this.halves
+      .get(value.channelId)
+      ?.retiring?.splice(0) ?? [])
+      release();
+  }
+
+  /** Called only after ownership acquisition succeeds. The receiving half
+   * carries queued envelopes; producer aliases never acquire them. */
+  bind(value: VmValue, receiver?: Receiver): void {
+    const half = this.get(value);
+    if (half.kind !== "stream" || half.pipe.receiver?.owner === receiver?.owner)
+      return;
+    this.managedReceivers += Number(!!receiver) - Number(!!half.pipe.receiver);
+    half.pipe.receiver = receiver;
+    for (const envelope of half.pipe.queue) {
+      const release = receiver?.acquire(envelope);
+      envelope.release?.();
+      envelope.release = release;
+    }
+  }
+
+  private admit(pipe: Pipe, value: VmValue): Envelope | null {
+    const envelope = { value } as Envelope;
+    try {
+      envelope.release = pipe.receiver?.acquire(envelope);
+      return envelope;
+    } catch (error) {
+      if (!(error instanceof HeapExceeded)) throw error;
+      // Acquisition is atomic. A refused recipient follows its existing
+      // checked failure path while the producer still owns the item.
+      pipe.readerOpen = false;
+      pipe.fault = "actor heap limit exceeded";
+      pipe.receiver?.refused();
+      this.flush(pipe);
+      return null;
+    }
   }
 
   peerClosed(value: VmValue): boolean {
@@ -134,10 +202,20 @@ export class Pipes {
       return () => {};
     }
     if (pipe.reading.length > 0) {
-      pipe.reading.shift()!.complete(item, null);
+      const envelope = this.admit(pipe, item);
+      if (!envelope) {
+        complete(1);
+        return () => {};
+      }
+      pipe.reading.shift()!.complete(item, null, envelope.release);
       complete(0);
     } else if (pipe.queue.length < pipe.capacity) {
-      pipe.queue.push({ value: item });
+      const envelope = this.admit(pipe, item);
+      if (!envelope) {
+        complete(1);
+        return () => {};
+      }
+      pipe.queue.push(envelope);
       complete(0);
     } else if (!park) {
       complete(2);
@@ -161,12 +239,19 @@ export class Pipes {
   ): () => void {
     const pipe = this.get(value).pipe;
     if (pipe.queue.length > 0) {
-      complete(pipe.queue.shift()!.value, null);
+      const envelope = pipe.queue.shift()!;
+      complete(envelope.value, null, envelope.release);
       this.flush(pipe);
     } else if (pipe.sending.length > 0) {
       const sender = pipe.sending.shift()!;
-      complete(sender.value, null);
-      sender.complete(0);
+      const envelope = this.admit(pipe, sender.value);
+      if (envelope) {
+        complete(sender.value, null, envelope.release);
+        sender.complete(0);
+      } else {
+        complete(null, pipe.fault);
+        sender.complete(1);
+      }
     } else if (
       pipe.fault !== null ||
       pipe.sinks === 0 ||
@@ -195,9 +280,14 @@ export class Pipes {
         (pipe.reading.length > 0 || pipe.queue.length < pipe.capacity)
       ) {
         const sender = pipe.sending.shift()!;
+        const envelope = this.admit(pipe, sender.value);
+        if (!envelope) {
+          sender.complete(1);
+          break;
+        }
         const reader = pipe.reading.shift();
-        if (reader) reader.complete(sender.value, null);
-        else pipe.queue.push({ value: sender.value });
+        if (reader) reader.complete(sender.value, null, envelope.release);
+        else pipe.queue.push(envelope);
         sender.complete(0);
       }
     }

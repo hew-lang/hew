@@ -1048,75 +1048,7 @@ pub fn render_index(modules: &[DocModule], config: &DocSiteConfig) -> String {
     }
     language_mods.sort_by_key(|module| (config.guide_rank(&module.name), &module.name));
 
-    if !language_mods.is_empty() {
-        body.push_str(
-            "<nav class=\"index-nav\" aria-label=\"Reference sections\"><a href=\"#guides\">",
-        );
-        body.push_str(&html_escape(&config.guide_title));
-        body.push_str("</a><a href=\"#modules\">");
-        body.push_str(&html_escape(&config.module_title));
-        body.push_str("</a></nav>\n");
-        body.push_str("<section class=\"doc-section\" id=\"guides\"><h2>");
-        body.push_str(&html_escape(&config.guide_title));
-        body.push_str("</h2>\n");
-        let mut guide_intro = String::new();
-        if let Some(start) = config
-            .guide_start
-            .as_deref()
-            .and_then(|name| language_mods.iter().find(|module| module.name == name))
-        {
-            guide_intro.push_str("Start with <a href=\"");
-            guide_intro.push_str(&html_escape(&super::module_to_filename(
-                &start.name,
-                "html",
-            )));
-            guide_intro.push_str("\">");
-            guide_intro.push_str(&html_escape(&page_title(start, true)));
-            guide_intro.push_str("</a>. ");
-        }
-        guide_intro.push_str(&html_escape(&config.guide_description));
-        if !guide_intro.trim().is_empty() {
-            body.push_str("<p>");
-            body.push_str(guide_intro.trim());
-            body.push_str("</p>\n");
-        }
-        if config.guide_groups.is_empty() {
-            body.push_str("<ul class=\"module-list\">\n");
-            for m in &language_mods {
-                render_index_entry(&mut body, m, true, config);
-            }
-            body.push_str("</ul>\n");
-        } else {
-            for group in &config.guide_groups {
-                body.push_str("<section class=\"guide-group\"><h3>");
-                body.push_str(&html_escape(&group.title));
-                body.push_str("</h3>\n<ul class=\"module-list\">\n");
-                for guide in &group.guides {
-                    if let Some(module) = language_mods
-                        .iter()
-                        .find(|module| module.name == guide.module)
-                    {
-                        render_index_entry(&mut body, module, true, config);
-                    }
-                }
-                body.push_str("</ul></section>\n");
-            }
-            let remaining_guides: Vec<&&DocModule> = language_mods
-                .iter()
-                .filter(|module| config.guide_entry(&module.name).is_none())
-                .collect();
-            if !remaining_guides.is_empty() {
-                body.push_str(
-                    "<section class=\"guide-group\"><h3>More guides</h3>\n<ul class=\"module-list\">\n",
-                );
-                for module in remaining_guides {
-                    render_index_entry(&mut body, module, true, config);
-                }
-                body.push_str("</ul></section>\n");
-            }
-        }
-        body.push_str("</section>\n");
-    }
+    render_guide_index(&mut body, &language_mods, config);
 
     body.push_str("<section class=\"doc-section\" id=\"modules\"><h2>");
     body.push_str(&html_escape(&config.module_title));
@@ -1143,6 +1075,84 @@ pub fn render_index(modules: &[DocModule], config: &DocSiteConfig) -> String {
     body.push_str("</section>\n");
 
     body
+}
+
+fn render_guide_index(body: &mut String, guides: &[&DocModule], config: &DocSiteConfig) {
+    if guides.is_empty() {
+        return;
+    }
+
+    body.push_str(
+        "<nav class=\"index-nav\" aria-label=\"Reference sections\"><a href=\"#guides\">",
+    );
+    body.push_str(&html_escape(&config.guide_title));
+    body.push_str("</a><a href=\"#modules\">");
+    body.push_str(&html_escape(&config.module_title));
+    body.push_str("</a></nav>\n");
+    body.push_str("<section class=\"doc-section\" id=\"guides\"><h2>");
+    body.push_str(&html_escape(&config.guide_title));
+    body.push_str("</h2>\n");
+
+    let mut guide_intro = String::new();
+    if let Some(start) = config
+        .guide_start
+        .as_deref()
+        .and_then(|name| guides.iter().find(|module| module.name == name))
+    {
+        guide_intro.push_str("Start with <a href=\"");
+        guide_intro.push_str(&html_escape(&super::module_to_filename(
+            &start.name,
+            "html",
+        )));
+        guide_intro.push_str("\">");
+        guide_intro.push_str(&html_escape(&page_title(start, true)));
+        guide_intro.push_str("</a>. ");
+    }
+    guide_intro.push_str(&html_escape(&config.guide_description));
+    if !guide_intro.trim().is_empty() {
+        body.push_str("<p>");
+        body.push_str(guide_intro.trim());
+        body.push_str("</p>\n");
+    }
+
+    if config.guide_groups.is_empty() {
+        body.push_str("<ul class=\"module-list\">\n");
+        for guide in guides {
+            render_index_entry(body, guide, true, config);
+        }
+        body.push_str("</ul>\n");
+    } else {
+        render_guide_groups(body, guides, config);
+    }
+    body.push_str("</section>\n");
+}
+
+fn render_guide_groups(body: &mut String, guides: &[&DocModule], config: &DocSiteConfig) {
+    for group in &config.guide_groups {
+        body.push_str("<section class=\"guide-group\"><h3>");
+        body.push_str(&html_escape(&group.title));
+        body.push_str("</h3>\n<ul class=\"module-list\">\n");
+        for guide in &group.guides {
+            if let Some(module) = guides.iter().find(|module| module.name == guide.module) {
+                render_index_entry(body, module, true, config);
+            }
+        }
+        body.push_str("</ul></section>\n");
+    }
+
+    let remaining_guides: Vec<&&DocModule> = guides
+        .iter()
+        .filter(|module| config.guide_entry(&module.name).is_none())
+        .collect();
+    if !remaining_guides.is_empty() {
+        body.push_str(
+            "<section class=\"guide-group\"><h3>More guides</h3>\n<ul class=\"module-list\">\n",
+        );
+        for module in remaining_guides {
+            render_index_entry(body, module, true, config);
+        }
+        body.push_str("</ul></section>\n");
+    }
 }
 
 fn render_index_entry(body: &mut String, m: &DocModule, is_guide: bool, config: &DocSiteConfig) {

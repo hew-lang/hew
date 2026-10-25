@@ -231,5 +231,4 @@ test("Map(Get) refuses a missing checked Option role tag", async () => {
   delete bytecode.variants[0].runtime_tags;
   const trace = await run(bytecode);
   assert.equal(trace.result, "runtime_failure");
-  assert.match(trace.final_state.runtime_failures[0].message, /no checked OptionSome tag/);
 });

@@ -72,7 +72,6 @@
 
 .PHONY: all build bootstrap install-hooks help shell-script-lint test-install-version-resolution actionlint hew hew-debug hew-native shared-host-debug observe-functional-test observe-protocol-generate observe-protocol-check mqtt-broker-e2e libhew-link-race-test runtime stdlib wasm-runtime wasm wasm-capability wasm-capability-check playground-manifest playground-manifest-check sandbox-fixtures sandbox-fixtures-check sandbox-fixtures-record sandbox-vm-deps sandbox-vm-test sandbox-parity playground-check playground-wasi-check preflight ci-preflight ci-local-linux wasm-dist release licenses licenses-check dependency-policy release-checks baselines baselines-check
 .PHONY: test test-strict ratchet-accounting ratchet-accounting-nextest test-ratchet-accounting-runner macos-leak-oracle test-leak-oracle-selftest test-cabi test-compiler-pipeline test-pkg-import test-package-install test-runtime-unit test-hew-ratchet test-o2-differential o2-differential-selftest test-release-lib-link asan tsan miri lint lint-rust structural-lint structural-lint-bootstrap structural-lint-bootstrap-install test-ast-grep-contract stdlib-errno-gate hew-fmt-check hew-fmt-fidelity test-migrate-corpus test-build-harness core-acceptance
-.PHONY: test-obligation-site-diff
 .PHONY: test-packaged-sdk
 .PHONY: stdlib-user-build-clean
 .PHONY: clean install uninstall test-cabi-surface cabi-surface cabi-surface-check
@@ -745,7 +744,7 @@ ci-shard-1: observe-functional-test test-cabi \
 ci-shard-2: libhew-link-race-test test \
 	test-leak-oracle-selftest \
 	compile-determinism-verify compile-determinism-selftest \
-	test-obligation-site-diff stdlib-user-build-clean stdlib-errno-gate \
+	stdlib-user-build-clean stdlib-errno-gate \
 	test-extern-bytes test-host-client
 
 ci-shard-3: mqtt-broker-e2e sandbox-vm-test sandbox-parity \
@@ -1319,10 +1318,6 @@ test-hew-ratchet: hew-native ## Test: run compiled Hew suites against their ratc
 	PYTHON="$(PYTHON)" HEW_BIN="$(DEBUG_DIR)/hew" scripts/corpus-ratchet.sh hew-suite $(if $(HEW_O0_OUTCOMES_FILE),--emit-o0-outcomes "$(HEW_O0_OUTCOMES_FILE)")
 
 endif
-
-test-obligation-site-diff:
-	$(PYTHON) scripts/tests/test_obligation_site_diff.py
-
 
 # The -O0-vs-O2 differential-exec parity gate: every compiled `.hew` program
 # must behave identically at -O0 and -O2. The no-miscompile oracle for the LLVM

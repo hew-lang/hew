@@ -36,7 +36,11 @@ export interface VmVector {
   storage?: VectorStorage;
   offset?: number;
   closed?: boolean;
-  prepareMutation?: (capacity: number, detached: boolean) => void;
+  prepareMutation?: (
+    capacity: number,
+    detached: boolean,
+    appended?: readonly VmValue[],
+  ) => void;
 }
 
 export type VmValue =
@@ -294,6 +298,7 @@ export function sliceByteVector(
 export function mutableVector(
   value: VmVector,
   needed = value.items.length,
+  appended?: readonly VmValue[],
 ): VmVector {
   let storage = vectorStorage(value);
   let capacity = storage.capacity;
@@ -312,8 +317,8 @@ export function mutableVector(
     (storage.bytes && capacity > 0xffffffff)
   )
     throw new Error("vector capacity overflow");
-  if (detached || capacity !== storage.capacity)
-    value.prepareMutation?.(capacity, detached);
+  if (detached || capacity !== storage.capacity || appended?.length)
+    value.prepareMutation?.(capacity, detached, appended);
   if (detached) {
     const items = value.items.map(cloneValue);
     storage.owners--;

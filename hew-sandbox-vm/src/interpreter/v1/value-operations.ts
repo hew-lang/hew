@@ -23,6 +23,7 @@ export type ValueRequest =
       value: VmValue;
       onFault?: VmValue;
       retained?: readonly VmValue[];
+      retainedType?: number;
     };
 export type ValueProgram = Generator<ValueRequest, VmValue, VmValue>;
 
@@ -389,6 +390,7 @@ export function* collectionOperation(
   args: VmValue[],
   callbacks: number[],
   shape: number | null | undefined,
+  elementType?: number,
 ): ValueProgram {
   const { family, operation } = request;
   if (family === "Vector") {
@@ -402,6 +404,7 @@ export function* collectionOperation(
         kind: "release",
         value: { kind: "vector", elementType: receiver.elementType, items },
         retained: items,
+        retainedType: elementType,
       };
       return receiver;
     }
@@ -415,7 +418,7 @@ export function* collectionOperation(
       mutableVector(receiver);
       const old = receiver.items[at]!;
       receiver.items[at] = args[2]!;
-      yield { kind: "release", value: old };
+      yield { kind: "release", value: old, retainedType: elementType };
       return receiver;
     }
     for (const item of receiver.items) {

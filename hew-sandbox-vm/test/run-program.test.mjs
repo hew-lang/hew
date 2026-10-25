@@ -267,6 +267,12 @@ for (const [name, file, stdout] of [
 
 for (const [name, file, stdout, exit] of [
   [
+    "vector operations",
+    "actor-owned-budget-vector-operations.hew",
+    "3\ndetach limit\n2\nslice limit\n8\nappend limit\n1\ncopy limit\n",
+    1,
+  ],
+  [
     "encoding messages",
     "actor-owned-budget-encoding-message.hew",
     "40\n41\n42\n",

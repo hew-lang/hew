@@ -943,10 +943,10 @@ class ExecutorV1 {
         : undefined;
     } else if (value.kind === "vector") {
       value.prepareMutation = budget
-        ? (capacity, detached) => {
+        ? (capacity, detached, appended) => {
             const row = this.managed.row(type);
             const storage = vectorStorage(value);
-            const items =
+            let items =
               detached &&
               (row.kind === "vector" ||
                 row.kind === "array" ||
@@ -955,6 +955,20 @@ class ExecutorV1 {
                     this.managed.copy(item, row.element),
                   )
                 : value.items;
+            if (appended?.length) {
+              if (
+                row.kind !== "vector" &&
+                row.kind !== "array" &&
+                row.kind !== "slice"
+              )
+                throw new Error(
+                  "vector append lacks its canonical element type",
+                );
+              items = [
+                ...items,
+                ...appended.map((item) => this.managed.copy(item, row.element)),
+              ];
+            }
             budget.checkMutation(
               value,
               {
@@ -2503,6 +2517,16 @@ class ExecutorV1 {
             return;
           }
           case "collection": {
+            const receiverType =
+              term.args[0] && act.managedTypes.get(term.args[0].value);
+            const receiverLayout =
+              receiverType == null ? undefined : this.managed.row(receiverType);
+            const elementType =
+              receiverLayout &&
+              (receiverLayout.kind === "vector" ||
+                receiverLayout.kind === "array")
+                ? receiverLayout.element
+                : undefined;
             const args = term.args.map((operand) =>
               this.boundary(act, operand),
             );
@@ -2512,6 +2536,7 @@ class ExecutorV1 {
               args,
               term.callbacks ?? [],
               term.result_member_shapes?.[1] ?? term.result_shape,
+              elementType,
             );
             this.runValueProgram(act, term, args, iterator);
             return;
@@ -3125,7 +3150,7 @@ class ExecutorV1 {
                 act,
                 (request.retained ?? [request.value]).map((value) => ({
                   value,
-                  type: this.managed.type(value),
+                  type: request.retainedType ?? this.managed.type(value),
                 })),
               )
             : undefined;

@@ -101,7 +101,7 @@ use hew_sir::{
 };
 pub use hew_sir::{
     BlockId, CallableId, CallableSpecializationId, ClosureId, DeferId, DeferScopeId, FaultParkId,
-    OffloadId, OwnKind, ResourceCarrier, ResourceRelease, SemParamPassing, TaskScopeId, TrapKind,
+    OffloadId, OwnKind, ResourceCarrier, ResourceRelease, SemParamPassing, TrapKind,
 };
 use hew_types::runtime_call::{
     collection_type_arguments, shared_handle_payload, MapValueOp, SetValueOp,

@@ -395,20 +395,57 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                     let moved = matches!(transfers.get(1), Some(ArgumentTransfer::Move(_)));
                     let function = get_or_declare_external(
                         self.llvm,
-                        if moved {
-                            "hew_vec_push_owned_move"
-                        } else {
-                            "hew_vec_push_owned"
-                        },
-                        self.ctx
-                            .void_type()
-                            .fn_type(&[pointer.into(), pointer.into()], false),
+                        "hew_vec_push_managed",
+                        self.ctx.i32_type().fn_type(
+                            &[
+                                pointer.into(),
+                                pointer.into(),
+                                self.ctx.i8_type().into(),
+                                pointer.into(),
+                            ],
+                            false,
+                        ),
                     )?;
-                    self.runtime_call_void(
-                        function,
-                        &[vector.into(), self.slots[source(1)?.0 as usize].into()],
-                        "vector.push",
+                    let state = self
+                        .frame
+                        .as_ref()
+                        .map_or(pointer.const_null(), |frame| frame.state);
+                    let status = self
+                        .runtime_call_value(
+                            function,
+                            &[
+                                vector.into(),
+                                self.slots[source(1)?.0 as usize].into(),
+                                self.ctx.i8_type().const_int(u64::from(moved), false).into(),
+                                state.into(),
+                            ],
+                            "vector.push.status",
+                        )?
+                        .into_int_value();
+                    let accepted = self
+                        .ctx
+                        .append_basic_block(self.value, "vector.push.accepted");
+                    let refused = self
+                        .ctx
+                        .append_basic_block(self.value, "vector.push.refused");
+                    let ok = self
+                        .builder
+                        .build_int_compare(
+                            IntPredicate::EQ,
+                            status,
+                            self.ctx.i32_type().const_zero(),
+                            "vector.push.ok",
+                        )
+                        .llvm_ctx("inspect checked vector growth")?;
+                    self.builder
+                        .build_conditional_branch(ok, accepted, refused)
+                        .llvm_ctx("preserve vector inputs before quota failure")?;
+                    self.builder.position_at_end(refused);
+                    self.initialize_active_fault(
+                        hew_runtime::internal::types::HEW_TRAP_HEAP_EXCEEDED,
                     )?;
+                    self.emit_edge(failure()?)?;
+                    self.builder.position_at_end(accepted);
                     if moved {
                         self.clear_owned(source(1)?)?;
                     }

@@ -912,7 +912,7 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
                 drop.as_global_value().as_pointer_value().into(),
                 release.into(),
                 self.code_owner().into(),
-                ptr.const_null().into(),
+                self.emit_actor_state_managed(actor, layout)?.into(),
             ]),
         );
         let clone = self.llvm.add_function(
@@ -2287,7 +2287,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
                     ptr.into(),
                     self.ctx.i32_type().into(),
                     self.ctx.i32_type().into(),
-                    size_ty.into(),
+                    self.ctx.i64_type().into(),
                     ptr.into(),
                     ptr.into(),
                     ptr.into(),
@@ -2296,6 +2296,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
                     ptr.into(),
                     ptr.into(),
                     ptr.into(),
+                    self.ctx.i8_type().into(),
                     ptr.into(),
                 ],
                 false,
@@ -2364,7 +2365,8 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
                         .const_int(u64::from(actor.mailbox_capacity.unwrap_or(0)), false)
                         .into(),
                     self.ctx.i32_type().const_int(overflow, false).into(),
-                    size_ty
+                    self.ctx
+                        .i64_type()
                         .const_int(actor.max_heap_bytes.unwrap_or(0), false)
                         .into(),
                     callback("sys_dispatch")?.into(),
@@ -2390,6 +2392,10 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
                             )
                         })?
                         .state
+                        .into(),
+                    self.ctx
+                        .i8_type()
+                        .const_int(u64::from(actor.max_heap_bytes.is_some()), false)
                         .into(),
                     self.llvm
                         .get_global(&symbol(actor.id, "state_layout"))
@@ -2455,6 +2461,59 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             .llvm_ctx("finish refused actor construction")?;
         let unavailable_end = self.builder.get_insert_block().unwrap();
         self.builder.position_at_end(initialize);
+        let construction = self
+            .frame
+            .as_ref()
+            .ok_or_else(|| CodegenError::FailClosed("construction lacks its invocation".into()))?
+            .state;
+        let prepare = get_or_declare_external(
+            self.llvm,
+            "hew_actor_prepare_managed_state",
+            self.ctx
+                .i32_type()
+                .fn_type(&[size_ty.into(), ptr.into(), ptr.into()], false),
+        )?;
+        let poll = self
+            .ctx
+            .append_basic_block(self.value, "spawn.managed.poll");
+        let pending = self
+            .ctx
+            .append_basic_block(self.value, "spawn.managed.pending");
+        let ready = self
+            .ctx
+            .append_basic_block(self.value, "spawn.managed.ready");
+        let invalid = self
+            .ctx
+            .append_basic_block(self.value, "spawn.managed.invalid");
+        self.builder
+            .build_unconditional_branch(poll)
+            .llvm_ctx("prepare initial actor ownership")?;
+        self.builder.position_at_end(poll);
+        let status = call_value(
+            &self.builder,
+            prepare,
+            &[token.into(), construction.into(), self.active_fault.into()],
+            "spawn.managed.status",
+        )?
+        .into_int_value();
+        self.builder
+            .build_switch(
+                status,
+                rollback,
+                &[
+                    (self.ctx.i32_type().const_zero(), pending),
+                    (self.ctx.i32_type().const_int(1, false), ready),
+                ],
+            )
+            .llvm_ctx("route initial managed adoption")?;
+        self.builder.position_at_end(pending);
+        self.frame
+            .as_ref()
+            .unwrap()
+            .suspend(self.ctx, &self.builder, poll, invalid)?;
+        self.builder.position_at_end(invalid);
+        self.reject_invalid_task_state()?;
+        self.builder.position_at_end(ready);
         for body in actor.init.iter().chain(&actor.start).copied() {
             let callable = callable(self.module, body)?;
             let mut arguments: Vec<BasicMetadataValueEnum<'ctx>> = vec![state.into()];

@@ -379,6 +379,7 @@ pub const fn runtime_failure_trap_kind(
     failure: hew_types::RuntimeLogicalFailure,
 ) -> Option<TrapKind> {
     match failure {
+        hew_types::RuntimeLogicalFailure::HeapExceeded => Some(TrapKind::HeapExceeded),
         hew_types::RuntimeLogicalFailure::IndexOutOfBounds => Some(TrapKind::IndexOutOfBounds),
         hew_types::RuntimeLogicalFailure::IntegerOverflow => Some(TrapKind::IntegerOverflow),
         hew_types::RuntimeLogicalFailure::CallbackFault

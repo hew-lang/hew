@@ -7417,7 +7417,7 @@ impl RuntimeCallFamily {
                         },
                     ],
                     result: R::UpdatedReceiver(K::Receiver(BuiltinType::Vec)),
-                    failures: &[],
+                    failures: &[RuntimeLogicalFailure::HeapExceeded],
                 }),
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,

@@ -30,8 +30,7 @@ pub struct HewActorOpts {
     ///
     /// Non-zero values cause [`hew_actor_spawn_opts`] to call
     /// `hew_arena_new_with_cap(arena_cap_bytes)` instead of `hew_arena_new()`.
-    /// Set from the `#[max_heap(N)]` actor attribute; callers that do not use
-    /// the attribute must supply `0`.
+    /// This explicit arena limit is separate from managed actor-value budgets.
     pub arena_cap_bytes: usize,
     /// Non-zero when the checker determined this actor participates in an
     /// actor-ref cycle. Future consumer: cycle-detection / Machine Lane B
@@ -739,7 +738,7 @@ pub unsafe extern "C" fn hew_actor_construct_native(
     stop_release: Option<hew_cabi::value::HewValueReleaseStart>,
     capacity: i32,
     overflow: i32,
-    cap_bytes: usize,
+    max_heap_bytes: u64,
     sys_dispatch: Option<HewSysDispatchFn>,
     native_crash: Option<HewNativeCrashFn>,
     fault: *mut *mut crate::fault::HewFault,
@@ -748,6 +747,7 @@ pub unsafe extern "C" fn hew_actor_construct_native(
     state_release: Option<hew_cabi::value::HewValueReleaseStart>,
     rejected_state_release: *mut *mut crate::release_walker::HewReleaseCursor,
     construction: *mut crate::coro_state::HewCoroState,
+    has_heap_limit: u8,
     state_layout: *const hew_cabi::value::HewValueLayout,
 ) -> crate::lifetime::local_handles::HewLocalPidId {
     // SAFETY: generated code supplies an empty cursor output.
@@ -808,6 +808,14 @@ pub unsafe extern "C" fn hew_actor_construct_native(
     {
         completion.cleanup.rc = owner;
     }
+    completion.cleanup.value_owner = (has_heap_limit != 0)
+        .then(|| crate::owned_value_budget::ValueOwner::new(Some(max_heap_bytes)));
+    completion
+        .cleanup
+        .state_layout
+        .store(state_layout.cast_mut(), Ordering::Relaxed);
+    *completion.cleanup.state_source_owner.lock_or_recover() =
+        Some(unsafe { crate::owned_value_budget::materialize::invocation_owner(construction) });
     completion.cleanup.set_state_release(state_release);
     completion.cleanup.set_stop_release(stop_release);
     // SAFETY: ownership and callbacks are supplied atomically before publication.
@@ -828,7 +836,7 @@ pub unsafe extern "C" fn hew_actor_construct_native(
             budget: HEW_MSG_BUDGET,
             coalesce_match_fn: coalesce_match,
             cycle_capable: false,
-            cap_bytes,
+            cap_bytes: 0,
             adopt: true,
         })
     };
@@ -842,6 +850,13 @@ pub unsafe extern "C" fn hew_actor_construct_native(
         // SAFETY: construction owns its context and the new actor cannot dispatch.
         unsafe {
             let actor = &*actor;
+            if let Some(owner) = actor
+                .native_completion
+                .as_ref()
+                .and_then(|completion| completion.cleanup.value_owner.as_ref())
+            {
+                owner.bind_incarnation(std::ptr::from_ref(actor).cast_mut());
+            }
             let construction = &mut *construction;
             construction.execution_mut().actor_turn =
                 live_actors::ActorIncarnation::of(std::ptr::from_ref(actor).cast_mut());
@@ -958,6 +973,7 @@ pub unsafe extern "C" fn hew_actor_abort_construction(
         let actor = unsafe { &*raw };
         let completion = actor.native_completion.as_ref().expect("native completion");
         completion.construction.lock_or_recover().take();
+        completion.construction_budget.lock_or_recover().take();
         completion.cleanup.set_stop_release(None);
         // SAFETY: construction relinquishes its Rc list and self identity before joining cleanup.
         unsafe {

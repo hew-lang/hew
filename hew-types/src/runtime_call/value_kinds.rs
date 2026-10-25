@@ -543,6 +543,8 @@ pub enum RuntimeResultEffect {
 /// Closed language-visible failures of the initial runtime-operation surface.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum RuntimeLogicalFailure {
+    /// Checked managed payload acquisition refused before input mutation.
+    HeapExceeded,
     IndexOutOfBounds,
     IntegerOverflow,
     /// A selected user callback returns an existing logical fault owner.
@@ -566,8 +568,15 @@ impl RuntimeSemanticContract {
     #[must_use]
     pub fn preserves_inputs_on_failure(self) -> bool {
         self.failures == [RuntimeLogicalFailure::RcUnavailable]
-            || (self.failures == [RuntimeLogicalFailure::IndexOutOfBounds]
-                || self.failures == [RuntimeLogicalFailure::CallbackFault])
+            || (!self.failures.is_empty()
+                && self.failures.iter().all(|failure| {
+                    matches!(
+                        failure,
+                        RuntimeLogicalFailure::IndexOutOfBounds
+                            | RuntimeLogicalFailure::CallbackFault
+                            | RuntimeLogicalFailure::HeapExceeded
+                    )
+                }))
                 && matches!(
                     self.result,
                     RuntimeResultEffect::UpdatedReceiver(_)
@@ -583,7 +592,9 @@ impl RuntimeSemanticContract {
         self.failures.iter().any(|failure| {
             matches!(
                 failure,
-                RuntimeLogicalFailure::CallbackFault | RuntimeLogicalFailure::RcUnavailable
+                RuntimeLogicalFailure::CallbackFault
+                    | RuntimeLogicalFailure::RcUnavailable
+                    | RuntimeLogicalFailure::HeapExceeded
             )
         })
     }

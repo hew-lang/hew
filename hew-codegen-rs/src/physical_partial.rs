@@ -2,8 +2,7 @@
 
 use std::collections::{btree_map::Entry, BTreeMap};
 
-use hew_mir::physical::{LeafContents, PhysicalCleanup, SemParamPassing, StorageOrigin};
-use hew_sir::OwnKind;
+use hew_mir::physical::{LeafContents, OwnKind, PhysicalCleanup, SemParamPassing, StorageOrigin};
 use inkwell::builder::Builder;
 use inkwell::values::{FunctionValue, IntValue, PointerValue};
 

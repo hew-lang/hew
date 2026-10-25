@@ -335,9 +335,15 @@ pub struct HewReleaseCursor {
     current_layout: Option<HewValueLayout>,
     remaining: usize,
     rc_sweep: Option<hew_observe_protocol::RcSweep>,
+    value_owner: Option<Option<crate::owned_value_budget::ValueOwner>>,
 }
 
 impl HewReleaseCursor {
+    /// Stamp cleanup with the account that owns its unconsumed payload.
+    pub(crate) fn set_value_owner(&mut self, owner: Option<crate::owned_value_budget::ValueOwner>) {
+        self.value_owner = Some(owner);
+    }
+
     /// Move an owner into independent storage before its receiver is mutated.
     /// # Safety
     /// `slot` is initialized with this exact layout. The caller must cease
@@ -372,6 +378,7 @@ impl HewReleaseCursor {
             current_layout: None,
             remaining: STEP_ELEMENTS,
             rc_sweep: None,
+            value_owner: None,
         }))
     }
 
@@ -519,7 +526,11 @@ impl ReleaseDriver {
         reason = "generated child frames retain fault output addresses in this allocation"
     )]
     pub(crate) fn new(cursor: *mut HewReleaseCursor) -> Box<Self> {
-        Self::with_value_owner(cursor, crate::owned_value_budget::current_owner())
+        // SAFETY: the caller transfers its live optional cursor to this driver.
+        let owner = unsafe { cursor.as_ref() }
+            .and_then(|cursor| cursor.value_owner.clone())
+            .unwrap_or_else(crate::owned_value_budget::current_owner);
+        Self::with_value_owner(cursor, owner)
     }
 
     /// Retain the payload's account across asynchronous authored cleanup.

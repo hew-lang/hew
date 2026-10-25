@@ -18,6 +18,8 @@ pub struct NativeActorCompletion {
     pub(crate) crash: Option<crate::actor::HewNativeCrashFn>,
     pub(crate) crash_action: AtomicI32,
     pub(crate) construction: Mutex<Option<crate::coro_state::RetainedCancellation>>,
+    pub(crate) construction_budget:
+        Mutex<Option<crate::owned_value_budget::actor::ConstructionBudget>>,
     phase: AtomicU8,
     code: AtomicI32,
     ready: ReadinessRegistrations,

@@ -58,18 +58,99 @@ unsafe fn ensure_cap_raw(v: *mut HewVec, needed: usize) {
             hew_vec_make_unique(v);
             return;
         }
-        let mut new_cap = if capacity == 0 { 4 } else { capacity };
-        while new_cap < needed {
-            new_cap = if let Some(c) = new_cap.checked_mul(2) {
-                c
-            } else {
-                // SAFETY: writing to stderr and aborting is always safe.
-                let msg = b"PANIC: Vec capacity overflow\n\0";
-                write_stderr(&msg[..msg.len() - 1]);
-                libc::abort();
-            };
-        }
+        let new_cap = capacity_for(capacity, needed).unwrap_or_else(|| allocation_size_overflow());
         resize_buffer(v, new_cap);
+    }
+}
+
+/// The same growth policy serves allocation and checked preflight.
+pub(crate) fn capacity_for(capacity: usize, needed: usize) -> Option<usize> {
+    if capacity >= needed {
+        return Some(capacity);
+    }
+    let mut new_cap = if capacity == 0 { 4 } else { capacity };
+    while new_cap < needed {
+        new_cap = new_cap.checked_mul(2)?;
+    }
+    Some(new_cap)
+}
+
+/// Push through a checked managed-storage boundary before changing any input.
+/// # Safety
+/// Vector, element and invocation are live and match the compiler descriptor.
+#[no_mangle]
+pub unsafe extern "C" fn hew_vec_push_managed(
+    v: *mut HewVec,
+    data: *const c_void,
+    moved: u8,
+    invocation: *const crate::coro_state::HewCoroState,
+) -> i32 {
+    use crate::owned_value_budget::{
+        materialize::{invocation_owner, HewManagedInput, MaterializationPermit},
+        ManagedStorage,
+    };
+    // SAFETY: the compiler retains the inputs until this checked call succeeds.
+    unsafe {
+        let Some(owner) = invocation_owner(invocation) else {
+            if moved != 0 {
+                hew_vec_push_owned_move(v, data);
+            } else {
+                hew_vec_push_owned(v, data);
+            }
+            return 0;
+        };
+        let layout = owned_descriptor(v);
+        let Some(managed) = layout.managed.as_ref() else {
+            return hew_cabi::managed::UNDESCRIBED;
+        };
+        let Some(needed) = (*v).len.checked_add(1) else {
+            return hew_cabi::managed::HEAP_EXCEEDED;
+        };
+        let Some(capacity) = capacity_for((*v).cap, needed) else {
+            return hew_cabi::managed::HEAP_EXCEEDED;
+        };
+        let Some(bytes) = managed.slot_bytes.checked_mul(capacity as u64) else {
+            return hew_cabi::managed::HEAP_EXCEEDED;
+        };
+        let unique = (*v).data.is_null() || (*buffer_owner(v)).load(Ordering::Acquire) == 1;
+        let old = (!(*v).data.is_null()).then(|| ManagedStorage {
+            identity: (*v).data as usize,
+            bytes: managed.slot_bytes * (*v).cap as u64,
+        });
+        let backing = if capacity != (*v).cap || !unique {
+            match owner.prepare_backing_change(old, bytes, unique) {
+                Ok(permit) => Some(permit),
+                Err(_) => return hew_cabi::managed::HEAP_EXCEEDED,
+            }
+        } else {
+            None
+        };
+        let inputs = [HewManagedInput {
+            layout,
+            slot: data,
+            copies: u64::from(moved == 0),
+            consume: moved,
+        }];
+        let element = match MaterializationPermit::prepare(owner.clone(), 0, &inputs) {
+            Ok(permit) => permit,
+            Err(status) => return status,
+        };
+        let index = (*v).len;
+        if moved != 0 {
+            hew_vec_push_owned_move(v, data);
+        } else {
+            hew_vec_push_owned(v, data);
+        }
+        if let Some(backing) = backing {
+            backing.commit((*v).data as usize);
+        }
+        if element
+            .commit(layout, (*v).data.add(index * layout.size).cast())
+            .is_err()
+        {
+            std::process::abort();
+        }
+        0
     }
 }
 
@@ -1614,6 +1695,19 @@ pub(crate) unsafe fn release_element_chunk(
 pub(crate) unsafe fn free_vector_storage(v: *mut HewVec) {
     // SAFETY: caller guarantees the allocation contract.
     unsafe {
+        if let Some(owner) = crate::owned_value_budget::current_owner() {
+            if !(*v).data.is_null() {
+                let layout = owned_descriptor(v);
+                if let Some(managed) = layout.managed.as_ref() {
+                    let bytes = managed
+                        .slot_bytes
+                        .checked_mul((*v).cap as u64)
+                        .unwrap_or_else(|| std::process::abort());
+                    owner.release_backing((*v).data.cast(), bytes);
+                }
+            }
+        }
+
         let _code = (*v)
             .layout
             .as_ref()

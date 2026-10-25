@@ -12,6 +12,7 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, MutexGuard};
 
+pub mod actor;
 pub mod frame;
 pub mod materialize;
 pub mod transfer;
@@ -290,6 +291,43 @@ impl ValueOwner {
         })
     }
 
+    /// Reserve one container replacement without holding the ledger while
+    /// typed copy callbacks execute. Unique growth credits existing capacity;
+    /// COW retains old storage until the final replacement commits.
+    pub(crate) fn prepare_backing_change(
+        &self,
+        old: Option<ManagedStorage>,
+        bytes: u64,
+        unique: bool,
+    ) -> Result<BackingChange, BudgetExceeded> {
+        let credit = if unique {
+            old.map_or(0, |old| old.bytes)
+        } else {
+            0
+        };
+        let reserved = bytes.saturating_sub(credit);
+        let mut ledger = self.ledger();
+        self.check(&ledger, reserved)?;
+        if let Some(old) = old {
+            let held = ledger
+                .storage
+                .get(&old.identity)
+                .expect("unowned managed mutation");
+            assert_eq!(held.bytes, old.bytes);
+            if unique {
+                assert_eq!(held.references, 1);
+            }
+        }
+        ledger.reserved += reserved;
+        Ok(BackingChange {
+            owner: self.clone(),
+            old,
+            bytes,
+            reserved,
+            committed: false,
+        })
+    }
+
     /// Reserve a unique backing's growth before its allocator can relocate it.
     /// Native COW uniqueness remains the container's authority; a retained
     /// alias also refuses this path and must acquire a distinct backing.
@@ -375,6 +413,52 @@ fn insert_storage(ledger: &mut Ledger, pending: HashMap<usize, Retention>) {
             .references
             .checked_add(acquired.references)
             .expect("managed reference overflow");
+    }
+}
+
+/// Container backing replacement. Typed child edges move with the existing
+/// elements; only the changed backing edge is replaced by this permit.
+#[derive(Debug)]
+pub(crate) struct BackingChange {
+    owner: ValueOwner,
+    old: Option<ManagedStorage>,
+    bytes: u64,
+    reserved: u64,
+    committed: bool,
+}
+impl BackingChange {
+    pub(crate) fn commit(mut self, identity: usize) {
+        let mut ledger = self.owner.ledger();
+        if let Some(old) = self.old {
+            let entry = ledger
+                .storage
+                .get_mut(&old.identity)
+                .expect("lost managed backing");
+            entry.references -= 1;
+            if entry.references == 0 {
+                ledger.storage.remove(&old.identity);
+                ledger.live -= old.bytes;
+            }
+        }
+        ledger.reserved -= self.reserved;
+        let new = storage_counts(&[ManagedStorage {
+            identity,
+            bytes: self.bytes,
+        }]);
+        let added = additional_bytes(&ledger, &new).expect("invalid managed replacement");
+        self.owner
+            .check(&ledger, added)
+            .expect("reserved managed replacement exceeded its plan");
+        ledger.live += added;
+        insert_storage(&mut ledger, new);
+        self.committed = true;
+    }
+}
+impl Drop for BackingChange {
+    fn drop(&mut self) {
+        if !self.committed {
+            self.owner.ledger().reserved -= self.reserved;
+        }
     }
 }
 

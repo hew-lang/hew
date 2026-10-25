@@ -157,6 +157,83 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
 }
 
 impl<'ctx> ModuleEmitter<'ctx, '_> {
+    pub(super) fn emit_actor_state_managed(
+        &self,
+        actor: &hew_mir::physical::SemActor,
+        layout: &PhysicalLayout,
+    ) -> CodegenResult<PointerValue<'ctx>> {
+        let pointer = self.ctx.ptr_type(AddressSpace::default());
+        let function = self.llvm.add_function(
+            &format!("hew.actor.{}.state_managed_visit", actor.id.0),
+            self.ctx.i32_type().fn_type(&[pointer.into(); 2], false),
+            Some(Linkage::Internal),
+        );
+        let builder = self.ctx.create_builder();
+        builder.position_at_end(self.ctx.append_basic_block(function, "entry"));
+        let state = function.get_nth_param(0).unwrap().into_pointer_value();
+        let visitor = function.get_nth_param(1).unwrap().into_pointer_value();
+        let structure = llvm_type(self.ctx, &layout.repr)?.into_struct_type();
+        let values = ValueEmitter {
+            module: self.module,
+            ctx: self.ctx,
+            llvm: &self.llvm,
+            builder: &builder,
+            value: function,
+            fault_sink: None,
+        };
+        let mut bytes = 0_u64;
+        for (index, field) in actor.fields.iter().enumerate() {
+            let row = self.module.managed_types.get(&field.ty).ok_or_else(|| {
+                CodegenError::FailClosed("actor field lacks canonical managed width".into())
+            })?;
+            bytes = bytes
+                .checked_add(row.slot_bytes)
+                .ok_or_else(|| CodegenError::FailClosed("actor state payload overflows".into()))?;
+            let Some(callback) = self.managed_visit(&field.ty)? else {
+                continue;
+            };
+            let index = u32::try_from(index)
+                .map_err(|_| CodegenError::FailClosed("too many actor fields".into()))?;
+            let flag = actor::state_field_initialized(self.ctx, &builder, state, layout, index)?;
+            let initialized = builder
+                .build_load(self.ctx.bool_type(), flag, "state.managed.initialized")
+                .llvm_ctx("read canonical state occupancy")?
+                .into_int_value();
+            let visit = self.ctx.append_basic_block(function, "state.managed.live");
+            let next = self.ctx.append_basic_block(function, "state.managed.next");
+            builder
+                .build_conditional_branch(initialized, visit, next)
+                .llvm_ctx("visit only initialized state fields")?;
+            builder.position_at_end(visit);
+            let slot = builder
+                .build_struct_gep(structure, state, index, "state.managed.field")
+                .llvm_ctx("address live actor field")?;
+            self.managed_child(&values, callback, slot, visitor)?;
+            builder
+                .build_unconditional_branch(next)
+                .llvm_ctx("finish actor managed field")?;
+            builder.position_at_end(next);
+        }
+        builder
+            .build_return(Some(&self.ctx.i32_type().const_zero()))
+            .llvm_ctx("finish actor managed state")?;
+        let descriptor_ty = self
+            .ctx
+            .struct_type(&[self.ctx.i64_type().into(), pointer.into()], false);
+        let descriptor = self.llvm.add_global(
+            descriptor_ty,
+            None,
+            &format!("hew.actor.{}.state_managed", actor.id.0),
+        );
+        descriptor.set_linkage(Linkage::Internal);
+        descriptor.set_constant(true);
+        descriptor.set_initializer(&descriptor_ty.const_named_struct(&[
+            self.ctx.i64_type().const_int(bytes, false).into(),
+            function.as_global_value().as_pointer_value().into(),
+        ]));
+        Ok(descriptor.as_pointer_value())
+    }
+
     fn managed_index(&self, ty: &ResolvedTy) -> CodegenResult<usize> {
         self.module
             .managed_types

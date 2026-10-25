@@ -62,6 +62,10 @@ the old instance, so an unsuccessful replacement can resume them. The oracle
 checks periodic progress after resume and unchanged state during a sleeping
 snapshot. A host must drain every exported call and its release before using the
 runtime drain API; an empty ready queue alone does not establish quiescence.
+Resuming an in-progress attempt withdraws its snapshot authority and requests
+cooperative cancellation. Its borrowed state stays retained until release; a
+new snapshot or disposal cannot bypass that cleanup. Ordinary calls may resume
+without waiting for the abandoned snapshot's result.
 
 Independent replacement deadlines, fenced network deployment and durable
 artefact caching remain separate implementation work; this is not yet the

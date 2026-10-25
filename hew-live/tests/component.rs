@@ -223,6 +223,16 @@ async fn exercise_router(engine: &Engine, component: &Component) {
             assert!(refused.unwrap_err().contains("not accepting"));
             // A rejected replacement can resume this exact retained actor state.
             handler.call_resume(accessor).await.unwrap().unwrap();
+            // Resume also withdraws an in-progress attempt. Completion may win
+            // the race; either way the old instance must accept the next call.
+            let (abandoned, resumed) = tokio::join!(
+                handler.call_quiesce(accessor),
+                handler.call_resume(accessor),
+            );
+            if let Ok(snapshot) = abandoned.unwrap() {
+                assert_eq!(snapshot.accepted, 41);
+            }
+            resumed.unwrap().unwrap();
             assert!(handler
                 .call_route(
                     accessor,

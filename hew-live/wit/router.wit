@@ -29,6 +29,8 @@ interface handler {
     initialize: func(state: snapshot) -> result<_, string>;
     route: async func(message: event) -> result<bool, string>;
     quiesce: async func() -> result<snapshot, string>;
+    /// Reopen a paused instance or withdraw an in-progress quiescence attempt.
+    /// A withdrawn attempt cannot publish a new paused state after this returns.
     resume: func() -> result<_, string>;
     dispose: async func() -> result<_, string>;
 }

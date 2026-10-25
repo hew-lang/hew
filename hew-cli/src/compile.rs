@@ -26,6 +26,8 @@ use crate::target::TargetSpec;
 
 #[derive(Debug, Clone, Default)]
 pub struct CompileOptions {
+    /// Explicit source overlays consumed by the ordinary frontend resolver.
+    pub documents: hew_compile::SourceSet,
     pub opt_level: Option<hew_codegen_rs::OptLevel>,
     /// Write the shared source coverage map and instrument block entries.
     pub coverage_map: Option<PathBuf>,
@@ -75,7 +77,7 @@ pub(crate) fn frontend_options(target: &TargetSpec, options: &CompileOptions) ->
         repl_fragment: options.repl_fragment,
         lint_levels: options.lint_levels.clone(),
         ignore_lockfile: false,
-        documents: hew_compile::SourceSet::new(),
+        documents: options.documents.clone(),
     }
 }
 
@@ -101,7 +103,7 @@ pub(crate) fn frontend_options_for_check(options: &CompileOptions) -> FrontendOp
         repl_fragment: options.repl_fragment,
         lint_levels: options.lint_levels.clone(),
         ignore_lockfile: false,
-        documents: hew_compile::SourceSet::new(),
+        documents: options.documents.clone(),
     }
 }
 

@@ -13,36 +13,43 @@ pub struct Toolchain {
     pub wasm_lib_dir: PathBuf,
 }
 
-/// Compile an ordinary router source and its sibling Hew modules. Generated
-/// services and lifecycle glue stay in a temporary build directory.
+/// Compile ordinary router source in its existing project context. Generated
+/// services use the compiler source overlay; lifecycle glue remains temporary.
 ///
 /// # Errors
 /// Returns source, compiler, linker or component validation diagnostics.
 pub fn build(source: &Path, toolchain: &Toolchain) -> Result<Vec<u8>> {
     let source = source.canonicalize()?;
     let directory = tempfile::tempdir()?;
-    copy_sources(
-        source.parent().ok_or("source has no parent")?,
-        directory.path(),
-    )?;
     super::write_guest_bindings(directory.path())?;
+    let services = source
+        .parent()
+        .ok_or("source has no parent")?
+        .join("router_services.hew");
+    if services.exists() {
+        return Err(format!(
+            "generated service module would shadow {}",
+            services.display()
+        )
+        .into());
+    }
     run(Command::new(&toolchain.compiler)
         .args(["build", "--target", "wasm32-wasip1", "--emit-obj"])
         .args(["--export-c", "create=guest_create"])
         .args(["--export-c-async", "route=guest_route"])
         .args(["--export-c-async", "snapshot=guest_snapshot"])
         .args(["--export-c-async", "dispose=guest_dispose"])
-        .arg(
-            directory
-                .path()
-                .join(source.file_name().ok_or("source has no filename")?),
-        )
+        .arg("--source-overlay")
+        .arg(format!(
+            "{}={}",
+            services.display(),
+            directory.path().join("router_services.hew").display()
+        ))
+        .arg(&source)
         .arg("-o")
         .arg(directory.path().join("guest.o")))?;
     run(Command::new(toolchain.wasi_sdk.join("bin/clang"))
         .args(["-mexec-model=reactor", "-O2", "-Wall", "-Wextra", "-Werror"])
-        .arg("-I")
-        .arg(directory.path())
         .arg("-I")
         .arg(directory.path())
         .arg(directory.path().join("router.c"))
@@ -61,33 +68,6 @@ pub fn build(source: &Path, toolchain: &Toolchain) -> Result<Vec<u8>> {
         )?
         .validate(true)
         .encode()?)
-}
-
-fn copy_sources(source: &Path, destination: &Path) -> Result<()> {
-    for entry in std::fs::read_dir(source)? {
-        let entry = entry?;
-        let kind = entry.file_type()?;
-        if kind.is_symlink() {
-            continue;
-        }
-        let name = entry.file_name();
-        if kind.is_dir() {
-            if name.to_string_lossy().starts_with('.') || name == "target" || name == "node_modules"
-            {
-                continue;
-            }
-            let child = destination.join(name);
-            std::fs::create_dir(&child)?;
-            copy_sources(&entry.path(), &child)?;
-        } else if entry
-            .path()
-            .extension()
-            .is_some_and(|extension| extension == "hew")
-        {
-            std::fs::copy(entry.path(), destination.join(name))?;
-        }
-    }
-    Ok(())
 }
 
 fn run(command: &mut Command) -> Result<()> {

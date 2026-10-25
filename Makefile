@@ -450,6 +450,12 @@ test-live-network: hew-native live-node wasm-runtime-debug ## Test: source repla
 	HEW_LIVE_WASM_LIB_DIR="$(abspath $(WASM_DEBUG_DIR))" \
 		$(TEST_RUN_ENV) cargo nextest run --profile ci -p hew-live --features component --test network
 
+.PHONY: test-live-source
+test-live-source: hew-native live-node wasm-runtime-debug ## Test: portable source builds preserve project and diagnostic context
+	HEW_LIVE_COMPILER="$(abspath $(DEBUG_HEW))" \
+	HEW_LIVE_WASM_LIB_DIR="$(abspath $(WASM_DEBUG_DIR))" \
+		$(TEST_RUN_ENV) cargo nextest run --profile ci -p hew-live --features component --test source_build
+
 .PHONY: test-live-component live-component-foreign
 live-component-foreign:
 	cargo build --manifest-path hew-live/tests/fixtures/foreign-router/Cargo.toml --target wasm32-wasip1

@@ -194,9 +194,10 @@ Standard output contains only protocol replies. The operations are:
 Source builds use `HEW_LIVE_COMPILER`, `HEW_WASI_SDK` and
 `HEW_LIVE_WASM_LIB_DIR`, with corresponding command-line options and SDK-relative
 fallbacks. The compiler defaults to the sibling `hew` executable. Generated C
-headers travel with the companion. The current source builder includes sibling
-Hew files and nested source directories; package dependencies outside that source
-directory are not yet staged. The reference contract requires public `create`,
+headers travel with the companion. The source builder compiles the original file
+using the normal project manifest, installed packages and relative-import resolver.
+Only the generated `router_services` module uses the compiler source overlay;
+the SDK does not write into the authored source tree or relocate diagnostic paths. The reference contract requires public `create`,
 `route`, `snapshot` and `dispose` functions, as shown in
 `tests/fixtures/router.hew`. `hew-live-node build --source router.hew --output
 router.wasm` runs this build without connecting to a node.

@@ -264,6 +264,26 @@ fn resolve_lint_levels(
 // Shared build options
 // ---------------------------------------------------------------------------
 
+/// An explicit source input supplied at its compiler-visible path.
+#[derive(Debug, Clone)]
+pub struct SourceOverlay {
+    path: PathBuf,
+    source: String,
+}
+
+fn parse_source_overlay(value: &str) -> Result<SourceOverlay, String> {
+    let (path, input) = value.split_once('=').ok_or("expected VIRTUAL=FILE")?;
+    if path.is_empty() || input.is_empty() {
+        return Err("source overlay requires both VIRTUAL and FILE".into());
+    }
+    let path = std::env::current_dir()
+        .map_err(|error| error.to_string())?
+        .join(path);
+    let source = std::fs::read_to_string(input)
+        .map_err(|error| format!("cannot read source overlay {input}: {error}"))?;
+    Ok(SourceOverlay { path, source })
+}
+
 #[derive(Debug, Args, Clone, Default)]
 pub struct CommonBuildArgs {
     /// Treat warnings as errors.
@@ -278,6 +298,9 @@ pub struct CommonBuildArgs {
     /// Override project directory for manifest and package resolution.
     #[arg(long, value_name = "DIR")]
     pub project_dir: Option<PathBuf>,
+    /// Supply generated source at a virtual path without changing project files.
+    #[arg(long, value_name = "VIRTUAL=FILE", value_parser = parse_source_overlay)]
+    pub source_overlay: Vec<SourceOverlay>,
     /// Downgrade a lint to `allow` (suppress it). Repeatable; accepts a lint
     /// name (e.g. `needless_range_loop`) or `all`.
     #[arg(long = "allow", short = 'A', value_name = "LINT", value_parser = parse_lint_selector)]
@@ -301,7 +324,12 @@ impl CommonBuildArgs {
     /// crate::compile::CompileOptions { target: self.target.clone(), ..self.common.base_compile_options() }
     /// ```
     pub fn base_compile_options(&self) -> crate::compile::CompileOptions {
+        let mut documents = hew_compile::SourceSet::new();
+        for overlay in &self.source_overlay {
+            documents.insert(overlay.path.clone(), overlay.source.clone());
+        }
         crate::compile::CompileOptions {
+            documents,
             no_typecheck: self.no_typecheck,
             werror: self.werror,
             pkg_path: self.pkg_path.clone(),

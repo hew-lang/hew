@@ -1,0 +1,175 @@
+//! Keyed memoization with optional expiry and bounded FIFO eviction.
+//!
+//! A cache is an ordinary value: copying it creates an independent snapshot.
+//! Keys and values must support `Clone`; reads return independent values.
+//! Use `cache.new(.Some(128), .Some(5s))` for at most 128 retained entries,
+//! each expiring five seconds after insertion. Omit either option to disable
+//! that limit. A zero capacity or TTL disables retention; negative limits fail.
+//!
+//! `get` and `insert` accept an observation `instant`, defaulting to the host's
+//! monotonic clock. Explicit instants must come from the same clock and move
+//! forward. An entry is absent at its exact deadline; reads never extend TTL.
+//! Insertion removes expired entries before evicting the oldest live insertion.
+//! Replacing a key makes it the newest insertion; reads do not change order.
+//! Expiry is lazy: `get`, `insert`, `prune` and `len` reclaim expired entries;
+//! there is no background task. FIFO removal and TTL pruning are linear in the
+//! retained entry count, while ordinary hits use the backing `HashMap`.
+//!
+//! `get_or_load(key, || load())` calls its loader only on a miss. Successful
+//! values are cached with a fresh `instant.now()` after loading finishes.
+//! Ordinary errors are returned without caching or evicting live entries.
+//! A fault or cancellation also leaves no partially initialized entry.
+//!
+//! See the complete product-cache example in `examples/keyed_cache.hew`.
+
+/// Invalid cache limits.
+pub enum CacheError {
+    InvalidCapacity(i64);
+    InvalidTtl(duration);
+}
+
+impl Error for CacheError {}
+
+impl Display for CacheError {
+    fn fmt(self) -> string {
+        match self {
+            .InvalidCapacity(capacity) => f"cache.new: capacity must be nonnegative, got {capacity}",
+            .InvalidTtl(ttl) => f"cache.new: TTL must be nonnegative, got {ttl}",
+        }
+    }
+}
+
+type Entry<V> {
+    value: V;
+    inserted: instant;
+}
+
+/// An owning value cache. Eviction and invalidation release retained values
+/// automatically; no close operation is needed.
+pub type Cache<K: Hash + Eq, V> {
+    entries: HashMap<K, Entry<V>>;
+    order: Vec<K>;
+    capacity: Option<i64>;
+    ttl: Option<duration>;
+}
+
+/// Create an empty cache. Unspecified limits are unbounded.
+pub fn new<K: Hash + Eq + Clone, V: Clone>(capacity: Option<i64> = .None, ttl: Option<duration> = .None) -> Cache<K, V> fails CacheError {
+    match capacity {
+        .Some(limit) => if limit < 0 {
+            return error .InvalidCapacity(limit);
+        }
+        .None => {}
+    }
+    match ttl {
+        .Some(lifetime) => if lifetime < 0ns {
+            return error .InvalidTtl(lifetime);
+        }
+        .None => {}
+    }
+    Cache { entries: HashMap.new(), order: Vec.new(), capacity: capacity, ttl: ttl }
+}
+
+impl<K: Hash + Eq + Clone, V: Clone> Cache<K, V> {
+    /// Return an independent value, removing the entry if its TTL has elapsed.
+    pub fn get(var self, key: K, now: instant = instant.now()) -> Option<V> {
+        match self.entries.get(key) {
+            .Some(entry) => if self.expired(entry.inserted, now) {
+                self.invalidate(key);
+                .None
+            } else {
+                .Some(entry.value)
+            }
+            .None => .None,
+        }
+    }
+
+    /// Insert or replace a value. Expired entries are reclaimed first; a full
+    /// bounded cache evicts its oldest insertion. Zero limits retain nothing.
+    pub fn insert(var self, consume key: K, consume value: V, now: instant = instant.now()) {
+        self.prune(now);
+        self.invalidate(key);
+        if self.capacity == .Some(0) || self.ttl == .Some(0ns) {
+            return;
+        }
+        match self.capacity {
+            .Some(limit) => if self.order.len() >= limit {
+                let oldest = self.order[0];
+                self.invalidate(oldest);
+            }
+            .None => {}
+        }
+        self.order.push(key.clone());
+        self.entries.insert(key, Entry { value: value, inserted: now });
+    }
+
+    /// Return a hit or run the explicit loader once. Failed loads retain no
+    /// error and do not evict another live entry. TTL starts after success.
+    pub fn get_or_load<E>(var self, consume key: K, consume load: fn[once, suspends]() -> Result<V, E>) -> V fails E {
+        match self.get(key) {
+            .Some(value) => value,
+            .None => {
+                let value = load()?;
+                self.insert(key, value.clone());
+                value
+            }
+        }
+    }
+
+    /// Remove a key regardless of its age. Return whether it was retained.
+    pub fn invalidate(var self, key: K) -> bool {
+        if !self.entries.contains_key(key) {
+            return false;
+        }
+        self.entries.remove(key);
+        for index in 0..self.order.len() {
+            if self.order[index] == key {
+                self.order.remove(index);
+                break;
+            }
+        }
+        true
+    }
+
+    /// Reclaim all entries whose TTL has elapsed. Return the number removed.
+    pub fn prune(var self, now: instant = instant.now()) -> i64 {
+        if self.ttl.is_none() {
+            return 0;
+        }
+        let keys = self.order.clone();
+        var retained: Vec<K> = Vec.new();
+        var removed: i64 = 0;
+        for key in keys {
+            match self.entries.get(key) {
+                .Some(entry) => if self.expired(entry.inserted, now) {
+                    self.entries.remove(key);
+                    removed += 1;
+                } else {
+                    retained.push(key);
+                }
+                .None => {}
+            }
+        }
+        self.order = retained;
+        removed
+    }
+
+    /// Count live entries, reclaiming expired entries first.
+    pub fn len(var self, now: instant = instant.now()) -> i64 {
+        self.prune(now);
+        self.order.len()
+    }
+
+    /// Release every retained key and value, preserving the configured limits.
+    pub fn clear(var self) {
+        self.entries.clear();
+        self.order.clear();
+    }
+
+    fn expired(self, inserted: instant, now: instant) -> bool {
+        match self.ttl {
+            .Some(lifetime) => now >= inserted && now.duration_since(inserted) >= lifetime,
+            .None => false,
+        }
+    }
+}

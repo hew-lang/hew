@@ -1,0 +1,53 @@
+import std.cache;
+
+fn main() {
+    let negative_capacity: Result<cache.Cache<string, i64>, cache.CacheError> = cache.new(.Some(-1));
+    assert(negative_capacity.is_err());
+    let negative_ttl: Result<cache.Cache<string, i64>, cache.CacheError> = cache.new(.None, .Some(-1ns));
+    assert(negative_ttl.is_err());
+    let start = instant.now();
+    var fifo: cache.Cache<string, i64> = cache.new(.Some(2)).expect("valid capacity");
+    fifo.insert("first", 1, start);
+    fifo.insert("second", 2, start);
+    assert(fifo.get("first", start) == .Some(1));
+    fifo.insert("third", 3, start);
+    assert(fifo.get("first", start).is_none());
+    assert(fifo.get("second", start) == .Some(2));
+    fifo.insert("second", 20, start);
+    fifo.insert("fourth", 4, start);
+    assert(fifo.get("third", start).is_none());
+    assert(fifo.get("second", start) == .Some(20));
+    assert(fifo.len(start) == 2);
+    assert(fifo.invalidate("second"));
+    assert(!fifo.invalidate("second"));
+    fifo.clear();
+    assert(fifo.len(start) == 0);
+    var timed: cache.Cache<string, i64> = cache.new(.Some(2), .Some(10ms)).expect("valid TTL");
+    timed.insert("old", 1, start);
+    timed.insert("young", 2, start + 5ms);
+    assert(timed.get("old", start + 9ms) == .Some(1));
+    // Expiry is inclusive; the read above must not renew it. An expired entry
+    // is reclaimed before capacity eviction, preserving the younger entry.
+    timed.insert("new", 3, start + 10ms);
+    assert(timed.get("old", start + 10ms).is_none());
+    assert(timed.get("young", start + 10ms) == .Some(2));
+    assert(timed.get("new", start + 10ms) == .Some(3));
+    assert(timed.prune(start + 15ms) == 1);
+    assert(timed.len(start + 20ms) == 0);
+    var values: cache.Cache<i64, Vec<string>> = cache.new().expect("unbounded cache");
+    values.insert(42, ["original".to_upper()], start);
+    var read = values.get(42, start).expect("cached vector");
+    read.push("changed");
+    assert(values.get(42, start).expect("independent read").len() == 1);
+    var snapshot = values.clone();
+    snapshot.insert(42, ["replacement"], start);
+    assert(values.get(42, start + 1000s).expect("no TTL")[0] == "ORIGINAL");
+    assert(snapshot.get(42, start).expect("independent cache")[0] == "replacement");
+    var disabled: cache.Cache<string, i64> = cache.new(.Some(0)).expect("zero capacity");
+    disabled.insert("key", 1, start);
+    assert(disabled.len(start) == 0);
+    var immediate: cache.Cache<string, i64> = cache.new(.None, .Some(0ns)).expect("zero TTL");
+    immediate.insert("key", 1, start);
+    assert(immediate.get("key", start).is_none());
+    println("cache policies passed");
+}

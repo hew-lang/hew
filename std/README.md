@@ -72,6 +72,7 @@ cloneable elements. Iterator adapters consume the iterator they wrap.
 - **CLI, files, and OS** — [`std.cli`](cli.hew), [`std.io`](io.hew), [`std.fs`](fs.hew), [`std.path`](path.hew), [`std.os`](os.hew), [`std.process`](process.hew)
 - **Collections and scans** — [`std.vec`](vec.hew), [`std.arena`](arena.hew), [`std.deque`](deque.hew), [`std.iter`](iter.hew), [`std.sort`](sort/sort.hew)
 - **Deferred values** — [`std.lazy`](lazy.hew): single-owner initialization on first demand, with independent value reads
+- **Keyed memoization** — [`std.cache`](cache.hew): independent cached values, optional TTL and bounded FIFO eviction, with explicit fallible loaders
 - **Streams and coordination** — [`std.stream`](stream.hew), [`std.semaphore`](semaphore.hew), [`std.concurrency.lifecycle`](concurrency/lifecycle.hew)
 - **Concurrent iteration** — [`std.pipeline`](pipeline/pipeline.hew): bounded prefetch and parallel mapping with input or completion order
 - **Data formats and wire protocols** — [`std.encoding.json`](encoding/json/json.hew), [`std.encoding.yaml`](encoding/yaml/yaml.hew), [`std.encoding.toml`](encoding/toml/toml.hew), [`std.encoding.csv`](encoding/csv/csv.hew), [`std.encoding.xml`](encoding/xml/xml.hew)

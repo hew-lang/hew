@@ -60,17 +60,21 @@ directory exercises failure controls for those boundaries.
 
 ## Questions and workloads
 
-| Workload          | What it explores                                                 | Checked result                     |
-| ----------------- | ---------------------------------------------------------------- | ---------------------------------- |
-| `scalar`          | Scalar arithmetic and the optimized code-generation floor        | Modular recurrence                 |
-| `vector_scan`     | Checked indexing, loop optimization and contiguous reads         | Sum of all visited values          |
-| `vector_build`    | Collection growth, element storage, traversal and release        | Sum of constructed elements        |
-| `bytes_shared`    | Snapshot sharing, retain/release and reads                       | Sum of selected original bytes     |
-| `bytes_cow`       | Preserve a snapshot while mutating its copy                      | Sum of changed and preserved bytes |
-| `task_ready`      | Creation and joining of already-ready work, across batch sizes   | Sum of task results                |
-| `actor_roundtrip` | Root-to-actor request/reply, including completion                | Sum of counter replies             |
-| `actor_fanout`    | Worker clients talking concurrently to independent actors        | Sum of every completed reply       |
-| `timer`           | Timer resolution and wakeup overshoot for sequential 1 ms sleeps | Number of completed waits          |
+| Workload                 | What it explores                                                           | Checked result                                |
+| ------------------------ | -------------------------------------------------------------------------- | --------------------------------------------- |
+| `scalar`                 | Scalar arithmetic and the optimized code-generation floor                  | Modular recurrence                            |
+| `vector_scan`            | Checked indexing, loop optimization and contiguous reads                   | Sum of all visited values                     |
+| `vector_build`           | Collection growth, element storage, traversal and release                  | Sum of constructed elements                   |
+| `bytes_shared`           | Snapshot sharing, retain/release and reads                                 | Sum of selected original bytes                |
+| `bytes_cow`              | Preserve a snapshot while mutating its copy                                | Sum of changed and preserved bytes            |
+| `task_ready`             | Creation and joining of already-ready work, across batch sizes             | Sum of task results                           |
+| `actor_roundtrip`        | Root-to-actor request/reply, including completion                          | Sum of counter replies                        |
+| `actor_fanout`           | Worker clients talking concurrently to independent actors                  | Sum of every completed reply                  |
+| `timer`                  | Timer resolution and wakeup overshoot for sequential 1 ms sleeps           | Number of completed waits                     |
+| `stream_roundtrip`       | Long-lived task exchanging indexed messages over two capacity-one pipes    | Sum of sequence numbers; every reply checked  |
+| `stream_roundtrip_alloc` | Same bounded task/stream handshake without per-message clocks              | Sum of sequence numbers; every reply checked  |
+| `stream_pipeline`        | Sustained one-way traffic through independent capacity-one task/pipe pairs | Sum of sequence residues; every value checked |
+| `stream_pipeline_alloc`  | Same pipeline without per-message clocks                                   | Sum of sequence residues; every value checked |
 
 Primitives run at several iteration counts or buffer sizes. Concurrency uses
 batch/actor counts of 1, 16 and 64 with one and two workers. Hew runs at O0 and
@@ -82,15 +86,27 @@ optimized baseline.
 
 Each process parses its inputs and prepares the initial data before timing.
 Actor creation precedes actor timings; task creation and joining are included
-in task/fanout timings. A warmup task initializes concurrency runtimes. The
+in task/fanout timings. The stream pipeline waits for every producer and
+consumer readiness signal before timing and includes bounded sends,
+backpressure, drain, task joins and per-end start-gate release. All endpoints
+remain parked after readiness; the timer starts before root releases their
+gates, so release overhead is included rather than work being performed before
+the timed interval. It runs with 1, 2 and 8 independent pairs.
+The stream ping-pong forks both client and worker; a two-sided readiness/start
+handshake keeps fork setup out of its measured interval. A warmup task initializes concurrency runtimes. The
 runner also discards one full process run per case and rotates implementation
 order for subsequent runs. Outputs are checked before timings are accepted.
 
 Each fixture emits one JSON object with `workload`, `iterations`, `size`,
-`elapsed_ns` and `checksum`. Request/reply and timer workloads include individual
-`latencies_ns` samples, capped at 10,000 per run. Timer samples are overshoot
-beyond the requested millisecond, rather than full wait duration. Raw samples
-are retained so different summaries do not require another measurement.
+`elapsed_ns` and `checksum`. Actor request/reply and timer workloads include
+individual `latencies_ns` samples, capped at 10,000 per run. Stream ping-pong
+samples request-send through reply-receive duration. The pipeline samples each
+drain's time blocked in `recv`; this is receive-wait latency, not end-to-end
+send-to-receive latency, because it carries no sender timestamp. Both sample
+one in every 64 messages, up to 10,000 samples, to limit clock overhead; their
+`_alloc` variants record no latency. Timer samples are overshoot beyond the
+requested millisecond, rather than full wait duration. Raw samples are retained
+so different summaries do not require another measurement.
 
 Batch medians and interquartile ranges describe variation between process runs.
 Latency percentiles pool the operations recorded across those runs. A short
@@ -152,7 +168,10 @@ optimization-level change affect a particular operation? Investigate large
 unexplained gaps with generated LLVM, allocation profiles or a reduced source
 program before changing language semantics or prescribing a workaround.
 
-The suite does not yet cover overload fairness, busy-worker wakeup tails,
+The bounded stream ping-pong is closed-loop with one outstanding request. The
+pipeline is open only to the extent that independent producers are interleaved;
+each capacity-one pipe still applies backpressure. Neither workload is an
+overload fairness test. The suite does not yet cover busy-worker wakeup tails,
 cancellation and supervision costs, networking throughput or distributed actor
 latency. A good result here cannot establish those behaviours. Platform and
 load details accompany each saved report; shared-host runs are calibration

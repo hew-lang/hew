@@ -322,8 +322,20 @@ pub(super) unsafe fn start_underlying(
             write_prefix: 0,
         }));
     }
-    // SAFETY: an adapter endpoint pins its shared sender through this exclusive loan.
-    if let Some(owner) = owner {
+    // An unencoded pipe already serializes producers in ChannelCore. Its owned
+    // core survives endpoint finish; queue state rejects writes after the last
+    // producer closes. It needs neither the transport gate nor a second operation.
+    let core = match &owner {
+        Some(owner) if park && owner.encoder.is_none() => owner.channel.clone(),
+        None => {
+            // SAFETY: the operation holds the original endpoint's source loan.
+            unsafe { super::clone_sink_channel_core(sink) }
+        }
+        _ => None,
+    };
+    // Encoders and transports retain their shared admission gate, including
+    // nonparking attempts whose rejection/accepted-remainder policy it owns.
+    if let Some(owner) = owner.filter(|_| core.is_none()) {
         return Box::into_raw(Box::new(HewNativeStream {
             layout,
             // SAFETY: the caller retains this descriptor during operation construction.
@@ -339,16 +351,6 @@ pub(super) unsafe fn start_underlying(
             write_prefix: 0,
         }));
     }
-    // SAFETY: sink is a live exclusive loan.
-    let raw = unsafe { (*sink).channel_core_ptr().cast::<ChannelCore>() };
-    let core = if raw.is_null() {
-        None
-    } else {
-        // SAFETY: the sink's backing owns the Arc to which this pointer refers.
-        unsafe { Arc::increment_strong_count(raw) };
-        // SAFETY: the increment above creates this operation's independent owner.
-        Some(unsafe { Arc::from_raw(raw) })
-    };
     #[cfg(not(target_arch = "wasm32"))]
     let mut write_prefix = 0;
     let (backing, envelope) = match core {
@@ -895,6 +897,156 @@ mod tests {
             notifications.try_recv().is_err(),
             "abandoned producer must not wake"
         );
+    }
+
+    unsafe extern "C-unwind" fn drop_sink(slot: *mut c_void) {
+        // SAFETY: this descriptor owns exactly one live sink handle.
+        unsafe { super::super::hew_sink_close(*slot.cast::<*mut HewSink>()) };
+    }
+
+    fn sink_layout() -> HewValueLayout {
+        HewValueLayout {
+            size: size_of::<*mut HewSink>(),
+            align: align_of::<*mut HewSink>(),
+            ownership_kind: HewTypeOwnershipKind::LayoutManaged,
+            clone_fn: None,
+            drop_fn: Some(drop_sink),
+            release_start: None,
+        }
+    }
+
+    #[test]
+    fn cloned_pipe_write_cancellation_preserves_owners_and_last_producer_eof() {
+        let (signal, notifications) = mpsc::channel();
+        let signal = Arc::new(signal);
+        let wake = waker(&signal);
+        let drops = Arc::new(AtomicUsize::new(0));
+        let layout = owned_layout();
+        let sink_layout = sink_layout();
+        let mut sink = std::ptr::null_mut();
+        // SAFETY: handles, descriptors and slots stay live through operation
+        // cleanup. Each transferred value and handle is released exactly once.
+        unsafe {
+            let stream = super::super::hew_stream_pipe_native(1, &raw const layout, &raw mut sink);
+            let sibling = super::super::sender::hew_sink_clone(sink, &raw const sink_layout);
+            let mut first = Box::into_raw(Box::new(Arc::clone(&drops)));
+            let sent = hew_stream_write_start_native(
+                sink,
+                &raw const wake,
+                (&raw mut first).cast(),
+                &raw const layout,
+                std::ptr::null(),
+                true,
+                &raw const sink_layout,
+            );
+            assert_eq!(hew_stream_write_poll_native(sent), 1);
+            crate::release_walker::hew_release_sync(hew_stream_operation_release_begin(sent));
+
+            let mut second = Box::into_raw(Box::new(Arc::clone(&drops)));
+            let pending = hew_stream_write_start_native(
+                sibling,
+                &raw const wake,
+                (&raw mut second).cast(),
+                &raw const layout,
+                std::ptr::null(),
+                true,
+                &raw const sink_layout,
+            );
+            assert_eq!(hew_stream_write_poll_native(pending), 0);
+            // Closing another producer must not close this producer's pipe.
+            super::super::hew_sink_close(sink);
+            hew_stream_cancel_native(pending);
+            assert_eq!(
+                hew_stream_cleanup_status_native(pending, &raw const wake),
+                1
+            );
+            crate::release_walker::hew_release_sync(hew_stream_operation_release_begin(pending));
+            assert_eq!(drops.load(Ordering::SeqCst), 1);
+
+            let read = hew_stream_read_start_native(
+                stream,
+                &raw const wake,
+                &raw const layout,
+                std::ptr::null_mut(),
+            );
+            assert_eq!(hew_stream_read_poll_native(read), 1);
+            let mut received: *mut Arc<AtomicUsize> = std::ptr::null_mut();
+            assert_eq!(
+                hew_stream_read_take_native(read, (&raw mut received).cast()),
+                1
+            );
+            crate::release_walker::hew_release_sync(hew_stream_operation_release_begin(read));
+            drop_owned((&raw mut received).cast());
+            assert_eq!(drops.load(Ordering::SeqCst), 2);
+            assert!(
+                notifications.try_recv().is_err(),
+                "cancelled send must not wake"
+            );
+
+            let eof = hew_stream_read_start_native(
+                stream,
+                &raw const wake,
+                &raw const layout,
+                std::ptr::null_mut(),
+            );
+            assert_eq!(
+                hew_stream_read_poll_native(eof),
+                0,
+                "last producer is still open"
+            );
+            super::super::hew_sink_close(sibling);
+            notifications
+                .recv_timeout(Duration::from_secs(1))
+                .expect("last producer wakes reader");
+            assert_eq!(hew_stream_read_poll_native(eof), 2);
+            crate::release_walker::hew_release_sync(hew_stream_operation_release_begin(eof));
+            drop(Box::from_raw(stream));
+        }
+        assert_eq!(drops.load(Ordering::SeqCst), 2);
+        assert_eq!(Arc::strong_count(&signal), 1);
+    }
+
+    #[test]
+    fn pipe_finish_before_first_write_poll_rejects_owned_value_after_eof() {
+        let (signal, _notifications) = mpsc::channel();
+        let signal = Arc::new(signal);
+        let wake = waker(&signal);
+        let drops = Arc::new(AtomicUsize::new(0));
+        let layout = owned_layout();
+        let sink_layout = sink_layout();
+        let mut sink = std::ptr::null_mut();
+        // SAFETY: finish keeps the handle alive; both operation references
+        // drain before their handles and exact descriptors are released.
+        unsafe {
+            let stream = super::super::hew_stream_pipe_native(1, &raw const layout, &raw mut sink);
+            let mut value = Box::into_raw(Box::new(Arc::clone(&drops)));
+            let write = hew_stream_write_start_native(
+                sink,
+                &raw const wake,
+                (&raw mut value).cast(),
+                &raw const layout,
+                std::ptr::null(),
+                true,
+                &raw const sink_layout,
+            );
+            super::super::hew_sink_finish(sink);
+            assert_eq!(hew_stream_write_poll_native(write), 2);
+            assert_eq!(hew_stream_cleanup_status_native(write, &raw const wake), 1);
+            crate::release_walker::hew_release_sync(hew_stream_operation_release_begin(write));
+            assert_eq!(drops.load(Ordering::SeqCst), 1);
+            let read = hew_stream_read_start_native(
+                stream,
+                &raw const wake,
+                &raw const layout,
+                std::ptr::null_mut(),
+            );
+            assert_eq!(hew_stream_read_poll_native(read), 2, "no post-EOF value");
+            crate::release_walker::hew_release_sync(hew_stream_operation_release_begin(read));
+            super::super::hew_sink_close(sink);
+            drop(Box::from_raw(stream));
+        }
+        assert_eq!(drops.load(Ordering::SeqCst), 1);
+        assert_eq!(Arc::strong_count(&signal), 1);
     }
 
     #[derive(Debug)]

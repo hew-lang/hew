@@ -25,7 +25,7 @@ pub(super) const BYTES: HewValueLayout = HewValueLayout {
 
 pub(crate) struct SharedSender {
     pub(super) sink: *mut HewSink,
-    channel: *const crate::channel_core::ChannelCore,
+    pub(super) channel: Option<Arc<crate::channel_core::ChannelCore>>,
     sink_layout: HewValueLayout,
     pub(super) encoder: Option<HewCallableValue>,
     encoder_layout: Option<HewValueLayout>,
@@ -416,21 +416,20 @@ fn endpoint(owner: Arc<SharedSender>, finished: bool) -> *mut HewSink {
 pub(super) unsafe fn fault_channel(
     owner: &SharedSender,
 ) -> Option<&crate::channel_core::ChannelCore> {
-    // SAFETY: an open endpoint prevents the underlying backing from finishing.
-    unsafe { owner.channel.as_ref() }
+    owner.channel.as_deref()
 }
 
-unsafe fn channel(sink: *mut HewSink) -> *const crate::channel_core::ChannelCore {
+unsafe fn channel(sink: *mut HewSink) -> Option<Arc<crate::channel_core::ChannelCore>> {
     // SAFETY: the constructor exclusively borrows this live source endpoint.
     if unsafe { (*sink).is_closed() } {
-        return std::ptr::null();
+        return None;
     }
     // SAFETY: the source endpoint pins its shared backing through construction.
     if let Some(owner) = unsafe { shared(sink) } {
-        owner.channel
+        owner.channel.clone()
     } else {
-        // SAFETY: the original channel backing is retained until its last open endpoint finishes.
-        unsafe { (*sink).channel_core_ptr().cast() }
+        // SAFETY: construction exclusively borrows the original endpoint.
+        unsafe { super::clone_sink_channel_core(sink) }
     }
 }
 
@@ -539,7 +538,7 @@ pub(super) unsafe fn retain(
         (*sink).with_shared(
             |original| {
                 let closed = original.is_closed();
-                let channel = original.channel_core_ptr().cast();
+                let channel = super::clone_sink_channel_core((&raw const original).cast_mut());
                 let owner = Arc::new(SharedSender {
                     sink: Box::into_raw(Box::new(original)),
                     channel,

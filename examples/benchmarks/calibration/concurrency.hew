@@ -4,6 +4,7 @@
 import std.os;
 
 import std.string;
+import std.stream;
 
 type Measurement {
     elapsed_ns: i64;
@@ -43,7 +44,11 @@ fn task_ready(iterations: i64, size: i64) -> Measurement {
     let start = instant.now();
     var offset = 0;
     while offset < iterations {
-        let end = if offset + size < iterations { offset + size } else { iterations };
+        let end = if offset + size < iterations {
+            offset + size
+        } else {
+            iterations
+        };
         var tasks = [fork ready(offset)];
         for index in (offset + 1) .. end {
             tasks.push(fork ready(index));
@@ -111,10 +116,159 @@ fn timer(iterations: i64) -> Measurement {
         sleep(1ms);
         let overshoot = before.elapsed().nanos() - 1000000;
         if index < 10000 {
-            samples.push(if overshoot > 0 { overshoot } else { 0 });
+            samples.push(if overshoot > 0 {
+                overshoot
+            } else {
+                0
+            });
         }
     }
     Measurement { elapsed_ns: start.elapsed().nanos(), checksum: iterations, latencies_ns: samples }
+}
+
+fn stream_worker(consume input: stream.Stream<i64>, consume output: stream.Sink<i64>, consume ready: stream.Sink<i64>, consume gate: stream.Stream<i64>, iterations: i64) {
+    ready.send(1).expect("stream worker ready");
+    let _ = gate.recv().expect("stream worker start");
+    for _ in 0..iterations {
+        let value = match input.recv() {
+            .Some(value) => value,
+            .None => panic("stream closed before expected request"),
+        };
+        output.send(value + 1).expect("stream reply");
+    }
+}
+
+fn stream_client(consume requests: stream.Sink<i64>, consume returned: stream.Stream<i64>, consume ready: stream.Sink<i64>, consume gate: stream.Stream<i64>, iterations: i64, sample_latency: bool) -> Measurement {
+    ready.send(2).expect("stream client ready");
+    let _ = gate.recv().expect("stream client start");
+    var samples: Vec<i64> = Vec.new();
+    var checksum = 0;
+    let start = instant.now();
+    for index in 0..iterations {
+        if sample_latency && index < 640000 && index % 64 == 0 {
+            let before = instant.now();
+            requests.send(index).expect("stream request");
+            let reply = returned.recv().expect("stream reply");
+            samples.push(before.elapsed().nanos());
+            if reply != index + 1 {
+                panic("stream sequence mismatch");
+            }
+        } else {
+            requests.send(index).expect("stream request");
+            let reply = returned.recv().expect("stream reply");
+            if reply != index + 1 {
+                panic("stream sequence mismatch");
+            }
+        }
+        checksum += index;
+    }
+    Measurement { elapsed_ns: start.elapsed().nanos(), checksum: checksum, latencies_ns: samples }
+}
+
+fn stream_roundtrip(iterations: i64, sample_latency: bool) -> Measurement {
+    let (requests, incoming): (stream.Sink<i64>, stream.Stream<i64>) = stream.pipe(1).expect("request pipe");
+    let (replies, returned): (stream.Sink<i64>, stream.Stream<i64>) = stream.pipe(1).expect("reply pipe");
+    let (ready, ready_input): (stream.Sink<i64>, stream.Stream<i64>) = stream.pipe(2).expect("stream ready pipe");
+    let (worker_gate, worker_start): (stream.Sink<i64>, stream.Stream<i64>) = stream.pipe(1).expect("worker start pipe");
+    let (client_gate, client_start): (stream.Sink<i64>, stream.Stream<i64>) = stream.pipe(1).expect("client start pipe");
+    let worker = fork stream_worker(incoming, replies, ready.clone(), worker_start, iterations);
+    let client = fork stream_client(requests, returned, ready, client_start, iterations, sample_latency);
+    let _ = ready_input.recv().expect("stream ready");
+    let _ = ready_input.recv().expect("stream ready");
+    ready_input.close();
+    worker_gate.send(1).expect("worker start");
+    client_gate.send(1).expect("client start");
+    worker_gate.close();
+    client_gate.close();
+    let measured = await client;
+    let _ = await worker;
+    measured
+}
+
+fn pipeline_worker(consume output: stream.Sink<i64>, consume ready: stream.Sink<i64>, consume gate: stream.Stream<i64>, iterations: i64, id: i64, pairs: i64) {
+    ready.send(id).expect("pipeline readiness");
+    let _ = gate.recv().expect("pipeline start");
+    for index in 0..iterations {
+        let value = index * pairs + id;
+        output.send(value).expect("pipeline output");
+    }
+    output.close();
+}
+
+fn pipeline_drain(consume input: stream.Stream<i64>, consume ready: stream.Sink<i64>, consume gate: stream.Stream<i64>, iterations: i64, id: i64, pairs: i64, sample_latency: bool, samples: stream.Sink<i64>) -> i64 {
+    ready.send(id + pairs).expect("pipeline drain readiness");
+    let _ = gate.recv().expect("pipeline drain start");
+    var sum = 0;
+    for index in 0..iterations {
+        let expected = index * pairs + id;
+        let value = if sample_latency && expected < 640000 && expected % 64 == 0 {
+            let before = instant.now();
+            let item = input.recv().expect("pipeline output");
+            samples.send(before.elapsed().nanos()).expect("pipeline latency sample");
+            item
+        } else {
+            input.recv().expect("pipeline output")
+        };
+        if value != expected {
+            panic("pipeline sequence mismatch");
+        }
+        sum += value % 251;
+    }
+    sum
+}
+
+fn stream_pipeline(iterations: i64, pairs: i64, sample_latency: bool) -> Measurement {
+    let (ready_sink, ready_input): (stream.Sink<i64>, stream.Stream<i64>) = stream.pipe(pairs * 2).expect("pipeline ready pipe");
+    let sample_capacity = if sample_latency {
+        let count = (iterations * pairs + 63) / 64;
+        if count < 10000 {
+            count + 1
+        } else {
+            10001
+        }
+    } else {
+        1
+    };
+    let (sample_sink, sample_input): (stream.Sink<i64>, stream.Stream<i64>) = stream.pipe(sample_capacity).expect("pipeline samples pipe");
+    var gates: Vec<stream.Sink<i64>> = Vec.new();
+    let (output, input): (stream.Sink<i64>, stream.Stream<i64>) = stream.pipe(1).expect("pipeline output pipe");
+    let (worker_gate, worker_start): (stream.Sink<i64>, stream.Stream<i64>) = stream.pipe(1).expect("pipeline worker gate");
+    let (drain_gate, drain_start): (stream.Sink<i64>, stream.Stream<i64>) = stream.pipe(1).expect("pipeline drain gate");
+    gates.push(worker_gate);
+    gates.push(drain_gate);
+    var workers = [fork pipeline_worker(output, ready_sink.clone(), worker_start, iterations, 0, pairs)];
+    var drains = [fork pipeline_drain(input, ready_sink.clone(), drain_start, iterations, 0, pairs, sample_latency, sample_sink.clone())];
+    for id in 1..pairs {
+        let (next_output, next_input): (stream.Sink<i64>, stream.Stream<i64>) = stream.pipe(1).expect("pipeline output pipe");
+        let (next_worker_gate, next_worker_start): (stream.Sink<i64>, stream.Stream<i64>) = stream.pipe(1).expect("pipeline worker gate");
+        let (next_drain_gate, next_drain_start): (stream.Sink<i64>, stream.Stream<i64>) = stream.pipe(1).expect("pipeline drain gate");
+        gates.push(next_worker_gate);
+        gates.push(next_drain_gate);
+        workers.push(fork pipeline_worker(next_output, ready_sink.clone(), next_worker_start, iterations, id, pairs));
+        drains.push(fork pipeline_drain(next_input, ready_sink.clone(), next_drain_start, iterations, id, pairs, sample_latency, sample_sink.clone()));
+    }
+    for _ in 0 .. (pairs * 2) {
+        let _ = ready_input.recv().expect("pipeline ready");
+    }
+    ready_input.close();
+    ready_sink.close();
+    var samples: Vec<i64> = Vec.new();
+    let start = instant.now();
+    for gate in gates {
+        gate.send(1).expect("pipeline start gate");
+    }
+    let sums = await drains;
+    let _ = await workers;
+    let elapsed = start.elapsed().nanos();
+    sample_sink.close();
+    for sample in sample_input {
+        samples.push(sample);
+    }
+    var checksum = 0;
+    for sum in sums {
+        checksum += sum;
+    }
+    Measurement { elapsed_ns: elapsed, checksum: checksum, latencies_ns: samples }
 }
 
 fn main() {
@@ -135,6 +289,10 @@ fn main() {
         "actor_roundtrip_alloc" => actor_roundtrip(iterations, false),
         "actor_fanout" => actor_fanout(iterations, size),
         "timer" => await fork timer(iterations),
+        "stream_roundtrip" => stream_roundtrip(iterations, true),
+        "stream_roundtrip_alloc" => stream_roundtrip(iterations, false),
+        "stream_pipeline" => stream_pipeline(iterations, size, true),
+        "stream_pipeline_alloc" => stream_pipeline(iterations, size, false),
         _ => panic("unknown concurrency workload"),
     };
     var samples = "[";

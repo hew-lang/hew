@@ -82,21 +82,13 @@ fn render_label(label: Label, level: string, colour: string, palette: Palette) -
     }
     let text = utf8.decode(data[start..end]).expect("source line is UTF-8");
     let first = math.min(math.max(label.start, start), end);
-    let skip = if boundary(data, first) {
-        scalars(data, start, first)
-    } else {
-        0
-    };
+    let skip = if boundary(data, first) { scalars(data, start, first) } else { 0 };
     let last = if label.start == label.end {
         math.min(first + 1, end)
     } else {
         math.min(math.max(label.end, start), end)
     };
-    let stop = if boundary(data, last) {
-        scalars(data, start, last)
-    } else {
-        skip + 1
-    };
+    let stop = if boundary(data, last) { scalars(data, start, last) } else { skip + 1 };
     let carets = "^".repeat(math.max(stop - skip, 1));
     let spaces = " ".repeat(skip);
     f"{header} {palette.blue}{number} |{palette.reset} {text}\n {padding} {palette.blue}|{palette.reset} {spaces}{palette.red}{carets}{palette.reset}\n"
@@ -107,11 +99,7 @@ fn render_label(label: Label, level: string, colour: string, palette: Palette) -
 pub fn render(input: string) -> string {
     let diagnostic = json.decode<Diagnostic>(input).expect("valid diagnostic presentation");
     let palette = diagnostic.palette;
-    let colour = if diagnostic.level == "warning" {
-        palette.yellow
-    } else {
-        palette.red
-    };
+    let colour = if diagnostic.level == "warning" { palette.yellow } else { palette.red };
     var output = render_label(diagnostic.primary, diagnostic.level, colour, palette);
     for note in diagnostic.notes {
         output += render_label(note, "note", palette.cyan, palette);

@@ -39,15 +39,25 @@ fn compile(directory: &Path, source: &str, name: &str, exports: &[&str]) -> Path
 }
 
 #[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one generation oracle covers relocation, owned calls and retirement"
+)]
 fn native_values_survive_calls_and_generations_retire_by_reachability() {
     let directory = tempfile::tempdir().unwrap();
     let runtime_dir =
         std::env::var_os("HEW_LIVE_RUNTIME_DIR").map_or_else(artifact_dir, PathBuf::from);
-    let runtime = runtime_dir.join(if cfg!(target_os = "macos") {
+    let runtime_name = if cfg!(target_os = "macos") {
         "libhew.dylib"
     } else {
         "libhew.so"
-    });
+    };
+    let sdk = directory.path().join("sdk-original");
+    let library = sdk.join("lib/hew");
+    let modules = library.join("live-node");
+    std::fs::create_dir_all(&modules).unwrap();
+    let runtime = library.join(runtime_name);
+    std::fs::copy(runtime_dir.join(runtime_name), &runtime).unwrap();
     let object = compile(
         directory.path(),
         include_str!("counter.hew"),
@@ -58,7 +68,7 @@ fn native_values_survive_calls_and_generations_retire_by_reachability() {
             "step=counter_step",
         ],
     );
-    let module = directory.path().join("counter.so");
+    let module = modules.join("counter.so");
     let manifest = prepare(&object, &runtime, &module, "test-build", "test-target").unwrap();
     let original = std::fs::read(&module).unwrap();
     assert!(prepare(&object, &runtime, &module, "test-build", "test-target").is_err());
@@ -88,6 +98,12 @@ fn native_values_survive_calls_and_generations_retire_by_reachability() {
     .unwrap_err()
     .to_string()
     .contains("defines runtime symbol"));
+    // A prepared SDK must remain usable after its atomic staging rename or
+    // installation elsewhere. The original link-time runtime path is gone.
+    let moved = directory.path().join("sdk-moved");
+    std::fs::rename(&sdk, &moved).unwrap();
+    let runtime = moved.join("lib/hew").join(runtime_name);
+    let module = moved.join("lib/hew/live-node/counter.so");
     // SAFETY: this test binary links no runtime, and all native code was built
     // by this workspace. The temporary directory is private and immutable.
     let host = unsafe { NativeHost::open(&runtime, "test-build", "test-target") }.unwrap();

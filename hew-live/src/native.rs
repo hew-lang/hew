@@ -67,9 +67,11 @@ pub fn prepare(
             // Even an empty declaration submission belongs to this runtime.
             // Keep that dependency when the object needs no runtime symbols.
             link.args(["-shared", "-Wl,-z,defs", "-Wl,--no-as-needed"]);
+            link.arg("-Wl,-rpath,$ORIGIN:$ORIGIN/..");
         }
         object::BinaryFormat::MachO => {
             link.arg("-dynamiclib");
+            link.args(["-Wl,-rpath,@loader_path", "-Wl,-rpath,@loader_path/.."]);
         }
         _ => {
             return Err("native generation linking is not implemented for this host format".into())

@@ -106,6 +106,7 @@ struct Authoring {
     opt_level: hew_codegen_rs::OptLevel,
     next_generation: u64,
     modules: BTreeMap<u64, PathBuf>,
+    show_wrapper: bool,
 }
 
 impl Authoring {
@@ -153,6 +154,7 @@ impl Authoring {
             },
             next_generation: 0,
             modules: BTreeMap::new(),
+            show_wrapper: args.show_wrapper,
         })
     }
 
@@ -164,6 +166,10 @@ impl Authoring {
                 return Ok(());
             }
         };
+        crate::compile::render_frontend_diagnostics(&prepared.diagnostics);
+        if self.show_wrapper {
+            eprintln!("// {}\n{}", prepared.path.display(), prepared.source);
+        }
         let id = self.next_generation;
         self.next_generation = id.checked_add(1).ok_or("live generation IDs exhausted")?;
         let symbol = format!("submission_{id}");
@@ -344,6 +350,7 @@ fn handle_command(authoring: &mut Authoring, command: ReplCommand) -> Result<boo
                 .prepare(&authoring.compiler, &source, InputKind::Statements)
             {
                 Ok(prepared) => {
+                    crate::compile::render_frontend_diagnostics(&prepared.diagnostics);
                     if let Some(binding) = prepared.live.bindings.last() {
                         println!("{}", binding.binding.ty.user_facing());
                     }

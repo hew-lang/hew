@@ -77,7 +77,10 @@ live in the session's scoped temporary directory.
 Source snippets and `:load` resolve imports relative to `--project` (the current
 directory by default). Ordinary Hew imports retain each imported file's own
 resolution context. The worker owns program stdout and stderr; the prompt owns
-stdin.
+stdin. Source diagnostics and exact fixes use the original input's offsets;
+compiler-generated scaffolding retains its own diagnostic context.
+Use `--show-wrapper` to inspect each checked submission's generated source on
+stderr before execution.
 
 Portable components, deployment migration and editor integration
 remain in progress.

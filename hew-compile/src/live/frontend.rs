@@ -12,6 +12,8 @@ use hew_types::{session::SessionContents, DefTable, TypeCheckOutput};
 use super::LiveSubmission;
 use crate::{FrontendFailure, FrontendOptions, Session, SessionError};
 
+mod diagnostics;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum InputKind {
     Declarations,
@@ -99,6 +101,7 @@ impl State {
 #[derive(Debug)]
 pub struct PreparedInput {
     pub live: LiveSubmission,
+    pub diagnostics: Vec<crate::FrontendDiagnostic>,
     pub program: Program,
     pub checked: TypeCheckOutput,
     pub source: String,
@@ -193,7 +196,16 @@ impl LiveFrontend {
             return Err(Error::State("live input path is already in use"));
         }
         let (source, input_span) = input_source(&next, body, kind);
-        let mut program = crate::parse_source(&source, &path.to_string_lossy())?;
+        next.views.insert(
+            path.clone(),
+            SourceView {
+                source: input.to_owned(),
+                input_span,
+                kind,
+            },
+        );
+        let mut program = crate::parse_source(&source, &path.to_string_lossy())
+            .map_err(|failure| diagnostics::remap(failure, &next.views))?;
         let Some((Item::Function(entry), _)) = program.items.last_mut() else {
             return Err(Error::State("live input has no generated submission entry"));
         };
@@ -213,20 +225,13 @@ impl LiveFrontend {
         next.options
             .documents
             .insert_prepared(path.clone(), source.clone(), program.clone());
-        next.views.insert(
-            path.clone(),
-            SourceView {
-                source: input.to_owned(),
-                input_span,
-                kind,
-            },
-        );
         let front = crate::run_program_frontend_to_typecheck(
             program,
             &source,
             &path.to_string_lossy(),
             &next.options,
-        )?;
+        )
+        .map_err(|failure| diagnostics::remap(failure, &next.views))?;
         let checked = front
             .typecheck_result
             .tco
@@ -240,13 +245,15 @@ impl LiveFrontend {
             .iter()
             .map(|binding| (binding.slot, binding.contents.clone()))
             .collect();
-        let live = compiler.lower_live_program_with_contents(
-            &front.program,
-            &checked,
-            *entry,
-            &inputs,
-            next.next_slot,
-        )?;
+        let live = compiler
+            .lower_live_program_with_contents(
+                &front.program,
+                &checked,
+                *entry,
+                &inputs,
+                next.next_slot,
+            )
+            .map_err(|error| diagnostics::lowering(error, &front.program, &source, &path, &next))?;
         next.definitions = checked.defs.clone();
         next.next_slot = live.next_slot;
         next.bindings = live
@@ -262,6 +269,7 @@ impl LiveFrontend {
             .collect();
         Ok(PreparedInput {
             live,
+            diagnostics: diagnostics::remap_all(front.diagnostics, &next.views),
             program: front.program,
             checked,
             source,
@@ -320,13 +328,24 @@ impl LiveFrontend {
         }
         let prefix = imports(next);
         let source = format!("{prefix}{input}");
-        let mut program = crate::parse_source(&source, &path.to_string_lossy())?;
+        next.views.insert(
+            path.clone(),
+            SourceView {
+                source: input.to_owned(),
+                input_span: prefix.len()..prefix.len() + input.len(),
+                kind: InputKind::Declarations,
+            },
+        );
+        let mut program = crate::parse_source(&source, &path.to_string_lossy())
+            .map_err(|failure| diagnostics::remap(failure, &next.views))?;
         publish(&mut program);
         next.options
             .documents
             .insert_prepared(path.clone(), source.clone(), program);
         let mut expanded =
-            crate::run_file_frontend_to_expansion(&path.to_string_lossy(), &next.options)?.program;
+            crate::run_file_frontend_to_expansion(&path.to_string_lossy(), &next.options)
+                .map_err(|failure| diagnostics::remap(failure, &next.views))?
+                .program;
         expanded.module_graph = None;
         for (item, span) in &expanded.items {
             if span.start >= prefix.len() && matches!(item, Item::Import(_)) {
@@ -341,14 +360,6 @@ impl LiveFrontend {
         next.options
             .documents
             .insert_prepared(path.clone(), source, expanded);
-        next.views.insert(
-            path,
-            SourceView {
-                source: input.to_owned(),
-                input_span: prefix.len()..prefix.len() + input.len(),
-                kind: InputKind::Declarations,
-            },
-        );
         Ok(())
     }
 }
@@ -518,5 +529,47 @@ mod tests {
             .unwrap();
         frontend.commit(fresh, &[SessionContents::Full]).unwrap();
         assert_eq!(frontend.bindings()[0].name, "after");
+    }
+
+    #[test]
+    fn live_frontend_diagnostics_refer_to_original_input() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut frontend =
+            LiveFrontend::new(directory.path().to_path_buf(), FrontendOptions::default());
+        let first = frontend
+            .prepare(
+                &compiler(),
+                "fn answer() -> i64 { 42 }",
+                InputKind::Declarations,
+            )
+            .unwrap();
+        frontend.commit(first, &[]).unwrap();
+        for (source, kind) in [
+            ("unknown_name", InputKind::Expression),
+            ("let value: i64 = \"wrong\";", InputKind::Statements),
+            (
+                "fn broken() -> i64 { unknown_name }",
+                InputKind::Declarations,
+            ),
+            ("let value = ;", InputKind::Statements),
+        ] {
+            let Error::Frontend(failure) = frontend.prepare(&compiler(), source, kind).unwrap_err()
+            else {
+                panic!("expected a source diagnostic");
+            };
+            let diagnostic = failure.diagnostics.first().unwrap();
+            assert_eq!(diagnostic.source.as_deref(), Some(source));
+            let location = match &diagnostic.kind {
+                crate::FrontendDiagnosticKind::Parse(error) => &error.span,
+                crate::FrontendDiagnosticKind::Type(error) => &error.span,
+                other => panic!("unexpected diagnostic: {other:?}"),
+            };
+            assert!(location.start <= location.end && location.end <= source.len());
+            assert!(source.is_char_boundary(location.start));
+            assert!(source.is_char_boundary(location.end));
+            if source.contains("unknown_name") {
+                assert_eq!(&source[location.clone()], "unknown_name");
+            }
+        }
     }
 }

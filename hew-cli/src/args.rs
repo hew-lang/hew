@@ -1075,6 +1075,9 @@ pub struct LiveArgs {
     /// Optimize prepared submissions with the ordinary O2 pipeline.
     #[arg(long)]
     pub release: bool,
+    /// Show compiler-generated submission wrappers on stderr.
+    #[arg(long)]
+    pub show_wrapper: bool,
 }
 
 #[derive(Debug, Args)]

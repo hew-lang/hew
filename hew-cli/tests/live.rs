@@ -59,4 +59,5 @@ count
     );
     assert!(stderr.contains("stop"), "{stderr}");
     assert!(stderr.contains("unknown_name"), "{stderr}");
+    assert!(stderr.contains(":1:1: error:"), "{stderr}");
 }

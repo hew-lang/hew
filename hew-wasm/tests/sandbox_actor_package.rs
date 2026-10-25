@@ -813,6 +813,61 @@ fn actor_one_shot_timers_preserve_ownership_and_overdue_faults() {
 }
 
 #[test]
+fn actor_timer_eviction_before_sleep_preserves_the_pending_fault() {
+    let trace = execute(
+        r#"
+        actor Latest {
+            mailbox 1 overflow drop_old;
+            receive fn run() {
+                let _ = mailbox(self, after: 0ms, overdue: 1h).tick();
+                sleep(10ms);
+                match mailbox(self, on_full: .Reject).filler() {
+                    .Ok(_) => {}
+                    .Err(_) => panic("filler was not admitted"),
+                }
+                sleep(1h);
+                panic("pending timer fault was lost");
+            }
+            receive fn filler() {}
+            receive fn tick() { panic("evicted timer started"); }
+            receive fn ping() {}
+            #[on(crash)]
+            fn crashed(info: CrashInfo) -> CrashAction {
+                assert(match info.kind {
+                    .TimerOverdue => true,
+                    _ => false,
+                });
+                println("pending overdue preserved");
+                CrashAction.Restart
+            }
+        }
+        supervisor App {
+            strategy: one_for_one;
+            intensity: 5 within 60s;
+            child latest: Latest;
+        }
+        fn main() {
+            let app = spawn App;
+            assert(app.latest.run().is_err());
+            restarted(app.latest);
+            app.latest.ping().expect("latest restarted");
+            stop(app);
+            stopped(app);
+        }
+        "#,
+    );
+    assert_eq!(stdout(&trace), "pending overdue preserved\n");
+    let errors = trace["final_state"]["stderr"].as_array().unwrap();
+    assert!(errors.iter().any(|line| line
+        .as_str()
+        .unwrap()
+        .contains("actor crash in Latest.run (actor 1): ActorTimerOverdue")));
+    assert!(!errors
+        .iter()
+        .any(|line| line.as_str().unwrap().contains("UserPanic")));
+}
+
+#[test]
 fn indexed_unicode_values_preserve_scalar_operations_and_snapshots() {
     let trace = execute(include_str!(
         "../../tests/core-acceptance/cases/string-indexed-unicode.hew"
@@ -1478,7 +1533,8 @@ fn assert_native_manifest_options(
     assert_eq!(
         stdout(&trace),
         case["expected"]["stdout"].as_str().unwrap(),
-        "{name}"
+        "{name}: {:?}",
+        trace["final_state"]["stderr"]
     );
     let stderr: String = trace["final_state"]["stderr"]
         .as_array()

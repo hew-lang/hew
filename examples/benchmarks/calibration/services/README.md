@@ -65,7 +65,9 @@ For `/io`, set `BENCH_BACKEND` to a reachable `host:port`; it is only needed
 for that route. The pass runner starts the checked backend and records the
 selected address in the result.
 
-The JSON config accepted by `guest/service-pass.py` supplies `servers` with a
+The JSON config accepted by `guest/service-pass.py` can set `driver_cores`
+(default 2); use a larger separate client budget when client CPU constrains
+throughput. It supplies `servers` with a
 unique `name` and an `argv` array. Optional `cwd` is relative to the config
 directory; optional `artifacts` is a list of prebuilt files to hash, useful
 for BEAM `.beam` files and .NET dependency manifests. Optional `version_argv`
@@ -101,7 +103,8 @@ as runtime metadata. For example:
 The runner writes one JSON result with command lines, selected environment,
 server and driver hashes, optional runtime/artifact hashes, server CPU ticks
 and memory snapshots, client command wall time, and checked per-request
-samples. The Go driver reports user and system CPU for the timed request
+samples in each run’s `driver.stdout`; the summary references that file and
+omits duplicate sample arrays. The Go driver reports user and system CPU for the timed request
 batch; `/io` CPU includes the local dependency server because it runs in the
 same driver process. Overload cases are preserved and marked invalid for
 latency comparison.

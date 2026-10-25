@@ -34,7 +34,7 @@ unsafe extern "C-unwind" fn drop_node(slot: *mut c_void) {
     // SAFETY: the cursor transfers this record once, retaining it through nested release.
     unsafe {
         let node = &mut *slot.cast::<Node>();
-        hew_release_sync(hew_rc_release_begin(node.next, &NODE));
+        hew_release_sync(hew_rc_release_begin(node.next, &raw const NODE));
         crate::string::hew_string_drop_managed(node.text);
     }
 }
@@ -45,7 +45,7 @@ unsafe extern "C-unwind" fn drop_rc(slot: *mut c_void) {
         if !value.is_null() {
             hew_release_sync(hew_rc_release_begin(
                 value,
-                &(*header_from_data(value)).layout,
+                &raw const (*header_from_data(value)).layout,
             ));
         }
     };
@@ -111,11 +111,11 @@ unsafe fn new_node(owner: &ValueOwner, registry: &Arc<RcAllocations>, node: &Nod
         let value = with_value_owner(&Some(owner.clone()), || {
             hew_rc_new_managed(
                 ptr::from_ref(node).cast(),
-                &NODE,
+                &raw const NODE,
                 c"Node".as_ptr(),
                 ptr::null(),
-                &RC,
-                &mut status,
+                &raw const RC,
+                &raw mut status,
             )
         });
         assert_eq!(status, 0);
@@ -170,11 +170,15 @@ unsafe fn cycle(owner: &ValueOwner, registry: &Arc<RcAllocations>) -> *mut u8 {
             text: replacement_text,
         };
         let mut status = 0;
-        let old =
-            hew_rc_set_release_checked(first, (&raw mut replacement).cast(), &NODE, &mut status);
+        let old = hew_rc_set_release_checked(
+            first,
+            (&raw mut replacement).cast(),
+            &raw const NODE,
+            &raw mut status,
+        );
         assert_eq!(status, 0);
         hew_release_sync(old);
-        hew_release_sync(hew_rc_release_begin(second, &NODE));
+        hew_release_sync(hew_rc_release_begin(second, &raw const NODE));
         first
     }
 }
@@ -193,11 +197,11 @@ fn quota_refusal_preserves_input_and_final_alias_holds_payload_until_cleanup() {
         let refused = with_value_owner(&Some(small.clone()), || {
             hew_rc_new_managed(
                 (&raw const node).cast(),
-                &NODE,
+                &raw const NODE,
                 c"Node".as_ptr(),
                 ptr::null(),
-                &RC,
-                &mut status,
+                &raw const RC,
+                &raw mut status,
             )
         });
         assert!(refused.is_null());
@@ -205,7 +209,7 @@ fn quota_refusal_preserves_input_and_final_alias_holds_payload_until_cleanup() {
         assert_eq!(node.text, original);
         assert_eq!(small.live_bytes(), 6);
         with_value_owner(&Some(small.clone()), || {
-            crate::string::hew_string_drop_managed(original)
+            crate::string::hew_string_drop_managed(original);
         });
         assert_eq!(small.live_bytes(), 0);
 
@@ -224,10 +228,10 @@ fn quota_refusal_preserves_input_and_final_alias_holds_payload_until_cleanup() {
         let weak = hew_rc_downgrade(value);
         let upgraded = hew_weak_upgrade_rc_managed(weak);
         assert_eq!(upgraded, value);
-        hew_release_sync(hew_rc_release_begin(upgraded, &NODE));
-        hew_release_sync(hew_rc_release_begin(value, &NODE));
+        hew_release_sync(hew_rc_release_begin(upgraded, &raw const NODE));
+        hew_release_sync(hew_rc_release_begin(value, &raw const NODE));
         assert_eq!(owner.live_bytes(), 22);
-        let cursor = hew_rc_release_begin(alias, &NODE);
+        let cursor = hew_rc_release_begin(alias, &raw const NODE);
         assert!(hew_weak_upgrade_rc_managed(weak).is_null());
         hew_weak_drop_rc(weak);
         assert!(registry.is_empty());
@@ -238,6 +242,10 @@ fn quota_refusal_preserves_input_and_final_alias_holds_payload_until_cleanup() {
 }
 
 #[test]
+#[expect(
+    clippy::cast_ptr_alignment,
+    reason = "the checked Rc constructor allocates this exact Node layout"
+)]
 fn checked_set_keeps_displaced_children_charged_and_rolls_back_refusal() {
     // SAFETY: the replacement slot stays live until its returned cursor drains.
     unsafe {
@@ -258,8 +266,12 @@ fn checked_set_keeps_displaced_children_charged_and_rolls_back_refusal() {
             text: new_text,
         };
         let mut status = 0;
-        let cursor =
-            hew_rc_set_release_checked(value, (&raw mut replacement).cast(), &NODE, &mut status);
+        let cursor = hew_rc_set_release_checked(
+            value,
+            (&raw mut replacement).cast(),
+            &raw const NODE,
+            &raw mut status,
+        );
         assert_eq!(status, 0);
         assert_eq!(replacement.text, old_text);
         assert_eq!((*value.cast::<Node>()).text, new_text);
@@ -271,15 +283,19 @@ fn checked_set_keeps_displaced_children_charged_and_rolls_back_refusal() {
             next: ptr::null_mut(),
             text: foreign,
         };
-        let cursor =
-            hew_rc_set_release_checked(value, (&raw mut refused).cast(), &NODE, &mut status);
+        let cursor = hew_rc_set_release_checked(
+            value,
+            (&raw mut refused).cast(),
+            &raw const NODE,
+            &raw mut status,
+        );
         assert!(cursor.is_null());
         assert_eq!(status, hew_cabi::managed::HEAP_EXCEEDED);
         assert_eq!(refused.text, foreign);
         assert_eq!((*value.cast::<Node>()).text, new_text);
         assert_eq!(owner.live_bytes(), 22);
         crate::string::hew_string_drop(foreign);
-        hew_release_sync(hew_rc_release_begin(value, &NODE));
+        hew_release_sync(hew_rc_release_begin(value, &raw const NODE));
         assert_eq!(owner.live_bytes(), 0);
     }
 }
@@ -297,7 +313,7 @@ fn cyclic_cells_rehome_shared_descendants_without_leaving_creator_debt() {
         let mut transfer = ValueTransfer::begin(
             Some(source.clone()),
             Some(destination.clone()),
-            &RC,
+            &raw const RC,
             (&raw const value).cast(),
         );
         transfer.set_destination_binding(Some(DestinationBinding {
@@ -309,7 +325,7 @@ fn cyclic_cells_rehome_shared_descendants_without_leaving_creator_debt() {
         assert_eq!((source.live_bytes(), destination.live_bytes()), (0, 38));
         assert!(old.close_empty());
         assert_eq!(new.inner.lock_or_recover().blocks.len(), 2);
-        hew_release_sync(hew_rc_release_begin(value, &NODE));
+        hew_release_sync(hew_rc_release_begin(value, &raw const NODE));
         assert_eq!(destination.live_bytes(), 38);
         let cursor = new.sweep().unwrap();
         (*cursor).set_value_owner(Some(destination.clone()));
@@ -329,7 +345,7 @@ fn abandoned_transfer_holds_sweep_until_abort_then_refunds_cycle() {
         let mut transfer = ValueTransfer::begin(
             Some(source.clone()),
             Some(destination.clone()),
-            &RC,
+            &raw const RC,
             (&raw const value).cast(),
         );
         assert!(transfer.poll_freeze().unwrap());
@@ -339,7 +355,7 @@ fn abandoned_transfer_holds_sweep_until_abort_then_refunds_cycle() {
         let state = crate::coro_state::hew_coro_state_new(waker.descriptor(), ptr::null_mut());
         let mut slot = ptr::null_mut();
         assert_eq!(
-            crate::release_walker::hew_release_poll(cursor, state, &mut slot),
+            crate::release_walker::hew_release_poll(cursor, state, &raw mut slot),
             0
         );
         assert!(!registry.close_empty());
@@ -347,7 +363,7 @@ fn abandoned_transfer_holds_sweep_until_abort_then_refunds_cycle() {
         drop(transfer);
         assert_eq!((source.live_bytes(), destination.live_bytes()), (38, 0));
         ready.wait();
-        hew_release_sync(hew_rc_release_begin(value, &NODE));
+        hew_release_sync(hew_rc_release_begin(value, &raw const NODE));
         hew_release_sync(cursor);
         assert_eq!(source.live_bytes(), 0);
         crate::coro_state::hew_coro_state_free(state);

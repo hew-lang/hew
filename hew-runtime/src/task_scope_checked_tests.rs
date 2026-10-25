@@ -1032,6 +1032,14 @@ fn transfer_waits_for_running_task_and_abort_preserves_sender_execution() {
         managed: &TASK_MANAGED,
         ..RESULT
     };
+    static RESULT_MANAGED: HewManagedValueDescriptor = HewManagedValueDescriptor {
+        slot_bytes: 8,
+        visit: None,
+    };
+    static MANAGED_RESULT: HewValueLayout = HewValueLayout {
+        managed: &RESULT_MANAGED,
+        ..RESULT
+    };
     let _runtime = TaskRuntime::new();
     let (readiness, waker) = Readiness::new();
     let (started, receive) = mpsc::channel();
@@ -1050,6 +1058,12 @@ fn transfer_waits_for_running_task_and_abort_preserves_sender_execution() {
             ResultValue::Scalar(42),
         );
         receive.recv().unwrap();
+        let execution = {
+            let mut state = checked(task).lock_or_recover();
+            // The fixture produces the same i64 slot; supply its budget witness.
+            state.layout = &MANAGED_RESULT;
+            state.execution.upgrade().unwrap()
+        };
         let mut transfer = crate::owned_value_budget::transfer::ValueTransfer::begin(
             None,
             Some(destination.clone()),
@@ -1068,6 +1082,19 @@ fn transfer_waits_for_running_task_and_abort_preserves_sender_execution() {
         while hew_checked_task_wait_status(wait) == PENDING {
             readiness.wait();
         }
+        // Completion wakes the observer before the executor's final Arc is
+        // necessarily gone. A retained executor must not make its dead frame
+        // part of ordinary result acquisition or final release.
+        destination
+            .acquire_value(&TASK_LAYOUT, (&raw const task).cast())
+            .unwrap()
+            .commit();
+        assert_eq!(destination.live_bytes(), 8);
+        destination
+            .release_value(&TASK_LAYOUT, (&raw const task).cast())
+            .unwrap();
+        assert_eq!(destination.live_bytes(), 0);
+        drop(execution);
         let mut value = 0_i64;
         let mut fault = ptr::null_mut();
         assert_eq!(

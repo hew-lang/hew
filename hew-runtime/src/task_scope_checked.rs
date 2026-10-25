@@ -471,10 +471,15 @@ pub unsafe extern "C" fn hew_managed_visit_task(
             if kind == HewManagedWalkKind::CommitTransfer {
                 state.value_owner = destination_owner(visitor);
             }
+            let completed = state.completed;
             drop(state);
-            execution
-                .as_ref()
-                .map_or(0, |execution| execution.visit_frozen_frame(visitor))
+            if completed {
+                0
+            } else {
+                execution
+                    .as_ref()
+                    .map_or(0, |execution| execution.visit_frozen_frame(visitor))
+            }
         })();
         if matches!(
             kind,

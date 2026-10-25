@@ -29,7 +29,7 @@ pub enum HewManagedWalkKind {
 }
 
 /// Called once for each encountered backing ownership edge. The callback
-/// records that edge and returns DESCEND, SKIP_DESCENDANTS or a failure status.
+/// records that edge and returns `DESCEND`, `SKIP_DESCENDANTS` or a failure status.
 pub type HewManagedStorageVisit =
     unsafe extern "C" fn(context: *mut c_void, identity: *const c_void, payload_bytes: u64) -> i32;
 
@@ -60,6 +60,7 @@ pub struct HewManagedValueDescriptor {
 /// # Safety
 /// The slot must match the live layout, and visitor/context must remain live
 /// throughout its synchronous traversal. Zero-sized slots may be null.
+#[must_use]
 pub unsafe fn visit_value(
     layout: &crate::value::HewValueLayout,
     slot: *const c_void,

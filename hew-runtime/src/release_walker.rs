@@ -410,6 +410,7 @@ impl HewReleaseCursor {
             pending.push(ReleaseItem::Value {
                 slot,
                 layout: HewValueLayout {
+                    code_owner: core::ptr::null(),
                     size,
                     align: 1,
                     ownership_kind: hew_cabi::value::HewTypeOwnershipKind::LayoutManaged,
@@ -828,6 +829,7 @@ mod tests {
     }
 
     const LAYOUT: HewValueLayout = HewValueLayout {
+        code_owner: core::ptr::null(),
         size: size_of::<i64>(),
         align: align_of::<i64>(),
         ownership_kind: HewTypeOwnershipKind::LayoutManaged,

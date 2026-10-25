@@ -816,6 +816,7 @@ mod tests {
         drop_fn: Option<unsafe extern "C" fn(*mut u8)>,
     ) -> *mut u8 {
         let layout = HewValueLayout {
+            code_owner: core::ptr::null(),
             size,
             align,
             ownership_kind: hew_cabi::value::HewTypeOwnershipKind::LayoutManaged,

@@ -85,6 +85,7 @@ fn layouts(align: usize, managed: bool) -> (HewMapKeyLayout, HewValueLayout) {
     FAIL.set(0);
     assert!(LAST_FAULT.get().is_null());
     let unit = HewValueLayout {
+        code_owner: core::ptr::null(),
         release_start: None,
         size: 0,
         align: 1,

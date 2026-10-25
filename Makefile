@@ -461,12 +461,21 @@ live-sdk: require-host-cargo-target wasm-runtime-debug ## Build: stage a matched
 		--completion-shells bash
 	@printf 'Live SDK: %s\nSet HEW_WASI_SDK to your installed WASI SDK for component source builds.\n' "$(LIVE_SDK_DEST)"
 
+LIVE_BENCH_SDK ?= $(LIVE_SDK_DEST)
+LIVE_BENCH_SAMPLES ?= 20
+LIVE_BENCH_GENERATIONS ?= 4
+.PHONY: bench-live-loop
+bench-live-loop: require-host-cargo-target ## Measure: authoring and retained runtime loops against a matched live SDK
+	@HEW_LIVE_BENCH_REVISION="$$(git rev-parse HEAD)" cargo run -p hew-live --features component --example live_loop $(CARGO_TARGET_FLAG) -- \
+		--sdk "$(LIVE_BENCH_SDK)" --samples "$(LIVE_BENCH_SAMPLES)" --generations "$(LIVE_BENCH_GENERATIONS)"
+
 .PHONY: test-live-network
+LIVE_NETWORK_TEST_ARGS ?=
 test-live-network: hew-native live-node wasm-runtime-debug ## Test: source replacement through authenticated QUIC nodes
 	HEW_LIVE_COMPILER="$(abspath $(DEBUG_HEW))" \
 	HEW_LIVE_RUNTIME_DIR="$(abspath $(DEBUG_DIR))" \
 	HEW_LIVE_WASM_LIB_DIR="$(abspath $(WASM_DEBUG_DIR))" \
-		$(TEST_RUN_ENV) cargo nextest run --profile ci -p hew-live --features component --test network
+		$(TEST_RUN_ENV) cargo nextest run --profile ci -p hew-live --features component --test network $(LIVE_NETWORK_TEST_ARGS)
 
 .PHONY: test-live-source
 test-live-source: hew-native live-node wasm-runtime-debug ## Test: portable source builds preserve project and diagnostic context

@@ -27,6 +27,19 @@ fn runtime() -> PathBuf {
     ))
 }
 
+fn transport(directory: &Path, compiler: &Path) -> PathBuf {
+    let module = directory.join("transport");
+    run(companion()
+        .arg("prepare-transport")
+        .arg("--compiler")
+        .arg(compiler)
+        .arg("--runtime")
+        .arg(runtime())
+        .arg("--output")
+        .arg(&module));
+    module
+}
+
 fn run(command: &mut Command) -> String {
     let output = command.output().expect("run SDK command");
     assert!(
@@ -155,10 +168,15 @@ fn observed_server(
     if let Some(observe) = observe {
         command.env("HEW_PPROF", observe);
     }
+    command
+        .args(["serve", "--allow-peer", client_id, "--cache"])
+        .arg(directory.join("cache"));
+    spawn_server(&mut command).0
+}
+
+fn spawn_server(command: &mut Command) -> (Process, mpsc::Receiver<String>) {
     let mut process = Process(
         command
-            .args(["serve", "--allow-peer", client_id, "--cache"])
-            .arg(directory.join("cache"))
             .stdout(Stdio::null())
             .stderr(Stdio::piped())
             .spawn()
@@ -181,7 +199,7 @@ fn observed_server(
             break;
         }
     }
-    process
+    (process, receive)
 }
 
 fn editor(directory: &Path, module: &Path, server_id: &str, address: &str) -> Editor {
@@ -294,15 +312,7 @@ fn authenticated_source_replacement_retains_state_and_recovers_connection() {
     let directory = tempfile::tempdir().unwrap();
     let root = directory.path();
     let compiler = environment("HEW_LIVE_COMPILER");
-    let module = root.join("transport");
-    run(companion()
-        .arg("prepare-transport")
-        .arg("--compiler")
-        .arg(&compiler)
-        .arg("--runtime")
-        .arg(runtime())
-        .arg("--output")
-        .arg(&module));
+    let module = transport(root, &compiler);
     run(Command::new(&compiler)
         .args(["node", "authority", "--key"])
         .arg(root.join("authority.key")));
@@ -373,4 +383,98 @@ fn authenticated_source_replacement_retains_state_and_recovers_connection() {
     service.finish();
     // A grant watcher with no connected peer must also stop cleanly.
     server(root, &module, &client_id, &address).finish();
+}
+
+fn expect_delivery(events: &mpsc::Receiver<String>, destination: &str, body: &str) {
+    loop {
+        let line = events
+            .recv_timeout(Duration::from_secs(10))
+            .expect("destination delivery");
+        if let Ok(event) = serde_json::from_str::<Value>(&line) {
+            if event["event"] == "delivery" {
+                assert_eq!(event["destination"], destination);
+                assert_eq!(event["body"], body);
+                break;
+            }
+        }
+    }
+}
+
+fn install(client: &mut Editor, component: &Path) -> Value {
+    let digest =
+        client.request(json!({"op":"prepare", "component":component}), true)["digest"].clone();
+    assert_eq!(
+        client.request(
+            json!({"op":"replace", "digest":digest, "predecessor":0, "within_ms":10000}),
+            true
+        )["epoch"],
+        1
+    );
+    digest
+}
+
+fn deliver(client: &mut Editor, events: &mpsc::Receiver<String>, destination: &str, body: &str) {
+    assert_eq!(
+        client.request(json!({"op":"route", "source":"inbox", "body":body}), true)["accepted"],
+        true
+    );
+    expect_delivery(events, destination, body);
+}
+
+#[test]
+fn one_portable_source_uses_two_nodes_destination_grants() {
+    let directory = tempfile::tempdir().unwrap();
+    let root = directory.path();
+    let compiler = environment("HEW_LIVE_COMPILER");
+    let module = transport(root, &compiler);
+    run(Command::new(&compiler)
+        .args(["node", "authority", "--key"])
+        .arg(root.join("authority.key")));
+    let west_id = peer(&compiler, root, "west");
+    let east_id = peer(&compiler, root, "east");
+    let client_id = peer(&compiler, root, "client");
+    let west_socket = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+    let east_socket = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+    let west_address = west_socket.local_addr().unwrap().to_string();
+    let east_address = east_socket.local_addr().unwrap().to_string();
+    drop((west_socket, east_socket));
+    let component = root.join("router.wasm");
+    run(companion()
+        .arg("build")
+        .arg("--source")
+        .arg(Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/preview_router.hew"))
+        .arg("--output")
+        .arg(&component));
+    let serve = |name: &str, address: &str, prefix: &str| {
+        spawn_server(
+            node(root, &module, name, address)
+                .env_remove("HEW_PPROF")
+                .args([
+                    "serve",
+                    "--allow-peer",
+                    &client_id,
+                    "--destination-prefix",
+                    prefix,
+                    "--cache",
+                ])
+                .arg(root.join(format!("{name}-cache"))),
+        )
+    };
+    let (west, west_events) = serve("west", &west_address, "west/");
+    let (east, east_events) = serve("east", &east_address, "east/");
+    let mut client = editor(root, &module, &west_id, &west_address);
+    let digest = install(&mut client, &component);
+    deliver(&mut client, &west_events, "west/inbox", "same source");
+    client.process.finish();
+    let mut client = editor(root, &module, &east_id, &east_address);
+    assert_eq!(install(&mut client, &component), digest);
+    deliver(&mut client, &east_events, "east/inbox", "same source");
+    client.process.finish();
+    // Installing the same candidate on the second node does not rebind the first.
+    let mut client = editor(root, &module, &west_id, &west_address);
+    assert_eq!(client.request(json!({"op":"status"}), true)["epoch"], 1);
+    deliver(&mut client, &west_events, "west/inbox", "still west");
+    client.process.finish();
+    west.finish();
+    east.finish();
 }

@@ -1,0 +1,29 @@
+import router_services;
+
+actor Counter {
+    var accepted: u64;
+    receive fn record() { accepted += 1; }
+    receive fn snapshot() -> u64 { accepted }
+}
+
+#[resource]
+pub type Router { counter: Counter; }
+impl Router {
+    fn close(consume self) {
+        stop(self.counter);
+        stopped(self.counter);
+    }
+}
+
+pub fn create(accepted: u64) -> Router {
+    Router { counter: spawn Counter { accepted: accepted } }
+}
+pub fn snapshot(router: Router) -> u64 { router.counter.snapshot().expect("snapshot") }
+pub fn dispose(consume router: Router) {}
+pub fn route(router: Router, source: string, body: string) -> bool {
+    if source == "skip0" { return false; }
+    let target = router_services.destination(source).expect("destination").expect("target");
+    router_services.emit(router_services.Delivery { destination: target, body: body }).expect("emit");
+    router.counter.record().expect("record");
+    true
+}

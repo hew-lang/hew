@@ -151,6 +151,9 @@ enum Operation {
         cache: PathBuf,
         #[arg(long)]
         allow_peer: String,
+        /// Prefix destinations provided by this reference node's service grant.
+        #[arg(long, default_value = "")]
+        destination_prefix: String,
     },
     /// Attach an editor using local JSON lines and the typed remote node service.
     Attach {
@@ -198,10 +201,13 @@ enum RequestOperation {
     },
 }
 
-struct Services;
+struct Services {
+    destination_prefix: String,
+}
 impl host::Services for Services {
     fn destination(&self, source: String) -> host::ServiceCall<Option<String>> {
-        Box::pin(async move { Ok(Some(source)) })
+        let destination = format!("{}{source}", self.destination_prefix);
+        Box::pin(async move { Ok(Some(destination)) })
     }
     fn emit(&self, message: host::Delivery) -> host::ServiceCall<()> {
         Box::pin(async move {
@@ -305,6 +311,7 @@ async fn main() -> Result<()> {
             native,
             cache,
             allow_peer,
+            destination_prefix,
         } => {
             // SAFETY: explicitly selected local SDK artefacts are trusted native code.
             let server = unsafe {
@@ -312,7 +319,7 @@ async fn main() -> Result<()> {
                     native.runtime()?,
                     module(&native.module()?)?,
                     ArtifactCache::open(cache)?,
-                    Arc::new(Services),
+                    Arc::new(Services { destination_prefix }),
                 )
                 .await?
             };

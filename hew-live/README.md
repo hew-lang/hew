@@ -209,8 +209,9 @@ hew-live-node attach --endpoint HOST:PORT --node SERVER_NODE_ID
 ```
 
 `serve` provides reference router services: destination lookup returns the source
-name, and emitted deliveries go to standard error. Embed `network::Server::open`
-with application `Services` implementations to provide real destinations and
+name, optionally prefixed by `--destination-prefix`, and emitted deliveries go to
+standard error. Embed `network::Server::open` with application `Services`
+implementations to provide real destinations and
 emission. Closing standard input shuts down the reference server. Its peer grant
 owner cancels its observation turn, revokes the export and waits for cleanup.
 A new authenticated session for the same authorized identity can reconnect.
@@ -262,3 +263,32 @@ desktop companion exposes status and isolated preview. Ordinary trace collection
 records metadata without source event bodies or service responses. Preview uses
 operator-supplied state, inputs and fixtures; metadata-only traces do not supply
 those responses.
+
+The same network oracle also installs identical component bytes on two running
+nodes with different destination services. Select only that witness with
+`LIVE_NETWORK_TEST_ARGS=one_portable_source_uses_two_nodes_destination_grants`.
+
+### Measuring authoring and runtime loops
+
+Use a staged SDK from the same revision as the host library:
+
+```sh
+HEW_WASI_SDK=/path/to/wasi-sdk make bench-live-loop \
+  LIVE_BENCH_SDK=/path/to/live-sdk > live-loop.json
+```
+
+The JSON report contains machine and binary identities, every timing sample,
+median and nearest-rank p95, and an informative comparison with 250 ms. Defaults
+are 20 samples and four retained generations; set `LIVE_BENCH_SAMPLES` and
+`LIVE_BENCH_GENERATIONS` to change them. Checks validate each evaluated result,
+route and preserved snapshot before accepting its measurement.
+
+First-process eval and warm-filesystem process runs are separate from two-line
+edits in one retained `hew tool live` session. OS caches are not flushed. Source
+build and component preparation are measured separately; cached activation,
+invocation and replacement consume prepared handles without compiling. The
+asynchronous comparison includes guest work and scheduling as well as service
+dispatch. Replacement pause covers snapshot through commit with no concurrent
+ingress. Linux RSS is recorded with prepared generations and active instances
+retained, then released; it includes engine and allocator retention and is not
+an allocation count or a leak diagnosis. Other platforms report no RSS value.

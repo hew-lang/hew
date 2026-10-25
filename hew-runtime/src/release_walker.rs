@@ -465,18 +465,36 @@ impl HewReleaseCursor {
         cursors: impl IntoIterator<Item = *mut Self, IntoIter: DoubleEndedIterator>,
     ) -> *mut Self {
         let mut pending = Vec::new();
+        let mut value_owner: Option<Option<crate::owned_value_budget::ValueOwner>> = None;
         for cursor in cursors.into_iter().rev() {
             if !cursor.is_null() {
                 // SAFETY: each cursor is uniquely transferred before its first step.
                 let cursor = unsafe { Box::from_raw(cursor) };
                 assert!(cursor.current_layout.is_none());
+                if let Some(owner) = cursor.value_owner {
+                    if let Some(previous) = &value_owner {
+                        assert!(
+                            match (previous, &owner) {
+                                (None, None) => true,
+                                (Some(previous), Some(owner)) => previous.same_account(owner),
+                                _ => false,
+                            },
+                            "joined cleanup cursors belong to different accounts"
+                        );
+                    } else {
+                        value_owner = Some(owner);
+                    }
+                }
                 pending.extend(cursor.pending);
             }
         }
         if pending.is_empty() {
             std::ptr::null_mut()
         } else {
-            Self::new(pending)
+            let joined = Self::new(pending);
+            // SAFETY: the fresh joined cursor owns the same operation graph.
+            unsafe { (*joined).value_owner = value_owner };
+            joined
         }
     }
 
@@ -1036,6 +1054,51 @@ mod tests {
 
         release_start: Some(selected_release),
     };
+
+    #[test]
+    fn joined_cleanup_preserves_retained_account_outside_invocation() {
+        use crate::owned_value_budget::{ManagedStorage, ValueOwner};
+        unsafe fn free(pointer: *mut c_void) {
+            // SAFETY: each cursor transfers its own sized-block allocation.
+            unsafe { crate::mem::buf_free(pointer) };
+        }
+        // SAFETY: both allocations are consumed once by the joined cursor.
+        unsafe {
+            let owner = ValueOwner::new(Some(17));
+            let first = crate::mem::buf_alloc(8);
+            let second = crate::mem::buf_alloc(9);
+            owner
+                .acquire(&[
+                    ManagedStorage {
+                        identity: first as usize,
+                        bytes: 8,
+                    },
+                    ManagedStorage {
+                        identity: second as usize,
+                        bytes: 9,
+                    },
+                ])
+                .unwrap()
+                .commit();
+            let first = HewReleaseCursor::new(vec![ReleaseItem::ManagedBacking {
+                pointer: first,
+                bytes: 8,
+                free,
+            }]);
+            (*first).set_value_owner(Some(owner.clone()));
+            let second = HewReleaseCursor::new(vec![ReleaseItem::ManagedBacking {
+                pointer: second,
+                bytes: 9,
+                free,
+            }]);
+            (*second).set_value_owner(Some(owner.clone()));
+            let joined = HewReleaseCursor::join([first, second]);
+            let joined = HewReleaseCursor::join([ptr::null_mut(), joined]);
+            assert!(crate::owned_value_budget::current_owner().is_none());
+            hew_release_sync(joined);
+            assert_eq!(owner.live_bytes(), 0);
+        }
+    }
 
     #[test]
     fn cleanup_transfer_retains_flat_payload_and_refunds_destination() {

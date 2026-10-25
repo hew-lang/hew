@@ -130,6 +130,7 @@ impl NativeRegistration {
 )]
 struct Inner {
     queue: VecDeque<QueueItem>,
+    typed: Option<typed::State>,
     capacity: usize,
     /// The producer signalled EOF: every sink handle finished or closed.
     sink_closed: bool,
@@ -211,6 +212,7 @@ impl ChannelCore {
         Self {
             inner: Mutex::new(Inner {
                 queue: VecDeque::new(),
+                typed: None,
                 capacity: capacity.max(1),
                 sink_closed: false,
                 sink_handles: 1,
@@ -986,6 +988,10 @@ impl ChannelCore {
     /// so their `await_send` resumes (the writes become no-ops) and drops their
     /// pending items — owned envelopes are released via the stamped witness.
     pub fn close_stream(&self) {
+        if self.is_typed() {
+            self.close_typed_sync();
+            return;
+        }
         let (layout, discarded) = self.close_stream_take();
         for value in discarded {
             Self::drop_envelope(layout.as_ref(), value);
@@ -1168,6 +1174,9 @@ impl Drop for ChannelCore {
     /// witness exactly once, and any registration the core still holds an
     /// in-flight slot ref for is released (no read-slot leak on teardown).
     fn drop(&mut self) {
+        if self.is_typed() {
+            self.close_typed_sync();
+        }
         let inner = self
             .inner
             .get_mut()

@@ -64,6 +64,10 @@ pub struct ValueOwner(Arc<Account>);
 pub(crate) fn current_owner() -> Option<ValueOwner> {
     let context = crate::execution_context::current_context();
     if !context.is_null() {
+        // SAFETY: explicit release bindings live through this synchronous poll.
+        if let Some(owner) = unsafe { (*context).value_owner.as_ref() } {
+            return owner.clone();
+        }
         // SAFETY: the canonical execution context pins its active task scope.
         let scope = unsafe { (*context).task_scope };
         if !scope.is_null() {
@@ -81,6 +85,41 @@ pub(crate) fn current_owner() -> Option<ValueOwner> {
         .native_completion
         .as_ref()
         .and_then(|completion| completion.cleanup.value_owner.clone())
+}
+
+/// Install a borrowed account on the canonical execution carrier for one
+/// synchronous poll. The driver retains it across suspension and reinstalls it
+/// on each worker; no thread-local account or value graph survives this call.
+pub(crate) fn with_value_owner<R>(owner: &Option<ValueOwner>, run: impl FnOnce() -> R) -> R {
+    use crate::execution_context::{current_context, set_current_context, HewExecutionContext};
+    let previous = current_context();
+    let mut fallback = HewExecutionContext::default();
+    let context = if previous.is_null() {
+        &raw mut fallback
+    } else {
+        previous
+    };
+    // SAFETY: this thread exclusively lends the installed carrier for this poll.
+    let old = unsafe { std::mem::replace(&mut (*context).value_owner, owner) };
+    struct Restore {
+        context: *mut HewExecutionContext,
+        previous: *mut HewExecutionContext,
+        owner: *const Option<ValueOwner>,
+    }
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            // SAFETY: the installed carrier remains live until this guard drops.
+            unsafe { (*self.context).value_owner = self.owner };
+            let _ = set_current_context(self.previous);
+        }
+    }
+    let _restore = Restore {
+        context,
+        previous,
+        owner: old,
+    };
+    let _ = set_current_context(context);
+    run()
 }
 
 impl ValueOwner {
@@ -181,6 +220,15 @@ impl ValueOwner {
             storage: storage.to_vec(),
             committed: false,
         })
+    }
+
+    /// End one backing edge after its typed children finish semantic release.
+    /// The caller supplies the same canonical capacity used for acquisition.
+    pub(crate) fn release_backing(&self, identity: *const std::ffi::c_void, bytes: u64) {
+        self.release(&[ManagedStorage {
+            identity: identity as usize,
+            bytes,
+        }]);
     }
 
     /// Release exactly the graph whose ownership obligation has ended, even
@@ -443,6 +491,34 @@ mod tests {
     use super::*;
     fn storage(identity: usize, bytes: u64) -> ManagedStorage {
         ManagedStorage { identity, bytes }
+    }
+
+    #[test]
+    fn backing_refund_keeps_other_retaining_accounts_charged() {
+        let first = ValueOwner::new(Some(6));
+        let second = ValueOwner::new(Some(6));
+        let backing = ManagedStorage {
+            identity: 123,
+            bytes: 6,
+        };
+        first.acquire(&[backing]).unwrap().commit();
+        second.acquire(&[backing]).unwrap().commit();
+        first.release_backing(backing.identity as *const std::ffi::c_void, backing.bytes);
+        assert_eq!((first.live_bytes(), second.live_bytes()), (0, 6));
+        second.release_backing(backing.identity as *const std::ffi::c_void, backing.bytes);
+        assert_eq!(second.live_bytes(), 0);
+    }
+
+    #[test]
+    fn release_context_keeps_explicit_owner_and_restores_nested_unbounded_binding() {
+        let owner = ValueOwner::new(Some(12));
+        let previous = crate::execution_context::current_context();
+        with_value_owner(&Some(owner.clone()), || {
+            assert!(current_owner().unwrap().same_account(&owner));
+            with_value_owner(&None, || assert!(current_owner().is_none()));
+            assert!(current_owner().unwrap().same_account(&owner));
+        });
+        assert_eq!(crate::execution_context::current_context(), previous);
     }
 
     #[test]

@@ -31,10 +31,12 @@ pub enum HewManagedWalkKind {
     ClonePlan,
     /// Freeze provider admission/mutation before an ownership transfer.
     PrepareTransfer,
-    /// Rebind provider ownership and resume admission after checked adoption.
+    /// Rebind provider ownership while the entire graph remains frozen.
     CommitTransfer,
     /// Resume the original provider owner after refused adoption.
     AbortTransfer,
+    /// Resume providers only after every destination binding is committed.
+    ResumeTransfer,
 }
 
 /// Called once for each encountered backing ownership edge. The callback

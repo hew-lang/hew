@@ -89,6 +89,7 @@ pub unsafe fn destination_owner(visitor: *const HewManagedStorageVisitor) -> Opt
         HewManagedWalkKind::PrepareTransfer
             | HewManagedWalkKind::CommitTransfer
             | HewManagedWalkKind::AbortTransfer
+            | HewManagedWalkKind::ResumeTransfer
     ));
     // SAFETY: transfer walks carry this exact runtime-owned context.
     unsafe { &*visitor.context.cast::<TransferWalk>() }
@@ -256,12 +257,16 @@ impl ValueTransfer {
             unsafe { owner.release_value(&*self.layout, self.slot) }?;
         }
         // SAFETY: destination acquisition and source refund completed atomically
-        // with respect to the frozen providers. Commit only rebinds/unfreezes.
+        // with respect to the frozen providers. Commit only rebinds; the whole graph stays frozen.
         if unsafe { self.phase(HewManagedWalkKind::CommitTransfer) } != 0 {
             std::process::abort();
         }
         if let Some(acquisition) = self.destination.take() {
             acquisition.commit();
+        }
+        // Rebind the complete graph before any child executor can run.
+        if unsafe { self.phase(HewManagedWalkKind::ResumeTransfer) } != 0 {
+            std::process::abort();
         }
         self.prepared = false;
         Ok(())
@@ -310,8 +315,12 @@ mod tests {
                         TRANSFER_PENDING
                     }
                 }
-                HewManagedWalkKind::CommitTransfer | HewManagedWalkKind::AbortTransfer => {
+                HewManagedWalkKind::ResumeTransfer | HewManagedWalkKind::AbortTransfer => {
                     provider.frozen.store(false, Ordering::Release);
+                    0
+                }
+                HewManagedWalkKind::CommitTransfer => {
+                    assert!(provider.frozen.load(Ordering::Acquire));
                     0
                 }
                 _ => {

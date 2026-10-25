@@ -123,10 +123,20 @@ pre.shiki .line::before {
 .fields dd { margin-left: 1rem; margin-bottom: 0.25rem; color: var(--comment); }
 .item { margin-bottom: 2rem; }
 /* Module index */
-.module-list { list-style: none; }
-.module-list li { margin: 0.4rem 0; display: flex; align-items: baseline; gap: 0.5rem; }
+.module-list { list-style: none; margin: 0.25rem 0 1.25rem; }
+.module-list li {
+    display: grid;
+    grid-template-columns: minmax(11rem, 15rem) minmax(0, 1fr);
+    align-items: baseline;
+    column-gap: 1.25rem;
+    padding: 0.5rem 0;
+}
+.module-list li + li { border-top: 1px solid color-mix(in srgb, var(--border) 65%, transparent); }
+.module-list li > a { font-weight: 600; line-height: 1.35; }
 .module-list li a code { font-size: 0.95em; font-weight: 500; }
-.module-list li .module-desc { color: var(--comment); font-size: 0.9em; }
+.module-list li .module-desc { color: var(--comment); font-size: 0.9em; line-height: 1.5; }
+.guide-group { margin-top: 1.5rem; }
+.guide-group h3 { margin-bottom: 0.25rem; color: var(--fg); }
 .section-heading { font-size: 1.1rem; font-weight: 600; color: var(--muted); text-transform: capitalize; margin: 1.75rem 0 0.5rem; padding-bottom: 0.25rem; border-bottom: 1px solid var(--border); }
 .search-label { display: block; font-weight: 600; margin-top: 1.5rem; }
 .module-search { width: 100%; margin: 0.4rem 0 0.25rem; padding: 0.65rem 0.75rem; border: 1px solid var(--border); border-radius: 6px; background: var(--code-bg); color: var(--fg); font: inherit; }
@@ -143,8 +153,8 @@ footer a:hover { color: var(--accent); }
     .site-header { align-items: flex-start; flex-direction: column; gap: 0.75rem; }
     .site-nav { flex-wrap: wrap; gap: 0.6rem 1rem; }
     .site-brand-tag { display: none; }
-    .module-list li { display: block; }
-    .module-desc { display: block; margin-top: 0.2rem; }
+    .module-list li { grid-template-columns: minmax(0, 1fr); row-gap: 0.2rem; padding: 0.65rem 0; }
+    .module-desc { display: block; }
 }
 "#;
 

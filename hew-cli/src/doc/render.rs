@@ -1050,27 +1050,51 @@ pub fn render_index(modules: &[DocModule], config: &DocSiteConfig) -> String {
     if !language_mods.is_empty() {
         body.push_str("<section class=\"doc-section\"><h2>");
         body.push_str(&html_escape(&config.guide_title));
-        body.push_str("</h2>\n<p>");
+        body.push_str("</h2>\n");
+        let mut guide_intro = String::new();
         if let Some(start) = config
             .guide_start
             .as_deref()
             .and_then(|name| language_mods.iter().find(|module| module.name == name))
         {
-            body.push_str("Start with <a href=\"");
-            body.push_str(&html_escape(&super::module_to_filename(
+            guide_intro.push_str("Start with <a href=\"");
+            guide_intro.push_str(&html_escape(&super::module_to_filename(
                 &start.name,
                 "html",
             )));
-            body.push_str("\">");
-            body.push_str(&html_escape(&page_title(start, true)));
-            body.push_str("</a>. ");
+            guide_intro.push_str("\">");
+            guide_intro.push_str(&html_escape(&page_title(start, true)));
+            guide_intro.push_str("</a>. ");
         }
-        body.push_str(&html_escape(&config.guide_description));
-        body.push_str("</p>\n<ul class=\"module-list\">\n");
-        for m in &language_mods {
-            render_index_entry(&mut body, m, true);
+        guide_intro.push_str(&html_escape(&config.guide_description));
+        if !guide_intro.trim().is_empty() {
+            body.push_str("<p>");
+            body.push_str(guide_intro.trim());
+            body.push_str("</p>\n");
         }
-        body.push_str("</ul></section>\n");
+        if config.guide_groups.is_empty() {
+            body.push_str("<ul class=\"module-list\">\n");
+            for m in &language_mods {
+                render_index_entry(&mut body, m, true, config);
+            }
+            body.push_str("</ul>\n");
+        } else {
+            for group in &config.guide_groups {
+                body.push_str("<section class=\"guide-group\"><h3>");
+                body.push_str(&html_escape(&group.title));
+                body.push_str("</h3>\n<ul class=\"module-list\">\n");
+                for guide in &group.guides {
+                    if let Some(module) = language_mods
+                        .iter()
+                        .find(|module| module.name == guide.module)
+                    {
+                        render_index_entry(&mut body, module, true, config);
+                    }
+                }
+                body.push_str("</ul></section>\n");
+            }
+        }
+        body.push_str("</section>\n");
     }
 
     body.push_str("<section class=\"doc-section\" id=\"modules\"><h2>");
@@ -1081,7 +1105,7 @@ pub fn render_index(modules: &[DocModule], config: &DocSiteConfig) -> String {
     if !root_mods.is_empty() {
         body.push_str("<ul class=\"module-list\">\n");
         for m in &root_mods {
-            render_index_entry(&mut body, m, false);
+            render_index_entry(&mut body, m, false, config);
         }
         body.push_str("</ul>\n");
     }
@@ -1091,7 +1115,7 @@ pub fn render_index(modules: &[DocModule], config: &DocSiteConfig) -> String {
         body.push_str(&html_escape(category));
         body.push_str("</h3>\n<ul class=\"module-list\">\n");
         for m in mods {
-            render_index_entry(&mut body, m, false);
+            render_index_entry(&mut body, m, false, config);
         }
         body.push_str("</ul>\n");
     }
@@ -1100,10 +1124,17 @@ pub fn render_index(modules: &[DocModule], config: &DocSiteConfig) -> String {
     body
 }
 
-fn render_index_entry(body: &mut String, m: &DocModule, is_guide: bool) {
+fn render_index_entry(body: &mut String, m: &DocModule, is_guide: bool, config: &DocSiteConfig) {
     let filename = super::module_to_filename(&m.name, "html");
-    let summary = module_summary(m.doc.as_deref());
-    let display_name = if is_guide {
+    let guide = is_guide.then(|| config.guide_entry(&m.name)).flatten();
+    let summary = if let Some(guide) = guide {
+        guide.summary.clone()
+    } else {
+        module_summary(m.doc.as_deref())
+    };
+    let display_name = if let Some(guide) = guide {
+        guide.label.clone()
+    } else if is_guide {
         page_title(m, true)
     } else {
         display_module_name(&m.name)
@@ -1122,7 +1153,7 @@ fn render_index_entry(body: &mut String, m: &DocModule, is_guide: bool) {
     }
     body.push_str("</a>");
     if !summary.is_empty() {
-        body.push_str("<span class=\"module-desc\"> — ");
+        body.push_str("<span class=\"module-desc\">");
         body.push_str(&html_escape(&summary));
         body.push_str("</span>");
     }
@@ -1157,6 +1188,7 @@ fn module_summary(doc: Option<&str>) -> String {
 
 #[cfg(test)]
 mod tests {
+    use super::super::config::{GuideEntry, GuideGroup};
     use super::super::extract::extract_docs;
     use super::*;
 
@@ -1215,6 +1247,42 @@ pub fn add(a: i32, b: i32) -> i32 {
         let html = render_index(&[module], &DocSiteConfig::default());
         assert!(html.contains("Messages must satisfy Send and Result."));
         assert!(!html.contains("[Send]("));
+    }
+
+    #[test]
+    fn render_index_uses_reader_facing_guide_groups() {
+        let module = DocModule {
+            name: "language::basics".to_string(),
+            doc: Some("# Language basics\n\nA long technical introduction.".to_string()),
+            functions: vec![],
+            types: vec![],
+            actors: vec![],
+            machines: vec![],
+            traits: vec![],
+            impls: vec![],
+            consts: vec![],
+            type_aliases: vec![],
+        };
+        let config = DocSiteConfig {
+            guide_title: "Learn Hew".to_string(),
+            guide_groups: vec![GuideGroup {
+                title: "Start here".to_string(),
+                guides: vec![GuideEntry {
+                    module: "language::basics".to_string(),
+                    label: "Basics".to_string(),
+                    summary: "Write a first program.".to_string(),
+                }],
+            }],
+            ..DocSiteConfig::default()
+        };
+
+        let html = render_index(&[module], &config);
+        assert!(html.contains("<h2>Learn Hew</h2>"));
+        assert!(html.contains("<h3>Start here</h3>"));
+        assert!(html.contains(">Basics</a>"));
+        assert!(html.contains(">Write a first program.</span>"));
+        assert!(!html.contains("A long technical introduction."));
+        assert!(!html.contains("module-desc\"> —"));
     }
 
     #[test]

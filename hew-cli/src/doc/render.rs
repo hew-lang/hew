@@ -1077,6 +1077,139 @@ pub fn render_index(modules: &[DocModule], config: &DocSiteConfig) -> String {
     body
 }
 
+/// Render the persistent cross-page navigation for an HTML documentation site.
+#[must_use]
+pub fn render_sidebar(
+    modules: &[DocModule],
+    config: &DocSiteConfig,
+    current_module: Option<&str>,
+) -> String {
+    let mut guides: Vec<&DocModule> = modules
+        .iter()
+        .filter(|module| config.is_guide(&module.name))
+        .collect();
+    guides.sort_by_key(|module| (config.guide_rank(&module.name), &module.name));
+
+    let mut root_modules = Vec::new();
+    let mut module_groups: std::collections::BTreeMap<String, Vec<&DocModule>> =
+        std::collections::BTreeMap::new();
+    for module in modules
+        .iter()
+        .filter(|module| !config.is_guide(&module.name))
+    {
+        let after_root = module
+            .name
+            .find("::")
+            .map_or("", |index| &module.name[index + 2..]);
+        if after_root.contains("::") {
+            let category = after_root.split("::").next().unwrap_or(after_root);
+            module_groups
+                .entry(category.to_string())
+                .or_default()
+                .push(module);
+        } else {
+            root_modules.push(module);
+        }
+    }
+
+    let index_current = current_module.is_none().then_some(" aria-current=\"page\"");
+    let mut navigation = format!(
+        "<nav class=\"docs-navigation\" aria-label=\"Reference pages\">\n<a class=\"docs-home\" href=\"index.html\"{}>Reference home</a>\n",
+        index_current.unwrap_or("")
+    );
+    if !guides.is_empty() {
+        navigation.push_str(
+            "<div class=\"sidebar-section\"><p class=\"sidebar-title\">Guides</p>\n<ul>\n",
+        );
+        for guide in guides {
+            render_sidebar_link(&mut navigation, guide, config, current_module, true);
+        }
+        navigation.push_str("</ul></div>\n");
+    }
+
+    navigation.push_str("<div class=\"sidebar-section\"><p class=\"sidebar-title\">");
+    navigation.push_str(&html_escape(&config.module_title));
+    navigation.push_str("</p>\n");
+    if !root_modules.is_empty() {
+        let open = current_module
+            .is_some_and(|name| root_modules.iter().any(|module| module.name == name));
+        render_sidebar_module_group(
+            &mut navigation,
+            "Core modules",
+            &root_modules,
+            config,
+            current_module,
+            open,
+        );
+    }
+    for (category, modules) in module_groups {
+        let open =
+            current_module.is_some_and(|name| modules.iter().any(|module| module.name == name));
+        render_sidebar_module_group(
+            &mut navigation,
+            &category,
+            &modules,
+            config,
+            current_module,
+            open,
+        );
+    }
+    navigation.push_str("</div>\n</nav>");
+    navigation
+}
+
+fn render_sidebar_module_group(
+    output: &mut String,
+    title: &str,
+    modules: &[&DocModule],
+    config: &DocSiteConfig,
+    current_module: Option<&str>,
+    open: bool,
+) {
+    output.push_str("<details class=\"sidebar-module-group\"");
+    if open {
+        output.push_str(" open");
+    }
+    output.push_str("><summary>");
+    output.push_str(&html_escape(title));
+    output.push_str("</summary>\n<ul>\n");
+    for module in modules {
+        render_sidebar_link(output, module, config, current_module, false);
+    }
+    output.push_str("</ul></details>\n");
+}
+
+fn render_sidebar_link(
+    output: &mut String,
+    module: &DocModule,
+    config: &DocSiteConfig,
+    current_module: Option<&str>,
+    is_guide: bool,
+) {
+    let label = config.guide_entry(&module.name).map_or_else(
+        || {
+            if is_guide {
+                page_title(module, true)
+            } else {
+                display_module_name(&module.name)
+            }
+        },
+        |guide| guide.label.clone(),
+    );
+    output.push_str("<li><a href=\"");
+    output.push_str(&html_escape(&super::module_to_filename(
+        &module.name,
+        "html",
+    )));
+    output.push('"');
+    if current_module == Some(module.name.as_str()) {
+        output.push_str(" aria-current=\"page\"");
+    }
+    output.push('>');
+    output.push_str(&html_escape(&label));
+    output.push_str("</a></li>\n");
+}
+
 fn render_guide_index(body: &mut String, guides: &[&DocModule], config: &DocSiteConfig) {
     if guides.is_empty() {
         return;
@@ -1333,6 +1466,52 @@ pub fn add(a: i32, b: i32) -> i32 {
         assert!(html.contains(">Explore advanced behavior.</span>"));
         assert!(!html.contains("A long technical introduction."));
         assert!(!html.contains("module-desc\"> —"));
+    }
+
+    #[test]
+    fn sidebar_marks_current_page_and_groups_modules() {
+        let guide = DocModule {
+            name: "language::basics".to_string(),
+            doc: Some("# Language basics".to_string()),
+            functions: vec![],
+            types: vec![],
+            actors: vec![],
+            machines: vec![],
+            traits: vec![],
+            impls: vec![],
+            consts: vec![],
+            type_aliases: vec![],
+        };
+        let module = DocModule {
+            name: "std::net::http".to_string(),
+            doc: Some("HTTP utilities.".to_string()),
+            functions: vec![],
+            types: vec![],
+            actors: vec![],
+            machines: vec![],
+            traits: vec![],
+            impls: vec![],
+            consts: vec![],
+            type_aliases: vec![],
+        };
+        let config = DocSiteConfig {
+            guide_groups: vec![GuideGroup {
+                title: "Start here".to_string(),
+                guides: vec![GuideEntry {
+                    module: "language::basics".to_string(),
+                    label: "Basics".to_string(),
+                    summary: "Write a first program.".to_string(),
+                }],
+            }],
+            ..DocSiteConfig::default()
+        };
+
+        let html = render_sidebar(&[guide, module], &config, Some("std::net::http"));
+        assert!(html.contains("aria-label=\"Reference pages\""));
+        assert!(html.contains(">Basics</a>"));
+        assert!(html.contains("<summary>net</summary>"));
+        assert!(html.contains("href=\"std.net.http.html\" aria-current=\"page\""));
+        assert!(!html.contains("docs-home\" href=\"index.html\" aria-current"));
     }
 
     #[test]

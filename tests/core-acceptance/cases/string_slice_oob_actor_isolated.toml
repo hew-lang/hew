@@ -10,5 +10,5 @@ HEW_WORKERS = "4"
 
 [case.expected]
 stdout = ""
-stderr = "hew: failure: IndexOutOfBounds (205)\nhew: actor crash in StringSliceCrasher.boom (actor 1): IndexOutOfBounds\n"
+stderr = "hew: failure: IndexOutOfBounds (205): string range out of bounds\nhew: actor crash in StringSliceCrasher.boom (actor 1): IndexOutOfBounds\n"
 exit = 1

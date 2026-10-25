@@ -10,5 +10,5 @@ HEW_WORKERS = "4"
 
 [case.expected]
 stdout = ""
-stderr = "hew: failure: IndexOutOfBounds (205)\n"
+stderr = "hew: failure: IndexOutOfBounds (205): string range out of bounds\n"
 exit = 1

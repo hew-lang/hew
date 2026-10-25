@@ -7,5 +7,5 @@ timeout_seconds = 30
 
 [case.expected]
 stdout = "3\n"
-stderr = "hew: failure: IndexOutOfBounds (205)\n"
+stderr = "hew: failure: IndexOutOfBounds (205): bytes index 3 out of bounds for length 3\n"
 exit = 1

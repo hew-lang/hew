@@ -13,8 +13,56 @@ use std::collections::HashSet;
 #[derive(Debug)]
 struct TransferWalk {
     destination: Option<ValueOwner>,
+    binding: Option<DestinationBinding>,
     waker: Option<crate::wake::OwnedWaker>,
     seen: HashSet<usize>,
+}
+
+/// Execution ownership already retained by the destination incarnation.
+/// This is independent of whether that actor enabled a managed value limit.
+#[derive(Clone, Debug)]
+pub(crate) struct DestinationBinding {
+    pub(crate) actor_turn: crate::lifetime::live_actors::ActorIncarnation,
+    pub(crate) rc_owner: Option<std::sync::Arc<crate::rc::RcAllocations>>,
+}
+
+impl DestinationBinding {
+    /// # Safety
+    /// The caller pins this actor while its canonical cleanup owners are read.
+    pub(crate) unsafe fn for_actor(actor: *mut crate::actor::HewActor) -> Self {
+        // SAFETY: admission retains the exact actor through this snapshot.
+        let actor_turn = unsafe { crate::lifetime::live_actors::ActorIncarnation::of(actor) };
+        let rc_owner = unsafe { actor.as_ref() }
+            .and_then(|actor| actor.native_completion.as_ref())
+            .map(|completion| completion.cleanup.rc.clone());
+        Self {
+            actor_turn,
+            rc_owner,
+        }
+    }
+}
+
+impl ValueOwner {
+    pub(crate) fn execution_binding(&self) -> Option<DestinationBinding> {
+        let identity = *self.0.incarnation.get()?;
+        crate::lifetime::live_actors::with_live_incarnation(identity, |pin| {
+            // SAFETY: the registry pins the matching incarnation for this read.
+            unsafe { DestinationBinding::for_actor(pin.as_ptr()) }
+        })
+    }
+}
+
+/// Canonical actor/Rc execution owner for a successful provider rebind.
+/// # Safety
+/// Visitor belongs to this module's explicit transfer phase.
+#[must_use]
+pub(crate) unsafe fn destination_binding(
+    visitor: *const HewManagedStorageVisitor,
+) -> Option<DestinationBinding> {
+    // SAFETY: the transfer retains this immutable binding snapshot.
+    unsafe { &*(*visitor).context.cast::<TransferWalk>() }
+        .binding
+        .clone()
 }
 
 unsafe extern "C" fn backing(context: *mut c_void, identity: *const c_void, _bytes: u64) -> i32 {
@@ -115,6 +163,7 @@ impl ValueTransfer {
             source,
             destination: None,
             walk: Box::new(TransferWalk {
+                binding: destination.as_ref().and_then(ValueOwner::execution_binding),
                 destination,
                 waker: None,
                 seen: HashSet::new(),
@@ -134,6 +183,20 @@ impl ValueTransfer {
     /// The waiting operation retains its existing wake target through retries.
     pub fn set_waker(&mut self, waker: crate::wake::OwnedWaker) {
         self.walk.waker = Some(waker);
+    }
+
+    /// Supply execution identity even when the recipient has no budget account.
+    /// Must precede preparation; budget acquisition remains disabled for it.
+    /// # Safety
+    /// The actor is live and pinned by the admission operation during this call.
+    pub unsafe fn set_destination_actor(&mut self, actor: *mut crate::actor::HewActor) {
+        assert!(
+            self.destination.is_none(),
+            "destination changed after acquisition"
+        );
+        self.walk.binding = Some(unsafe { DestinationBinding::for_actor(actor) });
+        self.prepared = true;
+        self.ready = false;
     }
 
     /// Poll provider quiescence while retaining its transfer gates. Pending

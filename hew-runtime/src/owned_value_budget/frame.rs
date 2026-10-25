@@ -67,7 +67,8 @@ pub unsafe extern "C" fn hew_managed_visit_invocation(
     // Provider freeze protects this invocation and its retained contexts.
     if unsafe { (*visitor).kind } == HewManagedWalkKind::CommitTransfer {
         let owner = unsafe { super::transfer::destination_owner(visitor) };
-        unsafe { crate::coro_state::rebind_value_owner(state, owner) };
+        let binding = unsafe { super::transfer::destination_binding(visitor) };
+        unsafe { crate::coro_state::rebind_value_owner(state, owner, binding) };
     }
     0
 }

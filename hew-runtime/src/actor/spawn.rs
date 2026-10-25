@@ -1145,6 +1145,10 @@ pub(crate) unsafe fn submit_bound_native_envelope(
     }
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "the ownership transaction stays between reservation and publication"
+)]
 unsafe fn admit_bound_native_request(
     actor: *mut HewActor,
     message: i32,
@@ -1170,22 +1174,121 @@ unsafe fn admit_bound_native_request(
         unsafe { crate::mailbox::retire_orphaned_ask_sender_ref(reply) };
         return mailbox::SendOutcome::Dropped;
     }
-    // SAFETY: the pinned mailbox consumes only an admitted envelope.
-    let outcome = unsafe {
-        if terminal {
-            mailbox::admit_native_terminal(&*a.mailbox.cast(), message, envelope)
+    // Providers quiesce without holding queue/ledger locks. The source keeps
+    // the unpublished envelope while waiting, including on a restarted role.
+    // SAFETY: the send pin retains this incarnation and the producer owns its envelope.
+    let frozen = unsafe {
+        let env = &mut *envelope;
+        if env.layout.is_null() {
+            Ok(true)
         } else {
-            mailbox::try_admit_native_request(
-                &*a.mailbox.cast(),
-                message,
-                envelope,
-                reply,
-                obligated,
-                caller,
-            )
+            let identity = crate::lifetime::live_actors::ActorIncarnation::of(actor);
+            if env
+                .transfer
+                .as_ref()
+                .is_some_and(|transfer| transfer.target != identity)
+            {
+                env.transfer.take();
+            }
+            if env.transfer.is_none() {
+                let destination = a
+                    .native_completion
+                    .as_ref()
+                    .and_then(|completion| completion.cleanup.value_owner.clone());
+                let mut value = crate::owned_value_budget::transfer::ValueTransfer::begin(
+                    env.value_owner.clone(),
+                    destination,
+                    &raw const crate::cow_envelope::ENVELOPE_LAYOUT,
+                    envelope.cast(),
+                );
+                value.set_destination_actor(actor);
+                if let Some(waker) = env.transfer_waker.clone() {
+                    value.set_waker(waker);
+                }
+                env.transfer = Some(crate::cow_envelope::EnvelopeTransfer {
+                    target: identity,
+                    value,
+                    pending: false,
+                });
+            }
+            let transfer = env.transfer.as_mut().unwrap();
+            let frozen = transfer.value.poll_freeze();
+            transfer.pending = matches!(frozen, Ok(false));
+            frozen
         }
     };
-    if matches!(outcome, mailbox::SendOutcome::Enqueued) {
+    if matches!(frozen, Ok(false)) {
+        return mailbox::SendOutcome::Failed;
+    }
+    // The policy decides whether this admission accepts before recipient quota
+    // is consulted. Reservation pins a coalesced/evicted victim without loss.
+    // SAFETY: this exact mailbox and both unpublished request references remain pinned.
+    let reservation = match unsafe {
+        mailbox::reserve_native_request(
+            &*a.mailbox.cast(),
+            message,
+            envelope,
+            reply,
+            obligated,
+            terminal,
+            caller,
+        )
+    } {
+        Ok(reservation) => reservation,
+        Err(outcome) => {
+            if !matches!(outcome, mailbox::SendOutcome::Dropped) {
+                // SAFETY: refusal preserves the original unpublished envelope.
+                unsafe {
+                    (*envelope).transfer.take();
+                }
+            }
+            return outcome;
+        }
+    };
+    // SAFETY: accepted capacity pins this envelope while its providers stay frozen.
+    let acquired = frozen.and_then(|_| unsafe {
+        (*envelope)
+            .transfer
+            .as_mut()
+            .map_or(Ok(()), |transfer| transfer.value.acquire())
+    });
+    if acquired.is_err() {
+        drop(reservation);
+        // SAFETY: no ownership committed; receiver cleanup disposes the sender-owned request.
+        unsafe {
+            (*envelope).transfer.take();
+            // Refusal is the recipient's supervised fault. Its established
+            // completion has no returned request and never faults the sender.
+            hew_actor_trap(actor, crate::internal::types::HEW_TRAP_HEAP_EXCEEDED);
+            if !reply.is_null() {
+                crate::reply_channel::hew_reply_channel_publish_crash_fallback(reply.cast());
+            }
+            crate::mailbox::hew_msg_envelope_release(envelope);
+        }
+        return mailbox::SendOutcome::Enqueued;
+    }
+    // SAFETY: the accepted unpublished root is frozen through whole-graph commit and resume.
+    unsafe {
+        if let Some(transfer) = (*envelope).transfer.take() {
+            transfer
+                .value
+                .commit()
+                .unwrap_or_else(|_| std::process::abort());
+            (*envelope).value_owner = a
+                .native_completion
+                .as_ref()
+                .and_then(|completion| completion.cleanup.value_owner.clone());
+        }
+        (*envelope).transfer_waker = None;
+        (*envelope).admission_pending = false;
+    }
+    // No receiver can access the borrowed root before graph-wide commit/resume.
+    // SAFETY: ownership has committed and the caller still pins this mailbox.
+    let outcome = unsafe { reservation.publish() };
+    if matches!(
+        outcome,
+        mailbox::SendOutcome::Enqueued | mailbox::SendOutcome::Coalesced
+    ) {
         // SAFETY: a message reached the live, pinned actor's mailbox.
         unsafe { schedule_actor_after_enqueue(actor, a, message) };
     }

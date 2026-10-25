@@ -886,7 +886,15 @@ unsafe fn detach_queued_terminal_locked(mailbox: &HewMailbox) -> DetachedTermina
 
     if mailbox.use_slow_path {
         let mut queue = mailbox.slow_path.lock_or_recover();
-        while let Some(node) = queue.user_queue.pop_front() {
+        while let Some(index) = queue
+            .user_queue
+            .iter()
+            .position(|node| !queue.reserved.contains(node))
+        {
+            let node = queue
+                .user_queue
+                .remove(index)
+                .expect("located terminal node");
             let previous = mailbox.count.fetch_sub(1, Ordering::Release);
             mailbox.record_loss(3);
             debug_assert!(previous > 0, "slow user queue count underflow");
@@ -1404,6 +1412,8 @@ impl MpscQueue {
 #[derive(Debug)]
 struct SlowPathQueue {
     user_queue: VecDeque<*mut HewMsgNode>,
+    /// Policy victims stay unreadable until the unpublished replacement commits.
+    reserved: Vec<*mut HewMsgNode>,
 }
 
 /// Identity of one [`BlockedSender`] registration, minted at
@@ -1688,6 +1698,7 @@ pub unsafe extern "C" fn hew_mailbox_new() -> *mut HewMailbox {
         sys_queue,
         slow_path: Mutex::new(SlowPathQueue {
             user_queue: VecDeque::new(),
+            reserved: Vec::new(),
         }),
         blocked_senders: Mutex::new(VecDeque::new()),
         native_capacity: crate::wake::ReadinessRegistrations::default(),
@@ -1732,6 +1743,7 @@ pub unsafe extern "C" fn hew_mailbox_new_bounded(capacity: i32) -> *mut HewMailb
         sys_queue,
         slow_path: Mutex::new(SlowPathQueue {
             user_queue: VecDeque::new(),
+            reserved: Vec::new(),
         }),
         blocked_senders: Mutex::new(VecDeque::new()),
         native_capacity: crate::wake::ReadinessRegistrations::default(),
@@ -1785,6 +1797,7 @@ pub unsafe extern "C" fn hew_mailbox_new_with_policy(
         sys_queue,
         slow_path: Mutex::new(SlowPathQueue {
             user_queue: VecDeque::new(),
+            reserved: Vec::new(),
         }),
         blocked_senders: Mutex::new(VecDeque::new()),
         native_capacity: crate::wake::ReadinessRegistrations::default(),
@@ -1982,14 +1995,11 @@ unsafe fn send_with_overflow(
         return SendOutcome::Enqueued;
     }
 
-    // Bounded mutex-backed mailboxes use the queue length as their sole
-    // admission predicate.  Keep this guard through count publication and
-    // enqueue: `count` can be published before a lock-free node is linked,
-    // but treating it as capacity here lets another producer observe "full"
-    // while the VecDeque is still empty and over-admit.
+    // The queue lock serializes slow policy decisions. Count includes accepted
+    // unpublished native reservations, so no other producer can steal a slot.
     if mb.capacity > 0 && mb.use_slow_path {
         let mut q = mb.slow_path.lock_or_recover();
-        let len = i64::try_from(q.user_queue.len()).unwrap_or(i64::MAX);
+        let len = mb.count.load(Ordering::Acquire);
         if len >= mb.capacity {
             let declared = if mb.overflow == HewOverflowPolicy::Coalesce {
                 normalize_coalesce_fallback(mb.coalesce_fallback)
@@ -2025,7 +2035,7 @@ unsafe fn send_with_overflow(
                         if mb.is_closed() {
                             return SendOutcome::Closed;
                         }
-                        let len = i64::try_from(q.user_queue.len()).unwrap_or(i64::MAX);
+                        let len = mb.count.load(Ordering::Acquire);
                         if len < mb.capacity {
                             break;
                         }
@@ -2178,10 +2188,8 @@ unsafe fn enqueue_user_node(mb: &HewMailbox, node: *mut HewMsgNode) {
 ///
 /// The caller must hold `slow_path` continuously from its admission decision
 /// (ordinary capacity or the native terminal-event exception)
-/// through this publication.  Unlike the lock-free queue, `count` is only an
-/// observability counter here: `user_queue.len()` is the sole admission
-/// predicate, so a producer whose count update is visible can never leave an
-/// apparently empty queue for another slow-path producer to over-admit.
+/// through this publication. Count includes accepted native reservations whose
+/// payloads remain unpublished until their ownership transaction commits.
 fn enqueue_bounded_slow_path_node(mb: &HewMailbox, q: &mut SlowPathQueue, node: *mut HewMsgNode) {
     debug_assert!(mb.use_slow_path);
     debug_assert!(mb.capacity > 0);
@@ -2249,6 +2257,7 @@ unsafe fn enqueue_reserved_fast_user_node(mb: &HewMailbox, node: *mut HewMsgNode
 ///
 /// # Safety
 /// The mailbox is pinned and both references are unpublished and uniquely owned.
+#[cfg(test)]
 pub(crate) unsafe fn try_admit_native_request(
     mb: &HewMailbox,
     msg_type: i32,
@@ -2262,6 +2271,7 @@ pub(crate) unsafe fn try_admit_native_request(
 }
 
 /// Admit a terminal attachment event behind queued data, bypassing capacity.
+#[cfg(test)]
 pub(crate) unsafe fn admit_native_terminal(
     mb: &HewMailbox,
     msg_type: i32,
@@ -2279,45 +2289,6 @@ pub(crate) unsafe fn admit_native_terminal(
             crate::actor_caller::local_sender(),
         )
     }
-}
-
-/// Replace the queued message this request supersedes, if any.
-///
-/// Only messages of the same type and key merge, so a handler whose payload
-/// carries no key projection never matches. On a match the queued node takes
-/// the incoming envelope and releases the superseded one exactly once; the
-/// caller's envelope reference is consumed.
-unsafe fn coalesce_native_request(
-    mb: &HewMailbox,
-    queue: &SlowPathQueue,
-    msg_type: i32,
-    envelope: *mut HewMsgEnvelope,
-    caller: crate::actor_caller::HewCallerStamp,
-) -> Option<*mut HewMsgEnvelope> {
-    let same_key = mb
-        .coalesce_match_fn
-        .expect("coalescing mailbox lacks its checked key matcher");
-    let queued = queue.user_queue.iter().copied().find(|&node| {
-        // SAFETY: the lock pins both queued payloads and the incoming envelope.
-        unsafe {
-            (*node).msg_type == msg_type
-                && !(*node).obligated
-                && !(*node).envelope.is_null()
-                && same_key(
-                    msg_type,
-                    hew_msg_envelope_payload_ptr((*node).envelope),
-                    hew_msg_envelope_payload_ptr(envelope),
-                ) != 0
-        }
-    })?;
-    mb.record_loss(2);
-    // SAFETY: the queue lock grants exclusive access to this node.
-    Some(unsafe {
-        (*queued).caller = caller;
-        (*queued).data = (*envelope).payload;
-        (*queued).data_size = (*envelope).payload_size;
-        std::mem::replace(&mut (*queued).envelope, envelope)
-    })
 }
 
 /// What a destination's declared mailbox policy does with a submission that
@@ -2362,7 +2333,7 @@ pub(crate) const fn declared_admission(policy: HewOverflowPolicy) -> DeclaredAdm
 fn evict_oldest_one_way(mb: &HewMailbox, queue: &mut SlowPathQueue) -> Option<*mut HewMsgNode> {
     let index = queue.user_queue.iter().position(|&node| {
         // SAFETY: the queue lock pins every queued node.
-        unsafe { !(*node).obligated }
+        !queue.reserved.contains(&node) && unsafe { !(*node).obligated }
     })?;
     let old = queue.user_queue.remove(index)?;
     mb.count.fetch_sub(1, Ordering::Release);
@@ -2370,10 +2341,258 @@ fn evict_oldest_one_way(mb: &HewMailbox, queue: &mut SlowPathQueue) -> Option<*m
     Some(old)
 }
 
+/// One accepted slot or policy victim, held before payload ownership changes.
+/// The mailbox remains pinned by the caller and close waits for its admission.
+pub(crate) struct NativeReservation<'a> {
+    mailbox: &'a HewMailbox,
+    _admission: AdmissionGuard<'a>,
+    node: *mut HewMsgNode,
+    victim: *mut HewMsgNode,
+    coalesced: bool,
+    counted: bool,
+}
+
+impl Drop for NativeReservation<'_> {
+    fn drop(&mut self) {
+        if self.node.is_null() {
+            return;
+        }
+        if !self.victim.is_null() {
+            let mut queue = self.mailbox.slow_path.lock_or_recover();
+            queue.reserved.retain(|node| *node != self.victim);
+        }
+        if self.counted {
+            release_fast_path_capacity(self.mailbox);
+        }
+        // SAFETY: refusal returns both unpublished references to their caller.
+        unsafe {
+            (*self.node).envelope = ptr::null_mut();
+            (*self.node).reply_channel = ptr::null_mut();
+            hew_msg_node_free(self.node);
+        }
+        if self.counted || !self.victim.is_null() {
+            self.mailbox.notify_not_full_all();
+            self.mailbox.native_capacity.notify();
+        }
+    }
+}
+
+impl NativeReservation<'_> {
+    /// Publish only after the entire payload graph has committed and resumed.
+    /// A close that wins afterwards consumes the admitted payload under the
+    /// receiver's existing disposal protocol; it never returns its fields.
+    /// # Safety
+    /// The caller has committed ownership and keeps the mailbox pinned.
+    pub(crate) unsafe fn publish(mut self) -> SendOutcome {
+        let mb = self.mailbox;
+        let node = self.node;
+        if mb.use_slow_path {
+            let mut queue = mb.slow_path.lock_or_recover();
+            if !self.victim.is_null() {
+                queue.reserved.retain(|entry| *entry != self.victim);
+            }
+            if mb.is_closed() {
+                if self.counted {
+                    release_fast_path_capacity(mb);
+                }
+                self.node = ptr::null_mut();
+                drop(queue);
+                // SAFETY: this post-commit request belongs to receiver cleanup.
+                unsafe { hew_msg_node_free(node) };
+                return SendOutcome::Enqueued;
+            }
+            if self.victim.is_null() {
+                queue.user_queue.push_back(node);
+                self.node = ptr::null_mut();
+            } else {
+                let index = queue
+                    .user_queue
+                    .iter()
+                    .position(|entry| *entry == self.victim)
+                    .expect("reserved policy victim remains pinned");
+                if self.coalesced {
+                    // SAFETY: reservation excludes every consumer/replacer.
+                    let displaced = unsafe {
+                        (*self.victim).caller = (*node).caller;
+                        (*self.victim).data = (*node).data;
+                        (*self.victim).data_size = (*node).data_size;
+                        let old = std::mem::replace(&mut (*self.victim).envelope, (*node).envelope);
+                        (*node).envelope = ptr::null_mut();
+                        (*node).reply_channel = ptr::null_mut();
+                        old
+                    };
+                    self.node = ptr::null_mut();
+                    drop(queue);
+                    mb.record_loss(2);
+                    // SAFETY: no queued message retains this displaced payload.
+                    unsafe {
+                        hew_msg_envelope_release(displaced);
+                        hew_msg_node_free(node);
+                    }
+                    mb.native_capacity.notify();
+                    return SendOutcome::Coalesced;
+                }
+                let displaced = queue.user_queue.remove(index).expect("reserved victim");
+                queue.user_queue.push_back(node);
+                self.node = ptr::null_mut();
+                drop(queue);
+                mb.record_loss(1);
+                // SAFETY: removal transferred this old message's ownership.
+                unsafe { hew_msg_node_free(displaced) };
+            }
+        } else {
+            self.node = ptr::null_mut();
+            if mb.is_closed() {
+                release_fast_path_capacity(mb);
+                // SAFETY: close consumes the already committed request.
+                unsafe { hew_msg_node_free(node) };
+                return SendOutcome::Enqueued;
+            }
+            // SAFETY: the reservation has already counted this unpublished node.
+            unsafe { mb.user_fast.enqueue(node) };
+        }
+        update_high_water_mark(mb);
+        MESSAGES_SENT.fetch_add(1, Ordering::Relaxed);
+        if mb.use_slow_path {
+            mb.native_capacity.notify();
+        }
+        SendOutcome::Enqueued
+    }
+}
+
+/// Reserve the declared admission before acquiring the recipient's value graph.
+/// Failure leaves the old queue and caller's request unchanged. A declared
+/// `DropNew` consumes its incoming payload without consulting recipient quota.
+/// # Safety
+/// The mailbox is pinned; envelope and reply are unpublished unique references.
 #[expect(
     clippy::too_many_lines,
-    reason = "mailbox admission keeps queue publication and envelope ownership together"
+    reason = "one policy decision reserves its existing queue seam"
 )]
+pub(crate) unsafe fn reserve_native_request(
+    mb: &HewMailbox,
+    msg_type: i32,
+    envelope: *mut HewMsgEnvelope,
+    reply: *mut c_void,
+    obligated: bool,
+    terminal: bool,
+    caller: crate::actor_caller::HewCallerStamp,
+) -> Result<NativeReservation<'_>, SendOutcome> {
+    let admission = mb.enter_admission().ok_or(SendOutcome::Closed)?;
+    // SAFETY: the producer exclusively owns this unpublished envelope.
+    unsafe {
+        (*envelope).admission_pending = false;
+    }
+    // SAFETY: this wrapper borrows both caller-owned references until commit.
+    let node = unsafe { msg_node_alloc_owned(msg_type, envelope, reply) };
+    if node.is_null() {
+        return Err(SendOutcome::Oom);
+    }
+    // SAFETY: the node is fresh and not reachable from either queue.
+    unsafe {
+        (*node).obligated = obligated;
+        (*node).caller = caller;
+    }
+    let mut reservation = NativeReservation {
+        mailbox: mb,
+        _admission: admission,
+        node,
+        victim: ptr::null_mut(),
+        coalesced: false,
+        counted: false,
+    };
+    if mb.use_slow_path {
+        let mut queue = mb.slow_path.lock_or_recover();
+        if mb.is_closed() {
+            return Err(SendOutcome::Closed);
+        }
+        if mb.capacity > 0 && !terminal && mb.count.load(Ordering::Acquire) >= mb.capacity {
+            if !queue.reserved.is_empty() || queue.user_queue.is_empty() {
+                // SAFETY: only this attempt can mutate its incoming envelope.
+                unsafe {
+                    (*envelope).admission_pending = true;
+                }
+                return Err(SendOutcome::Failed);
+            }
+            if obligated {
+                return Err(SendOutcome::Failed);
+            }
+            let declared = if mb.overflow == HewOverflowPolicy::Coalesce {
+                let same_key = mb.coalesce_match_fn.expect("checked coalesce matcher");
+                let victim = queue.user_queue.iter().copied().find(|node| {
+                    // SAFETY: the queue lock pins initialized payloads and the caller pins its envelope.
+                    !queue.reserved.contains(node)
+                        && unsafe {
+                            !(**node).obligated
+                                && (**node).msg_type == msg_type
+                                && !(**node).envelope.is_null()
+                                && same_key(
+                                    msg_type,
+                                    hew_msg_envelope_payload_ptr((**node).envelope),
+                                    hew_msg_envelope_payload_ptr(envelope),
+                                ) != 0
+                        }
+                });
+                if let Some(victim) = victim {
+                    queue.reserved.push(victim);
+                    reservation.victim = victim;
+                    reservation.coalesced = true;
+                    return Ok(reservation);
+                }
+                normalize_coalesce_fallback(mb.coalesce_fallback)
+            } else {
+                mb.overflow
+            };
+            match declared_admission(declared) {
+                DeclaredAdmission::DiscardIncoming => {
+                    drop(queue);
+                    mb.record_loss(0);
+                    // SAFETY: declared loss consumes the caller's one incoming reference.
+                    unsafe {
+                        hew_msg_envelope_release(envelope);
+                    }
+                    return Err(SendOutcome::Dropped);
+                }
+                DeclaredAdmission::EvictOldest => {
+                    let victim = queue
+                        .user_queue
+                        .iter()
+                        .copied()
+                        .find(|node| {
+                            // SAFETY: the queue lock pins every initialized candidate.
+                            !queue.reserved.contains(node) && unsafe { !(**node).obligated }
+                        })
+                        .ok_or(SendOutcome::Failed)?;
+                    queue.reserved.push(victim);
+                    reservation.victim = victim;
+                    return Ok(reservation);
+                }
+                DeclaredAdmission::AwaitCapacity | DeclaredAdmission::Refuse => {
+                    return Err(SendOutcome::Failed)
+                }
+            }
+        }
+        mb.count.fetch_add(1, Ordering::Release);
+    } else if mb.capacity > 0 && !terminal {
+        if !try_reserve_fast_path_capacity(mb) {
+            if mb.overflow == HewOverflowPolicy::DropNew && !obligated {
+                mb.record_loss(0);
+                // SAFETY: the caller's incoming reference transfers to declared loss.
+                unsafe {
+                    hew_msg_envelope_release(envelope);
+                }
+                return Err(SendOutcome::Dropped);
+            }
+            return Err(SendOutcome::Failed);
+        }
+    } else {
+        mb.count.fetch_add(1, Ordering::Release);
+    }
+    reservation.counted = true;
+    Ok(reservation)
+}
+
+#[cfg(test)]
 unsafe fn admit_native_request(
     mb: &HewMailbox,
     msg_type: i32,
@@ -2383,141 +2602,17 @@ unsafe fn admit_native_request(
     terminal: bool,
     caller: crate::actor_caller::HewCallerStamp,
 ) -> SendOutcome {
-    let Some(_admission) = mb.enter_admission() else {
-        return SendOutcome::Closed;
-    };
-    // SAFETY: allocation retains caller ownership of the envelope until publication.
-    let node = unsafe { msg_node_alloc_owned(msg_type, envelope, reply) };
-    if node.is_null() {
-        return SendOutcome::Oom;
-    }
-    // SAFETY: the unpublished node is exclusively owned here.
-    unsafe {
-        (*node).obligated = obligated;
-        (*node).caller = caller;
-    }
-    let outcome = if mb.capacity > 0 && mb.use_slow_path {
-        let mut queue = mb.slow_path.lock_or_recover();
-        if mb.is_closed() {
-            SendOutcome::Closed
-        } else if !terminal
-            && i64::try_from(queue.user_queue.len()).unwrap_or(i64::MAX) >= mb.capacity
-        {
-            // The destination's declared mailbox policy is the authority on a
-            // full queue: it answers before the sender's own `on_full` view
-            // does, and the sender's view only decides what happens when the
-            // declaration did not resolve the submission. A completion call is
-            // exempt from every discarding policy: superseding or discarding it
-            // would leave its caller waiting for a reply no handler will send,
-            // so it parks for a slot instead.
-            if obligated {
-                SendOutcome::Failed
-            } else {
-                let declared = if mb.overflow == HewOverflowPolicy::Coalesce {
-                    // SAFETY: the queue is locked and the caller owns `envelope`.
-                    match unsafe {
-                        coalesce_native_request(mb, &queue, msg_type, envelope, (*node).caller)
-                    } {
-                        Some(displaced) => {
-                            drop(queue);
-                            // SAFETY: replacement transferred this envelope out of the queue.
-                            unsafe { hew_msg_envelope_release(displaced) };
-                            // SAFETY: nothing published this node; the envelope
-                            // either transferred to the queued message or was
-                            // released with it.
-                            unsafe {
-                                (*node).envelope = ptr::null_mut();
-                                (*node).reply_channel = ptr::null_mut();
-                                hew_msg_node_free(node);
-                            }
-                            return SendOutcome::Coalesced;
-                        }
-                        None => normalize_coalesce_fallback(mb.coalesce_fallback),
-                    }
-                } else {
-                    mb.overflow
-                };
-                match declared_admission(declared) {
-                    DeclaredAdmission::DiscardIncoming => {
-                        drop(queue);
-                        mb.record_loss(0);
-                        // SAFETY: the unpublished envelope is this producer's;
-                        // the declared policy discards it.
-                        unsafe { hew_msg_envelope_release(envelope) };
-                        (*node).envelope = ptr::null_mut();
-                        (*node).reply_channel = ptr::null_mut();
-                        // SAFETY: the node was never published.
-                        unsafe { hew_msg_node_free(node) };
-                        return SendOutcome::Dropped;
-                    }
-                    DeclaredAdmission::EvictOldest => {
-                        let Some(displaced) = evict_oldest_one_way(mb, &mut queue) else {
-                            drop(queue);
-                            // SAFETY: the unpublished node is exclusively owned here.
-                            unsafe {
-                                (*node).envelope = ptr::null_mut();
-                                hew_msg_node_free(node);
-                            }
-                            return SendOutcome::Failed;
-                        };
-                        enqueue_bounded_slow_path_node(mb, &mut queue, node);
-                        drop(queue);
-                        // SAFETY: the removed node is exclusively owned outside the queue lock.
-                        unsafe {
-                            hew_msg_node_free(displaced);
-                        };
-                        update_high_water_mark(mb);
-                        MESSAGES_SENT.fetch_add(1, Ordering::Relaxed);
-                        return SendOutcome::Enqueued;
-                    }
-                    // This path never blocks its caller: `AwaitCapacity`
-                    // reports the full queue and the sender parks cooperatively
-                    // on it. `EvictOldest` with nothing it may evict says the
-                    // same.
-                    DeclaredAdmission::AwaitCapacity | DeclaredAdmission::Refuse => {
-                        SendOutcome::Failed
-                    }
-                }
+    loop {
+        match unsafe {
+            reserve_native_request(mb, msg_type, envelope, reply, obligated, terminal, caller)
+        } {
+            Ok(reservation) => return unsafe { reservation.publish() },
+            Err(SendOutcome::Failed) if unsafe { (*envelope).admission_pending } => {
+                std::thread::yield_now()
             }
-        } else {
-            enqueue_bounded_slow_path_node(mb, &mut queue, node);
-            drop(queue);
-            update_high_water_mark(mb);
-            MESSAGES_SENT.fetch_add(1, Ordering::Relaxed);
-            return SendOutcome::Enqueued;
+            Err(outcome) => return outcome,
         }
-    } else if mb.capacity > 0 && !terminal {
-        if try_reserve_fast_path_capacity(mb) {
-            // SAFETY: this producer owns the node and its reserved capacity slot.
-            unsafe { enqueue_reserved_fast_user_node(mb, node) };
-            return SendOutcome::Enqueued;
-        }
-        // `drop_new` is the one declared policy the fast path carries
-        // (`needs_slow_path`), and it discards this submission itself.
-        if mb.overflow == HewOverflowPolicy::DropNew && !obligated {
-            mb.record_loss(0);
-            // SAFETY: the unpublished envelope is this producer's.
-            unsafe { hew_msg_envelope_release(envelope) };
-            (*node).envelope = ptr::null_mut();
-            (*node).reply_channel = ptr::null_mut();
-            // SAFETY: the node was never published.
-            unsafe { hew_msg_node_free(node) };
-            return SendOutcome::Dropped;
-        }
-        SendOutcome::Failed
-    } else {
-        // SAFETY: this producer owns the unpublished node.
-        unsafe { enqueue_user_node(mb, node) };
-        return SendOutcome::Enqueued;
-    };
-    // SAFETY: nothing was published. Detach the envelope before freeing the node,
-    // leaving its single reference with the source message owner.
-    unsafe {
-        (*node).envelope = ptr::null_mut();
-        (*node).reply_channel = ptr::null_mut();
-        hew_msg_node_free(node);
     }
-    outcome
 }
 
 /// Send a message to the mailbox (user queue), deep-copying `data`.
@@ -2675,7 +2770,7 @@ pub(crate) unsafe fn mailbox_await_send(
     if node.is_null() {
         return (HewError::ErrOom as i32, 0);
     }
-    if i64::try_from(queue.user_queue.len()).unwrap_or(i64::MAX) < mailbox.capacity {
+    if mailbox.count.load(Ordering::Acquire) < mailbox.capacity {
         enqueue_bounded_slow_path_node(mailbox, &mut queue, node);
         drop(queue);
         update_high_water_mark(mailbox);
@@ -2768,7 +2863,7 @@ pub(crate) unsafe fn mailbox_send_with_reply_cooperative(
     if node.is_null() {
         return HewError::ErrOom as i32;
     }
-    if i64::try_from(queue.user_queue.len()).unwrap_or(i64::MAX) < mailbox.capacity {
+    if mailbox.count.load(Ordering::Acquire) < mailbox.capacity {
         enqueue_bounded_slow_path_node(mailbox, &mut queue, node);
         drop(queue);
         update_high_water_mark(mailbox);
@@ -3283,6 +3378,15 @@ pub(crate) unsafe fn mailbox_try_recv_with_origin(mb: *mut HewMailbox) -> RecvNo
     // User messages: slow path uses mutex, fast path uses lock-free queue.
     if mb.use_slow_path {
         let mut q = mb.slow_path.lock_or_recover();
+        if q.user_queue
+            .front()
+            .is_some_and(|node| q.reserved.contains(node))
+        {
+            return RecvNode {
+                node: ptr::null_mut(),
+                origin: Origin::User,
+            };
+        }
         if let Some(node) = q.user_queue.pop_front() {
             mb.count.fetch_sub(1, Ordering::Release);
             MESSAGES_RECEIVED.fetch_add(1, Ordering::Relaxed);
@@ -5977,6 +6081,114 @@ mod tests {
             let payload = mailbox_malloc(size_of::<u64>()).cast::<u64>();
             payload.write(key);
             hew_msg_envelope_new(payload.cast(), size_of::<u64>(), Some(count_envelope_drop))
+        }
+    }
+
+    #[test]
+    fn native_reservation_pins_capacity_without_publishing_a_payload() {
+        // SAFETY: the fixture owns both queues and each unpublished envelope.
+        unsafe {
+            for policy in [HewOverflowPolicy::Fail, HewOverflowPolicy::Block] {
+                let mailbox = hew_mailbox_new_with_policy(1, policy);
+                let envelope = hew_msg_envelope_new(ptr::null_mut(), 0, None);
+                let reservation = reserve_native_request(
+                    &*mailbox,
+                    1,
+                    envelope,
+                    ptr::null_mut(),
+                    true,
+                    false,
+                    crate::actor_caller::local_sender(),
+                )
+                .unwrap();
+                assert_eq!(hew_mailbox_len(mailbox), 1);
+                assert!(hew_mailbox_try_recv(mailbox).is_null());
+                assert_eq!(
+                    hew_mailbox_try_send(mailbox, 2, ptr::null_mut(), 0),
+                    HewError::ErrMailboxFull as i32
+                );
+                drop(reservation);
+                assert_eq!(hew_mailbox_len(mailbox), 0);
+                assert_eq!((*envelope).refcount.load(Ordering::Acquire), 1);
+                hew_msg_envelope_release(envelope);
+                hew_mailbox_free(mailbox);
+            }
+        }
+    }
+
+    #[test]
+    fn native_reservation_aborts_without_losing_or_replacing_its_victim() {
+        // SAFETY: reservation and each receive own their envelopes exclusively.
+        unsafe {
+            for policy in [HewOverflowPolicy::DropOld, HewOverflowPolicy::Coalesce] {
+                let mailbox = hew_mailbox_new_with_policy(1, policy);
+                hew_mailbox_set_coalesce_config(
+                    mailbox,
+                    Some(first_u64_same_key),
+                    HewOverflowPolicy::Fail,
+                );
+                let queued = keyed_envelope(7);
+                assert!(matches!(
+                    try_admit_native_request(
+                        &*mailbox,
+                        1,
+                        queued,
+                        ptr::null_mut(),
+                        false,
+                        crate::actor_caller::local_sender()
+                    ),
+                    SendOutcome::Enqueued
+                ));
+                let arriving = keyed_envelope(7);
+                let reservation = reserve_native_request(
+                    &*mailbox,
+                    1,
+                    arriving,
+                    ptr::null_mut(),
+                    false,
+                    false,
+                    crate::actor_caller::local_sender(),
+                )
+                .unwrap();
+                assert!(
+                    hew_mailbox_try_recv(mailbox).is_null(),
+                    "reserved victim remains pinned"
+                );
+                assert_eq!((*queued).refcount.load(Ordering::Acquire), 1);
+                drop(reservation);
+                let original = hew_mailbox_try_recv(mailbox);
+                assert_eq!((*original).envelope, queued);
+                hew_msg_node_free(original);
+                hew_msg_envelope_release(arriving);
+                hew_mailbox_free(mailbox);
+            }
+        }
+    }
+
+    #[test]
+    fn native_reservation_close_after_commit_consumes_instead_of_rejecting() {
+        // SAFETY: the reservation retains its mailbox admission through close.
+        unsafe {
+            for policy in [HewOverflowPolicy::Fail, HewOverflowPolicy::Block] {
+                let mailbox = hew_mailbox_new_with_policy(1, policy);
+                let envelope = hew_msg_envelope_new(ptr::null_mut(), 0, None);
+                let reservation = reserve_native_request(
+                    &*mailbox,
+                    1,
+                    envelope,
+                    ptr::null_mut(),
+                    true,
+                    false,
+                    crate::actor_caller::local_sender(),
+                )
+                .unwrap();
+                mailbox_close(mailbox);
+                assert!(!mailbox_admissions_drained(mailbox));
+                assert!(matches!(reservation.publish(), SendOutcome::Enqueued));
+                assert!(mailbox_admissions_drained(mailbox));
+                assert_eq!(hew_mailbox_len(mailbox), 0);
+                hew_mailbox_free(mailbox);
+            }
         }
     }
 

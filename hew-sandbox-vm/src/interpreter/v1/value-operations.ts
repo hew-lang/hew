@@ -414,7 +414,10 @@ export function* collectionOperation(
         throw new Error("vector mutation has no index");
       const at = Number(index.value);
       if (at < 0 || at >= receiver.items.length)
-        throw new ShimFault("vector_bounds", "vector index out of bounds");
+        throw new ShimFault(
+          "vector_bounds",
+          `vector index ${at} out of bounds for length ${receiver.items.length}`,
+        );
       mutableVector(receiver);
       const old = receiver.items[at]!;
       receiver.items[at] = args[2]!;

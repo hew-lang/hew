@@ -4,6 +4,7 @@ use super::*;
 
 impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
     pub(super) fn emit_terminator(&self, block: &PhysicalBlock) -> CodegenResult<()> {
+        self.fault_site.set(self.terminator_site(block));
         match &block.terminator {
             PhysicalTerminator::Materialize {
                 operations,
@@ -903,7 +904,7 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
             .copied()
     }
 
-    fn attach_active_fault_site(&self, site: Option<u32>) -> CodegenResult<()> {
+    pub(super) fn attach_active_fault_site(&self, site: Option<u32>) -> CodegenResult<()> {
         let Some(site) = site else {
             return Ok(());
         };
@@ -1248,7 +1249,8 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
             .try_as_basic_value()
             .basic()
             .ok_or_else(|| CodegenError::FailClosed("fault constructor returned void".into()))?;
-        self.store_active_fault_value(fault, code)
+        self.store_active_fault_value(fault, code)?;
+        self.attach_active_fault_site(self.fault_site.get())
     }
 
     pub(super) fn store_active_fault(

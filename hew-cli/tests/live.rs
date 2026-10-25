@@ -46,6 +46,9 @@ counter.next().expect("counter")
 var count: i64 = 40;
 count += 2; panic("stop");
 count
+let letters = "a";
+letters[4]
+letters
 unknown_name
 :type count
 stop(counter); stopped(counter);
@@ -62,9 +65,13 @@ count
     assert!(output.status.success(), "{stderr}");
     assert_eq!(
         String::from_utf8(output.stdout).unwrap(),
-        "9\n41\n42\n42\ni64\n7\n"
+        "9\n41\n42\n42\na\ni64\n7\n"
     );
     assert!(stderr.contains("stop"), "{stderr}");
+    assert!(
+        stderr.contains("string index 4 out of bounds for length 1"),
+        "{stderr}"
+    );
     assert!(stderr.contains("unknown_name"), "{stderr}");
     assert!(stderr.contains(":1:1: error:"), "{stderr}");
 }

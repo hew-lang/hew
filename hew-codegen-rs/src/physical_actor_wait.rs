@@ -605,17 +605,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             .build_call(free, &[request[2]], "")
             .llvm_ctx("free unadopted shallow submission wrapper")?;
         self.initialize_active_fault(hew_runtime::internal::types::HEW_TRAP_HEAP_EXCEEDED)?;
-        let action = self
-            .module
-            .actor_recipes
-            .get(&self.storage(source)?.ty)
-            .and_then(|recipe| recipe.destroy)
-            .ok_or_else(|| {
-                CodegenError::FailClosed(
-                    "submission refusal lacks its consuming value recipe".into(),
-                )
-            })?;
-        self.destroy_owned_operand(source, action)?;
+        self.discard_pending_message(source)?;
         if let Some(unwind) = unwind {
             self.emit_edge(unwind)?;
         } else {

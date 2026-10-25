@@ -288,7 +288,7 @@ fn dependency_program(program: &Program) -> Option<Program> {
     let root_physical = root_source
         .canonicalize()
         .unwrap_or_else(|_| root_source.clone());
-    let automatic_prelude = automatic_prelude_closure(program, graph);
+    let automatic_prelude = automatic_prelude_closure(graph);
     for (id, module) in &graph.modules {
         if *id == graph.root {
             continue;
@@ -333,56 +333,36 @@ fn dependency_program(program: &Program) -> Option<Program> {
     root.doc = None;
     graph.item_sources.remove(&original_root.dotted());
     // The seed root is a private graph floor only: no real source, imports or
-    // declarations survive. Rename its graph key without recomputing topology:
-    // the exact non-root traversal/file-index order must remain unchanged.
+    // declarations survive. Its lexical position in the original graph is
+    // irrelevant to this key. Keep the exact non-root traversal/file-index
+    // order, with the empty root consistently last.
     let checkpoint_root = ModulePath::root();
     if graph.modules.contains_key(&checkpoint_root) {
         return None;
     }
     root.id = checkpoint_root.clone();
-    for id in &mut graph.topo_order {
-        if *id == original_root {
-            *id = checkpoint_root.clone();
-        }
-    }
+    graph.topo_order.retain(|id| *id != original_root);
+    graph.topo_order.push(checkpoint_root.clone());
     graph.root = checkpoint_root.clone();
     graph.modules.insert(checkpoint_root, root);
     Some(dependencies)
 }
 
-fn automatic_prelude_closure(
-    program: &Program,
-    graph: &ModuleGraph,
-) -> std::collections::HashSet<ModulePath> {
+fn automatic_prelude_closure(graph: &ModuleGraph) -> std::collections::HashSet<ModulePath> {
     let mut closure = std::collections::HashSet::new();
-    for (leaf, _) in crate::stdlib_authority::IMPLICIT_PRELUDE_STD_SOURCES {
-        closure.insert(ModulePath::new(["std", leaf]));
-    }
-    // The shared frontend injects this exact empty-selection load at a
-    // synthetic span. A source-authored import cannot have a zero-length span.
-    // It brings lifecycle types and their transitive imports into every root,
-    // just like the implicit floor modules. Membership never confers std authority:
-    // each selected physical source must separately prove canonical provenance.
-    let injected_monitor = program.items.iter().any(|(item, span)| {
-        let Item::Import(import) = item else {
-            return false;
-        };
-        span.start == 0
-            && span.end == 0
-            && import.file_path.is_none()
-            && import.module_alias.is_none()
-            && matches!(&import.spec, Some(ImportSpec::Names(names)) if names.is_empty())
-            && import
-                .path
-                .segments
+    // The frontend loads these modules for every ordinary root, whether it
+    // already imported one explicitly or needed an empty-selection import.
+    // Membership never confers std authority: dependency_program separately
+    // verifies the canonical provenance of every selected physical source.
+    let mut pending = crate::stdlib_authority::IMPLICIT_PRELUDE_STD_SOURCES
+        .iter()
+        .map(|(leaf, _)| ModulePath::new(["std", *leaf]))
+        .chain(
+            crate::stdlib_authority::IMPLICIT_PRELUDE_MODULE_LOADS
                 .iter()
-                .map(|(segment, _)| segment.name.as_str())
-                .eq(["std", "link_monitor"])
-    });
-    if !injected_monitor {
-        return closure;
-    }
-    let mut pending = vec![ModulePath::new(["std", "link_monitor"])];
+                .map(|leaf| ModulePath::new(["std", *leaf])),
+        )
+        .collect::<Vec<_>>();
     while let Some(id) = pending.pop() {
         if !closure.insert(id.clone()) {
             continue;

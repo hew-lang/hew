@@ -2359,7 +2359,8 @@ fn inject_prelude_module_loads(items: &mut Vec<Spanned<Item>>, input: &Path) {
     if canonical_direct_stdlib_module_for_source(input).is_some() {
         return;
     }
-    for path in [["std", "link_monitor"], ["std", "stream"]] {
+    for leaf in hew_types::stdlib_authority::IMPLICIT_PRELUDE_MODULE_LOADS {
+        let path = ["std", leaf];
         let already_imported = items.iter().any(
             |(item, _)| matches!(item, Item::Import(decl) if import_segments(&decl.path) == path),
         );
@@ -8076,16 +8077,18 @@ extern "C" { fn hew_tcp_read(foo: Foo); }
         let stdlib_root = dir.path().join("compiler-resources");
         let stdlib_dir = stdlib_root.join("std");
         fs::create_dir_all(&stdlib_dir).expect("create explicit stdlib root");
-        write_source(&stdlib_dir, "builtins.hew", "// explicit stdlib marker\n");
-        // Every program loads the prelude's `std.link_monitor`, and the
-        // prelude modules behind builtin-type methods.
-        write_source(
-            &stdlib_dir,
-            "link_monitor.hew",
-            "// prelude module marker\n",
-        );
-        for prelude in ["option.hew", "result.hew", "iter.hew", "string.hew"] {
-            write_source(&stdlib_dir, prelude, "// prelude impl marker\n");
+        // Supply only the frontend's declared floor; no process-layout source
+        // may fill a missing module behind this explicit search root.
+        for leaf in hew_types::stdlib_authority::IMPLICIT_PRELUDE_STD_SOURCES
+            .iter()
+            .map(|(leaf, _)| *leaf)
+            .chain(hew_types::stdlib_authority::IMPLICIT_PRELUDE_MODULE_LOADS)
+        {
+            write_source(
+                &stdlib_dir,
+                &format!("{leaf}.hew"),
+                "// explicit prelude marker\n",
+            );
         }
         let expected = Path::new(&write_source(
             &stdlib_dir,
@@ -9599,13 +9602,16 @@ mod source_analysis_batch_tests {
         .unwrap();
         let options = test_options();
         let mut batch = SourceAnalysisBatch::new(options.clone());
+        // Keep the same dependency traversal order for this exact-snapshot
+        // memoization check. Roots on opposite sides of std's lexical position
+        // can select a different valid non-root order and require another seed.
         for (name, source) in [
             (
-                "integer.hew",
+                "consumer_integer.hew",
                 "import greeting; fn main() -> i64 { greeting.identity(1) }",
             ),
             (
-                "string.hew",
+                "consumer_string.hew",
                 "import greeting; fn main() -> string { greeting.identity(\"one\") }",
             ),
         ] {

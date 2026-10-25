@@ -205,6 +205,7 @@ pub(super) fn bind_runtime<'ctx>(llvm: &Module<'ctx>, engine: &ExecutionEngine<'
         mailbox::hew_msg_envelope_release,
         cow_envelope::hew_msg_envelope_release_begin,
         fault::hew_fault_new,
+        fault::hew_fault_new_bounds,
         fault::hew_fault_code,
         fault::hew_fault_new_panic,
         fault::hew_fault_combine,

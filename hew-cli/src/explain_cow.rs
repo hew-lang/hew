@@ -12,6 +12,7 @@ pub fn print(module: &SemModule, path: &str, source: &str) {
     for function in &module.functions {
         let mut types = BTreeMap::new();
         let mut producers = BTreeMap::new();
+        let forwarded = forwarded_values(function);
         for parameter in &function.params {
             types.insert(parameter.value, parameter.ty.clone());
         }
@@ -19,7 +20,7 @@ pub fn print(module: &SemModule, path: &str, source: &str) {
             for argument in &block.args {
                 types.insert(argument.value, argument.ty.clone());
             }
-            for operation in &block.ops {
+            for operation in block.operations() {
                 for result in &operation.results {
                     types.insert(result.id, result.ty.clone());
                     producers.insert(result.id, &operation.kind);
@@ -66,7 +67,7 @@ pub fn print(module: &SemModule, path: &str, source: &str) {
                     BoundaryDecision::Snapshot(hew_sir::SnapshotDecision::DeepCopy) => "deep copy",
                     BoundaryDecision::Snapshot(hew_sir::SnapshotDecision::Transfer) => "transfer",
                 };
-                let preparation = preparation(module, ty, &producers, value);
+                let preparation = preparation(module, ty, &producers, &forwarded, value);
                 entries.insert((
                     offset,
                     index,
@@ -86,14 +87,44 @@ pub fn print(module: &SemModule, path: &str, source: &str) {
     }
 }
 
+fn forwarded_values(function: &hew_sir::SemFunction) -> BTreeMap<ValueId, Option<ValueId>> {
+    let mut forwarded = BTreeMap::new();
+    let block_args = function
+        .blocks
+        .iter()
+        .map(|block| (block.id, &block.args))
+        .collect::<BTreeMap<_, _>>();
+    for block in &function.blocks {
+        block.terminator.visit_successors(|edge| {
+            for (argument, incoming) in block_args[&edge.target].iter().zip(&edge.args) {
+                forwarded
+                    .entry(argument.value)
+                    .and_modify(|previous| {
+                        if *previous != Some(incoming.value) {
+                            *previous = None;
+                        }
+                    })
+                    .or_insert(Some(incoming.value));
+            }
+        });
+    }
+    forwarded
+}
+
 fn preparation(
     module: &SemModule,
     ty: &ResolvedTy,
     producers: &BTreeMap<ValueId, &SemOpKind>,
+    forwarded: &BTreeMap<ValueId, Option<ValueId>>,
     mut value: ValueId,
 ) -> &'static str {
     let clone = module.type_facts[&TypeInstanceKey(ty.clone())].clone;
-    loop {
+    let mut visited = BTreeSet::new();
+    while visited.insert(value) {
+        if let Some(Some(incoming)) = forwarded.get(&value) {
+            value = *incoming;
+            continue;
+        }
         match producers.get(&value) {
             Some(SemOpKind::Move { source }) => value = source.value,
             Some(
@@ -118,4 +149,5 @@ fn preparation(
             _ => return "",
         }
     }
+    ""
 }

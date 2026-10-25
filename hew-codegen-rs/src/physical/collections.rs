@@ -316,11 +316,46 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
             .llvm_ctx("load the compiled regex handle")
     }
 
+    pub(super) fn initialize_bounds_fault(
+        &self,
+        kind: u32,
+        start: IntValue<'ctx>,
+        end: IntValue<'ctx>,
+        length: IntValue<'ctx>,
+    ) -> CodegenResult<()> {
+        let function = get_or_declare_external(
+            self.llvm,
+            "hew_fault_new_bounds",
+            self.ctx.ptr_type(AddressSpace::default()).fn_type(
+                &[
+                    self.ctx.i32_type().into(),
+                    self.ctx.i64_type().into(),
+                    self.ctx.i64_type().into(),
+                    self.ctx.i64_type().into(),
+                ],
+                false,
+            ),
+        )?;
+        let fault = self.runtime_call_value(
+            function,
+            &[
+                self.ctx.i32_type().const_int(u64::from(kind), false).into(),
+                start.into(),
+                end.into(),
+                length.into(),
+            ],
+            "bounds.fault",
+        )?;
+        self.store_active_fault(fault, HEW_TRAP_INDEX_OUT_OF_BOUNDS)?;
+        self.attach_active_fault_site(self.fault_site.get())
+    }
+
     fn emit_vector_index_guard(
         &self,
         vector: PointerValue<'ctx>,
         index: IntValue<'ctx>,
         failure: &PhysicalEdge,
+        swap: bool,
     ) -> CodegenResult<()> {
         let length = self.vector_length(vector)?;
         // Unsigned comparison also rejects every negative signed index.
@@ -336,7 +371,16 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
             .build_conditional_branch(in_bounds, safe, failed)
             .llvm_ctx("select vector mutation outcome")?;
         self.builder.position_at_end(failed);
-        self.initialize_active_fault(hew_runtime::internal::types::HEW_TRAP_INDEX_OUT_OF_BOUNDS)?;
+        self.initialize_bounds_fault(
+            if swap {
+                hew_runtime::fault::BOUNDS_VECTOR_SWAP
+            } else {
+                hew_runtime::fault::BOUNDS_VECTOR_INDEX
+            },
+            index,
+            self.ctx.i64_type().const_zero(),
+            length,
+        )?;
         self.emit_edge(failure)?;
         self.builder.position_at_end(safe);
         Ok(())
@@ -485,8 +529,8 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
             PhysicalVectorOp::Swap => {
                 let left = self.load(source(1)?, "vector.swap.left")?.into_int_value();
                 let right = self.load(source(2)?, "vector.swap.right")?.into_int_value();
-                self.emit_vector_index_guard(vector, left, failure()?)?;
-                self.emit_vector_index_guard(vector, right, failure()?)?;
+                self.emit_vector_index_guard(vector, left, failure()?, true)?;
+                self.emit_vector_index_guard(vector, right, failure()?, true)?;
                 self.make_vector_unique(vector, failure()?)?;
                 let function = get_or_declare_external(
                     self.llvm,
@@ -505,7 +549,7 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
             }
             PhysicalVectorOp::Set => {
                 let index = self.load(source(1)?, "vector.set.index")?.into_int_value();
-                self.emit_vector_index_guard(vector, index, failure()?)?;
+                self.emit_vector_index_guard(vector, index, failure()?, false)?;
                 let moved = matches!(transfers.get(2), Some(ArgumentTransfer::Move(_)));
                 let cleanup = values.entry_scratch(pointer.into(), "vector.set.cleanup")?;
                 let function = get_or_declare_external(
@@ -647,8 +691,11 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                     self.write_variant_value(self.slots[result.0 as usize], 1, &[], option)?;
                     self.emit_result_edge(Some(result), normal)?;
                 } else {
-                    self.initialize_active_fault(
-                        hew_runtime::internal::types::HEW_TRAP_INDEX_OUT_OF_BOUNDS,
+                    self.initialize_bounds_fault(
+                        hew_runtime::fault::BOUNDS_VECTOR_INDEX,
+                        index,
+                        i64_ty.const_zero(),
+                        self.vector_length(vector)?,
                     )?;
                     self.emit_edge(failure()?)?;
                 }
@@ -772,9 +819,7 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                     .build_conditional_branch(out_of_bounds, failed, safe)
                     .llvm_ctx("branch around fallible vector slice call")?;
                 self.builder.position_at_end(failed);
-                self.initialize_active_fault(
-                    hew_runtime::internal::types::HEW_TRAP_INDEX_OUT_OF_BOUNDS,
-                )?;
+                self.initialize_bounds_fault(hew_runtime::fault::BOUNDS_SLICE, start, end, length)?;
                 self.emit_edge(failure()?)?;
                 self.builder.position_at_end(safe);
                 let function = get_or_declare_external(
@@ -807,14 +852,14 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                         let index = self
                             .load(source(1)?, "vector.remove.index")?
                             .into_int_value();
-                        self.emit_vector_index_guard(vector, index, failure()?)?;
+                        self.emit_vector_index_guard(vector, index, failure()?, false)?;
                         Some(index)
                     }
                     _ => None,
                 };
                 let status = if let Some(index) = index {
                     if matches!(operation, PhysicalVectorOp::TakeFirst { .. }) {
-                        self.emit_vector_index_guard(vector, index, failure()?)?;
+                        self.emit_vector_index_guard(vector, index, failure()?, false)?;
                     }
                     self.make_vector_unique(vector, failure()?)?;
                     let function = get_or_declare_external(
@@ -1169,7 +1214,8 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                 .build_unconditional_branch(complete)
                 .llvm_ctx("finish absent map value")?;
         } else {
-            self.initialize_active_fault(HEW_TRAP_INDEX_OUT_OF_BOUNDS)?;
+            let zero = self.ctx.i64_type().const_zero();
+            self.initialize_bounds_fault(hew_runtime::fault::BOUNDS_MAP_INDEX, zero, zero, zero)?;
             self.emit_edge(failure.ok_or_else(|| {
                 CodegenError::FailClosed("map index lacks its failure cleanup".into())
             })?)?;

@@ -289,6 +289,7 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
             fault_out: active_fault,
             active_fault,
             active_status,
+            fault_site: std::cell::Cell::new(None),
             fault_parks: BTreeMap::new(),
             functions: self.functions,
             value_callbacks: self.value_callbacks,

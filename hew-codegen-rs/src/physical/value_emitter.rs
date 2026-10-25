@@ -946,7 +946,7 @@ impl<'a, 'ctx> ValueEmitter<'a, 'ctx> {
                     DestroyAction::Encoding(format) => {
                         hew_mir::physical::EncodingOp::Free.c_symbol(format)
                     }
-                    DestroyAction::StringRelease => "hew_string_drop",
+                    DestroyAction::StringRelease => "hew_string_drop_managed",
                     DestroyAction::BytesRelease => "hew_bytes_drop",
                     DestroyAction::Resource(_)
                     | DestroyAction::Callable

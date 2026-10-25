@@ -189,8 +189,6 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
         // reply when the message arrived through a one-way mailbox view and
         // carries no channel.
         let ptr = self.ctx.ptr_type(AddressSpace::default());
-        let target = TargetData::create(&self.module.target.data_layout);
-        let size_ty = self.ctx.ptr_sized_int_type(&target, None);
         let complete = self.ctx.append_basic_block(function, "reply.complete");
         let publish = self.ctx.append_basic_block(function, "reply.publish");
         let fault = builder
@@ -214,62 +212,130 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
             )?;
             builder.position_at_end(reply);
         }
-        let size = if output.is_some() {
-            self.module
+        let frame = frame.ok_or_else(|| {
+            CodegenError::FailClosed("reply publication lacks its checked continuation".into())
+        })?;
+        let status = frame.storage(self.ctx, self.ctx.i32_type().into(), "reply.cleanup.status")?;
+        builder
+            .build_store(status, self.ctx.i32_type().const_zero())
+            .llvm_ctx("initialize reply cleanup status")?;
+        let values = ValueEmitter {
+            module: self.module,
+            ctx: self.ctx,
+            llvm: &self.llvm,
+            builder,
+            value: function,
+            fault_sink: Some((fault_slot, status)),
+        };
+        let layout = self
+            .llvm
+            .get_global(&reply_layout_symbol(actor.id, handler.message_id))
+            .ok_or_else(|| CodegenError::FailClosed("reply lacks canonical value layout".into()))?
+            .as_pointer_value();
+        let start = get_or_declare_external(
+            &self.llvm,
+            "hew_actor_reply_start_native",
+            ptr.fn_type(&[ptr.into(); 4], false),
+        )?;
+        let operation = call_value(
+            builder,
+            start,
+            &[
+                output.unwrap_or(ptr.const_null()).into(),
+                layout.into(),
+                frame.state.into(),
+                status.into(),
+            ],
+            "reply.operation",
+        )?
+        .into_pointer_value();
+        let failed = self.ctx.append_basic_block(function, "reply.refused");
+        let poll = self.ctx.append_basic_block(function, "reply.poll");
+        let wait = self.ctx.append_basic_block(function, "reply.wait");
+        let delivered = self.ctx.append_basic_block(function, "reply.delivered");
+        let invalid = self.ctx.append_basic_block(function, "reply.invalid");
+        let refused = builder
+            .build_is_null(operation, "reply.not.consumed")
+            .llvm_ctx("inspect reply preflight")?;
+        builder
+            .build_conditional_branch(refused, failed, poll)
+            .llvm_ctx("consume reply only after preflight")?;
+        builder.position_at_end(failed);
+        let create_fault = external_fault_new(self.ctx, &self.llvm)?;
+        let fault = call_value(
+            builder,
+            create_fault,
+            &[self
+                .ctx
+                .i32_type()
+                .const_int(
+                    hew_runtime::internal::types::HEW_TRAP_HEAP_EXCEEDED as u64,
+                    false,
+                )
+                .into()],
+            "reply.quota.fault",
+        )?;
+        builder
+            .build_store(fault_slot, fault)
+            .llvm_ctx("retain failed reply preflight")?;
+        if let (Some(output), Some(action)) = (
+            output,
+            self.module.actor_recipes[&handler.return_ty].destroy,
+        ) {
+            let target_layout = self
+                .module
                 .target
                 .layout(&handler.return_ty)
-                .ok_or_else(|| CodegenError::FailClosed("reply has no target layout".into()))?
-                .size
-        } else {
-            0
-        };
-        let drop_reply = self
-            .llvm
-            .get_function(&reply_symbol(actor.id, handler.message_id))
-            .map_or(ptr.const_null(), |function| {
-                function.as_global_value().as_pointer_value()
-            });
-        let reply = get_or_declare_external(
-            &self.llvm,
-            "hew_actor_reply_native",
-            ptr.fn_type(&[ptr.into(), size_ty.into(), ptr.into(), ptr.into()], false),
-        )?;
-        let cleanup = builder
-            .build_call(
-                reply,
-                &[
-                    output.unwrap_or(ptr.const_null()).into(),
-                    size_ty.const_int(size, false).into(),
-                    drop_reply.into(),
-                    actor_value_release(self.ctx, &self.llvm, self.module, &handler.return_ty)?
-                        .into(),
-                ],
-                "",
-            )
-            .llvm_ctx("transfer typed reply under current activation")?
-            .try_as_basic_value()
-            .basic()
-            .ok_or_else(|| {
-                CodegenError::FailClosed("reply transfer returned no cleanup cursor".into())
-            })?
-            .into_pointer_value();
-        if let Some(frame) = frame {
-            let status = builder
-                .build_alloca(self.ctx.i32_type(), "reply.cleanup.status")
-                .llvm_ctx("allocate reply cleanup status")?;
-            builder
-                .build_store(status, self.ctx.i32_type().const_zero())
-                .llvm_ctx("initialize reply cleanup status")?;
-            let values = ValueEmitter {
-                module: self.module,
-                ctx: self.ctx,
-                llvm: &self.llvm,
-                builder,
-                value: function,
-                fault_sink: Some((fault_slot, status)),
-            };
-            release::drain(&values, Some(frame), cleanup)?;
+                .ok_or_else(|| {
+                    CodegenError::FailClosed("reply cleanup lacks target layout".into())
+                })?;
+            release::slot(&values, frame, output, target_layout, action)?;
         }
+        builder
+            .build_unconditional_branch(complete)
+            .llvm_ctx("finish refused reply cleanup")?;
+        builder.position_at_end(poll);
+        let poll_fn = get_or_declare_external(
+            &self.llvm,
+            "hew_actor_reply_poll_native",
+            self.ctx.i32_type().fn_type(&[ptr.into(); 2], false),
+        )?;
+        let ready = call_value(
+            builder,
+            poll_fn,
+            &[operation.into(), frame.state.into()],
+            "reply.status",
+        )?
+        .into_int_value();
+        builder
+            .build_switch(
+                ready,
+                invalid,
+                &[
+                    (self.ctx.i32_type().const_zero(), wait),
+                    (self.ctx.i32_type().const_int(1, false), delivered),
+                ],
+            )
+            .llvm_ctx("route checked reply readiness")?;
+        builder.position_at_end(wait);
+        frame.suspend(self.ctx, builder, poll, invalid)?;
+        builder.position_at_end(invalid);
+        builder
+            .build_unreachable()
+            .llvm_ctx("refuse an invalid reply completion")?;
+        builder.position_at_end(delivered);
+        let take = get_or_declare_external(
+            &self.llvm,
+            "hew_actor_reply_take_cleanup_native",
+            ptr.fn_type(&[ptr.into()], false),
+        )?;
+        let cleanup =
+            call_value(builder, take, &[operation.into()], "reply.cleanup")?.into_pointer_value();
+        release::drain(&values, Some(frame), cleanup)?;
+        let free = external_drop(self.ctx, &self.llvm, "hew_actor_reply_free_native")?;
+        builder
+            .build_call(free, &[operation.into()], "")
+            .llvm_ctx("release completed reply publication")?;
         builder
             .build_unconditional_branch(complete)
             .llvm_ctx("complete typed reply")?;
@@ -1392,113 +1458,46 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
             .llvm_ctx("complete invalid protocol dispatch")?;
         for (handler, block) in handlers {
             builder.position_at_end(block);
-            let callable = callable(self.module, handler.callable)?;
-            if callable.is_resumable
-                || self
-                    .module
-                    .actor_recipes
-                    .get(&handler.return_ty)
-                    .and_then(|recipe| recipe.destroy)
-                    .is_some_and(|action| {
-                        self.module.releases.suspends(action)
-                            || self.module.releases.raises_fault(action)
-                    })
-            {
-                let ramp = self.emit_actor_handler_ramp(actor, handler)?;
-                let handle = call_value(
-                    &builder,
-                    ramp,
-                    &[state.into(), payload.into()],
-                    "handler.frame",
-                )?
-                .into_pointer_value();
-                let is_done = get_or_declare_external(
-                    &self.llvm,
-                    "hew_cont_done",
-                    self.ctx.bool_type().fn_type(&[ptr.into()], false),
-                )?;
-                let complete = call_value(&builder, is_done, &[handle.into()], "handler.done")?
-                    .into_int_value();
-                let ready = self.ctx.append_basic_block(dispatch, "handler.ready");
-                let pending = self.ctx.append_basic_block(dispatch, "handler.pending");
-                let finished = builder
-                    .build_int_compare(
-                        IntPredicate::NE,
-                        complete,
-                        self.ctx.bool_type().const_zero(),
-                        "handler.complete",
-                    )
-                    .llvm_ctx("test actor turn completion")?;
-                builder
-                    .build_conditional_branch(finished, ready, pending)
-                    .llvm_ctx("select actor turn completion")?;
-                builder.position_at_end(pending);
-                builder
-                    .build_return(Some(&handle))
-                    .llvm_ctx("park strict actor turn")?;
-                builder.position_at_end(ready);
-                let destroy = external_drop(self.ctx, &self.llvm, "hew_cont_destroy")?;
-                builder
-                    .build_call(destroy, &[handle.into()], "")
-                    .llvm_ctx("destroy completed actor adapter")?;
-                builder
-                    .build_return(Some(&ptr.const_null()))
-                    .llvm_ctx("finish ready actor turn")?;
-                continue;
-            }
-            let message_ty = message_type(self.module, self.ctx, handler)?;
-            let mut args: Vec<BasicMetadataValueEnum<'ctx>> = vec![state.into()];
-            for (index, parameter) in callable.params.iter().skip(1).enumerate() {
-                let slot = builder
-                    .build_struct_gep(
-                        message_ty,
-                        payload,
-                        u32::try_from(index + 1).map_err(|_| {
-                            CodegenError::FailClosed("message index exceeds u32".into())
-                        })?,
-                        "handler.argument",
-                    )
-                    .llvm_ctx("address handler argument")?;
-                args.push(match parameter.carrier {
-                    ParamCarrier::Indirect => slot.into(),
-                    ParamCarrier::Direct => ValueEmitter {
-                        module: self.module,
-                        ctx: self.ctx,
-                        llvm: &self.llvm,
-                        builder: &builder,
-                        value: dispatch,
-                        fault_sink: None,
-                    }
-                    .load_value(slot, &parameter.layout, "handler.value")?
-                    .into(),
-                });
-            }
-            // Empty timer messages have no payload or field ownership to transfer.
-            if !handler.params.is_empty() {
-                builder
-                    .build_store(payload, self.ctx.i8_type().const_zero())
-                    .llvm_ctx("transfer message fields to handler")?;
-            }
-            let output = callable
-                .return_layout
-                .as_ref()
-                .map(|layout| {
-                    builder
-                        .build_alloca(llvm_type(self.ctx, &layout.repr)?, "handler.reply")
-                        .llvm_ctx("allocate handler reply")
-                })
-                .transpose()?;
-            if let Some(output) = output {
-                args.push(output.into());
-            }
-            args.push(fault.into());
+            let ramp = self.emit_actor_handler_ramp(actor, handler)?;
+            let handle = call_value(
+                &builder,
+                ramp,
+                &[state.into(), payload.into()],
+                "handler.frame",
+            )?
+            .into_pointer_value();
+            let is_done = get_or_declare_external(
+                &self.llvm,
+                "hew_cont_done",
+                self.ctx.bool_type().fn_type(&[ptr.into()], false),
+            )?;
+            let complete =
+                call_value(&builder, is_done, &[handle.into()], "handler.done")?.into_int_value();
+            let ready = self.ctx.append_basic_block(dispatch, "handler.ready");
+            let pending = self.ctx.append_basic_block(dispatch, "handler.pending");
+            let finished = builder
+                .build_int_compare(
+                    IntPredicate::NE,
+                    complete,
+                    self.ctx.bool_type().const_zero(),
+                    "handler.complete",
+                )
+                .llvm_ctx("test actor turn completion")?;
             builder
-                .build_call(self.functions[&handler.callable], &args, "handler.status")
-                .llvm_ctx("call checked actor body")?;
-            self.emit_actor_reply(&builder, dispatch, actor, handler, output, fault, None)?;
+                .build_conditional_branch(finished, ready, pending)
+                .llvm_ctx("select actor turn completion")?;
+            builder.position_at_end(pending);
             builder
-                .build_unconditional_branch(done)
-                .llvm_ctx("complete actor handler")?;
+                .build_return(Some(&handle))
+                .llvm_ctx("park strict actor turn")?;
+            builder.position_at_end(ready);
+            let destroy = external_drop(self.ctx, &self.llvm, "hew_cont_destroy")?;
+            builder
+                .build_call(destroy, &[handle.into()], "")
+                .llvm_ctx("destroy completed actor adapter")?;
+            builder
+                .build_return(Some(&ptr.const_null()))
+                .llvm_ctx("finish ready actor turn")?;
         }
         builder.position_at_end(done);
         let set_fault = get_or_declare_external(

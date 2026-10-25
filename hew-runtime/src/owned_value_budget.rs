@@ -294,7 +294,12 @@ impl ValueOwner {
     /// Reserve one container replacement without holding the ledger while
     /// typed copy callbacks execute. Unique growth credits existing capacity;
     /// COW retains old storage until the final replacement commits.
-    pub(crate) fn prepare_backing_change(
+    ///
+    /// # Errors
+    /// Returns the unchanged account's budget refusal when growth will not fit.
+    /// # Panics
+    /// Panics if `old` does not describe this owner's current backing.
+    pub fn prepare_backing_change(
         &self,
         old: Option<ManagedStorage>,
         bytes: u64,
@@ -419,7 +424,7 @@ fn insert_storage(ledger: &mut Ledger, pending: HashMap<usize, Retention>) {
 /// Container backing replacement. Typed child edges move with the existing
 /// elements; only the changed backing edge is replaced by this permit.
 #[derive(Debug)]
-pub(crate) struct BackingChange {
+pub struct BackingChange {
     owner: ValueOwner,
     old: Option<ManagedStorage>,
     bytes: u64,
@@ -427,7 +432,10 @@ pub(crate) struct BackingChange {
     committed: bool,
 }
 impl BackingChange {
-    pub(crate) fn commit(mut self, identity: usize) {
+    /// Publish the replacement backing after the reserved mutation succeeds.
+    /// # Panics
+    /// Panics if its actual identity contradicts the reserved storage plan.
+    pub fn commit(mut self, identity: usize) {
         let mut ledger = self.owner.ledger();
         if let Some(old) = self.old {
             let entry = ledger

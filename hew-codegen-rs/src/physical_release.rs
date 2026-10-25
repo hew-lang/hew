@@ -1173,165 +1173,25 @@ fn drain_cursor_inline<'ctx>(
     cursor: PointerValue<'ctx>,
 ) -> CodegenResult<()> {
     let pointer = values.ctx.ptr_type(AddressSpace::default());
-    let next = values
-        .ctx
-        .append_basic_block(values.value, "release.cursor.next");
-    let item = values
-        .ctx
-        .append_basic_block(values.value, "release.cursor.item");
-    let done = values
-        .ctx
-        .append_basic_block(values.value, "release.cursor.done");
-    let present = values
-        .builder
-        .build_is_not_null(cursor, "release.cursor.present")
-        .llvm_ctx("test optional release cursor")?;
-    values
-        .builder
-        .build_conditional_branch(present, next, done)
-        .llvm_ctx("start consuming container")?;
-    values.builder.position_at_end(next);
-    let slot = scratch(values, frame, pointer.into(), "release.cursor.slot")?;
-    let wait = values
-        .ctx
-        .append_basic_block(values.value, "release.cursor.wait");
-    let invalid = values
-        .ctx
-        .append_basic_block(values.value, "release.cursor.invalid");
-    let advance = get_or_declare_external(
+    let create = get_or_declare_external(
         values.llvm,
-        "hew_release_poll",
-        values.ctx.i32_type().fn_type(&[pointer.into(); 3], false),
-    )?;
-    let status = suspend::call_value(
-        values.builder,
-        advance,
-        &[cursor.into(), frame.state.into(), slot.into()],
-        "release.cursor.status",
-    )?
-    .into_int_value();
-    values
-        .builder
-        .build_switch(
-            status,
-            done,
-            &[
-                (values.ctx.i32_type().const_zero(), wait),
-                (values.ctx.i32_type().const_int(1, false), item),
-            ],
-        )
-        .llvm_ctx("select next release item")?;
-    values.builder.position_at_end(wait);
-    frame.suspend(values.ctx, values.builder, next, invalid)?;
-    values.builder.position_at_end(invalid);
-    values
-        .builder
-        .build_unreachable()
-        .llvm_ctx("refuse unfinished release destruction")?;
-    values.builder.position_at_end(item);
-    let source = values
-        .builder
-        .build_load(pointer, slot, "release.slot")
-        .llvm_ctx("read current release slot")?
-        .into_pointer_value();
-    let get_layout = get_or_declare_external(
-        values.llvm,
-        "hew_release_layout",
+        "hew_release_driver_new",
         pointer.fn_type(&[pointer.into()], false),
     )?;
-    let descriptor = suspend::call_value(
-        values.builder,
-        get_layout,
-        &[cursor.into()],
-        "release.layout",
-    )?
-    .into_pointer_value();
-    descriptor_slot(values, frame, source, descriptor)?;
-    values
-        .builder
-        .build_unconditional_branch(next)
-        .llvm_ctx("continue consuming container")?;
-    values.builder.position_at_end(done);
-    let finish = get_or_declare_external(
-        values.llvm,
-        "hew_release_finish",
-        values.ctx.void_type().fn_type(&[pointer.into()], false),
-    )?;
-    values
-        .builder
-        .build_call(finish, &[cursor.into()], "")
-        .llvm_ctx("release drained container storage")?;
-    Ok(())
-}
-
-fn descriptor_slot<'ctx>(
-    values: &ValueEmitter<'_, 'ctx>,
-    frame: &coro::Frame<'ctx>,
-    source: PointerValue<'ctx>,
-    descriptor: PointerValue<'ctx>,
-) -> CodegenResult<()> {
-    let pointer = values.ctx.ptr_type(AddressSpace::default());
-    let target = TargetData::create(&values.module.target.data_layout);
-    let layout = value_descriptor_type(values.ctx, &target);
-    let start = descriptor_release_start(values, descriptor)?;
-    let asynchronous = values.ctx.append_basic_block(values.value, "release.async");
-    let synchronous = values.ctx.append_basic_block(values.value, "release.sync");
-    let done = values
-        .ctx
-        .append_basic_block(values.value, "release.item.done");
-    let has_start = values
-        .builder
-        .build_is_not_null(start, "release.can.suspend")
-        .llvm_ctx("select release protocol")?;
-    values
-        .builder
-        .build_conditional_branch(has_start, asynchronous, synchronous)
-        .llvm_ctx("dispatch release protocol")?;
-    values.builder.position_at_end(asynchronous);
-    invoke(values, frame, start, source)?;
-    values
-        .builder
-        .build_unconditional_branch(done)
-        .llvm_ctx("finish asynchronous release")?;
-    values.builder.position_at_end(synchronous);
-    let drop_address = values
-        .builder
-        .build_struct_gep(layout, descriptor, 4, "release.drop.slot")
-        .llvm_ctx("address synchronous destructor")?;
-    let drop = values
-        .builder
-        .build_load(pointer, drop_address, "release.drop")
-        .llvm_ctx("read synchronous destructor")?
+    let driver = suspend::call_value(values.builder, create, &[cursor.into()], "release.driver")?
         .into_pointer_value();
-    let run = values
-        .ctx
-        .append_basic_block(values.value, "release.sync.run");
-    let has_drop = values
-        .builder
-        .build_is_not_null(drop, "release.owned")
-        .llvm_ctx("test synchronous owner")?;
+    drain_operation(
+        values,
+        frame,
+        driver,
+        "hew_release_driver_poll",
+        "hew_release_driver_fault",
+    )?;
+    let free = external_drop(values.ctx, values.llvm, "hew_release_driver_free")?;
     values
         .builder
-        .build_conditional_branch(has_drop, run, done)
-        .llvm_ctx("select synchronous owner release")?;
-    values.builder.position_at_end(run);
-    values.emit_release_in_sink(|| {
-        values
-            .builder
-            .build_indirect_call(
-                values.ctx.void_type().fn_type(&[pointer.into()], false),
-                drop,
-                &[source.into()],
-                "",
-            )
-            .llvm_ctx("release synchronous descriptor value")?;
-        Ok(())
-    })?;
-    values
-        .builder
-        .build_unconditional_branch(done)
-        .llvm_ctx("finish synchronous release")?;
-    values.builder.position_at_end(done);
+        .build_call(free, &[driver.into()], "")
+        .llvm_ctx("release the completed typed driver")?;
     Ok(())
 }
 

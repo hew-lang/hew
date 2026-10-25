@@ -1597,3 +1597,86 @@ fn vector_loop_chunks_preserve_empty_scans_bounds_and_overflow_at_o0_o2() {
         }
     }
 }
+
+#[test]
+fn active_operation_root_uses_the_split_coroutine_owner_slot() {
+    use std::cell::Cell;
+    use std::ffi::c_void;
+
+    thread_local! {
+        static FRAME_BYTES: Cell<usize> = const { Cell::new(0) };
+    }
+    unsafe extern "C" fn allocate(size: u64) -> *mut c_void {
+        FRAME_BYTES.set(usize::try_from(size).unwrap());
+        // SAFETY: the coroutine requests its complete frame allocation.
+        unsafe { hew_runtime::cont::hew_cont_frame_alloc(size) }
+    }
+
+    for opt in [OptLevel::O0, OptLevel::O2] {
+        let ctx = Context::create();
+        let llvm = ctx.create_module("operation_root");
+        let triple = native_emission_triple();
+        let machine = crate::llvm::target_machine_for_triple_with_opt_level(&triple, opt).unwrap();
+        llvm.set_data_layout(&machine.get_target_data().get_data_layout());
+        let pointer = ctx.ptr_type(AddressSpace::default());
+        let function =
+            llvm.add_function("probe", pointer.fn_type(&[pointer.into(); 2], false), None);
+        let builder = ctx.create_builder();
+        builder.position_at_end(ctx.append_basic_block(function, "entry"));
+        let state = function.get_nth_param(0).unwrap().into_pointer_value();
+        let owner = function.get_nth_param(1).unwrap().into_pointer_value();
+        let frame = coro::begin(&ctx, &llvm, &builder, function, state).unwrap();
+        let descriptor = llvm.add_global(ctx.i8_type(), None, "descriptor");
+        descriptor.set_initializer(&ctx.i8_type().const_zero());
+        frame
+            .bind_operation(&ctx, &builder, descriptor.as_pointer_value(), owner)
+            .unwrap();
+        let done = ctx.append_basic_block(function, "done");
+        frame.suspend(&ctx, &builder, done, done).unwrap();
+        builder.position_at_end(done);
+        frame.clear_operation(&ctx, &builder).unwrap();
+        builder.build_unconditional_branch(frame.finish).unwrap();
+        llvm.verify().unwrap();
+        crate::llvm::run_module_pipeline(&llvm, &machine, opt).unwrap();
+        let engine = llvm
+            .create_jit_execution_engine(inkwell::OptimizationLevel::None)
+            .unwrap();
+        super::test_runtime::bind_runtime(&llvm, &engine);
+        engine.add_global_mapping(
+            &llvm.get_function("hew_cont_frame_alloc").unwrap(),
+            allocate as *const () as usize,
+        );
+        let (_ready, wake) = hew_runtime::wake::blocking::Readiness::new();
+        // SAFETY: the state, dummy operation and generated module outlive the
+        // suspended frame. Inspect the registered slot before dereferencing it.
+        unsafe {
+            let state = hew_runtime::coro_state::hew_coro_state_new(
+                wake.descriptor(),
+                std::ptr::null_mut(),
+            );
+            let mut operation = 17_u64;
+            let expected = (&raw mut operation).cast::<c_void>();
+            let probe = engine
+                .get_function::<unsafe extern "C" fn(
+                    *mut hew_runtime::coro_state::HewCoroState,
+                    *mut c_void,
+                ) -> *mut c_void>("probe")
+                .unwrap();
+            let handle = probe.call(state, expected);
+            let view = (*state.cast::<hew_cabi::coro::HewCoroInvocation>())
+                .managed_frame
+                .as_ref()
+                .unwrap();
+            let root = view.operation.as_ref().unwrap();
+            let address = root.slot as usize;
+            assert!(
+                (handle as usize..handle as usize + FRAME_BYTES.get()).contains(&address),
+                "{opt:?}: active operation slot must belong to the retained coroutine frame"
+            );
+            assert_eq!(root.slot.cast::<*mut c_void>().read(), expected);
+            hew_runtime::cont::hew_cont_resume(handle);
+            hew_runtime::cont::hew_cont_destroy(handle);
+            hew_runtime::coro_state::hew_coro_state_free(state);
+        }
+    }
+}

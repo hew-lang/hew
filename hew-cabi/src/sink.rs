@@ -1044,7 +1044,7 @@ mod runtime_abi_stub {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::atomic::AtomicUsize;
     use std::sync::Arc;
 
     /// Proves a pointer lacking `CStringHeader`'s magic sentinel — what the OLD
@@ -1216,7 +1216,7 @@ mod tests {
     fn hew_sink_write_flush_close() {
         let (mock, written, flush_count, close_count) = MockSink::new();
         // SAFETY: into_write_sink_ptr returns a Box::into_raw allocation owned by this test.
-        let mut sink = unsafe { Box::from_raw(into_write_sink_ptr(mock)) }; // ALLOCATOR-PAIRING: GlobalAlloc
+        let sink = unsafe { Box::from_raw(into_write_sink_ptr(mock)) }; // ALLOCATOR-PAIRING: GlobalAlloc
         sink.write_item(b"hello");
         sink.write_item(b"world");
         sink.flush();
@@ -1337,7 +1337,7 @@ mod tests {
         let (tx, rx) = std::sync::mpsc::sync_channel(1);
         let ptr = into_channel_sink_ptr(tx);
         // SAFETY: ptr was created by into_channel_sink_ptr and is reclaimed once.
-        let mut sink = unsafe { Box::from_raw(ptr) }; // ALLOCATOR-PAIRING: GlobalAlloc
+        let sink = unsafe { Box::from_raw(ptr) }; // ALLOCATOR-PAIRING: GlobalAlloc
 
         assert_eq!(sink.try_write_item(b"accepted"), TrySendResult::Accepted);
         assert_eq!(sink.try_write_item(b"full"), TrySendResult::Full);
@@ -1350,7 +1350,7 @@ mod tests {
     fn closed_sink_try_write_reports_closed() {
         let (mock, written, _flush_count, _close_count) = MockSink::new();
         // SAFETY: into_write_sink_ptr returns a Box::into_raw allocation owned by this test.
-        let mut sink = unsafe { Box::from_raw(into_write_sink_ptr(mock)) }; // ALLOCATOR-PAIRING: GlobalAlloc
+        let sink = unsafe { Box::from_raw(into_write_sink_ptr(mock)) }; // ALLOCATOR-PAIRING: GlobalAlloc
         sink.close();
 
         assert_eq!(sink.try_write_item(b"discarded"), TrySendResult::Closed);

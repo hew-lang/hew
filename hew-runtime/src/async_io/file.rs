@@ -136,6 +136,10 @@ unsafe extern "C" fn run_file_job(context: *mut c_void) {
     operation.complete(result);
 }
 
+#[allow(
+    clippy::option_option,
+    reason = "None is a non-stream operation; Some(None) is an unbounded stream read"
+)]
 unsafe fn submit(
     pool: Option<*mut HewBlockingPool>,
     waker: *const HewWaker,

@@ -329,6 +329,10 @@ fn admit(slot: &Slot, action: &Action, direction: Direction) -> Result<(), IoFai
     })
 }
 
+#[allow(
+    clippy::option_option,
+    reason = "None is a non-stream operation; Some(None) is an unbounded stream read"
+)]
 unsafe fn start(
     handle: i32,
     action: Action,
@@ -372,6 +376,10 @@ pub(super) unsafe fn start_stdin_line(
     unsafe { start_on(slot, Action::StdinLine, Direction::Read, waker, None) }
 }
 
+#[allow(
+    clippy::option_option,
+    reason = "None is a non-stream operation; Some(None) is an unbounded stream read"
+)]
 unsafe fn start_on(
     slot: Arc<Slot>,
     action: Action,

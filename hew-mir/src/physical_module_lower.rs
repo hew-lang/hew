@@ -782,7 +782,7 @@ pub fn physical_type_inventory(module: &SemModule) -> PhysicalTypeInventory {
         types.extend(function.places.iter().map(|place| place.ty.clone()));
         for block in &function.blocks {
             types.extend(block.args.iter().map(|argument| argument.ty.clone()));
-            for operation in &block.ops {
+            for operation in block.operations() {
                 types.extend(operation.results.iter().map(|result| result.ty.clone()));
             }
             if let Some(result) = terminator_result(&block.terminator) {
@@ -1391,6 +1391,7 @@ pub(crate) fn function_attribution(
 
 pub(crate) fn terminator_result(terminator: &SemTerminator) -> Option<&hew_sir::ValueDef> {
     match terminator {
+        SemTerminator::Materialize { operation, .. } => operation.results.first(),
         SemTerminator::Call {
             result: CallResult::Value(result),
             ..

@@ -76,6 +76,32 @@ pub(crate) fn terminator_successors(
         ));
     }
     match terminator {
+        PhysicalTerminator::Materialize {
+            operations,
+            normal,
+            failure,
+        } => {
+            if state.fault != FaultState::None {
+                return Err(PhysicalError::new(
+                    "managed acquisition cannot abandon an active fault",
+                ));
+            }
+            let mut acquired = state.clone();
+            for operation in operations {
+                super::verify_ops::apply_operation(
+                    module,
+                    function,
+                    borrows,
+                    operation,
+                    &mut acquired,
+                    block,
+                )?;
+            }
+            Ok(vec![
+                apply_edge(function, borrows, normal, acquired, block)?,
+                apply_edge(function, borrows, failure, state, block)?,
+            ])
+        }
         PhysicalTerminator::ActorAsk {
             args,
             result,
@@ -953,6 +979,40 @@ pub(crate) fn verify_terminator(
         }
     };
     match terminator {
+        PhysicalTerminator::Materialize {
+            operations,
+            normal,
+            failure,
+        } => {
+            if operations.is_empty() {
+                return Err(PhysicalError::new(
+                    "managed acquisition has no physical construction",
+                ));
+            }
+            for operation in operations {
+                super::verify_ops::verify_operation_storage(module, function, operation)?;
+            }
+            let raises_heap = function
+                .blocks
+                .iter()
+                .find(|block| block.id == failure.target)
+                .is_some_and(|block| {
+                    matches!(
+                        block.terminator,
+                        PhysicalTerminator::CheckedRaiseFault {
+                            kind: super::TrapKind::HeapExceeded,
+                            ..
+                        }
+                    )
+                });
+            if !raises_heap {
+                return Err(PhysicalError::new(
+                    "managed acquisition failure must raise HeapExceeded",
+                ));
+            }
+            edge(normal)?;
+            edge(failure)
+        }
         PhysicalTerminator::ActorAsk {
             actor,
             message,

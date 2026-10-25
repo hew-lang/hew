@@ -1099,6 +1099,14 @@ pub struct PhysicalWireDecodeResult {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum PhysicalTerminator {
+    /// Execute the already selected physical value construction only after
+    /// its managed-storage acquisition succeeds. No input moves or result
+    /// publication occur on the failure edge.
+    Materialize {
+        operations: Vec<PhysicalOp>,
+        normal: PhysicalEdge,
+        failure: PhysicalEdge,
+    },
     /// Take the next element from the exclusively borrowed stream. `park`
     /// waits for an element or for the producer to finish; without it an empty
     /// stream produces `None` at once.

@@ -682,6 +682,15 @@ impl FunctionLowerer<'_> {
         block: &hew_sir::SemBlock,
     ) -> Result<PhysicalTerminator, PhysicalError> {
         match &block.terminator {
+            SemTerminator::Materialize {
+                operation,
+                normal,
+                failure,
+            } => Ok(PhysicalTerminator::Materialize {
+                operations: self.lower_op(operation, (block.id, block.ops.len()))?,
+                normal: self.lower_edge(normal)?,
+                failure: self.lower_edge(failure)?,
+            }),
             SemTerminator::EnterDefer { defer, park, body } => Ok(PhysicalTerminator::EnterDefer {
                 defer: *defer,
                 park: *park,

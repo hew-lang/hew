@@ -8,8 +8,8 @@ use super::{
     require_type_facts, BindingTarget, BlockArg, Builder, CallResult, CallTarget, CallUnwind, Edge,
     FaultHandback, HirExpr, HirExprKind, IntentKind, OpId, Operand, OwnKind, OwnedBindingUse,
     PlaceId, PlaceOrigin, PreparedCallee, Provenance, ResolvedRef, ResolvedTy, SemAbiParam,
-    SemCallableKind, SemOp, SemOpKind, SemParamPassing, SemSignature, SemTerminator,
-    TypeInstanceKey, ValueDef, ValueId, WritableRoot,
+    SemCallableKind, SemOpKind, SemParamPassing, SemSignature, SemTerminator, TypeInstanceKey,
+    ValueDef, ValueId, WritableRoot,
 };
 
 impl Builder<'_, '_> {

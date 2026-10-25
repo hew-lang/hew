@@ -739,6 +739,90 @@ pub unsafe extern "C" fn hew_release_driver_free(driver: *mut c_void) {
     drop(unsafe { Box::from_raw(driver.cast::<ReleaseDriver>()) });
 }
 
+/// Visit the typed obligations still owned by one suspended cleanup driver.
+/// # Safety
+/// Its provider freezes execution and retains the driver throughout this walk.
+#[no_mangle]
+pub unsafe extern "C" fn hew_managed_visit_release_driver(
+    driver: *mut c_void,
+    visitor: *const hew_cabi::managed::HewManagedStorageVisitor,
+) -> i32 {
+    use crate::owned_value_budget::{transfer, visit};
+    use hew_cabi::managed::{visit_value, HewManagedWalkKind, UNDESCRIBED};
+    // SAFETY: the provider lends its exclusive frozen cleanup state.
+    unsafe {
+        let Some(driver) = driver.cast::<ReleaseDriver>().as_mut() else {
+            return 0;
+        };
+        if (*visitor).kind == HewManagedWalkKind::CommitTransfer {
+            driver.value_owner = transfer::destination_owner(visitor);
+            if let Some(cursor) = driver.cursor.as_mut() {
+                cursor.set_value_owner(driver.value_owner.clone());
+            }
+        }
+        let status =
+            crate::owned_value_budget::frame::hew_managed_visit_invocation(driver.state, visitor);
+        if status != 0 {
+            return status;
+        }
+        let Some(cursor) = driver.cursor.as_ref() else {
+            return 0;
+        };
+        // Once a callback starts, its ordinary invocation occupancy owns the
+        // transferred value; the original cursor slot may already be consumed.
+        if driver.state.is_null() {
+            if let Some(layout) = cursor.current_layout.as_ref() {
+                let status = visit_value(layout, cursor.current_slot, visitor);
+                if status != 0 {
+                    return status;
+                }
+            }
+        }
+        for item in cursor.pending.iter().rev() {
+            let status = match item {
+                ReleaseItem::Value { slot, layout } => visit_value(layout, *slot, visitor),
+                ReleaseItem::String { value } => visit::hew_managed_visit_string(
+                    (value as *const *mut hew_cabi::string::HewString).cast(),
+                    visitor,
+                ),
+                ReleaseItem::ManagedBacking { pointer, bytes, .. } => {
+                    match visit::storage(visitor, *pointer, *bytes) {
+                        hew_cabi::managed::DESCEND | hew_cabi::managed::SKIP_DESCENDANTS => 0,
+                        failure => failure,
+                    }
+                }
+                ReleaseItem::Vector { vec } => {
+                    visit::hew_managed_visit_vector((vec as *const *mut HewVec).cast(), visitor)
+                }
+                ReleaseItem::VectorElements { vec, next, end } => {
+                    visit::visit_vector_range(*vec, *next, *end, false, visitor)
+                }
+                ReleaseItem::VectorStorage { vec } => {
+                    visit::visit_vector_range(*vec, 0, 0, true, visitor)
+                }
+                ReleaseItem::Map { map } => visit::hew_managed_visit_map(
+                    (map as *const *mut HewLayoutHashMap).cast(),
+                    visitor,
+                ),
+                ReleaseItem::MapSlots { map, next } => {
+                    visit::visit_map_range(*map, *next, false, visitor)
+                }
+                ReleaseItem::MapStorage { map } => {
+                    visit::visit_map_range(*map, (**map).cap, true, visitor)
+                }
+                ReleaseItem::RcSurvivors(_) | ReleaseItem::Sink { .. } => UNDESCRIBED,
+                ReleaseItem::CodeRoot(_)
+                | ReleaseItem::Storage { .. }
+                | ReleaseItem::Allocation { .. } => 0,
+            };
+            if status != 0 {
+                return status;
+            }
+        }
+        0
+    }
+}
+
 impl Drop for ReleaseDriver {
     fn drop(&mut self) {
         if !self.done {
@@ -952,6 +1036,114 @@ mod tests {
 
         release_start: Some(selected_release),
     };
+
+    #[test]
+    fn cleanup_transfer_retains_flat_payload_and_refunds_destination() {
+        use crate::owned_value_budget::{transfer::ValueTransfer, ValueOwner};
+        use hew_cabi::managed::{HewManagedStorageVisitor, HewManagedValueDescriptor};
+        unsafe extern "C" fn visit_driver(
+            slot: *const c_void,
+            visitor: *const HewManagedStorageVisitor,
+        ) -> i32 {
+            // SAFETY: this test lends its pinned, exclusively owned driver handle.
+            unsafe { hew_managed_visit_release_driver(slot.cast::<*mut c_void>().read(), visitor) }
+        }
+        unsafe extern "C-unwind" fn drop_string(slot: *mut c_void) {
+            // SAFETY: this exact slot transfers one charged string handle.
+            unsafe {
+                crate::string::hew_string_drop_managed(
+                    slot.cast::<*mut hew_cabi::string::HewString>().read(),
+                )
+            };
+        }
+        unsafe fn free(pointer: *mut c_void) {
+            // SAFETY: the cursor owns this exact sized-block allocation.
+            unsafe { crate::mem::buf_free(pointer) };
+        }
+        static STRING_MANAGED: HewManagedValueDescriptor = HewManagedValueDescriptor {
+            slot_bytes: 8,
+            visit: Some(crate::owned_value_budget::visit::hew_managed_visit_string),
+        };
+        static STRING: HewValueLayout = HewValueLayout {
+            size: size_of::<*mut c_void>(),
+            align: align_of::<*mut c_void>(),
+            ownership_kind: HewTypeOwnershipKind::LayoutManaged,
+            clone_fn: None,
+            drop_fn: Some(drop_string),
+            release_start: None,
+            code_owner: ptr::null(),
+            managed: &STRING_MANAGED,
+        };
+        static DRIVER_MANAGED: HewManagedValueDescriptor = HewManagedValueDescriptor {
+            slot_bytes: 0,
+            visit: Some(visit_driver),
+        };
+        static DRIVER: HewValueLayout = HewValueLayout {
+            size: size_of::<*mut c_void>(),
+            align: align_of::<*mut c_void>(),
+            ownership_kind: HewTypeOwnershipKind::Plain,
+            clone_fn: None,
+            drop_fn: None,
+            release_start: None,
+            code_owner: ptr::null(),
+            managed: &DRIVER_MANAGED,
+        };
+        // SAFETY: each value/backing has one semantic release and stays pinned
+        // while the refused and successful transfer inspect the same worklist.
+        unsafe {
+            let text = hew_cabi::string::string_from_str("test");
+            let payload =
+                crate::mem::buf_alloc(STRING.size).cast::<*mut hew_cabi::string::HewString>();
+            payload.write(text);
+            let source = ValueOwner::new(Some(12));
+            let cursor = HewReleaseCursor::new(vec![
+                ReleaseItem::ManagedBacking {
+                    pointer: payload.cast(),
+                    bytes: 8,
+                    free,
+                },
+                ReleaseItem::Value {
+                    slot: payload.cast(),
+                    layout: STRING,
+                },
+            ]);
+            let mut driver = ReleaseDriver::with_value_owner(cursor, Some(source.clone()));
+            let handle = ptr::from_mut(driver.as_mut()).cast::<c_void>();
+            source
+                .acquire_value(&DRIVER, (&raw const handle).cast())
+                .unwrap()
+                .commit();
+            assert_eq!(source.live_bytes(), 12);
+            let small = ValueOwner::new(Some(11));
+            assert!(ValueTransfer::prepare(
+                Some(source.clone()),
+                Some(small.clone()),
+                &DRIVER,
+                (&raw const handle).cast()
+            )
+            .is_err());
+            assert_eq!(source.live_bytes(), 12);
+            assert_eq!(small.live_bytes(), 0);
+            let destination = ValueOwner::new(Some(12));
+            ValueTransfer::prepare(
+                Some(source.clone()),
+                Some(destination.clone()),
+                &DRIVER,
+                (&raw const handle).cast(),
+            )
+            .unwrap()
+            .commit()
+            .unwrap();
+            assert_eq!(source.live_bytes(), 0);
+            assert_eq!(destination.live_bytes(), 12);
+            let (_ready, waker) = crate::wake::blocking::Readiness::new();
+            let state = crate::coro_state::hew_coro_state_new(waker.descriptor(), ptr::null_mut());
+            assert!(driver.poll(state));
+            assert!(driver.take_fault().is_null());
+            crate::coro_state::hew_coro_state_free(state);
+            assert_eq!(destination.live_bytes(), 0);
+        }
+    }
 
     #[test]
     fn consuming_cursor_retains_slots_between_forward_release_steps() {

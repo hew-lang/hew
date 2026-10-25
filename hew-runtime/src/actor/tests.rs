@@ -4638,6 +4638,7 @@ fn native_graceful_stop_drains_accepted_turns_before_completion() {
             None,
             ptr::null_mut(),
             construction,
+            0,
             ptr::null(),
         )
     };

@@ -108,9 +108,25 @@ pub unsafe extern "C" fn hew_managed_visit_vector(
     slot: *const c_void,
     visitor: *const HewManagedStorageVisitor,
 ) -> i32 {
-    // SAFETY: the container owns its descriptor and initialized element range.
+    // SAFETY: the descriptor supplies the live container handle.
+    let pointer = unsafe { slot.cast::<*const hew_cabi::vec::HewVec>().read() };
+    let end = unsafe { pointer.as_ref() }.map_or(0, |value| value.len);
+    // SAFETY: the ordinary value owns the full initialized range and backing.
+    unsafe { visit_vector_range(pointer, 0, end, true, visitor) }
+}
+
+/// Visit the cursor's remaining elements and, separately, its retained backing.
+/// # Safety
+/// The release owner pins this range and no destroyed prefix is included.
+pub(crate) unsafe fn visit_vector_range(
+    pointer: *const hew_cabi::vec::HewVec,
+    start: usize,
+    end: usize,
+    backing: bool,
+    visitor: *const HewManagedStorageVisitor,
+) -> i32 {
+    // SAFETY: the release/value owner retains the descriptor and selected range.
     unsafe {
-        let pointer = slot.cast::<*const hew_cabi::vec::HewVec>().read();
         let Some(value) = pointer.as_ref() else {
             return 0;
         };
@@ -138,12 +154,14 @@ pub unsafe extern "C" fn hew_managed_visit_vector(
         } else {
             value.data.cast_const().cast()
         };
-        match storage(visitor, identity, bytes) {
-            SKIP_DESCENDANTS => return 0,
-            DESCEND => {}
-            failure => return failure,
+        if backing {
+            match storage(visitor, identity, bytes) {
+                SKIP_DESCENDANTS => return 0,
+                DESCEND => {}
+                failure => return failure,
+            }
         }
-        for index in 0..value.len {
+        for index in start..end {
             let status = visit_value(
                 layout,
                 value.data.add(index * value.elem_size).cast(),
@@ -164,11 +182,26 @@ pub unsafe extern "C" fn hew_managed_visit_map(
     slot: *const c_void,
     visitor: *const HewManagedStorageVisitor,
 ) -> i32 {
-    // SAFETY: descriptor snapshots and occupied slots belong to this map.
+    // SAFETY: the descriptor supplies the live container handle.
+    let pointer = unsafe {
+        slot.cast::<*const crate::hashmap::HewLayoutHashMap>()
+            .read()
+    };
+    // SAFETY: the ordinary map owns all occupied slots and its backing.
+    unsafe { visit_map_range(pointer, 0, true, visitor) }
+}
+
+/// Visit only map entries not yet handed to the semantic release cursor.
+/// # Safety
+/// The owner pins entries at and after `start`, and optionally their backing.
+pub(crate) unsafe fn visit_map_range(
+    pointer: *const crate::hashmap::HewLayoutHashMap,
+    start: usize,
+    backing: bool,
+    visitor: *const HewManagedStorageVisitor,
+) -> i32 {
+    // SAFETY: the existing map descriptor and occupancy bytes remain authoritative.
     unsafe {
-        let pointer = slot
-            .cast::<*const crate::hashmap::HewLayoutHashMap>()
-            .read();
         let Some(value) = pointer.as_ref() else {
             return 0;
         };
@@ -193,12 +226,14 @@ pub unsafe extern "C" fn hew_managed_visit_map(
         } else {
             value.entries.cast_const().cast()
         };
-        match storage(visitor, identity, bytes) {
-            SKIP_DESCENDANTS => return 0,
-            DESCEND => {}
-            failure => return failure,
+        if backing {
+            match storage(visitor, identity, bytes) {
+                SKIP_DESCENDANTS => return 0,
+                DESCEND => {}
+                failure => return failure,
+            }
         }
-        for index in 0..value.cap {
+        for index in start..value.cap {
             if let Some((key_slot, value_slot)) = value.managed_slot(index) {
                 let status = visit_value(key, key_slot, visitor);
                 if status != 0 {

@@ -162,6 +162,9 @@ trait StreamBacking: Send + std::fmt::Debug {
     fn typed_core(&self) -> Option<Arc<crate::channel_core::ChannelCore>> {
         None
     }
+    fn managed_supported(&self) -> bool {
+        true
+    }
 
     /// How a native receive reaches this backing's reactor handle, if it has
     /// one; see [`NativeRead`].
@@ -573,6 +576,11 @@ struct LinesStream {
 }
 
 impl StreamBacking for LinesStream {
+    // Legacy foreign adapters retain private content buffers. Their synchronous
+    // API remains available, but they have no checked managed provider contract.
+    fn managed_supported(&self) -> bool {
+        false
+    }
     fn typed_core(&self) -> Option<Arc<crate::channel_core::ChannelCore>> {
         self.upstream.typed_core()
     }
@@ -685,6 +693,11 @@ struct ChunksStream {
 }
 
 impl StreamBacking for ChunksStream {
+    // Legacy foreign adapters retain private content buffers. Their synchronous
+    // API remains available, but they have no checked managed provider contract.
+    fn managed_supported(&self) -> bool {
+        false
+    }
     fn typed_core(&self) -> Option<Arc<crate::channel_core::ChannelCore>> {
         self.upstream.typed_core()
     }
@@ -778,6 +791,9 @@ struct TakeStream {
 }
 
 impl StreamBacking for TakeStream {
+    fn managed_supported(&self) -> bool {
+        self.upstream.managed_supported()
+    }
     fn typed_core(&self) -> Option<Arc<crate::channel_core::ChannelCore>> {
         self.upstream.typed_core()
     }
@@ -912,7 +928,11 @@ pub const extern "C" fn hew_stream_pair_is_valid(pair: *const HewStreamPair) -> 
 /// Channel-sink callback: blocking write (default callers). Suspending callers
 /// route through the channel core's own send instead.
 fn channel_sink_write(core: &mut Arc<crate::channel_core::ChannelCore>, data: &[u8]) {
-    core.blocking_send(data.to_vec());
+    if core.is_typed() {
+        core.typed_content_send(data);
+    } else {
+        core.blocking_send(data.to_vec());
+    }
 }
 
 /// Channel-sink callback: flush is a no-op (the core is not write-buffered).
@@ -5241,6 +5261,9 @@ pub unsafe extern "C" fn hew_managed_visit_stream(
     let Some(stream) = (unsafe { stream.as_ref() }) else {
         return 0;
     };
+    if !stream.inner.managed_supported() {
+        return hew_cabi::managed::UNDESCRIBED;
+    }
     if let Some(core) = stream.typed_core() {
         return unsafe { core.visit_typed(visitor) };
     }

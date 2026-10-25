@@ -15,7 +15,6 @@ use std::sync::Arc;
 
 #[derive(Debug)]
 pub(super) struct State {
-    pub(super) layout: HewValueLayout,
     pub(super) width: u64,
     owner: Option<ValueOwner>,
     binding: Option<transfer::DestinationBinding>,
@@ -48,7 +47,6 @@ impl ChannelCore {
         }
         core.stamp_elem_layout(&layout);
         core.locked().typed = Some(State {
-            layout,
             width,
             owner,
             binding: transfer::current_binding(),
@@ -565,6 +563,11 @@ impl TypedRead {
         self.core.finish_typed_activity();
         1
     }
+    pub(crate) fn fault_message(&self) -> Option<String> {
+        let faulted = self.core.locked().sink_fault;
+        faulted.then(|| self.core.fault_message())
+    }
+
     pub(crate) fn cancel(&mut self) {
         self.waker = None;
     }
@@ -982,5 +985,79 @@ mod tests {
         assert_eq!(receiver.live_bytes(), 14);
         core.close_typed_sync();
         assert_eq!(receiver.live_bytes(), 0);
+    }
+}
+
+impl ChannelCore {
+    /// Legacy foreign content writers create a typed image only at this
+    /// explicit boundary. Generated source uses the borrowing checked writer.
+    pub(crate) fn typed_content_send(self: &Arc<Self>, content: &[u8]) {
+        if current_owner().is_some() {
+            crate::channel_common::abort_elem_witness(
+                "typed Pipe content writer",
+                "a bounded invocation requires the checked typed operation",
+            );
+        }
+        let layout = self
+            .locked()
+            .elem_layout
+            .expect("typed Pipe element layout");
+        let zero = vec![0_u8; layout.size];
+        // SAFETY: the representation is initialized by decode before publication.
+        let slot = unsafe { Slot::copy_image(layout, zero.as_ptr().cast()) };
+        if unsafe {
+            crate::channel_common::decode_elem_envelope(
+                Some(content.to_vec()),
+                slot.as_ptr(),
+                &layout,
+                "typed Pipe content writer",
+            )
+        } != 1
+        {
+            return;
+        }
+        unsafe extern "C" fn no_op(_: *mut c_void) {}
+        let waker = Arc::new(unsafe {
+            OwnedWaker::retain(&crate::wake::HewWaker {
+                context: core::ptr::null_mut(),
+                wake: no_op,
+                retain: no_op,
+                release: no_op,
+            })
+        });
+        let mut write = unsafe {
+            TypedWrite::new(
+                self.clone(),
+                slot.as_ptr(),
+                layout,
+                core::ptr::null(),
+                waker,
+            )
+        };
+        loop {
+            match write.poll() {
+                1 => return,
+                0 => {
+                    let guard = self.locked();
+                    let _ = self
+                        .cv
+                        .wait_timeout(guard, std::time::Duration::from_millis(10));
+                }
+                2 => {
+                    // No semantic transfer occurred; the foreign-created image
+                    // still owns its children independently of the receiver.
+                    unsafe {
+                        crate::release_walker::hew_release_sync(
+                            crate::release_walker::HewReleaseCursor::detached(
+                                slot.as_ptr(),
+                                layout,
+                            ),
+                        )
+                    };
+                    return;
+                }
+                _ => unreachable!(),
+            }
+        }
     }
 }

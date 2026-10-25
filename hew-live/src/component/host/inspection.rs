@@ -208,6 +208,28 @@ impl Host {
         input: Preview,
         within: std::time::Duration,
     ) -> Result<PreviewOutcome, Error> {
+        if input.fixtures.len() > self.policy.max_preview_fixtures {
+            return Err(Error::Refused(super::PolicyLimit::PreviewFixtures));
+        }
+        let mut lengths = vec![input.input.source.len(), input.input.body.len()];
+        for fixture in &input.fixtures {
+            match fixture {
+                ServiceFixture::Destination { source, result } => {
+                    lengths.push(source.len());
+                    match result {
+                        Ok(Some(text)) | Err(text) => lengths.push(text.len()),
+                        Ok(None) => {}
+                    }
+                }
+                ServiceFixture::Emit { message, result } => {
+                    lengths.extend([message.destination.len(), message.body.len()]);
+                    if let Err(text) = result {
+                        lengths.push(text.len());
+                    }
+                }
+            }
+        }
+        self.policy.payload(&lengths)?;
         let changed = Arc::new(tokio::sync::Notify::new());
         let simulation = Arc::new(Mutex::new(Simulation {
             supplied: input.fixtures.len(),
@@ -220,6 +242,8 @@ impl Host {
             services: Arc::new(SimulatedServices(Arc::clone(&simulation))),
             observer: self.observer.clone(),
             mode: "preview",
+            policy: Arc::clone(&self.policy),
+            budgets: Arc::clone(&self.budgets),
         });
         tokio::time::timeout(within, async {
             let deployment = isolated.activate(prepared, input.state).await?;

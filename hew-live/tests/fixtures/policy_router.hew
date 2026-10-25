@@ -1,0 +1,44 @@
+actor Allocator {
+    receive fn small() -> bool {
+        let values = [7; 4];
+        values[3] == 7
+    }
+
+    receive fn allocate() -> bool {
+        let values = [7; 4194304];
+        values[4194303] == 7
+    }
+}
+
+#[resource]
+pub type Router {
+    child: Allocator;
+}
+
+impl Router {
+    fn close(consume self) {
+        stop(self.child);
+        stopped(self.child);
+    }
+}
+
+pub fn create(_accepted: u64) -> Router {
+    Router { child: spawn Allocator }
+}
+
+pub fn snapshot(_router: Router) -> u64 {
+    0
+}
+
+pub fn dispose(consume router: Router) {}
+
+pub fn route(router: Router, source: string, _body: string) -> bool {
+    if source == "small" {
+        router.child.small().expect("small child allocation")
+    } else if source == "resources" {
+        println("bounded guest output");
+        true
+    } else {
+        router.child.allocate().expect("large child allocation")
+    }
+}

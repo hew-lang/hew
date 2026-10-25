@@ -24,11 +24,22 @@ pub(super) struct Control {
 }
 
 impl Control {
-    async fn prepare(&self, bytes: Vec<u8>) -> Result<String> {
-        let host = Arc::clone(&self.host);
-        let cache = Arc::clone(&self.cache);
-        let prepared =
-            tokio::task::spawn_blocking(move || host.prepare_cached(&cache, &bytes)).await??;
+    async fn prepare(self: &Arc<Self>, bytes: Vec<u8>) -> Result<String> {
+        self.host.policy().component(bytes.len())?;
+        let digest = super::super::cache::digest(&bytes);
+        if self
+            .prepared
+            .lock()
+            .expect("prepared cache poisoned")
+            .contains_key(&digest)
+        {
+            return Ok(format_digest(digest));
+        }
+        let control = Arc::clone(self);
+        let prepared = tokio::task::spawn_blocking(move || {
+            prepare_with_eviction(&control.host, &control.cache, &control.prepared, &bytes)
+        })
+        .await??;
         let digest = prepared.digest();
         self.prepared
             .lock()
@@ -37,7 +48,7 @@ impl Control {
         Ok(format_digest(digest))
     }
 
-    async fn candidate(&self, digest: [u8; 32]) -> Result<Prepared> {
+    async fn candidate(self: &Arc<Self>, digest: [u8; 32]) -> Result<Prepared> {
         if let Some(prepared) = self
             .prepared
             .lock()
@@ -47,12 +58,25 @@ impl Control {
         {
             return Ok(prepared);
         }
-        let host = Arc::clone(&self.host);
-        let cache = Arc::clone(&self.cache);
-        Ok(tokio::task::spawn_blocking(move || host.restore(&cache, digest)).await??)
+        let control = Arc::clone(self);
+        // Reclaim unused compiled entries before restoring a durable digest,
+        // just as for a new save. Active/inflight clones keep their own lease.
+        Ok(tokio::task::spawn_blocking(move || {
+            let bytes = control
+                .cache
+                .load_limited(digest, control.host.policy().max_component_bytes)
+                .map_err(super::super::host::Error::Cache)?;
+            prepare_with_eviction(&control.host, &control.cache, &control.prepared, &bytes)
+        })
+        .await??)
     }
 
-    async fn replace(&self, digest: String, predecessor: u64, within_ms: u64) -> Result<Receipt> {
+    async fn replace(
+        self: &Arc<Self>,
+        digest: String,
+        predecessor: u64,
+        within_ms: u64,
+    ) -> Result<Receipt> {
         let digest = parse_digest(&digest)?;
         let prepared = self.candidate(digest).await?;
         let within = Duration::from_millis(within_ms);
@@ -105,7 +129,13 @@ impl Control {
             .await?)
     }
 
-    async fn preview(&self, digest: String, input: String, within_ms: u64) -> Result<String> {
+    async fn preview(
+        self: &Arc<Self>,
+        digest: String,
+        input: String,
+        within_ms: u64,
+    ) -> Result<String> {
+        self.host.policy().payload(&[input.len()])?;
         let prepared = self.candidate(parse_digest(&digest)?).await?;
         let preview = serde_json::from_str(&input)?;
         let outcome = self
@@ -157,6 +187,14 @@ impl Control {
                 replies.finish(Err("component host closed".into()));
                 return;
             }
+            if lifecycle.inflight >= self.host.policy().max_control_operations {
+                drop(lifecycle);
+                replies.finish(Err(super::super::host::Error::Refused(
+                    super::super::host::PolicyLimit::ControlOperations,
+                )
+                .into()));
+                return;
+            }
             lifecycle.inflight += 1;
         }
         let handle = self.handle.clone();
@@ -165,6 +203,32 @@ impl Control {
             replies.finish(operation(self).await);
             drop(pending);
         });
+    }
+}
+
+fn prepare_with_eviction(
+    host: &Host,
+    cache: &ArtifactCache,
+    prepared: &Mutex<HashMap<[u8; 32], Prepared>>,
+    bytes: &[u8],
+) -> std::result::Result<Prepared, super::super::host::Error> {
+    use super::super::host::{Error, PolicyLimit};
+    let mut remaining = prepared.lock().expect("prepared cache poisoned").len();
+    loop {
+        match host.prepare_cached(cache, bytes) {
+            Err(error @ Error::Refused(PolicyLimit::PreparedComponents)) => {
+                let mut entries = prepared.lock().expect("prepared cache poisoned");
+                let unused = entries
+                    .iter()
+                    .find_map(|(digest, entry)| entry.cache_exclusive().then_some(*digest));
+                if remaining == 0 || unused.is_none() {
+                    return Err(error);
+                }
+                entries.remove(&unused.expect("unused entry identified"));
+                remaining -= 1;
+            }
+            result => return result,
+        }
     }
 }
 
@@ -321,10 +385,14 @@ struct Callbacks {
     ),
 }
 
-unsafe fn read_text(pointer: *const c_void) -> String {
+unsafe fn read_text(pointer: *const c_void, maximum: usize) -> Result<String> {
     // SAFETY: ordinary extern callback borrows a compiler-owned immutable string.
     unsafe {
-        String::from_utf8_lossy(hew_cabi::string::string_as_bytes(pointer.cast())).into_owned()
+        let bytes = hew_cabi::string::string_as_bytes(pointer.cast());
+        if bytes.len() > maximum {
+            return Err("component host refused oversized control input".into());
+        }
+        Ok(std::str::from_utf8(bytes)?.to_owned())
     }
 }
 
@@ -344,22 +412,26 @@ unsafe extern "C" fn prepare(
     error: Pointer,
 ) {
     // SAFETY: bridge borrows immutable inputs for this callback only.
-    let (control, bytes) = unsafe {
-        let bytes = &*bytes;
-        (
-            context(pointer),
-            if bytes.length == 0 {
-                Vec::new()
-            } else {
-                std::slice::from_raw_parts(
-                    bytes.pointer.add(bytes.offset as usize),
-                    bytes.length as usize,
-                )
-                .to_vec()
-            },
-        )
-    };
+    let control = unsafe { context(pointer) };
     let replies = Replies::new(&control, &[status, digest, error]);
+    // SAFETY: bridge borrows this complete Bytes carrier for the callback.
+    let bytes = unsafe { &*bytes };
+    if let Err(error) = control.host.policy().component(bytes.length as usize) {
+        replies.finish(Err(error.into()));
+        return;
+    }
+    // SAFETY: the bridge borrows the immutable slice for this callback.
+    let bytes = unsafe {
+        if bytes.length == 0 {
+            Vec::new()
+        } else {
+            std::slice::from_raw_parts(
+                bytes.pointer.add(bytes.offset as usize),
+                bytes.length as usize,
+            )
+            .to_vec()
+        }
+    };
     control.dispatch(replies, move |control| async move {
         control
             .prepare(bytes)
@@ -382,11 +454,11 @@ unsafe extern "C" fn replace(
     // SAFETY: bridge retains the immutable input during this callback.
     let control = unsafe { context(pointer) };
     // SAFETY: bridge retains this immutable string during the callback.
-    let digest = unsafe { read_text(digest) };
+    let digest = unsafe { read_text(digest, 64) };
     let replies = Replies::new(&control, &[status, epoch, identity, accepted, error]);
     control.dispatch(replies, move |control| async move {
         control
-            .replace(digest, predecessor, within_ms)
+            .replace(digest?, predecessor, within_ms)
             .await
             .map(|receipt| {
                 vec![
@@ -430,15 +502,17 @@ unsafe extern "C" fn route(
     let control = unsafe { context(pointer) };
     // SAFETY: bridge retains both immutable strings during the callback.
     let event = unsafe {
-        Event {
-            source: read_text(source),
-            body: read_text(body),
-        }
+        (|| -> Result<Event> {
+            Ok(Event {
+                source: read_text(source, control.host.policy().max_payload_bytes)?,
+                body: read_text(body, control.host.policy().max_payload_bytes)?,
+            })
+        })()
     };
     let replies = Replies::new(&control, &[status, accepted, error]);
     control.dispatch(replies, move |control| async move {
         control
-            .route(event)
+            .route(event?)
             .await
             .map(|accepted| vec![Value::Boolean(accepted)])
     });
@@ -455,12 +529,18 @@ unsafe extern "C" fn preview(
 ) {
     // SAFETY: Driver and the bridge retain this context and both immutable texts
     // until the synchronous callback has copied its local SDK inputs.
-    let (control, digest, input) =
-        unsafe { (context(pointer), read_text(digest), read_text(input)) };
+    let control = unsafe { context(pointer) };
+    // SAFETY: bridge retains immutable inputs for this callback.
+    let (digest, input) = unsafe {
+        (
+            read_text(digest, 64),
+            read_text(input, control.host.policy().max_payload_bytes),
+        )
+    };
     let replies = Replies::new(&control, &[status, outcome, error]);
     control.dispatch(replies, move |control| async move {
         control
-            .preview(digest, input, within_ms)
+            .preview(digest?, input?, within_ms)
             .await
             .map(|outcome| vec![Value::Text(outcome)])
     });
@@ -482,4 +562,100 @@ pub(super) fn install(driver: &mut Driver, control: Arc<Control>) -> Result<()> 
     }
     driver.context = Some(control);
     driver.start()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::super::super::host::{Error, HostPolicy, PolicyLimit, ServiceCall, Services};
+    use super::*;
+
+    struct NoServices;
+    impl Services for NoServices {
+        fn destination(&self, _: String) -> ServiceCall<Option<String>> {
+            panic!("cache lifecycle must not issue services")
+        }
+        fn emit(&self, _: super::super::super::host::Delivery) -> ServiceCall<()> {
+            panic!("cache lifecycle must not emit")
+        }
+    }
+
+    #[tokio::test]
+    async fn policy_compiled_cache_evicts_unused_saves_without_releasing_live_roots() {
+        let core = std::fs::read(
+            std::env::var_os("HEW_LIVE_FOREIGN_COMPONENT")
+                .expect("make test-live-component supplies the independent guest"),
+        )
+        .unwrap();
+        let original = wit_component::ComponentEncoder::default()
+            .module(&core)
+            .unwrap()
+            .adapter(
+                "wasi_snapshot_preview1",
+                wasi_preview1_component_adapter_provider::WASI_SNAPSHOT_PREVIEW1_REACTOR_ADAPTER,
+            )
+            .unwrap()
+            .validate(true)
+            .encode()
+            .unwrap();
+        let variant = |revision: u8| {
+            let mut bytes = original.clone();
+            // A valid custom section changes identity without changing code.
+            bytes.extend_from_slice(&[0, 9, 7, b'v', b'e', b'r', b's', b'i', b'o', b'n', revision]);
+            bytes
+        };
+        let host = Arc::new(
+            Host::with_policy(
+                Arc::new(NoServices),
+                HostPolicy {
+                    max_prepared_components: 2,
+                    ..HostPolicy::default()
+                },
+            )
+            .unwrap(),
+        );
+        let directory = tempfile::tempdir().unwrap();
+        let cache = ArtifactCache::open(directory.path()).unwrap();
+        let entries = Mutex::new(HashMap::new());
+        let save = |bytes: &[u8]| {
+            let value = prepare_with_eviction(&host, &cache, &entries, bytes)?;
+            entries
+                .lock()
+                .unwrap()
+                .insert(value.digest(), value.clone());
+            Ok::<_, Error>(value)
+        };
+        let first = save(&variant(0)).unwrap();
+        let first_digest = first.digest();
+        let deployment = host
+            .activate(first, Snapshot { accepted: 7 })
+            .await
+            .unwrap();
+        for revision in 1..5 {
+            let prepared = save(&variant(revision)).unwrap();
+            let committed = deployment
+                .replace(prepared, u64::from(revision), Duration::from_secs(2))
+                .await
+                .unwrap();
+            assert_eq!(committed.snapshot.accepted, 7);
+            committed.retirement.await.unwrap().unwrap();
+            tokio::task::yield_now().await;
+            assert!(entries.lock().unwrap().len() <= 2);
+        }
+        let held = save(&variant(10)).unwrap();
+        assert!(matches!(
+            save(&variant(11)),
+            Err(Error::Refused(PolicyLimit::PreparedComponents))
+        ));
+        drop(held);
+        drop(save(&variant(11)).unwrap());
+        assert!(!entries.lock().unwrap().contains_key(&first_digest));
+        let restored = save(&cache.load(first_digest).unwrap()).unwrap();
+        let committed = deployment
+            .replace(restored, 5, Duration::from_secs(2))
+            .await
+            .unwrap();
+        assert_eq!(committed.snapshot.accepted, 7);
+        committed.retirement.await.unwrap().unwrap();
+        deployment.dispose().await.unwrap().unwrap();
+    }
 }

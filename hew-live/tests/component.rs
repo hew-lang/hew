@@ -30,10 +30,14 @@ fn environment(name: &str) -> PathBuf {
 }
 
 fn build_component(directory: &Path, constructor: &str) -> Vec<u8> {
+    build_fixture(directory, "router.hew", constructor)
+}
+
+fn build_fixture(directory: &Path, source: &str, constructor: &str) -> Vec<u8> {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
     let fixture = root.join("tests/fixtures");
     write_guest_bindings(directory).unwrap();
-    std::fs::copy(fixture.join("router.hew"), directory.join("router_app.hew")).unwrap();
+    std::fs::copy(fixture.join(source), directory.join("router_app.hew")).unwrap();
     run(Command::new(environment("HEW_LIVE_COMPILER"))
         .args(["build", "--target", "wasm32-wasip1", "--emit-obj"])
         .args(["--export-c", &format!("{constructor}=guest_create")])
@@ -217,6 +221,301 @@ impl hew_live::component::host::Services for DeploymentServices {
     }
 }
 
+fn policy_services() -> Arc<DeploymentServices> {
+    Arc::new(DeploymentServices {
+        idle: Arc::default(),
+        idle_calls: Arc::default(),
+        started: Arc::default(),
+        release: Arc::default(),
+        delivered: Arc::default(),
+    })
+}
+
+fn foreign_bytes() -> Vec<u8> {
+    component_bytes(&std::fs::read(environment("HEW_LIVE_FOREIGN_COMPONENT")).unwrap())
+}
+
+#[tokio::test(flavor = "current_thread")]
+#[allow(
+    clippy::too_many_lines,
+    reason = "one admission lifecycle proves retention through caller loss and actual Store disposal"
+)]
+async fn policy_admission_retains_routes_after_caller_loss_and_refunds_preparation() {
+    use hew_live::component::host::{
+        Error, Host, HostPolicy, PolicyLimit, Preview, ServiceFixture,
+    };
+    let bytes = foreign_bytes();
+    let services = policy_services();
+    let host = Arc::new(
+        Host::with_policy(
+            services.clone(),
+            HostPolicy {
+                max_component_bytes: bytes.len(),
+                max_prepared_components: 1,
+                max_instances: 1,
+                queue_capacity: 1,
+                max_routes: 1,
+                max_payload_bytes: 128,
+                max_preview_fixtures: 1,
+                ..HostPolicy::default()
+            },
+        )
+        .unwrap(),
+    );
+    assert!(matches!(
+        host.prepare(&vec![0; bytes.len() + 1]),
+        Err(Error::Refused(PolicyLimit::ComponentBytes))
+    ));
+    assert!(matches!(
+        host.prepare(b"invalid component"),
+        Err(Error::Engine(_))
+    ));
+    let prepared = host.prepare(&bytes).unwrap();
+    assert!(matches!(
+        host.prepare(&bytes),
+        Err(Error::Refused(PolicyLimit::PreparedComponents))
+    ));
+    let preview = Preview {
+        state: Snapshot { accepted: 0 },
+        input: Event {
+            source: "held".into(),
+            body: String::new(),
+        },
+        fixtures: vec![
+            ServiceFixture::Destination {
+                source: "held".into(),
+                result: Ok(None)
+            };
+            2
+        ],
+    };
+    assert!(matches!(
+        host.preview(prepared.clone(), preview, std::time::Duration::from_secs(1))
+            .await,
+        Err(Error::Refused(PolicyLimit::PreviewFixtures))
+    ));
+    let deployment = Arc::new(
+        host.activate(prepared.clone(), Snapshot { accepted: 0 })
+            .await
+            .unwrap(),
+    );
+    assert!(matches!(
+        host.activate(prepared, Snapshot { accepted: 0 }).await,
+        Err(Error::Refused(PolicyLimit::Instances))
+    ));
+    assert!(matches!(
+        deployment
+            .route(Event {
+                source: "oversized".into(),
+                body: "x".repeat(129)
+            })
+            .await,
+        Err(Error::Refused(PolicyLimit::PayloadBytes))
+    ));
+    let caller = Arc::clone(&deployment);
+    let pending = tokio::spawn(async move {
+        caller
+            .route(Event {
+                source: "held".into(),
+                body: "one".into(),
+            })
+            .await
+    });
+    services.started.notified().await;
+    pending.abort();
+    let _ = pending.await;
+    assert!(matches!(
+        deployment
+            .route(Event {
+                source: "next".into(),
+                body: String::new()
+            })
+            .await,
+        Err(Error::Refused(PolicyLimit::Routes))
+    ));
+    services.release.notify_one();
+    tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        loop {
+            match deployment
+                .route(Event {
+                    source: "next".into(),
+                    body: String::new(),
+                })
+                .await
+            {
+                Err(Error::Refused(PolicyLimit::Routes)) => tokio::task::yield_now().await,
+                result => {
+                    assert!(result.unwrap());
+                    break;
+                }
+            }
+        }
+    })
+    .await
+    .unwrap();
+    assert_eq!(services.delivered.lock().unwrap().len(), 2);
+    Arc::try_unwrap(deployment)
+        .unwrap()
+        .dispose()
+        .await
+        .unwrap()
+        .unwrap();
+    // Store destruction, rather than loss of a caller, returns retention permits.
+    tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        loop {
+            match host.prepare(&bytes) {
+                Err(Error::Refused(PolicyLimit::PreparedComponents)) => {
+                    tokio::task::yield_now().await;
+                }
+                result => {
+                    result.unwrap();
+                    break;
+                }
+            }
+        }
+    })
+    .await
+    .unwrap();
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn policy_service_exhaustion_is_an_admitted_fault() {
+    use hew_live::component::host::{Error, Host, HostPolicy};
+    let bytes = foreign_bytes();
+    for (index, policy) in [
+        HostPolicy {
+            max_service_calls: 1,
+            ..HostPolicy::default()
+        },
+        HostPolicy {
+            max_output_bytes: 3,
+            ..HostPolicy::default()
+        },
+        HostPolicy {
+            host_operation_timeout: std::time::Duration::from_millis(10),
+            ..HostPolicy::default()
+        },
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let services = policy_services();
+        let host = Arc::new(Host::with_policy(services.clone(), policy).unwrap());
+        let deployment = host
+            .activate(host.prepare(&bytes).unwrap(), Snapshot { accepted: 0 })
+            .await
+            .unwrap();
+        let error = deployment.route(Event {
+            source: if index == 2 { "held" } else { "ok" }.into(),
+            body: "body".into(),
+        });
+        // The first two policies fail on traffic before any provider effect;
+        // the timeout policy enters its provider and expires there.
+        let result = tokio::time::timeout(std::time::Duration::from_secs(2), error)
+            .await
+            .unwrap();
+        let Err(Error::Engine(error)) = result else {
+            panic!("expected an admitted execution fault: {result:?}")
+        };
+        let expected = ["ServiceCalls", "OutputBytes", "expired"][index];
+        assert!(format!("{error:#}").contains(expected), "{error:#}");
+        assert!(services.delivered.lock().unwrap().is_empty());
+        drop(deployment);
+    }
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn policy_limits_cover_child_allocations_and_guest_fuel() {
+    use hew_live::component::host::{Error, Host, HostPolicy};
+    let directory = tempfile::tempdir().unwrap();
+    let bytes = build_fixture(directory.path(), "policy_router.hew", "create");
+    for (limit, succeeds) in [(32 * 1024 * 1024, false), (128 * 1024 * 1024, true)] {
+        let host = Arc::new(
+            Host::with_policy(
+                policy_services(),
+                HostPolicy {
+                    memory_bytes: limit,
+                    ..HostPolicy::default()
+                },
+            )
+            .unwrap(),
+        );
+        let deployment = host
+            .activate(host.prepare(&bytes).unwrap(), Snapshot { accepted: 0 })
+            .await
+            .unwrap();
+        assert!(deployment
+            .route(Event {
+                source: "small".into(),
+                body: String::new()
+            })
+            .await
+            .unwrap());
+        let result = deployment
+            .route(Event {
+                source: "allocate".into(),
+                body: String::new(),
+            })
+            .await;
+        if succeeds {
+            assert!(result.unwrap());
+            deployment.dispose().await.unwrap().unwrap();
+        } else {
+            let Err(Error::Engine(error)) = result else {
+                panic!("expected a child memory fault: {result:?}")
+            };
+            assert!(format!("{error:#}").contains("memory"), "{error:#}");
+        }
+    }
+    let host = Arc::new(
+        Host::with_policy(
+            policy_services(),
+            HostPolicy {
+                fuel: 0,
+                ..HostPolicy::default()
+            },
+        )
+        .unwrap(),
+    );
+    let error = host
+        .activate(host.prepare(&bytes).unwrap(), Snapshot { accepted: 0 })
+        .await
+        .unwrap_err();
+    let Error::Engine(error) = error else {
+        panic!("expected a fuel fault: {error}")
+    };
+    assert!(format!("{error:#}").contains("fuel"), "{error:#}");
+
+    let host = Arc::new(
+        Host::with_policy(
+            policy_services(),
+            HostPolicy {
+                max_host_resources: 0,
+                ..HostPolicy::default()
+            },
+        )
+        .unwrap(),
+    );
+    let result = match host
+        .activate(host.prepare(&bytes).unwrap(), Snapshot { accepted: 0 })
+        .await
+    {
+        Ok(deployment) => {
+            deployment
+                .route(Event {
+                    source: "resources".into(),
+                    body: String::new(),
+                })
+                .await
+        }
+        Err(error) => Err(error),
+    };
+    let Err(Error::Engine(error)) = result else {
+        panic!("expected a WASI resource fault: {result:?}")
+    };
+    assert!(format!("{error:#}").contains("resource"), "{error:#}");
+}
+
 #[allow(
     clippy::too_many_lines,
     reason = "one replacement oracle checks admission, expiry, autonomous recovery and retirement"
@@ -234,9 +533,17 @@ async fn exercise_deployment(bytes: &[u8], stalled: &[u8]) {
     });
     let observation = Arc::new(Observed::default());
     let host = Arc::new(
-        Host::new(services.clone())
-            .unwrap()
-            .with_observer(observation.clone()),
+        // This oracle exercises deadline revocation independently of fuel
+        // exhaustion, which has its own explicit policy control above.
+        Host::with_policy(
+            services.clone(),
+            hew_live::component::host::HostPolicy {
+                fuel: 1_000_000_000_000,
+                ..hew_live::component::host::HostPolicy::default()
+            },
+        )
+        .unwrap()
+        .with_observer(observation.clone()),
     );
     let cache_directory = tempfile::tempdir().unwrap();
     let identity = {
@@ -317,10 +624,14 @@ async fn exercise_deployment(bytes: &[u8], stalled: &[u8]) {
 
     // Pure candidate initialization loops forever. Fuel yields allow the host
     // deadline to revoke commit authority without trapping the old deployment.
-    assert!(matches!(
-        deployment.replace(stalled, 2, Duration::from_secs(5)).await,
-        Err(Error::Expired(Stage::Initialization))
-    ));
+    let expired = deployment
+        .replace(stalled, 2, Duration::from_secs(5))
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(expired, Error::Expired(Stage::Initialization)),
+        "{expired}"
+    );
     assert_eq!(deployment.epoch().await, 2);
     services.observe_idle_turn().await;
     assert!(deployment

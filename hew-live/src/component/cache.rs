@@ -1,7 +1,7 @@
 //! Immutable component bytes retained across host restarts.
 
 use std::fmt::Write as _;
-use std::io::{self, Write};
+use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 
 use sha2::{Digest, Sha256};
@@ -31,7 +31,26 @@ impl ArtifactCache {
     /// # Errors
     /// Returns filesystem errors or `InvalidData` for corrupted bytes.
     pub fn load(&self, expected: [u8; 32]) -> io::Result<Vec<u8>> {
-        let bytes = std::fs::read(self.path(expected))?;
+        self.load_limited(expected, usize::MAX)
+    }
+
+    pub(super) fn load_limited(&self, expected: [u8; 32], maximum: usize) -> io::Result<Vec<u8>> {
+        let file = std::fs::File::open(self.path(expected))?;
+        if file.metadata()?.len() > maximum as u64 {
+            return Err(io::Error::new(
+                io::ErrorKind::FileTooLarge,
+                "cached component exceeds host policy",
+            ));
+        }
+        let mut bytes = Vec::new();
+        file.take((maximum as u64).saturating_add(1))
+            .read_to_end(&mut bytes)?;
+        if bytes.len() > maximum {
+            return Err(io::Error::new(
+                io::ErrorKind::FileTooLarge,
+                "cached component exceeds host policy",
+            ));
+        }
         if digest(&bytes) != expected {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
@@ -52,7 +71,7 @@ impl ArtifactCache {
                 Ok(())
             }
             Err(error) if error.error.kind() == io::ErrorKind::AlreadyExists => {
-                self.load(expected)?;
+                self.load_limited(expected, bytes.len())?;
                 Ok(())
             }
             Err(error) => Err(error.error),
@@ -116,5 +135,22 @@ mod tests {
             io::ErrorKind::InvalidData
         );
         assert_eq!(std::fs::read(cache.path(identity)).unwrap(), b"truncated");
+    }
+
+    #[test]
+    fn bounded_restore_refuses_before_reading_a_large_entry() {
+        let directory = tempfile::tempdir().unwrap();
+        let cache = ArtifactCache::open(directory.path()).unwrap();
+        let bytes = b"component bytes";
+        let identity = digest(bytes);
+        cache.insert(bytes, identity).unwrap();
+        assert_eq!(
+            cache
+                .load_limited(identity, bytes.len() - 1)
+                .unwrap_err()
+                .kind(),
+            io::ErrorKind::FileTooLarge
+        );
+        assert_eq!(cache.load_limited(identity, bytes.len()).unwrap(), bytes);
     }
 }

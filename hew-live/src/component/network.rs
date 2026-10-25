@@ -54,12 +54,38 @@ impl Server {
         cache: super::cache::ArtifactCache,
         services: std::sync::Arc<dyn super::host::Services>,
     ) -> Result<Self> {
+        // SAFETY: caller establishes trusted immutable files.
+        unsafe {
+            Self::open_with_policy(
+                runtime,
+                module,
+                cache,
+                services,
+                super::host::HostPolicy::default(),
+            )
+            .await
+        }
+    }
+
+    /// Start a node with explicit finite portable execution bounds.
+    /// # Safety
+    /// Runtime and module files must be trusted, immutable native code.
+    /// # Errors
+    /// Returns policy, native startup or component engine errors.
+    pub async unsafe fn open_with_policy(
+        runtime: PathBuf,
+        module: Module,
+        cache: super::cache::ArtifactCache,
+        services: std::sync::Arc<dyn super::host::Services>,
+        policy: super::host::HostPolicy,
+    ) -> Result<Self> {
         use std::sync::{Arc, Mutex};
+        let host = super::host::Host::with_policy(services, policy)?;
         // SAFETY: caller establishes trusted immutable files.
         let worker = unsafe { native::Worker::open(runtime, module).await? };
         let observer = worker.execute(|driver| Ok(driver.observer())).await?;
         let control = Arc::new(control::Control {
-            host: Arc::new(super::host::Host::new(services)?.with_observer(observer)),
+            host: Arc::new(host.with_observer(observer)),
             cache: Arc::new(cache),
             worker: worker.clone(),
             handle: tokio::runtime::Handle::current(),

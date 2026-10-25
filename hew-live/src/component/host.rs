@@ -8,11 +8,13 @@ use std::sync::{Arc, Mutex};
 use std::task::Poll;
 use std::time::Duration;
 
-use tokio::sync::{mpsc, oneshot, OwnedRwLockReadGuard, OwnedRwLockWriteGuard, RwLock};
+use tokio::sync::{
+    mpsc, oneshot, OwnedRwLockReadGuard, OwnedRwLockWriteGuard, OwnedSemaphorePermit, RwLock,
+};
 use tokio::task::JoinHandle;
 use tokio::time::Instant;
 use wasmtime::component::{Accessor, AccessorTask, Component, Linker, ResourceTable};
-use wasmtime::{Config, Engine, Store};
+use wasmtime::{Config, Engine, Store, StoreLimits};
 use wasmtime_wasi::{WasiCtx, WasiCtxBuilder, WasiCtxView, WasiView};
 
 use super::bindings;
@@ -20,7 +22,9 @@ use super::cache::{self, ArtifactCache};
 pub use bindings::hew::live_router::events::{Delivery, Event, Snapshot};
 
 mod inspection;
+mod policy;
 pub use inspection::{Observer, Preview, PreviewOutcome, ServiceFixture};
+pub use policy::{HostPolicy, PolicyLimit};
 
 static NEXT_IDENTITY: AtomicU64 = AtomicU64::new(1);
 
@@ -52,6 +56,8 @@ pub enum Error {
     PredecessorChanged,
     InvalidDeadline,
     IdentityExhausted,
+    Refused(PolicyLimit),
+    InvalidPolicy(&'static str),
 }
 
 /// Work that owned the fenced interval when its deadline expired.
@@ -81,6 +87,12 @@ impl fmt::Display for Error {
                 formatter.write_str("replacement duration exceeds the host clock")
             }
             Self::IdentityExhausted => formatter.write_str("host execution identity exhausted"),
+            Self::Refused(limit) => {
+                write!(formatter, "component host refused admission: {limit:?}")
+            }
+            Self::InvalidPolicy(field) => {
+                write!(formatter, "invalid component host policy: {field}")
+            }
         }
     }
 }
@@ -98,9 +110,14 @@ impl From<wasmtime::Error> for Error {
 pub struct Prepared {
     component: Component,
     digest: [u8; 32],
+    retention: Arc<OwnedSemaphorePermit>,
 }
 
 impl Prepared {
+    pub(super) fn cache_exclusive(&self) -> bool {
+        Arc::strong_count(&self.retention) == 1
+    }
+
     /// The content identity of the validated portable component bytes.
     #[must_use]
     pub fn digest(&self) -> [u8; 32] {
@@ -123,6 +140,8 @@ pub struct Host {
     services: Arc<dyn Services>,
     observer: Option<Arc<dyn Observer>>,
     mode: &'static str,
+    policy: Arc<HostPolicy>,
+    budgets: Arc<policy::Budgets>,
 }
 
 impl fmt::Debug for Host {
@@ -132,11 +151,21 @@ impl fmt::Debug for Host {
 }
 
 impl Host {
-    /// Create a host. Fuel yields to the executor without expiring the guest.
+    /// Create a host with finite resource bounds and no inherited WASI grants.
     ///
     /// # Errors
     /// Returns engine configuration failures.
     pub fn new(services: Arc<dyn Services>) -> Result<Self, Error> {
+        Self::with_policy(services, HostPolicy::default())
+    }
+
+    /// Create a host with explicit finite limits. Instance fuel and service
+    /// traffic include all descendant work for that instance's lifetime.
+    ///
+    /// # Errors
+    /// Returns invalid policy or engine configuration failures.
+    pub fn with_policy(services: Arc<dyn Services>, policy: HostPolicy) -> Result<Self, Error> {
+        policy.validate()?;
         let mut config = Config::new();
         config.wasm_component_model_async(true).consume_fuel(true);
         Ok(Self {
@@ -144,7 +173,15 @@ impl Host {
             services,
             observer: None,
             mode: "production",
+            budgets: Arc::new(policy::Budgets::new(&policy)),
+            policy: Arc::new(policy),
         })
+    }
+
+    /// The policy shared by this host and its isolated previews.
+    #[must_use]
+    pub fn policy(&self) -> &HostPolicy {
+        &self.policy
     }
 
     /// Attach metadata-only observation without granting control or services.
@@ -159,9 +196,16 @@ impl Host {
     /// # Errors
     /// Returns component validation or compilation failures.
     pub fn prepare(&self, bytes: &[u8]) -> Result<Prepared, Error> {
+        self.policy.component(bytes.len())?;
+        let _preparing = policy::reserve(&self.budgets.preparing, PolicyLimit::Preparations)?;
+        let retention = Arc::new(policy::reserve(
+            &self.budgets.prepared,
+            PolicyLimit::PreparedComponents,
+        )?);
         Ok(Prepared {
             component: Component::new(&self.engine, bytes)?,
             digest: cache::digest(bytes),
+            retention,
         })
     }
 
@@ -181,7 +225,16 @@ impl Host {
     /// # Errors
     /// Returns cache verification, validation or compilation failures.
     pub fn restore(&self, cache: &ArtifactCache, digest: [u8; 32]) -> Result<Prepared, Error> {
-        self.prepare(&cache.load(digest).map_err(Error::Cache)?)
+        let bytes = cache
+            .load_limited(digest, self.policy.max_component_bytes)
+            .map_err(|error| {
+                if error.kind() == std::io::ErrorKind::FileTooLarge {
+                    Error::Refused(PolicyLimit::ComponentBytes)
+                } else {
+                    Error::Cache(error)
+                }
+            })?;
+        self.prepare(&bytes)
     }
 
     /// Initialize a deployment before enabling its production services.
@@ -206,23 +259,44 @@ impl Host {
     }
 
     async fn instantiate(&self, prepared: Prepared) -> Result<Arc<Instance>, Error> {
-        let (commands, receiver) = mpsc::channel(64);
+        let instance_permit = policy::reserve(&self.budgets.instances, PolicyLimit::Instances)?;
+        let (commands, receiver) = mpsc::channel(self.policy.queue_capacity);
         let (ready, initialized) = oneshot::channel();
+        let (failed, failure) = tokio::sync::watch::channel(None);
         let granted = Arc::new(AtomicBool::new(false));
         let engine = self.engine.clone();
         let services = Arc::clone(&self.services);
         let worker_grant = Arc::clone(&granted);
         let wake = Arc::new(tokio::sync::Notify::new());
         let worker_wake = Arc::clone(&wake);
+        let policy = Arc::clone(&self.policy);
+        let budgets = Arc::clone(&self.budgets);
         let worker = tokio::spawn(async move {
-            match guest(&engine, &prepared.component, services, worker_grant).await {
+            // These permits belong to the Store owner, not the caller or its
+            // JoinHandle. Abort releases them only when that future is dropped.
+            let _instance_permit = instance_permit;
+            let _preparation = Arc::clone(&prepared.retention);
+            match guest(
+                &engine,
+                &prepared.component,
+                services,
+                worker_grant,
+                policy,
+                budgets,
+            )
+            .await
+            {
                 Ok((mut store, router)) => {
                     let _ = ready.send(Ok(()));
-                    let _ = store
+                    let result = store
                         .run_concurrent(async |accessor| {
                             serve(accessor, Arc::new(router), receiver, worker_wake).await
                         })
-                        .await;
+                        .await
+                        .and_then(std::convert::identity);
+                    if let Err(error) = result {
+                        let _ = failed.send(Some(format!("{error:#}")));
+                    }
                 }
                 Err(error) => {
                     let _ = ready.send(Err(error));
@@ -236,6 +310,7 @@ impl Host {
             digest: prepared.digest,
             snapshot_gate: Arc::default(),
             wake,
+            failure,
         });
         initialized.await.map_err(|_| Error::Closed)??;
         Ok(instance)
@@ -264,16 +339,18 @@ impl Deployment {
     /// # Errors
     /// Returns guest faults, service refusals or a closed host.
     pub async fn route(&self, event: Event) -> Result<bool, Error> {
+        self.host
+            .policy
+            .payload(&[event.source.len(), event.body.len()])?;
+        let admission = policy::reserve(&self.host.budgets.routes, PolicyLimit::Routes)?;
         let lease = Arc::clone(&self.active).read_owned().await;
         let instance = Arc::clone(&lease.instance);
         let (reply, result) = oneshot::channel();
         // Reserve command capacity before assigning the immutable admission.
         // Cancellation while waiting leaves this work unadmitted.
-        let permit = instance
-            .commands
-            .reserve()
-            .await
-            .map_err(|_| Error::Closed)?;
+        let Ok(permit) = instance.commands.reserve().await else {
+            return Err(instance.closed_error().await);
+        };
         let invocation = next_identity()?;
         let identity = self.identity(
             Status {
@@ -290,8 +367,9 @@ impl Deployment {
             reply,
             lease,
             observation,
+            admission,
         });
-        result.await.map_err(|_| Error::Closed)?
+        instance.receive(result).await
     }
 
     /// Observe the current admission epoch.
@@ -432,6 +510,7 @@ struct Instance {
     digest: [u8; 32],
     snapshot_gate: Arc<tokio::sync::Mutex<()>>,
     wake: Arc<tokio::sync::Notify>,
+    failure: tokio::sync::watch::Receiver<Option<String>>,
 }
 
 impl Drop for Instance {
@@ -441,6 +520,25 @@ impl Drop for Instance {
 }
 
 impl Instance {
+    async fn closed_error(&self) -> Error {
+        let mut failure = self.failure.clone();
+        loop {
+            if let Some(error) = failure.borrow_and_update().as_ref() {
+                return Error::Engine(wasmtime::Error::msg(error.clone()));
+            }
+            if failure.changed().await.is_err() {
+                return Error::Closed;
+            }
+        }
+    }
+
+    async fn receive<T>(&self, result: oneshot::Receiver<Result<T, Error>>) -> Result<T, Error> {
+        match result.await {
+            Ok(result) => result,
+            Err(_) => Err(self.closed_error().await),
+        }
+    }
+
     fn activate(&self) {
         self.granted.store(true, Ordering::Release);
         self.wake.notify_one();
@@ -448,33 +546,45 @@ impl Instance {
 
     async fn initialize(&self, state: Snapshot) -> Result<(), Error> {
         let (reply, result) = oneshot::channel();
-        self.commands
+        if self
+            .commands
             .send(Command::Initialize { state, reply })
             .await
-            .map_err(|_| Error::Closed)?;
-        result.await.map_err(|_| Error::Closed)?
+            .is_err()
+        {
+            return Err(self.closed_error().await);
+        }
+        self.receive(result).await
     }
 
     async fn snapshot(&self, attempt: Arc<Mutex<Attempt>>) -> Result<Snapshot, Error> {
         let (reply, result) = oneshot::channel();
-        self.commands
+        if self
+            .commands
             .send(Command::Snapshot {
                 attempt,
                 reply,
                 gate: Arc::clone(&self.snapshot_gate),
             })
             .await
-            .map_err(|_| Error::Closed)?;
-        result.await.map_err(|_| Error::Closed)?
+            .is_err()
+        {
+            return Err(self.closed_error().await);
+        }
+        self.receive(result).await
     }
 
     async fn dispose(&self) -> Result<(), Error> {
         let (reply, result) = oneshot::channel();
-        self.commands
+        if self
+            .commands
             .send(Command::Dispose { reply })
             .await
-            .map_err(|_| Error::Closed)?;
-        result.await.map_err(|_| Error::Closed)?
+            .is_err()
+        {
+            return Err(self.closed_error().await);
+        }
+        self.receive(result).await
     }
 }
 
@@ -515,6 +625,7 @@ enum Command {
         reply: oneshot::Sender<Result<bool, Error>>,
         lease: OwnedRwLockReadGuard<Arc<Activation>>,
         observation: inspection::InvocationObservation,
+        admission: OwnedSemaphorePermit,
     },
     Snapshot {
         attempt: Arc<Mutex<Attempt>>,
@@ -534,6 +645,23 @@ enum Command {
 struct Context {
     wasi: WasiCtx,
     resources: ResourceTable,
+    limits: StoreLimits,
+    output: Arc<policy::ServicesBudget>,
+}
+
+fn guest_result<T>(
+    accessor: &Accessor<Context>,
+    result: wasmtime::Result<Result<T, String>>,
+) -> Result<T, Error> {
+    match result.map_err(Error::Engine)? {
+        Ok(value) => Ok(value),
+        Err(message) => {
+            accessor
+                .with(|mut access| access.get().output.response(message.len()))
+                .map_err(Error::Engine)?;
+            Err(Error::Guest(message))
+        }
+    }
 }
 
 impl WasiView for Context {
@@ -550,42 +678,82 @@ async fn guest(
     component: &Component,
     services: Arc<dyn Services>,
     granted: Arc<AtomicBool>,
+    policy: Arc<HostPolicy>,
+    budgets: Arc<policy::Budgets>,
 ) -> Result<(Store<Context>, bindings::Router), Error> {
     let mut linker = Linker::new(engine);
     wasmtime_wasi::p2::add_to_linker_async(&mut linker)?;
     let mut imports = linker.instance("hew:live-router/services@0.1.0")?;
     let destinations = Arc::clone(&services);
     let destination_grant = Arc::clone(&granted);
+    let service_budget = Arc::new(policy::ServicesBudget::new(Arc::clone(&policy), &budgets));
+    let destination_budget = Arc::clone(&service_budget);
     imports.func_wrap_concurrent("destination", move |_accessor, (source,): (String,)| {
         let provider = Arc::clone(&destinations);
+        let budget = Arc::clone(&destination_budget);
         let granted = destination_grant.load(Ordering::Acquire);
+        // Reserve while constructing the host future, before it can become
+        // queued work. Refusal drops lifted input immediately.
+        let admitted = if granted {
+            budget
+                .begin(&[source.len()])
+                .map(|permit| Some((permit, source)))
+        } else {
+            Ok(None)
+        };
         Box::pin(async move {
-            Ok((if granted {
-                provider.destination(source).await
+            Ok((if let Some((_operation, source)) = admitted? {
+                let result = budget.complete(provider.destination(source)).await?;
+                let bytes = match &result {
+                    Ok(Some(text)) | Err(text) => text.len(),
+                    Ok(None) => 0,
+                };
+                budget.response(bytes)?;
+                result
             } else {
                 Err("production services are not granted".into())
             },))
         })
     })?;
+    let emit_budget = Arc::clone(&service_budget);
     imports.func_wrap_concurrent("emit", move |_accessor, (message,): (Delivery,)| {
         let provider = Arc::clone(&services);
+        let budget = Arc::clone(&emit_budget);
         let granted = granted.load(Ordering::Acquire);
+        let admitted = if granted {
+            budget
+                .begin(&[message.destination.len(), message.body.len()])
+                .map(|permit| Some((permit, message)))
+        } else {
+            Ok(None)
+        };
         Box::pin(async move {
-            Ok((if granted {
-                provider.emit(message).await
+            Ok((if let Some((_operation, message)) = admitted? {
+                let result = budget.complete(provider.emit(message)).await?;
+                if let Err(text) = &result {
+                    budget.response(text.len())?;
+                }
+                result
             } else {
                 Err("production services are not granted".into())
             },))
         })
     })?;
+    let mut resources = ResourceTable::new();
+    resources.set_max_capacity(policy.max_host_resources);
+    let mut wasi = WasiCtxBuilder::new();
+    wasi.max_random_size(policy.max_payload_bytes as u64);
     let mut store = Store::new(
         engine,
         Context {
-            wasi: WasiCtxBuilder::new().build(),
-            resources: ResourceTable::new(),
+            wasi: wasi.build(),
+            resources,
+            limits: policy.store_limits(),
+            output: service_budget,
         },
     );
-    store.set_fuel(u64::MAX)?;
+    store.limiter(|context| &mut context.limits);
+    store.set_fuel(policy.fuel)?;
     store.fuel_async_yield_interval(Some(100_000))?;
     let router = bindings::Router::instantiate_async(&mut store, component, &linker).await?;
     Ok((store, router))
@@ -652,6 +820,7 @@ async fn serve(
                 reply,
                 lease,
                 observation,
+                admission,
             } => {
                 accessor.spawn(Route {
                     router: Arc::clone(&router),
@@ -660,6 +829,7 @@ async fn serve(
                     _lease: lease,
                     wake: Arc::clone(&wake),
                     observation,
+                    _admission: admission,
                 })?;
             }
             Command::Snapshot {
@@ -679,11 +849,7 @@ async fn serve(
                     .hew_live_router_handler()
                     .call_initialize(accessor, state)
                     .await;
-                let _ = reply.send(
-                    result
-                        .map_err(Error::Engine)
-                        .and_then(|value| value.map_err(Error::Guest)),
-                );
+                let _ = reply.send(guest_result(accessor, result));
             }
             Command::Resume => {
                 // Complete this control call before dispatching later routes.
@@ -694,11 +860,7 @@ async fn serve(
                     .hew_live_router_handler()
                     .call_dispose(accessor)
                     .await;
-                let _ = reply.send(
-                    result
-                        .map_err(Error::Engine)
-                        .and_then(|value| value.map_err(Error::Guest)),
-                );
+                let _ = reply.send(guest_result(accessor, result));
                 break;
             }
         }
@@ -730,6 +892,7 @@ struct Route {
     _lease: OwnedRwLockReadGuard<Arc<Activation>>,
     wake: Arc<tokio::sync::Notify>,
     observation: inspection::InvocationObservation,
+    _admission: OwnedSemaphorePermit,
 }
 
 impl AccessorTask<Context> for Route {
@@ -745,11 +908,7 @@ impl AccessorTask<Context> for Route {
         } else {
             "faulted"
         });
-        let _ = self.reply.send(
-            result
-                .map_err(Error::Engine)
-                .and_then(|value| value.map_err(Error::Guest)),
-        );
+        let _ = self.reply.send(guest_result(accessor, result));
         Ok(())
     }
 }
@@ -784,13 +943,8 @@ impl AccessorTask<Context> for SnapshotCall {
         .await;
         let result = match initial {
             None => Err(Error::Expired(Stage::Snapshot)),
-            Some(Poll::Ready(result)) => result
-                .map_err(Error::Engine)
-                .and_then(|value| value.map_err(Error::Guest)),
-            Some(Poll::Pending) => call
-                .await
-                .map_err(Error::Engine)
-                .and_then(|value| value.map_err(Error::Guest)),
+            Some(Poll::Ready(result)) => guest_result(accessor, result),
+            Some(Poll::Pending) => guest_result(accessor, call.await),
         };
         let _ = self.reply.send(result);
         Ok(())

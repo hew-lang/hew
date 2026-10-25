@@ -64,11 +64,7 @@ impl string {
         let cutoff = -922337203685477580;
         // Last digit of i64::MIN (8, for ...5808) vs i64::MAX (7, for ...5807).
         // Used to detect overflow when the accumulator is exactly at the cutoff.
-        let max_last_digit = if negative {
-            8
-        } else {
-            7
-        };
+        let max_last_digit = if negative { 8 } else { 7 };
         var result = 0;
         for i in start..slen {
             let digit = self[i .. i + 1];
@@ -81,11 +77,7 @@ impl string {
             }
             result = result * 10 - d;
         }
-        if negative {
-            result
-        } else {
-            0 - result
-        }
+        if negative { result } else { 0 - result }
     }
 }
 
@@ -112,11 +104,7 @@ fn is_valid_float_literal(s: string) -> bool {
     if exponent_index < -1 {
         return false;
     }
-    let significand_end = if exponent_index < 0 {
-        slen
-    } else {
-        exponent_index
-    };
+    let significand_end = if exponent_index < 0 { slen } else { exponent_index };
     if !is_valid_float_significand(s, start, significand_end) {
         return false;
     }
@@ -145,21 +133,13 @@ fn parse_valid_float_literal(s: string) -> f64 {
     let first = s[0..1];
     let negative = first == "-";
     let exponent_index = find_exponent_index(s, start, slen);
-    let significand_end = if exponent_index < 0 {
-        slen
-    } else {
-        exponent_index
-    };
+    let significand_end = if exponent_index < 0 { slen } else { exponent_index };
     var value = parse_float_significand(s, start, significand_end);
     if exponent_index >= 0 {
         let exponent = parse_float_exponent(s, exponent_index + 1, slen);
         value = apply_float_exponent(value, exponent);
     }
-    if negative {
-        0.0 - value
-    } else {
-        value
-    }
+    if negative { 0.0 - value } else { value }
 }
 
 /// Return the numeric value of a single-character digit string, or `-1` if not a digit.
@@ -284,28 +264,16 @@ fn parse_float_exponent(s: string, start: i64, end: i64) -> i64 {
         let value = digit_value(digit);
         exponent = exponent * 10 + value;
     }
-    if negative {
-        0 - exponent
-    } else {
-        exponent
-    }
+    if negative { 0 - exponent } else { exponent }
 }
 
 fn apply_float_exponent(value: f64, exponent: i64) -> f64 {
     var scale = 1.0;
-    let exp_abs = if exponent < 0 {
-        0 - exponent
-    } else {
-        exponent
-    };
+    let exp_abs = if exponent < 0 { 0 - exponent } else { exponent };
     for i in 0..exp_abs {
         scale = scale * 10.0;
     }
-    if exponent < 0 {
-        value / scale
-    } else {
-        value * scale
-    }
+    if exponent < 0 { value / scale } else { value * scale }
 }
 
 fn digit_to_float(digit: i64) -> f64 {

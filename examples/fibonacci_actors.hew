@@ -4,11 +4,7 @@
 // Actor-based Fibonacci - Hew language example
 // Demonstrates actors computing fibonacci via deterministic fan-out
 fn fibonacci(n: i64) -> i64 {
-    if n <= 1 {
-        n
-    } else {
-        fibonacci(n - 1) + fibonacci(n - 2)
-    }
+    if n <= 1 { n } else { fibonacci(n - 1) + fibonacci(n - 2) }
 }
 
 fn print_result(worker_id: i64, n: i64, result: i64) {

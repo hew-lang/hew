@@ -142,11 +142,7 @@ pub fn build_get(host: string, path: string) -> string fails BuildError {
 /// extra headers (or split the request line), so any such value is rejected and
 /// a checked error is returned before any request bytes are emitted.
 pub fn build_request(method: string, host: string, path: string, body: string, content_type: string) -> string fails BuildError {
-    let req_path = if (path).is_empty() {
-        "/"
-    } else {
-        path
-    };
+    let req_path = if (path).is_empty() { "/" } else { path };
     if contains_control_char(method) {
         return error BuildError.InvalidField("method contains a control character");
     }
@@ -164,11 +160,7 @@ pub fn build_request(method: string, host: string, path: string, body: string, c
     req = req + f"Host: {host}" + nl;
     req = req + "Connection: close" + nl;
     if !(body).is_empty() {
-        let ct = if (content_type).is_empty() {
-            "application/octet-stream"
-        } else {
-            content_type
-        };
+        let ct = if (content_type).is_empty() { "application/octet-stream" } else { content_type };
         req = req + f"Content-Type: {ct}" + nl;
         req = req + f"Content-Length: {body.len()}" + nl;
     }
@@ -215,11 +207,7 @@ fn split_authority_path(after_scheme: string) -> (string, string) {
     let query = after_scheme.find("?");
     let end = match slash {
         .Some(s) => match query {
-            .Some(q) => if s < q {
-                Option.Some(s)
-            } else {
-                Option.Some(q)
-            }
+            .Some(q) => if s < q { Option.Some(s) } else { Option.Some(q) }
             .None => .Some(s),
         }
         .None => query,
@@ -228,11 +216,7 @@ fn split_authority_path(after_scheme: string) -> (string, string) {
         .Some(i) => {
             let authority = after_scheme[0..i];
             let suffix = after_scheme[i..after_scheme.len()];
-            if suffix.starts_with("?") {
-                (authority, "/" + suffix)
-            } else {
-                (authority, suffix)
-            }
+            if suffix.starts_with("?") { (authority, "/" + suffix) } else { (authority, suffix) }
         }
         .None => (after_scheme, "/"),
     }
@@ -240,11 +224,7 @@ fn split_authority_path(after_scheme: string) -> (string, string) {
 
 /// Default TCP port for a URL scheme (`https` → 443, everything else → 80).
 pub fn default_port(scheme: string) -> i64 {
-    if scheme == "https" {
-        443
-    } else {
-        80
-    }
+    if scheme == "https" { 443 } else { 80 }
 }
 
 /// The scheme of a URL (`http` / `https`), or `"http"` when none is present.

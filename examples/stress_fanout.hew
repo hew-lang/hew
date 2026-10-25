@@ -4,11 +4,7 @@
 // stress_fanout.hew - Test fan-out pattern with multiple workers
 // Spawns multiple workers, sends computation to each, verifies all complete.
 fn fib(n: i64) -> i64 {
-    if n <= 1 {
-        n
-    } else {
-        fib(n - 1) + fib(n - 2)
-    }
+    if n <= 1 { n } else { fib(n - 1) + fib(n - 2) }
 }
 
 fn print_result(worker_id: i64, x: i64, result: i64) {

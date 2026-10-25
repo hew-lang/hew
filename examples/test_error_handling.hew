@@ -4,11 +4,7 @@
 // Test: Error Handling
 // Exercises: Result<T,E>, Ok/Err, Option<T>, Some/None, ? operator, match
 fn divide(a: i64, b: i64) -> Result<i64, string> {
-    if b == 0 {
-        .Err("division by zero")
-    } else {
-        .Ok(a / b)
-    }
+    if b == 0 { .Err("division by zero") } else { .Ok(a / b) }
 }
 
 fn test_result_ok() -> i32 {

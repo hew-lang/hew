@@ -23,7 +23,7 @@
 //! `choices`, `gauss`) share one implicit generator per thread. `Rng` is a
 //! plain value a caller holds and passes around instead, so several
 //! independent streams can run in the same thread. It uses xoshiro256++
-//! (see `hew-runtime/src/random.rs` for the choice rationale) rather than
+//! implemented in ordinary Hew rather than
 //! MT19937, so its output does not match the module-level functions for the
 //! same seed.
 //!
@@ -58,56 +58,70 @@ impl Error for RandomError {}
 /// identical sequences. Advancing a generator requires a mutable `var` binding.
 /// Copying a generator creates an independent stream at the same position.
 pub type Rng {
-    state: Vec<u64>;
+    s0: u64;
+    s1: u64;
+    s2: u64;
+    s3: u64;
 }
 
-/// Methods available on an `Rng`.
-trait RngMethods {
-    fn next_u64(var self) -> u64;
-
-    fn next_f64(var self) -> f64;
-
-    fn range(var self, lo: i64, hi: i64) -> Result<i64, RandomError>;
-
-    /// Return an independently shuffled copy, advancing this generator.
-    fn shuffle<T>(var self, v: Vec<T>) -> Vec<T>;
-}
-
-impl RngMethods for Rng {
-    fn next_u64(var self) -> u64 {
-        unsafe {
-            hew_rng_next_u64(self.state)
-        }
+impl Rng {
+    /// Create an independent generator from any signed seed.
+    pub fn new(seed: i64) -> Rng {
+        let s0 = (seed as u64).wrapping_add(0x9E3779B97F4A7C15);
+        let s1 = s0.wrapping_add(0x9E3779B97F4A7C15);
+        let s2 = s1.wrapping_add(0x9E3779B97F4A7C15);
+        let s3 = s2.wrapping_add(0x9E3779B97F4A7C15);
+        Rng { s0: mix_seed(s0), s1: mix_seed(s1), s2: mix_seed(s2), s3: mix_seed(s3) }
     }
-    fn next_f64(var self) -> f64 {
-        unsafe {
-            hew_rng_next_f64(self.state)
-        }
+
+    /// Advance the xoshiro256++ stream by one word.
+    pub fn next_u64(var self) -> u64 {
+        let result = self.s0.wrapping_add(self.s3).rotate_left(23).wrapping_add(self.s0);
+        let shifted = self.s1 << 17;
+        self.s2 = self.s2 ^ self.s0;
+        self.s3 = self.s3 ^ self.s1;
+        self.s1 = self.s1 ^ self.s2;
+        self.s0 = self.s0 ^ self.s3;
+        self.s2 = self.s2 ^ shifted;
+        self.s3 = self.s3.rotate_left(45);
+        result
     }
-    fn range(var self, lo: i64, hi: i64) -> i64 fails RandomError {
+
+    /// Draw a 53-bit float in the half-open interval [0, 1).
+    pub fn next_f64(var self) -> f64 {
+        (self.next_u64() >> 11) as f64 * (1.0 / 9007199254740992.0)
+    }
+
+    /// Draw without bias from the half-open interval [lo, hi).
+    pub fn range(var self, lo: i64, hi: i64) -> i64 fails RandomError {
         if hi <= lo {
             return error RandomError.InvalidRange { lower: lo, upper: hi };
         }
-        unsafe {
-            hew_rng_range(self.state, lo, hi)
+        let width = (hi as u64).wrapping_sub(lo as u64);
+        if width == 1 {
+            return lo;
+        }
+        let maximum: u64 = 18446744073709551615;
+        let mask = maximum >> width.wrapping_sub(1).leading_zeros();
+        loop {
+            let offset = self.next_u64() & mask;
+            if offset < width {
+                return lo.wrapping_add(offset as i64);
+            }
         }
     }
-    fn shuffle<T>(var self, v: Vec<T>) -> Vec<T> {
+
+    /// Return an independently shuffled copy, advancing this generator.
+    pub fn shuffle<T>(var self, v: Vec<T>) -> Vec<T> {
         shuffled(v, |limit: i64| self.range(0, limit).expect("positive shuffle bound"))
     }
 }
 
-impl Rng {
-    /// Create a new generator seeded from `seed`.
-    ///
-    /// The seed is expanded into xoshiro256++'s 256 bits of state via four
-    /// splitmix64 steps, so every `i64` seed produces a well-mixed initial
-    /// state.
-    fn new(seed: i64) -> Rng {
-        unsafe {
-            Rng { state: hew_rng_new(seed) }
-        }
-    }
+// Splitmix64 expands the seed into the reference xoshiro state.
+fn mix_seed(word: u64) -> u64 {
+    let first = (word ^ (word >> 30)).wrapping_mul(0xBF58476D1CE4E5B9);
+    let second = (first ^ (first >> 27)).wrapping_mul(0x94D049BB133111EB);
+    second ^ (second >> 31)
 }
 
 // ── Cryptographically secure randomness ─────────────────────────────────
@@ -226,8 +240,4 @@ extern "C" {
     fn hew_random_gauss(mu: f64, sigma: f64) -> f64;
     fn hew_random_randint(lo: i64, hi: i64) -> i64;
     fn hew_random_choices_vec(v: Vec<f64>, total: f64, n: i64) -> i64;
-    fn hew_rng_new(seed: i64) -> Vec<u64>;
-    fn hew_rng_next_u64(state: Vec<u64>) -> u64;
-    fn hew_rng_next_f64(state: Vec<u64>) -> f64;
-    fn hew_rng_range(state: Vec<u64>, lo: i64, hi: i64) -> i64;
 }

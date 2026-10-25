@@ -13,17 +13,9 @@ fn sort_by_core<T>(var v: Vec<T>, consume var less: fn[var](T, T) -> bool) -> Ve
     while width < n {
         var start = 0;
         while start < n {
-            let left_len = if width < n - start {
-                width
-            } else {
-                n - start
-            };
+            let left_len = if width < n - start { width } else { n - start };
             let mid = start + left_len;
-            let right_len = if width < n - mid {
-                width
-            } else {
-                n - mid
-            };
+            let right_len = if width < n - mid { width } else { n - mid };
             let end = mid + right_len;
             var left = start;
             var right = mid;
@@ -56,11 +48,7 @@ fn sort_by_core<T>(var v: Vec<T>, consume var less: fn[var](T, T) -> bool) -> Ve
         let previous = v;
         v = scratch;
         scratch = previous;
-        width = if width > n / 2 {
-            n
-        } else {
-            width * 2
-        };
+        width = if width > n / 2 { n } else { width * 2 };
     }
     v
 }

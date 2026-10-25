@@ -169,11 +169,7 @@ pub fn from_ext(ext: string) -> string {
         "text/typescript"
     } else if ext == "tsx" {
         "text/tsx"
-    } else if ext == "jsx" {
-        "text/jsx"
-    } else {
-        "application/octet-stream"
-    }
+    } else if ext == "jsx" { "text/jsx" } else { "application/octet-stream" }
 }
 
 /// Test whether a MIME type is a text type (e.g. `text/*`).

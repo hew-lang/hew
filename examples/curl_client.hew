@@ -52,11 +52,7 @@ fn parse_port(url: string) -> string {
         s = s[0..slash];
     }
     let colon = s.find(":") ?? -1;
-    if colon >= 0 {
-        s[colon + 1 .. s.len()]
-    } else {
-        "80"
-    }
+    if colon >= 0 { s[colon + 1 .. s.len()] } else { "80" }
 }
 
 fn parse_path(url: string) -> string {
@@ -66,11 +62,7 @@ fn parse_path(url: string) -> string {
         s = s[7..s.len()];
     }
     let slash = s.find("/") ?? -1;
-    if slash >= 0 {
-        s[slash..s.len()]
-    } else {
-        "/"
-    }
+    if slash >= 0 { s[slash..s.len()] } else { "/" }
 }
 
 fn main() {

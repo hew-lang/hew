@@ -5,11 +5,7 @@
 // parameter order and the caller reassigns each one.
 fn hash(key: i64, capacity: i64) -> i64 {
     let h = key % capacity;
-    if h < 0 {
-        h + capacity
-    } else {
-        h
-    }
+    if h < 0 { h + capacity } else { h }
 }
 
 fn make_keys(capacity: i64) -> Vec<i64> {

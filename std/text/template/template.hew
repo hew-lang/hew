@@ -562,11 +562,7 @@ impl Ctx {
     /// ```
     pub fn set_bool(var self, key: string, val: bool) {
         self.skeys.push(key);
-        self.svals.push(if val {
-            "true"
-        } else {
-            "false"
-        });
+        self.svals.push(if val { "true" } else { "false" });
     }
     /// Bind `key` to the list of strings `items`.
     ///

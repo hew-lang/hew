@@ -409,11 +409,7 @@ fn volume_end(p: string) -> i64 {
 }
 
 fn root_end(p: string, windows: bool) -> i64 {
-    let volume = if windows {
-        volume_end(p)
-    } else {
-        0
-    };
+    let volume = if windows { volume_end(p) } else { 0 };
     if volume < p.len() && rooted(p[volume..p.len()], windows) {
         return volume + 1;
     }

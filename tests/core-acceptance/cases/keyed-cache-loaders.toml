@@ -1,0 +1,11 @@
+[[case]]
+id = "keyed-cache-loaders"
+intent = "Fallible/suspending once-loaders skip hits, retry errors, preserve live entries across failure/cancellation, timestamp after loading and release captured/evicted shared resources exactly once."
+source = "cases/keyed-cache-loaders.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 30
+env = { HEW_DETERMINISTIC = "schedule=fifo,seed=0" }
+[case.expected]
+stdout = "close 1\nfailed load 2\nclose 2\nfaulted load 3\nclose 3\ncancelled load 4\nclose 4\nclose 6\nclose 5\ncache loaders and cleanup passed\n"
+stderr = ""
+exit = 0

@@ -96,11 +96,7 @@ pub fn io_error_from_errno(errno: i64) -> IoError {
     } else if errno == 110 || errno == 60 {
         IoError.TimedOut(errno)
     // ECANCELED: Linux=125, macOS=89
-    } else if errno == 125 || errno == 89 {
-        IoError.Cancelled(errno)
-    } else {
-        IoError.Other(errno)
-    }
+    } else if errno == 125 || errno == 89 { IoError.Cancelled(errno) } else { IoError.Other(errno) }
 }
 
 /// Map the runtime's canonical, platform-independent error-kind tag (from
@@ -126,11 +122,7 @@ pub fn io_error_from_kind(kind: i64, errno: i64) -> IoError {
         IoError.AlreadyExists(errno)
     } else if kind == 4 {
         IoError.TimedOut(errno)
-    } else if kind == 6 {
-        IoError.Unsupported(errno)
-    } else {
-        io_error_from_errno(errno)
-    }
+    } else if kind == 6 { IoError.Unsupported(errno) } else { io_error_from_errno(errno) }
 }
 
 /// Print an `IoError`'s variant name and raw OS errno.
@@ -202,11 +194,7 @@ impl ReadFile {
     fn read(self) -> Result<bytes, IoError> {
         unsafe {
             let data = hew_file_read_remaining(self);
-            if hew_stream_has_error() {
-                .Err(last_io_error())
-            } else {
-                .Ok(data)
-            }
+            if hew_stream_has_error() { .Err(last_io_error()) } else { .Ok(data) }
         }
     }
 
@@ -246,11 +234,7 @@ impl WriteFile {
 pub fn open_read(path: string) -> Result<ReadFile, IoError> {
     unsafe {
         let file = hew_file_open_read(path);
-        if hew_file_read_is_valid(file) {
-            .Ok(file)
-        } else {
-            .Err(last_io_error())
-        }
+        if hew_file_read_is_valid(file) { .Ok(file) } else { .Err(last_io_error()) }
     }
 }
 
@@ -259,11 +243,7 @@ pub fn open_read(path: string) -> Result<ReadFile, IoError> {
 pub fn open_write(path: string) -> Result<WriteFile, IoError> {
     unsafe {
         let file = hew_file_open_write(path);
-        if hew_file_write_is_valid(file) {
-            .Ok(file)
-        } else {
-            .Err(last_io_error())
-        }
+        if hew_file_write_is_valid(file) { .Ok(file) } else { .Err(last_io_error()) }
     }
 }
 
@@ -285,11 +265,7 @@ impl ReadDir {
     fn open_read(self, path: string) -> Result<ReadFile, IoError> {
         unsafe {
             let file = hew_dir_read_open_file(self, path);
-            if hew_file_read_is_valid(file) {
-                .Ok(file)
-            } else {
-                .Err(last_io_error())
-            }
+            if hew_file_read_is_valid(file) { .Ok(file) } else { .Err(last_io_error()) }
         }
     }
 
@@ -298,11 +274,7 @@ impl ReadDir {
     fn subdir(self, path: string) -> Result<ReadDir, IoError> {
         unsafe {
             let directory = hew_dir_read_subdir(self, path);
-            if hew_dir_read_is_valid(directory) {
-                .Ok(directory)
-            } else {
-                .Err(last_io_error())
-            }
+            if hew_dir_read_is_valid(directory) { .Ok(directory) } else { .Err(last_io_error()) }
         }
     }
 
@@ -331,11 +303,7 @@ impl WriteDir {
     fn open_write(self, path: string) -> Result<WriteFile, IoError> {
         unsafe {
             let file = hew_dir_write_open_file(self, path);
-            if hew_file_write_is_valid(file) {
-                .Ok(file)
-            } else {
-                .Err(last_io_error())
-            }
+            if hew_file_write_is_valid(file) { .Ok(file) } else { .Err(last_io_error()) }
         }
     }
 
@@ -343,11 +311,7 @@ impl WriteDir {
     fn subdir(self, path: string) -> Result<WriteDir, IoError> {
         unsafe {
             let directory = hew_dir_write_subdir(self, path);
-            if hew_dir_write_is_valid(directory) {
-                .Ok(directory)
-            } else {
-                .Err(last_io_error())
-            }
+            if hew_dir_write_is_valid(directory) { .Ok(directory) } else { .Err(last_io_error()) }
         }
     }
 
@@ -363,11 +327,7 @@ impl WriteDir {
 pub fn open_read_dir(path: string) -> Result<ReadDir, IoError> {
     unsafe {
         let directory = hew_dir_open_read(path);
-        if hew_dir_read_is_valid(directory) {
-            .Ok(directory)
-        } else {
-            .Err(last_io_error())
-        }
+        if hew_dir_read_is_valid(directory) { .Ok(directory) } else { .Err(last_io_error()) }
     }
 }
 
@@ -375,11 +335,7 @@ pub fn open_read_dir(path: string) -> Result<ReadDir, IoError> {
 pub fn open_write_dir(path: string) -> Result<WriteDir, IoError> {
     unsafe {
         let directory = hew_dir_open_write(path);
-        if hew_dir_write_is_valid(directory) {
-            .Ok(directory)
-        } else {
-            .Err(last_io_error())
-        }
+        if hew_dir_write_is_valid(directory) { .Ok(directory) } else { .Err(last_io_error()) }
     }
 }
 
@@ -620,11 +576,7 @@ type RawMetadata {
 }
 
 fn present(value: i64) -> Option<i64> {
-    if value < 0 {
-        .None
-    } else {
-        .Some(value)
-    }
+    if value < 0 { .None } else { .Some(value) }
 }
 
 fn metadata_from(raw: RawMetadata) -> Metadata fails IoError {
@@ -635,11 +587,7 @@ fn metadata_from(raw: RawMetadata) -> Metadata fails IoError {
         FileKind.File
     } else if raw.kind == 1 {
         FileKind.Directory
-    } else if raw.kind == 2 {
-        FileKind.Symlink
-    } else {
-        FileKind.Other
-    };
+    } else if raw.kind == 2 { FileKind.Symlink } else { FileKind.Other };
     Metadata { kind: kind, size: raw.size, mode: present(raw.mode), owner: present(raw.owner) }
 }
 
@@ -887,11 +835,7 @@ pub fn list_dir(dir_path: string) -> Result<Vec<string>, IoError> {
         let kind = hew_stream_last_error_kind() as i64;
         let errno = hew_stream_last_errno();
         let _ = hew_stream_last_error();
-        if errno == 0 {
-            .Ok(entries)
-        } else {
-            .Err(io_error_from_kind(kind, errno as i64))
-        }
+        if errno == 0 { .Ok(entries) } else { .Err(io_error_from_kind(kind, errno as i64)) }
     }
 }
 

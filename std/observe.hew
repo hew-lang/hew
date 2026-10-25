@@ -7,11 +7,7 @@ pub fn read(name: string) -> Option<i64> {
     let value = unsafe {
         hew_observe_read_u64(name)
     };
-    if value == -1 {
-        .None
-    } else {
-        .Some(value)
-    }
+    if value == -1 { .None } else { .Some(value) }
 }
 
 /// Render the current metric registry in scrape text format.
@@ -52,11 +48,7 @@ pub fn barrier() -> Result<(), ObserveError> {
     };
     if status == 0 {
         .Ok(())
-    } else if status == -1 {
-        .Err(ObserveError.ActorTurn)
-    } else {
-        .Err(ObserveError.TimedOut)
-    }
+    } else if status == -1 { .Err(ObserveError.ActorTurn) } else { .Err(ObserveError.TimedOut) }
 }
 
 extern "C" {

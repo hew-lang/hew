@@ -1,0 +1,27 @@
+import std.cache;
+
+type Product {
+    name: string;
+    tags: Vec<string>;
+}
+
+fn load_product(id: i64) -> Product fails string {
+    if id != 42 {
+        return error "unknown product";
+    }
+    println("loading product 42");
+    Product { name: "Hew handbook", tags: ["language"] }
+}
+
+fn main() {
+    var products: cache.Cache<i64, Product> = cache.new(.Some(128), .Some(5s)).expect("valid cache limits");
+    let first = products.get_or_load(42, || load_product(42)).expect("known product");
+    let second = products.get_or_load(42, || load_product(42)).expect("cached product");
+    println(f"{first.name}: {second.tags[0]}");
+    match products.get_or_load(7, || load_product(7)) {
+        .Ok(product) => println(product.name),
+        .Err(error) => println(f"cannot load: {error}"),
+    }
+    products.invalidate(42);
+    println(f"retained products: {products.len()}");
+}

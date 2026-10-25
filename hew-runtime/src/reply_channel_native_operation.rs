@@ -173,6 +173,16 @@ pub unsafe extern "C" fn hew_actor_reply_poll_native(
             operation.terminal = true;
             return CoroStatus::Complete as i32;
         }
+        if crate::coro_state::hew_coro_state_is_cancelled(parent) != 0 {
+            operation.transfer = None;
+            release_gate(channel, identity);
+            operation.channel = ptr::null_mut();
+            // The established cancellation publisher retires this sender ref
+            // and wakes both checked and foreign-thread reply observers.
+            super::super::hew_reply_channel_publish_cancelled(channel);
+            operation.terminal = true;
+            return CoroStatus::Complete as i32;
+        }
         if (*channel).cancelled.load(Ordering::Acquire) {
             operation.transfer = None;
             release_gate(channel, identity);
@@ -468,6 +478,67 @@ mod tests {
             assert_eq!(status, hew_cabi::managed::HEAP_EXCEEDED);
             assert_eq!(value, 42);
             assert_eq!(source.live_bytes(), 0);
+            crate::coro_state::hew_coro_state_free(parent);
+        }
+    }
+
+    #[test]
+    fn cancelled_publisher_stops_waiting_for_receiver_transfer() {
+        let (_ready, wake) = Readiness::new();
+        let source = ValueOwner::new(Some(8));
+        let destination = ValueOwner::new(Some(8));
+        // SAFETY: both channel references and the receiver transfer remain pinned.
+        unsafe {
+            let channel =
+                super::super::hew_reply_channel_new_native(wake.descriptor(), None, None, &SCALAR);
+            super::super::super::hew_reply_channel_retain(channel);
+            let _context = TestExecutionContext::install(HewExecutionContext {
+                reply_channel: channel.cast(),
+                ..HewExecutionContext::default()
+            });
+            let parent = crate::coro_state::hew_coro_state_new(wake.descriptor(), ptr::null_mut());
+            let mut value = 42_u64;
+            let mut status = -1;
+            let operation =
+                crate::owned_value_budget::with_value_owner(&Some(source.clone()), || {
+                    hew_actor_reply_start_native(
+                        (&raw mut value).cast(),
+                        &SCALAR,
+                        parent,
+                        &raw mut status,
+                    )
+                });
+            assert_eq!(status, 0);
+            let mut transfer = ValueTransfer::begin(
+                None,
+                Some(destination.clone()),
+                &CHANNEL,
+                (&raw const channel).cast(),
+            );
+            transfer.set_waker(OwnedWaker::retain(&*wake.descriptor()));
+            assert!(transfer.poll_prepare().unwrap());
+            assert_eq!(
+                hew_actor_reply_poll_native(operation, parent),
+                CoroStatus::Pending as i32
+            );
+            crate::coro_state::hew_coro_state_cancel(parent);
+            assert_eq!(
+                hew_actor_reply_poll_native(operation, parent),
+                CoroStatus::Complete as i32
+            );
+            assert_eq!(
+                super::super::hew_reply_channel_status_native(channel, 8),
+                crate::internal::types::AskError::Cancelled as i32
+            );
+            assert_eq!(source.live_bytes(), 8);
+            let cursor = hew_actor_reply_take_cleanup_native(operation);
+            let mut cleanup = crate::release_walker::ReleaseDriver::new(cursor);
+            assert!(cleanup.poll(parent));
+            assert_eq!(source.live_bytes(), 0);
+            drop(cleanup);
+            hew_actor_reply_free_native(operation);
+            drop(transfer);
+            super::super::super::hew_reply_channel_free(channel);
             crate::coro_state::hew_coro_state_free(parent);
         }
     }

@@ -16,6 +16,11 @@ line and do NOT carry over â€” their side effects (file writes, channel sends, â
 execute exactly once and never replay. For a multi-statement program with
 persistent state, use `hew eval -f <file>` or `hew run`.
 
+`hew eval --lines 'println(line);'` compiles once and processes standard input
+in order, with each line bound as an immutable string. Use `--show-wrapper` to
+inspect the generated program. For retained resources, closures and actors across
+submissions, the experimental live SDK provides `hew tool live`.
+
 REPL commands:
   :help, :h           Show command help
   :session, :show     List remembered top-level definitions
@@ -663,10 +668,20 @@ pub struct DocArgs {
 
 #[derive(Debug, Args)]
 #[command(after_help = EVAL_AFTER_HELP)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "independent command-line switches"
+)]
 pub struct EvalArgs {
     /// Execute file in REPL context (`-` reads from stdin).
     #[arg(short = 'f')]
     pub file: Option<PathBuf>,
+    /// Compile once and run the body for each standard-input line, bound as `line`.
+    #[arg(long)]
+    pub lines: bool,
+    /// Show the generated line-processing program on stderr before compilation.
+    #[arg(long, requires = "lines")]
+    pub show_wrapper: bool,
     /// Per-evaluation timeout (`500ms`, `30s`, `1m`; bare integers mean seconds).
     #[arg(long, default_value = "30", value_name = "DURATION")]
     pub timeout: String,

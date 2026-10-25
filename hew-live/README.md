@@ -1,4 +1,4 @@
-# Experimental native live execution
+# Experimental live execution
 
 Stage the compiler, standard library, shared runtime, both live companions and
 the prepared native node module together:
@@ -102,7 +102,26 @@ compiler-generated scaffolding retains its own diagnostic context.
 Use `--show-wrapper` to inspect each checked submission's generated source on
 stderr before execution.
 
-Deployment migration and editor integration remain in progress.
+### Process standard-input lines
+
+```sh
+printf 'first\n\nlast\n' | hew eval --lines 'if line != "" { println(line); }'
+hew eval --lines -f filter.hew < events.log
+```
+
+The inline body or file contains ordinary Hew statements with an immutable
+`line: string` binding. The harness compiles once and processes input in order.
+Each iteration has its own local bindings; it can use `continue`, `break` or
+`return` just like an ordinary loop. Output is streamed as the program runs.
+`--show-wrapper` prints the generated program on stderr; diagnostics identify
+the original inline body or file.
+
+Input follows `std.io.read_line`: LF and CRLF delimit lines, blank lines are
+preserved, a final unterminated line is processed, and invalid UTF-8 becomes
+U+FFFD. No input means no iterations. Read or execution failure exits nonzero;
+`--timeout` bounds the complete execution after compilation. `--json` captures
+the output and terminal result using the existing eval contract. Standard input
+belongs to the data stream, so `-f -` is unavailable in this mode.
 
 ## Portable components
 
@@ -211,6 +230,12 @@ Standard output contains only protocol replies. The operations are:
   A successful reply includes the new `epoch`, `digest` and retained `accepted`
   count. A stale predecessor leaves the active instance unchanged.
 - `route`: supplies an event's `source` and `body` and returns `accepted`.
+- `preview`: supplies a prepared `digest`, `within_ms`, and a `preview` object
+  containing independent `state`, `input` and ordered service `fixtures`.
+  The result reports `accepted`, `needs_input`, fixture consumption and whether
+  guest cleanup completed. Production services and the active deployment are
+  untouched. Missing or mismatched fixtures request input instead of performing
+  the operation.
 
 Source builds use `HEW_LIVE_COMPILER`, `HEW_WASI_SDK` and
 `HEW_LIVE_WASM_LIB_DIR`, with corresponding command-line options and SDK-relative
@@ -229,3 +254,11 @@ replacement, stale-predecessor refusal, client reconnection, cache reuse after
 host restart and orderly shutdown with or without a connected peer. The protocol
 must not automatically retry an unconfirmed replacement after disconnect; query
 status after reconnecting and reconcile its epoch and digest first.
+
+The VS Code live session prepares saved source through this companion and shows
+the active and prepared identities separately. Activation is explicit. Observe
+associates invocation metadata with the code digest and activation epoch; its
+desktop companion exposes status and isolated preview. Ordinary trace collection
+records metadata without source event bodies or service responses. Preview uses
+operator-supplied state, inputs and fixtures; metadata-only traces do not supply
+those responses.

@@ -431,6 +431,10 @@ test-live-host: live-host ## Test: execute persistent submissions through the na
 test-live-authoring: hew-native live-host ## Test: exercise persistent source authoring and recovery
 	$(TEST_RUN_ENV) cargo nextest run --profile ci -p hew-cli --test live
 
+.PHONY: test-eval-lines
+test-eval-lines: hew-native ## Test: compile-once streaming line evaluation and diagnostics
+	$(TEST_RUN_ENV) cargo nextest run --profile ci -p hew-cli --test eval_lines
+
 test-live-places: hew-native live-host ## Test: preserve compiler-owned slots across native submissions
 	$(TEST_RUN_ENV) cargo nextest run --profile ci -p hew-codegen-rs -p hew-compile --lib -E 'test(native_session_places) | test(live_retained_type)'
 

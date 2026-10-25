@@ -21,7 +21,6 @@ pub mod bindings {
         additional_derives: [serde::Serialize, serde::Deserialize],
         imports: { default: async | store | trappable },
         exports: { default: async | store },
-        additional_derives: [serde::Serialize, serde::Deserialize],
     });
 }
 

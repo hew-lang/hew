@@ -13,6 +13,7 @@
 //! and captures its stdout. WASI eval compiles a module and runs it with wasmtime.
 
 pub mod classify;
+mod lines;
 pub mod repl;
 pub mod session;
 
@@ -96,8 +97,18 @@ pub fn cmd_eval(args: &crate::args::EvalArgs) {
         eprintln!("Error: {e}");
         std::process::exit(1);
     });
-    let request = EvalRequest::from_args(args);
     let target = eval_target_arg(args.target.as_deref(), target_spec.as_ref());
+
+    if args.lines {
+        if args.json {
+            emit_json_result(&capture_json_eval(|| lines::eval(args, timeout, target)));
+        } else {
+            emit_eval_output(lines::eval(args, timeout, target));
+        }
+        return;
+    }
+
+    let request = EvalRequest::from_args(args);
 
     validate_eval_request(&request, args.json, target);
 
@@ -169,6 +180,10 @@ fn emit_json_eval(request: &EvalRequest, timeout: std::time::Duration, target: O
         EvalRequest::Repl => unreachable!("validated before JSON evaluation"),
     };
 
+    emit_json_result(&result);
+}
+
+fn emit_json_result(result: &EvalJsonOutput) {
     let process_exit_code = i32::from(result.status != EvalStatus::Ok);
     println!(
         "{}",

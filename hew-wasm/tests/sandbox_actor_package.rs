@@ -1255,6 +1255,10 @@ fn bounded_semaphore_handles_retain_only_runtime_bookkeeping() {
 #[test]
 fn content_adapters_share_typed_generator_ownership() {
     assert_native_manifest(
+        "guarded_arms_sink_fallthrough",
+        hew_compile::SourceSet::in_memory(),
+    );
+    assert_native_manifest(
         "actor-owned-budget-stream-adapters",
         hew_compile::SourceSet::in_memory(),
     );

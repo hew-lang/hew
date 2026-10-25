@@ -153,14 +153,6 @@ builtin_named_types! {
                 signature: CountToSelf,
                 runtime: BuiltinMethodRuntime::Fixed("hew_stream_take")
             },
-            // String-specific collect: drains a Stream<string> into a single
-            // string. Only string elements have a runtime symbol; other element
-            // types are rejected by the checker's element-type gate before this
-            // table is consulted.
-            "collect" => {
-                signature: ReturnString,
-                runtime: BuiltinMethodRuntime::Fixed("hew_stream_collect_string")
-            },
         ]
     },
     Sink {

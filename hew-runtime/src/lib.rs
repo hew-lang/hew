@@ -549,6 +549,7 @@ pub mod hashset;
 pub mod layout_intrinsics;
 pub mod mem;
 pub(crate) mod output;
+pub mod owned_value_budget;
 pub mod print;
 pub mod random;
 pub mod rc;

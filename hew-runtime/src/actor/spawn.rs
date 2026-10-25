@@ -747,7 +747,7 @@ pub unsafe extern "C" fn hew_actor_construct_native(
     state_release: Option<hew_cabi::value::HewValueReleaseStart>,
     rejected_state_release: *mut *mut crate::release_walker::HewReleaseCursor,
     construction: *mut crate::coro_state::HewCoroState,
-    has_heap_limit: u8,
+    has_heap_limit: u32,
     state_layout: *const hew_cabi::value::HewValueLayout,
 ) -> crate::lifetime::local_handles::HewLocalPidId {
     // SAFETY: generated code supplies an empty cursor output.

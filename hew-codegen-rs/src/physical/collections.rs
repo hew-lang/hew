@@ -400,7 +400,7 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                             &[
                                 pointer.into(),
                                 pointer.into(),
-                                self.ctx.i8_type().into(),
+                                self.ctx.i32_type().into(),
                                 pointer.into(),
                             ],
                             false,
@@ -416,7 +416,10 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                             &[
                                 vector.into(),
                                 self.slots[source(1)?.0 as usize].into(),
-                                self.ctx.i8_type().const_int(u64::from(moved), false).into(),
+                                self.ctx
+                                    .i32_type()
+                                    .const_int(u64::from(moved), false)
+                                    .into(),
                                 state.into(),
                             ],
                             "vector.push.status",

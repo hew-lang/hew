@@ -82,7 +82,7 @@ pub(crate) fn capacity_for(capacity: usize, needed: usize) -> Option<usize> {
 pub unsafe extern "C" fn hew_vec_push_managed(
     v: *mut HewVec,
     data: *const c_void,
-    moved: u8,
+    moved: u32,
     invocation: *const crate::coro_state::HewCoroState,
 ) -> i32 {
     use crate::owned_value_budget::{
@@ -129,7 +129,7 @@ pub unsafe extern "C" fn hew_vec_push_managed(
             layout,
             slot: data,
             copies: u64::from(moved == 0),
-            consume: moved,
+            consume: u8::from(moved != 0),
         }];
         let element = match MaterializationPermit::prepare(owner.clone(), 0, &inputs) {
             Ok(permit) => permit,

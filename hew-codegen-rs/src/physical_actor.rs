@@ -2296,7 +2296,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
                     ptr.into(),
                     ptr.into(),
                     ptr.into(),
-                    self.ctx.i8_type().into(),
+                    self.ctx.i32_type().into(),
                     ptr.into(),
                 ],
                 false,
@@ -2394,7 +2394,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
                         .state
                         .into(),
                     self.ctx
-                        .i8_type()
+                        .i32_type()
                         .const_int(u64::from(actor.max_heap_bytes.is_some()), false)
                         .into(),
                     self.llvm

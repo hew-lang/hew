@@ -4,6 +4,8 @@
 use std::path::PathBuf;
 
 use hew_codegen_rs::physical::{emit_host_object, HostExport, PhysicalEmitOptions};
+use hew_mir::physical::{ParamCarrier, SemParamPassing};
+use hew_types::ResolvedTy;
 
 fn main() {
     let package = PathBuf::from(std::env::var_os("CARGO_MANIFEST_DIR").unwrap());
@@ -54,15 +56,18 @@ fn main() {
         .iter()
         .find(|callable| callable.declaration == declarations[0])
         .expect("selected renderer declaration");
-    let selections = [(callable.id, "diagnostic_render_text")];
-    let export = HostExport::new(&physical, &selections).expect("typed renderer export");
-    let header = export.header();
     // The Rust adapter borrows one opaque text owner and receives one text
-    // owner. Refuse a source signature change before linking its fixed ABI.
+    // owner. Verify the selected callable's contract before linking its ABI.
     assert!(
-        header.lines().any(|line| line == "int32_t diagnostic_render_text(const HewText *arg0, HewText **out, HewError **error);"),
+        matches!(callable.params.as_slice(), [param]
+            if param.ty == ResolvedTy::String
+                && param.passing == SemParamPassing::Borrow
+                && param.carrier == ParamCarrier::Direct)
+            && callable.return_ty == ResolvedTy::String,
         "diagnostic renderer must export a borrowed string -> string function"
     );
+    let selections = [(callable.id, "diagnostic_render_text")];
+    let export = HostExport::new(&physical, &selections).expect("typed renderer export");
     let artefacts = emit_host_object(
         &export,
         &PhysicalEmitOptions {
@@ -79,7 +84,7 @@ fn main() {
         },
     )
     .expect("emit diagnostic renderer");
-    std::fs::write(out.join("diagnostic_renderer.h"), header).unwrap();
+    std::fs::write(out.join("diagnostic_renderer.h"), export.header()).unwrap();
     cc::Build::new()
         .object(artefacts.native_obj_path.expect("native renderer object"))
         .compile("diagnostic_renderer");

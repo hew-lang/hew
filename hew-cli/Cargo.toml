@@ -67,6 +67,7 @@ finl_unicode = { version = "=1.5.0", default-features = false, features = [
 hew-compile = { path = "../hew-compile" }
 hew-hir = { path = "../hew-hir" }
 hew-mir = { path = "../hew-mir" }
+hew-types = { path = "../hew-types" }
 hew-codegen-rs = { path = "../hew-codegen-rs" }
 cc = "1"
 

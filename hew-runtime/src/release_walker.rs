@@ -765,8 +765,8 @@ pub unsafe extern "C" fn hew_managed_visit_release_driver(
     driver: *mut c_void,
     visitor: *const hew_cabi::managed::HewManagedStorageVisitor,
 ) -> i32 {
-    use crate::owned_value_budget::{transfer, visit};
-    use hew_cabi::managed::{visit_value, HewManagedWalkKind, UNDESCRIBED};
+    use crate::owned_value_budget::transfer;
+    use hew_cabi::managed::HewManagedWalkKind;
     // SAFETY: the provider lends its exclusive frozen cleanup state.
     unsafe {
         let Some(driver) = driver.cast::<ReleaseDriver>().as_mut() else {
@@ -783,12 +783,31 @@ pub unsafe extern "C" fn hew_managed_visit_release_driver(
         if status != 0 {
             return status;
         }
-        let Some(cursor) = driver.cursor.as_ref() else {
+        visit_cursor(driver.cursor, visitor, driver.state.is_null())
+    }
+}
+
+/// Visit the cursor's remaining typed obligations without constructing a driver.
+/// # Safety
+/// The caller freezes the cursor and owns its current slot unless an active child does.
+pub(crate) unsafe fn visit_cursor(
+    cursor: *mut HewReleaseCursor,
+    visitor: *const hew_cabi::managed::HewManagedStorageVisitor,
+    visit_current: bool,
+) -> i32 {
+    use crate::owned_value_budget::{transfer, visit};
+    use hew_cabi::managed::{visit_value, HewManagedWalkKind, UNDESCRIBED};
+    // SAFETY: the provider retains and freezes the exact pending cursor items.
+    unsafe {
+        let Some(cursor) = cursor.as_mut() else {
             return 0;
         };
+        if (*visitor).kind == HewManagedWalkKind::CommitTransfer {
+            cursor.set_value_owner(transfer::destination_owner(visitor));
+        }
         // Once a callback starts, its ordinary invocation occupancy owns the
         // transferred value; the original cursor slot may already be consumed.
-        if driver.state.is_null() {
+        if visit_current {
             if let Some(layout) = cursor.current_layout.as_ref() {
                 let status = visit_value(layout, cursor.current_slot, visitor);
                 if status != 0 {

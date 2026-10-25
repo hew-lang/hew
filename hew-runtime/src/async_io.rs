@@ -27,6 +27,8 @@ use crate::wake::{HewWaker, OwnedWaker};
 #[cfg(not(target_arch = "wasm32"))]
 mod connect;
 #[cfg(not(target_arch = "wasm32"))]
+pub(crate) mod content;
+#[cfg(not(target_arch = "wasm32"))]
 mod deadline;
 #[cfg(not(target_arch = "wasm32"))]
 mod file;
@@ -45,7 +47,9 @@ pub use connect::{hew_async_tcp_connect, hew_async_tcp_connect_timeout};
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) use file::{start_sink_write, start_stream_read};
 #[cfg(not(target_arch = "wasm32"))]
-pub(crate) use net::{accept_now, start_tcp_readable, start_tcp_stream_write};
+pub(crate) use net::{
+    accept_now, start_tcp_readable, start_tcp_stream_read, start_tcp_stream_write,
+};
 #[cfg(not(target_arch = "wasm32"))]
 pub use net::{hew_async_tcp_accept, hew_async_tcp_read, hew_async_tcp_write};
 pub use offload::hew_async_offload;
@@ -73,9 +77,23 @@ pub(crate) struct IoFailure {
     kind: i32,
     errno: i32,
     message: String,
+    trap: Option<i32>,
 }
 
 impl IoFailure {
+    #[cfg(not(target_arch = "wasm32"))]
+    fn managed(status: i32) -> Self {
+        Self {
+            kind: crate::stream_error::IO_ERROR_KIND_UNCLASSIFIED,
+            errno: libc::ENOMEM,
+            message: "stream result exceeds managed heap limit".into(),
+            trap: Some(if status == hew_cabi::managed::HEAP_EXCEEDED {
+                crate::internal::types::HEW_TRAP_HEAP_EXCEEDED
+            } else {
+                crate::internal::types::HEW_TRAP_USER_PANIC
+            }),
+        }
+    }
     pub(crate) fn from_io(operation: &str, error: &io::Error) -> Self {
         Self {
             kind: crate::stream_error::io_error_kind_tag(error.kind()),
@@ -83,6 +101,7 @@ impl IoFailure {
             // using nonzero errno, including portable errors without an OS code.
             errno: error.raw_os_error().unwrap_or(libc::EIO),
             message: format!("{operation}: {error}"),
+            trap: None,
         }
     }
 
@@ -96,6 +115,7 @@ impl IoFailure {
             kind,
             errno: if errno == 0 { libc::EIO } else { errno },
             message,
+            trap: None,
         })
     }
 
@@ -109,6 +129,7 @@ impl IoFailure {
             ),
             errno,
             message: crate::shutdown::refusal_message(operation),
+            trap: None,
         }
     }
 
@@ -118,6 +139,7 @@ impl IoFailure {
             kind: crate::stream_error::IO_ERROR_KIND_UNCLASSIFIED,
             errno: libc::EINVAL,
             message: message.into(),
+            trap: None,
         }
     }
 }
@@ -137,6 +159,8 @@ impl Drop for AcceptedConnection {
 }
 
 pub(crate) enum IoValue {
+    #[cfg(not(target_arch = "wasm32"))]
+    ManagedStreamItem(Option<Arc<content::Content>>),
     #[cfg_attr(
         all(target_arch = "wasm32", not(target_os = "wasi")),
         expect(dead_code, reason = "non-WASI wasm32 hosts have no file byte producer")
@@ -164,6 +188,11 @@ pub(crate) enum IoValue {
 
 enum State {
     Pending(Option<Arc<OwnedWaker>>),
+    #[cfg(not(target_arch = "wasm32"))]
+    Unpublished {
+        result: Result<IoValue, IoFailure>,
+        waker: Option<Arc<OwnedWaker>>,
+    },
     Ready(Result<IoValue, IoFailure>),
     Cancelled,
     Taken,
@@ -173,6 +202,8 @@ impl State {
     fn status(&self) -> AsyncIoStatus {
         match self {
             Self::Pending(_) => AsyncIoStatus::Pending,
+            #[cfg(not(target_arch = "wasm32"))]
+            Self::Unpublished { .. } => AsyncIoStatus::Pending,
             Self::Ready(Ok(_)) => AsyncIoStatus::Success,
             Self::Ready(Err(_)) => AsyncIoStatus::Error,
             Self::Cancelled => AsyncIoStatus::Cancelled,
@@ -184,6 +215,8 @@ impl State {
 /// Opaque resource held across a suspended I/O call.
 pub struct HewAsyncIo {
     state: Mutex<State>,
+    #[cfg(not(target_arch = "wasm32"))]
+    stream_content: Mutex<Option<content::ReadOwnership>>,
     #[cfg(not(target_arch = "wasm32"))]
     sink_finish: Mutex<Option<sink::Finish>>,
     /// The socket, action and readiness flag of a readiness operation.
@@ -268,7 +301,7 @@ impl HewAsyncIo {
     #[cfg(not(target_arch = "wasm32"))]
     unsafe fn new(waker: *const HewWaker) -> Arc<Self> {
         // SAFETY: the caller lends the descriptor through construction.
-        unsafe { Self::with_net(waker, None) }
+        unsafe { Self::with_net(waker, None, None) }
     }
 
     /// # Safety
@@ -288,7 +321,11 @@ impl HewAsyncIo {
     }
 
     #[cfg(not(target_arch = "wasm32"))]
-    unsafe fn with_net(waker: *const HewWaker, net: Option<net::NetOp>) -> Arc<Self> {
+    unsafe fn with_net(
+        waker: *const HewWaker,
+        net: Option<net::NetOp>,
+        stream_owner: Option<Option<crate::owned_value_budget::ValueOwner>>,
+    ) -> Arc<Self> {
         // SAFETY: the caller lends a live descriptor for this call, or null.
         let owned = unsafe {
             waker
@@ -297,6 +334,7 @@ impl HewAsyncIo {
         };
         Arc::new(Self {
             state: Mutex::new(State::Pending(owned)),
+            stream_content: Mutex::new(stream_owner.map(content::ReadOwnership::new)),
             net,
             sink_finish: Mutex::new(None),
             socket_cancel: None,
@@ -401,18 +439,28 @@ impl HewAsyncIo {
             }
             other => other,
         };
-        let waker = {
+        #[cfg(not(target_arch = "wasm32"))]
+        let (result, managed_publication) = self.prepare_content_publication(result);
+        #[cfg(target_arch = "wasm32")]
+        let result = Some(result);
+        let (waker, discarded) = {
             let mut state = self.state.lock_or_recover();
-            if !matches!(*state, State::Pending(_)) {
+            if matches!(*state, State::Pending(_)) && result.is_some() {
+                let result = result.expect("ready publication");
+                let State::Pending(waker) = std::mem::replace(&mut *state, State::Ready(result))
+                else {
+                    unreachable!("pending state was checked under this lock")
+                };
+                (waker, None)
+            } else {
                 // The producer still owns result. In particular, a late accept
                 // closes its connection here instead of stranding a table entry.
-                return;
+                (None, result)
             }
-            let State::Pending(waker) = std::mem::replace(&mut *state, State::Ready(result)) else {
-                unreachable!("pending state was checked under this lock")
-            };
-            waker
         };
+        drop(discarded);
+        #[cfg(not(target_arch = "wasm32"))]
+        self.finish_content_publication(managed_publication);
         #[cfg(not(target_arch = "wasm32"))]
         self.clear_deadline();
         if let Some(waker) = waker {
@@ -436,17 +484,19 @@ impl HewAsyncIo {
     }
 
     fn cancel_with_notification(&self, notify: bool) -> bool {
-        let (won, waker) = {
+        let (won, waker, discarded) = {
             let mut state = self.state.lock_or_recover();
-            if matches!(*state, State::Pending(_)) {
-                let State::Pending(waker) = std::mem::replace(&mut *state, State::Cancelled) else {
-                    unreachable!("pending state was checked under this lock")
-                };
-                (true, waker)
-            } else {
-                (false, None)
+            match std::mem::replace(&mut *state, State::Cancelled) {
+                State::Pending(waker) => (true, waker, None),
+                #[cfg(not(target_arch = "wasm32"))]
+                State::Unpublished { result, waker } => (true, waker, Some(result)),
+                previous => {
+                    *state = previous;
+                    (false, None, None)
+                }
             }
         };
+        drop(discarded);
         #[cfg(not(target_arch = "wasm32"))]
         {
             self.clear_deadline();
@@ -765,6 +815,40 @@ pub(crate) unsafe fn take_stream_item(operation: *const HewAsyncIo) -> (i32, Opt
     (if item.is_some() { 1 } else { 2 }, item)
 }
 
+/// Move one already-accounted content result to its native read operation.
+/// # Safety
+/// The operation is a retained typed stream read and the caller excludes concurrent takes.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) unsafe fn take_managed_stream_item(
+    operation: *const HewAsyncIo,
+) -> (i32, Option<Arc<content::Content>>) {
+    unsafe { HewAsyncIo::advance_if_ready(operation) };
+    let operation = unsafe { &*operation };
+    let mut state = operation.state.lock_or_recover();
+    if matches!(*state, State::Pending(_) | State::Unpublished { .. }) {
+        return (0, None);
+    }
+    if !matches!(*state, State::Ready(Ok(IoValue::ManagedStreamItem(_)))) {
+        return (3, None);
+    }
+    let State::Ready(Ok(IoValue::ManagedStreamItem(item))) =
+        std::mem::replace(&mut *state, State::Taken)
+    else {
+        unreachable!()
+    };
+    (if item.is_some() { 1 } else { 2 }, item)
+}
+
+/// Retain the authored fault category of a failed managed result publication.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) unsafe fn failure_trap(operation: *const HewAsyncIo) -> Option<i32> {
+    let operation = unsafe { &*operation };
+    match &*operation.state.lock_or_recover() {
+        State::Ready(Err(failure)) => failure.trap,
+        _ => None,
+    }
+}
+
 /// The diagnostic a failed operation carries, for the caller's trap report.
 ///
 /// # Safety
@@ -975,6 +1059,8 @@ pub unsafe extern "C" fn hew_async_io_restore_error(operation: *const HewAsyncIo
             let _ = crate::stream_error::take_last_error();
         }
         State::Pending(_) | State::Cancelled => {}
+        #[cfg(not(target_arch = "wasm32"))]
+        State::Unpublished { .. } => {}
     }
     state.status() as i32
 }

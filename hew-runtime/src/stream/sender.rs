@@ -89,8 +89,53 @@ pub(super) struct SharedWrite {
 }
 
 impl SharedWrite {
-    pub(super) fn value_owner(&self) -> Option<crate::owned_value_budget::ValueOwner> {
-        self.value_owner.clone()
+    /// The enclosing invocation freezes this operation before visiting its owning inputs.
+    pub(super) unsafe fn visit_managed(
+        &mut self,
+        layout: &HewValueLayout,
+        visitor: *const hew_cabi::managed::HewManagedStorageVisitor,
+    ) -> i32 {
+        use hew_cabi::managed::{visit_value, HewManagedWalkKind, DESCEND, SKIP_DESCENDANTS};
+        // SAFETY: the operation and every initialized slot remain pinned and frozen.
+        unsafe {
+            if let Some((slot, _, owned)) = self.input {
+                match crate::owned_value_budget::visit::storage(
+                    visitor,
+                    slot,
+                    self.input_slot_bytes,
+                ) {
+                    DESCEND if owned => {
+                        let status = visit_value(layout, slot, visitor);
+                        if status != 0 {
+                            return status;
+                        }
+                    }
+                    DESCEND | SKIP_DESCENDANTS => {}
+                    failure => return failure,
+                }
+            }
+            if self.encoded_live {
+                let status = visit_value(&BYTES, self.encoded.as_ptr().cast(), visitor);
+                if status != 0 {
+                    return status;
+                }
+            }
+            let status = self.invocation.visit_managed(visitor);
+            if status != 0 {
+                return status;
+            }
+            let status = super::native::hew_managed_visit_stream_operation(
+                std::ptr::from_ref(&self.child).cast(),
+                visitor,
+            );
+            if status != 0 {
+                return status;
+            }
+            if (*visitor).kind == HewManagedWalkKind::CommitTransfer {
+                self.value_owner = crate::owned_value_budget::transfer::destination_owner(visitor);
+            }
+            0
+        }
     }
 
     pub(super) unsafe fn new(
@@ -237,7 +282,14 @@ impl SharedWrite {
                 }
             };
             if self.owner.encoder.is_none() {
-                self.input.as_mut().expect("shared write input").2 = false;
+                let (slot, allocation, _) = self.input.take().expect("shared write input");
+                // The child consumed the value; no typed slot remains in this wrapper.
+                // SAFETY: the child never borrows the source representation after construction.
+                unsafe { std::alloc::dealloc(slot.cast(), allocation) };
+                if let Some(owner) = &self.value_owner {
+                    owner.release_backing(slot, self.input_slot_bytes);
+                }
+                self.argument = std::ptr::null_mut();
             }
             self.encoded_live = false;
         }
@@ -358,7 +410,13 @@ impl SharedWrite {
             std::ptr::null_mut()
         };
         // SAFETY: these fresh cursors transfer child, input and abandoned result obligations.
-        unsafe { HewReleaseCursor::join(vec![child, own, encoded]) }
+        unsafe {
+            let cursor = HewReleaseCursor::join(vec![child, own, encoded]);
+            if let Some(cursor) = cursor.as_mut() {
+                cursor.set_value_owner(self.value_owner.clone());
+            }
+            cursor
+        }
     }
 }
 

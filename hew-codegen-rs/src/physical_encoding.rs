@@ -7,6 +7,138 @@ use inkwell::attributes::{Attribute, AttributeLoc};
 use inkwell::types::AnyType;
 
 impl<'ctx> FunctionEmitter<'_, 'ctx> {
+    /// A checked synchronous container allocation publishes its typed result
+    /// only after the provider's reservation succeeds.
+    pub(super) fn checked_managed_pointer_call(
+        &self,
+        symbol: &str,
+        mut values: Vec<BasicValueEnum<'ctx>>,
+        result: StorageId,
+        failure: Option<&PhysicalEdge>,
+    ) -> CodegenResult<BasicValueEnum<'ctx>> {
+        let failure = failure.ok_or_else(|| {
+            CodegenError::FailClosed("managed container allocation lacks quota cleanup".into())
+        })?;
+        values.push(self.managed_value_layout(&self.storage(result)?.ty)?.into());
+        let status = self
+            .value_emitter()
+            .entry_scratch(self.ctx.i32_type().into(), "container.status")?;
+        self.builder
+            .build_store(status, self.ctx.i32_type().const_zero())
+            .llvm_ctx("initialize container quota status")?;
+        values.push(status.into());
+        let parameters = values
+            .iter()
+            .map(|value| value.get_type().into())
+            .collect::<Vec<_>>();
+        let function = get_or_declare_external(
+            self.llvm,
+            symbol,
+            self.ctx
+                .ptr_type(AddressSpace::default())
+                .fn_type(&parameters, false),
+        )?;
+        let value = self.runtime_call_value(
+            function,
+            &values.iter().copied().map(Into::into).collect::<Vec<_>>(),
+            "container.result",
+        )?;
+        let status = self
+            .builder
+            .build_load(self.ctx.i32_type(), status, "container.status")
+            .llvm_ctx("read container quota status")?
+            .into_int_value();
+        self.check_budget_status(status, failure)?;
+        Ok(value)
+    }
+
+    /// Provider allocations adopt their result once; mutations preserve every
+    /// input until the provider's canonical replacement transaction succeeds.
+    pub(super) fn emit_checked_encoding_call(
+        &self,
+        family: RuntimeCallFamily,
+        arguments: &PhysicalArguments,
+        result: Option<StorageId>,
+        failure: &PhysicalEdge,
+    ) -> CodegenResult<()> {
+        let row = family.row();
+        let contract = row.contract.ok_or_else(|| {
+            CodegenError::FailClosed("checked encoding call lacks its owning contract".into())
+        })?;
+        let allocating = matches!(
+            contract.result,
+            hew_types::RuntimeResultEffect::FreshOwned(_)
+        );
+        let in_place = row.c_return == RuntimeCReturn::ReceiverInPlace;
+        if !allocating && !in_place {
+            return Err(CodegenError::FailClosed(
+                "checked encoding call has no managed effect".into(),
+            ));
+        }
+        let transfers: &[ArgumentTransfer] = arguments;
+        let mut values = transfers
+            .iter()
+            .zip(arguments.carriers())
+            .map(|(transfer, carrier)| {
+                self.emit_physical_argument(transfer, *carrier, "encoding.argument")
+            })
+            .collect::<CodegenResult<Vec<_>>>()?;
+        let destination = result.ok_or_else(|| {
+            CodegenError::FailClosed("checked encoding call lacks its result storage".into())
+        })?;
+        let result_abi = if allocating {
+            values.push(
+                self.managed_value_layout(&self.storage(destination)?.ty)?
+                    .into(),
+            );
+            self.module
+                .target
+                .extern_result_abi(&self.storage(destination)?.ty)
+                .map_err(|error| CodegenError::FailClosed(error.to_string()))?
+        } else {
+            PhysicalExternResultAbi::Direct
+        };
+        let status = self
+            .value_emitter()
+            .entry_scratch(self.ctx.i32_type().into(), "encoding.status")?;
+        self.builder
+            .build_store(status, self.ctx.i32_type().const_zero())
+            .llvm_ctx("initialize checked encoding status")?;
+        values.push(status.into());
+        let foreign_result = if allocating {
+            let storage = self.storage(destination)?;
+            Some(ForeignResult {
+                destination: self.slots[destination.0 as usize],
+                storage: llvm_type(self.ctx, &storage.layout.repr)?,
+                align: storage.layout.align,
+            })
+        } else {
+            None
+        };
+        self.value_emitter().call_foreign(
+            &format!("{}_checked", row.symbol),
+            &values,
+            &self.argument_widening(transfers)?,
+            foreign_result,
+            &result_abi,
+        )?;
+        let status = self
+            .builder
+            .build_load(self.ctx.i32_type(), status, "encoding.status")
+            .llvm_ctx("read checked encoding status")?
+            .into_int_value();
+        self.check_budget_status(status, failure)?;
+        for transfer in transfers {
+            if let ArgumentTransfer::Move(source) = transfer {
+                self.clear_owned(*source)?;
+            }
+        }
+        if in_place {
+            self.store(destination, values[0])?;
+        }
+        Ok(())
+    }
+
     pub(super) fn emit_direct_runtime_call(
         &self,
         family: RuntimeCallFamily,

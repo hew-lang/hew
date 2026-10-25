@@ -209,6 +209,208 @@ fn grow_capacity(current_cap: u32, min_needed: u32) -> u32 {
     doubled.max(min_needed).max(MIN_CAPACITY)
 }
 
+/// The same detach and growth decisions used by the native byte operations.
+#[derive(Clone, Copy)]
+enum ManagedMutation {
+    Push,
+    Append { count: u32, aliases_receiver: bool },
+    Detach,
+}
+
+unsafe fn prepare_mutation(
+    value: &BytesTriple,
+    mutation: ManagedMutation,
+) -> Result<Option<crate::owned_value_budget::BackingChange>, i32> {
+    use crate::owned_value_budget::{current_owner, ManagedStorage};
+    let Some(owner) = current_owner() else {
+        return Ok(None);
+    };
+    if matches!(mutation, ManagedMutation::Append { count: 0, .. })
+        || (matches!(mutation, ManagedMutation::Detach) && value.len == 0)
+    {
+        return Ok(None);
+    }
+    // SAFETY: the checked boundary retains the original allocation unchanged.
+    let unique = value.ptr.is_null()
+        || (unsafe { refcount(value.ptr) }.load(Ordering::Acquire) == 1
+            && !matches!(
+                mutation,
+                ManagedMutation::Append {
+                    aliases_receiver: true,
+                    ..
+                }
+            ));
+    let old = if value.ptr.is_null() {
+        None
+    } else {
+        Some(ManagedStorage {
+            identity: value.ptr as usize,
+            // SAFETY: the same header is retained throughout preflight.
+            bytes: u64::from(unsafe { capacity(value.ptr) }),
+        })
+    };
+    let detached = !unique || value.ptr.is_null();
+    let cap = if detached {
+        value.len.max(MIN_CAPACITY)
+    } else {
+        old.expect("non-null unique bytes have a backing").bytes as u32
+    };
+    let offset = if detached { 0 } else { value.offset };
+    let fail = || hew_cabi::managed::HEAP_EXCEEDED;
+    let cap = match mutation {
+        ManagedMutation::Push => {
+            let needed = value.len.checked_add(1).ok_or_else(fail)?;
+            if offset.checked_add(value.len).ok_or_else(fail)? >= cap {
+                grow_capacity(cap, needed)
+            } else {
+                cap
+            }
+        }
+        ManagedMutation::Append { count, .. } => {
+            let needed = value.len.checked_add(count).ok_or_else(fail)?;
+            if value.ptr.is_null() {
+                needed.max(MIN_CAPACITY)
+            } else if needed > cap {
+                grow_capacity(cap, needed)
+            } else {
+                cap
+            }
+        }
+        ManagedMutation::Detach => cap,
+    };
+    owner
+        .prepare_backing_change(old, u64::from(cap), unique)
+        .map(Some)
+        .map_err(|_| hew_cabi::managed::HEAP_EXCEEDED)
+}
+
+/// Release a source-language byte owner at its actual disposal boundary.
+/// # Safety
+/// The pointer is null or one initialized, accounted byte backing owner.
+#[no_mangle]
+pub unsafe extern "C" fn hew_bytes_drop_managed(pointer: *mut u8) {
+    if !pointer.is_null() {
+        if let Some(owner) = crate::owned_value_budget::current_owner() {
+            // SAFETY: the backing remains allocated until the physical drop below.
+            owner.release_backing(pointer.cast(), u64::from(unsafe { capacity(pointer) }));
+        }
+    }
+    // SAFETY: the caller transfers this physical reference.
+    unsafe { hew_bytes_drop(pointer) };
+}
+
+/// Clear one accounted owner while leaving other byte aliases intact.
+/// # Safety
+/// The triple contains one initialized source-language owner.
+#[no_mangle]
+pub unsafe extern "C" fn hew_bytes_clear_managed(value: &mut BytesTriple) {
+    // SAFETY: clear transfers exactly the receiver's backing reference.
+    unsafe { hew_bytes_drop_managed(value.ptr) };
+    *value = BytesTriple {
+        ptr: core::ptr::null_mut(),
+        offset: 0,
+        len: 0,
+    };
+}
+
+/// Checked compiler-private byte push; refusal preserves the original triple.
+/// # Safety
+/// `old` owns a live triple and `out` is distinct uninitialized storage.
+#[no_mangle]
+pub unsafe extern "C" fn hew_bytes_push_checked(
+    old: *mut BytesTriple,
+    byte: u8,
+    out: *mut BytesTriple,
+) -> i32 {
+    // SAFETY: the original owner remains initialized throughout reservation.
+    unsafe {
+        let permit = match prepare_mutation(&*old, ManagedMutation::Push) {
+            Ok(permit) => permit,
+            Err(status) => return status,
+        };
+        hew_bytes_push_owned(old, byte, out);
+        if let Some(permit) = permit {
+            permit.commit((*out).ptr as usize);
+        }
+        0
+    }
+}
+
+/// Checked compiler-private byte append; refusal preserves both inputs.
+/// # Safety
+/// Inputs are live, `old` owns its reference, and `out` is distinct storage.
+#[no_mangle]
+pub unsafe extern "C" fn hew_bytes_append_checked(
+    old: *mut BytesTriple,
+    source: *const BytesTriple,
+    out: *mut BytesTriple,
+) -> i32 {
+    // SAFETY: both headers remain initialized until reservation succeeds.
+    unsafe {
+        let permit = match prepare_mutation(
+            &*old,
+            ManagedMutation::Append {
+                count: (*source).len,
+                aliases_receiver: !(*old).ptr.is_null() && (*old).ptr == (*source).ptr,
+            },
+        ) {
+            Ok(permit) => permit,
+            Err(status) => return status,
+        };
+        hew_bytes_append_owned(old, source, out);
+        if let Some(permit) = permit {
+            permit.commit((*out).ptr as usize);
+        }
+        0
+    }
+}
+
+/// Checked byte pop, including an exact COW reservation before mutation.
+/// # Safety
+/// The receiver and status pointer are live and uniquely writable.
+#[no_mangle]
+pub unsafe extern "C" fn hew_bytes_pop_checked(value: &mut BytesTriple, status: *mut i32) -> i64 {
+    // SAFETY: the caller retains the initialized source until success.
+    unsafe {
+        status.write(0);
+        let permit = match prepare_mutation(value, ManagedMutation::Detach) {
+            Ok(permit) => permit,
+            Err(failure) => {
+                status.write(failure);
+                return -1;
+            }
+        };
+        let result = hew_bytes_pop(value);
+        if let Some(permit) = permit {
+            permit.commit(value.ptr as usize);
+        }
+        result
+    }
+}
+
+/// Checked byte replacement after the compiler's ordinary bounds checks.
+/// # Safety
+/// The receiver contains `index`; its owner remains initialized on refusal.
+#[no_mangle]
+pub unsafe extern "C" fn hew_bytes_set_checked(
+    value: &mut BytesTriple,
+    index: i64,
+    byte: u8,
+) -> i32 {
+    // SAFETY: source bounds and ownership are supplied by checked lowering.
+    unsafe {
+        let permit = match prepare_mutation(value, ManagedMutation::Detach) {
+            Ok(permit) => permit,
+            Err(failure) => return failure,
+        };
+        hew_bytes_set(value, index, byte);
+        if let Some(permit) = permit {
+            permit.commit(value.ptr as usize);
+        }
+        0
+    }
+}
+
 /// Reallocate a uniquely-owned buffer to a new capacity, preserving `used`
 /// bytes of data from the start. Returns the new data pointer.
 ///
@@ -1314,6 +1516,33 @@ pub unsafe extern "C-unwind" fn hew_bytes_slice_owned(
     }
 }
 
+/// Retain the source account's backing edge for a non-empty borrowed slice.
+/// # Safety
+/// Bounds and offsets are checked and source belongs to the active account.
+#[no_mangle]
+pub unsafe extern "C" fn hew_bytes_slice_managed(
+    src: *const BytesTriple,
+    start: i64,
+    end: i64,
+    out: *mut BytesTriple,
+) {
+    // SAFETY: the checked compiler boundary retains source throughout this call.
+    unsafe {
+        if start != end {
+            if let Some(owner) = crate::owned_value_budget::current_owner() {
+                owner
+                    .acquire(&[crate::owned_value_budget::ManagedStorage {
+                        identity: (*src).ptr as usize,
+                        bytes: u64::from(capacity((*src).ptr)),
+                    }])
+                    .unwrap_or_else(|_| std::process::abort())
+                    .commit();
+            }
+        }
+        hew_bytes_slice_owned(src, start, end, out);
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -1325,6 +1554,53 @@ pub unsafe extern "C-unwind" fn hew_bytes_slice_owned(
 )]
 mod tests {
     use super::*;
+
+    #[test]
+    fn checked_mutation_preserves_inputs_on_refused_growth_and_refunds_aliases() {
+        use crate::owned_value_budget::{with_value_owner, ManagedStorage, ValueOwner};
+        // SAFETY: the test owns both physical aliases and accounts both edges.
+        unsafe {
+            let mut value = hew_bytes_from_static(b"0123456789abcdef".as_ptr(), 16);
+            let alias = value;
+            hew_bytes_clone_ref(alias.ptr);
+            let owner = ValueOwner::new(Some(47));
+            owner
+                .acquire(
+                    &[ManagedStorage {
+                        identity: value.ptr as usize,
+                        bytes: 16,
+                    }; 2],
+                )
+                .unwrap()
+                .commit();
+            with_value_owner(&Some(owner.clone()), || {
+                assert_eq!(hew_bytes_set_checked(&mut value, 0, b'x'), 0);
+                assert_ne!(value.ptr, alias.ptr);
+                assert_eq!(*value.ptr, b'x');
+                assert_eq!(*alias.ptr, b'0');
+                assert_eq!(owner.live_bytes(), 32);
+                let original = value.ptr;
+                let mut out = core::mem::MaybeUninit::uninit();
+                assert_eq!(
+                    hew_bytes_push_checked(&raw mut value, b'y', out.as_mut_ptr()),
+                    hew_cabi::managed::HEAP_EXCEEDED
+                );
+                assert_eq!(value.ptr, original);
+                assert_eq!(value.len, 16);
+                assert_eq!(owner.live_bytes(), 32);
+                let mut status = -1;
+                assert_eq!(
+                    hew_bytes_pop_checked(&mut value, &raw mut status),
+                    i64::from(b'f')
+                );
+                assert_eq!(status, 0);
+                hew_bytes_clear_managed(&mut value);
+                assert_eq!(owner.live_bytes(), 16);
+                hew_bytes_drop_managed(alias.ptr);
+                assert_eq!(owner.live_bytes(), 0);
+            });
+        }
+    }
 
     #[test]
     fn new_and_drop() {

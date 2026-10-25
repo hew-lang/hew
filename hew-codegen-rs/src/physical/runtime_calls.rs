@@ -293,11 +293,12 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                 )?;
             }
             RuntimeCallFamily::Encoding { format, op } => {
-                self.emit_direct_runtime_call(
-                    hew_types::RuntimeCallFamily::Encoding { format, op },
-                    arguments,
-                    result,
-                )?;
+                let family = hew_types::RuntimeCallFamily::Encoding { format, op };
+                if let Some(failure) = failure {
+                    self.emit_checked_encoding_call(family, arguments, result, failure)?;
+                    return self.emit_result_edge(result, normal);
+                }
+                self.emit_direct_runtime_call(family, arguments, result)?;
             }
             RuntimeCallFamily::NodeShutdown => {
                 let function = get_or_declare_external(
@@ -857,7 +858,15 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                         "bytes pop has no pair carrier".into(),
                     ));
                 };
-                return self.emit_bytes_pop(source(0)?, required_result()?, option, normal);
+                return self.emit_bytes_pop(
+                    source(0)?,
+                    required_result()?,
+                    option,
+                    normal,
+                    failure.ok_or_else(|| {
+                        CodegenError::FailClosed("bytes pop lacks quota cleanup".into())
+                    })?,
+                );
             }
             RuntimeCallFamily::BytesGet => {
                 let option = variant_carrier(action)?;
@@ -1052,7 +1061,7 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
             RuntimeCallFamily::BytesClear => {
                 let function = get_or_declare_external(
                     self.llvm,
-                    "hew_bytes_clear",
+                    "hew_bytes_clear_managed",
                     self.ctx.void_type().fn_type(&[ptr.into()], false),
                 )?;
                 self.runtime_call_void(
@@ -1061,6 +1070,7 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                     "bytes.clear",
                 )?;
                 let value = self.load(source(0)?, "bytes.clear.result")?;
+                self.clear_owned(source(0)?)?;
                 self.store(required_result()?, value)?;
             }
             RuntimeCallFamily::BytesSet => {
@@ -1164,13 +1174,13 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
             RuntimeCallFamily::BytesPush => {
                 let function = get_or_declare_external_widened(
                     self.llvm,
-                    "hew_bytes_push_owned",
+                    "hew_bytes_push_checked",
                     self.ctx
-                        .void_type()
+                        .i32_type()
                         .fn_type(&[ptr.into(), self.ctx.i8_type().into(), ptr.into()], false),
                     &[(1, Widen::Zero)],
                 )?;
-                self.runtime_call_void(
+                let status = self.runtime_call_value(
                     function,
                     &[
                         self.slots[source(0)?.0 as usize].into(),
@@ -1179,16 +1189,24 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                     ],
                     "bytes.push.owned",
                 )?;
+                self.check_budget_status(
+                    status.into_int_value(),
+                    failure.ok_or_else(|| {
+                        CodegenError::FailClosed("bytes push lacks quota cleanup".into())
+                    })?,
+                )?;
+                self.clear_owned(source(0)?)?;
+                return self.emit_result_edge(result, normal);
             }
             RuntimeCallFamily::BytesAppend => {
                 let function = get_or_declare_external(
                     self.llvm,
-                    "hew_bytes_append_owned",
+                    "hew_bytes_append_checked",
                     self.ctx
-                        .void_type()
+                        .i32_type()
                         .fn_type(&[ptr.into(), ptr.into(), ptr.into()], false),
                 )?;
-                self.runtime_call_void(
+                let status = self.runtime_call_value(
                     function,
                     &[
                         self.slots[source(0)?.0 as usize].into(),
@@ -1197,6 +1215,14 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                     ],
                     "bytes.append.owned",
                 )?;
+                self.check_budget_status(
+                    status.into_int_value(),
+                    failure.ok_or_else(|| {
+                        CodegenError::FailClosed("bytes append lacks quota cleanup".into())
+                    })?,
+                )?;
+                self.clear_owned(source(0)?)?;
+                return self.emit_result_edge(result, normal);
             }
             RuntimeCallFamily::BytesConcat => {
                 let function = get_or_declare_external(

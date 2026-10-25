@@ -1280,11 +1280,18 @@ macro_rules! encoding_contract {
 
 impl EncodingOp {
     pub(super) const fn contract(self, format: EncodingFormat) -> RuntimeSemanticContract {
-        match format {
+        let mut contract = match format {
             EncodingFormat::Json => encoding_contract!(JsonValue, self),
             EncodingFormat::Yaml => encoding_contract!(YamlValue, self),
             EncodingFormat::Toml => encoding_contract!(TomlValue, self),
+        };
+        if matches!(
+            contract.result,
+            RuntimeResultEffect::FreshOwned(_) | RuntimeResultEffect::UpdatedReceiver(_)
+        ) {
+            contract.failures = &[RuntimeLogicalFailure::HeapExceeded];
         }
+        contract
     }
 }
 

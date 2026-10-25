@@ -879,12 +879,12 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
         if operation == PhysicalMapOp::New {
             let key = self.descriptor_pointer(&map_key_descriptor_symbol(glue))?;
             let value = self.descriptor_pointer(&map_value_descriptor_symbol(glue))?;
-            let function = get_or_declare_external(
-                self.llvm,
-                "hew_hashmap_new_with_layout",
-                pointer.fn_type(&[pointer.into(), pointer.into()], false),
+            let map = self.checked_managed_pointer_call(
+                "hew_hashmap_new_with_layout_checked",
+                vec![key.into(), value.into()],
+                result,
+                failure,
             )?;
-            let map = self.runtime_call_value(function, &[key.into(), value.into()], "map.new")?;
             self.store(result, map)?;
             return self.emit_result_edge(Some(result), normal);
         }
@@ -924,6 +924,7 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                         commit: "hew_hashmap_probe_contains",
                         commit_args: &[],
                         releases: false,
+                        budget_checked: false,
                     },
                     failure,
                 )?;
@@ -948,6 +949,7 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                             },
                             commit_args: &[self.slots[source(2)?.0 as usize].into()],
                             releases: true,
+                            budget_checked: true,
                         },
                         failure,
                     )?;
@@ -967,12 +969,12 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
             }
             PhysicalMapOp::Keys | PhysicalMapOp::Values => {
                 let symbol = if operation == PhysicalMapOp::Keys {
-                    "hew_hashmap_keys_layout"
+                    "hew_hashmap_keys_layout_checked"
                 } else {
-                    "hew_hashmap_values_layout"
+                    "hew_hashmap_values_layout_checked"
                 };
-                let function = external_unary_ptr(self.ctx, self.llvm, symbol)?;
-                let vector = self.runtime_call_value(function, &[map.into()], "map.projection")?;
+                let vector =
+                    self.checked_managed_pointer_call(symbol, vec![map], result, failure)?;
                 self.store(result, vector)?;
             }
             PhysicalMapOp::Entries { result: vector } => {
@@ -987,22 +989,15 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                     CodegenError::FailClosed("map entry has no value offset".into())
                 })?;
                 let descriptor = self.descriptor_pointer(&vector_descriptor_symbol(vector))?;
-                let function = get_or_declare_external(
-                    self.llvm,
-                    "hew_hashmap_entries_layout",
-                    pointer.fn_type(
-                        &[pointer.into(), pointer.into(), self.ctx.i64_type().into()],
-                        false,
-                    ),
-                )?;
-                let entries = self.runtime_call_value(
-                    function,
-                    &[
-                        map.into(),
+                let entries = self.checked_managed_pointer_call(
+                    "hew_hashmap_entries_layout_checked",
+                    vec![
+                        map,
                         descriptor.into(),
                         self.ctx.i64_type().const_int(offset, false).into(),
                     ],
-                    "map.entries",
+                    result,
+                    failure,
                 )?;
                 self.store(result, entries)?;
             }
@@ -1074,6 +1069,10 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                 commit: symbol,
                 commit_args: &[output.into()],
                 releases: matches!(operation, PhysicalMapOp::Remove { .. }),
+                budget_checked: matches!(
+                    operation,
+                    PhysicalMapOp::Get { .. } | PhysicalMapOp::Index
+                ),
             },
             failure,
         )?;
@@ -1161,8 +1160,12 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
         let pointer = self.ctx.ptr_type(AddressSpace::default());
         if operation == PhysicalSetOp::New {
             let descriptor = self.descriptor_pointer(&set_key_descriptor_symbol(glue))?;
-            let function = external_unary_ptr(self.ctx, self.llvm, "hew_hashset_new_with_layout")?;
-            let set = self.runtime_call_value(function, &[descriptor.into()], "set.new")?;
+            let set = self.checked_managed_pointer_call(
+                "hew_hashset_new_with_layout_checked",
+                vec![descriptor.into()],
+                result,
+                failure,
+            )?;
             self.store(result, set)?;
             return self.emit_result_edge(Some(result), normal);
         }
@@ -1204,6 +1207,7 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                         commit: symbol,
                         commit_args: &[],
                         releases: operation != PhysicalSetOp::Contains,
+                        budget_checked: matches!(operation, PhysicalSetOp::Insert { .. }),
                     },
                     failure,
                 )?;
@@ -1230,9 +1234,12 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                 release::drain(&self.value_emitter(), self.frame.as_ref(), cursor)?;
             }
             PhysicalSetOp::Elements => {
-                let function =
-                    external_unary_ptr(self.ctx, self.llvm, "hew_hashset_to_vec_layout")?;
-                let vector = self.runtime_call_value(function, &[set.into()], "set.elements")?;
+                let vector = self.checked_managed_pointer_call(
+                    "hew_hashset_to_vec_layout_checked",
+                    vec![set],
+                    result,
+                    failure,
+                )?;
                 self.store(result, vector)?;
             }
         }

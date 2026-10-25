@@ -943,11 +943,13 @@ impl<'a, 'ctx> ValueEmitter<'a, 'ctx> {
                     }
                 };
                 let symbol = match action {
-                    DestroyAction::Encoding(format) => {
-                        hew_mir::physical::EncodingOp::Free.c_symbol(format)
-                    }
+                    DestroyAction::Encoding(format) => match format {
+                        hew_mir::physical::EncodingFormat::Json => "hew_json_free_managed",
+                        hew_mir::physical::EncodingFormat::Yaml => "hew_yaml_free_managed",
+                        hew_mir::physical::EncodingFormat::Toml => "hew_toml_free_managed",
+                    },
                     DestroyAction::StringRelease => "hew_string_drop_managed",
-                    DestroyAction::BytesRelease => "hew_bytes_drop",
+                    DestroyAction::BytesRelease => "hew_bytes_drop_managed",
                     DestroyAction::Resource(_)
                     | DestroyAction::Callable
                     | DestroyAction::TraitObject

@@ -47,7 +47,7 @@ function newStorage(bytes: Uint8Array, capacity = bytes.length): StringStorage {
 
 export class IndexedString {
   readonly kind = "string";
-  prepareGrowth?: (capacity: number) => void;
+  prepareGrowth?: (capacity: number, detached: boolean) => void;
   private storage: StringStorage | null;
 
   private constructor(storage: StringStorage) {
@@ -191,7 +191,7 @@ export class IndexedString {
         ? Math.max(newLength, storage.bytes.length * 2, 16)
         : storage.bytes.length;
     if (storage.owners !== 1 || capacity !== storage.bytes.length)
-      this.prepareGrowth?.(capacity);
+      this.prepareGrowth?.(capacity, storage.owners !== 1);
     if (storage.owners !== 1) {
       storage.owners--;
       storage = newStorage(this.encoded(), capacity);

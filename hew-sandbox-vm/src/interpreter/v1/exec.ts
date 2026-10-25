@@ -277,6 +277,11 @@ interface RoleSlot {
 }
 
 interface TaskEntry {
+  handles: Set<VmValue>;
+  scopeAlive: boolean;
+  members?: VmValue[];
+  budget?: ManagedBudget;
+  memberBytes?: bigint;
   managedReply?: VmValue;
   managedResult?: VmValue;
   managedType?: number;
@@ -312,6 +317,7 @@ interface TaskGroup {
 }
 
 interface Activation {
+  accountActor: ActorInstance | null;
   rcOwner: RcOwner | null;
   context: FrameContext;
   fn: FunctionV1;
@@ -472,6 +478,7 @@ class ExecutorV1 {
   private readonly tasks = new Map<string, TaskEntry>();
   private completedTasks = 0;
   private actorIdentity = 0n;
+  private arenaIdentity = 0n;
   private readonly faultDebts = new Set<number>();
   private nextFaultDebt = 0;
   private readonly closingResources = new WeakSet<object>();
@@ -506,6 +513,8 @@ class ExecutorV1 {
     this.ids = new DeterministicIds(trace.replay.seed);
     this.host = {
       argv: [...(options.argv ?? ["main.hew"])],
+      arenaInstanceId: () =>
+        this.arenaIdentity === 0x7fffffffffffffffn ? 0n : ++this.arenaIdentity,
       unixTimeMillis: () => this.trace.virtualTimeMs,
       monotonicTimeNanos: () => {
         const millis = this.trace.virtualTimeMs;
@@ -763,6 +772,7 @@ class ExecutorV1 {
           executionContext.actor,
         );
     return {
+      accountActor: executionContext.actor,
       rcOwner: fn.actor_construction
         ? { blocks: new Set(), closed: false }
         : (caller?.rcOwner ??
@@ -887,17 +897,23 @@ class ExecutorV1 {
         type,
       });
     }
-    if (value.kind === "task") this.taskFor(value).managedType = type;
+    if (value.kind === "task") {
+      const task = this.taskFor(value);
+      task.managedType = type;
+      task.handles.add(value);
+    }
     if (value.kind === "stream" && !this.generatorStreams.has(value.channelId))
       this.bindManagedStream(value, type, actor);
     if (value.kind === "generator") this.generatorFor(value).managedType = type;
     if (value.kind === "encoding") {
       value.prepareMutation = budget
-        ? (replacement) => budget.checkMutation(value, replacement)
+        ? (replacement, detached) =>
+            budget.checkMutation(value, replacement, detached)
         : undefined;
     } else if (value.kind === "string") {
       value.prepareGrowth = budget
-        ? (capacity) => budget.checkStringGrowth(value, capacity)
+        ? (capacity, detached) =>
+            budget.checkStringGrowth(value, capacity, detached)
         : undefined;
     } else if (value.kind === "map") {
       value.prepareInsert = budget
@@ -932,11 +948,15 @@ class ExecutorV1 {
                     this.managed.copy(item, row.element),
                   )
                 : value.items;
-            budget.checkMutation(value, {
-              ...value,
-              items,
-              storage: { ...storage, capacity, items, owners: 1 },
-            });
+            budget.checkMutation(
+              value,
+              {
+                ...value,
+                items,
+                storage: { ...storage, capacity, items, owners: 1 },
+              },
+              detached,
+            );
           }
         : undefined;
     }
@@ -953,6 +973,14 @@ class ExecutorV1 {
       const type = frame.fn.places[id]?.managed_type;
       if (type != null && cell.valid) roots.push({ value: cell.value, type });
     }
+    for (const scope of frame.scopes.values())
+      for (const task of scope.tasks)
+        if (task.managedType != null)
+          roots.push({
+            value: { kind: "task", id: task.id },
+            type: task.managedType,
+          });
+    if (frame.caller) roots.push(...this.frameManagedRoots(frame.caller));
     return roots;
   }
 
@@ -991,12 +1019,20 @@ class ExecutorV1 {
   }
 
   private adoptManaged(root: ManagedRoot, actor: ActorInstance): void {
+    if (!this.managed.needsAdoption(root.type)) return;
     this.managed.collect(
       root,
       new Map(),
       undefined,
       undefined,
-      (value, type) => this.bindManagedStream(value, type, actor),
+      (value, type) => {
+        this.bindManagedStream(value, type, actor);
+        const row = this.managed.row(type);
+        if (row.kind === "generator")
+          this.rehomeFrame(this.generatorFor(value).frame, actor);
+        else if (value.kind === "task")
+          this.rehomeTask(this.taskFor(value), actor);
+      },
       (value, type) => {
         const row = this.managed.row(type);
         // Encoding trees and opaque host providers cannot contain receiving
@@ -1008,6 +1044,61 @@ class ExecutorV1 {
           : this.managedRetained(value, type);
       },
     );
+  }
+
+  private rehomeLease(
+    lease: ManagedLease | undefined,
+    budget?: ManagedBudget,
+  ): ManagedLease | undefined {
+    if (!lease?.roots) return lease;
+    const replacement = budget?.retainMany(lease.roots);
+    lease.release();
+    return replacement;
+  }
+
+  private rehomeTask(task: TaskEntry, actor: ActorInstance): void {
+    if (task.budget === actor.budget && task.frame?.accountActor === actor)
+      return;
+    task.budget = actor.budget;
+    if (task.frame) this.rehomeFrame(task.frame, actor);
+    task.managedLease = this.rehomeLease(task.managedLease, actor.budget);
+  }
+
+  private rehomeFrame(frame: Activation, actor: ActorInstance): void {
+    if (frame.accountActor === actor) return;
+    const previous = frame.accountActor;
+    frame.accountActor = actor;
+    frame.context.actor = actor;
+    frame.context.id = actor.id;
+    const cells = new Set<Cell>();
+    const rehome = (cell: Cell) => {
+      if (cells.has(cell)) return;
+      cells.add(cell);
+      cell.budget = actor.budget;
+      if (cell.valid && cell.type != null)
+        this.stampManaged(cell.value, cell.type, actor);
+      cell.lease = this.rehomeLease(cell.lease, actor.budget);
+      if (!cell.lease && cell.valid && cell.type != null)
+        cell.lease = actor.budget?.retain({
+          value: cell.value,
+          type: cell.type,
+        });
+    };
+    const ref = (value: Ref): void => {
+      if (value.kind === "cell") rehome(value.cell);
+      else ref(value.parent);
+    };
+    for (const value of frame.env.values()) ref(value);
+    for (const cell of frame.places.values()) rehome(cell);
+    frame.managedInputs = frame.managedInputs.flatMap((lease) => {
+      const replacement = this.rehomeLease(lease, actor.budget);
+      return replacement ? [replacement] : [];
+    });
+    for (const scope of frame.scopes.values())
+      for (const task of scope.tasks) this.rehomeTask(task, actor);
+    if (frame.caller) this.rehomeFrame(frame.caller, actor);
+    previous?.budget?.changed();
+    actor.budget?.changed();
   }
 
   private failActorBudget(actor: ActorInstance): void {
@@ -1092,7 +1183,9 @@ class ExecutorV1 {
                       );
                     })(),
                 )
-              : 0n) + this.managed.width(row.children[0]!),
+              : 0n) +
+            this.managed.width(row.children[0]!) +
+            (task.memberBytes ?? 0n),
           children,
         };
       }
@@ -1234,6 +1327,24 @@ class ExecutorV1 {
   // ── instructions ─────────────────────────────────────────────────────────
 
   private execute(act: Activation, op: OpV1): void {
+    try {
+      this.executeOperation(act, op);
+    } finally {
+      switch (op.op) {
+        case "store.init":
+        case "store.assign":
+        case "load.take":
+        case "destructure":
+        case "variant.destructure":
+        case "destroy_value":
+        case "end_lifetime":
+        case "task_scope.close":
+          act.context.actor?.budget?.changed();
+      }
+    }
+  }
+
+  private executeOperation(act: Activation, op: OpV1): void {
     switch (op.op) {
       case "coverage.hit": {
         const key = String(op.counter);
@@ -1310,6 +1421,11 @@ class ExecutorV1 {
         const ref = this.placeRef(act, op.place);
         const replacement = this.read(act, op.value);
         const previous = liveRef(ref) ? readRef(ref) : UNIT;
+        const type = act.fn.places[op.place]?.managed_type;
+        const cleanup =
+          type == null
+            ? undefined
+            : act.context.actor?.budget?.retain({ value: previous, type });
         // Retire the old owner before invoking user close code. Publish the
         // replacement after cleanup, including when close records a fault;
         // the following cleanup.dispatch then drains the new owner once.
@@ -1317,6 +1433,7 @@ class ExecutorV1 {
         this.releaseOperation(act, previous, () => {
           writeRef(ref, replacement);
           this.invalidate(act, op.value);
+          cleanup?.release();
         });
         return;
       }
@@ -1604,11 +1721,10 @@ class ExecutorV1 {
             })),
           },
           () => {
-            for (const task of group?.tasks ?? []) {
-              task.managedLease?.release();
-              this.tasks.delete(task.id);
-            }
             act.scopes.delete(op.scope);
+            act.context.actor?.budget?.changed();
+            for (const task of group?.tasks ?? []) task.scopeAlive = false;
+            for (const task of group?.tasks ?? []) this.releaseTaskState(task);
           },
         );
         return;
@@ -1660,8 +1776,11 @@ class ExecutorV1 {
       case "task.race": {
         const scope = act.scopes.get(op.scope);
         if (!scope) throw new Error("race has no task scope");
-        const members = op.members.map((operand) => {
-          const member = this.taskFor(this.read(act, operand));
+        const memberValues = op.members.map((operand) =>
+          this.read(act, operand),
+        );
+        const members = op.members.map((operand, index) => {
+          const member = this.taskFor(memberValues[index]!);
           this.invalidate(act, operand);
           if (member.grouped) throw new Error("race reuses a task handle");
           member.grouped = true;
@@ -1671,7 +1790,10 @@ class ExecutorV1 {
         const task = this.newTask(
           act.context.actor?.budget,
           act.managedTypes.get(op.dst),
+          BigInt(op.member_slot_bytes) * BigInt(members.length),
+          true,
         );
+        task.members = memberValues;
         scope.tasks.push(task);
         let selected = false;
         let winner: TaskEntry | null = null;
@@ -1742,6 +1864,7 @@ class ExecutorV1 {
               failure = combineFaults(failure, closeFault);
               const finish = (releaseFault: Fault | null = null) => {
                 failure = combineFaults(failure, releaseFault);
+                this.releaseRaceMembers(task);
                 this.settleTask(task, failure ? UNIT : value, failure);
                 for (const changed of [...scope.changed]) changed();
               };
@@ -1823,6 +1946,8 @@ class ExecutorV1 {
         const task = this.newTask(
           act.context.actor?.budget,
           act.managedTypes.get(op.dst),
+          0n,
+          true,
         );
         group.tasks.push(task);
         let releaseReturn = () => {};
@@ -1991,6 +2116,7 @@ class ExecutorV1 {
         this.scheduler.enqueue(task.id, () => {
           if (task.done || task.finishing) return;
           task.invocationPending = false;
+          task.budget?.changed();
           this.runFrame(frame);
         });
         this.trace.allocateId("task", task.id, act.context.id);
@@ -2045,6 +2171,22 @@ class ExecutorV1 {
   // ── terminators ──────────────────────────────────────────────────────────
 
   private terminate(act: Activation, term: TermV1): void {
+    const mutable = [
+      "runtime.call",
+      "extern.call",
+      "value.call",
+      "wire.codec",
+      "suspend",
+    ].includes(term.op);
+    if (mutable) act.context.actor?.budget?.changed();
+    try {
+      this.terminateOperation(act, term);
+    } finally {
+      if (mutable) act.context.actor?.budget?.changed();
+    }
+  }
+
+  private terminateOperation(act: Activation, term: TermV1): void {
     switch (term.op) {
       case "materialize": {
         const budget = act.context.actor?.budget;
@@ -2650,7 +2792,9 @@ class ExecutorV1 {
             "checked task lacks its canonical provider descriptor",
           );
         const carrier =
-          op.op === "task.race" ? 0n : BigInt(row.invocation_slot_bytes!);
+          op.op === "task.race"
+            ? BigInt(op.member_slot_bytes) * BigInt(op.members.length)
+            : BigInt(row.invocation_slot_bytes!);
         const children: ManagedRoot[] = [];
         if (op.op === "task.invoke") {
           const operands = [...op.args];
@@ -2836,6 +2980,7 @@ class ExecutorV1 {
       >;
       try {
         step = iterator.next(value);
+        act.context.actor?.budget?.changed();
       } catch (error) {
         if (error instanceof ShimFault || error instanceof HeapExceeded) {
           fail({
@@ -3346,6 +3491,7 @@ class ExecutorV1 {
         const generator = act.context.generator;
         if (!generator || !generator.receive)
           throw new Error("yield has no generator consumer");
+        generator.frame = act;
         const value = this.boundary(act, term.inputs[0]!);
         const wake = this.park(act, term);
         generator.resume = () => wake(UNIT);
@@ -3459,7 +3605,8 @@ class ExecutorV1 {
         return;
       }
       case "Await": {
-        const task = this.taskFor(this.boundary(act, term.inputs[0]!));
+        const handle = this.boundary(act, term.inputs[0]!);
+        const task = this.taskFor(handle);
         let unwatch = () => {};
         let resultLease: ManagedLease | undefined;
         const wake = this.park(
@@ -3467,7 +3614,13 @@ class ExecutorV1 {
           term,
           () => unwatch(),
           undefined,
-          () => resultLease?.release(),
+          () => {
+            resultLease?.release();
+            task.handles.delete(handle);
+            this.managed.retire(handle);
+            task.budget?.changed();
+            this.releaseTaskState(task);
+          },
         );
         const ready = () => {
           if (!task.done) {
@@ -4282,6 +4435,11 @@ class ExecutorV1 {
           )
             this.pipes.finishClose(entry.retire);
           this.managed.retire(entry.retire);
+          actor?.budget?.changed();
+          if (entry.retire.kind === "task") {
+            const task = this.tasks.get(entry.retire.id);
+            if (task) this.releaseTaskState(task);
+          }
           continue;
         }
         const value = entry;
@@ -4352,7 +4510,8 @@ class ExecutorV1 {
             // Dropping a handle does not cancel scoped work. Join drains the
             // task, and scope close releases any result that was never taken.
             const task = this.tasks.get(value.id);
-            if (task?.done) {
+            const owned = task?.handles.delete(value);
+            if (task?.done && (!owned || !task.scopeAlive)) {
               const result = task.value;
               pending.push({ taskTaken: task });
               this.closeValueAsync(
@@ -4493,8 +4652,17 @@ class ExecutorV1 {
     this.managed.retire(value);
   }
 
-  private newTask(budget?: ManagedBudget, type?: number): TaskEntry {
+  private newTask(
+    budget?: ManagedBudget,
+    type?: number,
+    memberBytes = 0n,
+    scopeAlive = false,
+  ): TaskEntry {
     const task: TaskEntry = {
+      handles: new Set(),
+      scopeAlive,
+      budget,
+      memberBytes,
       managedType: type,
       id: this.ids.task(),
       grouped: false,
@@ -4521,6 +4689,31 @@ class ExecutorV1 {
     return task;
   }
 
+  private releaseTaskState(task: TaskEntry): void {
+    if (task.scopeAlive || task.handles.size || !this.tasks.has(task.id))
+      return;
+    this.releaseRaceMembers(task);
+    task.managedLease?.release();
+    task.managedLease = undefined;
+    this.tasks.delete(task.id);
+    task.budget?.changed();
+  }
+
+  private releaseRaceMembers(task: TaskEntry): void {
+    const members = task.members;
+    if (!members) return;
+    task.members = undefined;
+    task.memberBytes = 0n;
+    task.budget?.changed();
+    for (const value of members) {
+      if (value.kind !== "task") continue;
+      const member = this.tasks.get(value.id);
+      member?.handles.delete(value);
+      this.managed.retire(value);
+      if (member) this.releaseTaskState(member);
+    }
+  }
+
   private taskFor(value: VmValue): TaskEntry {
     if (value.kind !== "task")
       throw new Error(`expected a task, got ${value.kind}`);
@@ -4539,6 +4732,7 @@ class ExecutorV1 {
     task.resultInitialized = true;
     task.value = value;
     task.fault = fault;
+    task.budget?.changed();
     task.completedAt = ++this.completedTasks;
     for (const changed of [...task.changed]) changed();
   }
@@ -5146,6 +5340,10 @@ class ExecutorV1 {
         task.managedResult = undefined;
         task.managedReply = undefined;
         this.completeShim(act, term, result);
+        task.handles.delete(args[0]!);
+        this.managed.retire(args[0]!);
+        task.budget?.changed();
+        this.releaseTaskState(task);
         return;
       }
       case "submit": {
@@ -5758,18 +5956,31 @@ class ExecutorV1 {
     handler: ActorMessage["handler"],
     payload: VmValue[],
   ): ManagedLease | undefined {
-    if (!actor.budget && !this.pipes.hasManagedReceivers) return undefined;
     const params = this.functionAt(handler.callable).params.slice(1);
     if (params.length !== payload.length)
       throw new Error("typed message payload differs from its handler");
-    const roots = params.map((param, index) => {
-      if (param.managed_type == null)
+    if (
+      !actor.budget &&
+      !this.pipes.hasManagedReceivers &&
+      params.every(
+        (param) =>
+          param.managed_type == null ||
+          !this.managed.needsAdoption(param.managed_type),
+      )
+    )
+      return undefined;
+    const roots = params.flatMap((param, index) => {
+      if (param.managed_type == null) {
+        if (!actor.budget) return [];
         throw new Error("message parameter lacks its managed descriptor");
-      return {
-        value: payload[index]!,
-        type: param.managed_type,
-        slots: true,
-      };
+      }
+      return [
+        {
+          value: payload[index]!,
+          type: param.managed_type,
+          slots: true,
+        },
+      ];
     });
     if (actor.budget) return actor.budget.retainMany(roots);
     for (const root of roots) this.adoptManaged(root, actor);

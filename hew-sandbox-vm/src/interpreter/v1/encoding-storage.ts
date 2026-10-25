@@ -15,7 +15,7 @@ export interface EncodingOwner {
   value: EncodingNode | null;
   storage?: EncodingStorage;
   bridge?: (request: string) => string;
-  prepareMutation?: (replacement: EncodingOwner) => void;
+  prepareMutation?: (replacement: EncodingOwner, detached: boolean) => void;
 }
 
 interface ManagedTree {
@@ -171,7 +171,10 @@ export function mutateEncoding(
     key,
     child_detach: childStorage.sharedCopy && childStorage.owners > 1,
   });
-  value.prepareMutation?.(replacement);
+  value.prepareMutation?.(
+    replacement,
+    !!retained.sharedCopy && retained.owners > 1,
+  );
   retained.owners--;
   value.value = replacement.value;
   value.storage = replacement.storage;

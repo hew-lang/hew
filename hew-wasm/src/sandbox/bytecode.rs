@@ -663,6 +663,7 @@ pub enum OpKind {
         dst: u32,
         scope: u32,
         members: Vec<u32>,
+        member_slot_bytes: String,
     },
     #[serde(rename = "task.spawn")]
     TaskSpawn { dst: u32, scope: u32, callable: u32 },

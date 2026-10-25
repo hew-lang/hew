@@ -84,6 +84,7 @@ export interface ShimHost {
   /// The program's own generator. `hew_random_seed` replaces it, and it is
   /// separate from the scheduler's chaos stream.
   prng: Mt19937;
+  arenaInstanceId(): bigint;
   /// The package's regex literal pool.
   regexPatterns: readonly string[];
   /// Build a value of the enum descriptor the call demands. The tag comes from
@@ -1417,6 +1418,10 @@ function saturatingI64(value: bigint): bigint {
 // ── externs ─────────────────────────────────────────────────────────────────
 
 const EXTERN_SHIMS: Record<string, RuntimeShim | Ordinary | undefined> = {
+  hew_arena_instance_id_new: (host) => ({
+    kind: "i64",
+    value: host.arenaInstanceId(),
+  }),
   hew_semaphore_new: (host, args) => host.semaphores!.create(integer(args, 0)),
   hew_semaphore_clone: (host, args) => host.semaphores!.clone(arg(args, 0)),
   hew_semaphore_try_acquire: (host, args) =>

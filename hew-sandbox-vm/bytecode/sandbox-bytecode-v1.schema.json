@@ -3280,6 +3280,9 @@
               "minimum": 0,
               "type": "integer"
             },
+            "member_slot_bytes": {
+              "type": "string"
+            },
             "members": {
               "items": {
                 "format": "uint32",
@@ -3300,7 +3303,7 @@
               "type": "integer"
             }
           },
-          "required": ["op", "dst", "scope", "members"],
+          "required": ["op", "dst", "scope", "members", "member_slot_bytes"],
           "type": "object"
         },
         {

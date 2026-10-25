@@ -1,0 +1,52 @@
+actor Worker {
+    receive fn ready() -> i64 fails i64 {
+        return error 9;
+    }
+}
+
+#[max_heap(20)]
+actor Enough {
+    let worker: Worker;
+    receive fn run() -> i64 {
+        select {
+            value from worker.ready() => match value {
+                .Err(.Failed(code)) => code,
+                _ => 0,
+            }
+        }
+    }
+}
+
+#[max_heap(19)]
+actor Small {
+    let worker: Worker;
+    receive fn run() -> i64 {
+        select {
+            value from worker.ready() => match value {
+                .Err(.Failed(code)) => code,
+                _ => 0,
+            }
+        }
+    }
+}
+
+fn main() -> i64 {
+    let worker = spawn Worker;
+    let enough = spawn Enough { worker: worker };
+    println(enough.run().expect("declared reply fits"));
+    stop(enough);
+    stopped(enough);
+    let small = spawn Small { worker: worker };
+    match small.run() {
+        .Err(.Trapped) => println("declared reply limit"),
+        _ => return 2,
+    }
+    stopped(small);
+    match worker.ready() {
+        .Err(.Failed(code)) => println(code),
+        _ => return 3,
+    }
+    stop(worker);
+    stopped(worker);
+    0
+}

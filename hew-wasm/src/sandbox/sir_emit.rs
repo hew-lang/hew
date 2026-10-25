@@ -162,7 +162,12 @@ struct Walker<'m> {
 impl<'m> Walker<'m> {
     /// Project exact semantic children and canonical language widths before
     /// emitting any instruction that refers to a managed descriptor.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one exhaustive wire projection consumes the canonical SIR storage families"
+    )]
     fn managed_types(&mut self) -> Result<Vec<ManagedType>, EmitError> {
+        use hew_sir::{ManagedHandleKind as H, ManagedProviderKind as P, ManagedStorageShape as S};
         use hew_types::ResolvedTy as T;
         let inventory = hew_mir::physical::physical_type_inventory(self.module);
         self.managed_ids = inventory
@@ -181,9 +186,6 @@ impl<'m> Walker<'m> {
                 let width = hew_sir::managed_slot(self.module, ty).map_err(|error| {
                     EmitError::new(format!("managed width for {ty:?}: {error:?}"))
                 })?;
-                use hew_sir::{
-                    ManagedHandleKind as H, ManagedProviderKind as P, ManagedStorageShape as S,
-                };
                 let shape = hew_sir::managed_storage_shape(self.module, ty).map_err(|error| {
                     EmitError::new(format!("managed shape for {ty:?}: {error:?}"))
                 })?;
@@ -415,8 +417,8 @@ impl<'m> Walker<'m> {
                 | SemTerminator::Panic { .. }
                 | SemTerminator::Trap { .. }
                 | SemTerminator::ResumeUnwind { .. }
-                | SemTerminator::Unreachable => {}
-                SemTerminator::Materialize { .. } => {}
+                | SemTerminator::Unreachable
+                | SemTerminator::Materialize { .. } => {}
             }
             if let SemTerminator::Call {
                 handback: Some(handback),
@@ -1559,6 +1561,7 @@ impl<'m> Walker<'m> {
                 dst: output()?,
                 scope: scope.0,
                 members: members.iter().map(operand).collect::<Vec<_>>(),
+                member_slot_bytes: hew_sir::managed_callable_carrier().bytes.to_string(),
             },
             SemOpKind::TaskSpawn { scope, callable } => wire::OpKind::TaskSpawn {
                 dst: output()?,

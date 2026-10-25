@@ -57,6 +57,64 @@ test("managed recipient acquisition rolls back the complete typed graph", () => 
   assert.equal(recipient.liveBytes, 0n);
 });
 
+test("each retain of one ownership root requires its matching release", () => {
+  const root = { value: stringValue("abc"), type: 1, slots: true };
+  const budget = new ManagedBudget(new ManagedLayouts(rows), 11n);
+  const first = budget.retain(root);
+  const second = budget.retain(root);
+  first.release();
+  first.release();
+  assert.equal(budget.liveBytes, 11n);
+  second.release();
+  assert.equal(budget.liveBytes, 0n);
+});
+
+test("retaining and releasing a live backing alias never revisits its elements", () => {
+  const value = { kind: "vector", elementType: "", items: [integer(1)] };
+  const backing = vectorStorage(value);
+  const budget = new ManagedBudget(new ManagedLayouts(rows), 8n);
+  const first = budget.retain({ value, type: 3 });
+  Object.defineProperty(backing, "items", {
+    get() {
+      assert.fail("an existing backing owns its already-acquired children");
+    },
+  });
+  const second = budget.retain({ value: { ...value }, type: 3 });
+  first.release();
+  assert.equal(budget.liveBytes, 8n);
+  second.release();
+  assert.equal(budget.liveBytes, 0n);
+});
+
+test("final creator membership release retires a cyclic typed backing graph", () => {
+  const layouts = new ManagedLayouts([
+    ...rows,
+    { id: 4, slot_bytes: "16", kind: "aggregate", fields: [1, 5] },
+    { id: 5, slot_bytes: "8", kind: "shared", payload: 4, weak: false },
+  ]);
+  const cell = {
+    value: null,
+    refs: 2,
+    weak: 0,
+    dying: false,
+    owner: null,
+    typeName: "",
+  };
+  const value = { kind: "rc", cell, closed: false };
+  cell.value = {
+    kind: "record",
+    typeId: "",
+    fields: [stringValue("abc"), value],
+  };
+  const budget = new ManagedBudget(layouts, 19n);
+  const creator = budget.retain({ value, type: 5 });
+  const alias = budget.retain({ value: { ...value }, type: 5 });
+  alias.release();
+  assert.equal(budget.liveBytes, 19n);
+  creator.release();
+  assert.equal(budget.liveBytes, 0n);
+});
+
 test("zero permits primitive SSA values but refuses a stored scalar slot", () => {
   const budget = new ManagedBudget(new ManagedLayouts(rows), 0n);
   const scalar = budget.retain({ value: integer(7), type: 0 });
@@ -95,10 +153,17 @@ test("managed stream admission faults the recipient without consuming refused in
   pipes.bind(stream, {
     owner: budget,
     acquire: (item) => {
-      const lease = budget.retain({ value: item.value, type: 1, slots: true, identity: item });
+      const lease = budget.retain({
+        value: item.value,
+        type: 1,
+        slots: true,
+        identity: item,
+      });
       return () => lease.release();
     },
-    refused: () => { faults++; },
+    refused: () => {
+      faults++;
+    },
   });
   const statuses = [];
   const accepted = stringValue("a");
@@ -129,7 +194,12 @@ test("managed stream waiting admission keeps producer ownership until a slot ope
     owner: budget,
     acquire: (item) => {
       acquisitions++;
-      const lease = budget.retain({ value: item.value, type: 1, slots: true, identity: item });
+      const lease = budget.retain({
+        value: item.value,
+        type: 1,
+        slots: true,
+        identity: item,
+      });
       return () => lease.release();
     },
     refused: () => assert.fail("admitted values fit the receiver"),

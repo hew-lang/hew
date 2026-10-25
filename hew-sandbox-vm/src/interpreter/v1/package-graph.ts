@@ -82,6 +82,7 @@ export function validatePackageGraph(pkg: PackageV1): void {
         break;
       case "variant":
         width(row.payload_bytes);
+        at(pkg.variants, row.shape, "managed variant shape");
         row.cases.forEach((fields) => fields.forEach(managedType));
         break;
       case "callable":
@@ -631,6 +632,7 @@ export function validatePackageGraph(pkg: PackageV1): void {
           break;
         case "task.race":
           scope(op.scope);
+          width(op.member_slot_bytes);
           op.members.forEach(value);
           break;
         case "task.spawn":

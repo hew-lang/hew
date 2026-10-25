@@ -1,0 +1,39 @@
+// The actor owns one local handle; other actors retaining the immutable
+// backing still force a detach. Reserve old32 + replacement64 + state8
+// before committing that detach, even though the resulting state costs72.
+#[max_heap(104)]
+actor Enough {
+    var values: Vec<i64>;
+    receive fn detach() -> i64 {
+        values.push(4);
+        values.len()
+    }
+}
+
+#[max_heap(103)]
+actor Small {
+    var values: Vec<i64>;
+    receive fn detach() -> i64 {
+        values.push(4);
+        values.len()
+    }
+}
+
+fn main() -> i64 {
+    var values: Vec<i64> = Vec.new();
+    for i in 0..4 {
+        values.push(i);
+    }
+    let enough = spawn Enough { values: values };
+    println(enough.detach().expect("detach transaction fits"));
+    stop(enough);
+    stopped(enough);
+    let small = spawn Small { values: values };
+    match small.detach() {
+        .Err(.Trapped) => println("detach transaction"),
+        _ => return 2,
+    }
+    stopped(small);
+    println(values.len());
+    0
+}

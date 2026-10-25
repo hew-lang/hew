@@ -554,7 +554,13 @@ export type OpV1 = {
       duration: number | null;
     }
   | { op: "task_scope.close"; dst?: number | null | null; scope: number }
-  | { op: "task.race"; dst: number; scope: number; members: Array<number> }
+  | {
+      op: "task.race";
+      dst: number;
+      scope: number;
+      members: Array<number>;
+      member_slot_bytes: string;
+    }
   | { op: "task.spawn"; dst: number; scope: number; callable: number }
   | {
       op: "task.invoke";

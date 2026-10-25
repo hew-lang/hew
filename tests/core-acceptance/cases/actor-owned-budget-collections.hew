@@ -1,0 +1,33 @@
+import std.arena;
+
+#[max_heap(1024)]
+actor Collections {
+    receive fn run() -> i64 {
+        var values: Vec<i64> = Vec.new();
+        for i in 0..4 {
+            values.push(i);
+        }
+        var total = 0;
+        for value in values {
+            total += value;
+        }
+        var map: HashMap<i64, i64> = HashMap.new();
+        map.insert(1, total);
+        for (key, value) in map {
+            total += key + value;
+        }
+        var store: arena.Arena<i64> = arena.new();
+        let key = store.insert(total);
+        assert(store.get(key) == .Some(total));
+        assert(store.remove(key) == .Some(total));
+        assert(store.get(key) == .None);
+        total
+    }
+}
+
+fn main() {
+    let collections = spawn Collections;
+    println(collections.run().expect("typed collection payloads"));
+    stop(collections);
+    stopped(collections);
+}

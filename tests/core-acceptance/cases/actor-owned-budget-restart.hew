@@ -1,0 +1,40 @@
+// Each incarnation starts with a fresh account after terminal cleanup. The
+// stable supervisor role must not retain the failed incarnation's Vec charge.
+#[max_heap(48)]
+actor Buffer {
+    var values: Vec<i64> = Vec.new();
+
+    receive fn fill() -> i64 {
+        for i in 0..4 {
+            values.push(i);
+        }
+        values.len()
+    }
+
+    receive fn exceed() {
+        values.push(4);
+    }
+    receive fn retained() -> i64 {
+        values.len()
+    }
+}
+
+supervisor Group {
+    intensity: 1 within 60s;
+    child buffer: Buffer;
+}
+
+fn main() {
+    let group = spawn Group;
+    assert(group.buffer.fill().expect("first incarnation") == 4);
+    match group.buffer.exceed() {
+        .Err(.Trapped) => {}
+        _ => panic("expected heap limit"),
+    }
+    restarted(group.buffer);
+    assert(group.buffer.retained().expect("fresh state") == 0);
+    assert(group.buffer.fill().expect("fresh account") == 4);
+    stop(group);
+    stopped(group);
+    println("fresh account after cleanup");
+}

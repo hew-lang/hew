@@ -118,6 +118,7 @@ for (const [name, expected] of [
   ["capacity", "4\n4\nlimit\n"],
   ["alias", "8\nretained backing\n"],
   ["bytes-slice", "1\nslice capacity\n"],
+  ["remote-cow", "5\ndetach transaction\n4\n"],
 ]) {
   test(`actor-owned budget preserves ${name} accounting through cleanup`, async () => {
     const source = fs.readFileSync(
@@ -166,39 +167,98 @@ fn main() -> i64 {
   assert.equal(result.exit_code, 1, JSON.stringify(result));
 });
 
-test("actor-owned select charges the actual reply envelope and preserves the sender", async () => {
-  const result = await runProgram(
-    `
-actor Worker { receive fn ready() -> i64 { 7 } }
-#[max_heap(16)]
-actor Enough {
-    let worker: Worker;
-    receive fn run() -> i64 {
-        select { value from worker.ready() => value.expect("reply"), }
-    }
-}
-#[max_heap(15)]
-actor Small {
-    let worker: Worker;
-    receive fn run() -> i64 {
-        select { value from worker.ready() => value.expect("reply"), }
+test("actor-owned zero permits no-allocation turns and rejects oversized array backing", async () => {
+  for (const count of ["4294967296", "9223372036854775807"]) {
+    const result = await runProgram(
+      `
+#[max_heap(0)]
+actor Empty {
+    receive fn ready() {}
+    receive fn allocate() {
+        let values = [0; ${count}];
+        println(values.len());
     }
 }
 fn main() -> i64 {
-    let worker = spawn Worker;
-    let enough = spawn Enough { worker: worker };
-    match enough.run() { .Ok(n) => println(n), _ => return 2, }
-    stop(enough); stopped(enough);
-    let small = spawn Small { worker: worker };
-    match small.run() { .Err(.Trapped) => println("reply limit"), _ => return 3, }
-    stopped(small);
-    println(worker.ready().expect("sender survived"));
-    stop(worker); stopped(worker);
+    let empty = spawn Empty;
+    empty.ready().expect("zero-byte turn");
+    match empty.allocate() { .Err(.Trapped) => println("array limit"), _ => return 2, }
+    stopped(empty);
     0
 }`,
-    "",
+      "",
+    );
+    assert.equal(result.stdout, "array limit\n", JSON.stringify(result));
+    assert.equal(result.exit_code, 1, JSON.stringify(result));
+  }
+});
+
+test("actor-owned mailbox refusal rolls back the recipient and preserves caller storage", async () => {
+  const source = fs.readFileSync(
+    path.join(
+      repoRoot,
+      "tests/core-acceptance/cases/actor-owned-budget-mailbox.hew",
+    ),
+    "utf8",
   );
+  const result = await runProgram(source, "");
+  assert.equal(result.stdout, "admission limit\n5\n", JSON.stringify(result));
+  assert.equal(result.exit_code, 1, JSON.stringify(result));
+});
+
+test("actor-owned select charges the actual reply envelope and preserves the sender", async () => {
+  const source = fs.readFileSync(
+    path.join(
+      repoRoot,
+      "tests/core-acceptance/cases/actor-owned-budget-reply.hew",
+    ),
+    "utf8",
+  );
+  const result = await runProgram(source, "");
   assert.equal(result.stdout, "7\nreply limit\n7\n", JSON.stringify(result));
+  assert.equal(result.exit_code, 1, JSON.stringify(result));
+});
+
+test("actor-owned select retains the complete declared failure envelope", async () => {
+  const source = fs.readFileSync(
+    path.join(
+      repoRoot,
+      "tests/core-acceptance/cases/actor-owned-budget-fallible-reply.hew",
+    ),
+    "utf8",
+  );
+  const result = await runProgram(source, "");
+  assert.equal(
+    result.stdout,
+    "9\ndeclared reply limit\n9\n",
+    JSON.stringify(result),
+  );
+  assert.equal(result.exit_code, 1, JSON.stringify(result));
+});
+
+test("actor-owned collection iterators and arena retain structural typed descendants", async () => {
+  const source = fs.readFileSync(
+    path.join(
+      repoRoot,
+      "tests/core-acceptance/cases/actor-owned-budget-collections.hew",
+    ),
+    "utf8",
+  );
+  const result = await runProgram(source, "");
+  assert.equal(result.stdout, "13\n", JSON.stringify(result));
+  assert.equal(result.exit_code, 0, JSON.stringify(result));
+});
+
+test("actor-owned race reserves its owning member backing before publication", async () => {
+  const source = fs.readFileSync(
+    path.join(
+      repoRoot,
+      "tests/core-acceptance/cases/actor-owned-budget-race.hew",
+    ),
+    "utf8",
+  );
+  const result = await runProgram(source, "");
+  assert.equal(result.stdout, "7\nrace limit\n", JSON.stringify(result));
   assert.equal(result.exit_code, 1, JSON.stringify(result));
 });
 
@@ -228,6 +288,49 @@ fn main() -> i64 {
     "",
   );
   assert.equal(result.stdout, "4\ntree limit\n", JSON.stringify(result));
+  assert.equal(result.exit_code, 1, JSON.stringify(result));
+});
+
+test("actor-owned generator adoption transfers a live gated task scope", async () => {
+  const source = fs.readFileSync(
+    path.join(
+      repoRoot,
+      "tests/core-acceptance/cases/actor-owned-budget-generator-transfer.hew",
+    ),
+    "utf8",
+  );
+  const result = await runProgram(source, "");
+  assert.equal(result.stdout, "7\n", JSON.stringify(result));
+  assert.equal(result.exit_code, 0, JSON.stringify(result));
+});
+
+test("actor-owned supervised restart releases the old incarnation before fresh capacity", async () => {
+  const source = fs.readFileSync(
+    path.join(
+      repoRoot,
+      "tests/core-acceptance/cases/actor-owned-budget-restart.hew",
+    ),
+    "utf8",
+  );
+  const result = await runProgram(source, "");
+  assert.equal(
+    result.stdout,
+    "fresh account after cleanup\n",
+    JSON.stringify(result),
+  );
+  assert.equal(result.exit_code, 0, JSON.stringify(result));
+});
+
+test("actor-owned final payload remains charged across suspended authored cleanup", async () => {
+  const source = fs.readFileSync(
+    path.join(
+      repoRoot,
+      "tests/core-acceptance/cases/actor-owned-budget-cleanup.hew",
+    ),
+    "utf8",
+  );
+  const result = await runProgram(source, "");
+  assert.equal(result.stdout, "cleanup limit\n", JSON.stringify(result));
   assert.equal(result.exit_code, 1, JSON.stringify(result));
 });
 

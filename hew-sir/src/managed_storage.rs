@@ -31,7 +31,25 @@ impl ManagedSlot {
 pub enum ManagedLayoutError {
     Overflow,
     MissingShape(ResolvedTy),
+    MissingFacts(ResolvedTy),
     RecursiveInline(ResolvedTy),
+}
+
+/// Whether copying a sequence can share its backing without element callbacks.
+/// This uses the checker's exact copy and ownership facts, the same facts that
+/// produce a Plain native layout with no clone, drop or release callback.
+pub fn managed_slot_is_plain(
+    module: &SemModule,
+    ty: &ResolvedTy,
+) -> Result<bool, ManagedLayoutError> {
+    let facts = module
+        .type_facts
+        .get(&hew_types::TypeInstanceKey(ty.clone()))
+        .ok_or_else(|| ManagedLayoutError::MissingFacts(ty.clone()))?;
+    Ok(
+        crate::OwnKind::of_class(facts.class) == crate::OwnKind::None
+            && facts.clone == hew_types::CloneKind::Bits,
+    )
 }
 
 /// Resolve widths from the same exact semantic shapes that own field access
@@ -81,6 +99,14 @@ fn slot(
         | T::Pointer { .. }
         | T::Borrow { .. } => return Ok(8),
         T::GenericCallable { callable, .. } => return slot(module, callable, active),
+        T::Named {
+            head: TypeHead::Builtin(BuiltinType::NodeId),
+            ..
+        } => return Ok(16),
+        T::Named {
+            head: TypeHead::Builtin(BuiltinType::Location),
+            ..
+        } => return Ok(32),
         T::Named {
             head: TypeHead::Actor(_),
             ..
@@ -156,6 +182,26 @@ pub fn managed_array_payload(
         .map(|bytes| ManagedSlot { bytes })
 }
 
+/// A lazy generator owns one callable slot and an output slot large enough
+/// for either yielded or returned values. Captures and other managed backing
+/// storage retain their own identities through the ordinary value recipes.
+/// Coroutine scheduling fields and primitive SSA spill slots are bookkeeping,
+/// not a target-dependent charge for the runtime's native frame allocation.
+pub fn managed_generator_payload(
+    module: &SemModule,
+    ty: &ResolvedTy,
+) -> Result<ManagedSlot, ManagedLayoutError> {
+    let (yielded, returned) =
+        crate::generator_parts(ty).ok_or_else(|| ManagedLayoutError::MissingShape(ty.clone()))?;
+    let output = managed_slot(module, yielded)?
+        .bytes
+        .max(managed_slot(module, returned)?.bytes);
+    output
+        .checked_add(8)
+        .map(|bytes| ManagedSlot { bytes })
+        .ok_or(ManagedLayoutError::Overflow)
+}
+
 /// The fixed payload capacity of an indirect variant allocation. The
 /// discriminator is included; the owning handle's slot is charged only when
 /// it occupies another managed allocation.
@@ -217,5 +263,40 @@ mod tests {
         assert_eq!(managed_slot(&module, &outer).unwrap().bytes, 8);
         assert_eq!(managed_array_payload(&module, &inner).unwrap().bytes, 24);
         assert_eq!(managed_array_payload(&module, &outer).unwrap().bytes, 16);
+    }
+
+    #[test]
+    fn generator_output_reserves_the_larger_typed_slot() {
+        let module = SemModule::default();
+        let ty = ResolvedTy::Generator {
+            yields: Box::new(ResolvedTy::Tuple(vec![ResolvedTy::U64, ResolvedTy::U8])),
+            returns: Box::new(ResolvedTy::Bool),
+            producers: Vec::new(),
+        };
+        assert_eq!(managed_generator_payload(&module, &ty).unwrap().bytes, 17);
+        assert_eq!(managed_slot(&module, &ty).unwrap().bytes, 8);
+    }
+
+    #[test]
+    fn plain_sequence_eligibility_requires_published_copy_facts() {
+        let mut module = SemModule::default();
+        let ty = ResolvedTy::U64;
+        assert_eq!(
+            managed_slot_is_plain(&module, &ty),
+            Err(ManagedLayoutError::MissingFacts(ty.clone()))
+        );
+        let mut facts = hew_types::TypeFacts {
+            class: hew_types::ValueClass::BitCopy,
+            clone: hew_types::CloneKind::Bits,
+            send: hew_types::SendFact::Known(true),
+            hash: true,
+            eq: true,
+            partial_ord: true,
+        };
+        module.type_facts.insert(ty.clone().into(), facts);
+        assert_eq!(managed_slot_is_plain(&module, &ty), Ok(true));
+        facts.clone = hew_types::CloneKind::FieldWise;
+        module.type_facts.insert(ty.clone().into(), facts);
+        assert_eq!(managed_slot_is_plain(&module, &ty), Ok(false));
     }
 }

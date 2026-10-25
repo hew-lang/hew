@@ -17,6 +17,25 @@ export interface RcCell {
   typeName: string;
 }
 
+/** The language payload allocation. JS arrays holding view metadata do not
+ * determine its capacity or identity. Bytes views retain this complete owner. */
+export interface VectorStorage {
+  items: VmValue[];
+  capacity: number;
+  owners: number;
+  bytes: boolean;
+  shareOnCopy: boolean;
+}
+
+export interface VmVector {
+  kind: "vector";
+  elementType: string;
+  items: VmValue[];
+  storage?: VectorStorage;
+  offset?: number;
+  closed?: boolean;
+}
+
 export type VmValue =
   | import("./v1/semaphores.js").SemaphoreHandle
   | { kind: "encoding"; format: EncodingFormat; value: EncodingNode | null }
@@ -52,7 +71,7 @@ export type VmValue =
       tag: number;
       payload: VmValue[];
     }
-  | { kind: "vector"; elementType: string; items: VmValue[] }
+  | VmVector
   /** A map or set owns its occupied slots. Selected Hash/Eq operations probe
    *  the table; tombstones preserve collision chains across removal. */
   | {
@@ -160,11 +179,7 @@ export function cloneValue(value: VmValue): VmValue {
         payload: value.payload.map(cloneValue),
       };
     case "vector":
-      return {
-        kind: "vector",
-        elementType: value.elementType,
-        items: value.items.map(cloneValue),
-      };
+      return cloneVector(value);
     case "dyn":
       return {
         kind: "dyn",
@@ -191,6 +206,118 @@ export function cloneValue(value: VmValue): VmValue {
         ),
       };
   }
+}
+
+export function vectorStorage(value: VmVector): VectorStorage {
+  if (value.closed) throw new Error("cannot read a released vector");
+  return (value.storage ??= {
+    items: value.items,
+    capacity: value.items.length,
+    owners: 1,
+    bytes: false,
+    shareOnCopy: false,
+  });
+}
+
+export function byteVectorValue(items: VmValue[]): VmVector {
+  return {
+    kind: "vector",
+    elementType: "u8",
+    items,
+    storage: {
+      items,
+      capacity: items.length ? Math.max(items.length, 16) : 0,
+      owners: 1,
+      bytes: true,
+      shareOnCopy: true,
+    },
+    offset: 0,
+  };
+}
+
+function cloneVector(value: VmVector): VmVector {
+  const storage = vectorStorage(value);
+  // Native Vec clones discard an empty receiver's spare capacity. Bytes
+  // clones retain their allocation even when the visible length is zero.
+  if (storage.bytes || (storage.shareOnCopy && value.items.length !== 0)) {
+    storage.owners++;
+    return { ...value, storage, closed: false };
+  }
+  const items = value.items.map(cloneValue);
+  return {
+    kind: "vector",
+    elementType: value.elementType,
+    items,
+    storage: { ...storage, items, capacity: items.length, owners: 1 },
+  };
+}
+
+export function sliceByteVector(
+  value: VmVector,
+  start: number,
+  end: number,
+): VmVector {
+  const storage = vectorStorage(value);
+  if (!storage.bytes) throw new Error("bytes slice has no bytes storage");
+  if (start === end) return byteVectorValue([]);
+  storage.owners++;
+  return {
+    kind: "vector",
+    elementType: value.elementType,
+    items: value.items.slice(start, end),
+    storage,
+    offset: (value.offset ?? 0) + start,
+  };
+}
+
+/** Establish uniqueness before any mutation, preserving native capacity rules. */
+export function mutableVector(
+  value: VmVector,
+  needed = value.items.length,
+): VmVector {
+  let storage = vectorStorage(value);
+  let capacity = storage.capacity;
+  if (storage.owners !== 1) {
+    capacity = storage.bytes ? Math.max(value.items.length, 16) : capacity;
+    const items = value.items.map(cloneValue);
+    storage.owners--;
+    storage = { ...storage, items, capacity, owners: 1 };
+    value.storage = storage;
+    value.items = items;
+    value.offset = 0;
+  }
+  if (needed > capacity) {
+    if (storage.bytes) capacity = Math.max(capacity * 2, needed, 16);
+    else {
+      capacity = capacity || 4;
+      while (capacity < needed) capacity *= 2;
+    }
+    if (!Number.isSafeInteger(capacity))
+      throw new Error("vector capacity overflow");
+    storage.capacity = capacity;
+    value.offset = 0;
+  } else if (storage.bytes && (value.offset ?? 0) + needed > capacity) {
+    value.offset = 0;
+  }
+  return value;
+}
+
+/** Consume one handle; only the last backing owner releases its elements. */
+export function releaseVector(value: VmVector): VmValue[] {
+  if (value.closed) return [];
+  const storage = vectorStorage(value);
+  value.closed = true;
+  return --storage.owners === 0 ? storage.items : [];
+}
+
+export function clearByteVector(value: VmVector): VmVector {
+  const storage = vectorStorage(value);
+  storage.owners--;
+  const empty = byteVectorValue([]);
+  value.items = empty.items;
+  value.storage = empty.storage;
+  value.offset = 0;
+  return value;
 }
 
 export function valueFromLiteral(value: JsonValue): VmValue {

@@ -49,6 +49,7 @@ export type ActorShape = {
   id: number;
   name: string;
   state_fields: Array<ActorField>;
+  state_type?: number | null;
   init?: number | null;
   start?: number | null;
   stop: Array<number>;
@@ -62,7 +63,7 @@ export type ActorShape = {
   mailbox_capacity?: number | null;
   overflow: ActorOverflow;
   coalesce?: Coalesce | null;
-  max_heap_bytes?: number | null;
+  max_heap_bytes?: string | null;
 };
 export type AggregateBuiltin = "Timestamp";
 export type AggregateShape = {
@@ -279,6 +280,39 @@ export type InvocationCallee =
   | IndirectInvocation;
 export type JoinDetail = { scope: number; mode: JoinMode };
 export type JoinMode = "wait" | "cancel_losers" | "propagate_fault";
+export type ManagedType = {
+  id: number;
+  /**
+   * Canonical width of a slot holding this value, encoded without JS rounding.
+   */
+  slot_bytes: string;
+} & (
+  | { kind: "scalar" }
+  | { kind: "handle" }
+  | { kind: "string" }
+  | { kind: "bytes" }
+  | { kind: "vector"; element: number; share_on_copy: boolean }
+  | { kind: "array"; element: number; length: string; share_on_copy: boolean }
+  | { kind: "slice"; element: number; share_on_copy: boolean }
+  | { kind: "map"; key: number; value: number }
+  | { kind: "set"; element: number }
+  | { kind: "aggregate"; fields: Array<number> }
+  | {
+      kind: "variant";
+      indirect: boolean;
+      payload_bytes: string;
+      cases: Array<Array<number>>;
+    }
+  | { kind: "closure"; captures: Array<number> }
+  | {
+      kind: "generator";
+      yielded: number;
+      returned: number;
+      payload_bytes: string;
+    }
+  | { kind: "shared"; payload: number; weak: boolean }
+  | { kind: "dynamic" }
+);
 export type MapValueOp =
   | "New"
   | "Len"
@@ -336,7 +370,11 @@ export type MutableInvocation = {
 export type NativeIoDetail = { operation: AsyncIoOp };
 export type Nonfinite = "nan" | "inf" | "-inf";
 export type OffloadDetail = { function: number };
-export type OpV1 = { own?: Own | null; span?: SpanV1 | null | null } & (
+export type OpV1 = {
+  definitions?: Array<ValueDef>;
+  own?: Own | null;
+  span?: SpanV1 | null | null;
+} & (
   | { op: "coverage.hit"; counter: number }
   | { op: "const.int"; dst: number; value: string; ty: string }
   | { op: "const.bool"; dst: number; value: boolean }
@@ -506,6 +544,10 @@ export type OpV1 = { own?: Own | null; span?: SpanV1 | null | null } & (
 );
 export type Own = "none" | "owned" | "guaranteed";
 export type PackageV1 = {
+  /**
+   * Compiler-authored language accounting layouts; widths are never host sizes.
+   */
+  managed_types?: Array<ManagedType>;
   codecs?: Array<string>;
   structural_render?: Array<StructuralRecipe>;
   resources?: Array<Resource>;
@@ -535,19 +577,27 @@ export type PackageV1 = {
 };
 export type PlaceBase = { place: number } | { value: number };
 export type PlaceDecl =
-  | { origin: "local"; id: number }
-  | { origin: "runtime"; id: number }
+  | { origin: "local"; id: number; managed_type?: number | null }
+  | { origin: "runtime"; id: number; managed_type?: number | null }
   | {
       origin: "aggregate";
       id: number;
+      managed_type?: number | null;
       base: PlaceBase;
       shape?: number | null;
       field: number;
     }
-  | { origin: "capture"; id: number; environment: number; field: number }
+  | {
+      origin: "capture";
+      id: number;
+      managed_type?: number | null;
+      environment: number;
+      field: number;
+    }
   | {
       origin: "actor_state";
       id: number;
+      managed_type?: number | null;
       environment: number;
       field: number;
       initialized: boolean;
@@ -973,6 +1023,7 @@ export type TcpOp =
   | "WriteTimeout"
   | "BroadcastExcept";
 export type TermV1 = { span?: SpanV1 | null | null } & (
+  | { op: "materialize"; operation: OpV1; normal: Edge; failure: Edge }
   | { op: "return"; value: BoundaryOperand | null }
   | { op: "goto"; edge: Edge }
   | { op: "branch"; condition: number; then: Edge; else: Edge }
@@ -1170,6 +1221,7 @@ export type TermV1 = { span?: SpanV1 | null | null } & (
 export type TimerSendPolicy = "reject" | "drop_newest";
 export type TimestampBinaryOp = "Add" | "Subtract";
 export type TrapName =
+  | "heap_exceeded"
   | "integer_overflow"
   | "divide_by_zero"
   | "shift_out_of_range"
@@ -1187,7 +1239,11 @@ export type ValueComponentCapabilities = {
   selected: number;
   ordering?: ValueOrderingCapabilities | null;
 };
-export type ValueDef = { value: number; own: Own };
+export type ValueDef = {
+  value: number;
+  own: Own;
+  managed_type?: number | null;
+};
 export type ValueOrderingCapabilities = {
   less: number;
   less_equal: number;
@@ -1336,6 +1392,7 @@ export const OP_NAMES = [
   "task.invoke",
 ] as const;
 export const TERM_NAMES = [
+  "materialize",
   "return",
   "goto",
   "branch",

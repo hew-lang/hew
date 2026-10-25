@@ -1,6 +1,7 @@
 import type { RuntimeContinuation } from "./shims.js";
 import {
   UNIT,
+  mutableVector,
   cloneValue,
   compareUtf8,
   type VmValue,
@@ -390,6 +391,7 @@ export function* collectionOperation(
     if (receiver?.kind !== "vector")
       throw new Error("vector operation has no vector");
     if (operation === "Clear") {
+      mutableVector(receiver);
       const items = receiver.items.splice(0);
       yield {
         kind: "release",
@@ -404,6 +406,7 @@ export function* collectionOperation(
       const at = Number(index.value);
       if (at < 0 || at >= receiver.items.length)
         throw new ShimFault("vector_bounds", "vector index out of bounds");
+      mutableVector(receiver);
       const old = receiver.items[at]!;
       receiver.items[at] = args[2]!;
       yield { kind: "release", value: old };

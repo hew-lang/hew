@@ -21,7 +21,11 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { runBytecode } from "../dist/interpreter/index.js";
 
-const PRINT_I64 = { id: 0, family: "Print", detail: { kind: "I64", newline: true } };
+const PRINT_I64 = {
+  id: 0,
+  family: "Print",
+  detail: { kind: "I64", newline: true },
+};
 
 /// `captureAt` names the value the closure captures, so a test can make the
 /// same closure over a different reading of the same place.
@@ -41,7 +45,9 @@ function closurePackage(captureAt = 1) {
     externs: [],
     suspend_kinds: [],
     value_capabilities: [],
-    closures: [{ id: 0, entries: [{ body: 1, specialization: null }], fields: 1 }],
+    closures: [
+      { id: 0, entries: [{ body: 1, specialization: null }], fields: 1 },
+    ],
     vtables: [],
     functions: [
       // main
@@ -52,7 +58,7 @@ function closurePackage(captureAt = 1) {
         entry: 0,
         places: [
           { id: 0, origin: "local" },
-          { id: 1, origin: "local" }
+          { id: 1, origin: "local" },
         ],
         blocks: [
           {
@@ -65,19 +71,31 @@ function closurePackage(captureAt = 1) {
               { op: "load.copy", dst: 1, place: 0, span: null },
               { op: "const.int", dst: 9, value: "9", ty: "i64", span: null },
               { op: "store.assign", place: 0, value: 9, span: null },
-              { op: "load.copy", dst: 10, place: 0, span: null },
-              { op: "closure.make", dst: 2, closure: 0, fields: [captureAt], span: null },
+              { op: "load.copy", dst: 10, own: "none", place: 0, span: null },
+              {
+                op: "closure.make",
+                dst: 2,
+                closure: 0,
+                fields: [captureAt],
+                span: null,
+              },
               { op: "alloc_place", place: 1, span: null },
-              { op: "store.init", place: 1, value: 2, span: null }
+              { op: "store.init", place: 1, value: 2, span: null },
             ],
-            term: printTerm(10, 1)
+            term: printTerm(10, 1),
           },
           {
             id: 1,
             params: [],
             ops: [
               { op: "load.take", dst: 5, place: 1, span: null },
-              { op: "callable.coerce", specialization: null, dst: 6, source: 5, span: null }
+              {
+                op: "callable.coerce",
+                specialization: null,
+                dst: 6,
+                source: 5,
+                span: null,
+              },
             ],
             term: {
               op: "call",
@@ -86,12 +104,17 @@ function closurePackage(captureAt = 1) {
               result: { value: 7, own: "none" },
               normal: { to: 2, args: [] },
               unwind: null,
-              span: null
-            }
+              span: null,
+            },
           },
           { id: 2, params: [], ops: [], term: printTerm(7, 3) },
-          { id: 3, params: [], ops: [], term: { op: "return", value: null, span: null } }
-        ]
+          {
+            id: 3,
+            params: [],
+            ops: [],
+            term: { op: "return", value: null, span: null },
+          },
+        ],
       },
       // The closure body. Its first parameter is the environment, and place 0
       // is one field of it.
@@ -106,9 +129,13 @@ function closurePackage(captureAt = 1) {
             id: 0,
             params: [],
             ops: [{ op: "load.copy", dst: 1, place: 0, span: null }],
-            term: { op: "return", value: { value: 1, decision: "move" }, span: null }
-          }
-        ]
+            term: {
+              op: "return",
+              value: { value: 1, decision: "move" },
+              span: null,
+            },
+          },
+        ],
       },
       // read(f: fn() -> i64) -> i64
       {
@@ -130,18 +157,22 @@ function closurePackage(captureAt = 1) {
               result: { value: 1, own: "none" },
               normal: { to: 1, args: [] },
               unwind: null,
-              span: null
-            }
+              span: null,
+            },
           },
           {
             id: 1,
             params: [],
             ops: [],
-            term: { op: "return", value: { value: 1, decision: "move" }, span: null }
-          }
-        ]
-      }
-    ]
+            term: {
+              op: "return",
+              value: { value: 1, decision: "move" },
+              span: null,
+            },
+          },
+        ],
+      },
+    ],
   };
 }
 
@@ -154,7 +185,7 @@ function printTerm(value, to) {
     result_shape: null,
     normal: { to, args: [] },
     unwind: null,
-    span: null
+    span: null,
   };
 }
 
@@ -162,7 +193,12 @@ async function run(bytecode) {
   return await runBytecode(bytecode, {
     fixtureId: "v1-closure",
     traceId: "trace:v1-closure",
-    replay: { seed: 1, step_budget: 10_000, virtual_clock: { epoch_ms: 0, tick_ms: 1, current_ms: 0 }, inputs: [] }
+    replay: {
+      seed: 1,
+      step_budget: 10_000,
+      virtual_clock: { epoch_ms: 0, tick_ms: 1, current_ms: 0 },
+      inputs: [],
+    },
   });
 }
 
@@ -173,7 +209,11 @@ function stdout(trace) {
 test("a closure carries the value it captured, not the place it came from", async () => {
   const trace = await run(closurePackage());
 
-  assert.equal(trace.result, "ok", JSON.stringify(trace.final_state.runtime_failures));
+  assert.equal(
+    trace.result,
+    "ok",
+    JSON.stringify(trace.final_state.runtime_failures),
+  );
   // 9 is the reassigned place; 7 is what the closure captured before it.
   assert.equal(stdout(trace), "9\n7\n");
   assert.equal(trace.final_state.exit_code, 0);
@@ -185,7 +225,11 @@ test("a closure made from a later reading captures that later value", async () =
   // with the closure and not a stale read the VM cannot tell apart.
   const trace = await run(closurePackage(10));
 
-  assert.equal(trace.result, "ok", JSON.stringify(trace.final_state.runtime_failures));
+  assert.equal(
+    trace.result,
+    "ok",
+    JSON.stringify(trace.final_state.runtime_failures),
+  );
   assert.equal(stdout(trace), "9\n9\n");
 });
 
@@ -198,7 +242,7 @@ test("two closures over one body keep their own environments", async () => {
   main.blocks[0].ops.push(
     { op: "closure.make", dst: 11, closure: 0, fields: [10], span: null },
     { op: "alloc_place", place: 2, span: null },
-    { op: "store.init", place: 2, value: 11, span: null }
+    { op: "store.init", place: 2, value: 11, span: null },
   );
   main.blocks[2].term = {
     op: "runtime.call",
@@ -208,7 +252,7 @@ test("two closures over one body keep their own environments", async () => {
     result_shape: null,
     normal: { to: 4, args: [] },
     unwind: null,
-    span: null
+    span: null,
   };
   main.blocks.push(
     {
@@ -222,23 +266,32 @@ test("two closures over one body keep their own environments", async () => {
         result: { value: 13, own: "none" },
         normal: { to: 5, args: [] },
         unwind: null,
-        span: null
-      }
+        span: null,
+      },
     },
-    { id: 5, params: [], ops: [], term: printTerm(13, 3) }
+    { id: 5, params: [], ops: [], term: printTerm(13, 3) },
   );
 
   const trace = await run(pkg);
-  assert.equal(trace.result, "ok", JSON.stringify(trace.final_state.runtime_failures));
+  assert.equal(
+    trace.result,
+    "ok",
+    JSON.stringify(trace.final_state.runtime_failures),
+  );
   assert.equal(stdout(trace), "9\n7\n9\n");
 });
 
 test("an indirect call on a value that is not callable names what it got", async () => {
   const pkg = closurePackage();
   // Hand `read` an integer where its callable belongs.
-  pkg.functions[0].blocks[1].ops = [{ op: "const.int", dst: 6, value: "1", ty: "i64", span: null }];
+  pkg.functions[0].blocks[1].ops = [
+    { op: "const.int", dst: 6, value: "1", ty: "i64", span: null },
+  ];
 
   const trace = await run(pkg);
   assert.equal(trace.result, "runtime_failure");
-  assert.match(trace.final_state.runtime_failures[0].message, /expected a callable value, got i64/);
+  assert.match(
+    trace.final_state.runtime_failures[0].message,
+    /expected a callable value, got i64/,
+  );
 });

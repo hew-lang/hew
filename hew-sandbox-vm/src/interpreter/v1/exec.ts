@@ -27,6 +27,9 @@ import type {
 import {
   UNIT,
   cloneValue,
+  releaseVector,
+  byteVectorValue,
+  vectorStorage,
   stringValue,
   toJsonValue,
   type VmValue,
@@ -52,7 +55,7 @@ import type {
   VariantShape,
   RuntimeVariantRole,
 } from "./package.js";
-import { runtimeTag } from "./package.js";
+import { runtimeTag, staticOperations } from "./package.js";
 import { StructuralRenderer } from "./structural.js";
 import { timestampBinary } from "./timestamp.js";
 import {
@@ -289,6 +292,7 @@ interface Activation {
   opIndex: number;
   env: Map<number, Ref>;
   trivial: Set<number>;
+  managedTypes: Map<number, number>;
   scopes: Map<number, TaskGroup>;
   places: Map<number, Cell>;
   fault: Fault | null;
@@ -687,22 +691,30 @@ class ExecutorV1 {
     }
     const places = new Map<number, Cell>();
     const trivial = new Set<number>();
+    const managedTypes = new Map<number, number>();
     const record = (value: ValueDef) => {
       if (value.own === "none") trivial.add(value.value);
+      if (value.managed_type != null)
+        managedTypes.set(value.value, value.managed_type);
     };
     fn.params.forEach(record);
     for (const block of fn.blocks) {
       block.params.forEach(record);
-      for (const op of block.ops) {
+      for (const op of staticOperations(block)) {
+        op.definitions?.forEach(record);
         if ("dst" in op && op.dst != null && op.own === "none")
           trivial.add(op.dst);
       }
       const term = block.term;
       if ("result" in term && term.result && term.result !== "never")
         record(term.result);
+      if (term.op === "call" && term.handback) record(term.handback);
       if (term.op === "switch.variant")
         for (const arm of term.arms) arm.fields.forEach(record);
     }
+    for (const [index, param] of fn.params.entries())
+      if (param.managed_type != null && args[index])
+        this.stampManaged(args[index]!, param.managed_type);
     return {
       rcOwner: fn.actor_construction
         ? { blocks: new Set(), closed: false }
@@ -716,6 +728,7 @@ class ExecutorV1 {
       opIndex: 0,
       env,
       trivial,
+      managedTypes,
       scopes: new Map(),
       places,
       fault: null,
@@ -793,7 +806,25 @@ class ExecutorV1 {
     if (id === null || id === undefined) {
       return;
     }
+    const type = act.managedTypes.get(id);
+    if (type != null) this.stampManaged(value, type);
     act.env.set(id, ownedRef(value));
+  }
+
+  private stampManaged(value: VmValue, type: number): void {
+    const row = this.pkg.managed_types?.[type];
+    if (value.kind !== "vector" || !row) return;
+    const storage = vectorStorage(value);
+    if (row.kind === "bytes") {
+      storage.bytes = true;
+      storage.shareOnCopy = true;
+    } else if (
+      row.kind === "vector" ||
+      row.kind === "array" ||
+      row.kind === "slice"
+    ) {
+      storage.shareOnCopy = row.share_on_copy;
+    }
   }
 
   private invalidate(act: Activation, id: number): void {
@@ -970,6 +1001,7 @@ class ExecutorV1 {
           typeId: "",
           fields: op.elements.map((id) => this.read(act, id)),
         });
+        op.elements.forEach((id) => this.invalidate(act, id));
         return;
       case "tuple.get":
         this.define(
@@ -985,6 +1017,7 @@ class ExecutorV1 {
           shape: op.shape ?? undefined,
           fields: op.fields.map((id) => this.read(act, id)),
         });
+        op.fields.forEach((id) => this.invalidate(act, id));
         return;
       case "aggregate.project_copy":
         this.define(
@@ -1010,16 +1043,21 @@ class ExecutorV1 {
           elementType: "",
           items: op.elements.map((id) => this.read(act, id)),
         });
+        op.elements.forEach((id) => this.invalidate(act, id));
         return;
-      case "array.repeat":
+      case "array.repeat": {
+        const seed = this.read(act, op.value);
+        const count = op.count ?? 0;
         this.define(act, op.dst, {
           kind: "vector",
           elementType: "",
-          items: Array.from({ length: op.count ?? 0 }, () =>
-            cloneValue(this.read(act, op.value)),
+          items: Array.from({ length: count }, (_, index) =>
+            index === 0 ? seed : cloneValue(seed),
           ),
         });
+        this.invalidate(act, op.value);
         return;
+      }
 
       case "variant.make":
         this.define(act, op.dst, {
@@ -1029,6 +1067,7 @@ class ExecutorV1 {
           tag: op.variant,
           payload: op.fields.map((id) => this.read(act, id)),
         });
+        op.fields.forEach((id) => this.invalidate(act, id));
         return;
       case "variant.is":
         this.define(act, op.dst, {
@@ -1115,6 +1154,7 @@ class ExecutorV1 {
             fields: op.fields.map((id) => this.read(act, id)),
           },
         });
+        op.fields.forEach((id) => this.invalidate(act, id));
         return;
       }
       case "callable.coerce": {
@@ -1145,6 +1185,7 @@ class ExecutorV1 {
           vtable: op.vtable,
           value: this.read(act, op.value),
         });
+        this.invalidate(act, op.value);
         return;
 
       // The registration reserves the free places the body reaches; the drain
@@ -1625,6 +1666,10 @@ class ExecutorV1 {
 
   private terminate(act: Activation, term: TermV1): void {
     switch (term.op) {
+      case "materialize":
+        this.execute(act, term.operation);
+        this.takeEdge(act, term.normal);
+        return;
       case "goto":
         this.takeEdge(act, term.edge);
         return;
@@ -3656,7 +3701,7 @@ class ExecutorV1 {
             pending.push(...[...value.payload].reverse());
             break;
           case "vector":
-            pending.push(...[...value.items].reverse());
+            pending.push(...releaseVector(value).reverse());
             break;
           case "stream": {
             const adapter = this.generatorStreams.get(value.channelId);
@@ -3719,7 +3764,7 @@ class ExecutorV1 {
     else if (value.kind === "enum")
       for (const field of value.payload) this.closeValue(field, fault);
     else if (value.kind === "vector")
-      for (const item of value.items) this.closeValue(item, fault);
+      for (const item of releaseVector(value)) this.closeValue(item, fault);
   }
 
   private newTask(): TaskEntry {
@@ -5892,6 +5937,7 @@ function faultInfo(fault: Fault): [number, string] {
     shift_out_of_range: [204, "ShiftOutOfRange"],
     vector_bounds: [205, "IndexOutOfBounds"],
     actor_refused: [-4, "Refused"],
+    heap_exceeded: [200, "HeapExceeded"],
   }[fault.trap] as [number, string];
 }
 
@@ -6075,11 +6121,9 @@ function truth(value: VmValue): boolean {
 }
 
 function bytesValue(bytes: readonly number[]): VmValue {
-  return {
-    kind: "vector",
-    elementType: "u8",
-    items: bytes.map((byte) => ({ kind: "i64", value: BigInt(byte) })),
-  };
+  return byteVectorValue(
+    bytes.map((byte) => ({ kind: "i64", value: BigInt(byte) })),
+  );
 }
 
 function renderMessage(value: VmValue): string {
@@ -6150,6 +6194,8 @@ function trapMessage(trap: TrapName): string {
       return "index out of bounds";
     case "actor_refused":
       return "delivery refused by interceptor";
+    case "heap_exceeded":
+      return "actor heap limit exceeded";
   }
 }
 

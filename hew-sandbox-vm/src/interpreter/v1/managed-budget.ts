@@ -1,5 +1,6 @@
 import { vectorStorage, type VmValue } from "../values.js";
 import type { ManagedType } from "./package.js";
+import { cloneEncoding } from "./encoding-storage.js";
 
 const U64_MAX = 0xffffffffffffffffn;
 export class HeapExceeded extends Error {
@@ -47,7 +48,11 @@ export class ManagedLayouts {
   stamp(value: VmValue, type: number): void {
     this.types.set(value, type);
     const row = this.row(type);
-    if (row.kind === "callable" && row.captures && value.kind === "closure")
+    if (
+      row.kind === "callable" &&
+      row.captures &&
+      (value.kind === "closure" || value.kind === "record")
+    )
       value.managedCaptures = row.captures;
     if (row.kind === "dynamic" && value.kind === "dyn")
       value.managedPayload ??= this.types.get(value.value);
@@ -126,21 +131,30 @@ export class ManagedLayouts {
         };
       case "callable": {
         if (value.kind === "function") return value;
-        if (value.kind !== "closure" || value.environment.kind !== "record")
+        const environment =
+          value.kind === "record"
+            ? value
+            : value.kind === "closure" && value.environment.kind === "record"
+              ? value.environment
+              : null;
+        if (
+          !environment ||
+          (value.kind !== "closure" && value.kind !== "record")
+        )
           throw new Error("managed copy has no captures");
         const captures = row.captures ?? value.managedCaptures;
         if (!captures)
           throw new Error("callable has no concrete capture descriptor");
-        const result: VmValue = {
-          ...value,
-          environment: {
-            ...value.environment,
-            fields: value.environment.fields.map((item, index) =>
-              this.copy(item, captures[index]!),
-            ),
-          },
+        const copied = {
+          ...environment,
+          fields: environment.fields.map((item, index) =>
+            this.copy(item, captures[index]!),
+          ),
         };
-        if (result.kind === "closure") result.managedCaptures = captures;
+        const result: VmValue =
+          value.kind === "record" ? copied : { ...value, environment: copied };
+        if (result.kind === "closure" || result.kind === "record")
+          result.managedCaptures = captures;
         return result;
       }
       case "map":
@@ -174,16 +188,20 @@ export class ManagedLayouts {
         };
       case "generator":
         throw new Error("a generator cannot be copied");
+      case "actor_call":
+        return value;
       case "provider":
         if (
-          row.provider === "task" ||
-          row.provider === "actor_call" ||
-          row.provider === "sink"
-        )
-          return value;
-        throw new Error(
-          `managed ${row.provider} copy requires its provider visitor`,
-        );
+          row.provider === "json" ||
+          row.provider === "yaml" ||
+          row.provider === "toml"
+        ) {
+          if (value.kind !== "encoding")
+            throw new Error("managed encoding has no tree");
+          return cloneEncoding(value, true);
+        }
+        if (row.provider === "task" || row.provider === "sink") return value;
+        throw new HeapExceeded();
     }
   }
 
@@ -284,9 +302,19 @@ export class ManagedLayouts {
         }
         case "callable": {
           if (value.kind === "function") return;
-          if (value.kind !== "closure" || value.environment.kind !== "record")
+          const environment =
+            value.kind === "record"
+              ? value
+              : value.kind === "closure" && value.environment.kind === "record"
+                ? value.environment
+                : null;
+          if (
+            !environment ||
+            (value.kind !== "closure" && value.kind !== "record")
+          )
             throw new Error("managed callable has no capture environment");
-          const fields = value.environment.fields;
+          if (this.retired.has(environment)) return;
+          const fields = environment.fields;
           const captures = row.captures ?? value.managedCaptures;
           if (!captures)
             throw new Error("callable has no concrete capture descriptor");
@@ -294,15 +322,14 @@ export class ManagedLayouts {
             (total, type) => checked(total + this.width(type)),
             0n,
           );
-          if (allocation(value.environment, width))
+          if (allocation(environment, width))
             captures.forEach((type, index) => visit(fields[index]!, type));
           return;
         }
         case "shared": {
           if (value.kind !== "rc" && value.kind !== "weak")
             throw new Error("managed shared value has no cell");
-          if (value.closed || !value.cell || value.cell.dying || row.weak)
-            return;
+          if (value.closed || !value.cell || row.weak) return;
           if (allocation(value.cell, this.width(row.payload)))
             visit(value.cell.value, row.payload);
           return;
@@ -320,6 +347,7 @@ export class ManagedLayouts {
           return;
         }
         case "generator":
+        case "actor_call":
         case "provider": {
           retained?.(value, type);
           if (!providerGraph)

@@ -283,7 +283,6 @@ export type JoinMode = "wait" | "cancel_losers" | "propagate_fault";
 export type ManagedHandle = "actor" | "pointer" | "borrow" | "cancellation";
 export type ManagedProvider =
   | "task"
-  | "actor_call"
   | "stream"
   | "sink"
   | "json"
@@ -309,6 +308,7 @@ export type ManagedType = {
   | { kind: "aggregate"; fields: Array<number> }
   | {
       kind: "variant";
+      shape: number;
       indirect: boolean;
       payload_bytes: string;
       cases: Array<Array<number>>;
@@ -322,6 +322,12 @@ export type ManagedType = {
     }
   | { kind: "shared"; payload: number; weak: boolean }
   | { kind: "dynamic" }
+  | {
+      kind: "actor_call";
+      completion: number;
+      reply: number;
+      declared_failure: boolean;
+    }
   | {
       kind: "provider";
       provider: ManagedProvider;

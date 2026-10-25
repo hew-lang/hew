@@ -1216,16 +1216,7 @@
       "type": "string"
     },
     "ManagedProvider": {
-      "enum": [
-        "task",
-        "actor_call",
-        "stream",
-        "sink",
-        "json",
-        "yaml",
-        "toml",
-        "opaque"
-      ],
+      "enum": ["task", "stream", "sink", "json", "yaml", "toml", "opaque"],
       "type": "string"
     },
     "ManagedType": {
@@ -1414,9 +1405,15 @@
             },
             "payload_bytes": {
               "type": "string"
+            },
+            "shape": {
+              "format": "uint32",
+              "maximum": 4294967295,
+              "minimum": 0,
+              "type": "integer"
             }
           },
-          "required": ["kind", "indirect", "payload_bytes", "cases"],
+          "required": ["kind", "shape", "indirect", "payload_bytes", "cases"],
           "type": "object"
         },
         {
@@ -1490,6 +1487,31 @@
             }
           },
           "required": ["kind"],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "completion": {
+              "format": "uint32",
+              "maximum": 4294967295,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "declared_failure": {
+              "type": "boolean"
+            },
+            "kind": {
+              "const": "actor_call",
+              "type": "string"
+            },
+            "reply": {
+              "format": "uint32",
+              "maximum": 4294967295,
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "required": ["kind", "completion", "reply", "declared_failure"],
           "type": "object"
         },
         {

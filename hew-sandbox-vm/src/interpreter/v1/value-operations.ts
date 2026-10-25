@@ -18,7 +18,12 @@ import { actorIdentical } from "./actor-identity.js";
 export type ValueRequest =
   | { kind: "fault"; message: string }
   | { kind: "call"; callee: number; args: VmValue[] }
-  | { kind: "release"; value: VmValue; onFault?: VmValue };
+  | {
+      kind: "release";
+      value: VmValue;
+      onFault?: VmValue;
+      retained?: readonly VmValue[];
+    };
 export type ValueProgram = Generator<ValueRequest, VmValue, VmValue>;
 
 const OFFSET = 0xcbf29ce484222325n;
@@ -396,6 +401,7 @@ export function* collectionOperation(
       yield {
         kind: "release",
         value: { kind: "vector", elementType: receiver.elementType, items },
+        retained: items,
       };
       return receiver;
     }
@@ -437,6 +443,7 @@ export function* collectionOperation(
     receiver.tombstones = new Set();
     yield {
       kind: "release",
+      retained: entries.flatMap((entry) => [entry.key, entry.value]),
       value: {
         kind: "vector",
         elementType: "",

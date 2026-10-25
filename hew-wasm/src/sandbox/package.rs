@@ -95,6 +95,7 @@ pub enum ManagedLayout {
         fields: Vec<u32>,
     },
     Variant {
+        shape: u32,
         indirect: bool,
         payload_bytes: String,
         cases: Vec<Vec<u32>>,
@@ -112,6 +113,11 @@ pub enum ManagedLayout {
         weak: bool,
     },
     Dynamic,
+    ActorCall {
+        completion: u32,
+        reply: u32,
+        declared_failure: bool,
+    },
     Provider {
         provider: ManagedProvider,
         children: Vec<u32>,
@@ -134,7 +140,6 @@ pub enum ManagedHandle {
 #[serde(rename_all = "snake_case")]
 pub enum ManagedProvider {
     Task,
-    ActorCall,
     Stream,
     Sink,
     Json,

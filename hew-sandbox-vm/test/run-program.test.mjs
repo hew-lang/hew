@@ -135,6 +135,102 @@ for (const [name, expected] of [
   });
 }
 
+test("actor-owned task publication reserves result and pending callable storage", async () => {
+  const result = await runProgram(
+    `
+fn ready() -> i64 { 7 }
+#[max_heap(8)]
+actor Small {
+    receive fn run() -> i64 {
+        scope { let task = fork ready(); await task }
+    }
+}
+#[max_heap(16)]
+actor Enough {
+    receive fn run() -> i64 {
+        scope { let task = fork ready(); await task }
+    }
+}
+fn main() -> i64 {
+    let enough = spawn Enough;
+    match enough.run() { .Ok(n) => println(n), _ => return 2, }
+    stop(enough); stopped(enough);
+    let small = spawn Small;
+    match small.run() { .Err(.Trapped) => println("task limit"), _ => return 3, }
+    stopped(small);
+    0
+}`,
+    "",
+  );
+  assert.equal(result.stdout, "7\ntask limit\n", JSON.stringify(result));
+  assert.equal(result.exit_code, 1, JSON.stringify(result));
+});
+
+test("actor-owned select charges the actual reply envelope and preserves the sender", async () => {
+  const result = await runProgram(
+    `
+actor Worker { receive fn ready() -> i64 { 7 } }
+#[max_heap(16)]
+actor Enough {
+    let worker: Worker;
+    receive fn run() -> i64 {
+        select { value from worker.ready() => value.expect("reply"), }
+    }
+}
+#[max_heap(15)]
+actor Small {
+    let worker: Worker;
+    receive fn run() -> i64 {
+        select { value from worker.ready() => value.expect("reply"), }
+    }
+}
+fn main() -> i64 {
+    let worker = spawn Worker;
+    let enough = spawn Enough { worker: worker };
+    match enough.run() { .Ok(n) => println(n), _ => return 2, }
+    stop(enough); stopped(enough);
+    let small = spawn Small { worker: worker };
+    match small.run() { .Err(.Trapped) => println("reply limit"), _ => return 3, }
+    stopped(small);
+    println(worker.ready().expect("sender survived"));
+    stop(worker); stopped(worker);
+    0
+}`,
+    "",
+  );
+  assert.equal(result.stdout, "7\nreply limit\n7\n", JSON.stringify(result));
+  assert.equal(result.exit_code, 1, JSON.stringify(result));
+});
+
+test("actor-owned YAML copies retain one native tree until checked detach", async () => {
+  const result = await runProgram(
+    `
+import std.encoding.yaml;
+#[max_heap(80)]
+actor Document {
+    var values: yaml.Value;
+    receive fn copied_len() -> i64 {
+        let copy = values;
+        copy.array_len().expect("array")
+    }
+    receive fn detach() {
+        var copy = values;
+        copy.push(yaml.from_int(5)).expect("array");
+    }
+}
+fn main() -> i64 {
+    let document = spawn Document { values: yaml.parse("[1,2,3,4]").expect("parse") };
+    match document.copied_len() { .Ok(n) => println(n), _ => return 2, }
+    match document.detach() { .Err(.Trapped) => println("tree limit"), _ => return 3, }
+    stopped(document);
+    0
+}`,
+    "",
+  );
+  assert.equal(result.stdout, "4\ntree limit\n", JSON.stringify(result));
+  assert.equal(result.exit_code, 1, JSON.stringify(result));
+});
+
 test("source-defined collection updates preserve ownership and callback recovery", async () => {
   const source = fs.readFileSync(
     path.join(repoRoot, "tests/core-acceptance/cases/collection-update.hew"),

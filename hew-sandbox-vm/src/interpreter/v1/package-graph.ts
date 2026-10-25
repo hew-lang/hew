@@ -88,7 +88,12 @@ export function validatePackageGraph(pkg: PackageV1): void {
         row.captures?.forEach(managedType);
         break;
       case "provider":
+        if (row.invocation_slot_bytes != null) width(row.invocation_slot_bytes);
         row.children.forEach(managedType);
+        break;
+      case "actor_call":
+        managedType(row.completion);
+        managedType(row.reply);
         break;
       case "generator":
         width(row.payload_bytes);

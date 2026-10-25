@@ -1,6 +1,6 @@
 import type { JsonValue } from "./types.js";
 import { IndexedString, stringValue } from "./strings.js";
-import type { EncodingNode, EncodingFormat } from "./v1/encoding-values.js";
+import { cloneEncoding } from "./v1/encoding-storage.js";
 export { stringValue } from "./strings.js";
 
 /** One creator-owned membership list; payload destruction uses the ordinary VM release path. */
@@ -9,6 +9,8 @@ export interface RcOwner {
   closed: boolean;
 }
 export interface RcCell {
+  managedLease?: import("./v1/managed-budget.js").ManagedLease;
+  managedPayload?: number;
   value: VmValue;
   refs: number;
   weak: number;
@@ -39,7 +41,7 @@ export interface VmVector {
 
 export type VmValue =
   | import("./v1/semaphores.js").SemaphoreHandle
-  | { kind: "encoding"; format: EncodingFormat; value: EncodingNode | null }
+  | import("./v1/encoding-storage.js").EncodingOwner
   | { kind: "rc"; cell: RcCell | null; closed: boolean }
   | { kind: "weak"; cell: RcCell; closed: boolean }
   | { kind: "unit" }
@@ -64,7 +66,13 @@ export type VmValue =
   | { kind: "sink"; channelId: string }
   | { kind: "duplex"; channelId: string }
   | { kind: "regex"; source: string; regex: RegExp }
-  | { kind: "record"; typeId: string; shape?: number; fields: VmValue[] }
+  | {
+      kind: "record";
+      typeId: string;
+      shape?: number;
+      fields: VmValue[];
+      managedCaptures?: readonly number[];
+    }
   | {
       kind: "enum";
       typeId: string;
@@ -128,7 +136,7 @@ const I64_LITERAL_DECIMAL = /^(?:0|-?[1-9]\d*)$/;
 export function cloneValue(value: VmValue): VmValue {
   switch (value.kind) {
     case "encoding":
-      return { ...value, value: structuredClone(value.value) };
+      return cloneEncoding(value);
     case "rc":
       if (value.closed) throw new Error("cannot copy a released Rc");
       if (!value.cell || value.cell.dying)
@@ -177,6 +185,7 @@ export function cloneValue(value: VmValue): VmValue {
         kind: "record",
         typeId: value.typeId,
         shape: value.shape,
+        managedCaptures: value.managedCaptures,
         fields: value.fields.map(cloneValue),
       };
     case "enum":

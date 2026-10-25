@@ -238,6 +238,14 @@ impl<'m> Walker<'m> {
                         payload_bytes,
                         cases,
                     } => ManagedLayout::Variant {
+                        shape: self
+                            .module
+                            .variant_shape_for_type(ty)
+                            .ok_or_else(|| {
+                                EmitError::new("managed variant has no canonical shape")
+                            })?
+                            .id
+                            .0,
                         indirect,
                         payload_bytes: payload_bytes.to_string(),
                         cases: cases
@@ -262,6 +270,15 @@ impl<'m> Walker<'m> {
                         returned: child(&returned)?,
                         payload_bytes: payload_bytes.to_string(),
                     },
+                    S::ActorCall {
+                        completion,
+                        reply,
+                        declared_failure,
+                    } => ManagedLayout::ActorCall {
+                        completion: child(&completion)?,
+                        reply: child(&reply)?,
+                        declared_failure,
+                    },
                     S::Provider {
                         kind,
                         children: payloads,
@@ -270,7 +287,6 @@ impl<'m> Walker<'m> {
                             .then(|| hew_sir::managed_callable_carrier().bytes.to_string()),
                         provider: match kind {
                             P::Task => ManagedProvider::Task,
-                            P::ActorCall => ManagedProvider::ActorCall,
                             P::Stream => ManagedProvider::Stream,
                             P::Sink => ManagedProvider::Sink,
                             P::Encoding(hew_types::BuiltinType::JsonValue) => ManagedProvider::Json,

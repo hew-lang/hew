@@ -4,6 +4,7 @@ import {
   type DirectoryOperation,
 } from "./browser-directory.js";
 import type { EncodingFormat } from "./encoding-values.js";
+import { encodingStorage, releaseEncoding } from "./encoding-storage.js";
 /// The `hew.sandbox.bytecode.v1` executor.
 ///
 /// The package is a projection of verified ownership SIR, so this executor
@@ -141,7 +142,6 @@ interface FrameContext {
   requestDeadline?: number;
   caller?: CallerStamp;
   reply?: boolean;
-  replyPayload?: boolean;
   id: string;
   actor: ActorInstance | null;
   cancel?: (fault?: Fault) => void;
@@ -208,6 +208,7 @@ interface ActorMessage {
     value: VmValue | null,
     error: string | null,
     drained?: (fault: Fault | null) => void,
+    envelope?: VmValue,
   ): void;
 }
 
@@ -276,6 +277,10 @@ interface RoleSlot {
 }
 
 interface TaskEntry {
+  managedReply?: VmValue;
+  managedResult?: VmValue;
+  managedType?: number;
+  resultInitialized?: boolean;
   invocationPending?: boolean;
   frame?: Activation;
   callable?: VmValue;
@@ -866,10 +871,31 @@ class ExecutorV1 {
   ): void {
     const budget = actor?.budget;
     this.managed.stamp(value, type);
+    if (
+      value.kind === "rc" &&
+      !value.closed &&
+      value.cell?.owner &&
+      budget &&
+      !value.cell.managedLease
+    ) {
+      const row = this.managed.row(type);
+      if (row.kind !== "shared")
+        throw new Error("Rc has no canonical payload descriptor");
+      value.cell.managedPayload = row.payload;
+      value.cell.managedLease = budget.retain({
+        value: { kind: "rc", cell: value.cell, closed: false },
+        type,
+      });
+    }
+    if (value.kind === "task") this.taskFor(value).managedType = type;
     if (value.kind === "stream" && !this.generatorStreams.has(value.channelId))
       this.bindManagedStream(value, type, actor);
     if (value.kind === "generator") this.generatorFor(value).managedType = type;
-    if (value.kind === "string") {
+    if (value.kind === "encoding") {
+      value.prepareMutation = budget
+        ? (replacement) => budget.checkMutation(value, replacement)
+        : undefined;
+    } else if (value.kind === "string") {
       value.prepareGrowth = budget
         ? (capacity) => budget.checkStringGrowth(value, capacity)
         : undefined;
@@ -958,8 +984,7 @@ class ExecutorV1 {
               });
               return () => lease.release();
             },
-            refused: () =>
-              this.crashActor(actor, { kind: "trap", trap: "heap_exceeded" }),
+            refused: () => this.failActorBudget(actor),
           }
         : undefined,
     );
@@ -985,6 +1010,19 @@ class ExecutorV1 {
     );
   }
 
+  private failActorBudget(actor: ActorInstance): void {
+    const fault: Fault = { kind: "trap", trap: "heap_exceeded" };
+    if (!actor.active) this.crashActor(actor, fault);
+    else {
+      // A suspended turn owns its frame until authored unwind and lexical
+      // task drains finish. Admission must not retire its state underneath it.
+      actor.closing = true;
+      actor.crashing ??= fault;
+      actor.active.pendingCancellation ??= fault;
+      actor.active.cancel?.(fault);
+    }
+  }
+
   private managedRetained(value: VmValue, type: number): ManagedProjection {
     const row = this.managed.row(type);
     const typed = (value: VmValue): ManagedRoot => ({
@@ -1002,18 +1040,46 @@ class ExecutorV1 {
         ],
       };
     }
+    if (row.kind === "actor_call") {
+      const task = this.taskFor(value);
+      const reply = !task.taken && !task.fault && task.managedReply;
+      return {
+        identity: task,
+        bytes: reply ? this.managed.width(row.reply) : 0n,
+        children: reply ? [{ value: reply, type: row.reply }] : [],
+      };
+    }
     if (row.kind !== "provider")
       throw new Error("managed retained visitor received no provider");
     switch (row.provider) {
-      case "task":
-      case "actor_call": {
+      case "json":
+      case "yaml":
+      case "toml": {
+        if (value.kind !== "encoding")
+          throw new Error("managed encoding has no tree");
+        const retained = encodingStorage(value);
+        return {
+          identity: retained,
+          bytes: value.value === null ? 0n : retained.bytes!,
+          children: [],
+        };
+      }
+      case "task": {
         const task = this.taskFor(value);
+        const reply =
+          task.resultInitialized &&
+          !task.taken &&
+          !task.fault &&
+          (!task.actorError || task.actorError === "Failed");
         const children: ManagedRoot[] =
           task.frame && !task.done ? this.frameManagedRoots(task.frame) : [];
         if (task.callable?.kind === "closure" && !task.done)
           children.push(typed(task.callable));
-        if (task.done && !task.taken && !task.fault && !task.actorError)
-          children.push({ value: task.value, type: row.children[0]! });
+        if (reply)
+          children.push({
+            value: task.managedResult ?? task.value,
+            type: row.children[0]!,
+          });
         return {
           identity: task,
           bytes:
@@ -1026,11 +1092,7 @@ class ExecutorV1 {
                       );
                     })(),
                 )
-              : 0n) +
-            (row.provider === "task" ||
-            (task.done && !task.taken && !task.fault && !task.actorError)
-              ? this.managed.width(row.children[0]!)
-              : 0n),
+              : 0n) + this.managed.width(row.children[0]!),
           children,
         };
       }
@@ -1086,9 +1148,7 @@ class ExecutorV1 {
         };
       }
       default:
-        throw new Error(
-          `managed ${row.provider} has no canonical retained payload descriptor`,
-        );
+        throw new HeapExceeded();
     }
   }
 
@@ -1632,6 +1692,8 @@ class ExecutorV1 {
               value = first.value;
               first.value = UNIT;
               first.taken = true;
+              task.value = value;
+              task.resultInitialized = true;
             }
           }
           if (!cancelled) {
@@ -1666,13 +1728,17 @@ class ExecutorV1 {
             .filter((member) => member !== winner)
             .map((member) => {
               const result = member.value;
-              member.value = UNIT;
               return result;
             });
           this.closeValueAsync(
             { kind: "vector", elementType: "race result", items: losers },
             this.faultText(failure),
             (closeFault) => {
+              for (const member of members)
+                if (member !== winner) {
+                  member.value = UNIT;
+                  member.taken = true;
+                }
               failure = combineFaults(failure, closeFault);
               const finish = (releaseFault: Fault | null = null) => {
                 failure = combineFaults(failure, releaseFault);
@@ -2788,10 +2854,17 @@ class ExecutorV1 {
         fail({ kind: "panic", message: step.value.message });
       } else if (step.value.kind === "release") {
         const request = step.value;
+        const lease = act.context.actor?.budget?.retainMany(
+          (request.retained ?? [request.value]).map((value) => ({
+            value,
+            type: this.managed.type(value),
+          })),
+        );
         this.closeValueAsync(
           request.value,
           this.pipeFault(act),
           (fault) => {
+            lease?.release();
             if (fault) {
               if (term.op !== "runtime.call" || !term.releases_contents) {
                 fail(fault, request.onFault);
@@ -2994,12 +3067,23 @@ class ExecutorV1 {
         }
         const cell = item.value;
         const payload = cell.value;
+        let payloadLease: ManagedLease | undefined;
+        if (actor?.budget && cell.managedPayload != null)
+          payloadLease = actor.budget.retain({
+            value: payload,
+            type: cell.managedPayload,
+            slots: true,
+            identity: cell,
+          });
+        cell.managedLease?.release();
+        cell.managedLease = undefined;
         cell.value = UNIT;
         blocks.delete(cell);
         this.closeValueAsync(
           payload,
           this.faultText(firstFault),
           (fault) => {
+            payloadLease?.release();
             firstFault = combineFaults(firstFault, fault);
             release();
           },
@@ -3058,21 +3142,13 @@ class ExecutorV1 {
         act.block.term.op === "return" &&
         act.block.term.value
       ) {
-        let type = act.managedTypes.get(act.block.term.value.value);
+        const type = act.managedTypes.get(act.block.term.value.value);
         if (type == null)
           throw new Error("actor reply lacks its managed descriptor");
-        let payload = value;
-        if (act.context.replyPayload && value.kind === "enum") {
-          const row = this.managed.row(type);
-          if (row.kind !== "variant")
-            throw new Error("fallible reply lacks its canonical cases");
-          type = row.cases[value.tag]?.[0];
-          payload = value.payload[0] ?? UNIT;
-        }
         try {
           if (type != null)
             reply = act.context.actor.budget.retain({
-              value: payload,
+              value,
               type,
               slots: true,
             });
@@ -3385,7 +3461,14 @@ class ExecutorV1 {
       case "Await": {
         const task = this.taskFor(this.boundary(act, term.inputs[0]!));
         let unwatch = () => {};
-        const wake = this.park(act, term, () => unwatch());
+        let resultLease: ManagedLease | undefined;
+        const wake = this.park(
+          act,
+          term,
+          () => unwatch(),
+          undefined,
+          () => resultLease?.release(),
+        );
         const ready = () => {
           if (!task.done) {
             this.pendingActorWait(
@@ -3400,6 +3483,10 @@ class ExecutorV1 {
           if (task.fault) wake(UNIT, task.fault);
           else {
             const value = task.value;
+            resultLease = this.retainTaskResult(
+              task,
+              act.context.actor?.budget,
+            );
             task.value = UNIT;
             task.taken = true;
             wake(value);
@@ -3741,8 +3828,25 @@ class ExecutorV1 {
     act.context.parked = true;
     let pending: { value: VmValue; fault: Fault | null; edge: number } | null =
       null;
+    let pendingLease: ManagedLease | undefined;
     const resume = (value: VmValue, fault: Fault | null = null, edge = 0) => {
       if (pending) return false;
+      if (
+        !fault &&
+        act.context.actor?.budget &&
+        term.result &&
+        term.result !== "never"
+      ) {
+        const type = term.result.managed_type;
+        if (type == null)
+          throw new Error("suspended result lacks its managed descriptor");
+        try {
+          pendingLease = act.context.actor.budget.retain({ value, type });
+        } catch (error) {
+          if (!(error instanceof HeapExceeded)) throw error;
+          fault = { kind: "trap", trap: "heap_exceeded" };
+        }
+      }
       pending = { value, fault, edge };
       act.context.parked = false;
       if (act.context.actor?.active === act.context)
@@ -3771,6 +3875,7 @@ class ExecutorV1 {
             if (!edge) throw new Error(`${term.kind} has no resume edge`);
             this.takeEdge(act, edge);
           }
+          pendingLease?.release();
           drained();
           this.runFrame(act);
         };
@@ -4144,7 +4249,12 @@ class ExecutorV1 {
     actor: ActorInstance | null = this.current.context.actor,
     rcOwner: RcOwner | null = actor?.rcOwner ?? this.current.rcOwner,
   ): void {
-    const pending: Array<VmValue | { retire: VmValue }> = [value];
+    const pending: Array<
+      | VmValue
+      | { retire: VmValue }
+      | { taskTaken: TaskEntry }
+      | { managedRelease: ManagedLease }
+    > = [value];
     let firstFault: Fault | null = null;
     const next = (failure: Fault | null = null) => {
       firstFault = combineFaults(firstFault, failure);
@@ -4154,6 +4264,17 @@ class ExecutorV1 {
         fault ?? this.faultText(actor?.crashing ?? firstFault);
       while (pending.length) {
         const entry = pending.pop()!;
+        if ("managedRelease" in entry) {
+          entry.managedRelease.release();
+          continue;
+        }
+        if ("taskTaken" in entry) {
+          entry.taskTaken.value = UNIT;
+          entry.taskTaken.taken = true;
+          entry.taskTaken.managedResult = undefined;
+          entry.taskTaken.managedReply = undefined;
+          continue;
+        }
         if ("retire" in entry) {
           if (
             entry.retire.kind === "stream" &&
@@ -4167,7 +4288,7 @@ class ExecutorV1 {
         pending.push({ retire: value });
         switch (value.kind) {
           case "encoding":
-            value.value = null;
+            releaseEncoding(value);
             break;
           case "string":
             value.release();
@@ -4176,6 +4297,21 @@ class ExecutorV1 {
             if (!value.closed) {
               value.closed = true;
               if (value.cell && !value.cell.dying && --value.cell.refs === 0) {
+                if (actor?.budget) {
+                  const row = this.managed.row(this.managed.type(value));
+                  if (row.kind !== "shared")
+                    throw new Error("Rc has no canonical payload descriptor");
+                  pending.push({
+                    managedRelease: actor.budget.retain({
+                      value: value.cell.value,
+                      type: row.payload,
+                      slots: true,
+                      identity: value.cell,
+                    }),
+                  });
+                }
+                value.cell.managedLease?.release();
+                value.cell.managedLease = undefined;
                 value.cell.owner?.blocks.delete(value.cell);
                 value.cell.owner = null;
                 pending.push(value.cell.value);
@@ -4218,8 +4354,7 @@ class ExecutorV1 {
             const task = this.tasks.get(value.id);
             if (task?.done) {
               const result = task.value;
-              task.value = UNIT;
-              task.taken = true;
+              pending.push({ taskTaken: task });
               this.closeValueAsync(
                 result,
                 currentFault,
@@ -4327,7 +4462,7 @@ class ExecutorV1 {
   }
 
   private closeValue(value: VmValue, fault: string | null): void {
-    if (value.kind === "encoding") value.value = null;
+    if (value.kind === "encoding") releaseEncoding(value);
     if (value.kind === "host_resource") this.closeHostResource(value);
     if (value.kind === "string") value.release();
     if (value.kind === "closure") this.closeValue(value.environment, fault);
@@ -4339,11 +4474,28 @@ class ExecutorV1 {
       for (const field of value.payload) this.closeValue(field, fault);
     else if (value.kind === "vector")
       for (const item of releaseVector(value)) this.closeValue(item, fault);
+    else if (value.kind === "rc" && !value.closed) {
+      value.closed = true;
+      const cell = value.cell;
+      if (cell && !cell.dying && --cell.refs === 0) {
+        cell.dying = true;
+        this.closeValue(cell.value, fault);
+        cell.value = UNIT;
+        cell.managedLease?.release();
+        cell.managedLease = undefined;
+        cell.owner?.blocks.delete(cell);
+        cell.owner = null;
+      }
+    } else if (value.kind === "weak" && !value.closed) {
+      value.closed = true;
+      value.cell.weak--;
+    }
     this.managed.retire(value);
   }
 
   private newTask(budget?: ManagedBudget, type?: number): TaskEntry {
     const task: TaskEntry = {
+      managedType: type,
       id: this.ids.task(),
       grouped: false,
       done: false,
@@ -4384,10 +4536,64 @@ class ExecutorV1 {
   ): void {
     if (task.done) return;
     task.done = true;
+    task.resultInitialized = true;
     task.value = value;
     task.fault = fault;
     task.completedAt = ++this.completedTasks;
     for (const changed of [...task.changed]) changed();
+  }
+
+  private retainTaskResult(
+    task: TaskEntry,
+    budget?: ManagedBudget,
+  ): ManagedLease | undefined {
+    if (!budget) return undefined;
+    if (task.fault || (task.actorError && task.actorError !== "Failed"))
+      return undefined;
+    const row =
+      task.managedType == null ? undefined : this.managed.row(task.managedType);
+    if (row?.kind === "actor_call")
+      return budget.retain({
+        value: task.managedResult!,
+        type: row.completion,
+      });
+    if (!row || row.kind !== "provider" || row.children[0] == null)
+      throw new Error("task result lacks its canonical payload descriptor");
+    return budget.retain({
+      value: task.managedResult ?? task.value,
+      type: row.children[0],
+    });
+  }
+
+  private managedCompletion(
+    task: TaskEntry,
+    value: VmValue | null,
+    error: string | null,
+    envelope?: VmValue,
+  ): { value: VmValue; reply: ManagedRoot } | undefined {
+    if (
+      task.managedType == null ||
+      value === null ||
+      (error !== null && error !== "Failed")
+    )
+      return undefined;
+    const provider = this.managed.row(task.managedType);
+    if (provider.kind !== "actor_call")
+      throw new Error("actor completion has no canonical provider descriptor");
+    const type = provider.completion;
+    const result = this.managed.row(type);
+    if (result.kind !== "variant")
+      throw new Error("actor completion has no canonical result cases");
+    const err = runtimeTag(this.pkg.variants[result.shape]!, "ResultErr");
+    const failure = this.managed.row(result.cases[err]![0]!);
+    if (failure.kind !== "variant")
+      throw new Error("actor completion has no canonical error cases");
+    if (!envelope)
+      throw new Error("actor completion lost its actual handler envelope");
+    return {
+      value: this.completion(result.shape, failure.shape, value, error),
+      reply: { value: envelope, type: provider.reply },
+    };
   }
 
   private invokeFrame(
@@ -4871,11 +5077,36 @@ class ExecutorV1 {
         return;
       }
       case "call_start": {
-        const task = this.newTask();
+        const task = this.newTask(
+          act.context.actor?.budget,
+          term.result && term.result !== "never"
+            ? (term.result.managed_type ?? undefined)
+            : undefined,
+        );
         const cancelRequest = this.ask(
           operation.protocol,
           args,
-          (value, error, closeFault) => {
+          (value, error, closeFault, envelope) => {
+            const reply = this.managedCompletion(task, value, error, envelope);
+            if (reply && !closeFault && act.context.actor?.budget) {
+              try {
+                act.context.actor.budget.checkPayload(
+                  this.managed.width(reply.reply.type),
+                  [reply.reply],
+                );
+              } catch (failure) {
+                if (!(failure instanceof HeapExceeded)) throw failure;
+                task.actorError = "Trapped";
+                this.settleTask(task, UNIT, {
+                  kind: "trap",
+                  trap: "heap_exceeded",
+                });
+                this.failActorBudget(act.context.actor);
+                return false;
+              }
+            }
+            task.managedResult = reply?.value;
+            task.managedReply = reply?.reply.value;
             task.actorError = error;
             this.settleTask(task, value ?? UNIT, closeFault ?? null);
             return true;
@@ -4900,18 +5131,21 @@ class ExecutorV1 {
           throw new Error("actor completion taken before readiness");
         act.fault ??= task.fault;
         const value = task.value;
+        const lease = this.retainTaskResult(task, act.context.actor?.budget);
+        if (lease) act.managedInputs.push(lease);
         task.value = UNIT;
         task.taken = true;
-        this.completeShim(
-          act,
-          term,
+        const result =
+          task.managedResult ??
           this.completion(
             term.result_shape,
             term.error_shape,
             value,
             task.actorError,
-          ),
-        );
+          );
+        task.managedResult = undefined;
+        task.managedReply = undefined;
+        this.completeShim(act, term, result);
         return;
       }
       case "submit": {
@@ -5308,6 +5542,7 @@ class ExecutorV1 {
       value: VmValue | null,
       error: string | null,
       closeFault?: Fault | null,
+      envelope?: VmValue,
     ) => boolean,
     shapes?: RequestShapes | null,
     selectedTarget?: (actor: ActorInstance) => void,
@@ -5325,11 +5560,19 @@ class ExecutorV1 {
       ? { kind: "Actor", identity: owner.identity }
       : { kind: "Task" };
     let receiver: ActorInstance | null = null;
-    const finish: ActorMessage["complete"] = (value, error, drained) => {
+    const finish: ActorMessage["complete"] = (
+      value,
+      error,
+      drained,
+      envelope,
+    ) => {
       const alreadySettled = settled;
       settled = true;
       cancelTimer?.();
-      if (alreadySettled || complete(value, error) === false) {
+      if (
+        alreadySettled ||
+        complete(value, error, undefined, envelope) === false
+      ) {
         // The finishing receiver still owns a reply that its caller no
         // longer accepts. Its next turn must wait for this release.
         this.closeValueAsync(
@@ -5449,11 +5692,7 @@ class ExecutorV1 {
         managedLease = this.acquireActorMessage(actor, handler, payload);
       } catch (error) {
         if (!(error instanceof HeapExceeded)) throw error;
-        this.crashActor(
-          actor,
-          { kind: "trap", trap: "heap_exceeded" },
-          handler,
-        );
+        this.failActorBudget(actor);
         reject("Trapped");
         return;
       }
@@ -5555,11 +5794,7 @@ class ExecutorV1 {
         );
       } catch (error) {
         if (!(error instanceof HeapExceeded)) throw error;
-        this.crashActor(
-          actor,
-          { kind: "trap", trap: "heap_exceeded" },
-          message.handler,
-        );
+        this.failActorBudget(actor);
         return false;
       }
       return true;
@@ -5791,10 +6026,31 @@ class ExecutorV1 {
           caller: message.caller,
           requestDeadline: message.requestDeadline,
           reply: message.reply,
-          replyPayload: message.handler.fallible,
           returned: (value, released) => {
             unwatchStream();
             actor.active = null;
+            if (
+              actor.crashing?.kind === "trap" &&
+              actor.crashing.trap === "heap_exceeded"
+            ) {
+              const fault = actor.crashing;
+              this.closeValueAsync(
+                value,
+                this.faultText(fault),
+                (closeFault) => {
+                  released();
+                  this.crashActor(
+                    actor,
+                    combineFaults(fault, closeFault)!,
+                    message.handler,
+                  );
+                  message.complete(null, "Trapped");
+                },
+                actor,
+                actor.rcOwner,
+              );
+              return;
+            }
             const drained = (fault: Fault | null) => {
               released();
               actor.busy = false;
@@ -5809,7 +6065,12 @@ class ExecutorV1 {
               const shape = this.pkg.variants[message.handler.result_shape!];
               if (shape?.cases[value.tag]?.name === "Err") {
                 if (message.reply)
-                  message.complete(value.payload[0] ?? UNIT, "Failed", drained);
+                  message.complete(
+                    value.payload[0] ?? UNIT,
+                    "Failed",
+                    drained,
+                    value,
+                  );
                 else {
                   this.crashActor(
                     actor,
@@ -5823,10 +6084,15 @@ class ExecutorV1 {
                   return;
                 }
               } else {
-                message.complete(value.payload[0] ?? UNIT, null, drained);
+                message.complete(
+                  value.payload[0] ?? UNIT,
+                  null,
+                  drained,
+                  value,
+                );
               }
             } else {
-              message.complete(value, null, drained);
+              message.complete(value, null, drained, value);
             }
           },
           failed: (fault) => {

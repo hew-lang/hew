@@ -28,6 +28,22 @@ struct ActiveInvocation {
 }
 
 impl BorrowedInvocation {
+    /// Visit owned callback locals while its enclosing operation is frozen.
+    pub(crate) unsafe fn visit_managed(
+        &self,
+        visitor: *const hew_cabi::managed::HewManagedStorageVisitor,
+    ) -> i32 {
+        self.active.as_ref().map_or(0, |active| {
+            // SAFETY: the enclosing operation serializes callback execution and teardown.
+            unsafe {
+                crate::owned_value_budget::frame::hew_managed_visit_invocation(
+                    std::ptr::from_ref(&active.state).cast_mut(),
+                    visitor,
+                )
+            }
+        })
+    }
+
     pub(crate) fn new() -> Self {
         Self {
             active: None,

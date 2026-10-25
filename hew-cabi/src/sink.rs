@@ -158,6 +158,9 @@ trait SinkOps: Send {
     fn take_pending(&mut self) -> Vec<u8> {
         Vec::new()
     }
+    fn pending_content(&self) -> &[u8] {
+        &[]
+    }
     fn flush(&mut self);
     fn close(&mut self);
 }
@@ -293,6 +296,10 @@ impl<T: Send> SinkOps for NonblockingSink<T> {
         let pending = std::mem::take(&mut self.pending);
         let offset = std::mem::take(&mut self.offset);
         pending.into_iter().skip(offset).collect()
+    }
+
+    fn pending_content(&self) -> &[u8] {
+        &self.pending[self.offset..]
     }
 
     fn flush(&mut self) {
@@ -512,6 +519,15 @@ impl HewSink {
     pub fn native_connection(&self) -> Option<i32> {
         let state = self.state();
         state.native_connection
+    }
+
+    /// Copy pending content for transactional native write preparation.
+    #[must_use]
+    pub fn pending_content(&self) -> Vec<u8> {
+        self.state()
+            .inner
+            .as_ref()
+            .map_or_else(Vec::new, |inner| inner.pending_content().to_vec())
     }
 
     /// Transfer buffered bytes to the sink's exclusive native write operation.

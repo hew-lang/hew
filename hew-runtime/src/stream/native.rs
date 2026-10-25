@@ -56,7 +56,57 @@ pub struct HewNativeStream {
     read_stream: Option<*mut HewStream>,
     #[cfg(not(target_arch = "wasm32"))]
     write_prefix: usize,
+    #[cfg(not(target_arch = "wasm32"))]
+    content: Option<async_io::content::ContentView>,
+    #[cfg(not(target_arch = "wasm32"))]
+    read_content: Option<Arc<async_io::content::Content>>,
+    fault: *mut crate::fault::HewFault,
     _code: crate::code_owner::CodeRoot,
+}
+
+/// Visit the owning payload of a frozen native stream operation.
+/// # Safety
+/// The slot contains a retained operation; its containing invocation excludes poll and teardown.
+#[no_mangle]
+pub unsafe extern "C" fn hew_managed_visit_stream_operation(
+    slot: *const c_void,
+    visitor: *const hew_cabi::managed::HewManagedStorageVisitor,
+) -> i32 {
+    use hew_cabi::managed::UNDESCRIBED;
+    // SAFETY: the compiler supplies the operation's live handle slot.
+    unsafe {
+        let pointer = slot.cast::<*mut HewNativeStream>().read();
+        let Some(operation) = pointer.as_mut() else {
+            return 0;
+        };
+        // Queue/read envelopes require their exact typed ownership receipt.
+        if operation.envelope.is_some() {
+            return UNDESCRIBED;
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(content) = &operation.read_content {
+            let status = content.visit(visitor);
+            if status != 0 {
+                return status;
+            }
+        }
+        match &mut operation.backing {
+            Backing::Shared(write) => write.visit_managed(&operation.layout, visitor),
+            Backing::Immediate { release, .. } => {
+                crate::release_walker::visit_cursor(*release, visitor, true)
+            }
+            #[cfg(not(target_arch = "wasm32"))]
+            Backing::Io(io) => {
+                if let Some(content) = &mut operation.content {
+                    content.visit(visitor)
+                } else {
+                    (**io).visit_stream_content(visitor)
+                }
+            }
+            Backing::Pipe(_) => UNDESCRIBED,
+            Backing::Generator { .. } | Backing::Finished => 0,
+        }
+    }
 }
 
 /// The item a reactor read produces, fixed when the read starts.
@@ -73,6 +123,8 @@ enum ReadYield {
 
 impl Drop for HewNativeStream {
     fn drop(&mut self) {
+        // SAFETY: an unobserved materialization fault remains uniquely owned here.
+        unsafe { crate::fault::hew_fault_drop(self.fault) };
         if let Some(envelope) = self.envelope.take() {
             drop_elem_envelope(Some(&self.layout), envelope, "native stream drop");
         }
@@ -183,7 +235,11 @@ pub unsafe extern "C" fn hew_stream_read_start_native(
                 match (*stream).native_read() {
                     Some(NativeRead::Content(handle)) => {
                         content_layout(&layout);
-                        async_io::hew_async_tcp_read(handle, waker)
+                        async_io::start_tcp_stream_read(
+                            handle,
+                            waker,
+                            crate::owned_value_budget::materialize::invocation_owner(parent),
+                        )
                     }
                     Some(NativeRead::Accept(listener)) => {
                         connection_layout(&layout);
@@ -197,7 +253,11 @@ pub unsafe extern "C" fn hew_stream_read_start_native(
                     }
                     None => {
                         content_layout(&layout);
-                        async_io::start_stream_read(stream, waker)
+                        async_io::start_stream_read(
+                            stream,
+                            waker,
+                            crate::owned_value_budget::materialize::invocation_owner(parent),
+                        )
                     }
                 }
             }),
@@ -218,6 +278,11 @@ pub unsafe extern "C" fn hew_stream_read_start_native(
         read_stream: Some(stream),
         #[cfg(not(target_arch = "wasm32"))]
         write_prefix: 0,
+        #[cfg(not(target_arch = "wasm32"))]
+        content: None,
+        #[cfg(not(target_arch = "wasm32"))]
+        read_content: None,
+        fault: std::ptr::null_mut(),
     }))
 }
 
@@ -235,11 +300,21 @@ pub unsafe extern "C" fn hew_stream_write_start_native(
     parent: *const crate::coro_state::HewCoroState,
     park: bool,
     sink_layout: *const HewValueLayout,
+    out_status: *mut i32,
 ) -> *mut HewNativeStream {
     // SAFETY: the source read loan pins the endpoint and its exact descriptor.
     unsafe { super::sender::retain(sink, sink_layout, false) };
     // SAFETY: the installed owner serializes every underlying write through terminal cleanup.
-    unsafe { start_underlying(sink, waker, data, layout, parent, park) }
+    unsafe {
+        out_status.write(0);
+        match start_underlying(sink, waker, data, layout, parent, park) {
+            Ok(operation) => operation,
+            Err(status) => {
+                out_status.write(status);
+                std::ptr::null_mut()
+            }
+        }
+    }
 }
 
 /// # Safety
@@ -286,6 +361,11 @@ unsafe fn try_underlying(
         read_stream: None,
         #[cfg(not(target_arch = "wasm32"))]
         write_prefix: 0,
+        #[cfg(not(target_arch = "wasm32"))]
+        content: None,
+        #[cfg(not(target_arch = "wasm32"))]
+        read_content: None,
+        fault: std::ptr::null_mut(),
     }))
 }
 
@@ -298,14 +378,81 @@ pub(super) unsafe fn start_underlying(
     layout: *const HewValueLayout,
     parent: *const crate::coro_state::HewCoroState,
     park: bool,
-) -> *mut HewNativeStream {
+) -> Result<*mut HewNativeStream, i32> {
     // SAFETY: the compiler provides a static descriptor and a live owned value.
     let layout = unsafe { *move_elem_layout_witness(layout, "native stream write") };
     // SAFETY: this operation pins the endpoint while inspecting its shared backing.
     let owner = unsafe { super::sender::shared(sink) };
     if !park && owner.is_none() {
         // SAFETY: the shared gate lends this raw backing for one nonparking capacity attempt.
-        return unsafe { try_underlying(sink, waker, data, layout) };
+        return Ok(unsafe { try_underlying(sink, waker, data, layout) });
+    }
+    // SAFETY: an adapter endpoint pins its shared sender through this exclusive loan.
+    if let Some(owner) = owner {
+        return Ok(Box::into_raw(Box::new(HewNativeStream {
+            // SAFETY: the caller retains this descriptor until the operation owns it.
+            _code: unsafe { crate::code_owner::CodeRoot::acquire(layout.code_owner) },
+            layout,
+            // SAFETY: the caller retains this descriptor during operation construction.
+            waker: Arc::new(unsafe { OwnedWaker::retain(&*waker) }),
+            backing: Backing::Shared(Box::new(unsafe {
+                super::sender::SharedWrite::new(owner, sink, parent, park, data, &layout)?
+            })),
+            #[cfg(not(target_arch = "wasm32"))]
+            yields: ReadYield::Content,
+            envelope: None,
+            read_stream: None,
+            #[cfg(not(target_arch = "wasm32"))]
+            write_prefix: 0,
+            #[cfg(not(target_arch = "wasm32"))]
+            content: None,
+            #[cfg(not(target_arch = "wasm32"))]
+            read_content: None,
+            fault: std::ptr::null_mut(),
+        })));
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    // SAFETY: the sender gate retains the exclusive endpoint loan.
+    if unsafe { !(*sink).is_closed() && (*sink).channel_core_ptr().is_null() } {
+        content_layout(&layout);
+        // Inspect both sources before changing either; quota refusal preserves them.
+        let mut bytes = unsafe { (*sink).pending_content() };
+        let write_prefix = bytes.len();
+        let envelope = unsafe {
+            crate::channel_common::encode_elem_envelope(data, &layout, "native content write")
+        };
+        bytes.extend_from_slice(&envelope);
+        let value_owner =
+            unsafe { crate::owned_value_budget::materialize::invocation_owner(parent) };
+        let content = async_io::content::Content::new(bytes, value_owner.clone())?;
+        let content_view = async_io::content::ContentView::new(&content);
+        if let Some(owner) = &value_owner {
+            // SAFETY: content owns the replacement allocation; the source still retains its typed graph.
+            unsafe { owner.release_value(&layout, data) }?;
+        }
+        // SAFETY: the admitted buffer now owns all content and the source is consumed once.
+        crate::owned_value_budget::with_value_owner(&None, || unsafe {
+            layout.drop_fn.expect("validated content destructor")(data)
+        });
+        drop(unsafe { (*sink).take_pending() });
+        let io = if let Some(connection) = unsafe { (*sink).native_connection() } {
+            unsafe { async_io::start_tcp_stream_write(connection, content, waker) }
+        } else {
+            unsafe { async_io::start_sink_write(sink, content, waker) }
+        };
+        return Ok(Box::into_raw(Box::new(HewNativeStream {
+            _code: unsafe { crate::code_owner::CodeRoot::acquire(layout.code_owner) },
+            layout,
+            waker: Arc::new(unsafe { OwnedWaker::retain(&*waker) }),
+            backing: Backing::Io(io),
+            yields: ReadYield::Content,
+            envelope: None,
+            read_stream: None,
+            write_prefix,
+            content: Some(content_view),
+            read_content: None,
+            fault: std::ptr::null_mut(),
+        })));
     }
     // SAFETY: the source value transfers exactly once at operation construction.
     let envelope = unsafe { move_elem_envelope(data, &layout, "native stream write") };
@@ -314,7 +461,7 @@ pub(super) unsafe fn start_underlying(
     // poll already carries; `Drop` releases the element this operation took.
     // SAFETY: sink is a live exclusive loan.
     if unsafe { (*sink).is_closed() } {
-        return Box::into_raw(Box::new(HewNativeStream {
+        return Ok(Box::into_raw(Box::new(HewNativeStream {
             // SAFETY: the caller retains this descriptor until the operation owns it.
             _code: unsafe { crate::code_owner::CodeRoot::acquire(layout.code_owner) },
             layout,
@@ -327,26 +474,12 @@ pub(super) unsafe fn start_underlying(
             read_stream: None,
             #[cfg(not(target_arch = "wasm32"))]
             write_prefix: 0,
-        }));
-    }
-    // SAFETY: an adapter endpoint pins its shared sender through this exclusive loan.
-    if let Some(owner) = owner {
-        return Box::into_raw(Box::new(HewNativeStream {
-            // SAFETY: the caller retains this descriptor until the operation owns it.
-            _code: unsafe { crate::code_owner::CodeRoot::acquire(layout.code_owner) },
-            layout,
-            // SAFETY: the caller retains this descriptor during operation construction.
-            waker: Arc::new(unsafe { OwnedWaker::retain(&*waker) }),
-            backing: Backing::Shared(Box::new(super::sender::SharedWrite::new(
-                owner, sink, parent, park,
-            ))),
             #[cfg(not(target_arch = "wasm32"))]
-            yields: ReadYield::Content,
-            envelope: Some(envelope),
-            read_stream: None,
+            content: None,
             #[cfg(not(target_arch = "wasm32"))]
-            write_prefix: 0,
-        }));
+            read_content: None,
+            fault: std::ptr::null_mut(),
+        })));
     }
     // SAFETY: sink is a live exclusive loan.
     let raw = unsafe { (*sink).channel_core_ptr().cast::<ChannelCore>() };
@@ -358,34 +491,17 @@ pub(super) unsafe fn start_underlying(
         // SAFETY: the increment above creates this operation's independent owner.
         Some(unsafe { Arc::from_raw(raw) })
     };
-    #[cfg(not(target_arch = "wasm32"))]
-    let mut write_prefix = 0;
     let (backing, envelope) = match core {
         Some(core) => {
             core.stamp_elem_layout(&layout);
             (Backing::Pipe(core), Some(envelope))
         }
         #[cfg(not(target_arch = "wasm32"))]
-        None => {
-            content_layout(&layout);
-            // SAFETY: the exclusive sink loan remains live during inspection.
-            let io = if let Some(connection) = unsafe { (*sink).native_connection() } {
-                // SAFETY: generated cleanup retains the transport loan through quiescence.
-                let mut bytes = unsafe { (*sink).take_pending() };
-                write_prefix = bytes.len();
-                bytes.extend_from_slice(&envelope);
-                // SAFETY: the caller retains the sink loan and borrowed waker.
-                unsafe { async_io::start_tcp_stream_write(connection, bytes, waker) }
-            } else {
-                // SAFETY: generated cleanup retains sink through producer quiescence.
-                unsafe { async_io::start_sink_write(sink, envelope, waker) }
-            };
-            (Backing::Io(io), None)
-        }
+        None => std::process::abort(),
         #[cfg(target_arch = "wasm32")]
         None => reactor_backing_unreachable("write"),
     };
-    Box::into_raw(Box::new(HewNativeStream {
+    Ok(Box::into_raw(Box::new(HewNativeStream {
         // SAFETY: the caller's descriptor owner remains live during construction.
         _code: unsafe { crate::code_owner::CodeRoot::acquire(layout.code_owner) },
         layout,
@@ -397,8 +513,13 @@ pub(super) unsafe fn start_underlying(
         envelope,
         read_stream: None,
         #[cfg(not(target_arch = "wasm32"))]
-        write_prefix,
-    }))
+        write_prefix: 0,
+        #[cfg(not(target_arch = "wasm32"))]
+        content: None,
+        #[cfg(not(target_arch = "wasm32"))]
+        read_content: None,
+        fault: std::ptr::null_mut(),
+    })))
 }
 
 /// Poll a receive: 0 pending, 1 value, 2 EOF, 3 failure.
@@ -415,7 +536,11 @@ pub unsafe extern "C" fn hew_stream_read_poll_native(operation: *mut HewNativeSt
         Backing::Io(io) => unsafe {
             // SAFETY: the operation owns this live async request.
             match operation.yields {
-                ReadYield::Content => async_io::take_stream_item(*io),
+                ReadYield::Content => {
+                    let (status, content) = async_io::take_managed_stream_item(*io);
+                    operation.read_content = content;
+                    (status, None)
+                }
                 ReadYield::Connection => async_io::take_accepted_item(*io, operation.layout.size),
                 ReadYield::Readiness => async_io::take_readiness_item(*io),
             }
@@ -453,6 +578,16 @@ pub unsafe extern "C" fn hew_stream_read_poll_native(operation: *mut HewNativeSt
 pub unsafe extern "C" fn hew_stream_operation_fault_native(
     operation: *mut HewNativeStream,
 ) -> *mut crate::fault::HewFault {
+    // SAFETY: the operation owns its unpublished-result diagnostic.
+    if unsafe { !(*operation).fault.is_null() } {
+        return unsafe { std::mem::replace(&mut (*operation).fault, std::ptr::null_mut()) };
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    if let Backing::Io(io) = unsafe { &(*operation).backing } {
+        if let Some(code) = unsafe { async_io::failure_trap(*io) } {
+            return crate::fault::hew_fault_new(code);
+        }
+    }
     // SAFETY: the caller holds this operation's exclusive poll loan.
     if let Backing::Shared(write) = unsafe { &mut (*operation).backing } {
         // SAFETY: this owned write reported a terminal failure.
@@ -507,6 +642,50 @@ pub unsafe extern "C" fn hew_stream_read_take_native(
 ) -> i32 {
     // SAFETY: the caller lends the live exclusive operation.
     let operation = unsafe { &mut *operation };
+    #[cfg(not(target_arch = "wasm32"))]
+    if let Some(content) = &operation.read_content {
+        let owner = content.owner();
+        let reservation = match owner
+            .as_ref()
+            .map(|owner| owner.reserve_new(content.len() as u64))
+            .transpose()
+        {
+            Ok(reservation) => reservation,
+            Err(_) => {
+                operation.fault =
+                    crate::fault::hew_fault_new(crate::internal::types::HEW_TRAP_HEAP_EXCEEDED);
+                return 3;
+            }
+        };
+        // SAFETY: the temporary content image is decoded into the caller's unpublished slot.
+        let status = unsafe {
+            decode_elem_envelope(
+                Some(content.to_vec()),
+                out,
+                &operation.layout,
+                "native stream read",
+            )
+        };
+        if status == 1 {
+            if let Some(reservation) = reservation {
+                if let Err(failure) = unsafe { reservation.commit_value(&operation.layout, out) } {
+                    crate::owned_value_budget::with_value_owner(&None, || unsafe {
+                        operation.layout.drop_fn.expect("content destructor")(out);
+                    });
+                    operation.fault = crate::fault::hew_fault_new(
+                        if failure == hew_cabi::managed::HEAP_EXCEEDED {
+                            crate::internal::types::HEW_TRAP_HEAP_EXCEEDED
+                        } else {
+                            crate::internal::types::HEW_TRAP_USER_PANIC
+                        },
+                    );
+                    return 3;
+                }
+            }
+            operation.read_content = None;
+        }
+        return status;
+    }
     let item = operation.envelope.take();
     // SAFETY: out receives the descriptor's sole owned value.
     unsafe { decode_elem_envelope(item, out, &operation.layout, "native stream read") }
@@ -526,7 +705,7 @@ pub unsafe extern "C" fn hew_stream_write_poll_native(operation: *mut HewNativeS
         Backing::Immediate { status, .. } => *status,
         Backing::Shared(write) => {
             // SAFETY: this operation drives the unique pending frame under shared sender admission.
-            unsafe { write.poll(&mut operation.envelope, &operation.layout, &operation.waker) }
+            unsafe { write.poll(&operation.layout, &operation.waker) }
         }
         Backing::Pipe(core) => {
             let Some(envelope) = operation.envelope.take() else {
@@ -780,7 +959,13 @@ pub(super) fn blocking_tcp_read(connection: i32) -> Option<Vec<u8>> {
 pub(super) fn blocking_tcp_write(connection: i32, content: &[u8]) {
     let operation = wait_tcp(|waker| {
         // SAFETY: the synchronous backing retains its borrowed connection.
-        unsafe { async_io::start_tcp_stream_write(connection, content.to_vec(), waker) }
+        unsafe {
+            async_io::start_tcp_stream_write(
+                connection,
+                async_io::content::Content::unbounded(content.to_vec()),
+                waker,
+            )
+        }
     });
     // SAFETY: wait_tcp transfers a ready, drained operation reference.
     unsafe { async_io::hew_async_io_free(operation) };
@@ -880,6 +1065,7 @@ mod tests {
                 std::ptr::null(),
                 true,
             );
+            let first_op = first_op.unwrap();
             assert_eq!(hew_stream_write_poll_native(first_op), 1);
             hew_stream_operation_free_native(first_op);
             let mut second = Box::into_raw(Box::new(Arc::clone(&drops)));
@@ -891,6 +1077,7 @@ mod tests {
                 std::ptr::null(),
                 true,
             );
+            let second_op = second_op.unwrap();
             assert_eq!(hew_stream_write_poll_native(second_op), 0);
             hew_stream_cancel_native(second_op);
             assert_eq!(
@@ -908,6 +1095,110 @@ mod tests {
             notifications.try_recv().is_err(),
             "abandoned producer must not wake"
         );
+    }
+
+    #[test]
+    fn shared_write_cancel_before_admission_releases_its_typed_input() {
+        let (signal, _) = mpsc::channel();
+        let signal = Arc::new(signal);
+        let wake = waker(&signal);
+        let drops = Arc::new(AtomicUsize::new(0));
+        let layout = owned_layout();
+        let sink_layout = HewValueLayout {
+            drop_fn: None,
+            ..layout
+        };
+        let mut sink = std::ptr::null_mut();
+        // SAFETY: cancellation drains the operation before either endpoint closes.
+        unsafe {
+            let stream = super::super::hew_stream_pipe_native(1, &layout, &mut sink);
+            let mut value = Box::into_raw(Box::new(Arc::clone(&drops)));
+            let operation = hew_stream_write_start_native(
+                sink,
+                &wake,
+                (&raw mut value).cast(),
+                &layout,
+                std::ptr::null(),
+                true,
+                &sink_layout,
+                &mut 0,
+            );
+            hew_stream_cancel_native(operation);
+            assert_eq!(hew_stream_cleanup_status_native(operation, &wake), 1);
+            crate::release_walker::hew_release_sync(hew_stream_operation_release_begin(operation));
+            assert_eq!(drops.load(Ordering::SeqCst), 1);
+            super::super::hew_sink_close(sink);
+            super::super::hew_stream_close(stream);
+        }
+    }
+
+    #[test]
+    fn shared_write_reserves_its_input_before_consuming_and_refunds_on_cancel() {
+        let (signal, _) = mpsc::channel();
+        let signal = Arc::new(signal);
+        let wake = waker(&signal);
+        let drops = Arc::new(AtomicUsize::new(0));
+        let managed = hew_cabi::managed::HewManagedValueDescriptor {
+            slot_bytes: 8,
+            visit: None,
+        };
+        let layout = HewValueLayout {
+            managed: &managed,
+            ..owned_layout()
+        };
+        let sink_layout = HewValueLayout {
+            drop_fn: None,
+            ..layout
+        };
+        // SAFETY: all descriptors, slots and endpoints remain live through cancellation.
+        unsafe {
+            let state = crate::coro_state::hew_coro_state_new(&wake, std::ptr::null_mut());
+            let owner = crate::owned_value_budget::ValueOwner::new(Some(7));
+            (*state).execution_mut().value_owner = Some(owner.clone());
+            let mut sink = std::ptr::null_mut();
+            let stream = super::super::hew_stream_pipe_native(1, &layout, &mut sink);
+            let mut value = Box::into_raw(Box::new(Arc::clone(&drops)));
+            let original = value;
+            let mut status = 0;
+            let refused = hew_stream_write_start_native(
+                sink,
+                &wake,
+                (&raw mut value).cast(),
+                &layout,
+                state,
+                true,
+                &sink_layout,
+                &mut status,
+            );
+            assert!(refused.is_null());
+            assert_eq!(status, hew_cabi::managed::HEAP_EXCEEDED);
+            assert_eq!(value, original);
+            assert_eq!(drops.load(Ordering::SeqCst), 0);
+            assert_eq!(owner.live_bytes(), 0);
+            let owner = crate::owned_value_budget::ValueOwner::new(Some(8));
+            (*state).execution_mut().value_owner = Some(owner.clone());
+            let operation = hew_stream_write_start_native(
+                sink,
+                &wake,
+                (&raw mut value).cast(),
+                &layout,
+                state,
+                true,
+                &sink_layout,
+                &mut status,
+            );
+            assert!(!operation.is_null());
+            assert_eq!(status, 0);
+            assert_eq!(owner.live_bytes(), 8);
+            hew_stream_cancel_native(operation);
+            assert_eq!(hew_stream_cleanup_status_native(operation, &wake), 1);
+            crate::release_walker::hew_release_sync(hew_stream_operation_release_begin(operation));
+            assert_eq!(drops.load(Ordering::SeqCst), 1);
+            assert_eq!(owner.live_bytes(), 0);
+            super::super::hew_sink_close(sink);
+            super::super::hew_stream_close(stream);
+            crate::coro_state::hew_coro_state_free(state);
+        }
     }
 
     #[derive(Debug)]
@@ -935,6 +1226,133 @@ mod tests {
     impl Drop for ReleaseContent {
         fn drop(&mut self) {
             let _ = self.0.send(());
+        }
+    }
+
+    #[test]
+    fn pending_content_write_transfers_its_producer_payload_and_refunds_on_completion() {
+        let _runtime = crate::runtime_test_guard();
+        let (entered, started) = mpsc::channel();
+        let (release, released) = mpsc::channel();
+        let release = ReleaseContent(release);
+        let sink = super::super::into_sink_ptr(
+            (entered, released),
+            |(entered, released), _data| {
+                entered.send(()).unwrap();
+                released.recv().unwrap();
+            },
+            |_| {},
+            |_| {},
+        );
+        let (signal, notifications) = mpsc::channel();
+        let signal = Arc::new(signal);
+        let wake = waker(&signal);
+        let layout = &crate::layout_intrinsics::hew_layout_val_string;
+        let managed = hew_cabi::managed::HewManagedValueDescriptor {
+            slot_bytes: 0,
+            visit: Some(hew_managed_visit_stream_operation),
+        };
+        let operation_layout = HewValueLayout {
+            managed: &managed,
+            drop_fn: None,
+            ..owned_layout()
+        };
+        // SAFETY: this test pins the operation and excludes its polls while transfer runs.
+        unsafe {
+            let state = crate::coro_state::hew_coro_state_new(&wake, std::ptr::null_mut());
+            let source = crate::owned_value_budget::ValueOwner::new(Some(1024));
+            (*state).execution_mut().value_owner = Some(source.clone());
+            let mut value = hew_cabi::string::string_from_str("content");
+            source
+                .acquire_value(layout, (&raw const value).cast())
+                .unwrap()
+                .commit();
+            let operation =
+                start_underlying(sink, &wake, (&raw mut value).cast(), layout, state, true)
+                    .unwrap();
+            started.recv_timeout(Duration::from_secs(5)).unwrap();
+            let capacity = source.live_bytes();
+            assert!(capacity >= 8);
+            let destination = crate::owned_value_budget::ValueOwner::new(Some(capacity));
+            crate::owned_value_budget::transfer::ValueTransfer::prepare(
+                Some(source.clone()),
+                Some(destination.clone()),
+                &operation_layout,
+                (&raw const operation).cast(),
+            )
+            .unwrap()
+            .commit()
+            .unwrap();
+            assert_eq!(source.live_bytes(), 0);
+            assert_eq!(destination.live_bytes(), capacity);
+            drop(release);
+            while hew_stream_cleanup_status_native(operation, &wake) == 0 {
+                notifications.recv_timeout(Duration::from_secs(5)).unwrap();
+            }
+            assert_eq!(destination.live_bytes(), 0);
+            hew_stream_operation_free_native(operation);
+            super::super::hew_sink_close(sink);
+            crate::coro_state::hew_coro_state_free(state);
+        }
+    }
+
+    #[test]
+    fn content_read_reserves_output_before_consuming_its_retained_bytes() {
+        let _runtime = crate::runtime_test_guard();
+        for limit in [6, 12] {
+            let stream = super::super::into_stream_ptr(super::super::VecStream {
+                items: [b"result".to_vec()].into(),
+            });
+            let (signal, notifications) = mpsc::channel();
+            let signal = Arc::new(signal);
+            let wake = waker(&signal);
+            let layout = &crate::layout_intrinsics::hew_layout_val_string;
+            // SAFETY: this test retains every source, result and invocation until producer drain.
+            unsafe {
+                let state = crate::coro_state::hew_coro_state_new(&wake, std::ptr::null_mut());
+                let owner = crate::owned_value_budget::ValueOwner::new(Some(limit));
+                (*state).execution_mut().value_owner = Some(owner.clone());
+                let operation = hew_stream_read_start_native(stream, &wake, layout, state);
+                loop {
+                    let status = hew_stream_read_poll_native(operation);
+                    if status == 1 {
+                        break;
+                    }
+                    assert_eq!(status, 0);
+                    notifications.recv_timeout(Duration::from_secs(5)).unwrap();
+                }
+                while hew_stream_cleanup_status_native(operation, &wake) == 0 {
+                    notifications.recv_timeout(Duration::from_secs(5)).unwrap();
+                }
+                assert_eq!(owner.live_bytes(), 6);
+                let sentinel = std::ptr::dangling_mut::<hew_cabi::string::HewString>();
+                let mut output = sentinel;
+                let status = hew_stream_read_take_native(operation, (&raw mut output).cast());
+                if limit == 6 {
+                    assert_eq!(status, 3);
+                    assert_eq!(output, sentinel);
+                    assert_eq!(owner.live_bytes(), 6);
+                    let fault = hew_stream_operation_fault_native(operation);
+                    assert_eq!(
+                        (*fault).code(),
+                        crate::internal::types::HEW_TRAP_HEAP_EXCEEDED
+                    );
+                    crate::fault::hew_fault_drop(fault);
+                } else {
+                    assert_eq!(status, 1);
+                    assert_eq!(hew_cabi::string::string_as_bytes(output), b"result");
+                    assert_eq!(owner.live_bytes(), 6);
+                    crate::owned_value_budget::with_value_owner(&Some(owner.clone()), || {
+                        crate::string::hew_string_drop_managed(output);
+                    });
+                }
+                crate::release_walker::hew_release_sync(hew_stream_operation_release_begin(
+                    operation,
+                ));
+                assert_eq!(owner.live_bytes(), 0);
+                super::super::hew_stream_close(stream);
+                crate::coro_state::hew_coro_state_free(state);
+            }
         }
     }
 

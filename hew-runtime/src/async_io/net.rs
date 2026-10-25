@@ -43,7 +43,7 @@ enum Action {
 }
 
 enum WriteData {
-    Owned(Vec<u8>),
+    Owned(Arc<super::content::Content>),
     /// The caller's bytes, borrowed until the operation is freed. Only the
     /// owning task writes from them, inside its own status poll.
     Borrowed {
@@ -327,7 +327,12 @@ fn admit(slot: &Slot, action: &Action, direction: Direction) -> Result<(), IoFai
     })
 }
 
-unsafe fn start(handle: i32, action: Action, waker: *const HewWaker) -> *const HewAsyncIo {
+unsafe fn start(
+    handle: i32,
+    action: Action,
+    waker: *const HewWaker,
+    stream_owner: Option<Option<crate::owned_value_budget::ValueOwner>>,
+) -> *const HewAsyncIo {
     let direction = if matches!(action, Action::Write { .. }) {
         Direction::Write
     } else {
@@ -342,7 +347,7 @@ unsafe fn start(handle: i32, action: Action, waker: *const HewWaker) -> *const H
             pending.finish();
         }
         // SAFETY: the caller borrows a valid descriptor through this call.
-        let operation = unsafe { HewAsyncIo::new(waker) };
+        let operation = unsafe { HewAsyncIo::with_net(waker, None, stream_owner) };
         operation.complete(Err(IoFailure::from_io(
             "wait on I/O handle",
             &io::Error::from_raw_os_error(libc::EBADF),
@@ -350,7 +355,7 @@ unsafe fn start(handle: i32, action: Action, waker: *const HewWaker) -> *const H
         return Arc::into_raw(operation);
     };
     // SAFETY: the caller's waker contract is forwarded unchanged.
-    unsafe { start_on(slot, action, direction, waker) }
+    unsafe { start_on(slot, action, direction, waker, stream_owner) }
 }
 
 /// Start a standard-input line read on its slot.
@@ -362,7 +367,7 @@ pub(super) unsafe fn start_stdin_line(
     waker: *const HewWaker,
 ) -> *const HewAsyncIo {
     // SAFETY: the caller's waker contract is forwarded unchanged.
-    unsafe { start_on(slot, Action::StdinLine, Direction::Read, waker) }
+    unsafe { start_on(slot, Action::StdinLine, Direction::Read, waker, None) }
 }
 
 unsafe fn start_on(
@@ -370,6 +375,7 @@ unsafe fn start_on(
     action: Action,
     direction: Direction,
     waker: *const HewWaker,
+    stream_owner: Option<Option<crate::owned_value_budget::ValueOwner>>,
 ) -> *const HewAsyncIo {
     let admitted = admit(&slot, &action, direction);
     let net = NetOp {
@@ -380,7 +386,7 @@ unsafe fn start_on(
         holds_drain: !crate::coro_root::current_context_is_process_root(),
     };
     // SAFETY: the caller borrows a valid descriptor through this call.
-    let operation = unsafe { HewAsyncIo::with_net(waker, Some(net)) };
+    let operation = unsafe { HewAsyncIo::with_net(waker, Some(net), stream_owner) };
     match admitted {
         Ok(()) => advance(&operation),
         Err(error) => operation.complete(Err(error)),
@@ -400,7 +406,17 @@ pub unsafe extern "C" fn hew_async_tcp_read(
     waker: *const HewWaker,
 ) -> *const HewAsyncIo {
     // SAFETY: the caller supplies the borrowed readiness descriptor.
-    unsafe { start(connection, Action::Read, waker) }
+    unsafe { start(connection, Action::Read, waker, None) }
+}
+
+/// Start a typed stream read whose future content belongs to the retained invocation.
+pub(crate) unsafe fn start_tcp_stream_read(
+    connection: i32,
+    waker: *const HewWaker,
+    owner: Option<crate::owned_value_budget::ValueOwner>,
+) -> *const HewAsyncIo {
+    // SAFETY: the native stream operation retains the transport loan and wake descriptor.
+    unsafe { start(connection, Action::Read, waker, Some(owner)) }
 }
 
 /// Watch a connection until a read would make progress, reading nothing. A
@@ -414,7 +430,7 @@ pub(crate) unsafe fn start_tcp_readable(
     waker: *const HewWaker,
 ) -> *const HewAsyncIo {
     // SAFETY: the caller supplies the borrowed readiness descriptor.
-    unsafe { start(connection, Action::Readable, waker) }
+    unsafe { start(connection, Action::Readable, waker, None) }
 }
 
 /// Start a one-shot accept. The operation owns the newly accepted connection
@@ -429,7 +445,7 @@ pub unsafe extern "C" fn hew_async_tcp_accept(
     waker: *const HewWaker,
 ) -> *const HewAsyncIo {
     // SAFETY: the caller supplies the borrowed readiness descriptor.
-    unsafe { start(listener, Action::Accept, waker) }
+    unsafe { start(listener, Action::Accept, waker, None) }
 }
 
 /// Submit a complete byte write, keeping partial progress across readiness.
@@ -476,6 +492,7 @@ pub unsafe extern "C" fn hew_async_tcp_write(
                         finish: None,
                     },
                     waker,
+                    None,
                 )
             }
         }
@@ -494,7 +511,7 @@ pub unsafe extern "C" fn hew_async_tcp_write(
 /// `waker` is null or a valid descriptor.
 pub(crate) unsafe fn start_tcp_stream_write(
     connection: i32,
-    bytes: Vec<u8>,
+    bytes: Arc<super::content::Content>,
     waker: *const HewWaker,
 ) -> *const HewAsyncIo {
     if bytes.is_empty() {
@@ -509,7 +526,7 @@ pub(crate) unsafe fn start_tcp_stream_write(
             finish: None,
         };
         // SAFETY: the caller supplies the borrowed readiness descriptor.
-        unsafe { start(connection, action, waker) }
+        unsafe { start(connection, action, waker, None) }
     }
 }
 
@@ -520,10 +537,10 @@ pub(super) unsafe fn start_tcp_sink_finish(
     waker: *const HewWaker,
 ) -> *const HewAsyncIo {
     let action = Action::Write {
-        data: WriteData::Owned(bytes),
+        data: WriteData::Owned(super::content::Content::unbounded(bytes)),
         written: 0,
         finish: Some(pending),
     };
     // SAFETY: the pending backing retains the source loan and the caller lends a live waker.
-    unsafe { start(connection, action, waker) }
+    unsafe { start(connection, action, waker, None) }
 }

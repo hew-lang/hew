@@ -884,8 +884,11 @@ pub unsafe extern "C" fn hew_stream_channel(capacity: i64) -> *mut HewStreamPair
 }
 
 /// Create one bounded element pipe for a checked stream producer request.
-/// Elements move as raw bytes of `elem_size`; `elem_drop` releases whichever
-/// elements are still queued when the pipe ends.
+/// Elements retain their exact typed image and managed backing identities.
+/// The receiving Stream owns queued payload until read or semantic cleanup.
+///
+/// # Panics
+/// Panics if the compiler supplies a capacity outside the target's address space.
 ///
 /// # Safety
 /// `sink_out` is a writable slot that receives the owned sink half.
@@ -2056,16 +2059,18 @@ pub unsafe extern "C" fn hew_stream_release_begin(
     stream: *mut HewStream,
 ) -> *mut crate::release_walker::HewReleaseCursor {
     use crate::release_walker::{HewReleaseCursor, ReleaseItem};
-    if let Some(core) = unsafe { stream.as_ref() }.and_then(HewStream::typed_core) {
-        let cursor = HewReleaseCursor::new(vec![ReleaseItem::Stream { stream }]);
-        unsafe { (*cursor).set_value_owner(core.typed_owner()) };
-        return cursor;
-    }
     unsafe fn free_stream(owner: *mut c_void) {
         if !owner.is_null() {
             // SAFETY: the cursor owns the handle and has drained all queued values.
             unsafe { drop(Box::from_raw(owner.cast::<HewStream>())) };
         }
+    }
+    // SAFETY: the consuming boundary pins this optional unique Stream handle.
+    if let Some(core) = unsafe { stream.as_ref() }.and_then(HewStream::typed_core) {
+        let cursor = HewReleaseCursor::new(vec![ReleaseItem::Stream { stream }]);
+        // SAFETY: this fresh cursor exclusively owns the provider's terminal drain.
+        unsafe { (*cursor).set_value_owner(core.typed_owner()) };
+        return cursor;
     }
     // SAFETY: the caller supplies an exclusive live handle or null.
     let (layout, discarded) = unsafe { stream.as_ref() }
@@ -5216,6 +5221,7 @@ pub unsafe extern "C" fn hew_managed_visit_stream(
 ) -> i32 {
     // SAFETY: the compiler's Stream descriptor supplies its exact handle slot.
     let stream = unsafe { *slot.cast::<*mut HewStream>() };
+    // SAFETY: the enclosing descriptor retains this optional live handle.
     let Some(stream) = (unsafe { stream.as_ref() }) else {
         return 0;
     };
@@ -5223,6 +5229,7 @@ pub unsafe extern "C" fn hew_managed_visit_stream(
         return hew_cabi::managed::UNDESCRIBED;
     }
     if let Some(core) = stream.typed_core() {
+        // SAFETY: the Stream's unique provider lifetime pins its queue during this walk.
         return unsafe { core.visit_typed(visitor) };
     }
     // File/socket content and legacy host channels contain no typed queued values.
@@ -5233,12 +5240,14 @@ pub(crate) unsafe fn prepare_stream_release(
     stream: *mut HewStream,
     state: *const crate::coro_state::HewCoroState,
 ) -> bool {
+    // SAFETY: the consuming cursor retains this unique optional Stream handle.
     let Some(core) = (unsafe { stream.as_ref() }).and_then(HewStream::typed_core) else {
         return true;
     };
     let waker = if state.is_null() {
         None
     } else {
+        // SAFETY: the polling invocation retains this wake descriptor through registration.
         Some(unsafe {
             crate::wake::OwnedWaker::retain(&*crate::coro_state::hew_coro_state_waker(state))
         })
@@ -5252,8 +5261,10 @@ pub(crate) unsafe fn expand_stream_release(
 ) {
     use crate::release_walker::ReleaseItem;
     unsafe fn free(owner: *mut c_void) {
+        // SAFETY: the cursor drained every queued child and owns this original Box.
         unsafe { drop(Box::from_raw(owner.cast::<HewStream>())) };
     }
+    // SAFETY: expansion borrows the cursor's unique Stream before final retirement.
     let Some(stream_ref) = (unsafe { stream.as_mut() }) else {
         return;
     };

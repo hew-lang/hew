@@ -63,7 +63,7 @@ impl ChannelCore {
         self.locked().typed.is_some()
     }
 
-    fn typed_bytes(&self, count: usize, width: u64) -> Result<u64, i32> {
+    fn typed_bytes(count: usize, width: u64) -> Result<u64, i32> {
         width
             .checked_mul(count as u64)
             .ok_or(hew_cabi::managed::HEAP_EXCEEDED)
@@ -90,6 +90,24 @@ impl ChannelCore {
         self.cv.notify_all();
     }
 
+    fn finish_typed_transfer(&self, key: Option<usize>) {
+        let (wakes, transfers) = {
+            let mut inner = self.locked();
+            let state = inner.typed.as_mut().expect("typed Pipe descriptor");
+            if state.frozen == key {
+                state.frozen = None;
+                state.prepared_children = false;
+            }
+            let transfers = std::mem::take(&mut state.transfer_wakes);
+            (std::mem::take(&mut inner.native_producers), transfers)
+        };
+        Self::wake_native(wakes);
+        for wake in transfers {
+            wake.wake();
+        }
+        self.cv.notify_all();
+    }
+
     /// Visit the receiving provider only; producer endpoints do not retain it.
     /// # Safety
     /// A transfer freezes this provider before account traversal. Ordinary
@@ -108,7 +126,7 @@ impl ChannelCore {
             if !live {
                 return 0;
             }
-            let bytes = match self.typed_bytes(count, width) {
+            let bytes = match Self::typed_bytes(count, width) {
                 Ok(bytes) => bytes,
                 Err(error) => return error,
             };
@@ -181,21 +199,7 @@ impl ChannelCore {
                 kind,
                 HewManagedWalkKind::AbortTransfer | HewManagedWalkKind::ResumeTransfer
             ) {
-                let (wakes, transfers) = {
-                    let mut inner = self.locked();
-                    let state = inner.typed.as_mut().expect("typed Pipe descriptor");
-                    if state.frozen == key {
-                        state.frozen = None;
-                        state.prepared_children = false;
-                    }
-                    let transfers = std::mem::take(&mut state.transfer_wakes);
-                    (std::mem::take(&mut inner.native_producers), transfers)
-                };
-                Self::wake_native(wakes);
-                for wake in transfers {
-                    wake.wake();
-                }
-                self.cv.notify_all();
+                self.finish_typed_transfer(key);
             }
             0
         }
@@ -251,7 +255,7 @@ impl Slot {
         if layout.size != 0 {
             // SAFETY: input is live and the new aligned allocation is disjoint.
             unsafe {
-                core::ptr::copy_nonoverlapping(input.cast::<u8>(), pointer.as_ptr(), layout.size)
+                core::ptr::copy_nonoverlapping(input.cast::<u8>(), pointer.as_ptr(), layout.size);
             };
         }
         Self {
@@ -271,7 +275,9 @@ impl Slot {
 impl Drop for Slot {
     fn drop(&mut self) {
         // SAFETY: this carrier exclusively owns the exact aligned allocation.
-        unsafe { dealloc(self.pointer.as_ptr(), self.allocation) };
+        unsafe {
+            dealloc(self.pointer.as_ptr(), self.allocation);
+        };
     }
 }
 
@@ -332,10 +338,66 @@ impl TypedWrite {
         &mut self,
         visitor: *const HewManagedStorageVisitor,
     ) -> i32 {
+        // SAFETY: the enclosing operation pins this synchronous visitor.
         if unsafe { (*visitor).kind } == HewManagedWalkKind::PrepareTransfer {
             self.cancel();
         }
         0
+    }
+
+    fn reserve(&mut self) -> Result<(), i32> {
+        let (owner, binding, old, width) = {
+            let mut inner = self.core.locked();
+            if inner.stream_closed || inner.sink_closed || inner.sink_fault {
+                return Err(2);
+            }
+            let state = inner.typed.as_ref().expect("typed Pipe write");
+            if state.active || state.frozen.is_some() || inner.queue.len() >= inner.capacity {
+                inner
+                    .native_producers
+                    .push(NativeRegistration::Observe(Arc::downgrade(&self.waker)));
+                return Err(0);
+            }
+            let Ok(old) = ChannelCore::typed_bytes(inner.queue.len(), state.width) else {
+                std::process::abort();
+            };
+            let state = inner.typed.as_mut().expect("typed Pipe write");
+            state.active = true;
+            let snapshot = (state.owner.clone(), state.binding.clone(), old, state.width);
+            inner
+                .native_producers
+                .push(NativeRegistration::Observe(Arc::downgrade(&self.waker)));
+            snapshot
+        };
+        self.reserved = true;
+        if let Some(owner) = &owner {
+            let Some(bytes) = old.checked_add(width) else {
+                return Err(self.refuse(owner));
+            };
+            match owner.prepare_backing_change(
+                Some(ManagedStorage {
+                    identity: Arc::as_ptr(&self.core) as usize,
+                    bytes: old,
+                }),
+                bytes,
+                true,
+            ) {
+                Ok(backing) => self.backing = Some(backing),
+                Err(_) => return Err(self.refuse(owner)),
+            }
+        }
+        // SAFETY: the enclosing operation retains its parent and input;
+        // this reservation prevents transfer of the receiving provider.
+        let source =
+            unsafe { crate::owned_value_budget::materialize::invocation_owner(self.parent) };
+        // SAFETY: the parent pins the same initialized input until commit/drop.
+        let mut transfer = unsafe {
+            transfer::ValueTransfer::begin(source, owner, &raw const self.layout, self.input)
+        };
+        transfer.set_destination_binding(binding);
+        transfer.set_waker((*self.waker).clone());
+        self.transfer = Some(transfer);
+        Ok(())
     }
 
     /// Reserve actual space before acquiring the recipient's typed graph.
@@ -344,59 +406,9 @@ impl TypedWrite {
             return 1;
         }
         if !self.reserved {
-            let (owner, binding, old, width) = {
-                let mut inner = self.core.locked();
-                if inner.stream_closed || inner.sink_closed || inner.sink_fault {
-                    return 2;
-                }
-                let state = inner.typed.as_ref().expect("typed Pipe write");
-                if state.active || state.frozen.is_some() || inner.queue.len() >= inner.capacity {
-                    inner
-                        .native_producers
-                        .push(NativeRegistration::Observe(Arc::downgrade(&self.waker)));
-                    return 0;
-                }
-                let old = match self.core.typed_bytes(inner.queue.len(), state.width) {
-                    Ok(bytes) => bytes,
-                    Err(_) => {
-                        std::process::abort();
-                    }
-                };
-                let state = inner.typed.as_mut().expect("typed Pipe write");
-                state.active = true;
-                let snapshot = (state.owner.clone(), state.binding.clone(), old, state.width);
-                inner
-                    .native_producers
-                    .push(NativeRegistration::Observe(Arc::downgrade(&self.waker)));
-                snapshot
-            };
-            self.reserved = true;
-            if let Some(owner) = &owner {
-                let Some(bytes) = old.checked_add(width) else {
-                    return self.refuse(owner.clone());
-                };
-                match owner.prepare_backing_change(
-                    Some(ManagedStorage {
-                        identity: Arc::as_ptr(&self.core) as usize,
-                        bytes: old,
-                    }),
-                    bytes,
-                    true,
-                ) {
-                    Ok(backing) => self.backing = Some(backing),
-                    Err(_) => return self.refuse(owner.clone()),
-                }
+            if let Err(status) = self.reserve() {
+                return status;
             }
-            // SAFETY: the enclosing operation retains its parent and input;
-            // this reservation prevents transfer of the receiving provider.
-            let source =
-                unsafe { crate::owned_value_budget::materialize::invocation_owner(self.parent) };
-            let mut transfer = unsafe {
-                transfer::ValueTransfer::begin(source, owner, &raw const self.layout, self.input)
-            };
-            transfer.set_destination_binding(binding);
-            transfer.set_waker((*self.waker).clone());
-            self.transfer = Some(transfer);
         }
         // A close while providers were quiescing refuses before ownership moves.
         if self.core.locked().stream_closed {
@@ -439,7 +451,9 @@ impl TypedWrite {
         }
         // The active gate linearizes this accepted send before any later close.
         // The unpublished image borrows owners until the common graph commit.
+        // SAFETY: reservation pins the unchanged input and its exact layout.
         let slot = unsafe { Slot::copy_image(self.layout, self.input) };
+        // SAFETY: capacity and destination acquisition are accepted; publish follows resume.
         if unsafe {
             self.transfer
                 .take()
@@ -460,7 +474,7 @@ impl TypedWrite {
         1
     }
 
-    fn refuse(&mut self, owner: ValueOwner) -> i32 {
+    fn refuse(&mut self, owner: &ValueOwner) -> i32 {
         self.cancel();
         self.core.prepare_typed_close(None);
         owner.heap_exceeded();
@@ -483,9 +497,17 @@ pub(crate) struct TypedRead {
     owner: Option<ValueOwner>,
 }
 impl TypedRead {
+    #[expect(
+        clippy::unnecessary_box_returns,
+        reason = "The acquired receipt address is its stable ledger identity."
+    )]
     pub(crate) fn new(core: Arc<ChannelCore>, waker: Arc<OwnedWaker>) -> Box<Self> {
         Self::unobserved(core, Some(waker))
     }
+    #[expect(
+        clippy::unnecessary_box_returns,
+        reason = "The acquired receipt address is its stable ledger identity."
+    )]
     fn unobserved(core: Arc<ChannelCore>, waker: Option<Arc<OwnedWaker>>) -> Box<Self> {
         Box::new(Self {
             core,
@@ -521,9 +543,7 @@ impl TypedRead {
                 }
                 return 0;
             }
-            let old = self
-                .core
-                .typed_bytes(inner.queue.len(), state.width)
+            let old = ChannelCore::typed_bytes(inner.queue.len(), state.width)
                 .expect("retained Pipe width");
             let state = inner.typed.as_mut().expect("typed Pipe read");
             state.active = true;
@@ -575,15 +595,17 @@ impl TypedRead {
             return false;
         };
         if slot.layout.size != 0 {
+            // SAFETY: this receipt owns the exact image and output is disjoint writable storage.
             unsafe {
                 core::ptr::copy_nonoverlapping(
                     slot.as_ptr().cast::<u8>(),
                     out.cast::<u8>(),
                     slot.layout.size,
-                )
+                );
             };
         }
         if let Some(owner) = &self.owner {
+            // SAFETY: the descriptor/code root stays retained by the slot.
             let width = unsafe { (*slot.layout.managed).slot_bytes };
             owner.release_backing((self as *const Self).cast(), width);
         }
@@ -596,7 +618,9 @@ impl TypedRead {
         let Some(slot) = &self.slot else {
             return 0;
         };
+        // SAFETY: the acquired slot retains canonical managed metadata.
         let width = unsafe { (*slot.layout.managed).slot_bytes };
+        // SAFETY: the enclosing provider pins this synchronous visitor and receipt.
         match unsafe {
             ((*visitor).storage)((*visitor).context, (self as *const Self).cast(), width)
         } {
@@ -604,9 +628,12 @@ impl TypedRead {
             DESCEND => {}
             error => return error,
         }
+        // SAFETY: the live visitor lends the explicit transfer phase.
         if unsafe { (*visitor).kind } == HewManagedWalkKind::CommitTransfer {
+            // SAFETY: only the runtime's CommitTransfer visitor reaches this branch.
             self.owner = unsafe { transfer::destination_owner(visitor) };
         }
+        // SAFETY: the receipt pins its initialized image and defining layout.
         unsafe { visit_value(&slot.layout, slot.as_ptr(), visitor) }
     }
 
@@ -619,15 +646,12 @@ impl TypedRead {
         let ptr = Box::into_raw(self);
         // SAFETY: the cursor now uniquely owns the stable receipt and image.
         let slot = unsafe { (*ptr).slot.as_ref().expect("acquired Pipe read") };
+        // SAFETY: the retained image pins canonical metadata until cursor retirement.
         let width = unsafe { (*slot.layout.managed).slot_bytes };
-        unsafe fn free(owner: *mut c_void) {
-            unsafe { drop(Box::from_raw(owner.cast::<TypedRead>())) };
-        }
-        unsafe fn no_free(_: *mut c_void) {}
         let cursor = HewReleaseCursor::new(vec![
             ReleaseItem::Storage {
                 owner: ptr.cast(),
-                free,
+                free: free_read,
             },
             ReleaseItem::ManagedBacking {
                 pointer: ptr.cast(),
@@ -639,6 +663,7 @@ impl TypedRead {
                 layout: slot.layout,
             },
         ]);
+        // SAFETY: this fresh cursor remains exclusively owned before publication.
         unsafe { (*cursor).set_value_owner(owner) };
         cursor
     }
@@ -687,9 +712,7 @@ impl ChannelCore {
             }
             state.root_live = false;
             let width = state.width;
-            let bytes = self
-                .typed_bytes(inner.queue.len(), width)
-                .expect("retained Pipe bytes");
+            let bytes = Self::typed_bytes(inner.queue.len(), width).expect("retained Pipe bytes");
             let slots = inner
                 .queue
                 .drain(..)
@@ -701,13 +724,9 @@ impl ChannelCore {
             (slots, bytes)
         };
         let slots = Box::into_raw(Box::new(slots));
-        unsafe fn free(owner: *mut c_void) {
-            unsafe { drop(Box::from_raw(owner.cast::<Vec<Slot>>())) };
-        }
-        unsafe fn no_free(_: *mut c_void) {}
         pending.push(ReleaseItem::Storage {
             owner: slots.cast(),
-            free,
+            free: free_slots,
         });
         pending.push(ReleaseItem::ManagedBacking {
             pointer: (self as *const Self).cast_mut().cast(),
@@ -769,12 +788,17 @@ impl ChannelCore {
                 "typed Pipe content adapter",
             )
         };
+        // SAFETY: this synchronous foreign adapter owns the acquired receipt and selected recipe.
         unsafe { crate::release_walker::hew_release_sync(read.release_begin()) };
         Some(content)
     }
 }
 
 #[cfg(test)]
+#[allow(
+    clippy::undocumented_unsafe_blocks,
+    reason = "Each fixture owns its fresh typed slots, descriptors and protocol lifetimes."
+)]
 mod tests {
     use super::*;
     use crate::owned_value_budget::with_value_owner;
@@ -1184,6 +1208,7 @@ impl ChannelCore {
     /// Legacy foreign content writers create a typed image only at this
     /// explicit boundary. Generated source uses the borrowing checked writer.
     pub(crate) fn typed_content_send(self: &Arc<Self>, content: &[u8]) {
+        unsafe extern "C" fn no_op(_: *mut c_void) {}
         if current_owner().is_some() {
             crate::channel_common::abort_elem_witness(
                 "typed Pipe content writer",
@@ -1197,6 +1222,7 @@ impl ChannelCore {
         let zero = vec![0_u8; layout.size];
         // SAFETY: the representation is initialized by decode before publication.
         let slot = unsafe { Slot::copy_image(layout, zero.as_ptr().cast()) };
+        // SAFETY: decode initializes fresh aligned storage of this exact descriptor.
         if unsafe {
             crate::channel_common::decode_elem_envelope(
                 Some(content.to_vec()),
@@ -1208,7 +1234,7 @@ impl ChannelCore {
         {
             return;
         }
-        unsafe extern "C" fn no_op(_: *mut c_void) {}
+        // SAFETY: these static no-op callbacks never dereference the null context.
         let waker = Arc::new(unsafe {
             OwnedWaker::retain(&crate::wake::HewWaker {
                 context: core::ptr::null_mut(),
@@ -1217,6 +1243,7 @@ impl ChannelCore {
                 release: no_op,
             })
         });
+        // SAFETY: this synchronous frame retains its fresh image until terminal completion.
         let mut write = unsafe {
             TypedWrite::new(
                 self.clone(),
@@ -1236,7 +1263,7 @@ impl ChannelCore {
                         .wait_timeout(guard, std::time::Duration::from_millis(10));
                 }
                 2 => {
-                    // No semantic transfer occurred; the foreign-created image
+                    // SAFETY: no semantic transfer occurred; the foreign-created image
                     // still owns its children independently of the receiver.
                     unsafe {
                         crate::release_walker::hew_release_sync(
@@ -1244,7 +1271,7 @@ impl ChannelCore {
                                 slot.as_ptr(),
                                 layout,
                             ),
-                        )
+                        );
                     };
                     return;
                 }
@@ -1252,4 +1279,14 @@ impl ChannelCore {
             }
         }
     }
+}
+
+unsafe fn no_free(_: *mut c_void) {}
+unsafe fn free_read(owner: *mut c_void) {
+    // SAFETY: the consuming cursor drained all typed children before retiring this unique Box.
+    unsafe { drop(Box::from_raw(owner.cast::<TypedRead>())) };
+}
+unsafe fn free_slots(owner: *mut c_void) {
+    // SAFETY: the consuming cursor retained this exact Box until every slot closed.
+    unsafe { drop(Box::from_raw(owner.cast::<Vec<Slot>>())) };
 }

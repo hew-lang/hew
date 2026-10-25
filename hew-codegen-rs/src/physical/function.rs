@@ -130,7 +130,7 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
             }
         }
         let mut task_scopes = BTreeMap::new();
-        for op in function.blocks.iter().flat_map(|block| &block.ops) {
+        for op in function.blocks.iter().flat_map(|block| block.operations()) {
             if let PhysicalOp::TaskScopeEnter { scope, .. } = op {
                 let slot = coro::entry_storage(
                     ctx,

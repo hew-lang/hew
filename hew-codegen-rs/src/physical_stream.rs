@@ -19,7 +19,7 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
     pub(super) fn emit_stream_descriptors(&self) -> CodegenResult<()> {
         for function in &self.module.functions {
             for block in &function.blocks {
-                for operation in &block.ops {
+                for operation in block.operations() {
                     if let PhysicalOp::StreamPipe {
                         stream, element, ..
                     } = operation

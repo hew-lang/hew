@@ -266,10 +266,6 @@ impl Checker {
         true
     }
 
-    #[expect(
-        clippy::too_many_lines,
-        reason = "builtin stream typing and checker-owned rewrite metadata stay together"
-    )]
     pub(in crate::check) fn check_stream_method(
         &mut self,
         type_args: &[Ty],
@@ -306,24 +302,11 @@ impl Checker {
             );
             return Ty::Error;
         };
-        let resolved_inner = self.subst.resolve(&inner);
         match method {
             // `recv` parks until an item, EOF or a fault is ready; `try_recv`
             // never parks. Both ride the layout-witness entries for every
-            // describable element type. `collect` drains a `Stream<string>`.
-            "recv" | "try_recv" | "close" | "collect" => {
-                if method == "collect" && resolved_inner != Ty::String {
-                    self.report_error(
-                        TypeErrorKind::InvalidOperation,
-                        span,
-                        format!(
-                            "`Stream<{}>.collect` is not supported: `collect` drains a \
-                             `Stream<string>`",
-                            inner.user_facing()
-                        ),
-                    );
-                    return Ty::Error;
-                }
+            // describable element type. Collection is an ordinary source method.
+            "recv" | "try_recv" | "close" => {
                 let Some(c_symbol) = self.require_builtin_runtime_symbol(
                     span,
                     BuiltinNamedType::Stream.canonical_name(),
@@ -338,28 +321,14 @@ impl Checker {
                 self.record_runtime_method_call_rewrite(span, c_symbol);
                 sig.return_type
             }
-            // The lazy adaptors: each consumes its source stream and returns a
-            // fresh one. `lines` frames a `Stream<bytes>` into text, one line
-            // per item; `chunks` re-frames bytes by size; `take` bounds any
-            // stream.
-            "lines" | "chunks" | "take" => {
+            // Take consumes and bounds any typed stream. Content framing is
+            // implemented by ordinary source methods in std.stream.
+            "take" => {
                 if let Some(arg) = args.first() {
                     let (expr, sp) = arg.expr();
                     if let Some(param_ty) = sig.params.first() {
                         self.check_against(expr, sp, &param_ty.ty);
                     }
-                }
-                if method != "take" && resolved_inner != Ty::Bytes {
-                    self.report_error(
-                        TypeErrorKind::InvalidOperation,
-                        span,
-                        format!(
-                            "`Stream<{}>.{method}` is not supported: `{method}` frames a \
-                             `Stream<bytes>`",
-                            inner.user_facing()
-                        ),
-                    );
-                    return Ty::Error;
                 }
                 let Some(c_symbol) = self.require_builtin_runtime_symbol(
                     span,

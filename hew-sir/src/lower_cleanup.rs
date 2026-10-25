@@ -296,9 +296,29 @@ impl Builder<'_, '_> {
         floor: usize,
         preserved: &BTreeMap<ValueId, ResolvedTy>,
         leaves_body: bool,
-    ) -> Vec<ExitStep> {
-        let mut steps = self.plan_destroys(preserved);
+    ) -> Result<Vec<ExitStep>, SirLoweringError> {
+        // A checked copy can fail while a lexical loan still names a
+        // temporary collection snapshot. Keep that parent until its scope's
+        // defers and dependent loans have finished.
+        let mut retained = preserved.clone();
+        for loan in &self.scope_loans {
+            if self.live_loans.contains(loan) {
+                if let crate::OwnerRoot::Value(owner) = self.value_borrow_root(*loan)? {
+                    if let Some(ty) = self.owned_live.get(&owner) {
+                        retained.insert(owner, ty.clone());
+                    }
+                }
+            }
+        }
+        let mut steps = self.plan_destroys(&retained);
         steps.extend(self.plan_scope_drain(floor).steps);
+        steps.extend(
+            retained
+                .keys()
+                .rev()
+                .filter(|owner| !preserved.contains_key(owner))
+                .map(|&owner| ExitStep::Destroy(owner)),
+        );
         if leaves_body {
             // Spawn-supplied fields stay with the spawn, which destroys them
             // when init reports failure.
@@ -309,7 +329,7 @@ impl Builder<'_, '_> {
                     .map(|&place| ExitStep::EndLifetime(place)),
             );
         }
-        steps
+        Ok(steps)
     }
 
     /// Emit `steps` as rungs of the body's cleanup ladder ending at `end`,

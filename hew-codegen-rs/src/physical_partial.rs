@@ -221,6 +221,7 @@ pub(super) fn allocate_flags<'ctx>(
     if module.module.callables[function.callable.0 as usize].is_resumable {
         for storage in &function.storage {
             if storage.own != OwnKind::Owned
+                || !function.frame_roots.slots.contains(&storage.id)
                 || matches!(
                     storage.origin,
                     StorageOrigin::Capture { .. } | StorageOrigin::ActorState { .. }

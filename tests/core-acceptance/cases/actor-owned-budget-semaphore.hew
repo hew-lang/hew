@@ -1,0 +1,20 @@
+import std.semaphore;
+
+#[max_heap(8)]
+actor Worker {
+    receive fn run() -> i64 {
+        let permits = semaphore.new(1).expect("");
+        let alias = permits.clone();
+        assert(alias.try_acquire());
+        assert(permits.count() == 0);
+        alias.release();
+        permits.count()
+    }
+}
+
+fn main() {
+    let worker = spawn Worker;
+    println(worker.run().expect("semaphore"));
+    stop(worker);
+    stopped(worker);
+}

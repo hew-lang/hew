@@ -82,6 +82,27 @@ export class ManagedLayouts {
     return checked(BigInt(this.row(type).slot_bytes) * BigInt(capacity));
   }
 
+  /** Propagate nested compiler descriptors before an unbounded value is copied
+   * or suspended. Unknown foreign payloads need no quota graph here; acquiring
+   * the same value into a bounded owner still requires its real visitor. */
+  stampGraph(root: ManagedRoot): void {
+    this.collect(
+      root,
+      new Map(),
+      undefined,
+      undefined,
+      undefined,
+      (value, type) => {
+        const row = this.row(type);
+        if (row.kind === "provider" && row.provider === "opaque")
+          return { identity: value, bytes: 0n, children: [] };
+        if (!this.retained)
+          throw new Error("managed provider has no retained-value visitor");
+        return this.retained(value, type);
+      },
+    );
+  }
+
   needsAdoption(type: number): boolean {
     const cached = this.adoption.get(type);
     if (cached != null) return cached;

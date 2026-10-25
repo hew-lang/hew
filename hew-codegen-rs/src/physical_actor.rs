@@ -578,7 +578,7 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
                 matches!(resource.release, hew_mir::physical::ResourceRelease::Sink)
             })
             || self.module.functions.iter().flat_map(|function| &function.blocks).any(|block| {
-                if block.ops.iter().any(|op| matches!(op, PhysicalOp::TaskSpawn { .. } | PhysicalOp::TaskInvoke { .. } | PhysicalOp::TaskRace { .. })) {
+                if block.operations().any(|op| matches!(op, PhysicalOp::TaskSpawn { .. } | PhysicalOp::TaskInvoke { .. } | PhysicalOp::TaskRace { .. })) {
                     return true;
                 }
                 match &block.terminator {

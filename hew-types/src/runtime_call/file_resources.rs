@@ -61,7 +61,6 @@ pub enum FileReadOp {
     Close,
     StreamOpen,
     StreamIsValid,
-    StreamCollect,
     HasError,
     LastErrorKind,
     LastErrno,
@@ -77,7 +76,6 @@ impl FileReadOp {
             | Self::Collect
             | Self::Close
             | Self::StreamIsValid
-            | Self::StreamCollect
             | Self::HasError
             | Self::LastErrorKind
             | Self::LastErrno
@@ -94,7 +92,6 @@ impl FileReadOp {
             Self::Close => "hew_file_read_stream_close",
             Self::StreamOpen => "hew_stream_from_file_read",
             Self::StreamIsValid => "hew_stream_is_valid",
-            Self::StreamCollect => "hew_stream_collect_string",
             Self::HasError => "hew_stream_has_error",
             Self::LastErrorKind => "hew_stream_last_error_kind",
             Self::LastErrno => "hew_stream_last_errno",
@@ -128,10 +125,6 @@ impl FileReadOp {
             ty: FileReadHandle(FileReadHandleKind::Stream),
             effect: Borrow,
         };
-        const STREAM_MOVE: RuntimeArgumentContract = RuntimeArgumentContract {
-            ty: FileReadHandle(FileReadHandleKind::Stream),
-            effect: Move,
-        };
         match self {
             Self::Open => runtime_semantic_contract(
                 &[PATH],
@@ -146,9 +139,6 @@ impl FileReadOp {
             Self::IsValid => runtime_semantic_contract(&[NOMINAL_READ], BitCopy(Bool), &[]),
             Self::StreamIsValid => runtime_semantic_contract(&[STREAM_READ], BitCopy(Bool), &[]),
             Self::Collect => runtime_semantic_contract(&[NOMINAL_MOVE], FreshOwned(String), &[]),
-            Self::StreamCollect => {
-                runtime_semantic_contract(&[STREAM_MOVE], FreshOwned(String), &[])
-            }
             Self::Close => runtime_semantic_contract(&[NOMINAL_MOVE], Unit, &[]),
             Self::HasError => runtime_semantic_contract(&[], BitCopy(Bool), &[]),
             Self::LastErrorKind | Self::LastErrno => {
@@ -181,9 +171,7 @@ impl RuntimeCallFamily {
             Self::FileRead(
                 FileReadOp::Open | FileReadOp::IsValid | FileReadOp::Collect | FileReadOp::Close,
             ) => module == "std.fs",
-            Self::FileRead(
-                FileReadOp::StreamOpen | FileReadOp::StreamIsValid | FileReadOp::StreamCollect,
-            )
+            Self::FileRead(FileReadOp::StreamOpen | FileReadOp::StreamIsValid)
             | Self::StreamClose => module == "std.stream",
             Self::FileRead(
                 FileReadOp::HasError

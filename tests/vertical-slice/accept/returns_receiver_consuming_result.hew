@@ -1,74 +1,54 @@
-// A `#[returns_receiver]` method with a `consume self` receiver ends the
-// receiver generation at the call; the returned identity is the binding's
-// next generation and is released exactly once by whoever adopts it.
-#[opaque]
-type Handle {
+// A consuming identity method transfers its receiver into a Result. Releasing
+// a destructured argument bypasses its destructor; the result closes once.
+#[resource]
+type Value {
+    label: string;
 }
 
 #[resource]
-type Value {
-    handle: Handle;
+type Child {
+    text: string;
 }
 
 trait ValueMethods {
     #[returns_receiver]
-    fn push(consume self, consume child: Value) -> Self;
+    fn push(consume self, consume child: Child) -> Self;
 }
 
 impl ValueMethods for Value {
     #[returns_receiver]
-    fn push(consume self, consume child: Value) -> Value {
-        unsafe {
-            hew_json_array_push(self.handle, child.release())
-        };
+    fn push(consume self, consume child: Child) -> Value {
+        println(child.release());
         self
     }
 }
 
 impl Value {
     fn close(consume self) {
-        unsafe {
-            hew_json_free(self.handle)
-        };
-    }
-    // Destructuring hands the handle out without running `close`, so the
-    // parent array adopts a live child.
-    fn release(consume self) -> Handle {
-        let Value { handle } = self;
-        handle
+        println(self.label);
     }
 }
 
-extern "C" {
-    fn hew_json_free(consume handle: Handle);
-    fn hew_json_array_push(handle: Handle, consume child: Handle);
-    fn hew_json_array_new() -> Handle;
-    fn hew_json_type(handle: Handle) -> i32;
+impl Child {
+    fn close(consume self) {
+        println("unexpected child close");
+    }
+
+    fn release(consume self) -> string {
+        let Child { text } = self;
+        text
+    }
 }
 
 fn try_build() -> Result<Value, string> {
-    let value = Value { handle: unsafe {
-        hew_json_array_new()
-    } };
-    if unsafe {
-        hew_json_type(value.handle)
-    } >= 0 {
-        let child = Value { handle: unsafe {
-            hew_json_array_new()
-        } };
-        .Ok(value.push(child))
-    } else {
-        value.close();
-        .Err("bad handle")
-    }
+    let value = Value { label: "closed" };
+    let child = Child { text: "built" };
+    .Ok(value.push(child))
 }
 
 fn main() {
     match try_build() {
-        .Ok(value) => {
-            println("built");
-            value.close();
-        }
-        .Err(e) => println(e),
+        .Ok(value) => value.close(),
+        .Err(error) => println(error),
     }
 }

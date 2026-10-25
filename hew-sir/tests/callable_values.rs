@@ -763,9 +763,9 @@ fn a_capture_mutation_takes_the_capture_and_restores_it_on_failure() {
             .map(|op| &op.kind)
     };
     // Every receiver transform keeps its receiver on its failure edge, so a
-    // mutation takes the capture in place; the map insert, which a key
-    // callback can fail, re-initializes the capture on that edge so a call
-    // after a recovered fault reads it again.
+    // mutation takes the capture in place. Both a key callback failure and a
+    // managed-storage refusal restore it, so a call after a recovered fault
+    // reads the capture again.
     let mut taken = Vec::new();
     let mut restored = Vec::new();
     for block in &function.blocks {
@@ -795,7 +795,7 @@ fn a_capture_mutation_takes_the_capture_and_restores_it_on_failure() {
         }
     }
     assert_eq!(taken, [capture(0), capture(1)]);
-    assert_eq!(restored, [capture(0)]);
+    assert_eq!(restored, taken);
 }
 
 #[test]

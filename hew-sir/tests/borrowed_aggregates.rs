@@ -123,17 +123,37 @@ fn every_fault_edge_must_end_its_local_loans() {
     for mut module in [fixture::nested_borrow_module(), projected_borrow_module()] {
         let function = &mut module.functions[0];
         let leaf = leaf_loan(function);
-        let fault = function
+        let failure = function
             .blocks
-            .iter_mut()
-            .find(|block| {
-                matches!(block.terminator, SemTerminator::CheckedRaiseFault { .. })
-                    && block.ops.iter().any(|op| {
-                        matches!(&op.kind,
-                    SemOpKind::EndBorrow { borrow } if borrow.value == leaf)
-                    })
+            .iter()
+            .find_map(|block| match &block.terminator {
+                SemTerminator::RtCall {
+                    args,
+                    unwind: hew_sir::CallUnwind::Cleanup(edge),
+                    ..
+                } if args.first().is_some_and(|arg| arg.operand.value == leaf) => Some(edge.target),
+                _ => None,
             })
             .unwrap();
+        let mut pending = vec![failure];
+        let mut seen = std::collections::BTreeSet::new();
+        let fault = loop {
+            let id = pending.pop().expect("failure must end its local loan");
+            if !seen.insert(id) {
+                continue;
+            }
+            let block = &function.blocks[id.0 as usize];
+            if block.ops.iter().any(|op| {
+                matches!(&op.kind,
+                SemOpKind::EndBorrow { borrow } if borrow.value == leaf)
+            }) {
+                break id;
+            }
+            block
+                .terminator
+                .visit_successors(|edge| pending.push(edge.target));
+        };
+        let fault = &mut function.blocks[fault.0 as usize];
         let before = fault.ops.len();
         fault.ops.retain(
             |op| !matches!(&op.kind, SemOpKind::EndBorrow { borrow } if borrow.value == leaf),

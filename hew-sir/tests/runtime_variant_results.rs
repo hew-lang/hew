@@ -22,7 +22,7 @@ fn validating_utf8_decode_returns_an_owned_variant_on_the_normal_edge() {
             unwind,
             ..
         } => {
-            assert_eq!(*unwind, CallUnwind::NotApplicable);
+            assert!(matches!(unwind, CallUnwind::Cleanup(_)));
             result.ty.clone()
         }
         other => panic!("fixture must contain a value-producing runtime call: {other:?}"),

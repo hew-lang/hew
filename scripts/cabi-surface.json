@@ -12185,6 +12185,21 @@
       "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
+        "native": "fn hew_managed_visit_opaque( *const c_void, *const HewManagedStorageVisitor, ) -> i32",
+        "wasm32-wasip1": "fn hew_managed_visit_opaque( *const c_void, *const HewManagedStorageVisitor, ) -> i32"
+      },
+      "symbol": "hew_managed_visit_opaque"
+    },
+    {
+      "availability": [
+        "native",
+        "wasm32-wasip1"
+      ],
+      "classification": "non-declarable",
+      "extent": "no-in-signature-extent",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
         "native": "fn hew_managed_visit_release_driver( *mut c_void, *const hew_cabi::managed::HewManagedStorageVisitor, ) -> i32",
         "wasm32-wasip1": "fn hew_managed_visit_release_driver( *mut c_void, *const hew_cabi::managed::HewManagedStorageVisitor, ) -> i32"
       },
@@ -18092,21 +18107,6 @@
         "native",
         "wasm32-wasip1"
       ],
-      "classification": "stable",
-      "extent": "no-in-signature-extent",
-      "nul": "not-applicable",
-      "ownership": "unmeasured",
-      "signature": {
-        "native": "fn hew_stream_chunks( *mut HewStream, i64, ) -> *mut HewStream",
-        "wasm32-wasip1": "fn hew_stream_chunks( *mut HewStream, i64, ) -> *mut HewStream"
-      },
-      "symbol": "hew_stream_chunks"
-    },
-    {
-      "availability": [
-        "native",
-        "wasm32-wasip1"
-      ],
       "classification": "non-declarable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
@@ -18326,21 +18326,6 @@
         "wasm32-wasip1": "fn hew_stream_last_write_committed() -> i64"
       },
       "symbol": "hew_stream_last_write_committed"
-    },
-    {
-      "availability": [
-        "native",
-        "wasm32-wasip1"
-      ],
-      "classification": "stable",
-      "extent": "no-in-signature-extent",
-      "nul": "not-applicable",
-      "ownership": "unmeasured",
-      "signature": {
-        "native": "fn hew_stream_lines( *mut HewStream) -> *mut HewStream",
-        "wasm32-wasip1": "fn hew_stream_lines( *mut HewStream) -> *mut HewStream"
-      },
-      "symbol": "hew_stream_lines"
     },
     {
       "availability": [

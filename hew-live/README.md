@@ -121,7 +121,11 @@ without waiting for the abandoned snapshot's result.
 
 `component::host` runs each Store in a persistent task and keeps deployment
 admission outside that task. `Host::prepare` compiles immutable bytes before the
-fence. `Deployment::replace` drains admitted calls, snapshots the retained
+fence. `Host::prepare_cached` also publishes validated bytes to an `ArtifactCache`.
+The cache survives host restarts; reload verifies the content digest and compiles
+with the current engine. `Host::restore` never loads unchecked native machine code.
+`Deployment::status` reads the active epoch and component digest together.
+`Deployment::replace` drains admitted calls, snapshots the retained
 instance and initializes an ungranted candidate within one host deadline. Fuel
 yields let the deadline expire even when candidate initialization loops. Expiry
 withdraws the attempt and resumes the old instance; commit enables the candidate
@@ -136,5 +140,6 @@ inside a Tokio runtime.
 
 The host oracle exercises admission drain, caller cancellation, snapshot expiry,
 non-terminating candidate initialization, retained-state recovery, predecessor
-fencing, autonomous service calls without ingress and disposal. Fenced network
-deployment and durable artefact caching remain active implementation work.
+fencing, autonomous service calls without ingress, cache reopening and disposal.
+The cache also rejects corrupt entries without overwriting them. Fenced network
+deployment remains active implementation work.

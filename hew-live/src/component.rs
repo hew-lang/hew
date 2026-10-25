@@ -4,6 +4,7 @@ use std::path::Path;
 
 use wit_bindgen_core::{wit_parser::Resolve, Files};
 
+pub mod cache;
 mod hew_bindings;
 pub mod host;
 

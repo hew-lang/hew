@@ -1,11 +1,9 @@
 # Hew Language Guide
 
-A guide to the native language surface. The current release is
-[v0.6.1](releases/v0.6.1.md); later source changes are listed in
-[Unreleased](releases/UNRELEASED.md). Examples describe the current contracts;
-implementation gaps are identified where relevant. This document is not a record
-of execution on every target. See the [language specification](specs/HEW-SPEC-2026.md)
-for the full contract.
+A guide to Hew's language surface. The current release is
+[v0.9.3](releases/v0.9.3.md); later source changes are listed in
+[Unreleased](releases/UNRELEASED.md). See the
+[language specification](specs/HEW-SPEC-2026.md) for the full contract.
 
 An actor gets its own handle by writing `self`, so it can hand another actor a way to call back:
 

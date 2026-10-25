@@ -2,6 +2,24 @@
 
 ## [Unreleased]
 
+## [0.9.3] - 2026-10-24
+
+- Prefer lexical values over same-named modules when resolving method calls.
+- Lower `Vec.fold` through the checked collection pipeline.
+- Infer crash-hook return variants from the declared `CrashAction` type.
+- Apply nested-supervisor stop deadlines to the whole child subtree.
+- Preserve explicit process-exit behaviour when a scope contains deferred work.
+- Expand language guides and public API reference coverage, and publish a
+  checksummed reference documentation archive with release artifacts.
+
+See the [adoption release notes](docs/releases/v0.9.3.md) for the language,
+installation and migration entry points.
+
+## [0.9.2] - 2026-10-24
+
+- Resolve private peer files in embedded standard-library directory imports,
+  including browser single-source and project compilation.
+
 ## [0.9.1] - 2026-10-24
 
 - Recognize optimized recurrences spanning multiple LLVM blocks in packaged SDK

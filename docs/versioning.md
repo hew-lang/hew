@@ -25,6 +25,6 @@ owns the version and edition contract. Contributor release guidance lives in
 the [versioning policy](internal/versioning.md) and
 [release runbook](release-runbook.md).
 
-Use the [v0.8.0 release notes](releases/v0.8.0.md) when upgrading a released
+Use the [v0.9.3 release notes](releases/v0.9.3.md) when upgrading a released
 installation. Changes after that tag belong in
-[Unreleased](releases/UNRELEASED.md), rather than being attributed to v0.8.0.
+[Unreleased](releases/UNRELEASED.md), rather than being attributed to v0.9.3.

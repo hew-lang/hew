@@ -1283,8 +1283,9 @@ test-bench-calibration: ## Test: reject invalid calibration measurements and fai
 # Compile time is ~3× lower than the default-features build (measured: ~32s vs ~85s per binary).
 # Profiler allocator tests in transport.rs are skipped (they require feature = "profiler").
 # Run `cargo test -p hew-runtime` for the full suite including QUIC, TLS, and profiler paths.
+RUNTIME_TEST_ARGS ?=
 test-runtime-unit:
-	$(TEST_RUN_ENV) cargo nextest run --profile ci -p hew-runtime --no-default-features
+	$(TEST_RUN_ENV) cargo nextest run --profile ci -p hew-runtime --no-default-features $(RUNTIME_TEST_ARGS)
 
 # Ratcheted wrappers for the Hew-language test suites.
 #

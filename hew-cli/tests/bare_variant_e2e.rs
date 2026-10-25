@@ -298,21 +298,17 @@ fn prelude_impl_diagnostics_name_the_selected_std_file() {
     let std_copy = dir.path().join("selected").join("std");
     copy_tree(&repo_root().join("std"), &std_copy);
     let option = std_copy.join("option.hew");
-    let source = std::fs::read_to_string(&option).expect("read std option");
-    let needle = "let replacement: Option<T> = .None;";
-    let anchor = source.find(needle).expect("Option.take replacement");
-    let variant = anchor + needle.find(".None").expect("qualified variant");
+    let mut source = std::fs::read_to_string(&option).expect("read std option");
+    let invalid_impl = "\nimpl<T> Option<T> {\n    fn __selected_std_diagnostic(self) -> Option<T> {\n        None\n    }\n}\n";
+    let variant = source.len() + invalid_impl.find("None").expect("authored invalid variant");
+    source.push_str(invalid_impl);
     let line = source[..variant].matches('\n').count() + 1;
     let column = variant
         - source[..variant]
             .rfind('\n')
             .map_or(0, |newline| newline + 1)
         + 1;
-    std::fs::write(
-        &option,
-        source.replacen(needle, "let replacement: Option<T> = None;", 1),
-    )
-    .expect("break std option copy");
+    std::fs::write(&option, source).expect("append invalid std impl");
     let project = dir.path().join("project");
     std::fs::create_dir(&project).expect("create project directory");
     let user = write_source(&project, "user.hew", "fn main() {\n    println(1);\n}\n");

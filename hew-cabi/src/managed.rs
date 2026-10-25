@@ -17,6 +17,9 @@ pub const SKIP_DESCENDANTS: i32 = 1;
 pub const UNDESCRIBED: i32 = 2;
 /// Canonical payload arithmetic overflow is an exceeded budget.
 pub const HEAP_EXCEEDED: i32 = 3;
+/// Transfer preparation is waiting for a provider's existing executor gate.
+/// This is internal readiness, never a language fault or budget refusal.
+pub const TRANSFER_PENDING: i32 = 4;
 
 #[repr(u8)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

@@ -5,6 +5,7 @@ use super::{Acquisition, ValueOwner};
 use core::ffi::c_void;
 use hew_cabi::managed::{
     visit_value, HewManagedStorageVisitor, HewManagedWalkKind, DESCEND, SKIP_DESCENDANTS,
+    TRANSFER_PENDING,
 };
 use hew_cabi::value::HewValueLayout;
 use std::collections::HashSet;
@@ -12,6 +13,7 @@ use std::collections::HashSet;
 #[derive(Debug)]
 struct TransferWalk {
     destination: Option<ValueOwner>,
+    waker: Option<crate::wake::OwnedWaker>,
     seen: HashSet<usize>,
 }
 
@@ -46,23 +48,46 @@ pub unsafe fn destination_owner(visitor: *const HewManagedStorageVisitor) -> Opt
         .clone()
 }
 
+/// Stable identity for a provider's idempotent transfer gate.
+/// # Safety
+/// Visitor belongs to the same transfer walk contract as `destination_owner`.
+#[must_use]
+pub unsafe fn transfer_identity(visitor: *const HewManagedStorageVisitor) -> *const c_void {
+    // SAFETY: the transfer owns this boxed context until commit or abort.
+    unsafe { (*visitor).context.cast_const() }
+}
+
+/// Retain the admission attempt's notification target while a provider pauses.
+/// # Safety
+/// Visitor belongs to this module's explicit transfer phase.
+#[must_use]
+pub unsafe fn transfer_waker(
+    visitor: *const HewManagedStorageVisitor,
+) -> Option<crate::wake::OwnedWaker> {
+    // SAFETY: the stable boxed context retains this independent wake target.
+    unsafe { &*(*visitor).context.cast::<TransferWalk>() }
+        .waker
+        .clone()
+}
+
 /// Frozen typed graph with destination acquisition held until actual admission.
 /// Dropping a refused/waiting attempt restores every provider's original gate.
 #[derive(Debug)]
 pub struct ValueTransfer {
     source: Option<ValueOwner>,
     destination: Option<Acquisition>,
-    walk: TransferWalk,
+    walk: Box<TransferWalk>,
     layout: *const HewValueLayout,
     slot: *const c_void,
     prepared: bool,
+    ready: bool,
 }
 
 impl ValueTransfer {
     unsafe fn phase(&mut self, kind: HewManagedWalkKind) -> i32 {
         self.walk.seen.clear();
         let visitor = HewManagedStorageVisitor {
-            context: (&raw mut self.walk).cast(),
+            context: (&raw mut *self.walk).cast(),
             storage: backing,
             kind,
         };
@@ -75,12 +100,12 @@ impl ValueTransfer {
     ///
     /// # Safety
     /// Slot/layout stay live and stable through this transfer's commit or drop.
-    pub unsafe fn prepare(
+    pub unsafe fn begin(
         source: Option<ValueOwner>,
         destination: Option<ValueOwner>,
         layout: *const HewValueLayout,
         slot: *const c_void,
-    ) -> Result<Self, i32> {
+    ) -> Self {
         let same = match (&source, &destination) {
             (None, None) => true,
             (Some(a), Some(b)) => a.same_account(b),
@@ -89,28 +114,69 @@ impl ValueTransfer {
         let mut transfer = Self {
             source,
             destination: None,
-            walk: TransferWalk {
+            walk: Box::new(TransferWalk {
                 destination,
+                waker: None,
                 seen: HashSet::new(),
-            },
+            }),
             layout,
             slot,
             prepared: false,
+            ready: same,
         };
         if same {
-            return Ok(transfer);
+            return transfer;
         }
         transfer.prepared = true;
+        transfer
+    }
+
+    /// The waiting operation retains its existing wake target through retries.
+    pub fn set_waker(&mut self, waker: crate::wake::OwnedWaker) {
+        self.walk.waker = Some(waker);
+    }
+
+    /// Poll provider quiescence while retaining its transfer gates. Pending
+    /// work stays sender-owned and cannot publish into either account.
+    /// # Safety
+    /// The original slot is pinned and unchanged until commit or guard drop.
+    pub unsafe fn poll_prepare(&mut self) -> Result<bool, i32> {
+        if self.ready {
+            return Ok(true);
+        }
         // SAFETY: this phase changes only provider gate state, not ownership.
-        let status = unsafe { transfer.phase(HewManagedWalkKind::PrepareTransfer) };
+        let status = unsafe { self.phase(HewManagedWalkKind::PrepareTransfer) };
+        if status == TRANSFER_PENDING {
+            return Ok(false);
+        }
         if status != 0 {
             return Err(status);
         }
-        if let Some(owner) = &transfer.walk.destination {
+        if let Some(owner) = &self.walk.destination {
             // SAFETY: providers are now frozen; slots remain sender-owned.
-            transfer.destination = Some(unsafe { owner.acquire_value(&*layout, slot) }?);
+            self.destination = Some(unsafe { owner.acquire_value(&*self.layout, self.slot) }?);
         }
-        Ok(transfer)
+        self.ready = true;
+        Ok(true)
+    }
+
+    /// Prepare an immediately quiescent graph. Asynchronous providers retain
+    /// the guard from `begin` and poll readiness instead.
+    /// # Safety
+    /// Slot/layout stay live and stable through this transfer's commit or drop.
+    pub unsafe fn prepare(
+        source: Option<ValueOwner>,
+        destination: Option<ValueOwner>,
+        layout: *const HewValueLayout,
+        slot: *const c_void,
+    ) -> Result<Self, i32> {
+        // SAFETY: this convenience operation retains the same original slot.
+        let mut transfer = unsafe { Self::begin(source, destination, layout, slot) };
+        if unsafe { transfer.poll_prepare() }? {
+            Ok(transfer)
+        } else {
+            Err(TRANSFER_PENDING)
+        }
     }
 
     /// Finish an admitted transfer before providers can receive new payloads.
@@ -118,6 +184,7 @@ impl ValueTransfer {
     /// # Safety
     /// Caller has won actual admission, and the original frozen slot is live.
     pub unsafe fn commit(mut self) -> Result<(), i32> {
+        assert!(self.ready, "transfer committed before provider quiescence");
         if !self.prepared {
             return Ok(());
         }
@@ -154,6 +221,91 @@ impl Drop for ValueTransfer {
 mod tests {
     use super::*;
     use hew_cabi::managed::HEAP_EXCEEDED;
+
+    #[test]
+    fn pending_provider_keeps_its_gate_and_original_account_until_adoption() {
+        use core::sync::atomic::{AtomicBool, Ordering};
+        use hew_cabi::managed::HewManagedValueDescriptor;
+        use hew_cabi::value::HewTypeOwnershipKind;
+        struct Provider {
+            ready: AtomicBool,
+            frozen: AtomicBool,
+        }
+        unsafe extern "C" fn visit(
+            slot: *const c_void,
+            visitor: *const HewManagedStorageVisitor,
+        ) -> i32 {
+            // SAFETY: this test descriptor lends the same live provider.
+            let provider = unsafe { &*slot.cast::<*const Provider>().read() };
+            let walk = unsafe { &*visitor };
+            match walk.kind {
+                HewManagedWalkKind::PrepareTransfer => {
+                    provider.frozen.store(true, Ordering::Release);
+                    if provider.ready.load(Ordering::Acquire) {
+                        0
+                    } else {
+                        TRANSFER_PENDING
+                    }
+                }
+                HewManagedWalkKind::CommitTransfer | HewManagedWalkKind::AbortTransfer => {
+                    provider.frozen.store(false, Ordering::Release);
+                    0
+                }
+                _ => {
+                    let status = unsafe {
+                        (walk.storage)(walk.context, core::ptr::from_ref(provider).cast(), 6)
+                    };
+                    if status == SKIP_DESCENDANTS {
+                        0
+                    } else {
+                        status
+                    }
+                }
+            }
+        }
+        let provider = Provider {
+            ready: AtomicBool::new(false),
+            frozen: AtomicBool::new(false),
+        };
+        let pointer = &raw const provider;
+        let managed = HewManagedValueDescriptor {
+            slot_bytes: 8,
+            visit: Some(visit),
+        };
+        let layout = HewValueLayout {
+            size: size_of::<*const Provider>(),
+            align: align_of::<*const Provider>(),
+            ownership_kind: HewTypeOwnershipKind::Plain,
+            clone_fn: None,
+            drop_fn: None,
+            release_start: None,
+            code_owner: core::ptr::null(),
+            managed: &raw const managed,
+        };
+        let source = ValueOwner::new(Some(6));
+        let destination = ValueOwner::new(Some(6));
+        // SAFETY: the provider and descriptor outlive the pending transfer.
+        unsafe {
+            let slot = (&raw const pointer).cast();
+            source.acquire_value(&layout, slot).unwrap().commit();
+            let mut transfer = ValueTransfer::begin(
+                Some(source.clone()),
+                Some(destination.clone()),
+                &raw const layout,
+                slot,
+            );
+            assert!(!transfer.poll_prepare().unwrap());
+            assert!(provider.frozen.load(Ordering::Acquire));
+            assert_eq!((source.live_bytes(), destination.live_bytes()), (6, 0));
+            provider.ready.store(true, Ordering::Release);
+            assert!(transfer.poll_prepare().unwrap());
+            assert_eq!((source.live_bytes(), destination.live_bytes()), (6, 6));
+            transfer.commit().unwrap();
+            assert!(!provider.frozen.load(Ordering::Acquire));
+            assert_eq!((source.live_bytes(), destination.live_bytes()), (0, 6));
+            destination.release_value(&layout, slot).unwrap();
+        }
+    }
 
     #[test]
     fn refused_or_abandoned_adoption_preserves_the_sending_owner() {

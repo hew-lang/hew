@@ -40,18 +40,10 @@ fn process_message(msg: MessageType) -> ProcessingResult {
         .Binary(data) => {
             if data > 1000 {
                 .Error(1)
-            } else if data > 500 {
-                .Warning(data, 2)
-            } else {
-                .Success(data)
-            }
+            } else if data > 500 { .Warning(data, 2) } else { .Success(data) }
         }
         .Structured(header, payload) => {
-            if header == payload {
-                .Success(header)
-            } else {
-                .Error(3)
-            }
+            if header == payload { .Success(header) } else { .Error(3) }
         }
         _ => .Error(99),
     }

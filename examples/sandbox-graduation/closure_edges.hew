@@ -18,11 +18,7 @@ fn try_map(items: Vec<string>, f: fn(string) -> i64 fails string) -> Vec<i64> fa
 }
 
 fn positive(value: i64) -> Option<i64> {
-    if value > 0 {
-        .Some(value)
-    } else {
-        .None
-    }
+    if value > 0 { .Some(value) } else { .None }
 }
 
 fn main() {

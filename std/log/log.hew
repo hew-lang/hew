@@ -215,11 +215,7 @@ fn join_fields(fields: Vec<string>) -> string {
 
 fn compose(msg: string, fields: Vec<string>) -> string {
     let n = fields.len();
-    if n == 0 {
-        msg
-    } else {
-        msg + " " + join_fields(fields)
-    }
+    if n == 0 { msg } else { msg + " " + join_fields(fields) }
 }
 
 // ── Module-level functions ────────────────────────────────────────────

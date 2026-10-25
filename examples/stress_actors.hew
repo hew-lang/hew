@@ -142,11 +142,7 @@ supervisor MainSupervisor {
 
 // Helper function used by WorkerActor
 fn compute_fibonacci(n: i32) -> i32 {
-    if n <= 1 {
-        n
-    } else {
-        compute_fibonacci(n - 1) + compute_fibonacci(n - 2)
-    }
+    if n <= 1 { n } else { compute_fibonacci(n - 1) + compute_fibonacci(n - 2) }
 }
 
 // Helper functions for the actor system
@@ -196,11 +192,7 @@ fn execute_database_query(query_id: i32) -> i32 {
 
 fn access_cache(key: i32) -> i32 {
     // Simulate cache access
-    if key % 3 == 0 {
-        key * 5
-    } else {
-        key + 10
-    }
+    if key % 3 == 0 { key * 5 } else { key + 10 }
 }
 
 fn log_system_event(event_id: i32) -> i32 {
@@ -210,11 +202,7 @@ fn log_system_event(event_id: i32) -> i32 {
 
 fn monitor_system_health(check_id: i32) -> i32 {
     // Simulate health check
-    if check_id % 10 == 0 {
-        1
-    } else {
-        0
-    }
+    if check_id % 10 == 0 { 1 } else { 0 }
 }
 
 fn coordinate_system(coord_id: i32) -> i32 {

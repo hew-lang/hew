@@ -6,11 +6,7 @@
 import std.bench;
 
 fn fibonacci(n: i32) -> i64 {
-    if n <= 1 {
-        n as i64
-    } else {
-        fibonacci(n - 1) + fibonacci(n - 2)
-    }
+    if n <= 1 { n as i64 } else { fibonacci(n - 1) + fibonacci(n - 2) }
 }
 
 fn sum_to(n: i64) -> i64 {

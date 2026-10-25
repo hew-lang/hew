@@ -353,11 +353,7 @@ fn take_output(handle: ChildHandle, which: i32) -> Result<stream.Stream<bytes>, 
 }
 
 fn signal_result(failure: i32) -> Result<(), ProcessError> {
-    if failure == 0 {
-        .Ok(())
-    } else {
-        .Err(ProcessError.System(failure as i64))
-    }
+    if failure == 0 { .Ok(()) } else { .Err(ProcessError.System(failure as i64)) }
 }
 
 fn stdio_mode(stdio: Stdio) -> i32 {

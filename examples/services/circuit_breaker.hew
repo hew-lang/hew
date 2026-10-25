@@ -19,11 +19,7 @@
 actor Backend {
     var healthy: i64; // 1 = healthy, 0 = degraded
     receive fn call(request_id: i64) -> i64 {
-        if healthy == 0 {
-            -1
-        } else {
-            request_id * 10
-        }
+        if healthy == 0 { -1 } else { request_id * 10 }
     }
     receive fn set_healthy(val: i64) {
         healthy = val;

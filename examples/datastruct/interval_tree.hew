@@ -52,11 +52,7 @@ fn add_node(var nodes: Vec<i64>, low: i64, high: i64, NIL: i64) -> (Vec<i64>, i6
 }
 
 fn max_val(a: i64, b: i64) -> i64 {
-    if a > b {
-        a
-    } else {
-        b
-    }
+    if a > b { a } else { b }
 }
 
 fn update_max(var nodes: Vec<i64>, i: i64, NIL: i64) -> Vec<i64> {

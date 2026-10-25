@@ -132,17 +132,9 @@ fn grep_content(content: string, pat: regex.Pattern, cfg: Config, label: string,
         let raw_line = lines[li];
         // For -i, fold the line to lowercase before matching.
         // The pattern was already folded when the Pattern was compiled.
-        let test_line = if cfg.flag_i {
-            raw_line.to_lower()
-        } else {
-            raw_line.clone()
-        };
+        let test_line = if cfg.flag_i { raw_line.to_lower() } else { raw_line.clone() };
         let matched = pat.is_match(test_line);
-        let print_this = if cfg.flag_v {
-            !matched
-        } else {
-            matched
-        };
+        let print_this = if cfg.flag_v { !matched } else { matched };
         if print_this {
             match_count = match_count + 1;
             if !cfg.flag_c {
@@ -151,11 +143,7 @@ fn grep_content(content: string, pat: regex.Pattern, cfg: Config, label: string,
                     f"{label}{lineno}:"
                 } else if show_label {
                     f"{label}"
-                } else if cfg.flag_n {
-                    f"{lineno}:"
-                } else {
-                    ""
-                };
+                } else if cfg.flag_n { f"{lineno}:" } else { "" };
                 println(f"{prefix}{raw_line}");
             }
         }
@@ -168,11 +156,7 @@ fn grep_content(content: string, pat: regex.Pattern, cfg: Config, label: string,
 // ── File-level grep ────────────────────────────────────────────────────────────
 // Returns updated MatchState (structs are value-semantic; callers must reassign).
 fn grep_file(file_path: string, pat: regex.Pattern, cfg: Config, show_label: bool, state: MatchState) -> MatchState {
-    let label = if show_label {
-        f"{file_path}:"
-    } else {
-        ""
-    };
+    let label = if show_label { f"{file_path}:" } else { "" };
     let result = fs.read(file_path);
     match result {
         .Err(e) => {
@@ -248,11 +232,7 @@ fn main() -> i64 {
         }
         .Ok(cfg) => {
             // For -i, fold the pattern to lowercase so it matches lowercased input.
-            let compiled_pattern = if cfg.flag_i {
-                cfg.pattern.to_lower()
-            } else {
-                cfg.pattern
-            };
+            let compiled_pattern = if cfg.flag_i { cfg.pattern.to_lower() } else { cfg.pattern };
             // GAP[1]: re"..." is a compile-time literal; it cannot interpolate a runtime
             // string.  Until the compiler supports runtime-pattern re-literals or a
             // re!(expr) macro, callers must use regex.new(expr).expect("valid pattern") for dynamic patterns.

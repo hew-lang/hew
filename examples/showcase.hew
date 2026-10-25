@@ -33,19 +33,11 @@ fn describe_shape(s: Shape) {
 }
 
 fn fib(n: i64) -> i64 {
-    if n <= 1 {
-        n
-    } else {
-        fib(n - 1) + fib(n - 2)
-    }
+    if n <= 1 { n } else { fib(n - 1) + fib(n - 2) }
 }
 
 fn divide(a: i64, b: i64) -> Result<i64, string> {
-    if b == 0 {
-        .Err("division by zero")
-    } else {
-        .Ok(a / b)
-    }
+    if b == 0 { .Err("division by zero") } else { .Ok(a / b) }
 }
 
 actor Counter {

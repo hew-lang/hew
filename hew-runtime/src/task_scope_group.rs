@@ -52,6 +52,20 @@ impl RaceGroup {
                     return status;
                 }
             }
+            let wait = ptr::from_ref(&*self.wait);
+            let status = super::hew_managed_visit_scope_wait(ptr::from_ref(&wait).cast(), visitor);
+            if status != 0 {
+                return status;
+            }
+            if let Some(driver) = &mut self.release {
+                let status = crate::release_walker::hew_managed_visit_release_driver(
+                    ptr::from_mut(&mut **driver).cast(),
+                    visitor,
+                );
+                if status != 0 {
+                    return status;
+                }
+            }
             if (*visitor).kind == hew_cabi::managed::HewManagedWalkKind::CommitTransfer {
                 self.value_owner = crate::owned_value_budget::transfer::destination_owner(visitor);
             }

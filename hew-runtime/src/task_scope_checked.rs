@@ -784,6 +784,31 @@ pub unsafe extern "C" fn hew_managed_visit_task_wait(
     }
 }
 
+/// Visit values retained by a scope's pending result cleanup.
+/// # Safety
+/// The operation is retained by a frozen invocation for the whole walk.
+#[no_mangle]
+pub unsafe extern "C" fn hew_managed_visit_scope_wait(
+    slot: *const c_void,
+    visitor: *const hew_cabi::managed::HewManagedStorageVisitor,
+) -> i32 {
+    // SAFETY: the compiler provides the live operation handle slot.
+    unsafe {
+        let wait = slot.cast::<*const HewCheckedScopeWait>().read();
+        let Some(wait) = wait.as_ref() else {
+            return 0;
+        };
+        let mut close = wait.close.lock_or_recover();
+        if let Some(driver) = &mut close.driver {
+            return crate::release_walker::hew_managed_visit_release_driver(
+                ptr::from_mut(&mut **driver).cast(),
+                visitor,
+            );
+        }
+        0
+    }
+}
+
 impl HewCheckedTaskWait {
     /// Take one task reference and register readiness only while it is pending.
     unsafe fn new(task: *mut HewTask, waker: *const HewWaker, owns_account_edge: bool) -> Self {

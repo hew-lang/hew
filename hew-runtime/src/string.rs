@@ -838,6 +838,22 @@ pub unsafe extern "C" fn hew_string_drop(s: *mut HewString) {
     unsafe { string_release(s) };
 }
 
+/// Release a compiler-owned language string and its account edge.
+/// # Safety
+/// `s` is an initialized owned string charged to the current incarnation.
+#[no_mangle]
+pub unsafe extern "C" fn hew_string_drop_managed(s: *mut HewString) {
+    if !s.is_null() {
+        if let Some(owner) = crate::owned_value_budget::current_owner() {
+            // SAFETY: the source owner retains this exact string backing.
+            let bytes = unsafe { hew_cabi::string::string_payload_capacity(s) } as u64;
+            owner.release_backing(s.cast(), bytes);
+        }
+    }
+    // SAFETY: the semantic release transfers this one native reference.
+    unsafe { string_release(s) };
+}
+
 /// Retain (share) a string. `String` is immutable-shareable, so cloning is a
 /// refcount bump that returns the same opaque handle — both owners alias one
 /// buffer (the copy-on-write win). The result must still be released with

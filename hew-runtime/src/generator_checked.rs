@@ -255,6 +255,15 @@ pub unsafe extern "C" fn hew_managed_visit_generator(
                 failure => return failure,
             }
         }
+        if let Some(driver) = &mut generator.release {
+            let status = crate::release_walker::hew_managed_visit_release_driver(
+                ptr::from_mut(&mut **driver).cast(),
+                visitor,
+            );
+            if status != 0 {
+                return status;
+            }
+        }
         let status = crate::owned_value_budget::frame::hew_managed_visit_invocation(
             generator.state,
             visitor,

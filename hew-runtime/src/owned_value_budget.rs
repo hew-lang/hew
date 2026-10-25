@@ -184,6 +184,54 @@ impl ValueOwner {
         self.ledger().live
     }
 
+    /// Move an exclusive shallow payload charge into its new storage carriers.
+    /// Typed descendants retain their existing edges; the total charge never
+    /// changes, so a queue pop succeeds even when the account is at its limit.
+    ///
+    /// # Errors
+    /// Returns `UNDESCRIBED` for stale, shared, colliding or unequal geometry.
+    pub(crate) fn repartition_backing(
+        &self,
+        source: ManagedStorage,
+        replacements: &[ManagedStorage],
+    ) -> Result<(), i32> {
+        use hew_cabi::managed::UNDESCRIBED;
+        let mut identities = std::collections::HashSet::new();
+        let mut total = 0_u64;
+        for replacement in replacements {
+            if replacement.identity == 0 || !identities.insert(replacement.identity) {
+                return Err(UNDESCRIBED);
+            }
+            total = total.checked_add(replacement.bytes).ok_or(UNDESCRIBED)?;
+        }
+        if total != source.bytes {
+            return Err(UNDESCRIBED);
+        }
+        let mut ledger = self.ledger();
+        if !ledger
+            .storage
+            .get(&source.identity)
+            .is_some_and(|held| held.bytes == source.bytes && held.references == 1)
+            || replacements.iter().any(|replacement| {
+                replacement.identity != source.identity
+                    && ledger.storage.contains_key(&replacement.identity)
+            })
+        {
+            return Err(UNDESCRIBED);
+        }
+        ledger.storage.remove(&source.identity);
+        for replacement in replacements {
+            ledger.storage.insert(
+                replacement.identity,
+                Retention {
+                    bytes: replacement.bytes,
+                    references: 1,
+                },
+            );
+        }
+        Ok(())
+    }
+
     fn check(&self, ledger: &Ledger, bytes: u64) -> Result<(), BudgetExceeded> {
         if ledger
             .live
@@ -491,6 +539,29 @@ mod tests {
     use super::*;
     fn storage(identity: usize, bytes: u64) -> ManagedStorage {
         ManagedStorage { identity, bytes }
+    }
+
+    #[test]
+    fn shallow_repartition_moves_a_full_accounts_charge_without_headroom() {
+        let owner = ValueOwner::new(Some(16));
+        let queue = storage(11, 16);
+        owner.acquire(&[queue]).unwrap().commit();
+        let remaining = storage(11, 8);
+        let read = storage(12, 8);
+        owner
+            .repartition_backing(queue, &[remaining, read])
+            .unwrap();
+        assert_eq!(owner.live_bytes(), 16);
+        assert!(owner
+            .repartition_backing(remaining, &[storage(11, 0), storage(12, 8)])
+            .is_err());
+        assert_eq!(owner.live_bytes(), 16);
+        owner.release(&[read]);
+        owner
+            .repartition_backing(remaining, &[storage(11, 0), storage(13, 8)])
+            .unwrap();
+        owner.release(&[storage(13, 8), storage(11, 0)]);
+        assert_eq!(owner.live_bytes(), 0);
     }
 
     #[test]

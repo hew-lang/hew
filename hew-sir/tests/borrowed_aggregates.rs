@@ -126,7 +126,13 @@ fn every_fault_edge_must_end_its_local_loans() {
         let fault = function
             .blocks
             .iter_mut()
-            .find(|block| matches!(block.terminator, SemTerminator::CheckedRaiseFault { .. }))
+            .find(|block| {
+                matches!(block.terminator, SemTerminator::CheckedRaiseFault { .. })
+                    && block.ops.iter().any(|op| {
+                        matches!(&op.kind,
+                    SemOpKind::EndBorrow { borrow } if borrow.value == leaf)
+                    })
+            })
             .unwrap();
         let before = fault.ops.len();
         fault.ops.retain(

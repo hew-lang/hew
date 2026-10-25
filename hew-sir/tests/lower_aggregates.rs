@@ -1,3 +1,6 @@
+#[path = "support/checked.rs"]
+mod checked;
+
 use hew_hir::{lower_program_host_target, ResolutionCtx};
 use hew_sir::{
     lower_module, verify_module, AggregateShapeRef, BoundaryDecision, CallResult, SemOpKind,
@@ -155,7 +158,7 @@ fn owned_tuple_construction_and_repeated_borrows_are_explicit() {
     let fields: Vec<_> = main
         .blocks
         .iter()
-        .flat_map(|b| &b.ops)
+        .flat_map(|b| b.operations())
         .filter_map(|op| match &op.kind {
             SemOpKind::LoadBorrow { place } => {
                 let projection = plan.projection(*place).unwrap();
@@ -243,7 +246,7 @@ fn main() {
     let fields: Vec<_> = main
         .blocks
         .iter()
-        .flat_map(|b| &b.ops)
+        .flat_map(|b| b.operations())
         .filter_map(|op| match &op.kind {
             SemOpKind::LoadBorrow { place } => {
                 let projection = plan.projection(*place).unwrap();
@@ -559,7 +562,7 @@ fn main() -> i64 {
     let loans: Vec<_> = main
         .blocks
         .iter()
-        .flat_map(|b| &b.ops)
+        .flat_map(|b| b.operations())
         .filter(|op| matches!(op.kind, SemOpKind::LoadBorrow { .. }))
         .map(|op| {
             assert_eq!(op.results[0].own, hew_sir::OwnKind::Guaranteed);
@@ -581,7 +584,7 @@ fn main() -> i64 {
     let place = main
         .blocks
         .iter()
-        .flat_map(|b| &b.ops)
+        .flat_map(|b| b.operations())
         .find_map(|op| match &op.kind {
             SemOpKind::LoadBorrow { place } if op.results[0].id == loans[0] => Some(*place),
             _ => None,
@@ -674,7 +677,7 @@ fn main() -> i64 {
     assert_eq!(
         main.blocks
             .iter()
-            .flat_map(|b| &b.ops)
+            .flat_map(|b| b.operations())
             .filter(|op| { matches!(op.kind, SemOpKind::AggregateProjectBorrow { .. }) })
             .count(),
         2
@@ -686,7 +689,7 @@ fn main() -> i64 {
         .find(|f| lowered.module.defs.path(f.declaration) == "echo")
         .unwrap();
     assert!(
-        echo.blocks.iter().flat_map(|b| &b.ops).any(|op| {
+        echo.blocks.iter().flat_map(|b| b.operations()).any(|op| {
             matches!(op.kind, SemOpKind::CopyValue { .. })
                 && op.results[0].own == hew_sir::OwnKind::Owned
         }),
@@ -733,9 +736,9 @@ fn earlier_arguments_capture_owned_fields_before_later_effects() {
             })
             .unwrap();
         assert!(
-            main.blocks.iter().flat_map(|b| &b.ops).any(|op| {
+            main.blocks.iter().flat_map(|b| b.operations()).any(|op| {
                 matches!(op.kind, SemOpKind::LoadCopy { .. })
-                    && op.results[0].id == captured
+                    && op.results[0].id == checked::source(main, captured)
                     && op.results[0].own == hew_sir::OwnKind::Owned
             }),
             "later mutation or failure requires a captured independent value"
@@ -772,7 +775,7 @@ fn main() -> i64 {
         .iter()
         .find(|f| lowered.module.defs.path(f.declaration) == "main")
         .unwrap();
-    let operations: Vec<_> = main.blocks.iter().flat_map(|b| &b.ops).collect();
+    let operations: Vec<_> = main.blocks.iter().flat_map(|b| b.operations()).collect();
     let plan = hew_sir::place_plan(
         &lowered.module.defs,
         main,
@@ -841,7 +844,7 @@ fn main() -> i64 {
         .find(|f| lowered.module.defs.path(f.declaration) == "main")
         .unwrap();
     assert!(
-        main.blocks.iter().flat_map(|b| &b.ops).any(|op| {
+        main.blocks.iter().flat_map(|b| b.operations()).any(|op| {
             matches!(op.kind, SemOpKind::LoadCopy { .. })
                 && op.results[0].own == hew_sir::OwnKind::Owned
         }),

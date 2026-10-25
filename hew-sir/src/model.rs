@@ -276,12 +276,12 @@ impl SemBlock {
     /// Static operation inventory, including an operation executed only on
     /// checked acquisition success. Execution and availability analyses must
     /// continue to honour the terminator's separate success and failure paths.
-    pub fn operations(&self) -> impl Iterator<Item = &SemOp> {
+    pub fn operations(&self) -> impl DoubleEndedIterator<Item = &SemOp> {
         self.ops.iter().chain(self.terminator.materialization())
     }
 
     /// Mutable static inventory; control-flow rewrites remain explicit.
-    pub fn operations_mut(&mut self) -> impl Iterator<Item = &mut SemOp> {
+    pub fn operations_mut(&mut self) -> impl DoubleEndedIterator<Item = &mut SemOp> {
         let checked = match &mut self.terminator {
             SemTerminator::Materialize { operation, .. } => Some(operation.as_mut()),
             _ => None,

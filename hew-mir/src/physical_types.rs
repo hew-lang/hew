@@ -390,6 +390,8 @@ pub enum DestroyAction {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PhysicalValueRecipe {
     pub ty: ResolvedTy,
+    /// Canonical managed payload slot width, independent of the ABI layout.
+    pub managed_slot_bytes: u64,
     pub own: OwnKind,
     pub clone: Option<CloneAction>,
     pub destroy: Option<DestroyAction>,
@@ -1403,6 +1405,26 @@ pub struct PhysicalBlock {
     pub arguments: Vec<StorageId>,
     pub ops: Vec<PhysicalOp>,
     pub terminator: PhysicalTerminator,
+}
+
+impl PhysicalBlock {
+    /// Static inventory, including operations on checked acquisition success.
+    /// Availability and execution retain the terminator's two distinct paths.
+    pub fn operations(&self) -> impl DoubleEndedIterator<Item = &PhysicalOp> {
+        let checked = match &self.terminator {
+            PhysicalTerminator::Materialize { operations, .. } => operations.as_slice(),
+            _ => &[],
+        };
+        self.ops.iter().chain(checked)
+    }
+
+    pub fn operations_mut(&mut self) -> impl DoubleEndedIterator<Item = &mut PhysicalOp> {
+        let checked = match &mut self.terminator {
+            PhysicalTerminator::Materialize { operations, .. } => operations.as_mut_slice(),
+            _ => &mut [],
+        };
+        self.ops.iter_mut().chain(checked)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]

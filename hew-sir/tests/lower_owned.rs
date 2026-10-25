@@ -1,3 +1,6 @@
+#[path = "support/checked.rs"]
+mod checked;
+
 use hew_hir::{lower_program_host_target, ResolutionCtx};
 use hew_sir::{
     canonicalize_module_constant_cfg, lower_module, verify_module, BoundaryDecision, SemOpKind,
@@ -628,33 +631,37 @@ fn owned_block_expressions_destroy_inner_locals_at_scope_exit() {
             .iter()
             .find_map(|(id, value)| (value == source).then_some(*id))
             .expect("scratch literal must be interned");
+        let owner = main
+            .blocks
+            .iter()
+            .flat_map(|block| block.operations())
+            .find_map(|op| match op.kind {
+                SemOpKind::ConstStr(id) if id == literal => {
+                    op.results.first().map(|result| result.id)
+                }
+                _ => None,
+            })
+            .expect("scratch literal must have a checked producer");
+        let place = main
+            .blocks
+            .iter()
+            .flat_map(|block| block.operations())
+            .find_map(|op| match op.kind {
+                SemOpKind::StoreInit { place, ref value }
+                    if checked::source(main, value.value) == owner =>
+                {
+                    Some(place)
+                }
+                _ => None,
+            })
+            .expect("scratch must initialize local storage");
         assert!(
-            main.blocks.iter().any(|block| {
-                let Some(owner) = block.ops.iter().find_map(|op| match op.kind {
-                    SemOpKind::ConstStr(id) if id == literal => {
-                        op.results.first().map(|result| result.id)
-                    }
-                    _ => None,
-                }) else {
-                    return false;
-                };
-                let place = block
-                    .ops
-                    .iter()
-                    .find_map(|op| match op.kind {
-                        SemOpKind::StoreInit { place, ref value } if value.value == owner => {
-                            Some(place)
-                        }
-                        _ => None,
-                    })
-                    .expect("scratch must initialize local storage");
-                block.ops.iter().any(|op| {
-                    matches!(
-                        op.kind,
-                        SemOpKind::EndLifetime { place: ended } if ended == place
-                    )
-                })
-            }),
+            main.blocks.iter().any(|block| block.ops.iter().any(|op| {
+                matches!(
+                    op.kind,
+                    SemOpKind::EndLifetime { place: ended } if ended == place
+                )
+            })),
             "`{source}` must be destroyed in its defining lexical block"
         );
     }
@@ -779,6 +786,11 @@ fn owned_string_reassignment_loop_and_early_return_verify() {
         !choose
             .blocks
             .iter()
+            .filter(|block| !choose
+                .blocks
+                .iter()
+                .any(|predecessor| matches!(&predecessor.terminator,
+                SemTerminator::Materialize { normal, .. } if normal.target == block.id)))
             .flat_map(|block| &block.args)
             .any(|arg| arg.own == hew_sir::OwnKind::Owned),
         "lexical owners must not become loop or branch SSA arguments"

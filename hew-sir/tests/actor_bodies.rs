@@ -179,7 +179,7 @@ fn main() {
         let mut copies = 0;
         let mut takes = 0;
         for block in &body.blocks {
-            for op in &block.ops {
+            for op in block.operations() {
                 match op.kind {
                     hew_sir::SemOpKind::LoadCopy { .. } => copies += 1,
                     hew_sir::SemOpKind::LoadTake { .. } => takes += 1,

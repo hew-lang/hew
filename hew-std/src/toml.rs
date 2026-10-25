@@ -17,6 +17,117 @@ pub struct HewTomlValue {
     inner: toml::Value,
 }
 
+fn managed_payload(value: &toml::Value, copy: bool) -> crate::managed_tree::Payload {
+    use crate::managed_tree::{add, slots, text, HANDLE_BYTES, TOML_NODE_BYTES};
+    match value {
+        toml::Value::String(value) => text(value, copy),
+        toml::Value::Array(values) => {
+            let mut bytes = slots(
+                if copy {
+                    values.len()
+                } else {
+                    values.capacity()
+                },
+                TOML_NODE_BYTES,
+            )?;
+            for value in values {
+                bytes = add(bytes, managed_payload(value, copy)?)?;
+            }
+            Ok(bytes)
+        }
+        toml::Value::Table(values) => {
+            let mut bytes = slots(values.len(), HANDLE_BYTES + TOML_NODE_BYTES)?;
+            for (key, value) in values {
+                bytes = add(bytes, text(key, copy)?)?;
+                bytes = add(bytes, managed_payload(value, copy)?)?;
+            }
+            Ok(bytes)
+        }
+        toml::Value::Integer(_)
+        | toml::Value::Float(_)
+        | toml::Value::Boolean(_)
+        | toml::Value::Datetime(_) => Ok(0),
+    }
+}
+
+/// Visit the canonical payload of a TOML value without copying or mutating it.
+///
+/// # Safety
+/// `slot` contains a live TOML handle (or null); visitor/context remain live.
+#[no_mangle]
+pub unsafe extern "C" fn hew_managed_visit_toml(
+    slot: *const core::ffi::c_void,
+    visitor: *const hew_cabi::managed::HewManagedStorageVisitor,
+) -> i32 {
+    // SAFETY: the compiler's descriptor supplies this concrete handle slot.
+    let value = unsafe { slot.cast::<*const HewTomlValue>().read().as_ref() };
+    let Some(value) = value else {
+        return 0;
+    };
+    // SAFETY: the borrowed tree and visitor remain live throughout traversal.
+    unsafe {
+        crate::managed_tree::tree(visitor, core::ptr::from_ref(value).cast(), false, |copy| {
+            crate::managed_tree::add(
+                crate::managed_tree::TOML_NODE_BYTES,
+                managed_payload(&value.inner, copy)?,
+            )
+        })
+    }
+}
+
+#[cfg(test)]
+mod managed_tests {
+    use super::*;
+    use crate::managed_tree::tests::Capture;
+    use hew_cabi::managed::HewManagedWalkKind;
+
+    #[test]
+    fn managed_toml_counts_typed_datetime_and_clone_capacity() {
+        let mut text = String::with_capacity(64);
+        text.push_str("hew");
+        let mut values = Vec::with_capacity(8);
+        values.push(toml::Value::String(text));
+        values.push(toml::Value::Datetime(
+            "1979-05-27T07:32:00Z".parse().unwrap(),
+        ));
+        let value = boxed_value(toml::Value::Array(values));
+        // SAFETY: each concrete handle and borrowed visitor is live until free.
+        unsafe {
+            let mut retained = Capture::default();
+            assert_eq!(
+                hew_managed_visit_toml(
+                    (&raw const value).cast(),
+                    &retained.visitor(HewManagedWalkKind::Retain)
+                ),
+                0
+            );
+            assert_eq!(retained.entries, vec![(value as usize, 20 + 8 * 20 + 64)]);
+            let mut plan = Capture::default();
+            assert_eq!(
+                hew_managed_visit_toml(
+                    (&raw const value).cast(),
+                    &plan.visitor(HewManagedWalkKind::ClonePlan)
+                ),
+                0
+            );
+            assert_eq!(plan.entries, vec![(0, 20 + 2 * 20 + 3)]);
+            let copy = hew_toml_clone(value);
+            let mut copied = Capture::default();
+            assert_eq!(
+                hew_managed_visit_toml(
+                    (&raw const copy).cast(),
+                    &copied.visitor(HewManagedWalkKind::Retain)
+                ),
+                0
+            );
+            assert_eq!(copied.entries, vec![(copy as usize, plan.entries[0].1)]);
+            assert_eq!((*value).inner, (*copy).inner);
+            hew_toml_free(copy);
+            hew_toml_free(value);
+        }
+    }
+}
+
 #[cfg(test)]
 std::thread_local! {
     /// Test-only oracle for live outer `HewTomlValue` boxes. Nested TOML

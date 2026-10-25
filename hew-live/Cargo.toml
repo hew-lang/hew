@@ -11,6 +11,7 @@ keywords = ["hew", "embedding", "compiler"]
 categories = ["compilers", "api-bindings"]
 
 [dependencies]
+hew-cabi = { path = "../hew-cabi" }
 libloading = "0.9"
 object = "0.40"
 serde.workspace = true

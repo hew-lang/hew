@@ -606,6 +606,7 @@ pub mod iter;
 pub mod path;
 pub mod stdio;
 
+mod code_owner;
 /// Target-neutral COW mailbox payload envelope lifecycle.
 pub mod cow_envelope;
 pub mod crash;

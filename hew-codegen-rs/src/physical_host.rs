@@ -16,6 +16,7 @@ struct ExportedFunction {
 #[derive(Debug)]
 pub struct HostExport<'a> {
     pub(super) verified: &'a VerifiedPhysicalModule,
+    pub(super) live_code_ownership: bool,
     functions: Vec<ExportedFunction>,
     types: Vec<(ResolvedTy, String)>,
 }
@@ -65,6 +66,7 @@ impl<'a> HostExport<'a> {
                 || symbol.starts_with("hew_")
                 || symbol.starts_with("HEW_")
                 || ["HewText", "HewJson", "HewError", "HewRuntime", "HewWaker"].contains(&symbol)
+                || symbol == "HewLiveCodeOwner"
                 || symbol == "main"
                 || C_KEYWORDS
                     .split_ascii_whitespace()
@@ -131,11 +133,19 @@ impl<'a> HostExport<'a> {
         }
         let export = Self {
             verified,
+            live_code_ownership: false,
             functions,
             types,
         };
         export.validate_public_symbols()?;
         Ok(export)
+    }
+
+    /// Emit a loader-published defining-code lease for persistent native values.
+    #[must_use]
+    pub fn with_live_code_ownership(mut self) -> Self {
+        self.live_code_ownership = true;
+        self
     }
 
     fn validate_public_symbols(&self) -> CodegenResult<()> {

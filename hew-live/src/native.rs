@@ -137,8 +137,20 @@ impl fmt::Debug for NativeHost {
 }
 
 struct Loaded {
+    module_sha256: String,
     library: Library,
     _runtime: Arc<Runtime>,
+    lease: hew_cabi::code::HewCodeLease,
+}
+
+unsafe extern "C" fn retain_code(context: *const std::ffi::c_void) {
+    // SAFETY: every acquisition begins while a caller root retains this node.
+    unsafe { Arc::increment_strong_count(context.cast::<Loaded>()) };
+}
+
+unsafe extern "C" fn release_code(context: *const std::ffi::c_void) {
+    // SAFETY: the runtime transfers exactly one executable root to this call.
+    unsafe { Arc::decrement_strong_count(context.cast::<Loaded>()) };
 }
 
 #[derive(Default)]
@@ -242,6 +254,21 @@ impl NativeHost {
             return Err("native generation changed after preparation".into());
         }
         reject_runtime_definitions(&bytes)?;
+        let mut generations = self
+            .generations
+            .lock()
+            .map_err(|_| "generation registry poisoned")?;
+        if let Some((&id, node)) = generations
+            .nodes
+            .iter()
+            .find(|(_, node)| node.loaded.module_sha256 == manifest.module_sha256)
+        {
+            return Ok(Generation {
+                id,
+                loaded: node.loaded.clone(),
+                host: self.clone(),
+            });
+        }
         // SAFETY: trusted preparation and immutable artefacts are caller obligations.
         let library = unsafe { Library::new(path)? };
         // SAFETY: these are the runtime's fixed lifecycle entry points. Only
@@ -254,14 +281,46 @@ impl NativeHost {
         if !same_runtime {
             return Err("native generation resolves a different runtime image".into());
         }
-        let loaded = Arc::new(Loaded {
+        // A platform loader may reuse an image even through a different path.
+        // Its published owner is authoritative and must never be rebound.
+        // SAFETY: the optional export is the compiler's fixed writable slot ABI.
+        let code_owner =
+            unsafe { library.get::<*mut hew_cabi::code::HewCodeLeaseSlot>(b"HewLiveCodeOwner") }
+                .ok()
+                .map(|symbol| *symbol);
+        if let Some(slot) = code_owner {
+            // SAFETY: trusted compiler metadata remains valid with the library.
+            let published = unsafe { (*slot).lease };
+            if !published.is_null() {
+                let (&id, node) = generations
+                    .nodes
+                    .iter()
+                    .find(|(_, node)| std::ptr::eq(&raw const node.loaded.lease, published))
+                    .ok_or("native image has an unknown defining-code owner")?;
+                if node.loaded.module_sha256 != manifest.module_sha256 {
+                    return Err("native loader reused an image with different prepared code".into());
+                }
+                return Ok(Generation {
+                    id,
+                    loaded: node.loaded.clone(),
+                    host: self.clone(),
+                });
+            }
+        }
+        let loaded = Arc::new_cyclic(|owner: &std::sync::Weak<Loaded>| Loaded {
+            module_sha256: manifest.module_sha256.clone(),
             library,
             _runtime: self.runtime.clone(),
+            lease: hew_cabi::code::HewCodeLease {
+                context: owner.as_ptr().cast(),
+                retain: retain_code,
+                release: release_code,
+            },
         });
-        let mut generations = self
-            .generations
-            .lock()
-            .map_err(|_| "generation registry poisoned")?;
+        if let Some(slot) = code_owner {
+            // SAFETY: admission is serialized and this new image is unpublished.
+            unsafe { (*slot).lease = &raw const loaded.lease };
+        }
         let id = generations.next;
         generations.next = id.checked_add(1).ok_or("generation identity exhausted")?;
         generations.nodes.insert(
@@ -319,6 +378,14 @@ impl NativeHost {
 }
 
 impl Generation {
+    /// The defining-code lease used by this generation's typed descriptors.
+    /// The returned record stays valid while this handle or an acquired lease
+    /// root lives. Descriptor publication must precede executing module code.
+    #[must_use]
+    pub fn code_lease(&self) -> &hew_cabi::code::HewCodeLease {
+        &self.loaded.lease
+    }
+
     /// Register code reachable from this generation. Registration requires live
     /// roots at both ends and therefore cannot resurrect retired code.
     /// # Errors

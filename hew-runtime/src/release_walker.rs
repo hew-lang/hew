@@ -276,6 +276,8 @@ unsafe fn run(item: ReleaseItem) {
             std::process::abort();
         }
         if let Some(drop) = layout.drop_fn {
+            // SAFETY: the walk's value owner pins the canonical descriptor.
+            let _code = unsafe { crate::code_owner::CodeRoot::acquire(layout.code_owner) };
             // SAFETY: this walk owns the initialized slot and exact descriptor.
             unsafe { drop(slot) };
         }
@@ -494,6 +496,7 @@ pub(crate) struct ReleaseDriver {
     fault: *mut crate::fault::HewFault,
     done: bool,
     rc_sweep: Option<hew_observe_protocol::RcSweep>,
+    active_code: Option<crate::code_owner::CodeRoot>,
 }
 
 impl ReleaseDriver {
@@ -519,6 +522,7 @@ impl ReleaseDriver {
             fault: ptr::null_mut(),
             done: cursor.is_null(),
             rc_sweep: None,
+            active_code: None,
         })
     }
 
@@ -577,6 +581,9 @@ impl ReleaseDriver {
                     }
                     hew_coro_state_free(self.state);
                     self.state = ptr::null_mut();
+                    // The callback frame is gone; releasing its last carrier
+                    // could not retire the code while that frame was active.
+                    self.active_code = None;
                     self.fault = crate::fault::hew_fault_combine(
                         self.fault,
                         std::mem::take(&mut self.child_fault),
@@ -596,6 +603,8 @@ impl ReleaseDriver {
                 }
                 let layout = *hew_release_layout(self.cursor);
                 if let Some(start) = layout.release_start {
+                    self.active_code =
+                        Some(crate::code_owner::CodeRoot::acquire(layout.code_owner));
                     if !self.fault.is_null() {
                         hew_coro_state_set_cleanup_fault(parent, self.fault);
                     }
@@ -614,6 +623,7 @@ impl ReleaseDriver {
                         return false;
                     }
                 } else if let Some(drop) = layout.drop_fn {
+                    let _code = crate::code_owner::CodeRoot::acquire(layout.code_owner);
                     arm_release_sink();
                     drop(slot);
                     if let Some((_, fault)) = disarm_release_sink() {

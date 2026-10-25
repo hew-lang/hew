@@ -40,6 +40,17 @@ fn execute(directory: &Path, modules: &[&str]) {
 }
 
 fn compile(directory: &Path, name: &str, source: &str, inputs: &[u32], next: u32) {
+    compile_with_ownership(directory, name, source, inputs, next, false);
+}
+
+fn compile_with_ownership(
+    directory: &Path,
+    name: &str,
+    source: &str,
+    inputs: &[u32],
+    next: u32,
+    code_owner: bool,
+) {
     let mut parsed = hew_parser::parse(source);
     assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
     hew_compile::attach_prelude_std_modules(&mut parsed.program);
@@ -68,6 +79,11 @@ fn compile(directory: &Path, name: &str, source: &str, inputs: &[u32], next: u32
         )
     });
     let export = HostExport::new(&physical, &[(live.output.compiled_roots()[0], name)]).unwrap();
+    let export = if code_owner {
+        export.with_live_code_ownership()
+    } else {
+        export
+    };
     for (suffix, opt_level) in [("", OptLevel::O0), ("_o2", OptLevel::O2)] {
         emit_host_object(
             &export,
@@ -265,4 +281,47 @@ int main(void) {
 }
 "#).unwrap();
     execute(directory.path(), &["initial", "step", "again", "finish"]);
+}
+
+#[test]
+fn native_session_places_retain_emitted_defining_code() {
+    let directory = tempfile::tempdir().unwrap();
+    compile_with_ownership(
+        directory.path(),
+        "initial",
+        "pub fn submission() { let value: i64 = 40; }",
+        &[],
+        0,
+        true,
+    );
+    std::fs::write(
+        directory.path().join("host.c"),
+        r#"
+#include <assert.h>
+#include <stddef.h>
+typedef struct { void **slots; size_t len; } Session;
+typedef struct { void *context; void (*retain)(void *); void (*release)(void *); } Lease;
+extern const Lease *HewLiveCodeOwner;
+extern void *hew_runtime_new(void);
+extern void hew_runtime_release(void *);
+extern int hew_live_slot_release(Session *, size_t, void **);
+extern int initial(void *, void **);
+static void retain(void *context) { ++*(int *)context; }
+static void release(void *context) { assert(*(int *)context > 0); --*(int *)context; }
+int main(void) {
+    int roots = 0;
+    Lease lease = { &roots, retain, release };
+    HewLiveCodeOwner = &lease;
+    void *runtime = hew_runtime_new(), *slots[1] = {0}, *error = 0;
+    Session session = { slots, 1 };
+    assert(initial(&session, &error) == 0 && !error);
+    assert(roots == 1);
+    assert(hew_live_slot_release(&session, 0, &error) == 0 && !error);
+    assert(roots == 0);
+    hew_runtime_release(runtime);
+}
+"#,
+    )
+    .unwrap();
+    execute(directory.path(), &["initial"]);
 }

@@ -13,6 +13,11 @@ pub struct HewCodeLease {
     pub release: unsafe extern "C" fn(*const c_void),
 }
 
+// SAFETY: the host contract requires immutable data and thread-safe callbacks.
+unsafe impl Send for HewCodeLease {}
+// SAFETY: invoking a lease callback remains unsafe; shared reads are immutable.
+unsafe impl Sync for HewCodeLease {}
+
 /// Module-owned indirection populated once before any generated entry runs.
 /// A null lease denotes statically resident code. After publication the host
 /// never changes this slot, including while a callback or destructor runs.

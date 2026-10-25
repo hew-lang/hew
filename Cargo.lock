@@ -1998,6 +1998,7 @@ dependencies = [
 name = "hew-live"
 version = "0.9.4"
 dependencies = [
+ "hew-cabi",
  "libloading",
  "object 0.40.0",
  "serde",

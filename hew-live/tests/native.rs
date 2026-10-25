@@ -100,6 +100,33 @@ fn native_values_survive_calls_and_generations_retire_by_reachability() {
     exercise_owned_state(&host, &first);
     // SAFETY: same trusted generation and immutable manifest as above.
     let second = unsafe { host.load(&module, &manifest) }.unwrap();
+    assert!(
+        std::ptr::eq(first.code_lease(), second.code_lease()),
+        "repeated activation reuses the defining-code owner"
+    );
+    drop(second);
+    let other_object = compile(
+        directory.path(),
+        &include_str!("counter.hew").replace("total: 40", "total: 50"),
+        "other",
+        &[
+            "create=counter_create",
+            "read=counter_read",
+            "step=counter_step",
+        ],
+    );
+    let other_module = directory.path().join("other.so");
+    let other_manifest = prepare(
+        &other_object,
+        &runtime,
+        &other_module,
+        "test-build",
+        "test-target",
+    )
+    .unwrap();
+    // SAFETY: distinct trusted generation prepared above.
+    let second = unsafe { host.load(&other_module, &other_manifest) }.unwrap();
+    assert!(!std::ptr::eq(first.code_lease(), second.code_lease()));
     first.depends_on(&second).unwrap();
     second.depends_on(&first).unwrap();
     drop(first);
@@ -116,7 +143,40 @@ fn native_values_survive_calls_and_generations_retire_by_reachability() {
     // The host is reusable, and invocations above perform no compilation.
     // SAFETY: same trusted prepared module.
     let third = unsafe { host.load(&module, &manifest) }.unwrap();
-    drop(third);
+    exercise_typed_owner(&host, third);
+}
+
+fn exercise_typed_owner(host: &NativeHost, generation: hew_live::native::Generation) {
+    type NewValue = unsafe extern "C" fn(*const hew_cabi::value::HewValueLayout) -> *mut c_void;
+    type ForgetValue = unsafe extern "C" fn(*mut c_void);
+    let slot = hew_cabi::code::HewCodeLeaseSlot {
+        lease: generation.code_lease(),
+    };
+    let layout = hew_cabi::value::HewValueLayout {
+        size: 8,
+        align: 8,
+        ownership_kind: hew_cabi::value::HewTypeOwnershipKind::Plain,
+        clone_fn: None,
+        drop_fn: None,
+        release_start: None,
+        code_owner: &raw const slot,
+    };
+    // SAFETY: this same-build descriptor is pinned by the generation handle
+    // until the runtime acquires its own defining-code root.
+    let owner = unsafe {
+        host.runtime_symbol::<NewValue>(b"hew_host_value_new")
+            .unwrap()(&raw const layout)
+    };
+    drop(generation);
+    assert!(
+        host.collect().unwrap().is_empty(),
+        "a typed owner retains its defining code after the host handle is gone"
+    );
+    // SAFETY: no semantic value was initialized in the unique owner.
+    unsafe {
+        host.runtime_symbol::<ForgetValue>(b"hew_host_value_forget")
+            .unwrap()(owner);
+    };
     assert_eq!(host.collect().unwrap().len(), 1);
 }
 

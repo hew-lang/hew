@@ -12,6 +12,7 @@ use crate::release_walker::{HewReleaseCursor, ReleaseDriver};
 pub struct HewHostValue {
     layout: HewValueLayout,
     storage: *mut c_void,
+    _code: crate::code_owner::CodeRoot,
 }
 
 /// Allocate uninitialized result storage with an exact compiler descriptor.
@@ -22,11 +23,14 @@ pub struct HewHostValue {
 pub unsafe extern "C" fn hew_host_value_new(layout: *const HewValueLayout) -> *mut HewHostValue {
     // SAFETY: the generated caller supplies the canonical concrete descriptor.
     let layout = unsafe { *layout };
+    // SAFETY: the generated caller pins the descriptor until acquisition.
+    let code = unsafe { crate::code_owner::CodeRoot::acquire(layout.code_owner) };
     // SAFETY: the descriptor supplies valid allocation geometry, including ZSTs.
     let storage = unsafe { crate::mem::hew_alloc(layout.size.max(1) as u64, layout.align as u64) };
     Box::into_raw(Box::new(HewHostValue {
         layout,
         storage: storage.cast(),
+        _code: code,
     }))
 }
 

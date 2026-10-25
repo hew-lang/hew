@@ -181,6 +181,7 @@ struct Options {
     kinds: Vec<CaseKind>,
     hew_bin: PathBuf,
     timeout_seconds: Option<u64>,
+    compile_timeout_seconds: u64,
     jobs: usize,
     /// `Some((shard, total))` selects a stable 1-of-`total` slice of the
     /// selected cases, sorted by id. `shard` is 0-based.
@@ -447,6 +448,7 @@ fn parse_options(args: &[String]) -> Result<Options> {
     let mut cases = Vec::new();
     let mut hew_bin = root.join("target/debug/hew");
     let mut timeout_seconds = None;
+    let mut compile_timeout_seconds = 120;
     let mut kinds = Vec::new();
     let mut jobs = None;
     let mut partition = None;
@@ -488,6 +490,12 @@ fn parse_options(args: &[String]) -> Result<Options> {
                     format!("--timeout-seconds must be a positive integer, got {value:?}")
                 })?);
             }
+            "--compile-timeout-seconds" => {
+                let value = required_value(args, &mut index, "--compile-timeout-seconds")?;
+                compile_timeout_seconds = value.parse().map_err(|_| {
+                    format!("--compile-timeout-seconds must be a positive integer, got {value:?}")
+                })?;
+            }
             "--partition" => {
                 let value = required_value(args, &mut index, "--partition")?;
                 partition = Some(parse_partition(value)?);
@@ -511,6 +519,9 @@ fn parse_options(args: &[String]) -> Result<Options> {
     if timeout_seconds == Some(0) {
         return Err("--timeout-seconds must be positive".to_string());
     }
+    if compile_timeout_seconds == 0 {
+        return Err("--compile-timeout-seconds must be positive".to_string());
+    }
     // Safety runs sanitizer-instrumented binaries whose faults and scheduler
     // interleavings are the subject; running them alongside 31 others changes
     // what is being observed, and each one is memory-heavy besides.
@@ -521,6 +532,7 @@ fn parse_options(args: &[String]) -> Result<Options> {
         kinds,
         hew_bin,
         timeout_seconds,
+        compile_timeout_seconds,
         jobs,
         partition,
     })
@@ -592,7 +604,8 @@ fn usage() -> String {
         "  --hew-bin PATH                        use a prebuilt compiler binary",
         "  --kind run,check,reject               run only cases of these kinds",
         "  --jobs N                              cases to run concurrently (default: cores; 1 for safety)",
-        "  --timeout-seconds N                   override each case timeout",
+        "  --timeout-seconds N                   override each runtime or check timeout",
+        "  --compile-timeout-seconds N           compiler process deadline (default: 120)",
         "  --partition K/N                       run only shard K of N (0-based, stable by id)",
     ]
     .join("\n")
@@ -1084,7 +1097,10 @@ impl Runner<'_> {
         } else {
             command.env_remove("HEW_SANITIZE_ADDRESS");
         }
-        let result = match run_command(&mut command, self.timeout(case)) {
+        // Compilation includes LLVM optimization and linking under concurrent
+        // runner load; a fixture's execution deadline does not bound that work.
+        let timeout = Duration::from_secs(self.options.compile_timeout_seconds);
+        let result = match run_command(&mut command, timeout) {
             Ok(result) => result,
             Err(err) => {
                 let _ = writeln!(
@@ -1103,7 +1119,7 @@ impl Runner<'_> {
                     "FAIL {} profile={} class=timeout phase=compile timeout_seconds={}{}{}",
                     case.id,
                     profile.label(),
-                    self.timeout(case).as_secs(),
+                    timeout.as_secs(),
                     summarise(&stdout),
                     summarise(&stderr)
                 );
@@ -1604,6 +1620,7 @@ mod tests {
             partition: None,
             hew_bin: directory.path().join("hew"),
             timeout_seconds: None,
+            compile_timeout_seconds: 120,
         };
         let runner = Runner {
             options: &options,
@@ -1660,6 +1677,7 @@ mod tests {
             partition: None,
             hew_bin: binary.clone(),
             timeout_seconds: None,
+            compile_timeout_seconds: 120,
         };
         let runner = Runner {
             options: &options,
@@ -2240,6 +2258,63 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
+    fn compile_and_execution_deadlines_are_independent() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let directory = manifest_root_with_source("cases/probe.hew");
+        let fake_hew = directory.path().join("fake-hew");
+        fs::write(
+            &fake_hew,
+            "#!/bin/sh\nsleep 2\nprintf '#!/bin/sh\\nsleep 2\\n' > \"$3/probe\"\nchmod +x \"$3/probe\"\n",
+        )
+        .unwrap();
+        fs::set_permissions(&fake_hew, fs::Permissions::from_mode(0o700)).unwrap();
+        let mut options = Options {
+            suite: "acceptance".into(),
+            cases: Vec::new(),
+            kinds: Vec::new(),
+            jobs: 1,
+            partition: None,
+            hew_bin: fake_hew,
+            timeout_seconds: None,
+            compile_timeout_seconds: 30,
+        };
+        let mut case = make_case(
+            CaseKind::Run,
+            Vec::new(),
+            &["acceptance"],
+            "cases/probe.hew",
+        );
+        case.timeout_seconds = 1;
+        case.expected.stdout = Some(String::new());
+        case.expected.exit = Some(0);
+        let run = |options: &Options| {
+            let runner = Runner {
+                options,
+                root: directory.path(),
+                run_dir: directory.path(),
+                instrumentation_request: "none",
+            };
+            let mut log = String::new();
+            assert!(!runner.run_profile(&case, Profile::O0, &mut log));
+            log
+        };
+        let log = run(&options);
+        assert!(log.contains("phase=run timeout_seconds=1"), "{log}");
+        options.compile_timeout_seconds = 1;
+        let log = run(&options);
+        assert!(log.contains("phase=compile timeout_seconds=1"), "{log}");
+    }
+
+    #[test]
+    fn compile_deadline_must_be_positive() {
+        let error = parse_options(&["--compile-timeout-seconds".into(), "0".into()])
+            .expect_err("a zero compiler deadline must be refused");
+        assert!(error.contains("--compile-timeout-seconds must be positive"));
+    }
+
+    #[cfg(unix)]
+    #[test]
     fn check_case_with_a_wrong_position_fails_the_runner() {
         use std::os::unix::fs::PermissionsExt;
         let directory = manifest_root_with_source("cases/probe.hew");
@@ -2267,6 +2342,7 @@ mod tests {
             partition: None,
             hew_bin: fake_hew,
             timeout_seconds: None,
+            compile_timeout_seconds: 120,
         };
         let runner = Runner {
             options: &options,

@@ -29,6 +29,10 @@ pub const IMPLICIT_PRELUDE_STD_SOURCES: [(&str, &str); 5] = [
     ("string", include_str!("../../std/string.hew")),
 ];
 
+/// Prelude declarations loaded through ordinary import resolution, including
+/// their transitive modules. Empty selections expose no root bindings.
+pub const IMPLICIT_PRELUDE_MODULE_LOADS: [&str; 2] = ["link_monitor", "stream"];
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum StdlibRoot {
     Builtins,

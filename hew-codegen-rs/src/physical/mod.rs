@@ -916,6 +916,7 @@ struct FunctionEmitter<'a, 'ctx> {
     fault_out: PointerValue<'ctx>,
     active_fault: PointerValue<'ctx>,
     active_status: PointerValue<'ctx>,
+    fault_site: std::cell::Cell<Option<u32>>,
     fault_parks: BTreeMap<hew_mir::physical::FaultParkId, (PointerValue<'ctx>, PointerValue<'ctx>)>,
     functions: &'a BTreeMap<CallableId, FunctionValue<'ctx>>,
     value_callbacks: &'a key::CallbackTable<'ctx>,

@@ -241,6 +241,12 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
             .llvm_ctx("branch around fallible bytes index load")?;
 
         self.builder.position_at_end(failed);
+        self.initialize_bounds_fault(
+            hew_runtime::fault::BOUNDS_BYTES_INDEX,
+            index,
+            self.ctx.i64_type().const_zero(),
+            len64,
+        )?;
         self.emit_edge(failure)?;
 
         self.builder.position_at_end(safe);
@@ -513,7 +519,12 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
             .build_conditional_branch(invalid, failed, safe)
             .llvm_ctx("select bytes set outcome")?;
         self.builder.position_at_end(failed);
-        self.initialize_active_fault(hew_runtime::internal::types::HEW_TRAP_INDEX_OUT_OF_BOUNDS)?;
+        self.initialize_bounds_fault(
+            hew_runtime::fault::BOUNDS_BYTES_INDEX,
+            index,
+            self.ctx.i64_type().const_zero(),
+            len64,
+        )?;
         self.emit_edge(failure)?;
         self.builder.position_at_end(safe);
         let ptr = self.ctx.ptr_type(AddressSpace::default());
@@ -605,6 +616,12 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
             .llvm_ctx("branch around fallible string index call")?;
 
         self.builder.position_at_end(failed);
+        self.initialize_bounds_fault(
+            hew_runtime::fault::BOUNDS_STRING_INDEX,
+            index_value,
+            self.ctx.i64_type().const_zero(),
+            len,
+        )?;
         self.emit_edge(failure)?;
 
         self.builder.position_at_end(safe);
@@ -711,7 +728,12 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
             .llvm_ctx("branch around fallible bytes slice call")?;
 
         self.builder.position_at_end(failed);
-        self.initialize_active_fault(hew_runtime::internal::types::HEW_TRAP_INDEX_OUT_OF_BOUNDS)?;
+        self.initialize_bounds_fault(
+            hew_runtime::fault::BOUNDS_SLICE,
+            start_value,
+            end_value,
+            len64,
+        )?;
         self.emit_edge(failure)?;
 
         self.builder.position_at_end(safe);
@@ -799,7 +821,12 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
             .llvm_ctx("branch around fallible string slice call")?;
 
         self.builder.position_at_end(failed);
-        self.initialize_active_fault(hew_runtime::internal::types::HEW_TRAP_INDEX_OUT_OF_BOUNDS)?;
+        self.initialize_bounds_fault(
+            hew_runtime::fault::BOUNDS_STRING_SLICE,
+            start_value,
+            end_value,
+            len,
+        )?;
         self.emit_edge(failure)?;
 
         self.builder.position_at_end(safe);
@@ -877,7 +904,12 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
             .llvm_ctx("branch around fallible string slice-from call")?;
 
         self.builder.position_at_end(failed);
-        self.initialize_active_fault(hew_runtime::internal::types::HEW_TRAP_INDEX_OUT_OF_BOUNDS)?;
+        self.initialize_bounds_fault(
+            hew_runtime::fault::BOUNDS_STRING_SLICE_FROM,
+            start_value,
+            self.ctx.i64_type().const_zero(),
+            len,
+        )?;
         self.emit_edge(failure)?;
 
         self.builder.position_at_end(safe);

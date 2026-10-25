@@ -1517,31 +1517,17 @@ mod tests {
 
     #[test]
     fn dot_completions_for_builtin_stream() {
-        // Stream<T> uses channel-family naming: .recv() not .next()
+        // Use the ordinary editor frontend: collect/lines/chunks are source
+        // methods loaded with the prelude, rather than checker builtins.
         let source = "fn probe(s: Stream<string>) { s.recv(); }";
-        let parse_result = hew_parser::parse(source);
-        assert!(
-            parse_result.errors.is_empty(),
-            "unexpected parse errors: {:?}",
-            parse_result.errors
-        );
-        let mut checker = Checker::new(hew_types::module_registry::ModuleRegistry::new(vec![]));
-        let type_output = checker.check_program(&parse_result.program);
+        let uri = "file:///lsp/stream_completion.hew".parse().unwrap();
+        let doc = analyze_document(&uri, source, &DashMap::new(), &[]);
+        let type_output = doc.type_output.as_ref().expect("checked Stream parameter");
         assert!(
             type_output.errors.is_empty(),
             "type errors: {:?}",
             type_output.errors
         );
-
-        let doc = DocumentState {
-            expanded_program: None,
-            source: source.to_string(),
-            line_offsets: compute_line_offsets(source),
-            parse_result,
-            type_output: Some(type_output),
-            dependency_uris: None,
-            diagnostics_by_uri: HashMap::new(),
-        };
         let dot_pos = source.find("s.recv").unwrap() + 2;
         let items = hew_analysis::completions::complete(
             &doc.source,
@@ -1558,12 +1544,11 @@ mod tests {
             labels.contains(&"try_recv"),
             "expected method 'try_recv' in completions, got: {labels:?}"
         );
-        // .next and .lines are retired; channel-family naming uses .recv.
-        // .collect returned to the stream surface (hew_stream_collect_string)
-        // and is a legitimate completion.
+        // Stream uses channel-family .recv and implements Iterator through an
+        // ordinary source .next method, alongside its source adapters.
         assert!(
-            !labels.contains(&"next"),
-            "method 'next' should not appear in completions, got: {labels:?}"
+            labels.contains(&"next"),
+            "expected Iterator method 'next' in completions, got: {labels:?}"
         );
         assert!(
             labels.contains(&"collect"),

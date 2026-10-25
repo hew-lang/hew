@@ -2482,6 +2482,7 @@ fn verifier_rejects_overwriting_a_maybe_live_owner() {
         actors: Vec::new(),
         supervisors: Vec::new(),
         actor_recipes: BTreeMap::new(),
+        managed_types: BTreeMap::new(),
         resources: vec![],
         closures: vec![],
         callable_specializations: Vec::new(),

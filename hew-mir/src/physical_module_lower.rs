@@ -269,6 +269,24 @@ pub fn lower_physical_module(
         coverage: module.coverage.clone(),
         releases: ReleaseEffects::default(),
         actor_recipes: actor_value_recipes(module, &ids)?,
+        managed_types: super::physical_type_inventory(module)
+            .types()
+            .map(|ty| {
+                let slot = hew_sir::managed_slot(module, ty).map_err(|error| {
+                    PhysicalError::new(format!("managed payload width for {ty:?}: {error:?}"))
+                })?;
+                let shape = hew_sir::managed_storage_shape(module, ty).map_err(|error| {
+                    PhysicalError::new(format!("managed storage shape for {ty:?}: {error:?}"))
+                })?;
+                Ok((
+                    ty.clone(),
+                    super::PhysicalManagedType {
+                        slot_bytes: slot.bytes,
+                        shape,
+                    },
+                ))
+            })
+            .collect::<Result<_, PhysicalError>>()?,
         actors: module.actors.clone(),
         supervisors: module.supervisors.clone(),
         resources,

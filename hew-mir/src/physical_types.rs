@@ -397,6 +397,13 @@ pub struct PhysicalValueRecipe {
     pub destroy: Option<DestroyAction>,
 }
 
+/// Owning-stage storage facts projected without target-dependent arithmetic.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PhysicalManagedType {
+    pub slot_bytes: u64,
+    pub shape: hew_sir::ManagedStorageShape,
+}
+
 /// One value an `#[offload]` job's environment owns.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PhysicalOffloadSlot {
@@ -1444,6 +1451,7 @@ pub struct PhysicalModule {
     pub actors: Vec<hew_sir::SemActor>,
     pub supervisors: Vec<hew_sir::SemSupervisor>,
     pub actor_recipes: BTreeMap<ResolvedTy, PhysicalValueRecipe>,
+    pub managed_types: BTreeMap<ResolvedTy, PhysicalManagedType>,
     pub resources: Vec<PhysicalResourceDescriptor>,
     pub value_capabilities:
         BTreeMap<(ResolvedTy, hew_types::ValueCapability), PhysicalValueCapability>,

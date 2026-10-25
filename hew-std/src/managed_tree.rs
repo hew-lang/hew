@@ -12,6 +12,90 @@ use hew_cabi::managed::{
 
 pub(crate) type Payload = Result<u64, i32>;
 
+/// Reserve an indivisible tree replacement, including a moved child root.
+/// No input ownership changes until the returned permit is committed.
+pub(crate) fn replacement(
+    owner: Option<&hew_runtime::owned_value_budget::ValueOwner>,
+    retired: &[(hew_runtime::owned_value_budget::ManagedStorage, bool)],
+    bytes: Option<u64>,
+) -> Result<Option<hew_runtime::owned_value_budget::BackingChange>, i32> {
+    let Some(owner) = owner else {
+        return Ok(None);
+    };
+    owner
+        .prepare_backing_replacement(retired, bytes.ok_or(HEAP_EXCEEDED)?)
+        .map(Some)
+        .map_err(|_| HEAP_EXCEEDED)
+}
+
+/// Allocate replacement capacity before changing the live array. Elements move
+/// only after quota admission, and a refused growth leaves the original intact.
+pub(crate) fn array_growth<T>(values: &Vec<T>) -> Result<Option<Vec<T>>, i32> {
+    if values.len() < values.capacity() {
+        return Ok(None);
+    }
+    let capacity = values
+        .capacity()
+        .checked_mul(2)
+        .ok_or(HEAP_EXCEEDED)?
+        .max(4);
+    let mut replacement = Vec::new();
+    replacement
+        .try_reserve_exact(capacity)
+        .map_err(|_| HEAP_EXCEEDED)?;
+    Ok(Some(replacement))
+}
+
+pub(crate) fn push<T>(values: &mut Vec<T>, growth: Option<Vec<T>>, child: T) {
+    if let Some(mut replacement) = growth {
+        replacement.append(values);
+        *values = replacement;
+    }
+    values.push(child);
+}
+
+/// Adopt a private constructor result before exposing its owned Hew value.
+/// Parsing and serialization can discover their exact capacities only after
+/// building the private tree or text; the compiler's result descriptor remains
+/// the authority for acquisition. Refusal disposes only that unpublished result.
+///
+/// # Safety
+/// `value` has `layout`'s representation, `status` is writable, and `dispose`
+/// releases the physical result without releasing an unacquired account edge.
+pub(crate) unsafe fn publish<T: Copy>(
+    value: T,
+    empty: T,
+    layout: *const hew_cabi::value::HewValueLayout,
+    status: *mut i32,
+    dispose: impl FnOnce(T),
+) -> T {
+    // SAFETY: the checked ABI supplies its writable status slot.
+    unsafe { status.write(0) };
+    let Some(owner) = hew_runtime::owned_value_budget::current_owner() else {
+        return value;
+    };
+    // SAFETY: a bounded invocation supplies its live result descriptor.
+    let acquired = match unsafe { layout.as_ref() } {
+        Some(layout) => {
+            // SAFETY: the caller retains the unpublished concrete result slot.
+            unsafe { owner.acquire_value(layout, core::ptr::from_ref(&value).cast()) }
+        }
+        None => Err(UNDESCRIBED),
+    };
+    match acquired {
+        Ok(acquired) => {
+            acquired.commit();
+            value
+        }
+        Err(failure) => {
+            hew_runtime::owned_value_budget::with_value_owner(&None, || dispose(value));
+            // SAFETY: the status slot remains valid until this call returns.
+            unsafe { status.write(failure) };
+            empty
+        }
+    }
+}
+
 /// Publish one tree's complete payload. The callback controls acquisition,
 /// release and refusal; providers neither mutate values nor update accounts.
 ///
@@ -43,6 +127,21 @@ pub(crate) unsafe fn tree(
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
+
+    pub(crate) fn layout(
+        managed: &hew_cabi::managed::HewManagedValueDescriptor,
+    ) -> hew_cabi::value::HewValueLayout {
+        hew_cabi::value::HewValueLayout {
+            size: core::mem::size_of::<usize>(),
+            align: core::mem::align_of::<usize>(),
+            ownership_kind: hew_cabi::value::HewTypeOwnershipKind::LayoutManaged,
+            clone_fn: None,
+            drop_fn: None,
+            release_start: None,
+            code_owner: core::ptr::null(),
+            managed,
+        }
+    }
 
     #[derive(Default)]
     pub(crate) struct Capture {

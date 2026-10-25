@@ -6,6 +6,40 @@ pub const HANDLE_BYTES: u64 = 8;
 pub const JSON_NODE_BYTES: u64 = 12;
 /// Four-byte discriminant plus an eight-byte scalar or backing handle.
 pub const YAML_NODE_BYTES: u64 = 12;
+
+/// Prepare an empty mapping with enough capacity for one new key. Keeping this
+/// growth policy explicit lets providers admit its measured capacity before
+/// moving any live entries, with the same behaviour on native and browser paths.
+/// Existing keys and mappings with free capacity need no replacement.
+#[must_use]
+pub fn yaml_mapping_growth(
+    values: &serde_yaml::Mapping,
+    key: &serde_yaml::Value,
+) -> Option<serde_yaml::Mapping> {
+    if values.contains_key(key) || values.len() < values.capacity() {
+        return None;
+    }
+    Some(serde_yaml::Mapping::with_capacity(
+        values.capacity().saturating_mul(2).max(4),
+    ))
+}
+
+/// Insert after capacity admission, moving existing entries without copying
+/// their values. A provider may discard `growth` before committing ownership.
+pub fn yaml_mapping_insert(
+    values: &mut serde_yaml::Mapping,
+    growth: Option<serde_yaml::Mapping>,
+    key: serde_yaml::Value,
+    value: serde_yaml::Value,
+) {
+    if let Some(mut replacement) = growth {
+        for (key, value) in std::mem::take(values) {
+            replacement.insert(key, value);
+        }
+        *values = replacement;
+    }
+    values.insert(key, value);
+}
 /// Date presence, time-field presence and offset kind (three bytes), year
 /// (u16), month/day/hour/minute/second (five u8s), nanoseconds (u32), and
 /// offset minutes (i16). Missing fields retain their canonical slot.

@@ -294,7 +294,9 @@ fn mutate(request: &Json, format: &str) -> Result<Json, String> {
                 match (&mut value, operation) {
                     (serde_yaml::Value::Sequence(values), "array_push") => values.push(child),
                     (serde_yaml::Value::Mapping(values), "object_set") => {
-                        values.insert(serde_yaml::Value::String(key()?.to_owned()), child);
+                        let key = serde_yaml::Value::String(key()?.to_owned());
+                        let growth = hew_codec::managed_tree::yaml_mapping_growth(values, &key);
+                        hew_codec::managed_tree::yaml_mapping_insert(values, growth, key, child);
                     }
                     _ => {}
                 }

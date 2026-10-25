@@ -794,6 +794,93 @@ impl ChannelCore {
     }
 }
 
+impl ChannelCore {
+    /// Legacy foreign content writers create a typed image only at this
+    /// explicit boundary. Generated source uses the borrowing checked writer.
+    pub(crate) fn typed_content_send(self: &Arc<Self>, content: &[u8]) {
+        unsafe extern "C" fn no_op(_: *mut c_void) {}
+        if current_owner().is_some() {
+            crate::channel_common::abort_elem_witness(
+                "typed Pipe content writer",
+                "a bounded invocation requires the checked typed operation",
+            );
+        }
+        let layout = self
+            .locked()
+            .elem_layout
+            .expect("typed Pipe element layout");
+        let zero = vec![0_u8; layout.size];
+        // SAFETY: the representation is initialized by decode before publication.
+        let slot = unsafe { Slot::copy_image(layout, zero.as_ptr().cast()) };
+        // SAFETY: decode initializes fresh aligned storage of this exact descriptor.
+        if unsafe {
+            crate::channel_common::decode_elem_envelope(
+                Some(content.to_vec()),
+                slot.as_ptr(),
+                &layout,
+                "typed Pipe content writer",
+            )
+        } != 1
+        {
+            return;
+        }
+        // SAFETY: these static no-op callbacks never dereference the null context.
+        let waker = Arc::new(unsafe {
+            OwnedWaker::retain(&crate::wake::HewWaker {
+                context: core::ptr::null_mut(),
+                wake: no_op,
+                retain: no_op,
+                release: no_op,
+            })
+        });
+        // SAFETY: this synchronous frame retains its fresh image until terminal completion.
+        let mut write = unsafe {
+            TypedWrite::new(
+                self.clone(),
+                slot.as_ptr(),
+                layout,
+                core::ptr::null(),
+                waker,
+            )
+        };
+        loop {
+            match write.poll() {
+                1 => return,
+                0 => {
+                    let guard = self.locked();
+                    let _ = self
+                        .cv
+                        .wait_timeout(guard, std::time::Duration::from_millis(10));
+                }
+                2 => {
+                    // SAFETY: no semantic transfer occurred; the foreign-created image
+                    // still owns its children independently of the receiver.
+                    unsafe {
+                        crate::release_walker::hew_release_sync(
+                            crate::release_walker::HewReleaseCursor::detached(
+                                slot.as_ptr(),
+                                layout,
+                            ),
+                        );
+                    };
+                    return;
+                }
+                _ => unreachable!(),
+            }
+        }
+    }
+}
+
+unsafe fn no_free(_: *mut c_void) {}
+unsafe fn free_read(owner: *mut c_void) {
+    // SAFETY: the consuming cursor drained all typed children before retiring this unique Box.
+    unsafe { drop(Box::from_raw(owner.cast::<TypedRead>())) };
+}
+unsafe fn free_slots(owner: *mut c_void) {
+    // SAFETY: the consuming cursor retained this exact Box until every slot closed.
+    unsafe { drop(Box::from_raw(owner.cast::<Vec<Slot>>())) };
+}
+
 #[cfg(test)]
 #[allow(
     clippy::undocumented_unsafe_blocks,
@@ -1202,91 +1289,4 @@ mod tests {
         core.close_typed_sync();
         assert_eq!(receiver.live_bytes(), 0);
     }
-}
-
-impl ChannelCore {
-    /// Legacy foreign content writers create a typed image only at this
-    /// explicit boundary. Generated source uses the borrowing checked writer.
-    pub(crate) fn typed_content_send(self: &Arc<Self>, content: &[u8]) {
-        unsafe extern "C" fn no_op(_: *mut c_void) {}
-        if current_owner().is_some() {
-            crate::channel_common::abort_elem_witness(
-                "typed Pipe content writer",
-                "a bounded invocation requires the checked typed operation",
-            );
-        }
-        let layout = self
-            .locked()
-            .elem_layout
-            .expect("typed Pipe element layout");
-        let zero = vec![0_u8; layout.size];
-        // SAFETY: the representation is initialized by decode before publication.
-        let slot = unsafe { Slot::copy_image(layout, zero.as_ptr().cast()) };
-        // SAFETY: decode initializes fresh aligned storage of this exact descriptor.
-        if unsafe {
-            crate::channel_common::decode_elem_envelope(
-                Some(content.to_vec()),
-                slot.as_ptr(),
-                &layout,
-                "typed Pipe content writer",
-            )
-        } != 1
-        {
-            return;
-        }
-        // SAFETY: these static no-op callbacks never dereference the null context.
-        let waker = Arc::new(unsafe {
-            OwnedWaker::retain(&crate::wake::HewWaker {
-                context: core::ptr::null_mut(),
-                wake: no_op,
-                retain: no_op,
-                release: no_op,
-            })
-        });
-        // SAFETY: this synchronous frame retains its fresh image until terminal completion.
-        let mut write = unsafe {
-            TypedWrite::new(
-                self.clone(),
-                slot.as_ptr(),
-                layout,
-                core::ptr::null(),
-                waker,
-            )
-        };
-        loop {
-            match write.poll() {
-                1 => return,
-                0 => {
-                    let guard = self.locked();
-                    let _ = self
-                        .cv
-                        .wait_timeout(guard, std::time::Duration::from_millis(10));
-                }
-                2 => {
-                    // SAFETY: no semantic transfer occurred; the foreign-created image
-                    // still owns its children independently of the receiver.
-                    unsafe {
-                        crate::release_walker::hew_release_sync(
-                            crate::release_walker::HewReleaseCursor::detached(
-                                slot.as_ptr(),
-                                layout,
-                            ),
-                        );
-                    };
-                    return;
-                }
-                _ => unreachable!(),
-            }
-        }
-    }
-}
-
-unsafe fn no_free(_: *mut c_void) {}
-unsafe fn free_read(owner: *mut c_void) {
-    // SAFETY: the consuming cursor drained all typed children before retiring this unique Box.
-    unsafe { drop(Box::from_raw(owner.cast::<TypedRead>())) };
-}
-unsafe fn free_slots(owner: *mut c_void) {
-    // SAFETY: the consuming cursor retained this exact Box until every slot closed.
-    unsafe { drop(Box::from_raw(owner.cast::<Vec<Slot>>())) };
 }

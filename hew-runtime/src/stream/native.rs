@@ -634,13 +634,14 @@ pub unsafe extern "C" fn hew_stream_read_poll_native(operation: *mut HewNativeSt
         }
         Backing::Generator { stream, parent, .. } => {
             // SAFETY: the operation retains the exclusive stream and parent loans.
-            unsafe {
+            let status = unsafe {
                 (**stream)
                     .inner
                     .generator()
                     .expect("generator backing")
-                    .poll(*parent, &operation.layout)
-            }
+                    .poll_native(*parent)
+            };
+            (status, None)
         }
         // A read never begins on a finished backing; report end of data.
         Backing::Finished => (2, None),
@@ -740,6 +741,16 @@ pub unsafe extern "C" fn hew_stream_read_take_native(
     if let Backing::TypedRead(read) = &mut operation.backing {
         // SAFETY: out is writable storage of the operation's exact element descriptor.
         return i32::from(unsafe { read.take(out) });
+    }
+    if let Backing::Generator { stream, .. } = &mut operation.backing {
+        // SAFETY: the operation retains the unique Stream loan and out has its exact yield layout.
+        return i32::from(unsafe {
+            (**stream)
+                .inner
+                .generator()
+                .expect("generator backing")
+                .take_native(out)
+        });
     }
     #[cfg(not(target_arch = "wasm32"))]
     if let Some(content) = &operation.read_content {

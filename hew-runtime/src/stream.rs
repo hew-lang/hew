@@ -734,9 +734,13 @@ impl StreamBacking for ChunksStream {
 // ── Helper: box stream / sink into raw pointers ───────────────────────────────
 
 fn into_stream_ptr(backing: impl StreamBacking + 'static) -> *mut HewStream {
+    into_boxed_stream_ptr(Box::new(backing))
+}
+
+fn into_boxed_stream_ptr(backing: Box<dyn StreamBacking>) -> *mut HewStream {
     Box::into_raw(Box::new(HewStream {
         // ALLOCATOR-PAIRING: GlobalAlloc
-        inner: Box::new(backing),
+        inner: backing,
         closed: false,
         remaining: None,
         channel: None,
@@ -2070,6 +2074,20 @@ pub unsafe extern "C" fn hew_stream_release_begin(
         let cursor = HewReleaseCursor::new(vec![ReleaseItem::Stream { stream }]);
         // SAFETY: this fresh cursor exclusively owns the provider's terminal drain.
         unsafe { (*cursor).set_value_owner(core.typed_owner()) };
+        return cursor;
+    }
+    // SAFETY: the consuming boundary uniquely retains this provider and its stable backing.
+    if let Some(backing) = unsafe { stream.as_mut() }.and_then(|stream| stream.inner.generator()) {
+        let owner = backing.owner();
+        let mut pending = vec![ReleaseItem::Storage {
+            owner: stream.cast(),
+            free: free_stream,
+        }];
+        // SAFETY: the cursor pins the provider until generator cleanup and flat refund finish.
+        unsafe { backing.expand_release(&mut pending) };
+        let cursor = HewReleaseCursor::new(pending);
+        // SAFETY: this fresh cursor retains the provider's actual incarnation account.
+        unsafe { (*cursor).set_value_owner(owner) };
         return cursor;
     }
     // SAFETY: the caller supplies an exclusive live handle or null.
@@ -5222,7 +5240,7 @@ pub unsafe extern "C" fn hew_managed_visit_stream(
     // SAFETY: the compiler's Stream descriptor supplies its exact handle slot.
     let stream = unsafe { *slot.cast::<*mut HewStream>() };
     // SAFETY: the enclosing descriptor retains this optional live handle.
-    let Some(stream) = (unsafe { stream.as_ref() }) else {
+    let Some(stream) = (unsafe { stream.as_mut() }) else {
         return 0;
     };
     if !stream.inner.managed_supported() {
@@ -5231,6 +5249,10 @@ pub unsafe extern "C" fn hew_managed_visit_stream(
     if let Some(core) = stream.typed_core() {
         // SAFETY: the Stream's unique provider lifetime pins its queue during this walk.
         return unsafe { core.visit_typed(visitor) };
+    }
+    if let Some(generator) = stream.inner.generator() {
+        // SAFETY: common provider transfer freezes generator execution before publication.
+        return unsafe { generator.visit(visitor) };
     }
     // File/socket content and legacy host channels contain no typed queued values.
     0

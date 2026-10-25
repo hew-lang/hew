@@ -39,6 +39,9 @@ impl Walk<'_> {
             let Some(fresh) = self.fresh.checked_add(bytes) else {
                 return HEAP_EXCEEDED;
             };
+            if self.owner.check(self.ledger, fresh).is_err() {
+                return HEAP_EXCEEDED;
+            }
             self.fresh = fresh;
             return DESCEND;
         }
@@ -66,7 +69,10 @@ impl Walk<'_> {
                     None => return HEAP_EXCEEDED,
                 },
                 None => {
-                    if self.owner.check(self.ledger, bytes).is_err() {
+                    if bytes
+                        .checked_add(self.fresh)
+                        .is_none_or(|charge| self.owner.check(self.ledger, charge).is_err())
+                    {
                         return HEAP_EXCEEDED;
                     }
                     self.ledger.live += bytes;
@@ -175,7 +181,21 @@ impl ValueOwner {
         layout: &HewValueLayout,
         slot: *const c_void,
     ) -> Result<StorageReservation, i32> {
+        // SAFETY: this is the single-source form of the same typed copy plan.
+        unsafe { self.reserve_materialization(0, &[(layout, slot, 1)]) }
+    }
+
+    /// Reserve private payload and typed semantic copies as one acquisition.
+    ///
+    /// # Safety
+    /// Every source matches its descriptor and remains live through publication.
+    pub unsafe fn reserve_materialization(
+        &self,
+        fresh: u64,
+        copies: &[(&HewValueLayout, *const c_void, u64)],
+    ) -> Result<StorageReservation, i32> {
         let mut ledger = self.ledger();
+        self.check(&ledger, fresh).map_err(|_| HEAP_EXCEEDED)?;
         let before = ledger.live;
         let mut walk = Walk {
             owner: self,
@@ -183,10 +203,18 @@ impl ValueOwner {
             kind: HewManagedWalkKind::ClonePlan,
             undo: Vec::new(),
             edges: Vec::new(),
-            fresh: 0,
+            fresh,
         };
-        // SAFETY: clone planning only reads live typed storage.
-        let status = unsafe { walk.value(layout, slot) };
+        let mut status = 0;
+        'sources: for (layout, slot, count) in copies {
+            for _ in 0..*count {
+                // SAFETY: clone planning only reads live typed storage.
+                status = unsafe { walk.value(layout, *slot) };
+                if status != 0 {
+                    break 'sources;
+                }
+            }
+        }
         let bytes = (walk.ledger.live - before).checked_add(walk.fresh);
         walk.rollback();
         if status != 0 {

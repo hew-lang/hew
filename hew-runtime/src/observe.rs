@@ -44,11 +44,29 @@ thread_local! {
 
 static HOT_TIER_ENABLED: AtomicBool = AtomicBool::new(false);
 
-static HEAP_ALLOCATED_TOTAL: [AtomicU64; SHARD_COUNT] = [const { AtomicU64::new(0) }; SHARD_COUNT];
-static HEAP_FREED_TOTAL: [AtomicU64; SHARD_COUNT] = [const { AtomicU64::new(0) }; SHARD_COUNT];
-static HEAP_ALLOCATIONS_TOTAL: [AtomicU64; SHARD_COUNT] =
-    [const { AtomicU64::new(0) }; SHARD_COUNT];
-static HEAP_FREES_TOTAL: [AtomicU64; SHARD_COUNT] = [const { AtomicU64::new(0) }; SHARD_COUNT];
+// Keep the counters written by one worker together, away from other workers'
+// cache lines. Heap accounting is hot enough that packed atomic arrays cause
+// false sharing even when every worker uses a distinct index.
+#[repr(align(128))]
+struct HeapCounters {
+    allocated: AtomicU64,
+    freed: AtomicU64,
+    allocations: AtomicU64,
+    frees: AtomicU64,
+}
+
+impl HeapCounters {
+    const fn new() -> Self {
+        Self {
+            allocated: AtomicU64::new(0),
+            freed: AtomicU64::new(0),
+            allocations: AtomicU64::new(0),
+            frees: AtomicU64::new(0),
+        }
+    }
+}
+
+static HEAP_COUNTERS: [HeapCounters; SHARD_COUNT] = [const { HeapCounters::new() }; SHARD_COUNT];
 
 static ACTOR_TURNS_TOTAL: [AtomicU64; SHARD_COUNT] = [const { AtomicU64::new(0) }; SHARD_COUNT];
 static ACTOR_TURN_DURATION_NS_TOTAL: [AtomicU64; SHARD_COUNT] =
@@ -264,16 +282,18 @@ fn shard_reset(shards: &[AtomicU64; SHARD_COUNT]) {
 #[cfg(all(feature = "profiler", not(target_arch = "wasm32")))]
 pub(crate) fn record_heap_alloc(size: u64) {
     if observe_hot_tier_enabled() {
-        shard_add(&HEAP_ALLOCATIONS_TOTAL, 1);
-        shard_add(&HEAP_ALLOCATED_TOTAL, size);
+        let counters = &HEAP_COUNTERS[current_shard()];
+        counters.allocations.fetch_add(1, Ordering::Relaxed);
+        counters.allocated.fetch_add(size, Ordering::Relaxed);
     }
 }
 
 #[cfg(all(feature = "profiler", not(target_arch = "wasm32")))]
 pub(crate) fn record_heap_free(size: u64) {
     if observe_hot_tier_enabled() {
-        shard_add(&HEAP_FREES_TOTAL, 1);
-        shard_add(&HEAP_FREED_TOTAL, size);
+        let counters = &HEAP_COUNTERS[current_shard()];
+        counters.frees.fetch_add(1, Ordering::Relaxed);
+        counters.freed.fetch_add(size, Ordering::Relaxed);
     }
 }
 
@@ -597,14 +617,18 @@ pub extern "C" fn hew_observe_probe_suspend(dispatch_ptr: *const c_void) {
 
 #[must_use]
 pub fn hot_counters_snapshot() -> HotCounterSnapshot {
-    HotCounterSnapshot {
-        heap_allocated_total: shard_sum(&HEAP_ALLOCATED_TOTAL),
-        heap_freed_total: shard_sum(&HEAP_FREED_TOTAL),
-        heap_allocations_total: shard_sum(&HEAP_ALLOCATIONS_TOTAL),
-        heap_frees_total: shard_sum(&HEAP_FREES_TOTAL),
+    let mut snapshot = HotCounterSnapshot {
         actor_turns_total: shard_sum(&ACTOR_TURNS_TOTAL),
         actor_turn_duration_ns_total: shard_sum(&ACTOR_TURN_DURATION_NS_TOTAL),
+        ..HotCounterSnapshot::default()
+    };
+    for counters in &HEAP_COUNTERS {
+        snapshot.heap_allocated_total += counters.allocated.load(Ordering::Relaxed);
+        snapshot.heap_freed_total += counters.freed.load(Ordering::Relaxed);
+        snapshot.heap_allocations_total += counters.allocations.load(Ordering::Relaxed);
+        snapshot.heap_frees_total += counters.frees.load(Ordering::Relaxed);
     }
+    snapshot
 }
 
 #[must_use]
@@ -666,12 +690,12 @@ pub fn runtime_hook_snapshot() -> RuntimeHookSnapshot {
     }
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(feature = "profiler", not(target_arch = "wasm32")))]
 fn heap_live_bytes() -> u64 {
-    crate::profiler::allocator::snapshot().bytes_live
+    crate::profiler::allocator::hew_memory_bytes_live()
 }
 
-#[cfg(target_arch = "wasm32")]
+#[cfg(any(not(feature = "profiler"), target_arch = "wasm32"))]
 fn heap_live_bytes() -> u64 {
     0
 }
@@ -1289,10 +1313,12 @@ pub extern "C" fn hew_observe_series() -> *mut HewString {
 /// observe` is unconditional, so only wasm32 sees no caller.
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn reset_live_safe_counters() {
-    shard_reset(&HEAP_ALLOCATED_TOTAL);
-    shard_reset(&HEAP_FREED_TOTAL);
-    shard_reset(&HEAP_ALLOCATIONS_TOTAL);
-    shard_reset(&HEAP_FREES_TOTAL);
+    for counters in &HEAP_COUNTERS {
+        counters.allocated.store(0, Ordering::Relaxed);
+        counters.freed.store(0, Ordering::Relaxed);
+        counters.allocations.store(0, Ordering::Relaxed);
+        counters.frees.store(0, Ordering::Relaxed);
+    }
     shard_reset(&ACTOR_TURNS_TOTAL);
     shard_reset(&ACTOR_TURN_DURATION_NS_TOTAL);
     SCHEDULER_PARKS_TOTAL.store(0, Ordering::Relaxed);
@@ -1873,6 +1899,36 @@ mod tests {
 
         set_hot_tier_enabled(false);
         reset_all();
+    }
+
+    #[cfg(all(feature = "profiler", not(target_arch = "wasm32")))]
+    #[test]
+    fn heap_counters_preserve_tier_and_reset_boundaries() {
+        let _guard = crate::runtime_test_guard();
+        reset_all();
+        set_hot_tier_enabled(false);
+        record_heap_alloc(128);
+        set_hot_tier_enabled(true);
+        set_current_worker_shard(0);
+        record_heap_alloc(64);
+        set_current_worker_shard(1);
+        record_heap_alloc(32);
+        record_heap_free(64);
+        set_hot_tier_enabled(false);
+        record_heap_free(32);
+
+        let hot = hot_counters_snapshot();
+        assert_eq!(hot.heap_allocated_total, 96);
+        assert_eq!(hot.heap_freed_total, 64);
+        assert_eq!(hot.heap_allocations_total, 2);
+        assert_eq!(hot.heap_frees_total, 1);
+        reset_live_safe_counters();
+        let reset = hot_counters_snapshot();
+        assert_eq!(reset.heap_allocated_total, 0);
+        assert_eq!(reset.heap_freed_total, 0);
+        assert_eq!(reset.heap_allocations_total, 0);
+        assert_eq!(reset.heap_frees_total, 0);
+        set_current_worker_shard(0);
     }
 
     #[test]

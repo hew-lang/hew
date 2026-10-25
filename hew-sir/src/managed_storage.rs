@@ -70,6 +70,7 @@ fn slot(
         T::I64 | T::U64 | T::Isize | T::Usize | T::F64 | T::Duration => return Ok(8),
         T::String
         | T::Bytes
+        | T::Array(_, _)
         | T::Slice(_)
         | T::CancellationToken
         | T::Generator { .. }
@@ -125,9 +126,6 @@ fn slot(
     }
     let result = match ty {
         T::Tuple(fields) => sum_fields(module, fields, active),
-        T::Array(element, count) => slot(module, element, active)?
-            .checked_mul(*count)
-            .ok_or(ManagedLayoutError::Overflow),
         _ => {
             if let Some(shape) = module.aggregate_shape_for_type(ty) {
                 sum_fields(module, shape.fields.iter().map(|field| &field.ty), active)
@@ -142,6 +140,20 @@ fn slot(
     };
     active.remove(ty);
     result
+}
+
+/// Fixed arrays own a sequence backing even as locals. Nested arrays occupy
+/// handle slots and charge each distinct backing separately, like vectors.
+pub fn managed_array_payload(
+    module: &SemModule,
+    ty: &ResolvedTy,
+) -> Result<ManagedSlot, ManagedLayoutError> {
+    let ResolvedTy::Array(element, count) = ty else {
+        return Err(ManagedLayoutError::MissingShape(ty.clone()));
+    };
+    managed_slot(module, element)?
+        .capacity_bytes(*count)
+        .map(|bytes| ManagedSlot { bytes })
 }
 
 /// The fixed payload capacity of an indirect variant allocation. The
@@ -187,7 +199,7 @@ mod tests {
         let module = SemModule::default();
         let row = ResolvedTy::Array(Box::new(ResolvedTy::U64), u64::MAX);
         assert_eq!(
-            managed_slot(&module, &row),
+            managed_array_payload(&module, &row),
             Err(ManagedLayoutError::Overflow)
         );
         assert_eq!(
@@ -195,5 +207,15 @@ mod tests {
             Err(ManagedLayoutError::Overflow)
         );
         assert_eq!(ManagedSlot { bytes: 0 }.capacity_bytes(u64::MAX), Ok(0));
+    }
+
+    #[test]
+    fn nested_arrays_charge_backings_without_inlining_them_twice() {
+        let module = SemModule::default();
+        let inner = ResolvedTy::Array(Box::new(ResolvedTy::I64), 3);
+        let outer = ResolvedTy::Array(Box::new(inner.clone()), 2);
+        assert_eq!(managed_slot(&module, &outer).unwrap().bytes, 8);
+        assert_eq!(managed_array_payload(&module, &inner).unwrap().bytes, 24);
+        assert_eq!(managed_array_payload(&module, &outer).unwrap().bytes, 16);
     }
 }

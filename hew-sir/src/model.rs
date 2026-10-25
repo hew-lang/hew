@@ -1670,6 +1670,7 @@ impl SemOpKind {
                 | Self::DynMake { .. }
                 | Self::VariantMake { .. }
                 | Self::ArrayRepeat { .. }
+                | Self::ArrayMake { .. }
                 | Self::GeneratorMake { .. }
         )
     }

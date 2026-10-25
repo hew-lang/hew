@@ -56,7 +56,9 @@ pub use lower::{
     SirLoweringDemand, SirLoweringStatus, SirRootSelectionError, SirSourceStatus,
 };
 pub use lower_error::{SirLoweringError, SirOwnershipError};
-pub use managed_storage::{managed_slot, managed_variant_payload, ManagedLayoutError, ManagedSlot};
+pub use managed_storage::{
+    managed_array_payload, managed_slot, managed_variant_payload, ManagedLayoutError, ManagedSlot,
+};
 pub use model::{
     runtime_variant_shape_refs, AggregateShapeId, AggregateShapeRef, BlockArg, BlockId,
     BoundaryOperand, CallResult, CallUnwind, CallableId, CallableInstance, CheckedFailure, DeferId,

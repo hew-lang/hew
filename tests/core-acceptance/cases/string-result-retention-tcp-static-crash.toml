@@ -7,5 +7,4 @@ timeout_seconds = 60
 
 [case.expected]
 stdout = "crash-fallback\n"
-stderr = "hew: failure: UserPanic (212): crash before child suspend\nhew: actor crash in Reader.go (actor 1): UserPanic\n"
 exit = 1

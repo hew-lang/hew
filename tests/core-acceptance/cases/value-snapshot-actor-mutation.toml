@@ -8,5 +8,4 @@ env = { HEW_WORKERS = "4" }
 
 [case.expected]
 stdout = "snapshots=3000;current=3000;saved=0\n"
-stderr = ""
 exit = 0

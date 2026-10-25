@@ -7,5 +7,4 @@ timeout_seconds = 15
 
 [case.expected]
 stdout = "associated projection bounds\n"
-stderr = ""
 exit = 0

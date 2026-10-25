@@ -10,4 +10,3 @@ kind = "reject"
 code = "ArityMismatch"
 line = 4
 column = 15
-message = "type alias `Pair` expects 1 type argument(s), found 2"

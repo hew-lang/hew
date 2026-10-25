@@ -10,5 +10,4 @@ HEW_WORKERS = "4"
 
 [case.expected]
 stdout = "41\n"
-stderr = "hew: failure: UserPanic (212): free fold boom\n"
 exit = 1

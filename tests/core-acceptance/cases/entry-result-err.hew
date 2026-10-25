@@ -28,5 +28,8 @@ fn main() -> Result<(), AppError> {
     if checked.is_ok() {
         println("unreachable");
     }
-    checked
+    checked.map_err(|problem| {
+        println(problem);
+        problem
+    })
 }

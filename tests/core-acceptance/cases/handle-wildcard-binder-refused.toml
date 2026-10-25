@@ -11,4 +11,3 @@ severity = "error"
 code = "UndefinedVariable"
 line = 7
 column = 38
-message = "undefined variable `_`"

@@ -11,4 +11,3 @@ severity = "error"
 code = "BoundsNotSatisfied"
 line = 37
 column = 13
-message = "type `Narrow` does not implement trait `From<Low>` required by `F`"

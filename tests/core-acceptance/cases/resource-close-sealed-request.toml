@@ -10,5 +10,4 @@ HEW_WORKERS = "1"
 
 [case.expected]
 stdout = "closed 1\norigin closed\nclosed 2\nrequest closed\n"
-stderr = ""
 exit = 0

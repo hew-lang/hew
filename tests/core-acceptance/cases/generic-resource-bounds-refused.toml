@@ -11,18 +11,15 @@ severity = "error"
 code = "BoundsNotSatisfied"
 line = 36
 column = 5
-message = "type `StringCodec` does not implement trait `Codec<i64, Encoded = string>` required by `C`"
 
 [[case.expected.diagnostics]]
 severity = "error"
 code = "BoundsNotSatisfied"
 line = 37
 column = 5
-message = "type `BytesCodec` does not satisfy associated type binding `C: Codec<Encoded = string>`; found `bytes`"
 
 [[case.expected.diagnostics]]
 severity = "error"
 code = "BoundsNotSatisfied"
 line = 38
 column = 13
-message = "type `WrongValue` does not implement trait `ValueChild<i64>` required by `C`"

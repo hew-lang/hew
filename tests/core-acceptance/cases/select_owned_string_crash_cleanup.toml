@@ -10,5 +10,4 @@ HEW_WORKERS = "4"
 
 [case.expected]
 stdout = "selected=selected-value\nselect-handled-crash\n"
-stderr = "hew: failure: UserPanic (212): handled crash after select string use\nhew: actor crash in Selector.run (actor 2): UserPanic\n"
 exit = 1

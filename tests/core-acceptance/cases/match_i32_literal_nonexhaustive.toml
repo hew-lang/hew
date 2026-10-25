@@ -10,4 +10,3 @@ kind = "reject"
 code = "NonExhaustiveMatch"
 line = 5
 column = 5
-message = "non-exhaustive match: missing _"

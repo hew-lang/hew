@@ -10,4 +10,3 @@ kind = "reject"
 code = "InvalidSend"
 line = 14
 column = 33
-message = "fork cannot transfer `Weak<i64>`: the value is not proven Send"

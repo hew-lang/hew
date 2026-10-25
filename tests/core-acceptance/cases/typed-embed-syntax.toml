@@ -12,4 +12,3 @@ code = "InvalidOperation"
 file = "typed-embed-data/syntax.json"
 line = 2
 column = 10
-message = "E_EMBED_DECODE"

@@ -7,5 +7,4 @@ timeout_seconds = 15
 
 [case.expected]
 stdout = "[step0]\n[[0]]\n[step1]\n[[1]]\ngenerator cleaned\n[step0]\n[[0]]\n[step1]\ngenerator cleaned\nb0;[0];\nb1;[1];\nbatches cleaned\n2\n2\nbatches cleaned\ndone\n"
-stderr = ""
 exit = 0

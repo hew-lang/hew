@@ -16,5 +16,7 @@ fn main() fails string {
         .Ok(port) => println(f"port {port}"),
         .Err(e) => println(f"refused: {e.fmt()}"),
     }
-    return error "shutting down";
+    let problem = "shutting down";
+    println(problem);
+    return error problem;
 }

@@ -10,5 +10,4 @@ HEW_WORKERS = "4"
 
 [case.expected]
 stdout = "invalid pattern recovered\n"
-stderr = ""
 exit = 0

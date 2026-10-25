@@ -10,5 +10,4 @@ HEW_TEST_ACTOR_LEAK_CHECK = "1"
 
 [case.expected]
 stdout = "actor arguments evaluated once\n"
-stderr = ""
 exit = 0

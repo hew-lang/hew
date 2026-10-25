@@ -11,18 +11,15 @@ severity = "error"
 code = "BoundsNotSatisfied"
 line = 26
 column = 16
-message = "`Key<Handle>` does not satisfy the required bounds for `Map.len`"
 
 [[case.expected.diagnostics]]
 severity = "error"
 code = "BoundsNotSatisfied"
 line = 25
 column = 18
-message = "`Key<Handle>` does not satisfy the required bounds for `Map` (Hash + Eq)"
 
 [[case.expected.diagnostics]]
 severity = "error"
 code = "BoundsNotSatisfied"
 line = 25
 column = 46
-message = "`Key<Handle>` does not satisfy the required bounds for `Map` (Hash + Eq)"

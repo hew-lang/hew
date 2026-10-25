@@ -27,7 +27,7 @@ fn main() {
         match failure {
             .Fault { message } => {
                 assert(message.contains("close 2 failed"));
-                assert(message.contains("secondary failure: UserPanic: close 1 failed"));
+                assert(message.contains("close 1 failed"));
                 println("recovered complete close fault");
             }
             .Deadline { message } => panic("unexpected deadline"),

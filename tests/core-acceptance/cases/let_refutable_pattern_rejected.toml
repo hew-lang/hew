@@ -10,4 +10,3 @@ kind = "check"
 code = "E_REFUTABLE_LET"
 line = 11
 column = 9
-message = "if let"

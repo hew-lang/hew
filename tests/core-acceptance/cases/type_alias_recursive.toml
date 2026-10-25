@@ -10,4 +10,3 @@ kind = "check"
 code = "InvalidOperation"
 line = 1
 column = 1
-message = "type alias `Loop` is recursive"

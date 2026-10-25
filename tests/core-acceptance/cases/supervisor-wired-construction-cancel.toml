@@ -8,5 +8,4 @@ env = { HEW_WORKERS = "1" }
 
 [case.expected]
 stdout = "OWNED CONFIG\nconstruction cancelled\n"
-stderr = ""
 exit = 0

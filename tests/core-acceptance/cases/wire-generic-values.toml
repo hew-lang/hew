@@ -7,5 +7,4 @@ timeout_seconds = 15
 
 [case.expected]
 stdout = "generic wire values passed\n"
-stderr = ""
 exit = 0

@@ -7,5 +7,4 @@ timeout_seconds = 15
 
 [case.expected]
 stdout = "parallel and intermediate deep history passed\n"
-stderr = ""
 exit = 0

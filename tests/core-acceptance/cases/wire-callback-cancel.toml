@@ -10,5 +10,4 @@ HEW_WORKERS = "1"
 
 [case.expected]
 stdout = "WIRE CALLBACK LOCAL CLOSED\n42\n"
-stderr = ""
 exit = 0

@@ -11,11 +11,9 @@ severity = "error"
 code = "E_CONTEXT_VARIANT_NO_TYPE"
 line = 9
 column = 23
-message = "E_CONTEXT_VARIANT_NO_TYPE: contextual variant `.None` requires an expected enum or machine type"
 
 [[case.expected.diagnostics]]
 severity = "error"
 code = "E_CONTEXT_VARIANT_NO_TYPE"
 line = 8
 column = 37
-message = "E_CONTEXT_VARIANT_NO_TYPE: contextual variant `.None` requires an expected enum or machine type"

@@ -10,4 +10,3 @@ kind = "reject"
 code = "InvalidSend"
 line = 6
 column = 20
-message = "generator cannot be sent: retained `Rc<i64>` is not proven Send"

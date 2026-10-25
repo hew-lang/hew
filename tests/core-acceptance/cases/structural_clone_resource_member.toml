@@ -10,4 +10,3 @@ kind = "reject"
 code = "InvalidOperation"
 line = 16
 column = 17
-message = "type `Holder` contains `#[resource]` value `Token` and cannot be cloned: member `item.Some.1` contains `Token`, which has an affine close contract and no semantic clone"

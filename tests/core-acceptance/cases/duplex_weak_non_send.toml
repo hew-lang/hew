@@ -10,4 +10,3 @@ kind = "check"
 code = "InvalidSend"
 line = 2
 column = 19
-message = "E_DUPLEX_NON_SEND"

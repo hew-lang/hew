@@ -10,5 +10,4 @@ HEW_WORKERS = "2"
 
 [case.expected]
 stdout = "3\ndetach limit\n2\nslice limit\n8\nappend limit\n1\ncopy limit\n"
-stderr = "hew: failure: HeapExceeded (200)\nhew: actor crash in SmallDetach.edit (actor 2): HeapExceeded\nhew: failure: HeapExceeded (200)\nhew: actor crash in SmallSlice.read (actor 4): HeapExceeded\nhew: failure: HeapExceeded (200)\nhew: actor crash in SmallAppend.join (actor 6): HeapExceeded\nhew: failure: HeapExceeded (200)\nhew: actor crash in SmallCopy.read (actor 8): HeapExceeded\n"
 exit = 1

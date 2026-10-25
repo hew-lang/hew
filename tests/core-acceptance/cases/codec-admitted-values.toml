@@ -16,5 +16,4 @@ svc 2
 [{"name":"x","ports":[],"tag":"t"}]
 [true,false]
 """
-stderr = ""
 exit = 0

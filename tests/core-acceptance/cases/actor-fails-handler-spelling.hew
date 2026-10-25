@@ -43,8 +43,8 @@ fn main() {
         .Ok(left) => println(left),
         .Err(problem) => println(f"{problem}"),
     }
-    // The whole envelope renders through its own `Display`; the declared
-    // failure inside `Failed` renders as the handler wrote it.
+    // The envelope distinguishes a declared failure from transport faults;
+    // the declared payload remains application data.
     match ledger.deposit_half(0) {
         .Ok(left) => println(left),
         .Err(problem) => match problem {
@@ -67,8 +67,8 @@ fn main() {
         .Err(problem) => println(f"{problem}"),
     }
     match ledger.note(-1) {
-        .Ok(_) => println("noted"),
-        .Err(problem) => println(f"{problem}"),
+        .Err(.Failed(reason)) => println(reason),
+        _ => panic("expected declared failure"),
     }
     stop(ledger);
     stopped(ledger);

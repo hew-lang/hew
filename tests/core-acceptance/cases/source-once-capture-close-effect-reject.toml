@@ -10,4 +10,3 @@ kind = "reject"
 code = "InvalidOperation"
 line = 13
 column = 42
-message = "closure suspends via `implicit release of captured values`; `fn[once]() -> Ticket` never suspends, write `fn[suspends]`"

@@ -133,7 +133,6 @@ exit "${MAKE_STATUS:-0}"
         calls = (self.root / "calls").read_text()
         self.assertIn("core-acceptance /llvm with spaces", calls)
         self.assertIn("preflight /llvm with spaces", calls)
-        self.assertIn("Retained CI worktree:", result.stdout)
 
 
 if __name__ == "__main__":

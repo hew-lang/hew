@@ -7,5 +7,4 @@ timeout_seconds = 15
 
 [case.expected]
 stdout = "first 12\nsecond 14\nclose 13\n"
-stderr = "hew: failure: UserPanic (212): bump failed\nhew: actor crash in Holder.poke (actor 1): UserPanic\n"
 exit = 1

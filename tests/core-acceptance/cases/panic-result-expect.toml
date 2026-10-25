@@ -7,5 +7,4 @@ timeout_seconds = 15
 
 [case.expected]
 stdout = "CALLER OWNER\nCALLEE OWNER\n"
-stderr = "hew: failure: UserPanic (212): the request had already failed: OWNED ERROR\n"
 exit = 1

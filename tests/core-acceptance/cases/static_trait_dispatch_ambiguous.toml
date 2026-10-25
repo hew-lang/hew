@@ -10,4 +10,3 @@ kind = "reject"
 code = "AmbiguousTraitMethod"
 line = 23
 column = 5
-message = "ambiguous trait method `run` on `T`: method is declared by multiple traits (Athlete, Engine); qualify the call to disambiguate"

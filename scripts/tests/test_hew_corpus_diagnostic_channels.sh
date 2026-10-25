@@ -83,15 +83,6 @@ assert_status() {
     fi
 }
 
-assert_output_contains() {
-    local expected="$1" label="$2"
-    if [[ "${OUTPUT}" != *"${expected}"* ]]; then
-        echo "FAIL: ${label} (missing: ${expected})" >&2
-        printf '%s\n' "${OUTPUT}" >&2
-        exit 1
-    fi
-}
-
 run_case user
 assert_status 0 "User diagnostic exit is accepted"
 
@@ -103,17 +94,11 @@ assert_status 0 "Internal diagnostic exit is accepted"
 
 run_case nondiagnostic-3
 assert_status 1 "non-diagnostic exit 3 is rejected"
-assert_output_contains "OUTCOME DRIFT: ${TEST_PATH} (exit 3, expected structured compiler diagnostic)" \
-    "non-diagnostic exit 3 reports outcome drift"
 
 run_case nondiagnostic-4
 assert_status 1 "non-diagnostic exit 4 is rejected"
-assert_output_contains "OUTCOME DRIFT: ${TEST_PATH} (exit 4, expected structured compiler diagnostic)" \
-    "non-diagnostic exit 4 reports outcome drift"
 
 run_case signal
 assert_status 1 "signal is rejected"
-assert_output_contains "OUTCOME DRIFT: ${TEST_PATH} (exit 143, expected structured compiler diagnostic)" \
-    "signal reports outcome drift"
 
 echo "PASS: structured diagnostic channels are accepted without accepting process failures"

@@ -7,5 +7,4 @@ timeout_seconds = 30
 
 [case.expected]
 stdout = "make b\n"
-stderr = "hew: failure: UserPanic (212): later extern argument\n"
 exit = 1

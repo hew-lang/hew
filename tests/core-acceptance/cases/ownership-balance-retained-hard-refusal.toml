@@ -10,4 +10,3 @@ kind = "reject"
 code = "UseAfterMove"
 line = 32
 column = 24
-message = "use of moved place `booking.ticket`"

@@ -10,4 +10,3 @@ kind = "reject"
 code = "EmptyGenerator"
 line = 5
 column = 14
-message = "`gen { }` body contains no `yield` expression and no value-producing tail expression or `return`; the yield type cannot be inferred — add at least one `yield <value>` statement"

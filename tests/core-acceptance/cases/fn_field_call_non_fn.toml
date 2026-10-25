@@ -10,4 +10,3 @@ kind = "reject"
 code = "Mismatch"
 line = 12
 column = 6
-message = "cannot call value of type"

@@ -7,5 +7,4 @@ timeout_seconds = 15
 
 [case.expected]
 stdout = "eq\nnested eq\nne\nwide eq\n"
-stderr = ""
 exit = 0

@@ -20,6 +20,12 @@ fn parse(text: string) -> i64 fails dyn Error {
 fn main() fails dyn Error {
     let width = parse("hello")?;
     println(f"width={width}");
-    let missing = parse("")?;
+    let missing = match parse("") {
+        .Ok(value) => value,
+        .Err(problem) => {
+            println(problem.fmt());
+            return error problem;
+        }
+    };
     println(f"unreachable={missing}");
 }

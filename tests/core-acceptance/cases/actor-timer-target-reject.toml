@@ -10,4 +10,3 @@ kind = "reject"
 code = "E_TIMER_TARGET"
 line = 4
 column = 25
-message = "an actor-owned timer must target self through mailbox(self, after: duration)"

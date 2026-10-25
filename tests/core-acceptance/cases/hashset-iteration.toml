@@ -8,4 +8,3 @@ timeout_seconds = 60
 [case.expected]
 stdout = "scalar 2 42 1 true\ncurrent 99 1\nowned 8 0\nbreak 1 2\nevaluated\nevaluated\nevaluated\nshapes 4 4 4 4 2\n"
 exit = 0
-stderr = ""

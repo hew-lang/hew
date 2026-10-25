@@ -7,5 +7,4 @@ timeout_seconds = 15
 
 [case.expected]
 stdout = "true\nfalse\ntrue\n"
-stderr = ""
 exit = 0

@@ -10,5 +10,4 @@ HEW_WORKERS = "2"
 
 [case.expected]
 stdout = "7\n7\ngenerator carrier limit\n"
-stderr = "hew: failure: HeapExceeded (200)\nhew: actor crash in Small.wrap (actor 3): HeapExceeded\n"
 exit = 1

@@ -10,5 +10,4 @@ HEW_WORKERS = "1"
 
 [case.expected]
 stdout = "nonblocking pipe and socket sends retain item order\n"
-stderr = ""
 exit = 0

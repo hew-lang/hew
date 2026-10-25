@@ -10,4 +10,3 @@ kind = "reject"
 code = "InvalidOperation"
 line = 12
 column = 13
-message = "E_ACTOR_CONTEXT_REQUIRED: `monitor` requires an actor context"

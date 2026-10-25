@@ -10,4 +10,3 @@ kind = "reject"
 code = "ArityMismatch"
 line = 8
 column = 13
-message = "`send` on an actor handle expects one argument (the message), but 2 were supplied"

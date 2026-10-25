@@ -10,4 +10,3 @@ kind = "reject"
 code = "InvalidOperation"
 line = 12
 column = 8
-message = "`Holder` has no selected Eq implementation for equality comparison"

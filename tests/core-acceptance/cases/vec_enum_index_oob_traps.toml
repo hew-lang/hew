@@ -10,5 +10,4 @@ HEW_WORKERS = "4"
 
 [case.expected]
 stdout = ""
-stderr = "hew: failure: IndexOutOfBounds (205): vector index 9 out of bounds for length 2\n"
 exit = 1

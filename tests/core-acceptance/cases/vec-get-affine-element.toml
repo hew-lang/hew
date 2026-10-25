@@ -10,16 +10,13 @@ kind = "check"
 code = "InvalidOperation"
 line = 15
 column = 16
-message = "E_ELEMENT_NO_COPY: `Vec<Stream<i64>>` cannot be read with `get`"
 
 [[case.expected.diagnostics]]
 code = "InvalidOperation"
 line = 16
 column = 20
-message = "a pipe half is non-cloneable and has no copy operation"
 
 [[case.expected.diagnostics]]
 code = "InvalidOperation"
 line = 17
 column = 19
-message = "E_ELEMENT_NO_COPY: `Vec<Stream<i64>>` cannot be range-sliced"

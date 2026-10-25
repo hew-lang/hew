@@ -10,5 +10,4 @@ HEW_WORKERS = "2"
 
 [case.expected]
 stdout = "admission limit\n5\n"
-stderr = ""
 exit = 1

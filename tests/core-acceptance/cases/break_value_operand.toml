@@ -10,4 +10,3 @@ kind = "reject"
 code = "Other"
 line = 15
 column = 15
-message = "E_BREAK_VALUE: `break` carries no operand; a loop never produces a value"

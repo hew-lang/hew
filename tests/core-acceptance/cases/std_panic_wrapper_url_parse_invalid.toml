@@ -10,5 +10,4 @@ HEW_WORKERS = "4"
 
 [case.expected]
 stdout = "invalid URL recovered\n"
-stderr = ""
 exit = 0

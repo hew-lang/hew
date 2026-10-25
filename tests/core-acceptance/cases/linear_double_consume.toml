@@ -10,4 +10,3 @@ kind = "reject"
 code = "UseAfterConsume"
 line = 13
 column = 5
-message = "UseAfterConsume: use of consumed linear value `t`"

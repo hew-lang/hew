@@ -8,4 +8,3 @@ timeout_seconds = 15
 [case.expected]
 stdout = "tokens=2\nnumbers=3\nsum=60\nclose t2\nclose t1\ndrained\n"
 exit = 0
-stderr = ""

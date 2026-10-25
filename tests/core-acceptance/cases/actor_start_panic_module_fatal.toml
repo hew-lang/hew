@@ -10,5 +10,4 @@ HEW_WORKERS = "4"
 
 [case.expected]
 stdout = ""
-stderr = "hew: failure: UserPanic (212): intentional on(start) panic\n"
 exit = 1

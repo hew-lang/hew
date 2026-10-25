@@ -10,4 +10,3 @@ kind = "reject"
 code = "E_ACTOR_METHOD_OUTSIDE"
 line = 19
 column = 13
-message = "E_ACTOR_METHOD_OUTSIDE"

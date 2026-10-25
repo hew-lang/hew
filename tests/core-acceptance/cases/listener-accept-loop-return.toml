@@ -10,4 +10,3 @@ timeout_seconds = 15
 code = "E_OWN_CONSUME_BORROWED"
 line = 14
 column = 5
-message = "cannot consume a value through borrowed parameter `listener`"

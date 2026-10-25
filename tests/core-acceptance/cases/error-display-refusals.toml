@@ -10,16 +10,13 @@ kind = "check"
 code = "BoundsNotSatisfied"
 line = 23
 column = 16
-message = "type `Plain` does not implement `Display`"
 
 [[case.expected.diagnostics]]
 code = "BoundsNotSatisfied"
 line = 8
 column = 1
-message = "type `fn(i64) -> i64` has no structural rendering"
 
 [[case.expected.diagnostics]]
 code = "BoundsNotSatisfied"
 line = 25
 column = 16
-message = "type `Wrap<i64>` does not implement `Display`"

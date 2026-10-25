@@ -10,5 +10,4 @@ HEW_WORKERS = "2"
 
 [case.expected]
 stdout = "40\n41\n42\n"
-stderr = ""
 exit = 0

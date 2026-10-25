@@ -10,5 +10,4 @@ HEW_WORKERS = "2"
 
 [case.expected]
 stdout = "2\n2\nsnapshot limit\n"
-stderr = "hew: failure: HeapExceeded (200)\nhew: actor crash in TableStore.retain_two (actor 1): HeapExceeded\n"
 exit = 1

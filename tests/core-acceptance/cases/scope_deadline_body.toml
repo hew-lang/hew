@@ -10,4 +10,3 @@ kind = "reject"
 code = "Other"
 line = 23
 column = 9
-message = "deadline clauses have been replaced by a deadline on the scope"

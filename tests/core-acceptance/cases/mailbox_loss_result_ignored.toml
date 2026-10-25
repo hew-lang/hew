@@ -10,4 +10,3 @@ kind = "reject"
 code = "E_RESULT_DROPPED"
 line = 9
 column = 5
-message = "E_RESULT_DROPPED"

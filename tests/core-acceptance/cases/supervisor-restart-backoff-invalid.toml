@@ -10,5 +10,4 @@ HEW_DETERMINISTIC = ""
 
 [case.expected]
 stdout = "invalid policies refused before construction\n"
-stderr = ""
 exit = 0

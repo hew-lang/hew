@@ -10,5 +10,4 @@ HEW_WORKERS = "2"
 
 [case.expected]
 stdout = "1\nretained slice capacity\nsender retained\n"
-stderr = ""
 exit = 1

@@ -10,4 +10,3 @@ kind = "reject"
 code = "MachineExhaustivenessError"
 line = 25
 column = 32
-message = "machine evaluator is not demonstrably pure: call to `weigh`: releasing `Tag` runs its `close`: `println(...)` is not admitted in a machine transition"

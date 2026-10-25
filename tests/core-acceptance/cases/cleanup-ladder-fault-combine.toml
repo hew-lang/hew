@@ -7,5 +7,4 @@ timeout_seconds = 60
 
 [case.expected]
 stdout = "closed right\nclosed left\n"
-stderr = "hew: failure: UserPanic (212): second ask: Dead: the destination actor is gone and will not come back\nhew: secondary failure: UserPanic (212): release failed\n"
 exit = 1

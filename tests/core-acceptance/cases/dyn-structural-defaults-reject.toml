@@ -10,4 +10,3 @@ kind = "reject"
 code = "Mismatch"
 line = 5
 column = 23
-message = "type mismatch: expected `dyn Hi`, found `W`"

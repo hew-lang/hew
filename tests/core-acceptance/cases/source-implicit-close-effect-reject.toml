@@ -10,4 +10,3 @@ kind = "reject"
 code = "InvalidOperation"
 line = 16
 column = 32
-message = "suspends via `implicit release of Ticket`; `fn() -> ()` never suspends"

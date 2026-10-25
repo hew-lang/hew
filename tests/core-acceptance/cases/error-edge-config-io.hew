@@ -38,7 +38,13 @@ fn read_port(path: string) -> i64 fails ConfigError {
 }
 
 fn main() fails dyn Error {
-    let port = read_port(f"{os.temp_dir()}/hew-missing-config-{os.pid()}.conf").context("loading app.conf")?;
+    let port = match read_port(f"{os.temp_dir()}/hew-missing-config-{os.pid()}.conf").context("loading app.conf") {
+        .Ok(value) => value,
+        .Err(problem) => {
+            println(problem.fmt());
+            return error problem;
+        }
+    };
     if port > 65535 {
         return error f"port {port} is out of range";
     }

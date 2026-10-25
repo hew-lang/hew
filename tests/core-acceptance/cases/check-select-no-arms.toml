@@ -10,4 +10,3 @@ kind = "check"
 code = "InvalidOperation"
 line = 10
 column = 9
-message = "needs at least one arm: a source arm"

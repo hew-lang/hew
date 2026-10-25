@@ -10,4 +10,3 @@ kind = "reject"
 code = "InvalidOperation"
 line = 5
 column = 22
-message = "`is` compares identity, and `HashMap<string, i64>` is a value type (E_IS_VALUE_TYPE) — use `==` to compare it by value; `is` applies to handles: actor references"

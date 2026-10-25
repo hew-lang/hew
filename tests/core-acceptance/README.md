@@ -23,8 +23,8 @@ These exclusions describe fixture requirements, not execution parity.
 values only for the named variables. Native–sandbox parity reuses these values
 by matching each manifest's declared source path, including sources outside
 `cases/`. Unconfigured variables retain the caller's environment and harness
-defaults. Exact diagnostic transcripts may pin scheduler workers here; separate
-native actor tests cover the ring's behaviour with multiple workers.
+defaults. Cases may select scheduler workers when their authored event order
+requires it; separate native actor tests exercise multiple workers.
 
 ## Expectation kinds
 
@@ -32,8 +32,10 @@ A case's `kind` says what it proves. Omitting `kind` is `kind = "run"`, so
 every existing case is unaffected.
 
 - `kind = "run"` (the default): the runner compiles and executes the source
-  at O0 and O2, and `[case.expected]` holds `stdout`, optional `stderr`
-  (default empty) and `exit`.
+  at O0 and O2, and `[case.expected]` holds exact authored `stdout` and `exit`.
+  Runtime stderr is captured for failure reports and sanitizer checks, rather
+  than compared with a diagnostic transcript. Assert failure kinds through
+  typed source results and cleanup or event order through authored output.
 - `kind = "check"`: the runner runs `hew check --format json` against the
   source once — no build, no execution — and asserts exactly the expected
   diagnostics, nothing extra and nothing missing, warnings and notes
@@ -48,21 +50,21 @@ every existing case is unaffected.
     actually reported: 1 when any reported diagnostic is an error, else 0.
   - `code` — the JSON diagnostic's `code` field, verbatim. This is the
     checker's stable `kind` discriminant (see `hew-cli/src/diagnostic_json.rs`),
-    not always an `E_*`/`W_*` token: a diagnostic whose specific check lives
-    under a generic discriminant (`InvalidOperation` covers several distinct
-    `E_*` checks today) reports that generic string here, and its `E_*`/`W_*`
-    token lives only in `message`.
+    not always an `E_*`/`W_*` token. A diagnostic whose specific check lives
+    under a generic discriminant reports that generic string here.
   - `line`, `column` — the diagnostic's 1-based `span.start_line` and
     `span.start_col` from the JSON output, not a text-rendered position.
-  - `message` (optional) — a substring the diagnostic's `message` must
-    contain. This is how a case pins down a specific check when `code` is
-    one of the generic discriminants above.
+  - `file` (optional) — the source path suffix, using `/` separators. Use it
+    to distinguish diagnostics from imported sources with the same position.
+
+  Human diagnostic wording is reviewed as prose; it is not an expectation
+  field. Codes, severity and source provenance remain executable contracts.
 
   A `check` case cannot join the `safety` suite — safety (ASan/LSan) stays a
   suite selected by `suites`, never a case kind, since a `check` case is
   never sanitizer-compiled.
 
-Ground the exact `code`/`line`/`column`/`message` for a new `check` case by
+Ground the exact `code`/`line`/`column` for a new `check` case by
 running `hew check <source> --format json` against the built debug compiler
 and reading the JSON array it prints on stdout, rather than guessing from the
 text renderer or from the source-level `E_*` name.
@@ -72,7 +74,7 @@ AddressSanitizer, then runs the safety cases with generated LLVM instrumentation
 and leak detection. This target requires Linux and a compatible clang toolchain;
 missing tools or instrumentation fail the run. No leak suppressions are used.
 The safety cases include bounds faults and nested-call failure with live owners;
-their expected fault reports do not excuse leaks or post-failure execution.
+their expected failure exits do not excuse leaks or post-failure execution.
 A memory-ownership regression is a `run` case in both suites: the acceptance
 run pins its output, and the safety run fails it on any leak, double free or
 use after free. Its outcome never depends on a sleep: a handler that must stay

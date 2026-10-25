@@ -10,4 +10,3 @@ kind = "reject"
 code = "TraitNotObjectSafe"
 line = 16
 column = 23
-message = "trait `Zero` is not object-safe: `zero` has no `self` receiver"

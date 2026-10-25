@@ -7,5 +7,4 @@ timeout_seconds = 60
 
 [case.expected]
 stdout = "factory coffee\nupdate coffee\nclosed update\nupdate recovered\nclosed factory\nfactory recovered\nclosed record\nrecord recovered\ncollection update ok\n"
-stderr = ""
 exit = 0

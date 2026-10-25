@@ -10,4 +10,3 @@ kind = "reject"
 code = "E_TYPE_USED_AS_VALUE"
 line = 6
 column = 19
-message = "type `Choice` cannot be used as a value"

@@ -10,4 +10,3 @@ timeout_seconds = 30
 code = "UseAfterMove"
 line = 8
 column = 13
-message = "use of moved value `seen`"

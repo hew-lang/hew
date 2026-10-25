@@ -7,5 +7,4 @@ timeout_seconds = 30
 
 [case.expected]
 stdout = "count evaluated\ncaller cleaned\n"
-stderr = "hew: failure: UserPanic (212): count evaluated\n"
 exit = 1

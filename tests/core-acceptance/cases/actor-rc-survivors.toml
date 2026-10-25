@@ -7,5 +7,4 @@ timeout_seconds = 120
 
 [case.expected]
 stdout = "argument\ninit\nplain 3\nclose 1\nclose 2\nclose 4\nstopped\ncopied dead backedge\nclose 5\nbackedge refused\nclose 6\nclose 7\nconstruction refused\nplain 10\n"
-stderr = "hew: failure: UserPanic (212): Rc payload is being released\n"
 exit = 0

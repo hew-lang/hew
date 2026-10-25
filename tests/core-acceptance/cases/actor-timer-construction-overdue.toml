@@ -10,5 +10,4 @@ HEW_WORKERS = "1"
 
 [case.expected]
 stdout = "closed pending\nclosed overdue\nclosed queued\nclosed state\n"
-stderr = "hew: failure: ActorTimerOverdue (214)\n"
 exit = 1

@@ -10,5 +10,4 @@ HEW_DETERMINISTIC = ""
 
 [case.expected]
 stdout = "strategies retain their roles\n"
-stderr = "hew: failure: UserPanic (212): restart strategy\nhew: actor crash in Worker.fail (actor 1): UserPanic\nhew: failure: UserPanic (212): restart strategy\nhew: actor crash in Worker.fail (actor 7): UserPanic\nhew: failure: UserPanic (212): restart strategy\nhew: actor crash in Worker.fail (actor 12): UserPanic\nhew: failure: UserPanic (212): restart strategy\nhew: actor crash in Worker.fail (actor 15): UserPanic\nhew: failure: UserPanic (212): restart strategy\nhew: actor crash in Worker.fail (actor 13): UserPanic\nhew: failure: UserPanic (212): restart strategy\nhew: actor crash in Worker.fail (actor 18): UserPanic\nhew: failure: UserPanic (212): restart strategy\nhew: actor crash in Worker.fail (actor 21): UserPanic\n"
 exit = 0

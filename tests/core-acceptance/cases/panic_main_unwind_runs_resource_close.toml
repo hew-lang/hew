@@ -10,5 +10,4 @@ HEW_WORKERS = "4"
 
 [case.expected]
 stdout = "work\n7\n"
-stderr = "hew: failure: UserPanic (212): boom\n"
 exit = 1

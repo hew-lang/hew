@@ -9,7 +9,7 @@ fn invoke(callback: fn() -> i64) -> i64 {
     callback()
 }
 
-fn main() -> i64 {
+fn run() -> i64 {
     let caller = ["caller owner".to_upper(), "sibling".to_upper()];
     let failure = Failure { message: "échec\0après".to_upper(), retained: ["callback owner".to_upper()] };
     let callback = || -> i64 {
@@ -18,4 +18,18 @@ fn main() -> i64 {
     };
     println(caller[0]);
     invoke(callback)
+}
+
+fn main() -> i64 {
+    scope {
+        run()
+    } handle failure {
+        match failure {
+            .Fault { message } => {
+                println(message);
+                1
+            }
+            .Deadline { .. } => 2,
+        }
+    }
 }

@@ -10,4 +10,3 @@ kind = "reject"
 code = "Mismatch"
 line = 10
 column = 34
-message = "type mismatch"

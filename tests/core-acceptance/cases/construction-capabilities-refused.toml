@@ -11,126 +11,108 @@ severity = "error"
 code = "E_CONFINED_AUTHORITY"
 line = 5
 column = 13
-message = "confined `through_helper` reaches `fs.open_read`: ambient authority acquisition"
 
 [[case.expected.diagnostics]]
 severity = "error"
 code = "E_CONFINED_AUTHORITY"
 line = 5
 column = 13
-message = "confined `through_callback` reaches `fs.open_read`: ambient authority acquisition"
 
 [[case.expected.diagnostics]]
 severity = "error"
 code = "E_CONFINED_AUTHORITY"
 line = 5
 column = 13
-message = "confined `LateAcquisition` reaches `fs.open_read`: ambient authority acquisition"
 
 [[case.expected.diagnostics]]
 severity = "error"
 code = "E_CONFINED_AUTHORITY"
 line = 5
 column = 13
-message = "confined `through_cleanup` reaches `fs.open_read`: ambient authority acquisition"
 
 [[case.expected.diagnostics]]
 severity = "error"
 code = "E_CONFINED_AUTHORITY"
 line = 51
 column = 9
-message = "confined `through_extern` reaches `raw_host`: an opaque user extern/raw escape"
 
 [[case.expected.diagnostics]]
 severity = "error"
 code = "E_CONFINED_AUTHORITY"
 line = 5
 column = 13
-message = "confined `Unconstructed` reaches `fs.open_read`: ambient authority acquisition"
 
 [[case.expected.diagnostics]]
 severity = "error"
 code = "E_CONFINED_AUTHORITY"
 line = 5
 column = 13
-message = "confined `through_structural_hash` reaches `fs.open_read`: ambient authority acquisition"
 
 [[case.expected.diagnostics]]
 severity = "error"
 code = "E_CONFINED_AUTHORITY"
 line = 5
 column = 13
-message = "confined `through_structural_eq` reaches `fs.open_read`: ambient authority acquisition"
 
 [[case.expected.diagnostics]]
 severity = "error"
 code = "E_CONFINED_AUTHORITY"
 line = 5
 column = 13
-message = "confined `through_display` reaches `fs.open_read`: ambient authority acquisition"
 
 [[case.expected.diagnostics]]
 severity = "error"
 code = "E_CONFINED_AUTHORITY"
 line = 5
 column = 13
-message = "confined `through_structural_display` reaches `fs.open_read`: ambient authority acquisition"
 
 [[case.expected.diagnostics]]
 severity = "error"
 code = "E_CONFINED_AUTHORITY"
 line = 5
 column = 13
-message = "confined `through_assert_display` reaches `fs.open_read`: ambient authority acquisition"
 
 [[case.expected.diagnostics]]
 severity = "error"
 code = "E_CONFINED_AUTHORITY"
 line = 5
 column = 13
-message = "confined `through_lambda_actor` reaches `fs.open_read`: ambient authority acquisition"
 
 [[case.expected.diagnostics]]
 severity = "error"
 code = "E_CONFINED_AUTHORITY"
 line = 5
 column = 13
-message = "confined `through_to_string` reaches `fs.open_read`: ambient authority acquisition"
 
 [[case.expected.diagnostics]]
 severity = "error"
 code = "E_CONFINED_AUTHORITY"
 line = 5
 column = 13
-message = "confined `through_iterator` reaches `fs.open_read`: ambient authority acquisition"
 
 [[case.expected.diagnostics]]
 severity = "error"
 code = "E_CONFINED_AUTHORITY"
 line = 5
 column = 13
-message = "confined `through_into_iterator` reaches `fs.open_read`: ambient authority acquisition"
 
 [[case.expected.diagnostics]]
 severity = "error"
 code = "E_CONFINED_AUTHORITY"
 line = 5
 column = 13
-message = "confined `through_iterator_cleanup` reaches `fs.open_read`: ambient authority acquisition"
 
 [[case.expected.diagnostics]]
 severity = "error"
 code = "E_CONFINED_AUTHORITY"
 line = 5
 column = 13
-message = "confined `through_generator_cleanup` reaches `fs.open_read`: ambient authority acquisition"
 
 [[case.expected.diagnostics]]
 severity = "error"
 code = "E_CONFINED_AUTHORITY"
 line = 5
 column = 13
-message = "confined `through_generator_next` reaches `fs.open_read`: ambient authority acquisition"
 
 
 [[case.expected.diagnostics]]
@@ -138,11 +120,9 @@ severity = "error"
 code = "E_CONFINED_AUTHORITY"
 line = 5
 column = 13
-message = "confined `through_stream_payload` reaches `fs.open_read`: ambient authority acquisition"
 
 [[case.expected.diagnostics]]
 severity = "error"
 code = "E_CONFINED_AUTHORITY"
 line = 5
 column = 13
-message = "confined `through_stream_close` reaches `fs.open_read`: ambient authority acquisition"

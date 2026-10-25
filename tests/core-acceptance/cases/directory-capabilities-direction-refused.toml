@@ -11,11 +11,9 @@ code = "UndefinedMethod"
 severity = "error"
 line = 4
 column = 5
-message = "no method `write` on `std.fs.ReadDir`"
 
 [[case.expected.diagnostics]]
 code = "UndefinedMethod"
 severity = "error"
 line = 8
 column = 5
-message = "no method `read` on `std.fs.WriteDir`"

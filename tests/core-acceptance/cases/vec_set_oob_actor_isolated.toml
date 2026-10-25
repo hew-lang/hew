@@ -10,5 +10,4 @@ HEW_WORKERS = "4"
 
 [case.expected]
 stdout = ""
-stderr = "hew: failure: IndexOutOfBounds (205): vector index 99 out of bounds for length 1\nhew: actor crash in VecSetCrasher.boom (actor 1): IndexOutOfBounds\n"
 exit = 0

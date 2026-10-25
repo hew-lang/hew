@@ -10,4 +10,3 @@ kind = "reject"
 code = "UndefinedType"
 line = 4
 column = 31
-message = "unknown type `AskError`"

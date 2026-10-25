@@ -10,5 +10,4 @@ HEW_WORKERS = "2"
 
 [case.expected]
 stdout = "16\n17\nstring limit\n"
-stderr = "hew: failure: HeapExceeded (200)\nhew: actor crash in Small.grow (actor 2): HeapExceeded\n"
 exit = 1

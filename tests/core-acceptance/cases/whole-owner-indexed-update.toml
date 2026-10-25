@@ -7,5 +7,4 @@ timeout_seconds = 30
 
 [case.expected]
 stdout = "poked 5 7 renamed\nhook sees poked 1 99 renamed\ncaptured 1 11 2\ncaptured 2 21 3\n"
-stderr = "hew: failure: IndexOutOfBounds (205): vector index 9 out of bounds for length 1\nhew: actor crash in Keeper.out_of_bounds (actor 1): IndexOutOfBounds\n"
 exit = 0

@@ -25,6 +25,12 @@ fn main() fails dyn Error {
     println(f"recovered={recovered}");
     let width = parse("hello")?;
     println(f"width={width}");
-    let missing = parse("")?;
+    let missing = match parse("") {
+        .Ok(value) => value,
+        .Err(problem) => {
+            println(problem.fmt());
+            return error problem;
+        }
+    };
     println(f"unreachable={missing}");
 }

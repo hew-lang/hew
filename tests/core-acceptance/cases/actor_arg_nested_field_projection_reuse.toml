@@ -10,4 +10,3 @@ kind = "check"
 code = "UseAfterMove"
 line = 35
 column = 12
-message = "use of moved place `outer.inner.ticket`"

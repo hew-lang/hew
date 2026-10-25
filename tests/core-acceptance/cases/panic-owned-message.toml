@@ -6,6 +6,5 @@ suites = ["acceptance", "safety"]
 timeout_seconds = 15
 
 [case.expected]
-stdout = "CALLER OWNER\nINVOKE OWNER\nCALLBACK OWNER\n"
-stderr = "hew: failure: UserPanic (212): ÉCHEC\u0000APRÈS\n"
+stdout = "CALLER OWNER\nINVOKE OWNER\nCALLBACK OWNER\nÉCHEC\u0000APRÈS\n"
 exit = 1

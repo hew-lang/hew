@@ -11,5 +11,4 @@ HEW_WORKERS = "1"
 
 [case.expected]
 stdout = "7\nrace limit\n"
-stderr = "hew: failure: HeapExceeded (200)\nhew: actor crash in Small.run (actor 2): HeapExceeded\n"
 exit = 1

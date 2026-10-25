@@ -7,5 +7,4 @@ timeout_seconds = 30
 
 [case.expected]
 stdout = "len=2\n"
-stderr = ""
 exit = 0

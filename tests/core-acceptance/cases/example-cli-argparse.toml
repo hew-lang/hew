@@ -19,5 +19,4 @@ argv = [
 
 [case.expected]
 stdout = "port: 8080\nmode: safe\nverbose progress enabled\ninclude: public\ninclude: assets\nfile: index.html\nfile: -draft\nfile: \nfile: 雪\n"
-stderr = ""
 exit = 0

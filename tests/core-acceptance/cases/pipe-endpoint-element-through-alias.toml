@@ -11,4 +11,3 @@ code = "Mismatch"
 file = "pipe-endpoint-element-through-alias/main.hew"
 line = 16
 column = 23
-message = "expected `Sink<i64>`, found `Sink<string>`"

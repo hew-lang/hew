@@ -4,6 +4,7 @@ type AppError<T> {
 
 impl<T> Display for AppError<T> {
     fn fmt(self) -> string {
+        println("entry failure");
         "entry failure"
     }
 }

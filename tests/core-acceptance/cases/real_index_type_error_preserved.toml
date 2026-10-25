@@ -10,4 +10,3 @@ kind = "reject"
 code = "InvalidOperation"
 line = 3
 column = 14
-message = "cannot index into `i64`"

@@ -10,5 +10,4 @@ HEW_DETERMINISTIC = ""
 
 [case.expected]
 stdout = "pending restart cancelled\n"
-stderr = "hew: failure: UserPanic (212): cancel restart\nhew: actor crash in Worker.fail (actor 1): UserPanic\n"
 exit = 1

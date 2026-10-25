@@ -10,5 +10,4 @@ HEW_WORKERS = "1"
 
 [case.expected]
 stdout = "closed 1\nclosed 3\nclosed 2\nclosed 4\nclosed 5\nclosed 6\nclosed 7\nclosed 8\nclosed 9\nclosed 11\nclosed 10\nclosed 12\nclosed 13\nclosed 15\nclosed 14\nclosed 16\nmutations complete\n"
-stderr = ""
 exit = 0

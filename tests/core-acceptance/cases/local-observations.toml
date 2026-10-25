@@ -7,5 +7,4 @@ timeout_seconds = 30
 
 [case.expected]
 stdout = "local observations own subscriptions and report context\n"
-stderr = ""
 exit = 0

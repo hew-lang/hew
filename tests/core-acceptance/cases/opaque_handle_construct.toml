@@ -10,4 +10,3 @@ kind = "reject"
 code = "OpaqueDirectConstruct"
 line = 14
 column = 22
-message = "cannot construct opaque type `handles.Handle` directly; opaque handles are produced by their stdlib constructors [E_OPAQUE_CONSTRUCT]"

@@ -8,5 +8,4 @@ env = { HEW_DETERMINISTIC = "schedule=fifo,seed=0,budget=100000", HEW_ACTOR_LEAK
 
 [case.expected]
 stdout = "peer progressed\nserial cancelled\n7\npeer progressed\nnested cancelled\n7\nchecked fault recovered\n45\n"
-stderr = ""
 exit = 0

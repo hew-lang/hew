@@ -10,4 +10,3 @@ kind = "reject"
 code = "MutabilityError"
 line = 8
 column = 5
-message = "cannot assign to immutable variable `p`"

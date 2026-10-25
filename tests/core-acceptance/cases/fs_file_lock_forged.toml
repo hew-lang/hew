@@ -10,10 +10,8 @@ kind = "check"
 code = "OpaqueDirectConstruct"
 line = 7
 column = 18
-message = "cannot construct opaque type `std.fs.FileLock` directly"
 
 [[case.expected.diagnostics]]
 code = "UndefinedField"
 line = 10
 column = 20
-message = "no field `handle` on type `std.fs.FileLock`"

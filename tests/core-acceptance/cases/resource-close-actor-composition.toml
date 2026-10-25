@@ -10,5 +10,4 @@ HEW_WORKERS = "1"
 
 [case.expected]
 stdout = "closed 2\nclosed 1\nclosed 3\nclosed 4\nclosed 5\nclosed 6\nclosed 7\nworker complete\nbarrier\n"
-stderr = ""
 exit = 0

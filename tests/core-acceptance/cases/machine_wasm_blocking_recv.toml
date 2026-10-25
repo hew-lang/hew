@@ -10,4 +10,3 @@ kind = "reject"
 code = "MachineExhaustivenessError"
 line = 21
 column = 46
-message = "machine evaluator is not demonstrably pure: `recv(...)` is not admitted in a machine transition"

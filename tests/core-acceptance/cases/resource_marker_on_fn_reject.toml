@@ -10,4 +10,3 @@ kind = "reject"
 code = "Other"
 line = 4
 column = 1
-message = "unrecognised attribute `#[resource]` in this position [E_UNKNOWN_ATTRIBUTE]"

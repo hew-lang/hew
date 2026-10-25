@@ -10,4 +10,3 @@ kind = "reject"
 code = "E_BARE_VARIANT_PATTERN"
 line = 21
 column = 9
-message = "E_BARE_VARIANT_PATTERN: bare variant pattern `Present` is not a pattern; use `.Present` when the scrutinee type selects the enum, or qualify the variant with its type"

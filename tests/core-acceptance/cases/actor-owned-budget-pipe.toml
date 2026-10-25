@@ -10,5 +10,4 @@ HEW_WORKERS = "2"
 
 [case.expected]
 stdout = "6\n6\npipe limit\nsender retained\n"
-stderr = ""
 exit = 1

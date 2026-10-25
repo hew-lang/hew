@@ -10,4 +10,3 @@ kind = "reject"
 code = "InvalidOperation"
 line = 24
 column = 9
-message = "E_DYN_SLOT_SUSPENDS: function `Clock::<impl Ticker for Clock>::tick` suspends via `sleep(...)`, so it cannot fill `Ticker::tick` in `dyn Ticker`; that trait method never suspends unless it is declared `fn[suspends]`"

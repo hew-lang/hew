@@ -7,5 +7,4 @@ timeout_seconds = 20
 
 [case.expected]
 stdout = "COMPLETED CHILD RELEASED\n"
-stderr = "hew: failure: UserPanic (212): nested start failed\n"
 exit = 1

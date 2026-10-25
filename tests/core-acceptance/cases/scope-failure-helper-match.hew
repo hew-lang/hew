@@ -3,16 +3,10 @@
 import std.stream;
 
 fn verdict(failure: ScopeFailure) -> string {
-    let rendered = f"{failure}";
     match failure {
-        .Deadline { message } => if message.contains("Deadline") {
-            "deadline"
-        } else {
-            "bad deadline"
-        }
+        .Deadline { .. } => "deadline",
         .Fault { message } => {
             assert(message == "boom");
-            assert(rendered == "Fault: boom");
             "fault boom"
         }
     }

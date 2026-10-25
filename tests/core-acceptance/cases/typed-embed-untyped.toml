@@ -11,4 +11,3 @@ severity = "error"
 code = "InvalidOperation"
 line = 2
 column = 18
-message = "E_EMBED_NEEDS_TYPE"

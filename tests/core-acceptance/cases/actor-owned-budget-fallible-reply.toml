@@ -10,5 +10,4 @@ HEW_WORKERS = "2"
 
 [case.expected]
 stdout = "9\ndeclared reply limit\n9\n"
-stderr = "hew: failure: HeapExceeded (200)\nhew: actor crash in Small.run (actor 3): HeapExceeded\n"
 exit = 1

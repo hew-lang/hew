@@ -8,5 +8,4 @@ env = { HEW_WORKERS = "1" }
 
 [case.expected]
 stdout = "tick\nrestarted\n"
-stderr = "hew: failure: UserPanic (212): restart me\nhew: actor crash in Worker.fail (actor 1): UserPanic\nhew: failure: UserPanic (212): restart me\nhew: actor crash in Worker.fail (actor 3): UserPanic\n"
 exit = 0

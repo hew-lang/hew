@@ -10,4 +10,3 @@ kind = "reject"
 code = "BoundsNotSatisfied"
 line = 9
 column = 55
-message = "not its declared supertrait"

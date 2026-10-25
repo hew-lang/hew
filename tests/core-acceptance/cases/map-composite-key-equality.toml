@@ -7,5 +7,4 @@ timeout_seconds = 15
 
 [case.expected]
 stdout = "3\nreversed\nempty suffix\nREPLACEMENT\n"
-stderr = ""
 exit = 0

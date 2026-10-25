@@ -7,5 +7,4 @@ timeout_seconds = 20
 
 [case.expected]
 stdout = "start\nstart\nbudget spent\n"
-stderr = "hew: failure: UserPanic (212): worker failed\nhew: actor crash in Worker.boom (actor 1): UserPanic\nhew: failure: UserPanic (212): worker failed\nhew: actor crash in Worker.boom (actor 3): UserPanic\n"
 exit = 1

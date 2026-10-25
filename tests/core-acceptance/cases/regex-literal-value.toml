@@ -7,5 +7,4 @@ timeout_seconds = 15
 
 [case.expected]
 stdout = "true\nfalse\ntrue\ntrue\nfalse\nloop matches: 3\ntrue\nclosed matches: 3\n"
-stderr = ""
 exit = 0

@@ -7,5 +7,4 @@ timeout_seconds = 15
 
 [case.expected]
 stdout = "left done exit/right done exit/parent exit/cross body/parent entry/right entry/\nparallel hooks and conflict passed\n"
-stderr = ""
 exit = 0

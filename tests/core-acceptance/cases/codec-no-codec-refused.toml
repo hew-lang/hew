@@ -11,4 +11,3 @@ severity = "error"
 code = "BoundsNotSatisfied"
 line = 24
 column = 13
-message = "type `Handle` does not implement trait `Serializable` required by `T`"

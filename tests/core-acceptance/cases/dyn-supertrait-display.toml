@@ -6,6 +6,5 @@ suites = ["acceptance", "safety"]
 timeout_seconds = 15
 
 [case.expected]
-stdout = "handled: parse failed: empty input\nrecovered=0\nwidth=5\n"
-stderr = "error: parse failed: empty input\n"
+stdout = "handled: parse failed: empty input\nrecovered=0\nwidth=5\nparse failed: empty input\n"
 exit = 1

@@ -7,5 +7,4 @@ timeout_seconds = 15
 
 [case.expected]
 stdout = "math functions match libm to six decimal places\n"
-stderr = ""
 exit = 0

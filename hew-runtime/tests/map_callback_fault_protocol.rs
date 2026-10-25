@@ -141,6 +141,7 @@ unsafe extern "C" fn equal_owned(
 }
 
 static VALUE: HewValueLayout = HewValueLayout {
+    code_owner: core::ptr::null(),
     release_start: None,
     size: size_of::<Owned>(),
     align: align_of::<Owned>(),

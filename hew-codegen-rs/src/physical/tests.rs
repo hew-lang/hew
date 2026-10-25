@@ -128,6 +128,7 @@ fn vector_descriptor_matches_the_runtime_c_abi() {
         offset_of!(HewValueLayout, clone_fn),
         offset_of!(HewValueLayout, drop_fn),
         offset_of!(HewValueLayout, release_start),
+        offset_of!(HewValueLayout, code_owner),
     ]
     .into_iter()
     .enumerate()

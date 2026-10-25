@@ -80,6 +80,7 @@ use crate::vec::HewVec;
 /// A `static` binding provides program-lifetime validity without any
 /// heap allocation.
 static VALUE_LAYOUT: HewValueLayout = HewValueLayout {
+    code_owner: core::ptr::null(),
     release_start: None,
     size: 0,
     align: 1,

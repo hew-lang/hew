@@ -423,6 +423,7 @@ mod tests {
     }
 
     const ENVIRONMENT_LAYOUT: HewValueLayout = HewValueLayout {
+        code_owner: core::ptr::null(),
         release_start: None,
         size: size_of::<Environment>(),
         align: align_of::<Environment>(),
@@ -688,6 +689,7 @@ mod tests {
         assert_eq!(counts.drops.load(Ordering::SeqCst), 2);
         // A captured ZST still has a mask byte, independently allocated/copied.
         let layout = HewValueLayout {
+            code_owner: core::ptr::null(),
             release_start: None,
             size: 1,
             align: 1,
@@ -741,6 +743,7 @@ mod tests {
             ptr::null_mut()
         }
         let layout = HewValueLayout {
+            code_owner: core::ptr::null(),
             release_start: None,
             size: 0,
             align: 1,

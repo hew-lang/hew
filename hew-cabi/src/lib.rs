@@ -14,6 +14,7 @@
 
 pub mod cabi;
 pub mod callable;
+pub mod code;
 pub mod coro;
 pub mod host_error;
 pub mod live;

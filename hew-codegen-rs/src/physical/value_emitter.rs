@@ -1410,6 +1410,7 @@ pub(super) fn value_descriptor_type<'ctx>(
             pointer.into(),
             pointer.into(),
             pointer.into(),
+            pointer.into(),
         ],
         false,
     )

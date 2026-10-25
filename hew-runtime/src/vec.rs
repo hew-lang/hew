@@ -622,6 +622,7 @@ pub unsafe extern "C" fn hew_vec_new_with_layout(layout: *const HewTypeLayout) -
             }
         };
         (*v).layout_storage = HewValueLayout {
+            code_owner: core::ptr::null(),
             release_start: None,
             size: descriptor.size,
             align: descriptor.align,
@@ -5096,6 +5097,7 @@ mod vec_owned_tests {
     #[test]
     fn zero_sized_elements_preserve_length_without_reading_or_writing_payload() {
         let layout = HewValueLayout {
+            code_owner: core::ptr::null(),
             release_start: None,
             size: 0,
             align: 1,
@@ -5138,6 +5140,7 @@ mod vec_owned_tests {
     #[test]
     fn plain_descriptor_uses_the_same_value_operations_without_thunks() {
         let layout = HewValueLayout {
+            code_owner: core::ptr::null(),
             release_start: None,
             size: size_of::<(i64, i64)>(),
             align: align_of::<(i64, i64)>(),
@@ -5291,6 +5294,7 @@ mod vec_owned_tests {
 
     fn owned_layout() -> HewValueLayout {
         HewValueLayout {
+            code_owner: core::ptr::null(),
             release_start: None,
             size: core::mem::size_of::<OwnedElem>(),
             align: core::mem::align_of::<OwnedElem>(),
@@ -5346,6 +5350,7 @@ mod vec_owned_tests {
         // freed separately afterwards.
         unsafe {
             let layout = HewValueLayout {
+                code_owner: core::ptr::null(),
                 release_start: None,
                 size: core::mem::size_of::<OwnedElem>(),
                 align: core::mem::align_of::<OwnedElem>(),
@@ -5388,6 +5393,7 @@ mod vec_owned_tests {
         // declared layout. The output owns the payload after `take` returns.
         unsafe {
             let layout = HewValueLayout {
+                code_owner: core::ptr::null(),
                 release_start: None,
                 size: core::mem::size_of::<OwnedElem>(),
                 align: core::mem::align_of::<OwnedElem>(),
@@ -5463,6 +5469,7 @@ mod vec_owned_tests {
     #[test]
     fn plain_set_accepts_an_element_alias() {
         let layout = HewValueLayout {
+            code_owner: core::ptr::null(),
             size: size_of::<i64>(),
             align: align_of::<i64>(),
             ownership_kind: HewTypeOwnershipKind::Plain,
@@ -5581,6 +5588,7 @@ mod vec_owned_tests {
         #[repr(C, align(64))]
         struct Aligned([u8; 64]);
         let layout = HewValueLayout {
+            code_owner: core::ptr::null(),
             size: size_of::<Aligned>(),
             align: align_of::<Aligned>(),
             ownership_kind: HewTypeOwnershipKind::Plain,
@@ -5852,6 +5860,7 @@ mod vec_owned_tests {
             return;
         }
         let layout = HewValueLayout {
+            code_owner: core::ptr::null(),
             release_start: None,
             size: core::mem::size_of::<OwnedElem>(),
             align: core::mem::align_of::<OwnedElem>(),

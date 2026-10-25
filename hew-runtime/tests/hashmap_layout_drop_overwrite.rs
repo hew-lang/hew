@@ -110,6 +110,7 @@ fn overwrite_drops_old_v_once_and_never_drops_stored_k() {
     // wouldn't even invoke.
     let kl = HewMapKeyLayout {
         value: HewValueLayout {
+            code_owner: core::ptr::null(),
             release_start: None,
             size: size_of::<i64>(),
             align: align_of::<i64>(),
@@ -121,6 +122,7 @@ fn overwrite_drops_old_v_once_and_never_drops_stored_k() {
         eq_fn: Some(eq_i64 as HewMapKeyEqThunk),
     };
     let vl = HewValueLayout {
+        code_owner: core::ptr::null(),
         release_start: None,
         size: size_of::<i64>(),
         align: align_of::<i64>(),
@@ -189,6 +191,7 @@ fn plain_v_overwrite_does_not_invoke_drop() {
     V_DROP_COUNT.store(0, Ordering::SeqCst);
     let kl = HewMapKeyLayout {
         value: HewValueLayout {
+            code_owner: core::ptr::null(),
             release_start: None,
             size: size_of::<i64>(),
             align: align_of::<i64>(),
@@ -200,6 +203,7 @@ fn plain_v_overwrite_does_not_invoke_drop() {
         eq_fn: Some(eq_i64 as HewMapKeyEqThunk),
     };
     let vl = HewValueLayout {
+        code_owner: core::ptr::null(),
         release_start: None,
         size: size_of::<i64>(),
         align: align_of::<i64>(),

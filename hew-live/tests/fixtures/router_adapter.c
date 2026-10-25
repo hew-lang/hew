@@ -52,6 +52,7 @@ static HewOwned_Router *state;
 static size_t active;
 typedef enum { NEW, RUNNING, QUIESCING, PAUSED, DISPOSING, CLOSED } Phase;
 static Phase phase;
+static Task *quiescing;
 
 static void retain(void *raw) { ((Task *)raw)->refs++; }
 static void release(void *raw) {
@@ -165,7 +166,8 @@ static router_callback_code_t finish(Task *task) {
     assert(task->pending == NULL);
     if (task->cancelled) {
         if (task->kind == ROUTE) active--;
-        else if (task->kind == SNAPSHOT && phase == QUIESCING) {
+        else if (task->kind == SNAPSHOT && quiescing == task) {
+            quiescing = NULL;
             hew_guest_resume();
             phase = RUNNING;
         }
@@ -176,7 +178,8 @@ static router_callback_code_t finish(Task *task) {
         result.is_err = task->failure.ptr != NULL;
         if (result.is_err) result.val.err = task->failure;
         else result.val.ok.accepted = task->snapshot;
-        if (phase == QUIESCING) {
+        if (quiescing == task) {
+            quiescing = NULL;
             if (result.is_err) hew_guest_resume();
             phase = result.is_err ? RUNNING : PAUSED;
         }
@@ -339,6 +342,7 @@ router_callback_code_t exports_hew_live_router_handler_quiesce(void) {
         task->completed = true;
     } else {
         phase = QUIESCING;
+        quiescing = task;
         hew_guest_begin_drain();
     }
     return pump(task);

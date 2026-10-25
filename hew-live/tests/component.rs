@@ -198,7 +198,17 @@ async fn exercise_router(engine: &Engine, component: &Component) {
                 .await
                 .unwrap();
             assert!(denied.unwrap_err().contains("destination grant denied"));
-            let snapshot = handler.call_quiesce(accessor).await.unwrap().unwrap();
+            let (first, second) = tokio::join!(
+                handler.call_quiesce(accessor),
+                handler.call_quiesce(accessor),
+            );
+            let snapshot = match (first.unwrap(), second.unwrap()) {
+                (Ok(snapshot), Err(error)) | (Err(error), Ok(snapshot)) => {
+                    assert!(error.contains("drain admitted calls"));
+                    snapshot
+                }
+                other => panic!("exactly one quiescence attempt must own admission: {other:?}"),
+            };
             assert_eq!(snapshot.accepted, 41);
             let refused = handler
                 .call_route(

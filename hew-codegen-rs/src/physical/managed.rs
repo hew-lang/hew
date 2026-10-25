@@ -5,10 +5,6 @@ use hew_cabi::value::HewTypeOwnershipKind;
 use hew_mir::physical::StorageOrigin;
 use hew_mir::physical::{ManagedProviderKind as Provider, ManagedStorageShape as Shape};
 
-#[expect(
-    clippy::too_many_arguments,
-    reason = "one projection binds the existing frame storage and occupancy authorities"
-)]
 pub(super) fn bind_frame_roots<'ctx>(
     module: &ModuleEmitter<'ctx, '_>,
     function: &PhysicalFunction,
@@ -18,7 +14,6 @@ pub(super) fn bind_frame_roots<'ctx>(
     flags: &BTreeMap<StorageId, PointerValue<'ctx>>,
     scopes: &BTreeMap<hew_mir::physical::TaskScopeId, PointerValue<'ctx>>,
 ) -> CodegenResult<()> {
-    let pointer = module.ctx.ptr_type(AddressSpace::default());
     let mut roots = flags
         .iter()
         .filter(|(id, _)| {
@@ -60,40 +55,7 @@ pub(super) fn bind_frame_roots<'ctx>(
             .as_pointer_value();
         roots.extend(scopes.values().map(|slot| (scope_layout, *slot, present)));
     }
-    let row_ty = module.ctx.struct_type(&[pointer.into(); 3], false);
-    let count = u32::try_from(roots.len())
-        .map_err(|_| CodegenError::FailClosed("too many frame roots".into()))?;
-    let table_ty = row_ty.array_type(count);
-    let table = frame.storage(module.ctx, table_ty.into(), "managed.frame.slots")?;
-    for (index, (layout, slot, flag)) in roots.into_iter().enumerate() {
-        // SAFETY: each index names one declared entry of the exact table.
-        let row = unsafe {
-            builder.build_in_bounds_gep(
-                table_ty,
-                table,
-                &[
-                    module.ctx.i32_type().const_zero(),
-                    module.ctx.i32_type().const_int(index as u64, false),
-                ],
-                "managed.frame.slot",
-            )
-        }
-        .llvm_ctx("address a live frame root")?;
-        for (index, entry) in [layout, slot, flag].into_iter().enumerate() {
-            let field = builder
-                .build_struct_gep(
-                    row_ty,
-                    row,
-                    u32::try_from(index).expect("three root fields"),
-                    "managed.frame.field",
-                )
-                .llvm_ctx("address typed root metadata")?;
-            builder
-                .build_store(field, entry)
-                .llvm_ctx("bind typed root metadata")?;
-        }
-    }
-    frame.bind_managed_roots(module.ctx, &module.llvm, builder, table, u64::from(count))?;
+    frame.bind_root_entries(module.ctx, &module.llvm, builder, &roots)?;
     Ok(())
 }
 
@@ -150,6 +112,73 @@ pub(super) fn operation_layout<'ctx>(
         ]),
     );
     Ok(layout.as_pointer_value())
+}
+
+/// A cleanup cursor retains an allocation after its children begin disposal.
+pub(super) fn flat_backing_layout<'ctx>(
+    ctx: &'ctx Context,
+    llvm: &Module<'ctx>,
+    bytes: u64,
+) -> CodegenResult<PointerValue<'ctx>> {
+    let name = format!("__hew_budget_flat_{bytes}");
+    if llvm.get_function(&name).is_none() {
+        let pointer = ctx.ptr_type(AddressSpace::default());
+        let function = llvm.add_function(
+            &name,
+            ctx.i32_type().fn_type(&[pointer.into(); 2], false),
+            Some(Linkage::Internal),
+        );
+        let builder = ctx.create_builder();
+        builder.position_at_end(ctx.append_basic_block(function, "entry"));
+        let identity = builder
+            .build_load(
+                pointer,
+                function.get_nth_param(0).unwrap().into_pointer_value(),
+                "backing.identity",
+            )
+            .llvm_ctx("read retained cleanup allocation")?;
+        let visit = get_or_declare_external_widened(
+            llvm,
+            "hew_managed_visit_backing",
+            ctx.i32_type().fn_type(
+                &[
+                    pointer.into(),
+                    pointer.into(),
+                    ctx.i64_type().into(),
+                    ctx.i8_type().into(),
+                ],
+                false,
+            ),
+            &[(3, Widen::Zero)],
+        )?;
+        let status = suspend::call_value(
+            &builder,
+            visit,
+            &[
+                function.get_nth_param(1).unwrap().into(),
+                identity.into(),
+                ctx.i64_type().const_int(bytes, false).into(),
+                ctx.i8_type().const_zero().into(),
+            ],
+            "backing.status",
+        )?
+        .into_int_value();
+        let skip = builder
+            .build_int_compare(
+                IntPredicate::EQ,
+                status,
+                ctx.i32_type().const_int(1, false),
+                "backing.skip",
+            )
+            .llvm_ctx("inspect retained backing")?;
+        let result = builder
+            .build_select(skip, ctx.i32_type().const_zero(), status, "backing.result")
+            .llvm_ctx("normalize already retained backing")?;
+        builder
+            .build_return(Some(&result))
+            .llvm_ctx("finish flat backing visit")?;
+    }
+    operation_layout(ctx, llvm, &name)
 }
 
 pub(super) fn value_layout_symbol(
@@ -691,7 +720,7 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
         visitor: PointerValue<'ctx>,
     ) -> CodegenResult<()> {
         let pointer = self.ctx.ptr_type(AddressSpace::default());
-        let callback = get_or_declare_external(
+        let callback = get_or_declare_external_widened(
             &self.llvm,
             "hew_managed_visit_backing",
             self.ctx.i32_type().fn_type(
@@ -703,6 +732,7 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
                 ],
                 false,
             ),
+            &[(3, Widen::Zero)],
         )?;
         let status = suspend::call_value(
             values.builder,

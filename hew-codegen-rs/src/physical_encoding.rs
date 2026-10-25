@@ -147,6 +147,13 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
     ) -> CodegenResult<()> {
         let transfers: &[ArgumentTransfer] = arguments;
         let row = family.row();
+        // Explicit source aliases acquire an account edge; physical copy glue
+        // keeps the raw row symbol under its surrounding materialization permit.
+        let symbol = if family == RuntimeCallFamily::RcClone {
+            "hew_rc_clone_managed"
+        } else {
+            row.symbol
+        };
         row.contract.ok_or_else(|| {
             CodegenError::FailClosed("runtime operation lacks its semantic contract".into())
         })?;
@@ -170,7 +177,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
                 .target
                 .extern_result_abi(&self.storage(result)?.ty)
                 .map_err(|error| CodegenError::FailClosed(error.to_string()))?;
-            return self.emit_c_call(row.symbol, &values, transfers, Some(result), &result_abi);
+            return self.emit_c_call(symbol, &values, transfers, Some(result), &result_abi);
         }
         let parameters = values
             .iter()
@@ -196,7 +203,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
         );
         let function = get_or_declare_external_widened(
             self.llvm,
-            row.symbol,
+            symbol,
             signature,
             &self.argument_widening(transfers)?,
         )?;

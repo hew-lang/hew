@@ -8,7 +8,7 @@ use super::*;
 use hew_mir::physical::PhysicalSharedId;
 use hew_types::RuntimeCallFamily;
 
-impl FunctionEmitter<'_, '_> {
+impl<'ctx> FunctionEmitter<'_, 'ctx> {
     /// `Rc.new`, `Rc.get` and `Rc.set`: the three forms that need the payload's
     /// layout. The counting, downgrade and weak-clone forms are ordinary
     /// direct calls over a pointer.
@@ -18,6 +18,7 @@ impl FunctionEmitter<'_, '_> {
         glue_id: PhysicalSharedId,
         transfers: &[ArgumentTransfer],
         result: Option<StorageId>,
+        failure: Option<&PhysicalEdge>,
     ) -> CodegenResult<()> {
         let glue = shared_glue(self.module, glue_id)?;
         let payload_layout = self
@@ -28,7 +29,6 @@ impl FunctionEmitter<'_, '_> {
             .clone();
         let payload_ty = llvm_type(self.ctx, &payload_layout.repr)?;
         let ptr = self.ctx.ptr_type(AddressSpace::default());
-        let symbol = family.row().symbol;
         match family {
             RuntimeCallFamily::RcNew => {
                 let source = transfers
@@ -46,10 +46,17 @@ impl FunctionEmitter<'_, '_> {
                     &glue.payload.ty.user_facing().to_string(),
                     "rc.type",
                 );
+                let result = result.ok_or_else(|| {
+                    CodegenError::FailClosed("`Rc.new` lacks its handle storage".into())
+                })?;
+                let result_layout = self.managed_value_layout(&self.storage(result)?.ty)?;
+                let status = self
+                    .value_emitter()
+                    .entry_scratch(self.ctx.i32_type().into(), "rc.status")?;
                 let function = get_or_declare_external(
                     self.llvm,
-                    symbol,
-                    ptr.fn_type(&[ptr.into(); 4], false),
+                    "hew_rc_new_managed",
+                    ptr.fn_type(&[ptr.into(); 6], false),
                 )?;
                 let value = self.runtime_call_value(
                     function,
@@ -66,18 +73,16 @@ impl FunctionEmitter<'_, '_> {
                             })?
                             .state
                             .into(),
+                        result_layout.into(),
+                        status.into(),
                     ],
                     "rc.new",
                 )?;
+                self.check_shared_budget_status(status, failure)?;
                 // Clearing the operand zeroes its slot, so the handover has to
                 // finish before the caller's copy of the payload is released.
                 self.clear_moved(transfers)?;
-                self.store(
-                    result.ok_or_else(|| {
-                        CodegenError::FailClosed("`Rc.new` lacks its handle storage".into())
-                    })?,
-                    value,
-                )
+                self.store(result, value)
             }
             RuntimeCallFamily::RcGet => {
                 let handle = self.load(
@@ -86,8 +91,11 @@ impl FunctionEmitter<'_, '_> {
                     })?,
                     "rc.handle",
                 )?;
-                let function =
-                    get_or_declare_external(self.llvm, symbol, ptr.fn_type(&[ptr.into()], false))?;
+                let function = get_or_declare_external(
+                    self.llvm,
+                    family.row().symbol,
+                    ptr.fn_type(&[ptr.into()], false),
+                )?;
                 let payload = self
                     .runtime_call_value(function, &[handle.into()], "rc.payload")?
                     .into_pointer_value();
@@ -127,19 +135,28 @@ impl FunctionEmitter<'_, '_> {
                     .llvm_ctx("stage a shared payload replacement")?;
                 let function = get_or_declare_external(
                     self.llvm,
-                    "hew_rc_set_release",
-                    ptr.fn_type(&[ptr.into(); 3], false),
+                    "hew_rc_set_release_checked",
+                    ptr.fn_type(&[ptr.into(); 4], false),
                 )?;
-                self.clear_moved(transfers)?;
+                let status = self
+                    .value_emitter()
+                    .entry_scratch(self.ctx.i32_type().into(), "rc.status")?;
                 let descriptor =
                     self.descriptor_pointer(&format!("__hew_shared_payload_{}_layout", glue_id.0))?;
                 let cursor = self
                     .runtime_call_value(
                         function,
-                        &[handle.into(), staged.into(), descriptor.into()],
+                        &[
+                            handle.into(),
+                            staged.into(),
+                            descriptor.into(),
+                            status.into(),
+                        ],
                         "rc.set",
                     )?
                     .into_pointer_value();
+                self.check_shared_budget_status(status, failure)?;
+                self.clear_moved(transfers)?;
                 release::drain(&self.value_emitter(), self.frame.as_ref(), cursor)
             }
             other => Err(CodegenError::FailClosed(format!(
@@ -165,7 +182,7 @@ impl FunctionEmitter<'_, '_> {
         )?;
         let function = get_or_declare_external(
             self.llvm,
-            RuntimeCallFamily::WeakUpgradeRc.row().symbol,
+            "hew_weak_upgrade_rc_managed",
             ptr.fn_type(&[ptr.into()], false),
         )?;
         let upgraded = self
@@ -186,6 +203,24 @@ impl FunctionEmitter<'_, '_> {
         self.builder.position_at_end(present);
         self.write_variant_value(self.slots[result.0 as usize], 0, &[upgraded.into()], option)?;
         self.emit_result_edge(Some(result), normal)
+    }
+
+    fn check_shared_budget_status(
+        &self,
+        slot: PointerValue<'ctx>,
+        failure: Option<&PhysicalEdge>,
+    ) -> CodegenResult<()> {
+        let status = self
+            .builder
+            .build_load(self.ctx.i32_type(), slot, "rc.status")
+            .llvm_ctx("read shared-value preflight status")?
+            .into_int_value();
+        self.check_budget_status(
+            status,
+            failure.ok_or_else(|| {
+                CodegenError::FailClosed("checked Rc operation lacks its cleanup edge".into())
+            })?,
+        )
     }
 
     /// Give up the caller's claim on every operand the operation adopts, so

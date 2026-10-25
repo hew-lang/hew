@@ -127,6 +127,18 @@ pub fn with_value_owner<R>(owner: &Option<ValueOwner>, run: impl FnOnce() -> R) 
     run()
 }
 
+/// Refund one compiler-described allocation immediately before physical free.
+///
+/// # Safety
+/// The current account owns this exact canonical backing edge, retained through
+/// completed child cleanup. Unpublished candidates run with an explicit `None`.
+#[no_mangle]
+pub unsafe extern "C" fn hew_budget_release_backing(identity: *const std::ffi::c_void, bytes: u64) {
+    if let Some(owner) = current_owner() {
+        owner.release_backing(identity, bytes);
+    }
+}
+
 impl ValueOwner {
     #[must_use]
     pub fn new(limit: Option<u64>) -> Self {

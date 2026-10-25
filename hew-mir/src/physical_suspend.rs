@@ -6,7 +6,11 @@ use std::collections::{BTreeMap, BTreeSet};
 pub(super) fn verify_task_scopes(function: &super::PhysicalFunction) -> Result<(), PhysicalError> {
     use super::{PhysicalOp, TaskScopeId};
     let mut declared = BTreeSet::new();
-    for op in function.blocks.iter().flat_map(|block| block.operations()) {
+    for op in function
+        .blocks
+        .iter()
+        .flat_map(super::types::PhysicalBlock::operations)
+    {
         if let PhysicalOp::TaskScopeEnter { scope, .. } = op {
             if !declared.insert(*scope) {
                 return Err(PhysicalError::new(

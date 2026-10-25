@@ -404,6 +404,51 @@ impl<'ctx> Frame<'ctx> {
         Ok(())
     }
 
+    pub(super) fn bind_root_entries(
+        &self,
+        ctx: &'ctx Context,
+        llvm: &Module<'ctx>,
+        builder: &Builder<'ctx>,
+        roots: &[(PointerValue<'ctx>, PointerValue<'ctx>, PointerValue<'ctx>)],
+    ) -> CodegenResult<()> {
+        let pointer = ctx.ptr_type(AddressSpace::default());
+        let row_ty = ctx.struct_type(&[pointer.into(); 3], false);
+        let count = u32::try_from(roots.len())
+            .map_err(|_| CodegenError::FailClosed("too many frame roots".into()))?;
+        let table_ty = row_ty.array_type(count);
+        let table = self.storage(ctx, table_ty.into(), "managed.frame.slots")?;
+        for (index, (layout, slot, flag)) in roots.iter().copied().enumerate() {
+            // SAFETY: each index names one declared entry of the exact table.
+            let row = unsafe {
+                builder.build_in_bounds_gep(
+                    table_ty,
+                    table,
+                    &[
+                        ctx.i32_type().const_zero(),
+                        ctx.i32_type().const_int(index as u64, false),
+                    ],
+                    "managed.frame.slot",
+                )
+            }
+            .llvm_ctx("address a live frame root")?;
+            for (index, entry) in [layout, slot, flag].into_iter().enumerate() {
+                let field = builder
+                    .build_struct_gep(
+                        row_ty,
+                        row,
+                        u32::try_from(index).expect("three root fields"),
+                        "managed.frame.field",
+                    )
+                    .llvm_ctx("address typed root metadata")?;
+                builder
+                    .build_store(field, entry)
+                    .llvm_ctx("bind typed root metadata")?;
+            }
+        }
+        self.bind_managed_roots(ctx, llvm, builder, table, u64::from(count))?;
+        Ok(())
+    }
+
     pub(super) fn bind_managed_roots(
         &self,
         ctx: &'ctx Context,
@@ -671,6 +716,23 @@ pub(super) fn handle_operation<'ctx>(
     Ok(())
 }
 
+fn managed_frame_type<'ctx>(
+    ctx: &'ctx Context,
+    module: &Module<'ctx>,
+) -> CodegenResult<inkwell::types::StructType<'ctx>> {
+    let pointer = ctx.ptr_type(AddressSpace::default());
+    let data_layout = module.get_data_layout();
+    let data_layout = data_layout
+        .as_str()
+        .to_str()
+        .map_err(|_| CodegenError::FailClosed("target data layout is not UTF-8".into()))?;
+    let size = ctx.ptr_sized_int_type(&TargetData::create(data_layout), None);
+    Ok(ctx.struct_type(
+        &[pointer.into(), size.into(), pointer.into(), pointer.into()],
+        false,
+    ))
+}
+
 #[cfg(test)]
 mod abi_tests {
     use super::super::actor::{c_mirror_mismatch, field_size};
@@ -733,21 +795,4 @@ mod abi_tests {
         reordered.swap(0, 1);
         assert!(mismatch(ctx.struct_type(&reordered, false)).is_some());
     }
-}
-
-fn managed_frame_type<'ctx>(
-    ctx: &'ctx Context,
-    module: &Module<'ctx>,
-) -> CodegenResult<inkwell::types::StructType<'ctx>> {
-    let pointer = ctx.ptr_type(AddressSpace::default());
-    let data_layout = module.get_data_layout();
-    let data_layout = data_layout
-        .as_str()
-        .to_str()
-        .map_err(|_| CodegenError::FailClosed("target data layout is not UTF-8".into()))?;
-    let size = ctx.ptr_sized_int_type(&TargetData::create(data_layout), None);
-    Ok(ctx.struct_type(
-        &[pointer.into(), size.into(), pointer.into(), pointer.into()],
-        false,
-    ))
 }

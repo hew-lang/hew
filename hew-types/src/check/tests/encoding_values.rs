@@ -8,6 +8,42 @@ use crate::{CloneKind, SendFact, ValueCapability, ValueClass, ValueMethodPlan};
 
 const VALUE_SOURCE: &str = "#[opaque] pub type Value {}";
 
+#[test]
+fn encoding_values_cross_local_receives_with_their_owned_layouts() {
+    let source = format!(
+        "{VALUE_SOURCE}\n\
+         type Wrapped {{ value: Value; nested: Vec<Option<Value>>; }}\n\
+         actor Inbox {{\n\
+             receive fn direct(value: Value) {{}}\n\
+             receive fn wrapped(value: Wrapped) {{}}\n\
+         }}"
+    );
+    for format in ["json", "yaml", "toml"] {
+        let module = ["std", "encoding", format].map(str::to_string);
+        let output = check_source_in_canonical_std_module(&source, &module);
+        assert!(output.errors.is_empty(), "{format}: {:?}", output.errors);
+
+        let wire = check_source_in_canonical_std_module(
+            &format!(
+                "{VALUE_SOURCE}\n\
+                 fn require_wire<T: Serializable>(value: T) {{}}\n\
+                 fn remote_payload(value: Value) {{ require_wire(value); }}"
+            ),
+            &module,
+        );
+        assert!(wire.errors.iter().any(|error| {
+            error.kind == TypeErrorKind::BoundsNotSatisfied
+                && error.message.contains("Serializable")
+        }));
+
+        let lookalike = check_source_in_module(&source, module.to_vec());
+        assert!(lookalike
+            .errors
+            .iter()
+            .any(|error| matches!(error.kind, TypeErrorKind::OpaqueMessagePayload { .. })));
+    }
+}
+
 fn encoding_ty(kind: BuiltinType) -> Ty {
     Ty::Named {
         args: vec![],
@@ -295,6 +331,7 @@ fn encoding_value_import_aliases_preserve_identity_inside_generics() {
                  type Envelope<T> {{ payload: T; }}\n\
                  fn identity(value: Envelope<Option<{spelling}>>) -> Envelope<Option<{spelling}>> {{ value }}"
             )));
+
             let output = check_items(items);
             assert!(
                 output.errors.is_empty(),

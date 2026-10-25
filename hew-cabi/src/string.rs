@@ -483,6 +483,32 @@ pub unsafe fn string_push(value: *mut HewString, scalar: char) -> *mut HewString
     unsafe { append_utf8(value, scalar.encode_utf8(&mut bytes).as_bytes(), 1) }
 }
 
+/// Exact payload capacity and COW uniqueness before appending UTF-8 bytes.
+/// The allocation path consumes this same growth policy.
+/// # Safety
+/// `value` is a live borrowed string or null, with no concurrent mutation.
+#[must_use]
+pub unsafe fn string_append_plan(value: *const HewString, added: usize) -> Option<(usize, bool)> {
+    if value.is_null() {
+        return Some((added, true));
+    }
+    // SAFETY: the caller pins this immutable header until mutation commits.
+    let old = unsafe { &*header(value) };
+    let length = old.byte_len.checked_add(added)?;
+    Some((
+        append_capacity(old.capacity, length),
+        old.rc.load(Ordering::Acquire) == 1,
+    ))
+}
+
+fn append_capacity(old: usize, length: usize) -> usize {
+    if length > old {
+        length.max(old.saturating_mul(2)).max(16)
+    } else {
+        old
+    }
+}
+
 unsafe fn append_utf8(
     mut value: *mut HewString,
     suffix: &[u8],
@@ -510,11 +536,7 @@ unsafe fn append_utf8(
             .checked_add(added_scalars)
             .unwrap_or_else(|| std::process::abort());
         let indexed = new_scalars != new_len;
-        let capacity = if new_len > old_capacity {
-            new_len.max(old_capacity.saturating_mul(2)).max(16)
-        } else {
-            old_capacity
-        };
+        let capacity = append_capacity(old_capacity, new_len);
         let total = allocation_size(capacity, indexed);
         if old.rc.load(Ordering::Acquire) != 1 {
             let allocation = crate::mem::buf_try_alloc(total).cast::<HewStringHeader>();

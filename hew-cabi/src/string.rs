@@ -127,6 +127,18 @@ unsafe fn header(value: *const HewString) -> *const HewStringHeader {
     value.cast()
 }
 
+/// Retained UTF-8 payload capacity, excluding headers and scalar index caches.
+///
+/// # Safety
+/// A non-null handle must remain live throughout this read.
+pub unsafe fn string_payload_capacity(value: *const HewString) -> usize {
+    if value.is_null() {
+        return 0;
+    }
+    // SAFETY: the caller retains the immutable allocation header.
+    unsafe { (*header(value)).capacity }
+}
+
 #[inline]
 unsafe fn data(value: *const HewString) -> *const u8 {
     // SAFETY: callers establish that `value` names a live managed allocation.

@@ -12,6 +12,8 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, MutexGuard};
 
+pub mod visit;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct BudgetExceeded {
     pub limit: Option<u64>,

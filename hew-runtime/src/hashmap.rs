@@ -145,6 +145,29 @@ pub struct HewLayoutHashMap {
     pub val_layout: HewValueLayout,
 }
 
+impl HewLayoutHashMap {
+    /// Borrow the typed live payload in one slot, excluding probe metadata.
+    /// # Safety
+    /// The map remains live and unmodified; `index` is below its capacity.
+    pub(crate) unsafe fn managed_slot(
+        &self,
+        index: usize,
+    ) -> Option<(*const c_void, *const c_void)> {
+        // SAFETY: the caller retains the validated map and bounds the index.
+        unsafe {
+            if *slot_state(self.entries, index, self.stride) != OCCUPIED {
+                return None;
+            }
+            Some((
+                slot_key(self.entries, index, self.stride, self.key_offset).cast(),
+                self.entries
+                    .add(index * self.stride + self.val_offset)
+                    .cast(),
+            ))
+        }
+    }
+}
+
 /// Opaque cursor for borrowing occupied entries from a layout-backed map.
 ///
 /// The cursor owns no collection data. The map must remain alive and must not

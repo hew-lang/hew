@@ -321,12 +321,15 @@ extern "C-unwind" fn hew_layout_bytes_drop(blob: *mut c_void) {
 // the concrete key capabilities verified by the compiler.
 
 macro_rules! key_layout {
-    ($name:ident, $ty:ty, $hash:expr, $eq:expr, $ownership:expr, $drop:expr) => {
+    ($name:ident, $ty:ty, $width:expr, $hash:expr, $eq:expr, $ownership:expr, $drop:expr) => {
         #[no_mangle]
         pub static $name: HewMapKeyLayout = HewMapKeyLayout {
             value: HewValueLayout {
                 code_owner: core::ptr::null(),
-                managed: core::ptr::null(),
+                managed: &hew_cabi::managed::HewManagedValueDescriptor {
+                    slot_bytes: $width,
+                    visit: None,
+                },
                 release_start: None,
                 size: core::mem::size_of::<$ty>(),
                 align: core::mem::align_of::<$ty>(),
@@ -343,6 +346,7 @@ macro_rules! key_layout {
 key_layout!(
     hew_layout_key_i32,
     i32,
+    4,
     Some(hew_layout_key_i32_hash),
     Some(hew_layout_key_i32_eq),
     HewTypeOwnershipKind::Plain,
@@ -351,6 +355,7 @@ key_layout!(
 key_layout!(
     hew_layout_key_i64,
     i64,
+    8,
     Some(hew_layout_key_i64_hash),
     Some(hew_layout_key_i64_eq),
     HewTypeOwnershipKind::Plain,
@@ -359,6 +364,7 @@ key_layout!(
 key_layout!(
     hew_layout_key_u32,
     u32,
+    4,
     Some(hew_layout_key_u32_hash),
     Some(hew_layout_key_u32_eq),
     HewTypeOwnershipKind::Plain,
@@ -367,6 +373,7 @@ key_layout!(
 key_layout!(
     hew_layout_key_u64,
     u64,
+    8,
     Some(hew_layout_key_u64_hash),
     Some(hew_layout_key_u64_eq),
     HewTypeOwnershipKind::Plain,
@@ -377,6 +384,7 @@ key_layout!(
 key_layout!(
     hew_layout_key_f32,
     f32,
+    4,
     None,
     None,
     HewTypeOwnershipKind::Plain,
@@ -385,6 +393,7 @@ key_layout!(
 key_layout!(
     hew_layout_key_f64,
     f64,
+    8,
     None,
     None,
     HewTypeOwnershipKind::Plain,
@@ -396,7 +405,10 @@ key_layout!(
 pub static hew_layout_key_bool: HewMapKeyLayout = HewMapKeyLayout {
     value: HewValueLayout {
         code_owner: core::ptr::null(),
-        managed: core::ptr::null(),
+        managed: &hew_cabi::managed::HewManagedValueDescriptor {
+            slot_bytes: 1,
+            visit: None,
+        },
         release_start: None,
         size: 1,
         align: 1,
@@ -413,7 +425,10 @@ pub static hew_layout_key_bool: HewMapKeyLayout = HewMapKeyLayout {
 pub static hew_layout_key_char: HewMapKeyLayout = HewMapKeyLayout {
     value: HewValueLayout {
         code_owner: core::ptr::null(),
-        managed: core::ptr::null(),
+        managed: &hew_cabi::managed::HewManagedValueDescriptor {
+            slot_bytes: 4,
+            visit: None,
+        },
         release_start: None,
         size: 4,
         align: 4,
@@ -430,7 +445,10 @@ pub static hew_layout_key_char: HewMapKeyLayout = HewMapKeyLayout {
 pub static hew_layout_key_string: HewMapKeyLayout = HewMapKeyLayout {
     value: HewValueLayout {
         code_owner: core::ptr::null(),
-        managed: core::ptr::null(),
+        managed: &hew_cabi::managed::HewManagedValueDescriptor {
+            slot_bytes: 8,
+            visit: Some(crate::owned_value_budget::visit::hew_managed_visit_string),
+        },
         release_start: None,
         size: core::mem::size_of::<*const hew_cabi::string::HewString>(),
         align: core::mem::align_of::<*const hew_cabi::string::HewString>(),
@@ -447,7 +465,10 @@ pub static hew_layout_key_string: HewMapKeyLayout = HewMapKeyLayout {
 pub static hew_layout_key_bytes: HewMapKeyLayout = HewMapKeyLayout {
     value: HewValueLayout {
         code_owner: core::ptr::null(),
-        managed: core::ptr::null(),
+        managed: &hew_cabi::managed::HewManagedValueDescriptor {
+            slot_bytes: 8,
+            visit: Some(crate::owned_value_budget::visit::hew_managed_visit_bytes),
+        },
         release_start: None,
         size: core::mem::size_of::<BytesTripleRepr>(),
         align: core::mem::align_of::<BytesTripleRepr>(),
@@ -470,11 +491,14 @@ pub static hew_layout_key_bytes: HewMapKeyLayout = HewMapKeyLayout {
 // HashMap::get can return an owned Option<V> without aliasing the slot.
 
 macro_rules! val_layout_plain {
-    ($name:ident, $ty:ty) => {
+    ($name:ident, $ty:ty, $width:expr) => {
         #[no_mangle]
         pub static $name: HewValueLayout = HewValueLayout {
             code_owner: core::ptr::null(),
-            managed: core::ptr::null(),
+            managed: &hew_cabi::managed::HewManagedValueDescriptor {
+                slot_bytes: $width,
+                visit: None,
+            },
             release_start: None,
             size: core::mem::size_of::<$ty>(),
             align: core::mem::align_of::<$ty>(),
@@ -485,17 +509,20 @@ macro_rules! val_layout_plain {
     };
 }
 
-val_layout_plain!(hew_layout_val_i32, i32);
-val_layout_plain!(hew_layout_val_i64, i64);
-val_layout_plain!(hew_layout_val_u32, u32);
-val_layout_plain!(hew_layout_val_u64, u64);
-val_layout_plain!(hew_layout_val_f32, f32);
-val_layout_plain!(hew_layout_val_f64, f64);
+val_layout_plain!(hew_layout_val_i32, i32, 4);
+val_layout_plain!(hew_layout_val_i64, i64, 8);
+val_layout_plain!(hew_layout_val_u32, u32, 4);
+val_layout_plain!(hew_layout_val_u64, u64, 8);
+val_layout_plain!(hew_layout_val_f32, f32, 4);
+val_layout_plain!(hew_layout_val_f64, f64, 8);
 
 #[no_mangle]
 pub static hew_layout_val_bool: HewValueLayout = HewValueLayout {
     code_owner: core::ptr::null(),
-    managed: core::ptr::null(),
+    managed: &hew_cabi::managed::HewManagedValueDescriptor {
+        slot_bytes: 1,
+        visit: None,
+    },
     release_start: None,
     size: 1,
     align: 1,
@@ -507,7 +534,10 @@ pub static hew_layout_val_bool: HewValueLayout = HewValueLayout {
 #[no_mangle]
 pub static hew_layout_val_char: HewValueLayout = HewValueLayout {
     code_owner: core::ptr::null(),
-    managed: core::ptr::null(),
+    managed: &hew_cabi::managed::HewManagedValueDescriptor {
+        slot_bytes: 4,
+        visit: None,
+    },
     release_start: None,
     size: 4,
     align: 4,
@@ -519,7 +549,10 @@ pub static hew_layout_val_char: HewValueLayout = HewValueLayout {
 #[no_mangle]
 pub static hew_layout_val_string: HewValueLayout = HewValueLayout {
     code_owner: core::ptr::null(),
-    managed: core::ptr::null(),
+    managed: &hew_cabi::managed::HewManagedValueDescriptor {
+        slot_bytes: 8,
+        visit: Some(crate::owned_value_budget::visit::hew_managed_visit_string),
+    },
     release_start: None,
     size: core::mem::size_of::<*const hew_cabi::string::HewString>(),
     align: core::mem::align_of::<*const hew_cabi::string::HewString>(),
@@ -531,7 +564,10 @@ pub static hew_layout_val_string: HewValueLayout = HewValueLayout {
 #[no_mangle]
 pub static hew_layout_val_bytes: HewValueLayout = HewValueLayout {
     code_owner: core::ptr::null(),
-    managed: core::ptr::null(),
+    managed: &hew_cabi::managed::HewManagedValueDescriptor {
+        slot_bytes: 8,
+        visit: Some(crate::owned_value_budget::visit::hew_managed_visit_bytes),
+    },
     release_start: None,
     size: core::mem::size_of::<BytesTripleRepr>(),
     align: core::mem::align_of::<BytesTripleRepr>(),
@@ -546,7 +582,10 @@ pub static hew_layout_val_bytes: HewValueLayout = HewValueLayout {
 #[no_mangle]
 pub static hew_layout_val_unit: HewValueLayout = HewValueLayout {
     code_owner: core::ptr::null(),
-    managed: core::ptr::null(),
+    managed: &hew_cabi::managed::HewManagedValueDescriptor {
+        slot_bytes: 0,
+        visit: None,
+    },
     release_start: None,
     size: 0,
     align: 1,

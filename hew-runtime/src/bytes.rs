@@ -96,7 +96,7 @@ unsafe fn refcount(data_ptr: *mut u8) -> &'static AtomicU32 {
     clippy::cast_ptr_alignment,
     reason = "header is 8-byte aligned from malloc, u32 needs 4"
 )]
-unsafe fn capacity(data_ptr: *mut u8) -> u32 {
+pub(crate) unsafe fn capacity(data_ptr: *mut u8) -> u32 {
     // SAFETY: Capacity is at offset 4 within the header (data_ptr - 4).
     // Caller guarantees data_ptr is valid.
     unsafe { data_ptr.sub(4).cast::<u32>().read() }

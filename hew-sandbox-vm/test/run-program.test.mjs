@@ -206,6 +206,19 @@ test("actor-owned mailbox refusal rolls back the recipient and preserves caller 
   assert.equal(result.exit_code, 1, JSON.stringify(result));
 });
 
+test("actor-owned map and set snapshots retain native Vec capacity", async () => {
+  const source = fs.readFileSync(
+    path.join(
+      repoRoot,
+      "tests/core-acceptance/cases/actor-owned-budget-map.hew",
+    ),
+    "utf8",
+  );
+  const result = await runProgram(source, "");
+  assert.equal(result.stdout, "2\n2\nsnapshot limit\n", JSON.stringify(result));
+  assert.equal(result.exit_code, 1, JSON.stringify(result));
+});
+
 test("actor-owned select charges the actual reply envelope and preserves the sender", async () => {
   const source = fs.readFileSync(
     path.join(

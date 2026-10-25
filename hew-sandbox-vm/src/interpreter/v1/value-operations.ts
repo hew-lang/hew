@@ -458,17 +458,23 @@ export function* collectionOperation(
     operation === "Elements" ||
     operation === "Entries"
   ) {
-    return {
+    const result: Extract<VmValue, { kind: "vector" }> = {
       kind: "vector",
       elementType: "",
-      items: [...receiver.entries.values()].map(({ key, value }) =>
-        operation === "Values"
-          ? cloneValue(value)
-          : operation === "Entries"
-            ? tuple(cloneValue(key), cloneValue(value))
-            : cloneValue(key),
-      ),
+      items: [],
     };
+    const items = [...receiver.entries.values()].map(({ key, value }) =>
+      operation === "Values"
+        ? cloneValue(value)
+        : operation === "Entries"
+          ? tuple(cloneValue(key), cloneValue(value))
+          : cloneValue(key),
+    );
+    // Native snapshots push into an initially empty Vec, retaining its normal
+    // growth capacity. A later semantic clone may use exact live length.
+    mutableVector(result, items.length);
+    result.items.push(...items);
+    return result;
   }
   let staged = receiver;
   if (

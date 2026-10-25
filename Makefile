@@ -1506,7 +1506,7 @@ test-ast-grep-contract:
 
 # These Hew-compiler-free behaviour tests have their own CI result. Source lint
 # still validates the real ABI/symbol inputs; these prove checker failures.
-test-tooling: test-build-harness test-build-version test-cabi-surface ## Test: verify build tooling and ABI checker behaviour
+test-tooling: test-build-harness test-build-version test-cabi-surface test-extern-string-abi ## Test: verify build tooling and ABI checker behaviour
 
 # Focused behaviour tests for the Hew JUnit transaction, shell discovery,
 # and compiled-Hew report aggregation. None needs a built compiler.
@@ -1676,6 +1676,10 @@ coverage-runtime:
 LINT_GATES += verify-extern-string-abi
 verify-extern-string-abi:
 	$(PYTHON) scripts/verify-extern-string-abi.py
+
+.PHONY: test-extern-string-abi
+test-extern-string-abi:
+	$(PYTHON) -B scripts/tests/test_extern_string_abi.py
 
 # Python only; no artifacts.
 

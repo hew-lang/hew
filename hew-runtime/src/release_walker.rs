@@ -36,6 +36,10 @@ pub(crate) enum ReleaseItem {
     RcSurvivors(Box<crate::rc::RcSurvivors>),
     /// Expand endpoint owners after its final I/O operation is quiescent.
     Sink { sink: *mut crate::stream::HewSink },
+    /// Wait for unpublished Pipe admission, then drain the receiving provider.
+    Stream {
+        stream: *mut crate::stream::HewStream,
+    },
     /// One initialized value; the descriptor consumes its semantic owners.
     Value {
         slot: *mut c_void,
@@ -308,6 +312,12 @@ unsafe fn expand(
             ReleaseItem::CodeRoot(root) => drop(root),
             ReleaseItem::RcSurvivors(wave) => return wave.step(pending),
             ReleaseItem::Sink { sink } => crate::stream::expand_sink(sink, pending),
+            ReleaseItem::Stream { stream } => {
+                if !crate::stream::prepare_stream_release(stream, ptr::null()) {
+                    std::process::abort();
+                }
+                crate::stream::expand_stream_release(stream, pending);
+            }
             ReleaseItem::Value { .. } => pending.push(item),
             ReleaseItem::String { value } => hew_cabi::string::string_release(value),
             ReleaseItem::Storage { owner, free } => free(owner),
@@ -851,6 +861,10 @@ pub(crate) unsafe fn visit_cursor(
                     (sink as *const *mut crate::stream::HewSink).cast(),
                     visitor,
                 ),
+                ReleaseItem::Stream { stream } => crate::stream::hew_managed_visit_stream(
+                    (stream as *const *mut crate::stream::HewStream).cast(),
+                    visitor,
+                ),
                 ReleaseItem::RcSurvivors(_) => UNDESCRIBED,
                 ReleaseItem::CodeRoot(_)
                 | ReleaseItem::Storage { .. }
@@ -974,6 +988,15 @@ pub unsafe extern "C" fn hew_release_poll(
             // SAFETY: this output slot remains writable through polling.
             unsafe { slot.write(value) };
             return 1;
+        }
+        if let ReleaseItem::Stream { stream } = item {
+            // SAFETY: this unique cursor pins the provider and its invocation.
+            if !unsafe { crate::stream::prepare_stream_release(stream, state) } {
+                cursor.pending.push(ReleaseItem::Stream { stream });
+                return 0;
+            }
+            unsafe { crate::stream::expand_stream_release(stream, &mut cursor.pending) };
+            continue;
         }
         // SAFETY: expansion consumes only one cursor-owned structural step.
         if let Some(summary) = unsafe { expand(item, &mut cursor.pending) } {

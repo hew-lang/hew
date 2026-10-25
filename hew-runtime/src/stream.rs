@@ -159,6 +159,9 @@ trait StreamBacking: Send + std::fmt::Debug {
     fn owned_values(&mut self) -> Vec<(*mut c_void, crate::vec::HewValueLayout)> {
         Vec::new()
     }
+    fn typed_core(&self) -> Option<Arc<crate::channel_core::ChannelCore>> {
+        None
+    }
 
     /// How a native receive reaches this backing's reactor handle, if it has
     /// one; see [`NativeRead`].
@@ -212,6 +215,14 @@ pub struct HewStream {
 }
 
 impl HewStream {
+    fn typed_core(&self) -> Option<Arc<crate::channel_core::ChannelCore>> {
+        self.channel
+            .as_ref()
+            .filter(|core| core.is_typed())
+            .cloned()
+            .or_else(|| self.inner.typed_core())
+    }
+
     pub(crate) fn exhausted(&self) -> bool {
         self.closed || self.remaining == Some(0)
     }
@@ -313,15 +324,26 @@ struct ChannelStream {
 }
 
 impl StreamBacking for ChannelStream {
+    fn typed_core(&self) -> Option<Arc<crate::channel_core::ChannelCore>> {
+        self.core.is_typed().then(|| self.core.clone())
+    }
     fn next(&mut self) -> Option<Item> {
         // Default (non-suspending) callers block the foreign thread on the core
         // condvar. Suspending callers never reach here — they go through
         // `hew_stream_await_next` + `hew_stream_pop_bytes`.
-        self.core.blocking_recv()
+        if self.core.is_typed() {
+            self.core.typed_content_recv(true)
+        } else {
+            self.core.blocking_recv()
+        }
     }
 
     fn try_next(&mut self, _layout: &crate::vec::HewValueLayout) -> Option<Item> {
-        self.core.try_recv()
+        if self.core.is_typed() {
+            self.core.typed_content_recv(false)
+        } else {
+            self.core.try_recv()
+        }
     }
 
     fn close(&mut self) {
@@ -551,6 +573,9 @@ struct LinesStream {
 }
 
 impl StreamBacking for LinesStream {
+    fn typed_core(&self) -> Option<Arc<crate::channel_core::ChannelCore>> {
+        self.upstream.typed_core()
+    }
     fn select_readiness(&self) -> SelectReadiness {
         adapter_select_readiness(self.upstream.select_readiness())
     }
@@ -660,6 +685,9 @@ struct ChunksStream {
 }
 
 impl StreamBacking for ChunksStream {
+    fn typed_core(&self) -> Option<Arc<crate::channel_core::ChannelCore>> {
+        self.upstream.typed_core()
+    }
     fn select_readiness(&self) -> SelectReadiness {
         adapter_select_readiness(self.upstream.select_readiness())
     }
@@ -750,6 +778,9 @@ struct TakeStream {
 }
 
 impl StreamBacking for TakeStream {
+    fn typed_core(&self) -> Option<Arc<crate::channel_core::ChannelCore>> {
+        self.upstream.typed_core()
+    }
     fn select_readiness(&self) -> SelectReadiness {
         adapter_select_readiness(self.upstream.select_readiness())
     }
@@ -848,29 +879,27 @@ pub unsafe extern "C" fn hew_stream_pipe_native(
     layout: *const hew_cabi::vec::HewValueLayout,
     sink_out: *mut *mut HewSink,
 ) -> *mut HewStream {
-    // SAFETY: the pair constructor accepts any capacity.
-    let pair = unsafe { hew_stream_channel(capacity) };
-    if pair.is_null() {
-        std::process::abort();
-    }
-    // SAFETY: the pair was just allocated by `hew_stream_channel`.
-    let mut pair = unsafe { Box::from_raw(pair) };
-    // SAFETY: the compiler lends a static descriptor for the owned element.
+    // SAFETY: the compiler lends the exact concrete element descriptor.
     let layout = unsafe {
         crate::channel_common::move_elem_layout_witness(layout, "hew_stream_pipe_native")
     };
-    // SAFETY: both halves are live and share the core this pair created.
+    let cap = usize::try_from(capacity.max(1)).expect("verified Pipe capacity");
+    // SAFETY: no endpoint is exposed before its canonical empty root is bound.
+    let core = unsafe { crate::channel_core::ChannelCore::new_typed(cap, *layout) };
+    let core_raw = Arc::as_ptr(&core).cast::<c_void>();
+    let stream = into_stream_ptr(ChannelStream { core: core.clone() });
+    let sink = into_sink_ptr(
+        core.clone(),
+        channel_sink_write,
+        channel_sink_flush,
+        channel_sink_close,
+    );
+    // SAFETY: fresh unique endpoints and a writable compiler-provided sink slot.
     unsafe {
-        if let Some(core) = (*pair.stream).channel.as_ref() {
-            core.stamp_elem_layout(layout);
-        }
-        *sink_out = pair.sink;
+        (*stream).channel = Some(core);
+        (*sink).set_channel_core(core_raw);
+        *sink_out = sink;
     }
-    let stream = pair.stream;
-    // The halves now belong to the caller; the pair drop frees only itself.
-    pair.sink = std::ptr::null_mut();
-    pair.stream = std::ptr::null_mut();
-    drop(pair);
     stream
 }
 
@@ -2000,6 +2029,11 @@ pub unsafe extern "C" fn hew_stream_release_begin(
     stream: *mut HewStream,
 ) -> *mut crate::release_walker::HewReleaseCursor {
     use crate::release_walker::{HewReleaseCursor, ReleaseItem};
+    if let Some(core) = unsafe { stream.as_ref() }.and_then(HewStream::typed_core) {
+        let cursor = HewReleaseCursor::new(vec![ReleaseItem::Stream { stream }]);
+        unsafe { (*cursor).set_value_owner(core.typed_owner()) };
+        return cursor;
+    }
     unsafe fn free_stream(owner: *mut c_void) {
         if !owner.is_null() {
             // SAFETY: the cursor owns the handle and has drained all queued values.
@@ -5192,4 +5226,63 @@ mod tests {
             "consumed element dropped by the consumer; queued element by teardown"
         );
     }
+}
+
+/// Traverse the unique receiving Pipe provider, never producer endpoint aliases.
+/// # Safety
+/// The descriptor retains the live Stream slot and provider through this walk.
+#[no_mangle]
+pub unsafe extern "C" fn hew_managed_visit_stream(
+    slot: *const c_void,
+    visitor: *const hew_cabi::managed::HewManagedStorageVisitor,
+) -> i32 {
+    // SAFETY: the compiler's Stream descriptor supplies its exact handle slot.
+    let stream = unsafe { *slot.cast::<*mut HewStream>() };
+    let Some(stream) = (unsafe { stream.as_ref() }) else {
+        return 0;
+    };
+    if let Some(core) = stream.typed_core() {
+        return unsafe { core.visit_typed(visitor) };
+    }
+    // File/socket content and legacy host channels contain no typed queued values.
+    0
+}
+
+pub(crate) unsafe fn prepare_stream_release(
+    stream: *mut HewStream,
+    state: *const crate::coro_state::HewCoroState,
+) -> bool {
+    let Some(core) = (unsafe { stream.as_ref() }).and_then(HewStream::typed_core) else {
+        return true;
+    };
+    let waker = if state.is_null() {
+        None
+    } else {
+        Some(unsafe {
+            crate::wake::OwnedWaker::retain(&*crate::coro_state::hew_coro_state_waker(state))
+        })
+    };
+    core.prepare_typed_close(waker)
+}
+
+pub(crate) unsafe fn expand_stream_release(
+    stream: *mut HewStream,
+    pending: &mut Vec<crate::release_walker::ReleaseItem>,
+) {
+    use crate::release_walker::ReleaseItem;
+    unsafe fn free(owner: *mut c_void) {
+        unsafe { drop(Box::from_raw(owner.cast::<HewStream>())) };
+    }
+    let Some(stream_ref) = (unsafe { stream.as_mut() }) else {
+        return;
+    };
+    let core = stream_ref.typed_core().expect("typed Stream release core");
+    // The allocation pins the core identity until its queued children and flat
+    // payload finish; its destructor must not start another content close.
+    stream_ref.closed = true;
+    pending.push(ReleaseItem::Storage {
+        owner: stream.cast(),
+        free,
+    });
+    core.expand_typed_close(pending);
 }

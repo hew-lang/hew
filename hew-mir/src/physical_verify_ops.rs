@@ -566,11 +566,89 @@ pub(crate) enum FaultState {
     MaybeActive,
 }
 
+#[derive(Debug)]
+pub(crate) struct FunctionInitialization {
+    pub(crate) available: super::PhysicalDebugAvailability,
+    pub(crate) frame_roots: super::PhysicalFrameRootPlan,
+}
+
+fn retain_frame_roots(
+    function: &PhysicalFunction,
+    state: &FlowState,
+    roots: &mut super::PhysicalFrameRootPlan,
+) {
+    roots
+        .slots
+        .extend(function.storage.iter().filter_map(|slot| {
+            (slot.own == OwnKind::Owned
+                && state.slots[slot.id.0 as usize] != InitState::Uninitialized
+                && !matches!(
+                    slot.origin,
+                    StorageOrigin::ActorState { .. } | StorageOrigin::Capture { .. }
+                ))
+            .then_some(slot.id)
+        }));
+}
+
+fn persistent_frame_roots(function: &PhysicalFunction) -> super::PhysicalFrameRootPlan {
+    let mut roots = super::PhysicalFrameRootPlan::default();
+    // Persistent host slots keep their existing visibility even when this
+    // invocation does not initialize them itself.
+    for slot in &function.storage {
+        if matches!(slot.origin, StorageOrigin::Session { .. }) {
+            roots.slots.insert(slot.id);
+            if let Some(projection) = function.place_storage.get(&slot.id) {
+                roots
+                    .slots
+                    .extend(projection.leaves.iter().map(|leaf| leaf.storage));
+            }
+        }
+    }
+    roots
+}
+
+fn retain_materialization_roots(
+    module: &PhysicalModule,
+    function: &PhysicalFunction,
+    block: &super::PhysicalBlock,
+    borrows: &BorrowDependents,
+    state: &FlowState,
+    roots: &mut super::PhysicalFrameRootPlan,
+) -> Result<(), PhysicalError> {
+    let super::PhysicalTerminator::Materialize { operations, .. } = &block.terminator else {
+        return Ok(());
+    };
+    if operations
+        .iter()
+        .any(|op| super::suspend::operation_suspends(&module.releases, op))
+    {
+        let mut acquired = state.clone();
+        for operation in operations {
+            if super::suspend::operation_suspends(&module.releases, operation) {
+                retain_frame_roots(function, &acquired, roots);
+            }
+            apply_operation(
+                module,
+                function,
+                borrows,
+                operation,
+                &mut acquired,
+                block.id,
+            )?;
+        }
+    }
+    Ok(())
+}
+
+#[expect(
+    clippy::too_many_lines,
+    reason = "observe frame roots within the existing initialization worklist"
+)]
 pub(crate) fn verify_initialization(
     module: &PhysicalModule,
     function: &PhysicalFunction,
     cleanup_needs_fault: Option<&BTreeSet<BlockId>>,
-) -> Result<super::PhysicalDebugAvailability, PhysicalError> {
+) -> Result<FunctionInitialization, PhysicalError> {
     let defer_plan = defer::verify_regions(module, function)?;
     defer::verify_calls(module, function, &defer_plan)?;
     let blocks = function
@@ -610,6 +688,7 @@ pub(crate) fn verify_initialization(
         }
     }
     let borrows = &BorrowDependents::of(function);
+    let mut frame_roots = persistent_frame_roots(function);
     let mut incoming = BTreeMap::from([(function.entry, vec![entry])]);
     // Visit blocks in loop-aware reverse postorder, lowest rank first, each at
     // most once per round. A loop settles before the code after it runs, so a
@@ -624,6 +703,9 @@ pub(crate) fn verify_initialization(
         for mut state in incoming[&block_id].clone() {
             defer::verify_entry_phase(&defer_plan, block_id, &state)?;
             for operation in &block.ops {
+                if super::suspend::operation_suspends(&module.releases, operation) {
+                    retain_frame_roots(function, &state, &mut frame_roots);
+                }
                 if cleanup_needs_fault.is_some_and(|blocks| blocks.contains(&block_id))
                     && (state.exit == 0 || state.exit & defer::ORDINARY != 0)
                     && matches!(operation, PhysicalOp::Destroy { cleanup, .. } | PhysicalOp::StorageDead { cleanup, .. }
@@ -635,6 +717,17 @@ pub(crate) fn verify_initialization(
                 }
                 apply_operation(module, function, borrows, operation, &mut state, block_id)?;
             }
+            if super::suspend::terminator_suspends(module, function, &block.terminator)? {
+                retain_frame_roots(function, &state, &mut frame_roots);
+            }
+            retain_materialization_roots(
+                module,
+                function,
+                block,
+                borrows,
+                &state,
+                &mut frame_roots,
+            )?;
             for (target, successor) in terminator_successors(
                 module,
                 function,
@@ -669,7 +762,10 @@ pub(crate) fn verify_initialization(
             }
         }
     }
-    Ok(debug_availability(module, function, incoming))
+    Ok(FunctionInitialization {
+        available: debug_availability(module, function, incoming),
+        frame_roots,
+    })
 }
 
 fn debug_availability(

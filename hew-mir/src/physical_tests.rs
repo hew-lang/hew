@@ -564,6 +564,57 @@ fn lower_source(source: &str) -> SemModule {
 }
 
 #[test]
+fn frame_roots_follow_live_owners_at_loop_and_child_suspension() {
+    for pause in [
+        "for i in 0..2 { assert(held.len() > i); }",
+        "pause(); assert(held.len() == 4);",
+    ] {
+        let source = format!(
+            r#"
+fn pause() {{ sleep(1ms); }}
+fn main() {{
+    {{ let temporary = "gone"; assert(temporary.len() == 4); }}
+    let held = "held";
+    {pause}
+}}
+"#
+        );
+        let semantic = lower_source(&source);
+        let physical = lower_physical_module(&semantic, target_for_inventory(&semantic)).unwrap();
+        let module = physical.module();
+        let function = module
+            .functions
+            .iter()
+            .find(|function| {
+                module
+                    .defs
+                    .path(module.callables[function.callable.0 as usize].declaration)
+                    == "main"
+            })
+            .unwrap();
+        let local_slot = |name| {
+            *module.debug.functions[&function.callable]
+                .locals
+                .iter()
+                .find(|(_, local)| local.name == name)
+                .unwrap()
+                .0
+        };
+        assert!(
+            !function
+                .frame_roots
+                .slots
+                .contains(&local_slot("temporary")),
+            "a disposed synchronous temporary is not a suspended frame root"
+        );
+        assert!(
+            function.frame_roots.slots.contains(&local_slot("held")),
+            "a live owner survives both cooperative loop polls and child calls"
+        );
+    }
+}
+
+#[test]
 fn deferred_value_comparison_proves_its_selected_physical_callees() {
     let semantic = lower_source(
         r"type Key { id: i64; }
@@ -2395,6 +2446,7 @@ fn verifier_rejects_overwriting_a_maybe_live_owner() {
         entry: BlockId(0),
         parameters: vec![],
         place_storage: BTreeMap::new(),
+        frame_roots: PhysicalFrameRootPlan::default(),
         storage: vec![
             PhysicalStorage {
                 id: StorageId(0),

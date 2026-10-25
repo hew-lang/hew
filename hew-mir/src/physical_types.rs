@@ -1483,6 +1483,13 @@ impl PhysicalBlock {
     }
 }
 
+/// Local owned storage that can be initialized at an invocation's quiescent
+/// entry. Derived by the same flow analysis that verifies initialization.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct PhysicalFrameRootPlan {
+    pub slots: BTreeSet<StorageId>,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct PhysicalFunction {
     pub callable: CallableId,
@@ -1491,6 +1498,7 @@ pub struct PhysicalFunction {
     pub storage: Vec<PhysicalStorage>,
     /// Verified root partitions and their target-realized projection paths.
     pub place_storage: BTreeMap<StorageId, PhysicalPlaceStorage>,
+    pub frame_roots: PhysicalFrameRootPlan,
     pub blocks: Vec<PhysicalBlock>,
 }
 

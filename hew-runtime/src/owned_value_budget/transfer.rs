@@ -42,6 +42,28 @@ impl DestinationBinding {
     }
 }
 
+/// Capture execution identity independently of optional budget accounting.
+pub(crate) fn current_binding() -> Option<DestinationBinding> {
+    let context = crate::execution_context::current_context();
+    // SAFETY: the installed context retains its lexical scope for this poll.
+    if let Some(scope) = unsafe {
+        context
+            .as_ref()
+            .and_then(|context| context.task_scope.as_ref())
+    } {
+        return Some(DestinationBinding {
+            actor_turn: scope.actor_turn,
+            rc_owner: scope.rc_owner.clone(),
+        });
+    }
+    let actor = crate::actor::hew_actor_self();
+    if actor.is_null() {
+        return None;
+    }
+    // SAFETY: the current dispatch pins its actor until this poll returns.
+    Some(unsafe { DestinationBinding::for_actor(actor) })
+}
+
 impl ValueOwner {
     pub(crate) fn execution_binding(&self) -> Option<DestinationBinding> {
         let identity = *self.0.incarnation.get()?;
@@ -196,6 +218,17 @@ impl ValueTransfer {
             "destination changed after acquisition"
         );
         self.walk.binding = Some(unsafe { DestinationBinding::for_actor(actor) });
+        self.prepared = true;
+        self.ready = false;
+    }
+
+    /// Bind a retained destination snapshot after its original dispatch ended.
+    pub(crate) fn set_destination_binding(&mut self, binding: Option<DestinationBinding>) {
+        assert!(
+            self.destination.is_none(),
+            "destination changed after acquisition"
+        );
+        self.walk.binding = binding;
         self.prepared = true;
         self.ready = false;
     }

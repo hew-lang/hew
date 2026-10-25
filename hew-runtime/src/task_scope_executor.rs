@@ -41,7 +41,7 @@ struct Driver {
     frame: *mut c_void,
     group: Option<RaceGroup>,
     fault: *mut HewFault,
-    owner: u64,
+    actor_turn: crate::lifetime::live_actors::ActorIncarnation,
     rc_owner: Option<Arc<crate::rc::RcAllocations>>,
     value_owner: Option<crate::owned_value_budget::ValueOwner>,
     request_deadline: crate::request_deadline::RequestDeadline,
@@ -72,7 +72,8 @@ impl TaskExecution {
                 frame: ptr::null_mut(),
                 group: None,
                 fault: ptr::null_mut(),
-                owner: crate::fault::owning_actor_at_spawn(),
+                // SAFETY: the scope retains the exact actor incarnation.
+                actor_turn: unsafe { (*(*task).scope).actor_turn },
                 // SAFETY: the scope outlives every submitted child.
                 rc_owner: unsafe { (*(*task).scope).rc_owner.clone() },
                 // SAFETY: the lexical drain retains the incarnation account.
@@ -161,7 +162,7 @@ impl TaskExecution {
                 if let Some(binding) =
                     crate::owned_value_budget::transfer::destination_binding(visitor)
                 {
-                    driver.owner = binding.actor_turn.actor_id();
+                    driver.actor_turn = binding.actor_turn;
                     driver.rc_owner = binding.rc_owner;
                 }
             }
@@ -195,6 +196,7 @@ impl ReadyWork for TaskExecution {
         let driver = unsafe { &mut *self.driver.get() };
         let previous = current_context();
         let mut context = HewExecutionContext {
+            actor_id: driver.actor_turn.actor_id(),
             // SAFETY: the execution reference retains task and its token/scope.
             cancel_token: unsafe { (*driver.task).cancel_token },
             // SAFETY: structured drain keeps scope alive through completion.
@@ -204,7 +206,7 @@ impl ReadyWork for TaskExecution {
             ..HewExecutionContext::default()
         };
         let _ = set_current_context(&raw mut context);
-        let finished = crate::fault::with_owning_actor(driver.owner, || {
+        let finished = crate::fault::with_owning_actor(driver.actor_turn.actor_id(), || {
             // SAFETY: this worker exclusively drives the retained continuation.
             unsafe { driver.poll(&self) }
         });
@@ -231,6 +233,7 @@ impl Driver {
                     release,
                 };
                 self.state = hew_coro_state_new(&raw const waker, (*self.task).cancel_token);
+                (*self.state).execution_mut().actor_turn = self.actor_turn;
                 (*self.state)
                     .execution_mut()
                     .rc_owner

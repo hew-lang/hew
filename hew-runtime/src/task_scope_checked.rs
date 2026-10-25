@@ -236,6 +236,10 @@ pub unsafe extern "C" fn hew_checked_scope_new(
         tasks: ptr::null_mut(),
         cancel_token,
         checked_deadline: ptr::null_mut(),
+        actor_turn: crate::owned_value_budget::transfer::current_binding().map_or(
+            crate::lifetime::live_actors::ActorIncarnation::NONE,
+            |binding| binding.actor_turn,
+        ),
         rc_owner: crate::rc::current_allocations(),
         value_owner: crate::owned_value_budget::current_owner(),
     }))
@@ -251,6 +255,7 @@ pub unsafe extern "C" fn hew_checked_scope_set_rc_owner(
 ) {
     // SAFETY: construction of this lexical scope has not published children.
     unsafe {
+        (*scope).actor_turn = (*state).execution().actor_turn;
         (*scope).rc_owner.clone_from(&(*state).execution().rc_owner);
         (*scope)
             .value_owner
@@ -424,6 +429,7 @@ pub unsafe extern "C" fn hew_managed_visit_task(
             kind,
             HewManagedWalkKind::PrepareTransfer
                 | HewManagedWalkKind::CommitTransfer
+                | HewManagedWalkKind::ResumeTransfer
                 | HewManagedWalkKind::AbortTransfer
         );
         let identity = if transfer {
@@ -483,7 +489,7 @@ pub unsafe extern "C" fn hew_managed_visit_task(
         })();
         if matches!(
             kind,
-            HewManagedWalkKind::CommitTransfer | HewManagedWalkKind::AbortTransfer
+            HewManagedWalkKind::ResumeTransfer | HewManagedWalkKind::AbortTransfer
         ) {
             if let Some(execution) = execution {
                 execution.unfreeze(identity);
@@ -501,22 +507,18 @@ pub unsafe extern "C" fn hew_managed_visit_task_scope(
     slot: *const c_void,
     visitor: *const hew_cabi::managed::HewManagedStorageVisitor,
 ) -> i32 {
-    use hew_cabi::managed::{HewManagedWalkKind, DESCEND, SKIP_DESCENDANTS};
+    use hew_cabi::managed::HewManagedWalkKind;
     // SAFETY: the invocation gate excludes scope mutation and destruction.
     unsafe {
         let scope = slot.cast::<*mut HewTaskScope>().read();
         if scope.is_null() {
             return 0;
         }
-        match crate::owned_value_budget::visit::storage(visitor, scope.cast(), 0) {
-            SKIP_DESCENDANTS => return 0,
-            DESCEND => {}
-            failure => return failure,
-        }
         if (*visitor).kind == HewManagedWalkKind::CommitTransfer {
             (*scope).value_owner = crate::owned_value_budget::transfer::destination_owner(visitor);
             if let Some(binding) = crate::owned_value_budget::transfer::destination_binding(visitor)
             {
+                (*scope).actor_turn = binding.actor_turn;
                 (*scope).rc_owner = binding.rc_owner;
             }
         }
@@ -1070,7 +1072,10 @@ pub unsafe extern "C-unwind" fn hew_checked_scope_wait_status(
                     values.push((state.result, *state.layout));
                 }
             }
-            close.driver = Some(ReleaseDriver::new(HewReleaseCursor::values(values)));
+            close.driver = Some(ReleaseDriver::with_value_owner(
+                HewReleaseCursor::values(values),
+                (*wait.scope).value_owner.clone(),
+            ));
             close.collected = true;
         }
         let parent = close.state;

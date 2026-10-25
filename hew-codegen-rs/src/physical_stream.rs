@@ -74,6 +74,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
         family: RuntimeCallFamily,
         arguments: &[ArgumentTransfer],
         result: StorageId,
+        failure: Option<&PhysicalEdge>,
     ) -> CodegenResult<()> {
         let index = usize::from(family == RuntimeCallFamily::SinkFromEncoder);
         let source = argument_source(&arguments[index]);
@@ -110,12 +111,47 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             inputs.push(sink_witness.as_pointer_value().into());
         }
         inputs.push(witness.into());
+        let checked = matches!(
+            family,
+            RuntimeCallFamily::SinkClone | RuntimeCallFamily::SinkFromEncoder
+        );
+        let status = if checked {
+            let status = self
+                .value_emitter()
+                .entry_scratch(self.ctx.i32_type().into(), "sink.status")?;
+            inputs.push(status.into());
+            Some(status)
+        } else {
+            None
+        };
         let function = get_or_declare_external(
             self.llvm,
-            family.c_symbol(),
+            if family == RuntimeCallFamily::SinkClone {
+                "hew_sink_clone_checked"
+            } else {
+                family.c_symbol()
+            },
             pointer.fn_type(&vec![pointer.into(); inputs.len()], false),
         )?;
         let value = suspend::call_value(&self.builder, function, &inputs, "stream.codec")?;
+        if let Some(status) = status {
+            let status = self
+                .builder
+                .build_load(self.ctx.i32_type(), status, "sink.status")
+                .llvm_ctx("read checked Sink construction")?
+                .into_int_value();
+            self.check_budget_status(
+                status,
+                failure.ok_or_else(|| {
+                    CodegenError::FailClosed("checked Sink construction lacks cleanup".into())
+                })?,
+            )?;
+        }
+        for transfer in arguments {
+            if let ArgumentTransfer::Move(source) = transfer {
+                self.clear_owned(*source)?;
+            }
+        }
         self.store(result, value)
     }
 
@@ -255,7 +291,8 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             pointer.fn_type(&[pointer.into()], false),
         )?;
         let fault = suspend::call_value(&self.builder, fault, &[request.into()], "stream.fault")?;
-        self.store_active_fault(fault, HEW_TRAP_USER_PANIC)
+        let code = self.state_value("hew_fault_code", fault.into_pointer_value())?;
+        self.store_active_fault_value(fault, code)
     }
 
     fn finish_stream(
@@ -329,7 +366,8 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             .build_conditional_branch(faulted, failed, ready)
             .llvm_ctx("dispatch generator poll fault")?;
         self.builder.position_at_end(failed);
-        self.store_active_fault(fault.into(), HEW_TRAP_USER_PANIC)?;
+        let code = self.state_value("hew_fault_code", fault)?;
+        self.store_active_fault_value(fault.into(), code)?;
         self.emit_edge(unwind)?;
         self.builder.position_at_end(ready);
         let some = self
@@ -487,12 +525,39 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             "hew_stream_read_take_native",
             self.ctx.i32_type().fn_type(&[pointer.into(); 2], false),
         )?;
-        suspend::call_value(
+        let taken = suspend::call_value(
             &self.builder,
             take,
             &[request.into(), slot.into()],
             "stream.read.taken",
-        )?;
+        )?
+        .into_int_value();
+        let accepted = self
+            .ctx
+            .append_basic_block(self.value, "stream.read.accepted");
+        let refused = self
+            .ctx
+            .append_basic_block(self.value, "stream.read.refused");
+        let absent = self
+            .ctx
+            .append_basic_block(self.value, "stream.read.absent");
+        self.builder
+            .build_switch(
+                taken,
+                invalid,
+                &[
+                    (self.ctx.i32_type().const_int(1, false), accepted),
+                    (self.ctx.i32_type().const_int(3, false), refused),
+                    (self.ctx.i32_type().const_zero(), absent),
+                ],
+            )
+            .llvm_ctx("publish only an acquired stream read result")?;
+        self.builder.position_at_end(refused);
+        self.initialize_stream_fault(request)?;
+        self.leave(&mut join, suspend::EXIT_UNWIND)?;
+        self.builder.position_at_end(absent);
+        self.leave(&mut join, NONE)?;
+        self.builder.position_at_end(accepted);
         self.leave(&mut join, SOME)?;
         self.builder.position_at_end(none);
         self.finish_stream(request, waker, cancelled)?;

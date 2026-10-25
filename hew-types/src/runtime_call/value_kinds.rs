@@ -605,7 +605,15 @@ impl RuntimeSemanticContract {
     /// ordinary cleanup, so a `var self` receiver or an actor seat stays whole.
     #[must_use]
     pub fn preserves_inputs_on_failure(self) -> bool {
-        self.failures == [RuntimeLogicalFailure::RcUnavailable]
+        (self.failures == [RuntimeLogicalFailure::HeapExceeded]
+            && matches!(
+                self.result,
+                RuntimeResultEffect::FreshOwned(
+                    RuntimeValueKind::PipeHalf(PipeHalfKind::Sink)
+                        | RuntimeValueKind::Applied(BuiltinType::Sink, _)
+                )
+            ))
+            || self.failures == [RuntimeLogicalFailure::RcUnavailable]
             || (!self.failures.is_empty()
                 && self.failures.iter().all(|failure| {
                     matches!(

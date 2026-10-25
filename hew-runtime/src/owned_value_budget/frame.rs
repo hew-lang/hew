@@ -35,23 +35,9 @@ pub unsafe extern "C" fn hew_managed_visit_invocation(
     // SAFETY: the canonical record and pinned view outlive this frozen walk.
     let record = unsafe { &*state.cast::<hew_cabi::coro::HewCoroInvocation>() };
     if let Some(frame) = unsafe { record.managed_frame.as_ref() } {
-        let slots = if frame.count == 0 {
-            &[][..]
-        } else {
-            // SAFETY: the compiler initialized this exact contiguous root table.
-            unsafe { core::slice::from_raw_parts(frame.slots, frame.count) }
-        };
-        for entry in slots {
-            // SAFETY: the same occupancy flag drives semantic cleanup.
-            if unsafe { entry.initialized.read() } == 0 {
-                continue;
-            }
-            // SAFETY: only initialized slots are exposed by the frozen frame.
-            let status = unsafe { visit_value(&*entry.layout, entry.slot, visitor) };
-            if status != 0 {
-                return status;
-            }
-        }
+        // Settle pending protocol ownership before freezing endpoints retained
+        // by ordinary slots. A typed write can hold its receiver's admission
+        // gate until this operation view cancels or quiesces that write.
         if let Some(operation) = unsafe { frame.operation.as_ref() } {
             if let Some(layout) = unsafe { operation.layout.as_ref() } {
                 // SAFETY: the active protocol owns this typed handle until
@@ -68,6 +54,23 @@ pub unsafe extern "C" fn hew_managed_visit_invocation(
                 .cast_mut()
                 .cast::<HewCoroState>();
             let status = unsafe { hew_managed_visit_invocation(child, visitor) };
+            if status != 0 {
+                return status;
+            }
+        }
+        let slots = if frame.count == 0 {
+            &[][..]
+        } else {
+            // SAFETY: the compiler initialized this exact contiguous root table.
+            unsafe { core::slice::from_raw_parts(frame.slots, frame.count) }
+        };
+        for entry in slots {
+            // SAFETY: the same occupancy flag drives semantic cleanup.
+            if unsafe { entry.initialized.read() } == 0 {
+                continue;
+            }
+            // SAFETY: only initialized slots are exposed by the frozen frame.
+            let status = unsafe { visit_value(&*entry.layout, entry.slot, visitor) };
             if status != 0 {
                 return status;
             }

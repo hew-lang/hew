@@ -269,7 +269,10 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
             family @ (RuntimeCallFamily::StreamFromGenerator
             | RuntimeCallFamily::SinkFromEncoder
             | RuntimeCallFamily::SinkClone) => {
-                self.emit_stream_codec_make(family, transfers, required_result()?)?;
+                self.emit_stream_codec_make(family, transfers, required_result()?, failure)?;
+                if family != RuntimeCallFamily::StreamFromGenerator {
+                    return self.emit_result_edge(result, normal);
+                }
             }
             RuntimeCallFamily::ActorCallFree => {
                 self.emit_direct_runtime_call(

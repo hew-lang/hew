@@ -418,13 +418,7 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
         for (index, row) in self.module.managed_types.values().enumerate() {
             let leaf = matches!(
                 row.shape,
-                Shape::Scalar
-                    | Shape::Handle(_)
-                    | Shape::Shared { weak: true, .. }
-                    | Shape::Provider {
-                        kind: Provider::Sink,
-                        ..
-                    }
+                Shape::Scalar | Shape::Handle(_) | Shape::Shared { weak: true, .. }
             );
             let visit = if leaf {
                 pointer.const_null()
@@ -485,6 +479,10 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
                     kind: Provider::Stream,
                     ..
                 } => Some("hew_managed_visit_stream"),
+                Shape::Provider {
+                    kind: Provider::Sink,
+                    ..
+                } => Some("hew_managed_visit_sink"),
                 Shape::Provider {
                     kind: Provider::Encoding(hew_types::BuiltinType::JsonValue),
                     ..

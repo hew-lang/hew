@@ -493,7 +493,7 @@ impl HewAsyncIo {
         let (won, waker, discarded) = {
             let mut state = self.state.lock_or_recover();
             match std::mem::replace(&mut *state, State::Cancelled) {
-                State::Pending(waker) => (true, waker, None),
+                State::Pending(waker) => (true, waker, None::<Result<IoValue, IoFailure>>),
                 #[cfg(not(target_arch = "wasm32"))]
                 State::Unpublished { result, waker } => (true, waker, Some(result)),
                 previous => {

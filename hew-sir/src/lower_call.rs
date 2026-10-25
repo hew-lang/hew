@@ -2393,6 +2393,7 @@ impl Builder<'_, '_> {
         let id = OpId(self.ops);
         self.ops += 1;
         let normal_target = normal.target;
+        let borrowed_owner = result_is_loan.then(|| lowered_args[0].operand.value);
         self.set_terminator(SemTerminator::RtCall {
             id,
             family,
@@ -2449,6 +2450,11 @@ impl Builder<'_, '_> {
             // back-edge, innermost first.
             self.scope_loans.extend(loans.iter().copied());
             if let Some(continuation) = continuation {
+                self.borrow_parents.insert(
+                    continuation,
+                    crate::PlaceBase::Value(borrowed_owner.expect("loan result has an owner")),
+                );
+                self.live_loans.insert(continuation);
                 self.scope_loans.push(continuation);
             }
         } else {

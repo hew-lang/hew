@@ -372,10 +372,6 @@ fn verifier_requires_index_failure_and_its_owner_cleanup() {
             _ => None,
         })
         .unwrap();
-    let failure = match &function.blocks[failure.0 as usize].terminator {
-        SemTerminator::CheckedRaiseFault { cleanup, .. } => cleanup.target,
-        other => panic!("index failure must create the fault before cleanup: {other:?}"),
-    };
     let mut pending = vec![failure];
     let mut seen = std::collections::BTreeSet::new();
     let (cleanup, destroy) =

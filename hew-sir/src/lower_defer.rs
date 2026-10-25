@@ -236,7 +236,7 @@ impl Builder<'_, '_> {
             } else {
                 None
             };
-            for step in self.plan_fault_drain(floor, &preserved, boundary.is_none()) {
+            for step in self.plan_fault_drain(floor, &preserved, boundary.is_none())? {
                 self.emit_exit_step(&step, true)?;
             }
             self.set_terminator(
@@ -245,7 +245,7 @@ impl Builder<'_, '_> {
                 }),
             )?;
         } else {
-            steps.extend(self.plan_fault_drain(floor, &preserved, boundary.is_none()));
+            steps.extend(self.plan_fault_drain(floor, &preserved, boundary.is_none())?);
             let end = boundary.map_or(super::cleanup::ExitEnd::Unwind, |body| {
                 super::cleanup::ExitEnd::Finish(body.finish)
             });

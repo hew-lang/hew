@@ -144,6 +144,63 @@ impl TrySendResult {
     }
 }
 
+/// Immutable content whose owner remains retained through partial writes.
+pub trait SinkContent: Send + Sync {
+    fn bytes(&self) -> &[u8];
+}
+
+/// Accepted bytes retain their original allocation and destruction receipt.
+pub struct PendingBytes {
+    storage: PendingStorage,
+    offset: usize,
+}
+enum PendingStorage {
+    Raw(Vec<u8>),
+    Retained(std::sync::Arc<dyn SinkContent>),
+}
+impl Default for PendingBytes {
+    fn default() -> Self {
+        Self::raw(Vec::new())
+    }
+}
+impl std::fmt::Debug for PendingBytes {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PendingBytes")
+            .field("remaining", &self.len())
+            .finish_non_exhaustive()
+    }
+}
+impl PendingBytes {
+    pub fn retained(content: std::sync::Arc<dyn SinkContent>) -> Self {
+        Self {
+            storage: PendingStorage::Retained(content),
+            offset: 0,
+        }
+    }
+    fn raw(bytes: Vec<u8>) -> Self {
+        Self {
+            storage: PendingStorage::Raw(bytes),
+            offset: 0,
+        }
+    }
+    fn clear(&mut self) {
+        *self = Self::default();
+    }
+    fn advance(&mut self, count: usize) {
+        self.offset += count;
+    }
+}
+impl std::ops::Deref for PendingBytes {
+    type Target = [u8];
+    fn deref(&self) -> &[u8] {
+        let bytes = match &self.storage {
+            PendingStorage::Raw(bytes) => bytes,
+            PendingStorage::Retained(content) => content.bytes(),
+        };
+        &bytes[self.offset..]
+    }
+}
+
 trait SinkOps: Send {
     fn retire(&mut self) -> bool {
         true
@@ -156,8 +213,11 @@ trait SinkOps: Send {
         set_last_error("this sink does not support nonblocking writes".into());
         TrySendResult::Failed
     }
-    fn take_pending(&mut self) -> Vec<u8> {
-        Vec::new()
+    fn take_pending(&mut self) -> PendingBytes {
+        PendingBytes::default()
+    }
+    fn try_write_owned(&mut self, data: PendingBytes) -> TrySendResult {
+        self.try_write_item(&data)
     }
     fn pending_content(&self) -> &[u8] {
         &[]
@@ -227,7 +287,7 @@ struct NonblockingSink<T> {
     try_write: fn(&mut T, &[u8]) -> std::io::Result<usize>,
     flush: fn(&mut T),
     close: fn(&mut T),
-    pending: Vec<u8>,
+    pending: PendingBytes,
     offset: usize,
 }
 
@@ -287,7 +347,7 @@ impl<T: Send> SinkOps for NonblockingSink<T> {
             Ok(0) => TrySendResult::Full,
             Ok(count) => {
                 if count < data.len() {
-                    self.pending.extend_from_slice(&data[count..]);
+                    self.pending = PendingBytes::raw(data[count..].to_vec());
                 }
                 TrySendResult::Accepted
             }
@@ -295,10 +355,40 @@ impl<T: Send> SinkOps for NonblockingSink<T> {
         }
     }
 
-    fn take_pending(&mut self) -> Vec<u8> {
-        let pending = std::mem::take(&mut self.pending);
-        let offset = std::mem::take(&mut self.offset);
-        pending.into_iter().skip(offset).collect()
+    fn try_write_owned(&mut self, mut data: PendingBytes) -> TrySendResult {
+        if !self.pending.is_empty() {
+            match (self.try_write)(&mut self.backing, &self.pending[self.offset..]) {
+                Ok(count) => {
+                    self.offset += count;
+                    if self.offset < self.pending.len() {
+                        return TrySendResult::Full;
+                    }
+                    self.pending.clear();
+                    self.offset = 0;
+                }
+                Err(error) => return try_write_error(&error),
+            }
+        }
+        if data.is_empty() {
+            return TrySendResult::Accepted;
+        }
+        match (self.try_write)(&mut self.backing, &data) {
+            Ok(0) => TrySendResult::Full,
+            Ok(count) => {
+                if count < data.len() {
+                    data.advance(count);
+                    self.pending = data;
+                }
+                TrySendResult::Accepted
+            }
+            Err(error) => try_write_error(&error),
+        }
+    }
+
+    fn take_pending(&mut self) -> PendingBytes {
+        let mut pending = std::mem::take(&mut self.pending);
+        pending.advance(std::mem::take(&mut self.offset));
+        pending
     }
 
     fn pending_content(&self) -> &[u8] {
@@ -354,10 +444,10 @@ impl PendingFinish {
     }
 
     /// Transfer the accepted remainder to its native finish operation.
-    pub fn take_pending(&mut self) -> Vec<u8> {
+    pub fn take_pending(&mut self) -> PendingBytes {
         self.inner
             .as_mut()
-            .map_or_else(Vec::new, |inner| inner.take_pending())
+            .map_or_else(PendingBytes::default, |inner| inner.take_pending())
     }
 
     /// Retained pipe identity for native cancellation.
@@ -543,12 +633,12 @@ impl HewSink {
     }
 
     /// Transfer buffered bytes to the sink's exclusive native write operation.
-    pub fn take_pending(&self) -> Vec<u8> {
+    pub fn take_pending(&self) -> PendingBytes {
         let mut state = self.state();
         state
             .inner
             .as_mut()
-            .map_or_else(Vec::new, |inner| inner.take_pending())
+            .map_or_else(PendingBytes::default, |inner| inner.take_pending())
     }
 
     /// Attach an opaque suspending-channel-core borrow (NEW-7). Called by the
@@ -599,6 +689,18 @@ impl HewSink {
             return TrySendResult::Closed;
         };
         inner.try_write_item(data)
+    }
+
+    /// Attempt an owned content write, retaining partial bytes without copying.
+    pub fn try_write_owned(&self, data: PendingBytes) -> TrySendResult {
+        let mut state = self.state();
+        if state.finished {
+            return TrySendResult::Closed;
+        }
+        state
+            .inner
+            .as_mut()
+            .map_or(TrySendResult::Closed, |inner| inner.try_write_owned(data))
     }
 
     /// Flush any buffered writes (file sinks).
@@ -746,7 +848,7 @@ pub fn into_nonblocking_sink_ptr<T: Send + 'static>(
                 try_write,
                 flush,
                 close,
-                pending: Vec::new(),
+                pending: PendingBytes::default(),
                 offset: 0,
             })),
             finished: false,

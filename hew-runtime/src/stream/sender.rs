@@ -193,6 +193,14 @@ impl SharedWrite {
         use hew_cabi::managed::{visit_value, HewManagedWalkKind, DESCEND, SKIP_DESCENDANTS};
         // SAFETY: the operation and every initialized slot remain pinned and frozen.
         unsafe {
+            // Stop any unpublished child admission before its borrowed input is frozen elsewhere.
+            let status = super::native::hew_managed_visit_stream_operation(
+                std::ptr::from_ref(&self.child).cast(),
+                visitor,
+            );
+            if status != 0 {
+                return status;
+            }
             if let Some((slot, _, owned)) = self.input {
                 match crate::owned_value_budget::visit::storage(
                     visitor,
@@ -216,13 +224,6 @@ impl SharedWrite {
                 }
             }
             let status = self.invocation.visit_managed(visitor);
-            if status != 0 {
-                return status;
-            }
-            let status = super::native::hew_managed_visit_stream_operation(
-                std::ptr::from_ref(&self.child).cast(),
-                visitor,
-            );
             if status != 0 {
                 return status;
             }
@@ -376,20 +377,34 @@ impl SharedWrite {
                     return 3;
                 }
             };
-            if self.owner.encoder.is_none() {
-                let (slot, allocation, _) = self.input.take().expect("shared write input");
-                // The child consumed the value; no typed slot remains in this wrapper.
-                // SAFETY: the child never borrows the source representation after construction.
+            if !unsafe { super::native::borrows_write_input(self.child) } {
+                self.child_consumed_input();
+            }
+        }
+        // SAFETY: this owner drives its unique underlying operation.
+        let status = unsafe { super::native::hew_stream_write_poll_native(self.child) };
+        if status == 1 && unsafe { super::native::borrows_write_input(self.child) } {
+            self.child_consumed_input();
+        }
+        if status == 0 && !self.park {
+            4
+        } else {
+            status
+        }
+    }
+
+    fn child_consumed_input(&mut self) {
+        if self.owner.encoder.is_none() {
+            if let Some((slot, allocation, _)) = self.input.take() {
+                // SAFETY: successful admission consumed the source representation without retaining a borrow.
                 unsafe { std::alloc::dealloc(slot.cast(), allocation) };
                 if let Some(owner) = &self.value_owner {
                     owner.release_backing(slot, self.input_slot_bytes);
                 }
                 self.argument = std::ptr::null_mut();
             }
-            self.encoded_live = false;
         }
-        // SAFETY: this owner drives its unique underlying operation.
-        unsafe { super::native::hew_stream_write_poll_native(self.child) }
+        self.encoded_live = false;
     }
 
     pub(super) unsafe fn take_fault(&mut self) -> *mut crate::fault::HewFault {

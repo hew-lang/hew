@@ -1313,7 +1313,7 @@ test-bench-calibration: ## Test: reject invalid calibration measurements and fai
 # Run `cargo test -p hew-runtime` for the full suite including QUIC, TLS, and profiler paths.
 RUNTIME_TEST_ARGS ?=
 test-runtime-unit:
-	$(TEST_RUN_ENV) cargo nextest run --profile ci -p hew-runtime --no-default-features $(RUNTIME_TEST_ARGS)
+	$(TEST_RUN_ENV) cargo nextest run --profile ci --no-fail-fast -p hew-runtime --no-default-features $(RUNTIME_TEST_ARGS)
 
 # Ratcheted wrappers for the Hew-language test suites.
 #

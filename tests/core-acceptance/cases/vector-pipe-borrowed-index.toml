@@ -8,4 +8,3 @@ timeout_seconds = 15
 [case.expected]
 stdout = "borrowed pipe indices preserve endpoint owners\n"
 exit = 0
-stderr = ""

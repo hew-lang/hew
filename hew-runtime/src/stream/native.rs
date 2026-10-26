@@ -1314,6 +1314,29 @@ mod tests {
         counter.fetch_add(1, Ordering::SeqCst);
     }
 
+    unsafe extern "C-unwind" fn drop_sink(slot: *mut c_void) {
+        // SAFETY: the descriptor describes one owning sink handle.
+        unsafe { super::super::hew_sink_close(slot.cast::<*mut HewSink>().read()) };
+    }
+
+    fn sink_layout() -> HewValueLayout {
+        static MANAGED: hew_cabi::managed::HewManagedValueDescriptor =
+            hew_cabi::managed::HewManagedValueDescriptor {
+                slot_bytes: size_of::<*mut HewSink>() as u64,
+                visit: Some(super::super::sender::hew_managed_visit_sink),
+            };
+        HewValueLayout {
+            size: size_of::<*mut HewSink>(),
+            align: align_of::<*mut HewSink>(),
+            ownership_kind: HewTypeOwnershipKind::LayoutManaged,
+            clone_fn: None,
+            drop_fn: Some(drop_sink),
+            release_start: None,
+            code_owner: std::ptr::null(),
+            managed: &raw const MANAGED,
+        }
+    }
+
     fn owned_layout() -> HewValueLayout {
         static MANAGED: hew_cabi::managed::HewManagedValueDescriptor =
             hew_cabi::managed::HewManagedValueDescriptor {
@@ -1556,10 +1579,7 @@ mod tests {
         let wake = waker(&signal);
         let drops = Arc::new(AtomicUsize::new(0));
         let layout = owned_layout();
-        let sink_layout = HewValueLayout {
-            drop_fn: None,
-            ..layout
-        };
+        let sink_layout = sink_layout();
         let mut sink = std::ptr::null_mut();
         // SAFETY: cancellation drains the operation before either endpoint closes.
         unsafe {
@@ -1601,10 +1621,7 @@ mod tests {
             managed: &raw const managed,
             ..owned_layout()
         };
-        let sink_layout = HewValueLayout {
-            drop_fn: None,
-            ..layout
-        };
+        let sink_layout = sink_layout();
         // SAFETY: all descriptors, slots and endpoints remain live through cancellation.
         unsafe {
             let state =

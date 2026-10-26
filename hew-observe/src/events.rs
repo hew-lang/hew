@@ -84,6 +84,14 @@ pub const CURRENT_TRACE_EVENT_METADATA: &[TraceEventMeta] = &[
         actionable: true,
     },
     TraceEventMeta {
+        name: "live.execution",
+        label: "live execution",
+        glyph: '\u{25B6}',
+        tone: TraceEventTone::Accent,
+        group: TraceEventGroup::Lifecycle,
+        actionable: true,
+    },
+    TraceEventMeta {
         name: "spawn",
         label: "spawn",
         glyph: '\u{25C6}',

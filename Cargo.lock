@@ -2037,7 +2037,7 @@ checksum = "2304e00983f87ffb38b55b444b5e3b60a884b5d30c0fca7d82fe33449bbe55ea"
 
 [[package]]
 name = "hew-analysis"
-version = "0.9.4"
+version = "0.10.0-rc1"
 dependencies = [
  "hew-lexer",
  "hew-parser",
@@ -2049,21 +2049,21 @@ dependencies = [
 
 [[package]]
 name = "hew-cabi"
-version = "0.9.4"
+version = "0.10.0-rc1"
 dependencies = [
  "libc",
 ]
 
 [[package]]
 name = "hew-calendar"
-version = "0.9.4"
+version = "0.10.0-rc1"
 dependencies = [
  "chrono",
 ]
 
 [[package]]
 name = "hew-capability-gen"
-version = "0.9.4"
+version = "0.10.0-rc1"
 dependencies = [
  "serde",
  "serde_json",
@@ -2073,7 +2073,7 @@ dependencies = [
 
 [[package]]
 name = "hew-cli"
-version = "0.9.4"
+version = "0.10.0-rc1"
 dependencies = [
  "cc",
  "clap",
@@ -2116,7 +2116,7 @@ dependencies = [
 
 [[package]]
 name = "hew-codec"
-version = "0.9.4"
+version = "0.10.0-rc1"
 dependencies = [
  "base64 0.22.1",
  "ciborium",
@@ -2131,7 +2131,7 @@ dependencies = [
 
 [[package]]
 name = "hew-codegen-rs"
-version = "0.9.4"
+version = "0.10.0-rc1"
 dependencies = [
  "cc",
  "hew-cabi",
@@ -2153,7 +2153,7 @@ dependencies = [
 
 [[package]]
 name = "hew-compile"
-version = "0.9.4"
+version = "0.10.0-rc1"
 dependencies = [
  "hew-expand",
  "hew-hir",
@@ -2171,7 +2171,7 @@ dependencies = [
 
 [[package]]
 name = "hew-expand"
-version = "0.9.4"
+version = "0.10.0-rc1"
 dependencies = [
  "hew-lexer",
  "hew-parser",
@@ -2179,7 +2179,7 @@ dependencies = [
 
 [[package]]
 name = "hew-hir"
-version = "0.9.4"
+version = "0.10.0-rc1"
 dependencies = [
  "hew-parser",
  "hew-types",
@@ -2188,7 +2188,7 @@ dependencies = [
 
 [[package]]
 name = "hew-lexer"
-version = "0.9.4"
+version = "0.10.0-rc1"
 dependencies = [
  "logos",
  "serde",
@@ -2197,7 +2197,7 @@ dependencies = [
 
 [[package]]
 name = "hew-lib"
-version = "0.9.4"
+version = "0.10.0-rc1"
 dependencies = [
  "hew-runtime",
  "hew-std",
@@ -2205,7 +2205,7 @@ dependencies = [
 
 [[package]]
 name = "hew-live"
-version = "0.9.4"
+version = "0.10.0-rc1"
 dependencies = [
  "clap",
  "hew-cabi",
@@ -2227,7 +2227,7 @@ dependencies = [
 
 [[package]]
 name = "hew-lsp"
-version = "0.9.4"
+version = "0.10.0-rc1"
 dependencies = [
  "clap",
  "dashmap",
@@ -2249,7 +2249,7 @@ dependencies = [
 
 [[package]]
 name = "hew-mir"
-version = "0.9.4"
+version = "0.10.0-rc1"
 dependencies = [
  "hew-hir",
  "hew-parser",
@@ -2259,7 +2259,7 @@ dependencies = [
 
 [[package]]
 name = "hew-observe"
-version = "0.9.4"
+version = "0.10.0-rc1"
 dependencies = [
  "clap",
  "crossterm",
@@ -2276,7 +2276,7 @@ dependencies = [
 
 [[package]]
 name = "hew-observe-protocol"
-version = "0.9.4"
+version = "0.10.0-rc1"
 dependencies = [
  "serde",
  "serde_json",
@@ -2284,7 +2284,7 @@ dependencies = [
 
 [[package]]
 name = "hew-parser"
-version = "0.9.4"
+version = "0.10.0-rc1"
 dependencies = [
  "finl_unicode",
  "hew-lexer",
@@ -2295,7 +2295,7 @@ dependencies = [
 
 [[package]]
 name = "hew-pkg"
-version = "0.9.4"
+version = "0.10.0-rc1"
 dependencies = [
  "base64 0.22.1",
  "cargo-config2",
@@ -2323,7 +2323,7 @@ dependencies = [
 
 [[package]]
 name = "hew-runtime"
-version = "0.9.4"
+version = "0.10.0-rc1"
 dependencies = [
  "bytes",
  "cap-std",
@@ -2371,7 +2371,7 @@ dependencies = [
 
 [[package]]
 name = "hew-runtime-testkit"
-version = "0.9.4"
+version = "0.10.0-rc1"
 dependencies = [
  "hew-runtime",
  "libc",
@@ -2379,7 +2379,7 @@ dependencies = [
 
 [[package]]
 name = "hew-sir"
-version = "0.9.4"
+version = "0.10.0-rc1"
 dependencies = [
  "hew-codec",
  "hew-hir",
@@ -2389,7 +2389,7 @@ dependencies = [
 
 [[package]]
 name = "hew-std"
-version = "0.9.4"
+version = "0.10.0-rc1"
 dependencies = [
  "argon2",
  "base64 0.22.1",
@@ -2428,11 +2428,11 @@ dependencies = [
 
 [[package]]
 name = "hew-std-text-template"
-version = "0.9.4"
+version = "0.10.0-rc1"
 
 [[package]]
 name = "hew-testutil"
-version = "0.9.4"
+version = "0.10.0-rc1"
 dependencies = [
  "libc",
  "tempfile",
@@ -2440,7 +2440,7 @@ dependencies = [
 
 [[package]]
 name = "hew-types"
-version = "0.9.4"
+version = "0.10.0-rc1"
 dependencies = [
  "heck",
  "hew-cabi",
@@ -2460,7 +2460,7 @@ dependencies = [
 
 [[package]]
 name = "hew-wasm"
-version = "0.9.4"
+version = "0.10.0-rc1"
 dependencies = [
  "assert_cmd",
  "hew-analysis",
@@ -6987,7 +6987,7 @@ dependencies = [
 
 [[package]]
 name = "xtask"
-version = "0.9.4"
+version = "0.10.0-rc1"
 dependencies = [
  "hew-parser",
  "hew-types",

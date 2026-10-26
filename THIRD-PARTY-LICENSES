@@ -6,11 +6,11 @@ with the Hew compiler, runtime, and tools. Hew itself is dual-licensed under
 MIT OR Apache-2.0 (see LICENSE-MIT and LICENSE-APACHE in this archive).
 
 License summary by SPDX identifier:
-  Apache License 2.0 (406 packages)
+  Apache License 2.0 (407 packages)
   MIT License (115 packages)
   Unicode License v3 (19 packages)
   BSD 3-Clause "New" or "Revised" License (9 packages)
-  ISC License (8 packages)
+  ISC License (9 packages)
   Creative Commons Zero v1.0 Universal (3 packages)
   Boost Software License 1.0 (2 packages)
   Community Data License Agreement Permissive 2.0 (2 packages)
@@ -9239,33 +9239,34 @@ limitations under the License.
 
 ================================================================================
 Apache License 2.0
-  * hew-analysis 0.9.4 — https://github.com/hew-lang/hew
-  * hew-cabi 0.9.4 — https://github.com/hew-lang/hew
-  * hew-calendar 0.9.4 — https://github.com/hew-lang/hew
-  * hew-capability-gen 0.9.4 — https://github.com/hew-lang/hew
-  * hew-cli 0.9.4 — https://github.com/hew-lang/hew
-  * hew-codec 0.9.4 — https://github.com/hew-lang/hew
-  * hew-codegen-rs 0.9.4 — https://github.com/hew-lang/hew
-  * hew-compile 0.9.4 — https://github.com/hew-lang/hew
-  * hew-expand 0.9.4 — https://github.com/hew-lang/hew
-  * hew-hir 0.9.4 — https://github.com/hew-lang/hew
-  * hew-lexer 0.9.4 — https://github.com/hew-lang/hew
-  * hew-lib 0.9.4
-  * hew-lsp 0.9.4 — https://github.com/hew-lang/hew
-  * hew-mir 0.9.4 — https://github.com/hew-lang/hew
-  * hew-observe 0.9.4 — https://github.com/hew-lang/hew
-  * hew-observe-protocol 0.9.4 — https://github.com/hew-lang/hew
-  * hew-parser 0.9.4 — https://github.com/hew-lang/hew
-  * hew-pkg 0.9.4 — https://github.com/hew-lang/hew
-  * hew-runtime 0.9.4 — https://github.com/hew-lang/hew
-  * hew-runtime-testkit 0.9.4 — https://github.com/hew-lang/hew
-  * hew-sir 0.9.4 — https://github.com/hew-lang/hew
-  * hew-std 0.9.4 — https://github.com/hew-lang/hew
-  * hew-testutil 0.9.4
-  * hew-types 0.9.4 — https://github.com/hew-lang/hew
-  * hew-wasm 0.9.4 — https://github.com/hew-lang/hew
-  * hew-std-text-template 0.9.4 — https://github.com/hew-lang/hew
-  * xtask 0.9.4 — https://github.com/hew-lang/hew
+  * hew-analysis 0.10.0-rc1 — https://github.com/hew-lang/hew
+  * hew-cabi 0.10.0-rc1 — https://github.com/hew-lang/hew
+  * hew-calendar 0.10.0-rc1 — https://github.com/hew-lang/hew
+  * hew-capability-gen 0.10.0-rc1 — https://github.com/hew-lang/hew
+  * hew-cli 0.10.0-rc1 — https://github.com/hew-lang/hew
+  * hew-codec 0.10.0-rc1 — https://github.com/hew-lang/hew
+  * hew-codegen-rs 0.10.0-rc1 — https://github.com/hew-lang/hew
+  * hew-compile 0.10.0-rc1 — https://github.com/hew-lang/hew
+  * hew-expand 0.10.0-rc1 — https://github.com/hew-lang/hew
+  * hew-hir 0.10.0-rc1 — https://github.com/hew-lang/hew
+  * hew-lexer 0.10.0-rc1 — https://github.com/hew-lang/hew
+  * hew-lib 0.10.0-rc1
+  * hew-live 0.10.0-rc1 — https://github.com/hew-lang/hew
+  * hew-lsp 0.10.0-rc1 — https://github.com/hew-lang/hew
+  * hew-mir 0.10.0-rc1 — https://github.com/hew-lang/hew
+  * hew-observe 0.10.0-rc1 — https://github.com/hew-lang/hew
+  * hew-observe-protocol 0.10.0-rc1 — https://github.com/hew-lang/hew
+  * hew-parser 0.10.0-rc1 — https://github.com/hew-lang/hew
+  * hew-pkg 0.10.0-rc1 — https://github.com/hew-lang/hew
+  * hew-runtime 0.10.0-rc1 — https://github.com/hew-lang/hew
+  * hew-runtime-testkit 0.10.0-rc1 — https://github.com/hew-lang/hew
+  * hew-sir 0.10.0-rc1 — https://github.com/hew-lang/hew
+  * hew-std 0.10.0-rc1 — https://github.com/hew-lang/hew
+  * hew-testutil 0.10.0-rc1
+  * hew-types 0.10.0-rc1 — https://github.com/hew-lang/hew
+  * hew-wasm 0.10.0-rc1 — https://github.com/hew-lang/hew
+  * hew-std-text-template 0.10.0-rc1 — https://github.com/hew-lang/hew
+  * xtask 0.10.0-rc1 — https://github.com/hew-lang/hew
   * abnf_to_pest 0.5.1 — https://github.com/Nadrieril/dhall-rust
   * allocator-api2 0.2.21 — https://github.com/zakarumych/allocator-api2
   * android_system_properties 0.1.6 — https://github.com/nical/android_system_properties
@@ -10205,6 +10206,24 @@ SPECIAL, DIRECT, INDIRECT, OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES
 WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN AN ACTION
 OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF OR IN
 CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
+
+
+================================================================================
+ISC License
+  * libloading 0.9.0 — https://github.com/nagisa/rust_libloading/
+
+Copyright © 2015, Simonas Kazlauskas
+
+Permission to use, copy, modify, and/or distribute this software for any purpose with or without
+fee is hereby granted, provided that the above copyright notice and this permission notice appear
+in all copies.
+
+THE SOFTWARE IS PROVIDED "AS IS" AND THE AUTHOR DISCLAIMS ALL WARRANTIES WITH REGARD TO THIS
+SOFTWARE INCLUDING ALL IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS. IN NO EVENT SHALL THE
+AUTHOR BE LIABLE FOR ANY SPECIAL, DIRECT, INDIRECT, OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES
+WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN AN ACTION OF CONTRACT,
+NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF
+THIS SOFTWARE.
 
 
 ================================================================================

@@ -2,6 +2,26 @@
 
 ## [Unreleased]
 
+## [0.10.0-rc1] - 2026-10-26
+
+- Account for actor-owned managed values across native and browser execution,
+  including collections, suspended work, message admission and cleanup.
+- Preserve ownership through generator transfers and split coroutine frames.
+- Reduce communication allocations, unnecessary wake-ups and Observe read costs.
+- Add persistent native source sessions, typed portable components, explicit
+  replacement and generated asynchronous service bindings.
+- Supply the experimental live tools in the Linux x86_64 SDK, with editor
+  activation and Observe status/preview integration.
+- Add a pure-Hew keyed cache, implement independent RNG values in Hew and format
+  short conditional expressions compactly.
+- Render human compiler diagnostics with an AOT Hew component and retain
+  structured diagnostic contracts in the test harness.
+- Reclaim unreferenced retired actor identities.
+
+See the [release candidate notes](docs/releases/v0.10.0-rc1.md) for usage,
+qualification and migration guidance. This is a pre-release for real-program
+testing before 0.10.0.
+
 ## [0.9.3] - 2026-10-24
 
 - Prefer lexical values over same-named modules when resolving method calls.

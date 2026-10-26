@@ -1,3 +1,4 @@
 # Unreleased
 
-Changes after [v0.9.3](v0.9.3.md) belong here.
+The current candidate is [v0.10.0-rc1](v0.10.0-rc1.md). Changes after its frozen
+candidate commit belong here.

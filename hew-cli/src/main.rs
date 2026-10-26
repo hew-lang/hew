@@ -68,12 +68,7 @@ use std::path::{Path, PathBuf};
 use args::Cli;
 use hew_types::error::DiagChannel;
 
-/// Stack budget for threads that run the in-process compiler pipeline.
-///
-/// Compilation is recursive in several phases, so the platform thread default
-/// is not sufficient for larger programs. Keep every compiler entry point on
-/// the same explicit budget.
-pub(crate) const COMPILER_STACK_SIZE: usize = 64 * 1024 * 1024; // 64 MiB
+pub(crate) use hew_compile::COMPILER_STACK_SIZE;
 
 fn main() {
     // Spawn the real entry point on a thread with a large stack so deeply

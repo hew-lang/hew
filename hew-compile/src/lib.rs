@@ -11,6 +11,9 @@ use serde::{de::DeserializeOwned, Deserialize};
 /// Build identity shared by the compiler driver and its frontend consumers.
 pub const VERSION: &str = env!("HEW_VERSION");
 
+/// Stack budget for native threads running the recursive compiler pipeline.
+pub const COMPILER_STACK_SIZE: usize = 64 * 1024 * 1024;
+
 mod compile_time;
 mod coverage;
 mod host_admission;

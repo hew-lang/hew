@@ -767,9 +767,13 @@ jobs:
           - target: linux-x86_64
             os: ubuntu-24.04
             rust_target: x86_64-unknown-linux-gnu
+            bin_profile: release-lib
+            live_sdk: true
           - target: linux-aarch64
             os: ubuntu-24.04-arm
             rust_target: aarch64-unknown-linux-gnu
+            bin_profile: release
+            live_sdk: false
 
     runs-on: ${{ matrix.os }}
     container: ubuntu:22.04
@@ -835,29 +839,29 @@ jobs:
           restore-keys: |
             release-${{ matrix.target }}-jammy-cargo-
 
-      - name: Build the Hew toolchain
-        run: cargo build -p hew-cli --release --target ${{ matrix.rust_target }}
-
-      - name: Build libhew.a (runtime + stdlib)
-        # Non-LTO release-lib profile: the shipped archive must keep verbatim
-        # libstd members so external Rust staticlibs (--link-lib) can dedupe.
-        run: cargo build -p hew-lib --profile release-lib --target ${{ matrix.rust_target }}
+      - name: Build the matched Hew SDK artifacts
+        run: |
+          if [ "${{ matrix.live_sdk }}" = true ]; then
+            make live-release-artifacts TARGET_TRIPLE="${{ matrix.rust_target }}"
+          else
+            make release-host TARGET_TRIPLE="${{ matrix.rust_target }}"
+          fi
 
       - name: Prove release library consumer linking
         run: |
           scripts/test-release-lib-link.sh \
-            --hew "target/${{ matrix.rust_target }}/release/hew" \
+            --hew "target/${{ matrix.rust_target }}/${{ matrix.bin_profile }}/hew" \
             --archive "target/${{ matrix.rust_target }}/release-lib/libhew.a"
 
       - name: Verify Linux binaries
         run: |
           ldd --version 2>&1 | sed -n "1p"
-          "target/${{ matrix.rust_target }}/release/hew" --version
-          "target/${{ matrix.rust_target }}/release/hew" lsp --version
-          "target/${{ matrix.rust_target }}/release/hew" observe --version
+          "target/${{ matrix.rust_target }}/${{ matrix.bin_profile }}/hew" --version
+          "target/${{ matrix.rust_target }}/${{ matrix.bin_profile }}/hew" lsp --version
+          "target/${{ matrix.rust_target }}/${{ matrix.bin_profile }}/hew" observe --version
           test -f "target/${{ matrix.rust_target }}/release-lib/libhew.a"
 
-          if ldd "target/${{ matrix.rust_target }}/release/hew" | grep -Eqi 'llvm|mlir'; then
+          if ldd "target/${{ matrix.rust_target }}/${{ matrix.bin_profile }}/hew" | grep -Eqi 'llvm|mlir'; then
             echo "::error::Linux release binary dynamically links LLVM-family libraries"
             exit 1
           fi
@@ -867,13 +871,20 @@ jobs:
           VERSION="${RELEASE_TAG#v}"
           ARCHIVE_NAME="hew-v${VERSION}-${{ matrix.target }}"
 
+          # Only the Linux x86_64 SDK carries the experimental live boundary.
+          # Require its matching portable libraries instead of silently omitting them.
+          if [ "${{ matrix.live_sdk }}" = true ]; then
+            set -- --live-runtime "target/${{ matrix.rust_target }}/release-lib/libhew.so"
+          else
+            set -- --optional-wasi
+          fi
           sh scripts/stage-release-package.sh \
             --source-dir "$PWD" \
-            --bin-dir "target/${{ matrix.rust_target }}/release" \
+            --bin-dir "target/${{ matrix.rust_target }}/${{ matrix.bin_profile }}" \
             --native-lib "target/${{ matrix.rust_target }}/release-lib/libhew.a" \
             --native-triple "${{ matrix.rust_target }}" \
             --native-lib-name "libhew.a" \
-            --wasi-lib-dir "portable-release-libs/wasm32-wasip1" --optional-wasi \
+            --wasi-lib-dir "portable-release-libs/wasm32-wasip1" "$@" \
             --destination "${ARCHIVE_NAME}" \
             --completion-shells "bash zsh fish"
 
@@ -886,7 +897,7 @@ jobs:
 
       - name: Test packaged SDK
         timeout-minutes: 20
-        run: make test-packaged-sdk PACKAGED_SDK_ARCHIVE="${ARCHIVE_NAME}.tar.gz"
+        run: make test-packaged-sdk PACKAGED_SDK_ARCHIVE="${ARCHIVE_NAME}.tar.gz" PACKAGED_SDK_EXPERIMENTAL_LIVE=${{ matrix.live_sdk && 1 || 0 }}
 
       - name: Upload packaged SDK acceptance
         if: always()

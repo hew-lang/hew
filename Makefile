@@ -472,6 +472,22 @@ live-sdk: require-host-cargo-target wasm-runtime-debug ## Build: stage a matched
 		--completion-shells bash
 	@printf 'Live SDK: %s\nSet HEW_WASI_SDK to your installed WASI SDK for component source builds.\n' "$(LIVE_SDK_DEST)"
 
+# Linux experimental SDKs use one optimized, non-LTO profile for the compiler, runtime
+# and companions. Keep ordinary release products on their existing profiles.
+.PHONY: live-release-artifacts live-sdk-release
+live-release-artifacts: require-host-cargo-target ## Build: matched optimized experimental live execution tools
+	@test "$(HOST_TRIPLE)" = x86_64-unknown-linux-gnu || { echo 'The release live SDK is qualified only for Linux x86_64'; exit 1; }
+	cargo build -p hew-lib -p hew-cli -p hew-live --features hew-live/component --profile release-lib $(CARGO_TARGET_FLAG)
+
+LIVE_RELEASE_SDK_DEST ?= $(RELEASE_LIB_DIR)/live-sdk
+live-sdk-release: live-release-artifacts wasm-runtime-release ## Release: stage the optimized experimental Linux live SDK
+	$(MAKE) stage-release-package \
+		RELEASE_PACKAGE_BIN_DIR="$(RELEASE_LIB_DIR)" \
+		RELEASE_PACKAGE_NATIVE_LIB="$(RELEASE_LIBHEW)" \
+		RELEASE_PACKAGE_WASI_LIB_DIR="$(WASM_RELEASE_DIR)" \
+		RELEASE_PACKAGE_LIVE_RUNTIME="$(RELEASE_LIB_DIR)/libhew.so" \
+		RELEASE_PACKAGE_DEST="$(LIVE_RELEASE_SDK_DEST)"
+
 LIVE_BENCH_SDK ?= $(LIVE_SDK_DEST)
 LIVE_BENCH_SAMPLES ?= 20
 LIVE_BENCH_GENERATIONS ?= 4
@@ -612,6 +628,7 @@ RELEASE_PACKAGE_NATIVE_TRIPLE ?= $(HOST_TRIPLE)
 RELEASE_PACKAGE_NATIVE_LIB_NAME ?= $(LIBHEW_NAME)
 RELEASE_PACKAGE_WASI_LIB_DIR ?= $(WASM_RELEASE_DIR)
 RELEASE_PACKAGE_DEST ?= $(BUILD_DIR)/release-package
+RELEASE_PACKAGE_LIVE_RUNTIME ?=
 RELEASE_PACKAGE_COMPLETIONS ?= $(if $(filter Windows_NT,$(OS)),bash zsh fish powershell,bash zsh fish)
 
 # `make dev-dist` produces a self-contained, host-specific development
@@ -630,6 +647,7 @@ stage-release-package: ## Release: stage a validated distributable toolchain tre
 		--native-triple "$(RELEASE_PACKAGE_NATIVE_TRIPLE)" \
 		--native-lib-name "$(RELEASE_PACKAGE_NATIVE_LIB_NAME)" \
 		--wasi-lib-dir "$(RELEASE_PACKAGE_WASI_LIB_DIR)" \
+		$(if $(RELEASE_PACKAGE_LIVE_RUNTIME),--live-runtime "$(RELEASE_PACKAGE_LIVE_RUNTIME)") \
 		--destination "$(RELEASE_PACKAGE_DEST)" \
 		--completion-shells "$(RELEASE_PACKAGE_COMPLETIONS)"
 
@@ -1082,8 +1100,9 @@ build-docs-reference: ## Release: generate the versioned language and API refere
 
 PACKAGED_SDK_ARCHIVE ?=
 PACKAGED_SDK_RESULTS ?= build/packaged-sdk-acceptance
+PACKAGED_SDK_EXPERIMENTAL_LIVE ?= 0
 test-packaged-sdk: ## Release: execute SDK source/ABI contracts (PACKAGED_SDK_ARCHIVE=...)
-	$(PYTHON) scripts/test-packaged-sdk.py --archive "$(PACKAGED_SDK_ARCHIVE)" --output "$(PACKAGED_SDK_RESULTS)"
+	$(PYTHON) scripts/test-packaged-sdk.py --archive "$(PACKAGED_SDK_ARCHIVE)" --output "$(PACKAGED_SDK_RESULTS)" $(if $(filter 1,$(PACKAGED_SDK_EXPERIMENTAL_LIVE)),--experimental-live)
 
 # Prove the shipped archive can link a real Rust staticlib through the public
 # `hew build --link-lib` interface. Rust controls archive member names, so the

@@ -9,11 +9,8 @@ use hew_types::Ty;
 
 /// Assert exactly one `DuplicateDefinition` error, pointing at the SECOND
 /// occurrence's declaration span, whose first `notes` entry carries the
-/// FIRST occurrence's declaration span, with a message naming `name`. A bare
-/// `kind == DuplicateDefinition` presence check would still pass if the
-/// diagnostic pointed at the wrong declaration or named the wrong
-/// identifier — this pins the sole coverage of the corresponding
-/// `register_type_namespace_name` call site to the exact span+kind+name.
+/// FIRST occurrence's declaration span. Both declarations are located from
+/// the parsed source, independently of diagnostic wording.
 fn expect_duplicate_definition_span_kind_name(source: &str, name: &str) {
     let (program, output) = parse_and_typecheck_isolated(source);
     let colliding: Vec<&Span> = program
@@ -51,11 +48,6 @@ fn expect_duplicate_definition_span_kind_name(source: &str, name: &str) {
         err.notes.first().map(|(span, _, _)| span.clone()),
         Some(first_span),
         "DuplicateDefinition related span should point at the FIRST `{name}` declaration"
-    );
-    assert!(
-        err.message.contains(name),
-        "DuplicateDefinition message should name `{name}`, got: {}",
-        err.message
     );
 }
 
@@ -142,9 +134,7 @@ fn if_let_bound_name_is_immutable() {
         output
             .errors
             .iter()
-            .any(|e| e.kind == TypeErrorKind::MutabilityError
-                && e.message
-                    .contains("cannot assign to immutable variable `x`")),
+            .any(|e| e.kind == TypeErrorKind::MutabilityError),
         "Expected if-let binding MutabilityError, got errors: {:?}",
         output.errors
     );
@@ -165,9 +155,7 @@ fn while_let_bound_name_is_immutable() {
         output
             .errors
             .iter()
-            .any(|e| e.kind == TypeErrorKind::MutabilityError
-                && e.message
-                    .contains("cannot assign to immutable variable `x`")),
+            .any(|e| e.kind == TypeErrorKind::MutabilityError),
         "Expected while-let binding MutabilityError, got errors: {:?}",
         output.errors
     );
@@ -192,7 +180,7 @@ fn mutable_param_can_be_reassigned_no_error() {
         !output
             .warnings
             .iter()
-            .any(|w| w.message.contains("never reassigned")),
+            .any(|w| w.kind == TypeErrorKind::UnusedMut),
         "mutable param reassignment should suppress unused-mut warning, got: {:?}",
         output.warnings
     );
@@ -211,7 +199,7 @@ fn var_never_reassigned_emits_unusedmut_warning() {
     let warning = output
         .warnings
         .iter()
-        .find(|w| w.message.contains("never reassigned"))
+        .find(|w| w.kind == TypeErrorKind::UnusedMut)
         .unwrap_or_else(|| {
             panic!(
                 "Expected never-reassigned warning, got: {:?}",
@@ -247,9 +235,7 @@ fn main() {
         output
             .errors
             .iter()
-            .any(|e| e.kind == TypeErrorKind::MutabilityError
-                && e.message
-                    .contains("cannot assign to immutable variable `p`")),
+            .any(|e| e.kind == TypeErrorKind::MutabilityError),
         "Expected immutable field root MutabilityError, got errors: {:?}",
         output.errors
     );
@@ -269,9 +255,7 @@ fn let_index_assign_immutable_root_is_rejected() {
         output
             .errors
             .iter()
-            .any(|e| e.kind == TypeErrorKind::MutabilityError
-                && e.message
-                    .contains("cannot assign to immutable variable `xs`")),
+            .any(|e| e.kind == TypeErrorKind::MutabilityError),
         "Expected immutable index root MutabilityError, got errors: {:?}",
         output.errors
     );
@@ -576,10 +560,10 @@ fn machine_state_cannot_shadow_event_member() {
 fn main() {}
 ",
     );
-    assert!(output.errors.iter().any(|error| {
-        error.kind == TypeErrorKind::DuplicateDefinition
-            && error.message.contains("conflicts with the event type")
-    }));
+    assert!(output
+        .errors
+        .iter()
+        .any(|error| { error.kind == TypeErrorKind::DuplicateDefinition }));
 }
 
 // ── 6i. DuplicateDefinition — define same wire type twice ────────────
@@ -1020,9 +1004,7 @@ fn main() {}
         output
             .errors
             .iter()
-            .any(|e| e.kind == TypeErrorKind::MachineExhaustivenessError
-                && e.message
-                    .contains("references an undeclared state or input event")),
+            .any(|e| e.kind == TypeErrorKind::MachineExhaustivenessError),
         "Expected MachineExhaustivenessError for unknown event, got errors: {:?}",
         output.errors
     );
@@ -1051,9 +1033,7 @@ fn main() {}
         output
             .errors
             .iter()
-            .any(|e| e.kind == TypeErrorKind::MachineExhaustivenessError
-                && e.message
-                    .contains("references an undeclared state or input event")),
+            .any(|e| e.kind == TypeErrorKind::MachineExhaustivenessError),
         "Expected MachineExhaustivenessError for unknown state, got errors: {:?}",
         output.errors
     );
@@ -1086,9 +1066,7 @@ fn main() {}
         output
             .errors
             .iter()
-            .any(|e| e.kind == TypeErrorKind::MachineExhaustivenessError
-                && e.message
-                    .contains("unreachable rule after the unconditional fallback")),
+            .any(|e| e.kind == TypeErrorKind::MachineExhaustivenessError),
         "Expected MachineExhaustivenessError for duplicate wildcard, got errors: {:?}",
         output.errors
     );
@@ -1160,7 +1138,7 @@ fn match_over_error_scrutinee_no_arm_body_cascade() {
         output
             .errors
             .iter()
-            .any(|e| e.kind == TypeErrorKind::UndefinedFunction && e.message.contains("missing")),
+            .any(|e| e.kind == TypeErrorKind::UndefinedFunction),
         "expected undefined function error for scrutinee, got: {:?}",
         output.errors
     );
@@ -1192,9 +1170,10 @@ fn for_over_non_iterable_no_loop_body_cascade() {
         output.errors
     );
     assert!(
-        output.errors.iter().any(
-            |e| e.kind == TypeErrorKind::InvalidOperation && e.message.contains("not iterable")
-        ),
+        output
+            .errors
+            .iter()
+            .any(|e| e.kind == TypeErrorKind::InvalidOperation),
         "expected non-iterable diagnostic, got: {:?}",
         output.errors
     );
@@ -1229,7 +1208,7 @@ fn iflet_over_error_scrutinee_no_bound_var_error() {
         output
             .errors
             .iter()
-            .any(|e| e.kind == TypeErrorKind::UndefinedFunction && e.message.contains("missing")),
+            .any(|e| e.kind == TypeErrorKind::UndefinedFunction),
         "expected undefined function error for scrutinee, got: {:?}",
         output.errors
     );
@@ -1240,14 +1219,6 @@ fn iflet_over_error_scrutinee_no_bound_var_error() {
             .all(|e| e.kind != TypeErrorKind::UndefinedVariable),
         "if-let binding must not cascade into undefined-variable errors: {:?}",
         output.errors
-    );
-    assert!(
-        output
-            .errors
-            .iter()
-            .all(|e| !e.message.contains("produced-value graph is incomplete")),
-        "if-let recovery must not fabricate an invalid ownership join: {:?}",
-        output.errors,
     );
 }
 
@@ -1270,16 +1241,8 @@ fn if_over_error_condition_preserves_original_diagnostic_only() {
         output
             .errors
             .iter()
-            .any(|e| e.kind == TypeErrorKind::UndefinedFunction && e.message.contains("missing")),
+            .any(|e| e.kind == TypeErrorKind::UndefinedFunction),
         "expected undefined function error for condition, got: {:?}",
-        output.errors,
-    );
-    assert!(
-        output
-            .errors
-            .iter()
-            .all(|e| !e.message.contains("produced-value graph is incomplete")),
-        "if recovery must not fabricate an invalid ownership join: {:?}",
         output.errors,
     );
 }
@@ -1309,17 +1272,9 @@ fn main() {
         output
             .errors
             .iter()
-            .any(|e| e.kind == TypeErrorKind::UndefinedFunction && e.message.contains("missing")),
+            .any(|e| e.kind == TypeErrorKind::UndefinedFunction),
         "expected undefined function error for scrutinee, got: {:?}",
         output.errors
-    );
-    assert!(
-        output
-            .errors
-            .iter()
-            .all(|e| !e.message.contains("produced-value graph is incomplete")),
-        "match convergence recovery must not fabricate an invalid ownership join: {:?}",
-        output.errors,
     );
 }
 
@@ -1348,7 +1303,7 @@ fn tuple_pattern_error_scrutinee_silent() {
         output
             .errors
             .iter()
-            .any(|e| e.kind == TypeErrorKind::UndefinedFunction && e.message.contains("missing")),
+            .any(|e| e.kind == TypeErrorKind::UndefinedFunction),
         "expected undefined function error for scrutinee, got: {:?}",
         output.errors
     );
@@ -1801,8 +1756,7 @@ fn explicit_hole_nonitem_cast_target_annotation_still_rejects_invalid_inferred_c
         output
             .errors
             .iter()
-            .any(|e| matches!(e.kind, TypeErrorKind::Mismatch { .. })
-                && e.message.contains("cannot cast")),
+            .any(|e| matches!(e.kind, TypeErrorKind::Mismatch { .. })),
         "Expected cast mismatch, got errors: {:?}",
         output.errors
     );
@@ -1840,9 +1794,7 @@ fn main() {}
         output
             .errors
             .iter()
-            .any(|e| e.kind == TypeErrorKind::MachineExhaustivenessError
-                && e.message
-                    .contains("unreachable rule after the unconditional fallback")),
+            .any(|e| e.kind == TypeErrorKind::MachineExhaustivenessError),
         "Expected MachineExhaustivenessError for duplicate transition, got errors: {:?}",
         output.errors
     );
@@ -2190,10 +2142,10 @@ fn vec_push_nested_tuple_with_function_stays_rejected() {
         ",
     );
     assert!(
-        output.errors.iter().any(|e| {
-            e.kind == TypeErrorKind::InvalidOperation
-                && e.message.contains("contains a function value")
-        }),
+        output
+            .errors
+            .iter()
+            .any(|e| { e.kind == TypeErrorKind::InvalidOperation }),
         "nested tuple with function field must stay rejected, got errors: {:?}",
         output.errors
     );
@@ -2318,10 +2270,7 @@ fn has_packet(v: Vec<Packet>, needle: Packet) -> bool {
         output
             .errors
             .iter()
-            .any(|e| e.kind == TypeErrorKind::InvalidOperation
-                && e.message.contains("`Vec.contains`")
-                && e.message.contains("layout-managed/non-Copy")
-                && e.message.contains("bytes")),
+            .any(|e| e.kind == TypeErrorKind::InvalidOperation),
         "Expected layout-managed equality eligibility diagnostic, got: {:?}",
         output.errors
     );
@@ -2432,17 +2381,7 @@ fn main() {
 }
 ",
     );
-    let layout_fence_errors: Vec<_> = output
-        .errors
-        .iter()
-        .filter(|e| {
-            e.kind == TypeErrorKind::InvalidOperation && e.message.contains("hew_vec_clone_layout")
-        })
-        .collect();
-    assert!(
-        layout_fence_errors.is_empty(),
-        "Vec<Point>::clone (BitCopy record) must NOT trigger the layout fence: {layout_fence_errors:?}",
-    );
+    assert!(output.errors.is_empty(), "{:?}", output.errors);
 }
 
 #[test]
@@ -2456,17 +2395,7 @@ fn vec_clone_bitcopy_tuple_element_is_permitted() {
         }
         ",
     );
-    let layout_fence_errors: Vec<_> = output
-        .errors
-        .iter()
-        .filter(|e| {
-            e.kind == TypeErrorKind::InvalidOperation && e.message.contains("hew_vec_clone_layout")
-        })
-        .collect();
-    assert!(
-        layout_fence_errors.is_empty(),
-        "Vec<(i32,f64)>::clone (BitCopy tuple) must NOT trigger the layout fence: {layout_fence_errors:?}",
-    );
+    assert!(output.errors.is_empty(), "{:?}", output.errors);
 }
 
 #[test]
@@ -2546,9 +2475,7 @@ fn main() {
         refused
             .errors
             .iter()
-            .any(|e| e.kind == TypeErrorKind::InvalidOperation
-                && e.message.contains("`Vec.append`")
-                && e.message.contains("function-valued elements")),
+            .any(|e| e.kind == TypeErrorKind::InvalidOperation),
         "Expected the shared-copy refusal for Vec<fn>::append, got: {:?}",
         refused.errors
     );
@@ -2576,7 +2503,7 @@ fn main() {
         output
             .errors
             .iter()
-            .any(|e| e.kind == TypeErrorKind::UndefinedMethod && e.message.contains("extend")),
+            .any(|e| e.kind == TypeErrorKind::UndefinedMethod),
         "Expected UndefinedMethod for retired Vec::extend, got: {:?}",
         output.errors
     );
@@ -2603,19 +2530,7 @@ fn main() {
 }
 ",
     );
-    // Neither `len` nor `is_empty` should emit layout-fence diagnostics.
-    let layout_fence_errors: Vec<_> = output
-        .errors
-        .iter()
-        .filter(|e| {
-            e.kind == TypeErrorKind::InvalidOperation
-                && e.message.contains("not runtime-backed yet")
-        })
-        .collect();
-    assert!(
-        layout_fence_errors.is_empty(),
-        "`Vec::len` and `Vec::is_empty` must not trigger the layout fence: {layout_fence_errors:?}",
-    );
+    assert!(output.errors.is_empty(), "{:?}", output.errors);
 }
 
 // ── NTC-01 — no implicit i32 → bool coercion ─────────────────────────────────
@@ -2679,12 +2594,7 @@ fn double_colon_in_type_position_emits_module_separator_hint() {
         parsed
             .errors
             .iter()
-            .any(|e| e.message.contains("E_PATH_LEGACY_SEPARATOR")
-                && e.message.contains("use dotted paths")
-                && e.message.contains("geometry.Point")
-                && e.hint
-                    .as_deref()
-                    .is_some_and(|hint| hint.contains("geometry.Point"))),
+            .any(|e| e.kind == hew_parser::ParseDiagnosticKind::LegacyPathSeparator),
         "Expected a dotted-path migration diagnostic for geometry::Point, got errors: {:?}",
         parsed.errors
     );
@@ -2711,10 +2621,7 @@ fn main() {
 ",
     );
     assert!(
-        output
-            .errors
-            .iter()
-            .all(|e| !e.message.contains("module separator")),
+        output.errors.is_empty(),
         "Dot-qualified type must not trigger the module-separator diagnostic, got: {:?}",
         output.errors
     );

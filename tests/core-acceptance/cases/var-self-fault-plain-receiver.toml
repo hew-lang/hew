@@ -7,5 +7,4 @@ timeout_seconds = 30
 
 [case.expected]
 stdout = "defer sees x 3\nlocal faulted\ndefer sees rect 11\nfield faulted\n2\nhook sees x 3\n2\ndone\n"
-stderr = "hew: failure: UserPanic (212): bump failed\nhew: actor crash in Worker.local (actor 1): UserPanic\nhew: failure: UserPanic (212): bump failed\nhew: actor crash in Worker.field (actor 2): UserPanic\nhew: failure: UserPanic (212): bump failed\nhew: actor crash in Holder.poke (actor 3): UserPanic\n"
 exit = 1

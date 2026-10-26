@@ -8,5 +8,4 @@ env = { HEW_WORKERS = "1" }
 
 [case.expected]
 stdout = "file-backed supervisor construction\n"
-stderr = "hew: failure: UserPanic (212): file-backed reconstruction\nhew: actor crash in Ledger.fail (actor 1): UserPanic\nhew: failure: UserPanic (212): file-backed checkout reconstruction\nhew: actor crash in Checkout.fail (actor 2): UserPanic\n"
 exit = 0

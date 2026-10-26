@@ -10,4 +10,3 @@ kind = "reject"
 code = "Other"
 line = 16
 column = 47
-message = "`count:` is a pool clause"

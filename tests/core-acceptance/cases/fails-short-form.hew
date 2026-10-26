@@ -39,6 +39,9 @@ fn check(n: i64) fails Oops {
 
 fn main() fails dyn Error {
     check(1)?;
-    check(2)?;
+    check(2).map_err(|problem| {
+        println(problem);
+        problem
+    })?;
     println("unreachable");
 }

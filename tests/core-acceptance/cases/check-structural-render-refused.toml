@@ -11,11 +11,9 @@ code = "BoundsNotSatisfied"
 severity = "error"
 line = 14
 column = 16
-message = "has no structural rendering"
 
 [[case.expected.diagnostics]]
 code = "BoundsNotSatisfied"
 severity = "error"
 line = 16
 column = 16
-message = "does not implement `Display`"

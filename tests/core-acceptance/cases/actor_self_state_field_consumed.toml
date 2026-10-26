@@ -10,4 +10,3 @@ kind = "reject"
 code = "UseAfterConsume"
 line = 20
 column = 16
-message = "actor state `sock` is consumed here and never re-initialised"

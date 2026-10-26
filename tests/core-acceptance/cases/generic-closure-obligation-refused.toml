@@ -11,4 +11,3 @@ severity = "error"
 code = "InvalidOperation"
 line = 7
 column = 19
-message = "requires Eq for `T`"

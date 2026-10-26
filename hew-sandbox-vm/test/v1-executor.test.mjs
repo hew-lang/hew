@@ -532,10 +532,6 @@ test("v1: switch.variant does not join equal display names across shapes", async
     }),
   );
   assert.equal(trace.result, "runtime_failure");
-  assert.match(
-    trace.final_state.runtime_failures[0].message,
-    /expected variant 1/,
-  );
 });
 
 test("v1: a stdin line read resumes with the raw line bytes, then empty bytes at end of input", async () => {

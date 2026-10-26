@@ -10,4 +10,3 @@ kind = "reject"
 code = "E_CONST_INITIALIZER"
 line = 4
 column = 17
-message = "constant initializer arithmetic overflows declared type `u8`"

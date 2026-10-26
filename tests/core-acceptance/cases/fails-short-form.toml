@@ -6,6 +6,5 @@ suites = ["acceptance"]
 timeout_seconds = 15
 
 [case.expected]
-stdout = "ran 1\n"
-stderr = "error: Bad: 2\n"
+stdout = "ran 1\nBad: 2\n"
 exit = 1

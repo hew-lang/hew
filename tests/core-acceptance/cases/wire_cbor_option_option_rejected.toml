@@ -10,4 +10,3 @@ kind = "reject"
 code = "BoundsNotSatisfied"
 line = 9
 column = 8
-message = "E_NOT_SERIALIZABLE: field `x` of `#[wire]` type `Nested` reaches `Option<Option<i64>>`, a nested `Option`, which null cannot represent"

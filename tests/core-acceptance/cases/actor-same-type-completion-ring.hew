@@ -21,6 +21,9 @@ fn main() {
     let b = spawn Stage;
     a.link(b).expect("link a");
     b.link(a).expect("link b");
-    println(f"{a.process(1):?}");
+    match a.process(1) {
+        .Err(.Trapped) => println("trapped"),
+        _ => panic("wait cycle must fault"),
+    }
     println("done");
 }

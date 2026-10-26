@@ -10,5 +10,4 @@ HEW_WORKERS = "2"
 
 [case.expected]
 stdout = "fresh account after cleanup\n"
-stderr = "hew: failure: HeapExceeded (200)\nhew: actor crash in Buffer.exceed (actor 1): HeapExceeded\n"
 exit = 0

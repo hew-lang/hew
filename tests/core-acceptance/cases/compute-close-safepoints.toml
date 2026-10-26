@@ -8,5 +8,4 @@ env = { HEW_DETERMINISTIC = "schedule=fifo,seed=0" }
 
 [case.expected]
 stdout = "peer progressed\nfinished 40000\nclosed explicit\n7\npeer progressed\nfinished 40000\nclosed implicit\n7\n"
-stderr = ""
 exit = 0

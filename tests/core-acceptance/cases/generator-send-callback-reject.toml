@@ -10,4 +10,3 @@ kind = "reject"
 code = "InvalidSend"
 line = 10
 column = 5
-message = "cannot prove `Generator<i64, ()>` is Send: its generator captures need checked transferable values"

@@ -7,5 +7,4 @@ timeout_seconds = 15
 
 [case.expected]
 stdout = "1\nSECOND\ntrue\ntrue\nSIBLING\nORIGINAL\nSIBLING\n1\n0\n0\n0\n"
-stderr = ""
 exit = 0

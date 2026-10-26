@@ -11,4 +11,3 @@ severity = "error"
 code = "InvalidOperation"
 line = 15
 column = 31
-message = "E_EMBED_KEY: embed! cannot execute user-defined equality for key `Key`"

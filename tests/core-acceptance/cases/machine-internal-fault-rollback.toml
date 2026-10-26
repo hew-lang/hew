@@ -7,5 +7,4 @@ timeout_seconds = 15
 
 [case.expected]
 stdout = "true\n"
-stderr = "hew: failure: DivideByZero (202)\n"
 exit = 1

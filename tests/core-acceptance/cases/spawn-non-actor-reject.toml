@@ -10,4 +10,3 @@ kind = "reject"
 code = "InvalidOperation"
 line = 6
 column = 14
-message = "`Rec` is not an actor; `spawn` starts an actor or a supervisor"

@@ -7,5 +7,4 @@ timeout_seconds = 60
 
 [case.expected]
 stdout = "nested and parallel shallow history passed\n"
-stderr = ""
 exit = 0

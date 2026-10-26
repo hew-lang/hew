@@ -22,6 +22,9 @@ fn parse(text: string) -> i64 fails ParseFailure {
 fn main() fails ParseFailure {
     let width = parse("hello")?;
     println(f"width={width}");
-    let missing = parse("")?;
+    let missing = parse("").map_err(|problem| {
+        println(problem);
+        problem
+    })?;
     println(f"unreachable={missing}");
 }

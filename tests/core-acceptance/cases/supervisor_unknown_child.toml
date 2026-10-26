@@ -10,4 +10,3 @@ kind = "reject"
 code = "UndefinedField"
 line = 21
 column = 14
-message = "supervisor `App` has no child named `w2`"

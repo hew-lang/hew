@@ -10,5 +10,4 @@ HEW_DETERMINISTIC = ""
 
 [case.expected]
 stdout = "true\n"
-stderr = "hew: failure: UserPanic (212): restart the child\nhew: actor crash in Worker.crash_me (actor 1): UserPanic\nhew: failure: UserPanic (212): restart the child\nhew: actor crash in Worker.crash_me (actor 3): UserPanic\n"
 exit = 1

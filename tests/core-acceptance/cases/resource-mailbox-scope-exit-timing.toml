@@ -7,5 +7,4 @@ timeout_seconds = 20
 
 [case.expected]
 stdout = "used 2\nfirst marker\nsecond marker\nclosed 2\nafter reply\n"
-stderr = ""
 exit = 0

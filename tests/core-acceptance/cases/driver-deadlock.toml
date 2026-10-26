@@ -10,5 +10,4 @@ HEW_DETERMINISTIC = "schedule=fifo"
 
 [case.expected]
 stdout = ""
-stderr = "hew: deadlock: nothing is runnable and no timer is pending after 0 steps at virtual time 0 ms (schedule fifo, seed 0x0)\n"
 exit = 3

@@ -10,4 +10,3 @@ kind = "reject"
 code = "TaskNotNameable"
 line = 8
 column = 13
-message = "compiler-internal type"

@@ -88,7 +88,7 @@ fn canonical_io_wrappers_propagate_checked_native_operation_effects() {
         diagnostics.iter().any(|diagnostic| {
             matches!(&diagnostic.kind, FrontendDiagnosticKind::Type(error)
             if error.severity == hew_types::error::Severity::Error
-                && error.message.contains("`await` on a plain call adds nothing")
+                && error.kind == hew_types::error::TypeErrorKind::InvalidOperation
                 && error.span == (start..start + "fs.read(path)".len()))
         }),
         "missing redundant await refusal: {diagnostics:#?}"

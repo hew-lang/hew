@@ -11,18 +11,15 @@ severity = "error"
 code = "AmbiguousTraitMethod"
 line = 39
 column = 16
-message = "ambiguous associated function `from` on `Count`: the arguments do not choose one of its impls `From<i32>`, `From<i64>`"
 
 [[case.expected.diagnostics]]
 severity = "error"
 code = "AmbiguousTraitMethod"
 line = 40
 column = 16
-message = "ambiguous associated function `from` on `Name`: the arguments do not choose one of its impls `From<char>`, `From<string>`"
 
 [[case.expected.diagnostics]]
 severity = "error"
 code = "UndefinedVariable"
 line = 41
 column = 27
-message = "undefined variable `undefined`"

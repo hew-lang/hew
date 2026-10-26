@@ -10,4 +10,3 @@ kind = "reject"
 code = "E_BOUNDARY_RESOURCE_MUST_CONSUME"
 line = 38
 column = 5
-message = "E_BOUNDARY_RESOURCE_MUST_CONSUME: `Handle` is a `#[resource]`/`#[linear]` value passed to trait method signature `put`"

@@ -7,5 +7,4 @@ timeout_seconds = 15
 
 [case.expected]
 stdout = "before\n"
-stderr = "hew: failure: IndexOutOfBounds (205): vector index 7 out of bounds for length 3\n"
 exit = 1

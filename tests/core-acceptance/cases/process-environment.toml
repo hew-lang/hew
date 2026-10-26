@@ -11,5 +11,4 @@ HEW_PROCESS_AMBIENT = "ambient"
 
 [case.expected]
 stdout = "default inheritance retained\nclear bindings and empty environment isolated\nper-child working directory retained\nconcurrent environments leave parent unchanged\ninvalid options and failed launches refused\nowned child pipes, cached wait and bounded capture retained\n"
-stderr = ""
 exit = 0

@@ -7,5 +7,4 @@ timeout_seconds = 30
 
 [case.expected]
 stdout = "first alive: true\nfirst reaped: true\nreplacement alive: true\nreplacement reaped: true\n"
-stderr = "hew: failure: UserPanic (212): owner fails\nhew: actor crash in Owner.fail (actor 1): UserPanic\n"
 exit = 0

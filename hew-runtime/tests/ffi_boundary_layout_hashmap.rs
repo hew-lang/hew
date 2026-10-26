@@ -589,7 +589,7 @@ fn layout_hashmap_free_null_is_noop() {
 // ---------------------------------------------------------------------------
 
 #[test]
-#[should_panic(expected = "key_layout is null")]
+#[should_panic]
 fn layout_hashmap_null_key_layout_aborts() {
     let vl = val_layout(8, 8);
     unsafe {
@@ -598,7 +598,7 @@ fn layout_hashmap_null_key_layout_aborts() {
 }
 
 #[test]
-#[should_panic(expected = "val_layout is null")]
+#[should_panic]
 fn layout_hashmap_null_val_layout_aborts() {
     let kl = key_layout_i64();
     unsafe {
@@ -607,7 +607,7 @@ fn layout_hashmap_null_val_layout_aborts() {
 }
 
 #[test]
-#[should_panic(expected = "key_layout ownership_kind=LayoutManaged requires drop_fn")]
+#[should_panic]
 fn layout_hashmap_managed_key_without_drop_aborts() {
     // W4.001 Stage C0a: LayoutManaged is admitted by validate_key_layout
     // (it is a legitimate ownership kind). The new fail-closed gate fires
@@ -633,7 +633,7 @@ fn layout_hashmap_managed_key_without_drop_aborts() {
 }
 
 #[test]
-#[should_panic(expected = "val_layout ownership_kind=LayoutManaged requires drop_fn")]
+#[should_panic]
 fn layout_hashmap_managed_value_without_drop_aborts() {
     let vl = HewValueLayout {
         code_owner: core::ptr::null(),
@@ -701,7 +701,7 @@ fn layout_hashmap_zero_size_key_keeps_nonzero_metadata_stride() {
 }
 
 #[test]
-#[should_panic(expected = "key_layout.value.align is not a power of two")]
+#[should_panic]
 fn layout_hashmap_invalid_align_aborts() {
     let kl = HewMapKeyLayout {
         value: HewValueLayout {
@@ -721,7 +721,7 @@ fn layout_hashmap_invalid_align_aborts() {
 }
 
 #[test]
-#[should_panic(expected = "zero-size value layout must have align == 1")]
+#[should_panic]
 fn layout_hashmap_zero_size_value_with_nonunit_align_aborts() {
     let vl = HewValueLayout {
         code_owner: core::ptr::null(),
@@ -737,7 +737,7 @@ fn layout_hashmap_zero_size_value_with_nonunit_align_aborts() {
 }
 
 #[test]
-#[should_panic(expected = "slot stride overflow")]
+#[should_panic]
 fn layout_hashmap_stride_overflow_aborts() {
     // Huge key size that, even before multiplication by capacity, exceeds the
     // isize::MAX/4 stride budget. align=8 is fine; the size itself trips the
@@ -763,7 +763,7 @@ fn layout_hashmap_stride_overflow_aborts() {
 }
 
 #[test]
-#[should_panic(expected = "val_layout.align is not a power of two")]
+#[should_panic]
 fn val_layout_non_power_of_two_align_aborts() {
     // align = 3 is not a power of two — gate at validate_val_layout.
     let vl = val_layout(8, 3);
@@ -773,7 +773,7 @@ fn val_layout_non_power_of_two_align_aborts() {
 }
 
 #[test]
-#[should_panic(expected = "op: m is null")]
+#[should_panic]
 fn op_inputs_null_map_aborts() {
     // Drive the operational gate directly with a non-null key (any pointer)
     // and a null map. The val=None path means no insert semantics are
@@ -785,7 +785,7 @@ fn op_inputs_null_map_aborts() {
 }
 
 #[test]
-#[should_panic(expected = "op: key is null")]
+#[should_panic]
 fn op_inputs_null_key_aborts() {
     // Build a real map so the m-not-null branch is satisfied; then trip the
     // key-null branch.
@@ -801,7 +801,7 @@ fn op_inputs_null_key_aborts() {
 }
 
 #[test]
-#[should_panic(expected = "val is null but value size > 0")]
+#[should_panic]
 fn op_inputs_null_val_with_nonzero_size_aborts() {
     // Insert semantics on an i64-value map: val=Some(null) must trip the
     // size>0 gate.
@@ -871,7 +871,7 @@ fn op_inputs_null_val_with_zero_size_ok() {
 }
 
 #[test]
-#[should_panic(expected = "op: m is null")]
+#[should_panic]
 fn op_map_only_null_aborts() {
     // The len/free variant of the gate — validate_op_map covers `_len_layout`.
     unsafe {

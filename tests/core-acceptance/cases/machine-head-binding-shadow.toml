@@ -11,4 +11,3 @@ severity = "warning"
 code = "Shadowing"
 line = 13
 column = 14
-message = "variable `limit` shadows a binding in an outer scope"

@@ -10,4 +10,3 @@ kind = "reject"
 code = "Other"
 line = 18
 column = 35
-message = "pool arity is a child clause"

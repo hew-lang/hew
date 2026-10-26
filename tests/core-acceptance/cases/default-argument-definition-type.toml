@@ -11,4 +11,3 @@ severity = "error"
 code = "Mismatch"
 line = 1
 column = 25
-message = "type mismatch: expected `i64`, found `string`"

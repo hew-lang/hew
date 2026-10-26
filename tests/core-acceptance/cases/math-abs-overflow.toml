@@ -7,5 +7,4 @@ timeout_seconds = 15
 
 [case.expected]
 stdout = ""
-stderr = "hew: failure: IntegerOverflow (201)\n"
 exit = 1

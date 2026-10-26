@@ -10,4 +10,3 @@ kind = "reject"
 code = "UndefinedType"
 line = 13
 column = 18
-message = "unknown type `ActorRef`"

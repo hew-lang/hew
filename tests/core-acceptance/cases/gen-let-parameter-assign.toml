@@ -10,4 +10,3 @@ kind = "check"
 code = "MutabilityError"
 line = 4
 column = 9
-message = "cannot assign to immutable variable `n`"

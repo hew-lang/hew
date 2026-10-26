@@ -10,4 +10,3 @@ kind = "reject"
 code = "MutabilityError"
 line = 5
 column = 5
-message = "method `range` on `std.random.Rng` requires a mutable binding receiver; `rng` is not declared with `var`"

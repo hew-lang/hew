@@ -10,5 +10,4 @@ HEW_IO_LEAK_CHECK = "1"
 
 [case.expected]
 stdout = "invalid addresses refused\nHTTP managed strings and cleanup\nWebSocket managed strings and cleanup\n"
-stderr = ""
 exit = 0

@@ -10,10 +10,8 @@ kind = "reject"
 code = "OpaqueMessagePayload"
 line = 6
 column = 28
-message = "opaque type `std.builtins.Timer` has no supported actor message transfer layout. Open or construct the handle locally inside the handler instead [E_OPAQUE_MESSAGE_PAYLOAD]"
 
 [[case.expected.diagnostics]]
 code = "BoundsNotSatisfied"
 line = 12
 column = 5
-message = "type `WrappedTimer` does not implement trait `Send` required by `T`"

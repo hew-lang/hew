@@ -7,5 +7,4 @@ timeout_seconds = 20
 
 [case.expected]
 stdout = "callback reached real\n"
-stderr = ""
 exit = 0

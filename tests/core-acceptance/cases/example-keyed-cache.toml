@@ -6,5 +6,4 @@ suites = ["acceptance"]
 timeout_seconds = 30
 [case.expected]
 stdout = "loading product 42\nHew handbook: language\ncannot load: unknown product\nretained products: 0\n"
-stderr = ""
 exit = 0

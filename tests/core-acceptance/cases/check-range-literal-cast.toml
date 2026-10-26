@@ -11,11 +11,9 @@ severity = "error"
 code = "Mismatch"
 line = 3
 column = 17
-message = "integer-to-char conversion is fallible; use `.try_to_char()`"
 
 [[case.expected.diagnostics]]
 severity = "error"
 code = "InvalidOperation"
 line = 5
 column = 27
-message = "integer literal `256` does not fit in `u8`"

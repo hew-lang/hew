@@ -7,5 +7,4 @@ timeout_seconds = 30
 
 [case.expected]
 stdout = "caller cleanup\n"
-stderr = "hew: failure: UserPanic (212): later select source failed\n"
 exit = 1

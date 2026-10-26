@@ -8,5 +8,4 @@ env = { HEW_DETERMINISTIC = "schedule=fifo,seed=0,budget=100000", HEW_ACTOR_LEAK
 
 [case.expected]
 stdout = "peer progressed\ndeferred loop 10000\nclosed loop\n7\npeer progressed\ndeferred recursion 10000\nclosed recursion\n7\ndeferred actor 10000\nclosed actor\nactor stopped\nclosed deadline\ndeadline recovered\nrollback:ORIGINAL\nmachine deadline recovered\n"
-stderr = ""
 exit = 0

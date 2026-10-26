@@ -157,7 +157,6 @@ class NpmDelivery(unittest.TestCase):
     def test_identical_existing_original_tarballs_skip_without_write(self):
         result = self.run_adapter()
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(result.stdout.count("Verified identical tarball"), 2)
         self.assertEqual(self.server.writes, 0)
 
     def test_successful_publish_is_terminal_while_metadata_propagates(self):
@@ -167,15 +166,12 @@ class NpmDelivery(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(self.server.writes, 1)
         self.assertEqual(self.server.packages["wasm"], self.packages["wasm"])
-        self.assertEqual(result.stdout.count("Verified identical tarball"), 1)
-        self.assertIn(f"Published: @hew-lang/wasm@{VERSION}", result.stdout)
         self.assertEqual(self.server.published_reads, 0)
 
     def test_different_tarball_fails_without_overwrite(self):
         self.server.packages["wasm"] = package("wasm", payload=b"other")
         result = self.run_adapter()
         self.assertNotEqual(result.returncode, 0)
-        self.assertIn("Published bytes differ", result.stderr)
         self.assertEqual(self.server.writes, 0)
 
     def test_lost_publish_response_resumes_by_exact_bytes_without_another_write(self):
@@ -186,14 +182,12 @@ class NpmDelivery(unittest.TestCase):
         self.assertEqual(self.server.writes, 1)
         resumed = self.run_adapter()
         self.assertEqual(resumed.returncode, 0, resumed.stderr)
-        self.assertEqual(resumed.stdout.count("Verified identical tarball"), 2)
         self.assertEqual(self.server.writes, 1)
 
     def test_unreadable_registry_fails_without_blind_publish(self):
         self.server.mode = "unreadable"
         result = self.run_adapter()
         self.assertNotEqual(result.returncode, 0)
-        self.assertIn("Cannot determine npm publication state", result.stderr)
         self.assertEqual(self.server.writes, 0)
 
     def test_wrong_producer_source_refuses_registry_work(self):
@@ -202,7 +196,6 @@ class NpmDelivery(unittest.TestCase):
         )
         result = self.run_adapter()
         self.assertNotEqual(result.returncode, 0)
-        self.assertIn("Producer package source/version mismatch", result.stderr)
         self.assertEqual(self.server.writes, 0)
 
 

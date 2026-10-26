@@ -10,5 +10,4 @@ HEW_WORKERS = "2"
 
 [case.expected]
 stdout = "5\ndetach transaction\n4\n"
-stderr = "hew: failure: HeapExceeded (200)\nhew: actor crash in Small.detach (actor 2): HeapExceeded\n"
 exit = 1

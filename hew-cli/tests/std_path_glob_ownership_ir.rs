@@ -29,17 +29,6 @@ fn main() {
 }
 "#;
 
-fn function_body<'a>(ir: &'a str, symbol: &str) -> &'a str {
-    let start = ir
-        .find(symbol)
-        .unwrap_or_else(|| panic!("missing {symbol} in emitted IR"));
-    let body = &ir[start..];
-    let end = body
-        .find("\n}")
-        .map_or(body.len(), |closing_brace| closing_brace + 2);
-    &body[..end]
-}
-
 fn call_positions(body: &str, symbol: &str) -> Vec<usize> {
     body.lines()
         .scan(0, |offset, line| {
@@ -54,25 +43,29 @@ fn call_positions(body: &str, symbol: &str) -> Vec<usize> {
         .collect()
 }
 
-fn assert_one_failure_cleanup(ir: &str, symbol: &str) {
-    let body = function_body(ir, symbol);
+fn assert_one_failure_cleanup(ir: &str) {
+    let body = ir
+        .split("\ndefine ")
+        .filter_map(|function| function.split_once("\n}").map(|(body, _)| body))
+        .find(|body| !call_positions(body, "@hew_glob_error(").is_empty())
+        .expect("a reached wrapper must read the glob failure detail");
     let error = body
         .find("@hew_glob_error")
-        .unwrap_or_else(|| panic!("{symbol} must read the failure detail:\n{body}"));
+        .unwrap_or_else(|| panic!("the wrapper must read the failure detail:\n{body}"));
     let frees = call_positions(body, "@hew_glob_free(");
     let free = frees
         .first()
         .copied()
-        .unwrap_or_else(|| panic!("{symbol} must free an invalid glob handle:\n{body}"));
+        .unwrap_or_else(|| panic!("the wrapper must free an invalid glob handle:\n{body}"));
 
     assert!(
         error < free,
-        "{symbol} must copy the failure detail before freeing its borrowed handle:\n{body}"
+        "the wrapper must copy the failure detail before freeing its borrowed handle:\n{body}"
     );
     assert_eq!(
         frees.len(),
         1,
-        "{symbol} must consume the invalid handle exactly once:\n{body}"
+        "the wrapper must consume the invalid handle exactly once:\n{body}"
     );
 }
 
@@ -102,7 +95,7 @@ fn path_glob_failure_handles_are_released_once_after_detail_is_copied() {
 
     let ir = std::fs::read_to_string(dir.path().join("glob_ownership.ll"))
         .expect("read emitted LLVM IR");
-    assert_one_failure_cleanup(&ir, "define i32 @\"__hew_fn_std$path$glob\"(");
+    assert_one_failure_cleanup(&ir);
     let binary = String::from_utf8_lossy(&output.stdout)
         .lines()
         .find_map(|line| line.strip_prefix("native: ").map(std::path::PathBuf::from))

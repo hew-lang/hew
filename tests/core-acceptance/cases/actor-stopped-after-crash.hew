@@ -31,12 +31,18 @@ actor ClosingReader {
 
 fn main() {
     let reader = spawn Reader;
-    println(f"{reader.feed("boom"):?}");
+    match reader.feed("boom") {
+        .Err(.Trapped) => println("trapped"),
+        _ => panic("expected trapped handler"),
+    }
     stopped(reader);
     println("after crash-only stopped");
 
     let closing_reader = spawn ClosingReader;
-    println(f"{closing_reader.feed("boom"):?}");
+    match closing_reader.feed("boom") {
+        .Err(.Trapped) => println("trapped"),
+        _ => panic("expected trapped handler"),
+    }
     assert(scope {
         stopped(closing_reader);
         false
@@ -51,5 +57,8 @@ fn main() {
         }
     });
     println("after cleanup stopped");
-    println(f"{closing_reader.feed("x"):?}");
+    match closing_reader.feed("x") {
+        .Err(.Dead) => println("dead"),
+        _ => panic("crashed actor must remain dead"),
+    }
 }

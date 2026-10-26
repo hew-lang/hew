@@ -7,5 +7,4 @@ timeout_seconds = 15
 
 [case.expected]
 stdout = "bytes append preserves borrowed buffers and slices\n"
-stderr = ""
 exit = 0

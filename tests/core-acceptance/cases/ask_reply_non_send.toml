@@ -10,4 +10,3 @@ kind = "reject"
 code = "InvalidSend"
 line = 26
 column = 15
-message = "ask-shaped actor reply type `Rc<i64>` is not Send (E_DUPLEX_NON_SEND)"

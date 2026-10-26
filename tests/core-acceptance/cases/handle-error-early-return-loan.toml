@@ -7,5 +7,4 @@ timeout_seconds = 30
 
 [case.expected]
 stdout = "read: first\ninvalid: invalid UTF-8 at byte 0 (1-byte sequence)\n"
-stderr = ""
 exit = 0

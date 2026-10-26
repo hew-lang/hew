@@ -10,4 +10,3 @@ kind = "reject"
 code = "E_GEN_RETURN_SPELLING"
 line = 6
 column = 21
-message = "E_GEN_RETURN_SPELLING: `gen fn` return type names the yield type, not the generator handle it produces; write `-> i64` instead of the `Generator<Y, R>` handle spelling"

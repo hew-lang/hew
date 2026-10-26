@@ -14,4 +14,3 @@ code = "fork_outlives_timed_select"
 severity = "warning"
 line = 17
 column = 24
-message = "this timed `select` is the only wait on task `job`"

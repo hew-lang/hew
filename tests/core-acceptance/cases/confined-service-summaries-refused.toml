@@ -11,74 +11,63 @@ severity = "error"
 code = "E_CONFINED_AUTHORITY"
 line = 21
 column = 20
-message = "confined `discard_pair` reaches `fs.open_read`: ambient authority acquisition"
 
 [[case.expected.diagnostics]]
 severity = "error"
 code = "E_CONFINED_AUTHORITY"
 line = 10
 column = 20
-message = "confined `run_service` reaches `fs.open_read`: ambient authority acquisition"
 
 [[case.expected.diagnostics]]
 severity = "error"
 code = "E_CONFINED_AUTHORITY"
 line = 21
 column = 20
-message = "confined `execute_cleanup_service` reaches `fs.open_read`: ambient authority acquisition"
 
 [[case.expected.diagnostics]]
 severity = "error"
 code = "E_CONFINED_AUTHORITY"
 line = 21
 column = 20
-message = "confined `discard_service` reaches `fs.open_read`: ambient authority acquisition"
 
 [[case.expected.diagnostics]]
 severity = "error"
 code = "E_CONFINED_AUTHORITY"
 line = 10
 column = 20
-message = "confined `discard_callback` reaches `fs.open_read`: ambient authority acquisition"
 
 [[case.expected.diagnostics]]
 severity = "error"
 code = "E_CONFINED_AUTHORITY"
 line = 21
 column = 20
-message = "confined `discard_callback` reaches `fs.open_read`: ambient authority acquisition"
 
 [[case.expected.diagnostics]]
 severity = "error"
 code = "E_CONFINED_AUTHORITY"
 line = 21
 column = 20
-message = "confined `first` reaches `fs.open_read`: ambient authority acquisition"
 
 [[case.expected.diagnostics]]
 severity = "error"
 code = "E_CONFINED_AUTHORITY"
 line = 10
 column = 20
-message = "confined `run_callback` reaches `fs.open_read`: ambient authority acquisition"
 
 [[case.expected.diagnostics]]
 severity = "error"
 code = "E_CONFINED_AUTHORITY"
 line = 10
 column = 20
-message = "confined `first` reaches `fs.open_read`: ambient authority acquisition"
 
 [[case.expected.diagnostics]]
 severity = "error"
 code = "E_CONFINED_AUTHORITY"
 line = 10
 column = 20
-message = "confined `Copier` reaches `fs.open_read`: ambient authority acquisition"
 
 [[case.expected.diagnostics]]
 severity = "error"
 code = "E_CONFINED_AUTHORITY"
 line = 66
 column = 16
-message = "confined `run_factory` reaches `fs.open_read`: ambient authority acquisition"

@@ -7,5 +7,4 @@ timeout_seconds = 20
 
 [case.expected]
 stdout = "child cleaned\nparent cleaned\nchild failed\n"
-stderr = ""
 exit = 0

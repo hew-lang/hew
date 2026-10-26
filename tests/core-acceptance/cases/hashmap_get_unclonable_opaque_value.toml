@@ -10,4 +10,3 @@ kind = "reject"
 code = "E_OWN_CONSUME_BORROWED"
 line = 20
 column = 27
-message = "E_OWN_CONSUME_BORROWED: cannot consume borrowed collection element `t`"

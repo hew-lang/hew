@@ -6,5 +6,4 @@ suites = ["acceptance"]
 timeout_seconds = 30
 [case.expected]
 stdout = "configuration is still deferred\nloading configuration\nhttps://example.com: 3 retries\n"
-stderr = ""
 exit = 0

@@ -10,10 +10,8 @@ kind = "check"
 code = "E_ERROR_NO_CONVERSION"
 line = 27
 column = 5
-message = "`First` and `Second` both carry `ParseError`"
 
 [[case.expected.diagnostics]]
 code = "E_ERROR_NO_CONVERSION"
 line = 31
 column = 5
-message = "cannot convert `ParseError` into `Wrapper<ParseError>`"

@@ -11,4 +11,3 @@ severity = "error"
 code = "MachineExhaustivenessError"
 line = 10
 column = 25
-message = "transition to `Busy` must produce that state on every normal path"

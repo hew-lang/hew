@@ -10,4 +10,3 @@ kind = "reject"
 code = "UndefinedMethod"
 line = 31
 column = 13
-message = "type `Resource` cannot be cloned because member `Live.0` contains opaque value `Handle`"

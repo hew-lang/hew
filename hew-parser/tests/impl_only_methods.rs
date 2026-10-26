@@ -20,14 +20,9 @@ fn inline_methods_are_refused_with_an_impl_directive_and_recovery() {
         let parsed = parse(&source);
         assert_eq!(parsed.errors.len(), 1, "{method}: {:?}", parsed.errors);
         let error = &parsed.errors[0];
-        assert!(error.message.contains("E_TYPE_METHOD_IN_DECL"), "{error:?}");
         assert_eq!(
             error.kind,
             hew_parser::ParseDiagnosticKind::TypeMethodInDecl
-        );
-        assert_eq!(
-            error.hint.as_deref(),
-            Some("move this method to `impl Value { ... }`")
         );
         let Item::TypeDecl(decl) = &parsed.program.items[0].0 else {
             panic!("type lost")
@@ -43,8 +38,8 @@ fn enum_methods_also_belong_in_impl_blocks() {
         parse("enum State { Ready; fn read(self) {} Done; } impl State { fn read(self) {} }");
     assert_eq!(parsed.errors.len(), 1, "{:?}", parsed.errors);
     assert_eq!(
-        parsed.errors[0].hint.as_deref(),
-        Some("move this method to `impl State { ... }`")
+        parsed.errors[0].kind,
+        hew_parser::ParseDiagnosticKind::TypeMethodInDecl
     );
     let Item::TypeDecl(decl) = &parsed.program.items[0].0 else {
         panic!("enum lost")

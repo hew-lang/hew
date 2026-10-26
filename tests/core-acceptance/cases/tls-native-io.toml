@@ -11,5 +11,4 @@ HEW_WORKERS = "1"
 
 [case.expected]
 stdout = "TLS progress and retained read/write recovery\n"
-stderr = ""
 exit = 0

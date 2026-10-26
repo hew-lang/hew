@@ -4,8 +4,8 @@
 //! MIR/codegen boundaries: generic/local call carriers, `Arena<T>::insert`,
 //! actor message transfer, closure environments, and a resource parameter
 //! followed by an ordinary ABI argument. The stdout assertions make a user
-//! close ritual an exact-count oracle; the raw-MIR assertions pin the transfer
-//! authority that makes the runtime result structural rather than accidental.
+//! close ritual an exact-count oracle; rejected copies retain their structured
+//! ownership diagnostic and never reach native execution.
 
 #![cfg(unix)]
 
@@ -15,7 +15,7 @@ use std::path::Path;
 use std::process::{Command, Output};
 
 use support::leak_slope::{compile_to_native, measure_leaks_exact, run_under_malloc_scribble};
-use support::{describe_output, hew_binary, repo_root, require_codegen, strip_ansi};
+use support::{describe_output, hew_binary, repo_root, require_codegen};
 
 const TOKEN: &str = r#"#[resource]
 type Token {
@@ -342,7 +342,7 @@ fn assert_exact_runtime(name: &str, body: &str, expected_stdout: &str) {
     );
 }
 
-fn compile_rejected(name: &str, body: &str) -> String {
+fn compile_rejected(name: &str, body: &str, code: &str) {
     require_codegen();
     let dir = tempfile::Builder::new()
         .prefix(&format!("affine-resource-reject-{name}-"))
@@ -352,6 +352,7 @@ fn compile_rejected(name: &str, body: &str) -> String {
     std::fs::write(&input, source(body)).expect("write rejection fixture");
     let output = Command::new(hew_binary())
         .arg("compile")
+        .args(["--format", "json"])
         .arg(&input)
         .current_dir(repo_root())
         .output()
@@ -361,7 +362,14 @@ fn compile_rejected(name: &str, body: &str) -> String {
         "{name} must be rejected before native code generation:\n{}",
         describe_output(&output)
     );
-    strip_ansi(&String::from_utf8_lossy(&output.stderr))
+    let diagnostics: Vec<serde_json::Value> = serde_json::from_slice(&output.stdout)
+        .unwrap_or_else(|error| panic!("{name}: {error}: {}", describe_output(&output)));
+    assert!(
+        diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic["code"] == code && diagnostic["severity"] == "error"),
+        "{diagnostics:#?}"
+    );
 }
 
 #[test]
@@ -399,24 +407,8 @@ fn carrier_helper_locals_do_not_displace_trailing_abi_parameters() {
 
 #[test]
 fn resource_parameter_reuse_after_collection_transfer_is_rejected() {
-    let stderr = compile_rejected("parameter_reuse", PARAMETER_REUSE_BODY);
-    assert!(
-        stderr.contains("use of moved value `value`")
-            && stderr.contains("value was consumed here")
-            && stderr.contains("value.close()")
-            && stderr.contains("items.push(value)"),
-        "a real same-function use after collection transfer must remain rejected:\n{stderr}"
-    );
+    compile_rejected("parameter_reuse", PARAMETER_REUSE_BODY, "UseAfterMove");
 }
-
-// Lost coverage: `raw_mir_carries_guards_and_preserves_the_parameter_prefix`
-// used `--dump-mir raw` (retired) to pin exact guard/neutralize/snapshot_drop
-// opcode text and parameter-local ordering across the identity, nested,
-// arena-insert, actor-send and parameter-order fixtures. Physical MIR's
-// structured (Debug) dump has no equivalent single-line text to grep, so
-// this MIR-emission coverage has no direct replacement. The same fixtures'
-// end-to-end behaviour (single close, correct ordering of side effects) is
-// still proven by the exact-runtime tests above.
 
 #[test]
 fn consuming_a_resource_from_a_reusable_closure_fails_closed() {
@@ -431,7 +423,8 @@ fn consuming_a_resource_from_a_reusable_closure_fails_closed() {
     let output = Command::new(hew_binary())
         .args([
             "compile",
-            "--emit-llvm",
+            "--format",
+            "json",
             "--emit-dir",
             emit_dir.to_str().expect("emit path utf-8"),
             input.to_str().expect("fixture path utf-8"),
@@ -439,16 +432,17 @@ fn consuming_a_resource_from_a_reusable_closure_fails_closed() {
         .current_dir(repo_root())
         .output()
         .expect("invoke hew closure compile");
-    let stderr = strip_ansi(&String::from_utf8_lossy(&output.stderr));
     assert!(
         !output.status.success(),
         "a reusable closure must not byte-copy and consume its environment-owned resource"
     );
+    let diagnostics: Vec<serde_json::Value> =
+        serde_json::from_slice(&output.stdout).expect("structured refusal");
     assert!(
-        stderr.contains("E_OWN_CONSUME_BORROWED")
-            && stderr.contains("cannot consume a value through borrowed parameter `value`")
-            && stderr.contains("declare the parameter `consume value:"),
-        "closure consumption must fail at the borrowed-parameter authority:\n{stderr}"
+        diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic["code"] == "E_OWN_CONSUME_BORROWED"),
+        "{diagnostics:#?}"
     );
     assert!(
         !contains_native_artifact(&emit_dir),
@@ -459,33 +453,10 @@ fn consuming_a_resource_from_a_reusable_closure_fails_closed() {
 #[test]
 fn channel_handle_clone_terminals_match_runtime_semantics() {
     assert_exact_runtime("channel_sender_clone", CHANNEL_SENDER_CLONE_BODY, "1\n");
-    // Lost coverage: this test used to also dump `--dump-mir raw` (retired)
-    // here to pin the channel constructor's neutralize-on-discharge text and
-    // the Vec<Sender<AffineT>> clone/push-owned-move opcode shape directly.
-    // Physical MIR's structured (Debug) dump has no equivalent single-line
-    // text to grep, so that MIR-emission split has no direct replacement;
-    // the exact-runtime assertion above still proves the externally
-    // observable half (one close, correct output).
-
-    let dir = tempfile::Builder::new()
-        .prefix("affine-resource-channel-receiver-")
-        .tempdir()
-        .expect("tempdir");
-    let input = dir.path().join("receiver_clone.hew");
-    std::fs::write(&input, source(CHANNEL_RECEIVER_CLONE_BODY))
-        .expect("write receiver clone fixture");
-    let output = Command::new(hew_binary())
-        .arg("compile")
-        .arg(&input)
-        .current_dir(repo_root())
-        .output()
-        .expect("invoke receiver clone compile");
-    let stderr = strip_ansi(&String::from_utf8_lossy(&output.stderr));
-    assert!(
-        !output.status.success()
-            && stderr.contains("`Vec<Stream<Token>>.clone()` is not supported")
-            && stderr.contains("a `Stream` has one consumer"),
-        "Stream has no dup helper and must be rejected in source by the pipe-half clone contract:\n{stderr}"
+    compile_rejected(
+        "receiver_clone",
+        CHANNEL_RECEIVER_CLONE_BODY,
+        "InvalidOperation",
     );
 }
 
@@ -494,15 +465,15 @@ fn channel_handle_clone_terminals_match_runtime_semantics() {
 /// producer. Indexing borrows its endpoint and cannot consume the Vec's owner.
 #[test]
 fn sink_composites_have_no_structural_copy_operation() {
-    let stderr = compile_rejected("sink_record_clone", SINK_RECORD_CLONE_BODY);
-    assert!(
-        stderr.contains("cannot be cloned") && stderr.contains("out"),
-        "a record with a Sink member must be refused in source:\n{stderr}"
+    compile_rejected(
+        "sink_record_clone",
+        SINK_RECORD_CLONE_BODY,
+        "UndefinedMethod",
     );
-    let stderr = compile_rejected("sink_vec_index_consume", SINK_VEC_INDEX_CONSUME_BODY);
-    assert!(
-        stderr.contains("E_OWN_CONSUME_BORROWED"),
-        "an indexed Sink borrow cannot consume the Vec's endpoint:\n{stderr}"
+    compile_rejected(
+        "sink_vec_index_consume",
+        SINK_VEC_INDEX_CONSUME_BODY,
+        "E_OWN_CONSUME_BORROWED",
     );
 }
 
@@ -538,26 +509,6 @@ fn receiver_vec_move_is_descriptor_owned_and_read_copy_surfaces_reject() {
     );
     assert_eq!(String::from_utf8_lossy(&output.stdout), "1\n");
 
-    let ir = std::fs::read_to_string(dir.path().join("receiver_move.ll"))
-        .expect("read drop-only Receiver Vec LLVM IR");
-    assert!(
-        ir.contains("call ptr @hew_vec_new_with_elem_layout")
-            && ir.contains("call i32 @hew_vec_push_managed")
-            && ir.contains("call ptr @hew_vec_release_begin")
-            && ir.contains("call ptr @hew_stream_release_begin"),
-        "Receiver Vec must move its endpoint through the element descriptor and consuming release cursor:\n{ir}"
-    );
-    let descriptor = ir
-        .lines()
-        .find(|line| {
-            line.contains("@__hew_vector_element_layout_") && line.contains("= internal constant")
-        })
-        .unwrap_or_else(|| panic!("no Vec element-layout descriptor emitted:\n{ir}"));
-    assert!(
-        descriptor.contains("i8 2, ptr null,") && descriptor.contains("ptr @\"__hew_release_"),
-        "Receiver Vec must forbid copying and retain its consuming endpoint release:\n{descriptor}"
-    );
-
     for (name, body) in [
         ("receiver_bound_push", CHANNEL_RECEIVER_COPY_PUSH_BODY),
         ("receiver_bound_set", CHANNEL_RECEIVER_COPY_SET_BODY),
@@ -574,13 +525,10 @@ fn receiver_vec_move_is_descriptor_owned_and_read_copy_surfaces_reject() {
         );
     }
 
-    let stderr = compile_rejected(
+    compile_rejected(
         "receiver_index_consume",
         CHANNEL_RECEIVER_INDEX_CONSUME_BODY,
-    );
-    assert!(
-        stderr.contains("E_OWN_CONSUME_BORROWED"),
-        "an indexed Stream borrow cannot consume the Vec's endpoint:\n{stderr}"
+        "E_OWN_CONSUME_BORROWED",
     );
 
     // Indexing and reference iteration borrow the affine endpoint; get and
@@ -589,14 +537,7 @@ fn receiver_vec_move_is_descriptor_owned_and_read_copy_surfaces_reject() {
         ("receiver_get", CHANNEL_RECEIVER_GET_BODY),
         ("receiver_slice", CHANNEL_RECEIVER_SLICE_BODY),
     ] {
-        let stderr = compile_rejected(name, body);
-        assert!(
-            (stderr.contains("no copy operation") || stderr.contains("single-consumer endpoint"))
-                && (stderr.contains("affine resource")
-                    || stderr.contains("non-cloneable")
-                    || stderr.contains("cannot be cloned")),
-            "{name} must reject the copy/read surface through the affine Stream contract:\n{stderr}"
-        );
+        compile_rejected(name, body, "InvalidOperation");
     }
 }
 

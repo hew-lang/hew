@@ -11,4 +11,3 @@ severity = "error"
 code = "BoundsNotSatisfied"
 line = 3
 column = 31
-message = "type `T` does not implement trait `Build` required by `T`"

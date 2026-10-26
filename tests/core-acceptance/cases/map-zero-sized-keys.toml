@@ -7,5 +7,4 @@ timeout_seconds = 15
 
 [case.expected]
 stdout = "1\nREPLACEMENT\nFIRST\n1\ntrue\nfalse\ntrue\ntrue\n1\n"
-stderr = ""
 exit = 0

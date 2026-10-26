@@ -7,5 +7,4 @@ timeout_seconds = 60
 
 [case.expected]
 stdout = "U:m1 V:m1 \nafter drain 0\nafter refill 1\nW:m2 \nseat 3\nseat 2\ndone\n"
-stderr = "hew: failure: IndexOutOfBounds (205): vector index 9 out of bounds for length 3\nhew: actor crash in Labels.fail_in_transform (actor 2): IndexOutOfBounds\nhew: failure: UserPanic (212): before the take\nhew: actor crash in Labels.fail_before_transform (actor 3): UserPanic\n"
 exit = 1

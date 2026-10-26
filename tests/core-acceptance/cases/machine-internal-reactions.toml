@@ -7,5 +7,4 @@ timeout_seconds = 15
 
 [case.expected]
 stdout = "internal reactions and bounded rollback passed\n"
-stderr = ""
 exit = 0

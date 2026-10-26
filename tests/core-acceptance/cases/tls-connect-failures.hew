@@ -10,7 +10,7 @@ fn describe(consume result: Result<tls.TlsStream, net.NetError>) -> string {
         .Ok(_) => "connected",
         .Err(NetError.TimedOut(_)) => "timed out",
         .Err(NetError.ConnectionRefused(_)) => "refused",
-        .Err(NetError.InvalidArgument(detail)) => f"invalid: {detail}",
+        .Err(NetError.InvalidArgument(_)) => "invalid",
         .Err(other) => f"other: {other}",
     }
 }

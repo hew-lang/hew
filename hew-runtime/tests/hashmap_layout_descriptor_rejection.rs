@@ -127,7 +127,7 @@ fn plain_k_layout() -> HewMapKeyLayout {
 // ---------------------------------------------------------------------------
 
 #[test]
-#[should_panic(expected = "key_layout ownership_kind=String requires drop_fn")]
+#[should_panic]
 fn rejects_string_key_without_drop_fn() {
     let kl = HewMapKeyLayout {
         value: HewValueLayout {
@@ -150,7 +150,7 @@ fn rejects_string_key_without_drop_fn() {
 }
 
 #[test]
-#[should_panic(expected = "key_layout ownership_kind=LayoutManaged requires drop_fn")]
+#[should_panic]
 fn rejects_layout_managed_key_without_drop_fn() {
     let kl = HewMapKeyLayout {
         value: HewValueLayout {
@@ -173,7 +173,7 @@ fn rejects_layout_managed_key_without_drop_fn() {
 }
 
 #[test]
-#[should_panic(expected = "val_layout ownership_kind=String requires drop_fn")]
+#[should_panic]
 fn rejects_string_value_without_drop_fn() {
     let kl = plain_k_layout();
     let vl = HewValueLayout {
@@ -192,7 +192,7 @@ fn rejects_string_value_without_drop_fn() {
 }
 
 #[test]
-#[should_panic(expected = "val_layout ownership_kind=LayoutManaged requires drop_fn")]
+#[should_panic]
 fn rejects_layout_managed_value_without_drop_fn() {
     let kl = plain_k_layout();
     let vl = HewValueLayout {

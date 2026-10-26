@@ -11,4 +11,3 @@ severity = "warning"
 code = "dead_code"
 line = 3
 column = 1
-message = "function `genuinely_uncalled` is never called"

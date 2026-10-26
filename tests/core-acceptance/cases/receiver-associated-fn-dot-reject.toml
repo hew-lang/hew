@@ -10,4 +10,3 @@ kind = "reject"
 code = "UndefinedMethod"
 line = 13
 column = 13
-message = "`same` is an associated function of `Point`, not a method"

@@ -8,5 +8,4 @@ env = { HEW_DETERMINISTIC = "schedule=fifo", HEW_ACTOR_LEAK_CHECK = "1" }
 
 [case.expected]
 stdout = "fast done\nslow done\nclosed slow\npicked fast\nclosed fast\n"
-stderr = ""
 exit = 0

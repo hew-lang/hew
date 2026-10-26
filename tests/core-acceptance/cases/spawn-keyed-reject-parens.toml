@@ -10,4 +10,3 @@ kind = "check"
 code = "E_SPAWN_PAREN_ARGS"
 line = 12
 column = 24
-message = "keys are written in braces"

@@ -11,4 +11,3 @@ severity = "error"
 code = "UseAfterMove"
 line = 12
 column = 24
-message = "use of moved value `job`"

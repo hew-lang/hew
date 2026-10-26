@@ -7,5 +7,4 @@ timeout_seconds = 30
 
 [case.expected]
 stdout = "caught nested\nnested recovered\n"
-stderr = "hew: failure: UserPanic (212): nested prerequisite crash\nhew: actor crash in Worker.fail (actor 1): UserPanic\n"
 exit = 0

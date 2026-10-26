@@ -11,4 +11,3 @@ severity = "error"
 code = "OpaqueMessagePayload"
 line = 3
 column = 29
-message = "opaque type `std.net.PeerSession` has no supported actor message transfer layout. Open or construct the handle locally inside the handler instead [E_OPAQUE_MESSAGE_PAYLOAD]"

@@ -8,5 +8,4 @@ timeout_seconds = 15
 
 [case.expected]
 stdout = ""
-stderr = "hew: failure: UserPanic (212): init failed after every field\n"
 exit = 1

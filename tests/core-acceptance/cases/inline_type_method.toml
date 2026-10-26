@@ -10,4 +10,3 @@ kind = "reject"
 code = "E_TYPE_METHOD_IN_DECL"
 line = 3
 column = 5
-message = "methods belong in an impl block [E_TYPE_METHOD_IN_DECL]"

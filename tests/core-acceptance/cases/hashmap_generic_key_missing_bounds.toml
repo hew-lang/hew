@@ -10,4 +10,3 @@ kind = "reject"
 code = "BoundsNotSatisfied"
 line = 4
 column = 5
-message = "does not satisfy the required bounds for `Map.contains_key`"

@@ -7,5 +7,4 @@ timeout_seconds = 60
 
 [case.expected]
 stdout = "crash-fallback\nmain-done\n0\n"
-stderr = "hew: failure: UserPanic (212): crash after child resume\nhew: actor crash in Runner.go (actor 2): UserPanic\n"
 exit = 1

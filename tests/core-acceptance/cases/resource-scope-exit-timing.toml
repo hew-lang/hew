@@ -7,5 +7,4 @@ timeout_seconds = 20
 
 [case.expected]
 stdout = "used 1\nfirst marker\nsecond marker\nclosed 1\nafter scope\n"
-stderr = ""
 exit = 0

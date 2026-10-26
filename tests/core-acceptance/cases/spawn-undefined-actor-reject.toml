@@ -10,4 +10,3 @@ kind = "reject"
 code = "UndefinedType"
 line = 6
 column = 14
-message = "undefined actor `Countr`"

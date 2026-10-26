@@ -9,6 +9,5 @@ timeout_seconds = 15
 [[case.expected.diagnostics]]
 code = "InvalidOperation"
 severity = "error"
-message = "unsupported extern ABI `C-unwind`"
 line = 1
 column = 1

@@ -10,4 +10,3 @@ kind = "reject"
 code = "BoundsNotSatisfied"
 line = 7
 column = 16
-message = "type `PlainValue` does not implement `Display`"

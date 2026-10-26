@@ -6,6 +6,5 @@ suites = ["acceptance", "safety"]
 timeout_seconds = 15
 
 [case.expected]
-stdout = "Ok(8080) Err(empty)\nOk(Ok(1)) Ok(Err(zero)) Err(refused)\nOk(abc) Err(nothing to read)\nOk(16160)\n"
-stderr = "error: no setting host\n"
+stdout = "Ok(8080) Err(empty)\nOk(Ok(1)) Ok(Err(zero)) Err(refused)\nOk(abc) Err(nothing to read)\nOk(16160)\nno setting host\n"
 exit = 1

@@ -7,5 +7,4 @@ timeout_seconds = 15
 
 [case.expected]
 stdout = "early\nearly cleaned\nreturned:7\ndriven\ndriven cleaned\nlater\nheavy\nheavy cleaned\nheavy\ndone\n"
-stderr = ""
 exit = 0

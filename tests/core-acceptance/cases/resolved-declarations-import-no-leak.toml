@@ -11,4 +11,3 @@ code = "UndefinedFunction"
 file = "resolved-declarations-import-scope/unbound/peer.hew"
 line = 2
 column = 5
-message = "undefined function `label`"

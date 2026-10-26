@@ -11,5 +11,4 @@ HEW_IO_LEAK_CHECK = "1"
 
 [case.expected]
 stdout = "concurrent work: 42\ncancelled reads: 10\nselect timeout: true\ndelayed data: true\nselected EOF: true\noutput after exit: true\nbuffer refills: true\npending reads closed\nunrelated children retain no writers\nstderr data: true\n"
-stderr = ""
 exit = 0

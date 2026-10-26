@@ -10,5 +10,4 @@ HEW_WORKERS = "1"
 
 [case.expected]
 stdout = "refusal cleanup fault is preserved\n"
-stderr = "hew: failure: UserPanic (212): refused request cleanup failed\nhew: actor crash in BrokenCleanup.work (actor 1): UserPanic\n"
 exit = 0

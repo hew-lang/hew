@@ -11,4 +11,3 @@ severity = "error"
 code = "Other"
 line = 1
 column = 35
-message = "default arguments belong to Hew-authored declarations, not extern declarations"

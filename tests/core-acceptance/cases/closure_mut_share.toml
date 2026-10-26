@@ -10,4 +10,3 @@ kind = "reject"
 code = "MutabilityError"
 line = 6
 column = 5
-message = "this callable requires a mutable place; bind it with `var` before calling"

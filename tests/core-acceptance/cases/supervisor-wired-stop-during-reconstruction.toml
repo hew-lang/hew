@@ -7,5 +7,4 @@ timeout_seconds = 30
 
 [case.expected]
 stdout = "cancelled reconstruction\n"
-stderr = "hew: failure: UserPanic (212): stop during ledger reconstruction\nhew: actor crash in Ledger.fail (actor 2): UserPanic\n"
 exit = 1

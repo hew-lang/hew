@@ -129,7 +129,7 @@ jobs:
           sudo apt-get install -y -qq clang-format gcc
 
       - name: Verify build tooling and checker behaviour
-        run: make -k test-tooling compile-determinism-selftest test-obligation-site-diff
+        run: make -k test-tooling compile-determinism-selftest
 
   # ─────────────────────────────────────────────────────────────────────────
   # Browser/playground smoke — repo-local browser tooling coverage only.

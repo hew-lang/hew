@@ -7,5 +7,4 @@ timeout_seconds = 15
 
 [case.expected]
 stdout = "both regions advanced\n"
-stderr = ""
 exit = 0

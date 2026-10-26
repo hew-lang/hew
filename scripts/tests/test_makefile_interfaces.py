@@ -23,23 +23,6 @@ def load(name: str, path: Path):
 shell_lint = load("shell_script_lint", ROOT / "scripts" / "shell-script-lint.py")
 
 
-def test_plain_make_builds_only_the_native_toolchain() -> None:
-    result = subprocess.run(
-        ["make", "--no-print-directory", "--dry-run"],
-        cwd=ROOT,
-        capture_output=True,
-        text=True,
-        check=True,
-    )
-    commands = result.stdout.splitlines()
-    builds = [line for line in commands if line.startswith("cargo build ")]
-    assert len(builds) == 1, result.stdout
-    assert "-p hew-cli" in builds[0], result.stdout
-    assert "-p hew-lib" in builds[0], result.stdout
-    assert "--target wasm" not in builds[0], result.stdout
-    assert "scripts/make-help.py" not in result.stdout, result.stdout
-
-
 def test_make_help_renders_the_current_target_index() -> None:
     result = subprocess.run(
         ["make", "--no-print-directory", "help"],

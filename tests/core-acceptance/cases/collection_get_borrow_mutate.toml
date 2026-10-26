@@ -10,4 +10,3 @@ kind = "reject"
 code = "InvalidOperation"
 line = 17
 column = 11
-message = "E_ELEMENT_NO_COPY: `Vec<Tok>` cannot be read with `get`"

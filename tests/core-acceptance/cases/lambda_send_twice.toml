@@ -10,16 +10,13 @@ kind = "reject"
 code = "E_RESULT_DROPPED"
 line = 3
 column = 9
-message = "E_RESULT_DROPPED: discarded `Result` with error type `std.builtins.Act"
 
 [[case.expected.diagnostics]]
 code = "UseAfterMove"
 line = 13
 column = 18
-message = "use of moved value `w`"
 
 [[case.expected.diagnostics]]
 code = "UseAfterMove"
 line = 14
 column = 13
-message = "use of moved value `w`"

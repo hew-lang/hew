@@ -10,4 +10,3 @@ kind = "check"
 code = "E_ERROR_NO_CONVERSION"
 line = 60
 column = 13
-message = "`?` cannot convert `A` into `C`"

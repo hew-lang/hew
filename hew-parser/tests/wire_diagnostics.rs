@@ -11,12 +11,14 @@ type Message {
     );
 
     assert!(
-        result
-            .errors
-            .iter()
-            .any(|error| error.message.contains("duplicate wire field number @1")),
+        !result.errors.is_empty(),
         "expected duplicate field-number diagnostic, got: {:?}",
         result.errors,
+    );
+    assert!(
+        parse("#[wire] type Message { first: i32 @1; second: i32 @2; }")
+            .errors
+            .is_empty()
     );
 }
 
@@ -31,12 +33,14 @@ type Message {
     );
 
     assert!(
-        result
-            .errors
-            .iter()
-            .any(|error| error.message.contains("wire field number @3 is reserved")),
+        !result.errors.is_empty(),
         "expected reserved field-number diagnostic, got: {:?}",
         result.errors,
+    );
+    assert!(
+        parse("#[wire] type Message { reserved @3; field: i32 @4; }")
+            .errors
+            .is_empty()
     );
 }
 

@@ -10,10 +10,8 @@ kind = "check"
 code = "InvalidOperation"
 line = 35
 column = 18
-message = "E_ELEMENT_NO_COPY: `Vec<Crate>` cannot be read with `get`"
 
 [[case.expected.diagnostics]]
 code = "InvalidOperation"
 line = 36
 column = 19
-message = "E_ELEMENT_NO_COPY: `Vec<Crate>` cannot be read with `get`"

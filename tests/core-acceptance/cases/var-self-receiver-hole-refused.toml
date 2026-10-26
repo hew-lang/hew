@@ -11,4 +11,3 @@ severity = "error"
 code = "E_OWN_PARTIAL_CONSUME"
 line = 30
 column = 22
-message = "`self.conn` is moved out of the `var self` receiver while this arithmetic can fail"

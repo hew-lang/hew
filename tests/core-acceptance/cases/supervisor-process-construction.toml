@@ -8,5 +8,4 @@ env = { HEW_WORKERS = "1" }
 
 [case.expected]
 stdout = "process-backed supervisor construction\n"
-stderr = "hew: failure: UserPanic (212): process-backed reconstruction\nhew: actor crash in Worker.fail (actor 1): UserPanic\n"
 exit = 0

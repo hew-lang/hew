@@ -10,4 +10,3 @@ kind = "reject"
 code = "UndefinedMethod"
 line = 2
 column = 5
-message = "type `Option<T>` cannot be cloned because member `Some` of type `T` has no Clone capability"

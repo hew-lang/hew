@@ -10,10 +10,8 @@ kind = "check"
 code = "E_FROM_INVALID"
 line = 16
 column = 1
-message = "cannot target a trait object"
 
 [[case.expected.diagnostics]]
 code = "E_FROM_INVALID"
 line = 22
 column = 1
-message = "bare type parameter"

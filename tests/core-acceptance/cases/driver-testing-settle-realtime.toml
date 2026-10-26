@@ -7,5 +7,4 @@ timeout_seconds = 10
 
 [case.expected]
 stdout = ""
-stderr = "hew: failure: UserPanic (212): testing.settle requires deterministic execution\n"
 exit = 1

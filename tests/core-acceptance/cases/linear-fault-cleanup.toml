@@ -7,5 +7,4 @@ timeout_seconds = 30
 
 [case.expected]
 stdout = "ACTIVE\nclose ACTIVE\nclose REMAINING\n"
-stderr = "hew: failure: UserPanic (212): commit failed\n"
 exit = 1

@@ -521,8 +521,8 @@ impl<'ctx> Frame<'ctx> {
             .build_store(layout, pointer.const_null())
             .llvm_ctx("initialize inactive operation")?;
         builder
-            .build_store(slot, owner)
-            .llvm_ctx("bind active operation slot")?;
+            .build_store(slot, pointer.const_null())
+            .llvm_ctx("initialize inactive operation slot")?;
         builder
             .build_store(owner, pointer.const_null())
             .llvm_ctx("initialize protocol owner")?;
@@ -544,9 +544,18 @@ impl<'ctx> Frame<'ctx> {
         let field = builder
             .build_struct_gep(row, metadata, 0, "managed.operation.layout")
             .llvm_ctx("address active protocol descriptor")?;
+        let address = builder
+            .build_struct_gep(row, metadata, 1, "managed.operation.slot")
+            .llvm_ctx("address active protocol slot")?;
         builder
             .build_store(slot, owner)
             .llvm_ctx("retain current protocol handle")?;
+        // Publish this address after coro.begin, when coroutine splitting can
+        // place the owner cell in its persistent frame. A pointer stored in
+        // the ramp's aggregate initializer would retain the ramp stack slot.
+        builder
+            .build_store(address, slot)
+            .llvm_ctx("bind persistent protocol handle slot")?;
         builder
             .build_store(field, layout)
             .llvm_ctx("publish typed protocol owner")?;

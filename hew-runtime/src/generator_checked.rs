@@ -367,6 +367,10 @@ pub unsafe extern "C" fn hew_checked_generator_poll(
         let mut context = HewExecutionContext {
             // SAFETY: child state retains its cancellation token.
             cancel_token: unsafe { hew_coro_state_token(generator.state) },
+            // The retained owner changes only after transfer commits. Explicit
+            // None must suppress fallback to the consumer's actor on a refused
+            // transfer, while scheduling and tracing still follow that consumer.
+            value_owner: &raw const generator.value_owner,
             prev_context: previous,
             ..HewExecutionContext::default()
         };

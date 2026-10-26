@@ -72,6 +72,10 @@ fn retire_actor_route(actor: *mut HewActor, actor_id: u64) {
             crate::lifetime::local_handles::RetireActorResult::Mismatch,
             "live actor route retirement lost exact authority"
         );
+        // The handle lock is released before taking a monitor shard. Terminal
+        // publication takes the shard first and checks identity liveness there.
+        // SAFETY: the owning runtime outlives this actor's retirement.
+        unsafe { &(*owner).monitors }.forget_unreferenced_actor_terminal(actor_id, handles);
     }
     #[cfg(target_arch = "wasm32")]
     {
@@ -81,6 +85,7 @@ fn retire_actor_route(actor: *mut HewActor, actor_id: u64) {
             crate::lifetime::local_handles::RetireActorResult::Mismatch,
             "live actor route retirement lost exact authority"
         );
+        crate::monitor::forget_unreferenced_actor_terminal(actor_id);
     }
 }
 

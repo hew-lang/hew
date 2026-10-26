@@ -875,7 +875,7 @@ pub unsafe extern "C" fn hew_actor_construct_native(
                     .expect("native completion")
                     .cancel_construction(crate::fault::HEW_FAULT_CANCELLED);
             }
-            actor.local_pid_id
+            crate::lifetime::local_handles::hew_actor_handle_retain(actor.local_pid_id)
         }
     }
 }

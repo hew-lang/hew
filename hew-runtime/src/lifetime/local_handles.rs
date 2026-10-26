@@ -69,6 +69,13 @@ pub(crate) enum Route {
     Actor {
         runtime_id: RuntimeId,
         actor_id: u64,
+        references: usize,
+    },
+    /// Terminal identity retained only by outstanding actor values.
+    RetiredActor {
+        runtime_id: RuntimeId,
+        actor_id: u64,
+        references: usize,
     },
     Supervisor {
         runtime_id: RuntimeId,
@@ -113,9 +120,6 @@ pub(crate) enum ObservedActorTarget {
 struct LocalHandleState {
     routes: HashMap<HewLocalPidId, Route>,
     actor_tokens: HashMap<u64, HewLocalPidId>,
-    // A retired identity has no allocation ownership but still names the
-    // terminal incarnation for immediate DOWN delivery.
-    retired_actors: HashMap<HewLocalPidId, (RuntimeId, u64)>,
     controls: HashMap<HewLocalPidId, Arc<SupervisorControl>>,
     supervisor_tokens: HashMap<usize, HewLocalPidId>,
     supervisor_roles: HashMap<HewLocalPidId, SupervisorRole>,
@@ -128,6 +132,42 @@ struct LocalHandleState {
 struct ImportedActorBinding {
     references: usize,
     service: Arc<crate::hew_node::service_api::ImportedService>,
+}
+
+impl LocalHandleState {
+    fn retain_actor(&mut self, token: HewLocalPidId) -> bool {
+        let Some(Route::Actor { references, .. } | Route::RetiredActor { references, .. }) =
+            self.routes.get_mut(&token)
+        else {
+            return false;
+        };
+        *references = references
+            .checked_add(1)
+            .expect("actor identity reference count overflow");
+        true
+    }
+
+    fn release_actor(&mut self, token: HewLocalPidId) -> bool {
+        let remove = match self.routes.get_mut(&token) {
+            Some(Route::Actor { references, .. }) => {
+                // The live actor owns one reference independently of handles.
+                assert!(*references > 1, "unowned actor identity release");
+                *references -= 1;
+                false
+            }
+            Some(Route::RetiredActor { references, .. }) => {
+                *references -= 1;
+                *references == 0
+            }
+            _ => return false,
+        };
+        if remove {
+            if let Some(Route::RetiredActor { actor_id, .. }) = self.routes.remove(&token) {
+                self.actor_tokens.remove(&actor_id);
+            }
+        }
+        true
+    }
 }
 
 /// The disjoint declared child rosters share one canonical role-token table.
@@ -751,6 +791,7 @@ impl LocalHandles {
                     entry.insert(Route::Actor {
                         runtime_id,
                         actor_id,
+                        references: 1,
                     });
                 }
                 std::collections::hash_map::Entry::Occupied(_) => {
@@ -825,6 +866,7 @@ impl LocalHandles {
             Some(Route::Actor {
                 runtime_id: owner,
                 actor_id,
+                ..
             }) if *owner == runtime_id => Some(*actor_id),
             _ => None,
         })
@@ -844,14 +886,19 @@ impl LocalHandles {
         token: HewLocalPidId,
     ) -> Option<u64> {
         self.state.access(|state| match state.routes.get(&token) {
-            Some(Route::Actor {
-                runtime_id: owner,
-                actor_id,
-            }) if *owner == runtime_id => Some(*actor_id),
-            _ => state
-                .retired_actors
-                .get(&token)
-                .and_then(|(owner, id)| (*owner == runtime_id).then_some(*id)),
+            Some(
+                Route::Actor {
+                    runtime_id: owner,
+                    actor_id,
+                    ..
+                }
+                | Route::RetiredActor {
+                    runtime_id: owner,
+                    actor_id,
+                    ..
+                },
+            ) if *owner == runtime_id => Some(*actor_id),
+            _ => None,
         })
     }
 
@@ -871,6 +918,7 @@ impl LocalHandles {
                 Some(Route::Actor {
                     runtime_id: owner,
                     actor_id: routed,
+                    ..
                 }) if *owner == runtime_id && *routed == actor_id => Some(token),
                 _ => None,
             }
@@ -885,6 +933,9 @@ impl LocalHandles {
             return RetireActorResult::AlreadyRetired;
         }
         self.state.access(|state| {
+            if matches!(state.routes.get(&token), Some(Route::RetiredActor { actor_id: routed, .. }) if *routed == actor_id) {
+                return RetireActorResult::AlreadyRetired;
+            }
             if !state.routes.contains_key(&token) && !state.actor_tokens.contains_key(&actor_id) {
                 return RetireActorResult::AlreadyRetired;
             }
@@ -901,23 +952,53 @@ impl LocalHandles {
             if let Some(Route::Actor {
                 runtime_id,
                 actor_id,
+                references,
             }) = state.routes.remove(&token)
             {
-                state.retired_actors.insert(token, (runtime_id, actor_id));
+                if references > 1 {
+                    state.routes.insert(
+                        token,
+                        Route::RetiredActor {
+                            runtime_id,
+                            actor_id,
+                            references: references - 1,
+                        },
+                    );
+                } else {
+                    state.actor_tokens.remove(&actor_id);
+                }
             }
-            state.actor_tokens.remove(&actor_id);
             RetireActorResult::Retired
         })
     }
 
     #[cfg(test)]
     pub(crate) fn counts(&self) -> (usize, usize) {
-        self.state
-            .access(|state| (state.routes.len(), state.actor_tokens.len()))
+        self.state.access(|state| {
+            (
+                state.routes.len(),
+                state
+                    .routes
+                    .values()
+                    .filter(|route| matches!(route, Route::Actor { .. }))
+                    .count(),
+            )
+        })
     }
 
     pub(crate) fn actor_route_count(&self) -> usize {
-        self.state.access(|state| state.actor_tokens.len())
+        self.state.access(|state| {
+            state
+                .actor_tokens
+                .values()
+                .filter(|token| matches!(state.routes.get(token), Some(Route::Actor { .. })))
+                .count()
+        })
+    }
+
+    pub(crate) fn has_actor_identity(&self, actor_id: u64) -> bool {
+        self.state
+            .access(|state| state.actor_tokens.contains_key(&actor_id))
     }
 
     pub(crate) fn pin_supervisor(
@@ -1227,13 +1308,16 @@ pub extern "C" fn hew_actor_handle_identical(left: HewLocalPidId, right: HewLoca
     0
 }
 
-/// Copy an actor value. Local incarnations and roles own no target allocation;
-/// imported values share only their local descriptor, never the issuer grant.
+/// Copy an actor value, retaining its identity metadata or imported descriptor.
+/// No actor value owns the target allocation or extends its lifecycle.
 #[no_mangle]
 pub extern "C" fn hew_actor_handle_retain(token: HewLocalPidId) -> HewLocalPidId {
-    #[cfg(not(target_arch = "wasm32"))]
     if let Some(handles) = current_handles() {
         handles.state.access(|state| {
+            if state.retain_actor(token) {
+                return;
+            }
+            #[cfg(not(target_arch = "wasm32"))]
             if let Some(binding) = state.imports.get_mut(&token) {
                 binding.references = binding
                     .references
@@ -1245,21 +1329,49 @@ pub extern "C" fn hew_actor_handle_retain(token: HewLocalPidId) -> HewLocalPidId
     token
 }
 
-/// Release one actor value. Last imported-handle release frees its descriptor;
-/// exporter revocation and actor lifecycle remain separate authorities.
+/// Release one actor value. The final value frees a retired identity's metadata
+/// or an imported descriptor, independently of actor lifecycle and revocation.
 #[no_mangle]
 pub extern "C" fn hew_actor_handle_release(token: HewLocalPidId) {
-    #[cfg(not(target_arch = "wasm32"))]
     if let Some(handles) = current_handles() {
-        let retired = handles.state.access(|state| {
-            let binding = state.imports.get_mut(&token)?;
-            binding.references -= 1;
-            (binding.references == 0).then(|| state.imports.remove(&token))
+        #[cfg(not(target_arch = "wasm32"))]
+        let (actor_id, retired) = handles.state.access(|state| {
+            let actor_id = match state.routes.get(&token) {
+                Some(Route::RetiredActor {
+                    actor_id,
+                    references: 1,
+                    ..
+                }) => Some(*actor_id),
+                _ => None,
+            };
+            if state.release_actor(token) {
+                return (actor_id, None);
+            }
+            let retired = state.imports.get_mut(&token).and_then(|binding| {
+                binding.references -= 1;
+                (binding.references == 0).then_some(())
+            });
+            (None, retired.and_then(|()| state.imports.remove(&token)))
         });
+        #[cfg(not(target_arch = "wasm32"))]
         drop(retired);
+        #[cfg(target_arch = "wasm32")]
+        let actor_id = handles.state.access(|state| {
+            let actor_id = match state.routes.get(&token) {
+                Some(Route::RetiredActor {
+                    actor_id,
+                    references: 1,
+                    ..
+                }) => Some(*actor_id),
+                _ => None,
+            };
+            state.release_actor(token);
+            actor_id
+        });
+        if let Some(actor_id) = actor_id {
+            crate::monitor::forget_unreferenced_actor_terminal(actor_id);
+        }
     }
-    #[cfg(target_arch = "wasm32")]
-    let _ = token;
 }
 
 /// Start one actor publication in the current runtime authority.
@@ -1669,6 +1781,7 @@ mod tests {
         let old = handles
             .register_actor(runtime_id, 41)
             .expect("old direct route");
+        assert!(handles.state.access(|state| state.retain_actor(old)));
 
         assert_eq!(handles.resolve_actor(runtime_id, old), Some(41));
         assert_eq!(handles.retire_actor(old, 41), RetireActorResult::Retired);
@@ -1688,6 +1801,55 @@ mod tests {
         assert_ne!(replacement, old);
         assert_eq!(handles.resolve_actor(runtime_id, old), None);
         assert_eq!(handles.resolve_actor(runtime_id, replacement), Some(42));
+        assert!(handles.state.access(|state| state.release_actor(old)));
+        assert_eq!(handles.observation_actor(runtime_id, old), None);
+    }
+
+    #[test]
+    fn retired_actor_identity_lives_until_its_last_value_is_released() {
+        let handles = LocalHandles::new();
+        let owner = RuntimeId::DEFAULT;
+        let token = handles.register_actor(owner, 1).expect("actor route");
+        assert!(handles.state.access(|state| state.retain_actor(token)));
+        assert!(handles.state.access(|state| state.retain_actor(token)));
+
+        assert_eq!(handles.retire_actor(token, 1), RetireActorResult::Retired);
+        assert_eq!(handles.retire_actor(token, 2), RetireActorResult::Mismatch);
+        assert_eq!(handles.resolve_actor(owner, token), None);
+        assert_eq!(handles.observation_actor(owner, token), Some(1));
+        assert_eq!(handles.observation_actor(RuntimeId(9), token), None);
+        assert_eq!(handles.counts(), (1, 0));
+
+        assert!(handles.state.access(|state| state.release_actor(token)));
+        assert_eq!(handles.observation_actor(owner, token), Some(1));
+        assert!(handles.state.access(|state| state.release_actor(token)));
+        assert_eq!(handles.observation_actor(owner, token), None);
+        assert_eq!(handles.counts(), (0, 0));
+    }
+
+    #[test]
+    fn actor_churn_reclaims_unreferenced_identity_metadata() {
+        let handles = LocalHandles::new();
+        let owner = RuntimeId::DEFAULT;
+        let held = handles.register_actor(owner, 1).expect("retained actor");
+        assert!(handles.state.access(|state| state.retain_actor(held)));
+        assert_eq!(handles.retire_actor(held, 1), RetireActorResult::Retired);
+
+        for actor_id in 2..2_002 {
+            let token = handles
+                .register_actor(owner, actor_id)
+                .expect("actor route");
+            assert_ne!(token, held);
+            assert_eq!(
+                handles.retire_actor(token, actor_id),
+                RetireActorResult::Retired
+            );
+            assert_eq!(handles.observation_actor(owner, token), None);
+        }
+        assert_eq!(handles.counts(), (1, 0));
+        assert_eq!(handles.observation_actor(owner, held), Some(1));
+        assert!(handles.state.access(|state| state.release_actor(held)));
+        assert_eq!(handles.counts(), (0, 0));
     }
 
     #[test]

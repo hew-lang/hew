@@ -2614,6 +2614,13 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             .build_call(abort, &[token.into(), construction.into()], "")
             .llvm_ctx("return construction to terminal cleanup")?;
         self.emit_actor_wait(result, None, true)?;
+        let identity = self.load(result, "spawn.rollback.identity")?;
+        self.value_emitter().destroy_loaded_value(
+            identity,
+            &self.storage(result)?.layout,
+            DestroyAction::ActorRelease,
+        )?;
+        self.store(result, size_ty.const_zero().into())?;
         self.builder
             .build_unconditional_branch(complete)
             .llvm_ctx("finish construction rollback")?;

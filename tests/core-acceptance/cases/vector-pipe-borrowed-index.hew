@@ -1,0 +1,15 @@
+import std.stream;
+
+fn main() {
+    let (sink, input): (stream.Sink<string>, stream.Stream<string>) = stream.pipe(1).expect("pipe");
+    var sinks = [sink];
+    let inputs = [input];
+    sinks[0].send("first").expect("first send");
+    assert(inputs[0].recv().expect("first receive") == "first");
+    sinks[0].send("second").expect("second send");
+    assert(inputs[0].recv().expect("second receive") == "second");
+    assert(sinks.len() == 1 && inputs.len() == 1);
+    sinks.clear();
+    assert(inputs[0].recv().is_none());
+    println("borrowed pipe indices preserve endpoint owners");
+}

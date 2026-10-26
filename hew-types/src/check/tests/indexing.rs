@@ -142,29 +142,6 @@ fn inspect(tokens: Vec<Token>) -> i64 {
     );
 }
 
-#[test]
-fn vec_index_still_rejects_either_pipe_half() {
-    for (name, builtin) in [
-        ("std.stream.Stream", BuiltinType::Stream),
-        ("std.stream.Sink", BuiltinType::Sink),
-    ] {
-        let mut checker = Checker::new(ModuleRegistry::new(vec![]));
-        let half = Ty::Named {
-            args: vec![Ty::I64],
-            head: crate::TypeHead::Builtin(builtin),
-        };
-        assert!(!checker.validate_vec_index_borrow_surface(&half, &Span::from(0..0)));
-        assert!(
-            checker
-                .errors
-                .iter()
-                .any(|error| error.message.contains("no copy operation")),
-            "{name} must refuse index-by-value in source: {:#?}",
-            checker.errors
-        );
-    }
-}
-
 /// the boundary does: a concrete type lands in both maps; a non-concrete type
 /// (a leaked inference var) lands only in `expr_types`, leaving the typed map
 /// correctly absent (fail-closed omission, never a fabricated guess).

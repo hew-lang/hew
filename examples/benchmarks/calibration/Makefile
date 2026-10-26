@@ -4,11 +4,12 @@ OUT ?= $(CURDIR)/out
 RUSTC ?= rustc
 CC := clang
 GO ?= go
+DOTNET ?= dotnet
 PYTHON ?= python3
 CARGO_BUILD_JOBS ?= 1
 PRIMITIVE_SOURCE ?= primitives
 
-.PHONY: build primitives concurrency run smoke compile-scaling check primitives-hew-o0 primitives-hew primitives-rust primitives-rust-checked primitives-go primitives-c concurrency-hew-o0 concurrency-hew concurrency-profile concurrency-go concurrency-tokio concurrency-beam
+.PHONY: build primitives concurrency run smoke compile-scaling check primitives-hew-o0 primitives-hew primitives-rust primitives-rust-checked primitives-go primitives-c concurrency-hew-o0 concurrency-hew concurrency-profile concurrency-go concurrency-tokio concurrency-beam concurrency-dotnet
 
 build: primitives concurrency
 
@@ -38,7 +39,7 @@ primitives-c:
 	mkdir -p "$(OUT)"
 	$(CC) -O2 -std=c11 "$(PRIMITIVE_SOURCE).c" -o "$(OUT)/primitives-c"
 
-concurrency: concurrency-hew-o0 concurrency-hew concurrency-go concurrency-tokio concurrency-beam
+concurrency: concurrency-hew-o0 concurrency-hew concurrency-go concurrency-tokio concurrency-beam concurrency-dotnet
 
 concurrency-hew-o0:
 	mkdir -p "$(OUT)"
@@ -64,6 +65,10 @@ concurrency-tokio:
 concurrency-beam:
 	mkdir -p "$(OUT)"
 	erlc -o "$(OUT)" concurrency.erl
+
+concurrency-dotnet:
+	mkdir -p "$(OUT)/dotnet"
+	$(DOTNET) build dotnet/calibration.csproj --configuration Release --output "$(OUT)/dotnet" -p:BaseIntermediateOutputPath="$(OUT)/dotnet-obj/"
 
 run:
 	$(PYTHON) run.py --hew "$(HEW)" --output "$(OUT)" $(ARGS)

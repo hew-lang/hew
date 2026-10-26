@@ -229,43 +229,6 @@ impl Checker {
         Some(instantiate_stdlib_method_sig(sig, impl_params, type_args))
     }
 
-    /// Validate the exceptional element types that cannot use `Vec`'s
-    /// borrow-only index path.
-    ///
-    /// Ordinary `#[resource]` / `#[linear]` elements are deliberately admitted:
-    /// MIR lowers `values[i]` through the owned-layout getter as an interior
-    /// borrow and its escape/consume/rebind checks keep that borrow inside the
-    /// collection's release authority. A pipe half, however, is an opaque
-    /// endpoint with no readable borrowed-value surface, so it remains
-    /// rejected regardless of its payload type.
-    pub(in crate::check) fn validate_vec_index_borrow_surface(
-        &mut self,
-        ty: &Ty,
-        span: &Span,
-    ) -> bool {
-        let resolved = self.subst.resolve(ty).materialize_literal_defaults();
-        if let Ty::Named {
-            head: crate::TypeHead::Builtin(builtin),
-            ..
-        } = resolved
-        {
-            if builtin.is_pipe_half() {
-                self.report_error(
-                    TypeErrorKind::InvalidOperation,
-                    span,
-                    format!(
-                        "cannot index `Vec<{}>` by value: a pipe half is non-cloneable and \
-                         has no copy operation; use `pop`, `remove`, or consuming iteration \
-                         to move the endpoint out",
-                        resolved.user_facing()
-                    ),
-                );
-                return false;
-            }
-        }
-        true
-    }
-
     pub(in crate::check) fn check_stream_method(
         &mut self,
         type_args: &[Ty],

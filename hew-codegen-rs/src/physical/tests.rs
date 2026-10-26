@@ -1379,6 +1379,8 @@ fn scalar_and_vector_loop_chunks_preserve_the_shared_budget_across_serial_calls(
         static BUDGET: Cell<u32> = const { Cell::new(0) };
         static POLLS: Cell<u32> = const { Cell::new(0) };
         static SUPPRESSED: Cell<bool> = const { Cell::new(false) };
+        static CANCELLING: Cell<bool> = const { Cell::new(false) };
+        static VECTOR_RELEASES: Cell<u32> = const { Cell::new(0) };
     }
     unsafe extern "C" fn countdown(_: *mut std::ffi::c_void, _: u32) -> *mut u32 {
         if SUPPRESSED.get() {
@@ -1387,7 +1389,7 @@ fn scalar_and_vector_loop_chunks_preserve_the_shared_budget_across_serial_calls(
             BUDGET.with(Cell::as_ptr)
         }
     }
-    unsafe extern "C" fn poll(_: *mut std::ffi::c_void, budget: u32) -> i32 {
+    unsafe extern "C" fn poll(state: *mut std::ffi::c_void, budget: u32) -> i32 {
         assert_eq!(
             BUDGET.get(),
             0,
@@ -1395,7 +1397,26 @@ fn scalar_and_vector_loop_chunks_preserve_the_shared_budget_across_serial_calls(
         );
         BUDGET.set(budget);
         POLLS.set(POLLS.get() + 1);
-        0
+        if CANCELLING.get() {
+            // SAFETY: generated polling borrows the live invocation state;
+            // its execution owner retains the token throughout this call.
+            unsafe {
+                let token = hew_runtime::coro_state::hew_coro_state_token(state.cast());
+                hew_runtime::cancel_token::hew_cancel_token_cancel(
+                    token,
+                    hew_runtime::fault::HEW_FAULT_CANCELLED,
+                );
+            }
+            2
+        } else {
+            0
+        }
+    }
+    unsafe extern "C-unwind" fn release_vector(vector: *mut std::ffi::c_void) {
+        VECTOR_RELEASES.set(VECTOR_RELEASES.get() + 1);
+        // SAFETY: scalar-vector cleanup is synchronous and transfers one live
+        // owner to the consuming walk, including cancellation cleanup.
+        unsafe { hew_runtime::vec::hew_vec_free_owned_walk(vector.cast()) };
     }
     let semantic = lower_source(
         r"
@@ -1437,8 +1458,17 @@ fn scalar_and_vector_loop_chunks_preserve_the_shared_budget_across_serial_calls(
         for (name, address) in [
             ("hew_coro_safepoint_budget", countdown as *const () as usize),
             ("hew_coro_safepoint", poll as *const () as usize),
+            (
+                "hew_vec_free_owned_walk",
+                release_vector as *const () as usize,
+            ),
         ] {
-            engine.add_global_mapping(&llvm.get_function(name).unwrap(), address);
+            engine.add_global_mapping(
+                &llvm
+                    .get_function(name)
+                    .unwrap_or_else(|| panic!("missing runtime boundary {name}")),
+                address,
+            );
         }
         type Main = unsafe extern "C" fn(*mut i64, *mut *mut hew_runtime::fault::HewFault) -> i32;
         // SAFETY: the generated main wrapper has the physical result/fault ABI.
@@ -1472,6 +1502,34 @@ fn scalar_and_vector_loop_chunks_preserve_the_shared_budget_across_serial_calls(
         assert_eq!(BUDGET.get(), 17, "suppression leaves the budget untouched");
         assert_eq!(POLLS.get(), 0);
         SUPPRESSED.set(false);
+
+        // Main entry, outer header and callee entry consume three ticks.
+        // Cancel on the next scan header after one element, with its vector
+        // owner and private recurrence live across the chunk's budget exit.
+        BUDGET.set(5);
+        POLLS.set(0);
+        VECTOR_RELEASES.set(0);
+        CANCELLING.set(true);
+        let mut result = -77;
+        let mut fault = std::ptr::null_mut();
+        // SAFETY: output carriers remain live through the synchronous root.
+        assert_eq!(
+            unsafe { main.call(&raw mut result, &raw mut fault) },
+            hew_runtime::fault::HEW_FAULT_CANCELLED
+        );
+        assert_eq!(result, -77, "cancelled scans must not publish a result");
+        assert!(!fault.is_null());
+        assert_eq!(POLLS.get(), 1);
+        assert_eq!(
+            VECTOR_RELEASES.get(),
+            1,
+            "cancellation releases the live vector once"
+        );
+        // SAFETY: the cancelled call published one owned fault.
+        unsafe {
+            hew_runtime::fault::hew_fault_drop(fault);
+        }
+        CANCELLING.set(false);
     }
 }
 

@@ -424,7 +424,7 @@ impl Checker {
     pub(in crate::check) fn lang_trait(&self, item: crate::LangItem) -> Option<crate::DefId> {
         self.lang_items
             .get(item.key())
-            .map(|binding| binding.trait_id)
+            .and_then(|binding| binding.trait_id)
     }
 
     /// The compiler marker a trait is: a predicate row, or the prelude's
@@ -772,9 +772,7 @@ impl Checker {
                                 .get(crate::LangItem::IteratorNext.key())
                                 .is_some_and(|binding| {
                                     self.trait_method_ids_of(declaring, name.as_str())
-                                        == binding
-                                            .method_id
-                                            .map(|method| (binding.trait_id, method))
+                                        == binding.trait_id.zip(binding.method_id)
                                 });
                             let mut substitutions = HashMap::from([(
                                 crate::ParamHead::receiver(declaring),

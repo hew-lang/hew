@@ -981,6 +981,30 @@ impl Builder<'_, '_> {
         if signature.return_ty != result_ty {
             signature.return_ty = result_ty.clone();
         }
+        if scope.is_none()
+            && args.len() == 2
+            && matches!(
+                args[1].kind,
+                HirExprKind::Literal(hew_hir::HirLiteral::String(_))
+            )
+        {
+            if let CallTarget::ImplMethod(declaration) | CallTarget::User(declaration) = target {
+                if let Some(role) = self
+                    .service
+                    .callable_facts
+                    .literal_expect_role(*declaration)
+                {
+                    return self.lower_literal_expect(
+                        expr,
+                        &callee,
+                        &signature,
+                        args,
+                        role,
+                        value_required,
+                    );
+                }
+            }
+        }
         // A checker-approved `#[returns_receiver]` call used only for its
         // effect carries a Read receiver even though the selected parameter
         // consumes it. Transfer the seat into the call, then publish the exact
@@ -1263,6 +1287,92 @@ impl Builder<'_, '_> {
             value_required,
             None,
         )
+    }
+
+    /// A literal diagnostic has no authored effects. Construct it only in the
+    /// failing variant; the selected stdlib body still owns panic formatting.
+    fn lower_literal_expect(
+        &mut self,
+        expr: &HirExpr,
+        callee: &PreparedCallee,
+        signature: &SemSignature,
+        args: &[HirExpr],
+        success: crate::RuntimeVariantRole,
+        value_required: bool,
+    ) -> Result<Option<ValueId>, SirLoweringError> {
+        let PreparedCallee::Direct { target, site } = callee else {
+            return Err("canonical expect must name a direct callable".into());
+        };
+        let mut receiver_loans = Vec::new();
+        let receiver_argument = self.lower_user_arguments(
+            &args[..1],
+            &[],
+            &signature.params[..1],
+            &mut receiver_loans,
+        )?;
+        let receiver = receiver_argument[0].operand.value;
+        let receiver_decision = receiver_argument[0].decision;
+        let receiver_ty = self.ty(&args[0].ty);
+        let shape = self.service.require_variant_shape(&receiver_ty)?;
+        let descriptor = self.service.variant_shapes[shape.0 as usize].clone();
+        let success = descriptor
+            .runtime_tags
+            .iter()
+            .find_map(|(role, variant)| (*role == success).then_some(*variant))
+            .ok_or_else(|| SirLoweringError::from("canonical expect lacks its success variant"))?;
+        let entry = self.control_state();
+        let branches = self.emit_variant_switch(shape, &descriptor, receiver)?;
+        let mut exits = Vec::new();
+        for branch in branches {
+            self.restore_control_state(&entry);
+            self.current = branch.block;
+            self.owned_live = branch.owned_live;
+            let result = if branch.variant == success {
+                let [field] = branch.fields.as_slice() else {
+                    return Err("canonical expect success must have one payload".into());
+                };
+                if self.ty(&expr.ty) == ResolvedTy::Unit {
+                    None
+                } else {
+                    Some(field.value)
+                }
+            } else {
+                let receiver =
+                    self.emit_variant_make(shape, branch.variant, &receiver_ty, &branch.fields)?;
+                let baseline = self.owned_live.keys().copied().collect();
+                let mut loans = Vec::new();
+                let mut arguments =
+                    self.lower_user_arguments(&args[1..], &[], &signature.params[1..], &mut loans)?;
+                arguments.insert(
+                    0,
+                    crate::BoundaryOperand {
+                        operand: Operand { value: receiver },
+                        decision: receiver_decision,
+                    },
+                );
+                self.finish_user_call(
+                    PreparedCallee::Direct {
+                        target: *target,
+                        site: *site,
+                    },
+                    signature.clone(),
+                    arguments,
+                    &loans,
+                    &baseline,
+                    value_required,
+                    None,
+                )?
+            };
+            self.end_call_loans(&receiver_loans)?;
+            if let Some(result) = result {
+                self.owned_live.remove(&result);
+            }
+            exits.push(super::MatchExit {
+                state: self.control_state(),
+                result: result.map(|value| Operand { value }),
+            });
+        }
+        self.merge_match_exits(exits, &self.ty(&expr.ty))
     }
 
     /// Capture arguments in their evaluation order while keeping earlier

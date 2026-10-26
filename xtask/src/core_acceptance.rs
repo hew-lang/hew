@@ -1776,6 +1776,14 @@ mod tests {
     }
 
     #[test]
+    fn repository_manifests_match_runner_contract() {
+        let root = workspace_root().expect("workspace root");
+        let mut manifest = load_manifest(&root, &[]).expect("checked-in case schema");
+        resolve_stdout_files(&mut manifest, &root).expect("authored output files");
+        validate_manifest(&manifest, &root).expect("checked-in case contracts");
+    }
+
+    #[test]
     fn missing_capture_is_an_environment_error() {
         let directory = tempfile::tempdir().expect("temporary directory");
         let _ = read_capture(&directory.path().join("missing"), "stdout")

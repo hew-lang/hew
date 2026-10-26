@@ -4609,13 +4609,15 @@ pub fn check_file_with_state(
     Ok((output, state))
 }
 
-/// The running compiler's release version, the version `hew --version`
-/// prints. Every crate in the workspace shares it.
+/// The workspace release version. Development display identities also include
+/// their Git count and commit. Every crate in the workspace shares this base.
 pub const COMPILER_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 /// Whether a `[package] hew` compiler range admits this compiler. The one
 /// reader of that range: the frontend, `hew publish`, `hew check` and the
 /// package resolver all ask it.
+/// Ordinary ranges describe the compiler's feature version; explicit
+/// prerelease bounds compare its full release version.
 ///
 /// # Errors
 ///
@@ -4628,7 +4630,37 @@ pub fn compiler_supports(range: &str) -> Result<bool, semver::Error> {
     let range = semver::VersionReq::parse(range)?;
     let compiler =
         semver::Version::parse(COMPILER_VERSION).expect("the workspace version is semver");
-    Ok(range.matches(&compiler))
+    Ok(compiler_requirement_matches(&range, compiler))
+}
+
+fn compiler_requirement_matches(range: &semver::VersionReq, mut compiler: semver::Version) -> bool {
+    if range.comparators.iter().all(|bound| bound.pre.is_empty()) {
+        compiler.pre = semver::Prerelease::EMPTY;
+    }
+    range.matches(&compiler)
+}
+
+#[cfg(test)]
+mod compiler_range_tests {
+    #[test]
+    fn feature_ranges_and_explicit_prerelease_bounds() {
+        for (requirement, compiler, admitted) in [
+            (">=0.9.3", "0.10.0-rc1", true),
+            ("<0.10.0", "0.10.0-rc1", false),
+            ("=0.9.3", "0.10.0-rc1", false),
+            (">=0.10.0-rc2", "0.10.0-rc1", false),
+            (">=0.10.0-rc1", "0.10.0-rc1", true),
+            (">=0.10.0-rc2", "0.10.0", true),
+            (">=0.9.3", "0.9.2", false),
+        ] {
+            let requirement = semver::VersionReq::parse(requirement).unwrap();
+            let compiler = semver::Version::parse(compiler).unwrap();
+            assert_eq!(
+                super::compiler_requirement_matches(&requirement, compiler),
+                admitted
+            );
+        }
+    }
 }
 
 /// Hew language editions the compiler accepts. Sources in a package whose

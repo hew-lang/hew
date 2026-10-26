@@ -1869,6 +1869,7 @@ dependencies = [
 name = "hew-cli"
 version = "0.9.4"
 dependencies = [
+ "cc",
  "clap",
  "clap_complete",
  "dirs",

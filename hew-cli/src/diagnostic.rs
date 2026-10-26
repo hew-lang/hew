@@ -8,6 +8,9 @@ use std::collections::HashMap;
 use std::io::IsTerminal;
 use std::ops::Range;
 
+#[path = "diagnostic_renderer.rs"]
+mod renderer;
+
 // ---------------------------------------------------------------------------
 // Thread-local diagnostic capture
 // ---------------------------------------------------------------------------
@@ -250,6 +253,7 @@ const CYAN: &str = "\x1b[1;36m";
 const BOLD: &str = "\x1b[1m";
 const RESET: &str = "\x1b[0m";
 
+#[derive(serde::Serialize)]
 struct DiagnosticPalette {
     red: &'static str,
     yellow: &'static str,
@@ -363,44 +367,8 @@ fn render_diagnostic_impl(
     suggestions: &[String],
     code: Option<&str>,
 ) {
-    let filename = display_filename(filename);
-    let message = hew_compile::source_path_policy().display_text(message);
-    let palette = diagnostic_palette();
-    let (line, col) = offset_to_line_col(source, span.start);
     let level = code.map_or_else(|| "error".to_string(), |code| format!("error[{code}]"));
-
-    // Header: filename:line:col: error[CODE]: message
-    diag_println(&format!(
-        "{bold}{filename}:{line}:{col}:{reset} {red}{level}{reset}{bold}: {message}{reset}",
-        bold = palette.bold,
-        red = palette.red,
-        reset = palette.reset,
-    ));
-
-    render_source_underline(source, span, line, &palette);
-
-    // Secondary notes with their own spans
-    for note in notes {
-        let (note_line, note_col) = offset_to_line_col(note.source, note.span.start);
-        diag_println(&format!(
-            "{bold}{note_filename}:{note_line}:{note_col}:{reset} {cyan}note{reset}{bold}: {message}{reset}",
-            bold = palette.bold,
-            cyan = palette.cyan,
-            message = hew_compile::source_path_policy().display_text(note.message),
-            note_filename = display_filename(note.filename),
-            reset = palette.reset,
-        ));
-        render_source_underline(note.source, note.span, note_line, &palette);
-    }
-
-    // Suggestions
-    for suggestion in suggestions {
-        diag_println(&format!(
-            "  {cyan}= help{reset}: {suggestion}",
-            cyan = palette.cyan,
-            reset = palette.reset,
-        ));
-    }
+    render_presentation(source, filename, span, message, &level, notes, suggestions);
 }
 
 /// Render a warning message with source context and span underline.
@@ -414,40 +382,45 @@ pub fn render_warning(
     notes: &[DiagnosticNote<'_>],
     suggestions: &[String],
 ) {
-    let filename = display_filename(filename);
-    let message = hew_compile::source_path_policy().display_text(message);
-    let palette = diagnostic_palette();
-    let (line, col) = offset_to_line_col(source, span.start);
+    render_presentation(
+        source,
+        filename,
+        span,
+        message,
+        "warning",
+        notes,
+        suggestions,
+    );
+}
 
-    diag_println(&format!(
-        "{bold}{filename}:{line}:{col}:{reset} {yellow}warning{reset}{bold}: {message}{reset}",
-        bold = palette.bold,
-        reset = palette.reset,
-        yellow = palette.yellow,
-    ));
-
-    render_source_underline(source, span, line, &palette);
-
-    for note in notes {
-        let (note_line, note_col) = offset_to_line_col(note.source, note.span.start);
-        diag_println(&format!(
-            "{bold}{note_filename}:{note_line}:{note_col}:{reset} {cyan}note{reset}{bold}: {message}{reset}",
-            bold = palette.bold,
-            cyan = palette.cyan,
-            message = hew_compile::source_path_policy().display_text(note.message),
-            note_filename = display_filename(note.filename),
-            reset = palette.reset,
-        ));
-        render_source_underline(note.source, note.span, note_line, &palette);
-    }
-
-    for suggestion in suggestions {
-        diag_println(&format!(
-            "  {cyan}= help{reset}: {suggestion}",
-            cyan = palette.cyan,
-            reset = palette.reset,
-        ));
-    }
+fn render_presentation(
+    source: &str,
+    filename: &str,
+    span: &Range<usize>,
+    message: &str,
+    level: &str,
+    notes: &[DiagnosticNote<'_>],
+    suggestions: &[String],
+) {
+    let rendered = renderer::render(
+        &DiagnosticNote {
+            source,
+            filename,
+            span,
+            message,
+        },
+        level,
+        notes,
+        suggestions,
+        &diagnostic_palette(),
+    );
+    DIAG_CAPTURE.with(|capture| {
+        if let Some(buffer) = capture.borrow_mut().as_mut() {
+            buffer.push_str(&rendered);
+        } else {
+            eprint!("{rendered}");
+        }
+    });
 }
 
 /// Print diagnostic-only `info[HEW-PERF-001]` stack-allocation hints to stderr.
@@ -739,84 +712,6 @@ pub(crate) fn render_hir_diagnostic(
     }
 }
 
-/// Render the source line and `^^^` underline for a span.
-fn render_source_underline(
-    source: &str,
-    span: &Range<usize>,
-    line: usize,
-    palette: &DiagnosticPalette,
-) {
-    let lines: Vec<&str> = source.lines().collect();
-
-    if line == 0 {
-        return;
-    }
-
-    // Handle EOF / empty file — show a marker line.
-    if line > lines.len() {
-        let line_num = line.to_string();
-        let padding = " ".repeat(line_num.len());
-        diag_println(&format!(
-            " {blue}{line_num} |{reset}",
-            blue = palette.blue,
-            reset = palette.reset,
-        ));
-        diag_println(&format!(
-            " {padding} {blue}|{reset} {red}^{reset}",
-            blue = palette.blue,
-            red = palette.red,
-            reset = palette.reset,
-        ));
-        return;
-    }
-
-    let source_line = lines[line - 1];
-    // Strip trailing \r for CRLF files so underline widths align with display.
-    let display_line = source_line.strip_suffix('\r').unwrap_or(source_line);
-    let line_num = line.to_string();
-    let padding = " ".repeat(line_num.len());
-
-    // Print the source line
-    diag_println(&format!(
-        " {blue}{line_num} |{reset} {display_line}",
-        blue = palette.blue,
-        reset = palette.reset,
-    ));
-
-    // Compute underline position within the line using character counts,
-    // not byte offsets, so multi-byte UTF-8 characters align correctly.
-    let line_start = line_start_offset(source, line);
-    let start_byte = span
-        .start
-        .saturating_sub(line_start)
-        .min(display_line.len());
-    let start_chars = display_line
-        .get(..start_byte)
-        .map_or(0, |s| s.chars().count());
-
-    // For multi-line spans, underline to end of first line; for empty spans, show one caret.
-    let end_byte = if span.start == span.end {
-        start_byte + 1
-    } else {
-        let line_end = line_start + display_line.len();
-        span.end.min(line_end).saturating_sub(line_start)
-    };
-    let end_chars = display_line
-        .get(..end_byte.min(display_line.len()))
-        .map_or(start_chars + 1, |s| s.chars().count());
-
-    let underline_len = end_chars.saturating_sub(start_chars).max(1);
-
-    diag_println(&format!(
-        " {padding} {blue}|{reset} {}{red}{}{reset}",
-        " ".repeat(start_chars),
-        "^".repeat(underline_len),
-        blue = palette.blue,
-        red = palette.red,
-        reset = palette.reset,
-    ));
-}
-
 /// Convert a byte offset to a 1-based (line, column) pair.
 /// Handles both `\n` and `\r\n` line endings; `\r` before `\n` is not counted
 /// as a column so that the column number matches the displayed line content.
@@ -841,21 +736,6 @@ pub(crate) fn offset_to_line_col(source: &str, offset: usize) -> (usize, usize) 
     }
 
     (line, col)
-}
-
-/// Return the byte offset of the start of a 1-based line number.
-fn line_start_offset(source: &str, line: usize) -> usize {
-    let mut current_line = 1;
-    for (i, ch) in source.char_indices() {
-        if current_line == line {
-            return i;
-        }
-        if ch == '\n' {
-            current_line += 1;
-        }
-    }
-    // Past end — return source length
-    source.len()
 }
 
 #[cfg(test)]

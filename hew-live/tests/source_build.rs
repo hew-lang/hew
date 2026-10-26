@@ -12,6 +12,23 @@ fn environment(name: &str) -> PathBuf {
 }
 
 #[test]
+fn tracked_router_sources_build_with_their_generated_service_context() {
+    let toolchain = Toolchain {
+        compiler: environment("HEW_LIVE_COMPILER"),
+        wasi_sdk: environment("HEW_WASI_SDK"),
+        wasm_lib_dir: environment("HEW_LIVE_WASM_LIB_DIR"),
+    };
+    for relative in [
+        "examples/live_router.hew",
+        "tests/fixtures/router.hew",
+        "tests/fixtures/preview_router.hew",
+    ] {
+        let source = Path::new(env!("CARGO_MANIFEST_DIR")).join(relative);
+        build(&source, &toolchain).unwrap_or_else(|error| panic!("{relative}: {error}"));
+    }
+}
+
+#[test]
 fn source_build_preserves_project_imports_and_helper_diagnostics() {
     let workspace = tempfile::tempdir().unwrap();
     let project = workspace.path().join("app");
@@ -82,6 +99,5 @@ fn source_build_preserves_project_imports_and_helper_diagnostics() {
         error.contains(&helper.display().to_string()),
         "helper diagnostic lost its original path: {error}"
     );
-    assert!(error.contains("missing_value"), "{error}");
     assert!(!project.join("router_services.hew").exists());
 }

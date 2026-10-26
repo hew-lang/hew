@@ -70,6 +70,9 @@ specifications.
   borrowed values must not outlive their owner.
 - Cleanup operations are idempotent or are guarded so that each owned resource
   is released exactly once.
+- Actor values retain identity metadata independently of the target allocation.
+  Retirement closes routing; the last owning value releases the retired identity
+  and terminal cause. Completed actor churn must not accumulate terminal history.
 
 ## Oracles test intent
 

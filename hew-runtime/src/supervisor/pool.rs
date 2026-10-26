@@ -1080,7 +1080,9 @@ mod tests {
                     actor::hew_actor_spawn(ptr::null_mut(), 0, Some(noop_child_dispatch))
                 };
                 // SAFETY: successful spawn publishes the direct token.
-                unsafe { (*actor).local_pid_id }
+                crate::lifetime::local_handles::hew_actor_handle_retain(unsafe {
+                    (*actor).local_pid_id
+                })
             })();
             // SAFETY: the invocation owns its output and completion slots.
             unsafe {
@@ -1105,7 +1107,9 @@ mod tests {
                     actor::hew_actor_spawn(ptr::null_mut(), 0, Some(noop_child_dispatch))
                 };
                 // SAFETY: successful spawn publishes the direct token.
-                unsafe { (*actor).local_pid_id }
+                crate::lifetime::local_handles::hew_actor_handle_retain(unsafe {
+                    (*actor).local_pid_id
+                })
             };
             // SAFETY: the invocation owns its output and completion slots.
             unsafe {

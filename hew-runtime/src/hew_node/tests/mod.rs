@@ -281,9 +281,11 @@ fn spawn_bounded_test_actor(
         crate::coro_state::hew_coro_state_free(construction);
     }
     assert!(fault.is_null(), "test actor spawn faulted");
-    crate::lifetime::local_handles::resolve_current_actor(token)
+    let actor = crate::lifetime::local_handles::resolve_current_actor(token)
         .and_then(crate::lifetime::live_actors::get_actor_ptr_by_id)
-        .unwrap_or(ptr::null_mut())
+        .unwrap_or(ptr::null_mut());
+    crate::lifetime::local_handles::hew_actor_handle_release(token);
+    actor
 }
 
 /// One `u32` request the test codec encodes.

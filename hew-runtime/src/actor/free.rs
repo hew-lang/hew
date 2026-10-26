@@ -3588,7 +3588,7 @@ pub extern "C" fn hew_actor_self_pid() -> u64 {
     unsafe { &*actor }.id
 }
 
-/// Resolve `self` from the checked invocation, including init and start.
+/// Return an owned `self` value from the checked invocation, including init and start.
 /// # Safety
 /// `state` is the live invocation executing this actor body.
 #[no_mangle]
@@ -3598,7 +3598,9 @@ pub unsafe extern "C" fn hew_actor_self_token(
     // SAFETY: the generated call retains its invocation throughout this read.
     let target = unsafe { &*state }.execution().actor_turn;
     crate::lifetime::live_actors::with_live_incarnation(target, |actor| {
-        usize::from(actor.actor().local_pid_id)
+        usize::from(crate::lifetime::local_handles::hew_actor_handle_retain(
+            actor.actor().local_pid_id,
+        ))
     })
     .unwrap_or(0)
 }

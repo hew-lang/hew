@@ -58,6 +58,18 @@ pub(crate) struct TerminalMonitorReason {
     pub(crate) end: crate::internal::types::ActorEndReason,
 }
 
+/// Terminal causes have the same lifetime as their actor identities. Take the
+/// shard before checking the identity so a concurrent terminal publication
+/// cannot recreate a cause after the final value has released it.
+pub(crate) fn forget_unreferenced_actor_terminal(actor_id: u64) {
+    if let (Some(state), Some(handles)) = (
+        monitor_state_opt(),
+        crate::lifetime::local_handles::current_handles(),
+    ) {
+        state.forget_unreferenced_actor_terminal(actor_id, handles);
+    }
+}
+
 /// Per-runtime actor-monitor state: the sharded monitor table plus the
 /// reference-id counter for entries in that table.
 ///
@@ -195,6 +207,17 @@ pub(crate) enum RemoteWatcherSetup {
 }
 
 impl MonitorState {
+    pub(crate) fn forget_unreferenced_actor_terminal(
+        &self,
+        actor_id: u64,
+        handles: &crate::lifetime::local_handles::LocalHandles,
+    ) {
+        self.table[get_shard_index(actor_id)].access(|shard| {
+            if !handles.has_actor_identity(actor_id) {
+                shard.terminal_reasons.remove(&actor_id);
+            }
+        });
+    }
     /// Construct an empty monitor table for a fresh runtime.
     pub(crate) fn new() -> Self {
         Self {
@@ -1719,14 +1742,18 @@ pub(crate) fn notify_monitors_on_end(
     // Take all monitors for this actor ID.
     let snapshot = state.table[shard_index].access(|shard| {
         let monitors = shard.monitors.remove(&actor_id).unwrap_or_default();
-        shard.terminal_reasons.insert(
-            actor_id,
-            TerminalMonitorReason {
-                state: reason,
-                crash_kind,
-                end,
-            },
-        );
+        if crate::lifetime::local_handles::current_handles()
+            .is_some_and(|handles| handles.has_actor_identity(actor_id))
+        {
+            shard.terminal_reasons.insert(
+                actor_id,
+                TerminalMonitorReason {
+                    state: reason,
+                    crash_kind,
+                    end,
+                },
+            );
+        }
 
         // Also remove from ref_to_monitor mapping
         for monitor in &monitors {
@@ -1882,8 +1909,8 @@ pub(crate) fn remove_all_monitors_for_actor(actor_id: u64, _actor_addr: *mut Hew
     // Remove any monitors-on-this-actor entry from its shard.
     let own_shard = get_shard_index(actor_id);
     let target_refs = state.table[own_shard].access(|shard| {
-        // Incarnation identities never reuse within a runtime. Preserve the
-        // terminal cause for monitors created through a retired actor token.
+        // Retained actor values keep the terminal cause independently of live
+        // registrations, until the final identity value is released.
         let monitors = shard.monitors.remove(&actor_id).unwrap_or_default();
         for m in &monitors {
             shard.ref_to_monitor.remove(&m.ref_id);
@@ -2074,6 +2101,7 @@ mod tests {
             assert!(!watcher.is_null() && !target.is_null());
             let target_id = (*target).id;
             let token = (*target).local_pid_id;
+            crate::lifetime::local_handles::hew_actor_handle_retain(token);
             let mut id = u64::MAX;
             let previous = crate::execution_context::set_current_context(std::ptr::null_mut());
             assert_eq!(
@@ -2158,6 +2186,7 @@ mod tests {
                 assert!(!has_monitor_ref_in_any_index(id));
             }
             assert!(mailbox::hew_mailbox_try_recv_sys(mailbox).is_null());
+            crate::lifetime::local_handles::hew_actor_handle_release(token);
             let _ = crate::execution_context::set_current_context(previous);
             (*watcher)
                 .actor_state
@@ -2766,6 +2795,14 @@ mod tests {
         let rt_b = Box::new(crate::runtime::RuntimeInner::new(
             crate::scheduler::worker_less_scheduler(),
         ));
+        let identity_a = rt_a
+            .local_handles
+            .register_actor(crate::runtime_id::RuntimeId::DEFAULT, 60_200)
+            .unwrap();
+        let identity_b = rt_b
+            .local_handles
+            .register_actor(crate::runtime_id::RuntimeId::DEFAULT, 60_200)
+            .unwrap();
 
         let mut watcher_a = create_test_actor(60_100);
         let mut target_a = create_test_actor(60_200);
@@ -2818,6 +2855,8 @@ mod tests {
                 "runtime B must not inherit runtime A's terminal reason"
             );
         });
+        rt_a.local_handles.retire_actor(identity_a, 60_200);
+        rt_b.local_handles.retire_actor(identity_b, 60_200);
     }
 
     /// Death-path monitor reads must tolerate a missing runtime, exactly as the
@@ -2851,6 +2890,10 @@ mod tests {
         ));
         // SAFETY: rt lives for the whole entered scope.
         let _enter = unsafe { crate::runtime::enter(&rt) };
+        let identity = rt
+            .local_handles
+            .register_actor(crate::runtime_id::RuntimeId::DEFAULT, 71_200)
+            .unwrap();
 
         notify_monitors_on_death(71_200, HewActorState::Crashed as i32, 0);
 
@@ -2865,6 +2908,53 @@ mod tests {
                 "the installed runtime's monitor table must record the terminal sweep"
             );
         });
+        rt.local_handles.retire_actor(identity, 71_200);
+    }
+
+    #[test]
+    fn actor_churn_reclaims_terminal_causes_after_the_last_value() {
+        let _guard = crate::runtime_test_guard();
+        let state = monitor_state();
+        // SAFETY: empty state and a no-op dispatch define an idle test-owned actor.
+        let held =
+            unsafe { crate::actor::hew_actor_spawn(std::ptr::null_mut(), 0, Some(noop_dispatch)) };
+        // SAFETY: this test owns each idle actor and its retained identity.
+        let (held_id, token) = unsafe { ((*held).id, (*held).local_pid_id) };
+        crate::lifetime::local_handles::hew_actor_handle_retain(token);
+        notify_monitors_on_death(held_id, HewActorState::Crashed as i32, 1);
+        // SAFETY: held is idle, test-owned and undispatched.
+        assert_eq!(unsafe { crate::actor::hew_actor_free(held) }, 0);
+
+        for _ in 0..256 {
+            // SAFETY: empty state and no-op dispatch are valid, unscheduled spawns.
+            let actor = unsafe {
+                crate::actor::hew_actor_spawn(std::ptr::null_mut(), 0, Some(noop_dispatch))
+            };
+            // SAFETY: the actor is live and owned by this test.
+            let actor_id = unsafe { (*actor).id };
+            notify_monitors_on_death(actor_id, HewActorState::Stopped as i32, 0);
+            // SAFETY: actor is idle, test-owned and undispatched.
+            assert_eq!(unsafe { crate::actor::hew_actor_free(actor) }, 0);
+        }
+        let terminal_count = || {
+            state
+                .table
+                .iter()
+                .map(|table| table.read_access(|shard| shard.terminal_reasons.len()))
+                .sum::<usize>()
+        };
+        assert_eq!(terminal_count(), 1);
+        state.table[get_shard_index(held_id)].read_access(|shard| {
+            assert_eq!(
+                shard.terminal_reasons[&held_id].end,
+                crate::internal::types::ActorEndReason::Crashed
+            );
+        });
+        crate::lifetime::local_handles::hew_actor_handle_release(token);
+        assert_eq!(terminal_count(), 0);
+        // A terminal publication racing after retirement cannot restore history.
+        notify_monitors_on_death(held_id, HewActorState::Crashed as i32, 1);
+        assert_eq!(terminal_count(), 0);
     }
 
     fn remote_location(byte: u8, slot: u64, incarnation: u32) -> Location {

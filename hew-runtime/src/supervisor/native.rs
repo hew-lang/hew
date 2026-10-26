@@ -168,6 +168,7 @@ impl Drop for NativeInvocation {
             // SAFETY: an untransferred diagnostic is exclusively owned here.
             unsafe { crate::fault::hew_fault_drop(self.fault) };
         }
+        local_handles::hew_actor_handle_release(self.result);
     }
 }
 
@@ -414,7 +415,9 @@ pub unsafe extern "C" fn hew_supervisor_native_spawn_poll(
             let Some(outcome) = invocation.poll() else {
                 return 0;
             };
-            op.invocation.take();
+            // Keep the callback's owned result until adoption or discard has
+            // consumed its identity. The live actor owns its route separately.
+            let _invocation = op.invocation.take();
             let (declaration, slot) = op.order[op.next];
             let cancelled = cancelled || (*op.supervisor).cancelled.load(Ordering::Acquire);
             match outcome {
@@ -884,7 +887,7 @@ mod tests {
             } else {
                 // SAFETY: this fixture spawns an empty, independently owned actor.
                 let actor = actor::hew_actor_spawn(ptr::null_mut(), 0, None);
-                *frame.result = (*actor).local_pid_id;
+                *frame.result = local_handles::hew_actor_handle_retain((*actor).local_pid_id);
                 0
             };
             frame.prefix.resume = None;

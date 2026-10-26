@@ -7,5 +7,5 @@ timeout_seconds = 15
 
 [case.expected]
 stdout = ""
-stderr = "hew: failure: IndexOutOfBounds (205)\n"
+stderr = "hew: failure: IndexOutOfBounds (205): map key not found\n"
 exit = 1

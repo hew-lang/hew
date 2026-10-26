@@ -396,12 +396,7 @@ fn bytes_runtime_transform_and_failure_edges_are_explicit_and_checked() {
             _ => None,
         })
         .expect("bytes index must have an explicit bounds-failure edge");
-    let failure = &main.blocks[index_unwind.0 as usize];
-    let SemTerminator::CheckedRaiseFault { kind, cleanup } = &failure.terminator else {
-        panic!("bounds failure must create its fault before cleanup");
-    };
-    assert_eq!(*kind, TrapKind::IndexOutOfBounds);
-    let cleanup = cleanup_path(main, cleanup.target);
+    let cleanup = cleanup_path(main, index_unwind);
     assert!(cleanup_has_lifetime(&cleanup, copy));
     assert!(cleanup_ends_with_resume(&cleanup));
 

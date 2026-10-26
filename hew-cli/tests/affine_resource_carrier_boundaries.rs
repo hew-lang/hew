@@ -169,13 +169,13 @@ fn main() -> i64 {
 }
 ";
 
-const SINK_VEC_INDEX_BODY: &str = r"
+const SINK_VEC_INDEX_CONSUME_BODY: &str = r"
 import std.stream;
 
 fn main() -> i64 {
     let (tx, rx): (stream.Sink<Token>, stream.Stream<Token>) = match stream.pipe(4) { .Ok(pair) => pair, .Err(error) => panic(error), };
     let senders: Vec<stream.Sink<Token>> = [tx];
-    let _item = senders[0];
+    senders[0].close();
     rx.close();
     0
 }
@@ -192,9 +192,8 @@ fn main() -> i64 {
 }
 ";
 
-/// Receiver slots have no clone thunk: this is the sole accepted construction
-/// shape, which moves `rx` into the descriptor-backed Vec then lets the Vec
-/// close it at scope exit.
+/// Receiver slots have no clone thunk: construction moves `rx` into the
+/// descriptor-backed Vec, which closes it at scope exit.
 const CHANNEL_RECEIVER_MOVE_BODY: &str = r"
 import std.stream;
 
@@ -217,13 +216,13 @@ fn main() -> i64 {
 }
 ";
 
-const CHANNEL_RECEIVER_INDEX_BODY: &str = r"
+const CHANNEL_RECEIVER_INDEX_CONSUME_BODY: &str = r"
 import std.stream;
 
 fn main() -> i64 {
     let (_tx, rx): (stream.Sink<Token>, stream.Stream<Token>) = match stream.pipe(4) { .Ok(pair) => pair, .Err(error) => panic(error), };
     let receivers: Vec<stream.Stream<Token>> = [rx];
-    let _item = receivers[0];
+    receivers[0].close();
     0
 }
 ";
@@ -238,6 +237,24 @@ fn main() -> i64 {
     0
 }
 ";
+
+const INDEXED_PIPE_BORROW_BODY: &str = r#"
+import std.stream;
+
+fn main() -> i64 {
+    let (tx, rx): (stream.Sink<Token>, stream.Stream<Token>) = stream.pipe(1).expect("pipe");
+    var senders = [tx];
+    let receivers = [rx];
+    senders[0].send(Token { id: 17 }).expect("first send");
+    receivers[0].recv().expect("first receive").close();
+    senders[0].send(Token { id: 18 }).expect("second send");
+    receivers[0].recv().expect("second receive").close();
+    assert(senders.len() == 1 && receivers.len() == 1);
+    senders.clear();
+    assert(receivers[0].recv().is_none());
+    0
+}
+"#;
 
 const CHANNEL_RECEIVER_COPY_PUSH_BODY: &str = r"
 import std.stream;
@@ -445,8 +462,7 @@ fn channel_handle_clone_terminals_match_runtime_semantics() {
 
 /// Both pipe halves are affine, so a composite holding either has no copy
 /// operation. `sink.clone()` on the handle itself stays the one way to add a
-/// producer, and these two composite shapes are refused in source rather than
-/// reaching the SIR verifier with no recipe to lower.
+/// producer. Indexing borrows its endpoint and cannot consume the Vec's owner.
 #[test]
 fn sink_composites_have_no_structural_copy_operation() {
     compile_rejected(
@@ -454,7 +470,20 @@ fn sink_composites_have_no_structural_copy_operation() {
         SINK_RECORD_CLONE_BODY,
         "UndefinedMethod",
     );
-    compile_rejected("sink_vec_index", SINK_VEC_INDEX_BODY, "InvalidOperation");
+    compile_rejected(
+        "sink_vec_index_consume",
+        SINK_VEC_INDEX_CONSUME_BODY,
+        "E_OWN_CONSUME_BORROWED",
+    );
+}
+
+#[test]
+fn indexed_pipe_borrows_preserve_endpoint_and_payload_ownership() {
+    assert_exact_runtime(
+        "indexed_pipe_borrow",
+        INDEXED_PIPE_BORROW_BODY,
+        "closing token id=17\nclosing token id=18\n",
+    );
 }
 
 #[test]
@@ -496,12 +525,16 @@ fn receiver_vec_move_is_descriptor_owned_and_read_copy_surfaces_reject() {
         );
     }
 
-    // `receiver_iter` (`Vec<Stream<T>>.iter()`) dropped out of this loop: it
-    // now compiles cleanly, since iterating by reference does not copy the
-    // affine element the way `get`/indexing/slicing do.
+    compile_rejected(
+        "receiver_index_consume",
+        CHANNEL_RECEIVER_INDEX_CONSUME_BODY,
+        "E_OWN_CONSUME_BORROWED",
+    );
+
+    // Indexing and reference iteration borrow the affine endpoint; get and
+    // slicing still require a structural copy operation.
     for (name, body) in [
         ("receiver_get", CHANNEL_RECEIVER_GET_BODY),
-        ("receiver_index", CHANNEL_RECEIVER_INDEX_BODY),
         ("receiver_slice", CHANNEL_RECEIVER_SLICE_BODY),
     ] {
         compile_rejected(name, body, "InvalidOperation");

@@ -1,7 +1,5 @@
-// Every non-consuming read of a `Vec` element goes through one admission
-// decision: `get`, `[]` and a range slice all copy the element out, so an
-// element with no copy operation refuses at all three. An owning removal is
-// how the endpoint leaves the vector.
+// `get` and range slices copy elements and refuse clone-free pipe endpoints.
+// An index instead lends the collection slot without copying or moving it.
 import std.stream;
 
 fn main() {

@@ -487,42 +487,47 @@ impl HewReleaseCursor {
     pub(crate) unsafe fn join(
         cursors: impl IntoIterator<Item = *mut Self, IntoIter: DoubleEndedIterator>,
     ) -> *mut Self {
-        let mut pending = Vec::new();
+        let mut joined: Option<Box<Self>> = None;
         #[allow(
             clippy::option_option,
-            reason = "absence preserves the invocation owner; Some(None) explicitly selects unbounded ownership"
+            reason = "absence inherits the invocation; Some(None) selects unbounded ownership"
         )]
         let mut value_owner: Option<Option<crate::owned_value_budget::ValueOwner>> = None;
         for cursor in cursors.into_iter().rev() {
-            if !cursor.is_null() {
-                // SAFETY: each cursor is uniquely transferred before its first step.
-                let cursor = unsafe { Box::from_raw(cursor) };
-                assert!(cursor.current_layout.is_none());
-                if let Some(owner) = cursor.value_owner {
-                    if let Some(previous) = &value_owner {
-                        assert!(
-                            match (previous, &owner) {
-                                (None, None) => true,
-                                (Some(previous), Some(owner)) => previous.same_account(owner),
-                                _ => false,
-                            },
-                            "joined cleanup cursors belong to different accounts"
-                        );
-                    } else {
-                        value_owner = Some(owner);
-                    }
+            if cursor.is_null() {
+                continue;
+            }
+            // SAFETY: each cursor transfers its unique ownership before its first step.
+            let cursor = unsafe { Box::from_raw(cursor) };
+            assert!(cursor.current_layout.is_none());
+            if let Some(owner) = &cursor.value_owner {
+                if let Some(previous) = &value_owner {
+                    assert!(
+                        match (previous, owner) {
+                            (None, None) => true,
+                            (Some(previous), Some(owner)) => previous.same_account(owner),
+                            _ => false,
+                        },
+                        "joined cleanup cursors belong to different accounts"
+                    );
+                } else {
+                    value_owner = Some(owner.clone());
                 }
-                pending.extend(cursor.pending);
+            }
+            if cursor.pending.is_empty() {
+                continue;
+            }
+            if let Some(joined) = &mut joined {
+                joined.pending.extend(cursor.pending);
+            } else {
+                // Reuse the last source cursor and its existing worklist allocation.
+                joined = Some(cursor);
             }
         }
-        if pending.is_empty() {
-            std::ptr::null_mut()
-        } else {
-            let joined = Self::new(pending);
-            // SAFETY: the fresh joined cursor owns the same operation graph.
-            unsafe { (*joined).value_owner = value_owner };
-            joined
-        }
+        joined.map_or(ptr::null_mut(), |mut joined| {
+            joined.value_owner = value_owner;
+            Box::into_raw(joined)
+        })
     }
 
     pub(crate) fn envelopes(
@@ -1159,6 +1164,56 @@ mod tests {
 
         release_start: Some(selected_release),
     };
+
+    #[test]
+    fn joined_cursors_keep_source_order_and_pin_storage_across_yields() {
+        unsafe fn record_storage(owner: *mut c_void) {
+            // SAFETY: the test retains each borrowed record until completion.
+            let (events, id) = unsafe { &*owner.cast::<(&RefCell<Vec<i32>>, i32)>() };
+            events.borrow_mut().push(*id);
+        }
+        let events = RefCell::new(Vec::<i32>::new());
+        let mut first_storage = (&events, 1);
+        let mut second_storage = (&events, 2);
+        let mut first = 11_i64;
+        let mut second = 22_i64;
+        let cursor = |slot: *mut i64, owner: *mut c_void| {
+            HewReleaseCursor::new(vec![
+                ReleaseItem::Storage {
+                    owner,
+                    free: record_storage,
+                },
+                ReleaseItem::Value {
+                    slot: slot.cast(),
+                    layout: LAYOUT,
+                },
+            ])
+        };
+        // SAFETY: each fresh cursor transfers distinct borrowed storage, all
+        // retained through the final step. Each yielded value finishes before
+        // the next step, standing in for a suspending consuming callback.
+        unsafe {
+            let first_cursor = cursor(&raw mut first, (&raw mut first_storage).cast());
+            let second_cursor = cursor(&raw mut second, (&raw mut second_storage).cast());
+            let joined = HewReleaseCursor::join([
+                ptr::null_mut(),
+                first_cursor,
+                HewReleaseCursor::new(Vec::new()),
+                second_cursor,
+                ptr::null_mut(),
+            ]);
+            assert_eq!(hew_release_next(joined), (&raw mut first).cast());
+            assert!(events.borrow().is_empty());
+            first = 0;
+            assert_eq!(hew_release_next(joined), (&raw mut second).cast());
+            assert_eq!(*events.borrow(), [1]);
+            second = 0;
+            assert!(hew_release_next(joined).is_null());
+            assert_eq!(*events.borrow(), [1, 2]);
+            hew_release_finish(joined);
+        }
+        assert_eq!((first, second), (0, 0));
+    }
 
     #[test]
     fn joined_cleanup_preserves_retained_account_outside_invocation() {

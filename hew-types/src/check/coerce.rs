@@ -843,7 +843,7 @@ impl Checker {
         let from_trait = self
             .lang_items
             .get(crate::LangItem::From.key())
-            .map(|binding| binding.trait_id);
+            .and_then(|binding| binding.trait_id);
         if from_trait.is_none()
             || Some(owner) != from_trait.map(super::dispatch_table::MethodOwner::Trait)
         {

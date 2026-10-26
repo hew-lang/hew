@@ -34,6 +34,30 @@ impl<'a> CallableFacts<'a> {
             .flat_map(|(site, types)| types.iter().cloned().map(|ty| (site.clone(), ty)))
             .collect()
     }
+    pub(super) fn literal_expect_role(
+        &self,
+        declaration: DefId,
+    ) -> Option<crate::RuntimeVariantRole> {
+        [
+            (
+                hew_types::LangItem::OptionExpect,
+                crate::RuntimeVariantRole::OptionSome,
+            ),
+            (
+                hew_types::LangItem::ResultExpect,
+                crate::RuntimeVariantRole::ResultOk,
+            ),
+        ]
+        .into_iter()
+        .find_map(|(item, role)| {
+            self.checked
+                .lang_items
+                .get(item.key())
+                .filter(|binding| binding.method_id == Some(declaration))
+                .map(|_| role)
+        })
+    }
+
     pub(super) fn is_iterator_next(&self, target: &hew_types::CallTarget) -> bool {
         let hew_types::CallTarget::StaticTraitMethod {
             declaring_trait,
@@ -46,7 +70,7 @@ impl<'a> CallableFacts<'a> {
             .lang_items
             .get(hew_types::LangItem::IteratorNext.key())
             .is_some_and(|binding| {
-                binding.trait_id == *declaring_trait && binding.method_id == Some(*method)
+                binding.trait_id == Some(*declaring_trait) && binding.method_id == Some(*method)
             })
     }
 

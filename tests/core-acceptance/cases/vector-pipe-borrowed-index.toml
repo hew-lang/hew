@@ -1,0 +1,11 @@
+[[case]]
+id = "vector-pipe-borrowed-index"
+intent = "Indexing lends pipe endpoints: repeated sends/receives keep their collection owners, and clearing the producer vector publishes last-producer EOF."
+source = "cases/vector-pipe-borrowed-index.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "borrowed pipe indices preserve endpoint owners\n"
+exit = 0
+stderr = ""

@@ -664,16 +664,19 @@ pub fn attributed_turns_snapshot() -> Vec<((usize, i32), AttributedTurn)> {
 
 #[must_use]
 fn attributed_turns_totals() -> AttributedTurn {
-    attributed_turns_snapshot().into_iter().fold(
-        AttributedTurn::default(),
-        |mut totals, (_, turn)| {
-            totals.turns_total = totals.turns_total.saturating_add(turn.turns_total);
-            totals.duration_ns_total = totals
-                .duration_ns_total
-                .saturating_add(turn.duration_ns_total);
-            totals
-        },
-    )
+    ATTRIBUTED_TURNS.access(|slot| {
+        slot.as_ref().map_or_else(AttributedTurn::default, |turns| {
+            turns
+                .values()
+                .fold(AttributedTurn::default(), |mut totals, turn| {
+                    totals.turns_total = totals.turns_total.saturating_add(turn.turns_total);
+                    totals.duration_ns_total = totals
+                        .duration_ns_total
+                        .saturating_add(turn.duration_ns_total);
+                    totals
+                })
+        })
+    })
 }
 
 #[must_use]
@@ -761,18 +764,22 @@ fn actors_live() -> u64 {
     0
 }
 
+fn heap_counter_sum(field: impl Fn(&HeapCounters) -> &AtomicU64) -> u64 {
+    HEAP_COUNTERS
+        .iter()
+        .map(|counters| field(counters).load(Ordering::Relaxed))
+        .sum()
+}
+
 #[must_use]
 pub fn read_u64(name: &str) -> Option<u64> {
-    let hot = hot_counters_snapshot();
-    let coroutines = coroutine_snapshot();
-    let hooks = runtime_hook_snapshot();
     match name {
         "observe.hot_enabled" => Some(u64::from(observe_hot_tier_enabled())),
         "heap.live_bytes" => Some(heap_live_bytes()),
-        "heap.allocated_total" => Some(hot.heap_allocated_total),
-        "heap.freed_total" => Some(hot.heap_freed_total),
-        "heap.allocations_total" => Some(hot.heap_allocations_total),
-        "heap.frees_total" => Some(hot.heap_frees_total),
+        "heap.allocated_total" => Some(heap_counter_sum(|counters| &counters.allocated)),
+        "heap.freed_total" => Some(heap_counter_sum(|counters| &counters.freed)),
+        "heap.allocations_total" => Some(heap_counter_sum(|counters| &counters.allocations)),
+        "heap.frees_total" => Some(heap_counter_sum(|counters| &counters.frees)),
         "scheduler.workers" => Some(scheduler_workers()),
         "scheduler.runnable_actors" => Some(scheduler_runnable_actors()),
         "scheduler.runnable_coroutines" => Some(scheduler_runnable_coroutines()),
@@ -781,32 +788,32 @@ pub fn read_u64(name: &str) -> Option<u64> {
         "scheduler.parks_total" => Some(crate::observe::scheduler_parks_total()),
         "scheduler.unparks_total" => Some(crate::observe::scheduler_unparks_total()),
         "actors.live" => Some(actors_live()),
-        "actors.turns_total" => Some(hot.actor_turns_total),
-        "actors.turn_duration_ns_total" => Some(hot.actor_turn_duration_ns_total),
+        "actors.turns_total" => Some(shard_sum(&ACTOR_TURNS_TOTAL)),
+        "actors.turn_duration_ns_total" => Some(shard_sum(&ACTOR_TURN_DURATION_NS_TOTAL)),
         "actors.attributed_turns_total" => Some(attributed_turns_totals().turns_total),
         "actors.attributed_turn_duration_ns_total" => {
             Some(attributed_turns_totals().duration_ns_total)
         }
-        "actors.crashes_total" => Some(hooks.actors_crashes_total),
-        "actors.restarts_total" => Some(hooks.actors_restarts_total),
+        "actors.crashes_total" => Some(ACTORS_CRASHES_TOTAL.load(Ordering::Relaxed)),
+        "actors.restarts_total" => Some(ACTORS_RESTARTS_TOTAL.load(Ordering::Relaxed)),
         #[cfg(all(feature = "profiler", not(target_arch = "wasm32")))]
         "mailbox.depth" => Some(crate::profiler::actor_registry::mailbox_aggregate().sum_depth),
         #[cfg(all(feature = "profiler", not(target_arch = "wasm32")))]
         "mailbox.depth_max" => Some(crate::profiler::actor_registry::mailbox_aggregate().max_depth),
         #[cfg(all(feature = "profiler", not(target_arch = "wasm32")))]
         "mailbox.depth_p99" => Some(crate::profiler::actor_registry::mailbox_aggregate().p99_depth),
-        "coroutines.live" => Some(coroutines.live),
-        "coroutines.suspended" => Some(coroutines.suspended),
-        "coroutines.resumes_total" => Some(coroutines.resumes_total),
-        "coroutines.suspends_total" => Some(coroutines.suspends_total),
-        "coroutines.frame_bytes_live" => Some(coroutines.frame_bytes_live),
-        "threads.blocking_count" => Some(hooks.threads_blocking_count),
-        "reactor.registrations_live" => Some(hooks.reactor_registrations_live),
-        "reactor.ready_events_total" => Some(hooks.reactor_ready_events_total),
-        "io.handles_live" => Some(hooks.io_handles_live),
-        "pool.threads" => Some(hooks.pool_threads),
-        "pool.saturations_total" => Some(hooks.pool_saturations_total),
-        "arena.resets_total" => Some(hooks.arena_resets_total),
+        "coroutines.live" => Some(COROUTINES_LIVE.load(Ordering::Relaxed)),
+        "coroutines.suspended" => Some(COROUTINES_SUSPENDED.load(Ordering::Relaxed)),
+        "coroutines.resumes_total" => Some(COROUTINES_RESUMES_TOTAL.load(Ordering::Relaxed)),
+        "coroutines.suspends_total" => Some(COROUTINES_SUSPENDS_TOTAL.load(Ordering::Relaxed)),
+        "coroutines.frame_bytes_live" => Some(COROUTINES_FRAME_BYTES_LIVE.load(Ordering::Relaxed)),
+        "threads.blocking_count" => Some(THREADS_BLOCKING_COUNT.load(Ordering::Relaxed)),
+        "reactor.registrations_live" => Some(REACTOR_REGISTRATIONS_LIVE.load(Ordering::Relaxed)),
+        "reactor.ready_events_total" => Some(REACTOR_READY_EVENTS_TOTAL.load(Ordering::Relaxed)),
+        "io.handles_live" => Some(IO_HANDLES_LIVE.load(Ordering::Relaxed)),
+        "pool.threads" => Some(POOL_THREADS.load(Ordering::Relaxed)),
+        "pool.saturations_total" => Some(POOL_SATURATIONS_TOTAL.load(Ordering::Relaxed)),
+        "arena.resets_total" => Some(ARENA_RESETS_TOTAL.load(Ordering::Relaxed)),
         #[cfg(not(target_arch = "wasm32"))]
         "registry.conflicts_total" => Some(crate::registry::metrics_snapshot().1),
         _ => {

@@ -1,0 +1,6 @@
+{application, calibration_service,
+ [{description, "Calibration HTTP service comparator"},
+  {vsn, "0.1.0"},
+  {modules, [calibration_service, calibration_handler]},
+  {registered, []},
+  {applications, [kernel, stdlib, crypto, cowlib, ranch, cowboy]}]}.

@@ -264,7 +264,7 @@ impl Checker {
                     key.clone(),
                     crate::LangItemBinding {
                         trait_name: td.name.to_string(),
-                        trait_id,
+                        trait_id: Some(trait_id),
                         method_name: None,
                         method_id: None,
                     },
@@ -283,7 +283,7 @@ impl Checker {
                             key.clone(),
                             crate::LangItemBinding {
                                 trait_name: td.name.to_string(),
-                                trait_id,
+                                trait_id: Some(trait_id),
                                 method_name: Some(m.name.to_string()),
                                 method_id,
                             },
@@ -322,7 +322,7 @@ impl Checker {
                     key.clone(),
                     crate::LangItemBinding {
                         trait_name: td.name.to_string(),
-                        trait_id,
+                        trait_id: Some(trait_id),
                         method_name: None,
                         method_id: None,
                     },
@@ -348,7 +348,7 @@ impl Checker {
                             key.clone(),
                             crate::LangItemBinding {
                                 trait_name: td.name.to_string(),
-                                trait_id,
+                                trait_id: Some(trait_id),
                                 method_name: Some(m.name.to_string()),
                                 method_id,
                             },

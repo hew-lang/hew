@@ -5,7 +5,13 @@ use hew_mir::physical::PhysicalLoopChunk;
 
 impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
     pub(super) fn emit_loop_chunk(&self, chunk: &PhysicalLoopChunk) -> CodegenResult<()> {
-        let ids = chunk.storage.iter().copied().collect::<Vec<_>>();
+        // Only carriers crossing the call boundary need persistent coroutine
+        // storage. Private chunk temporaries remain in the helper's locals.
+        let mut boundary = chunk.inputs.clone();
+        for outputs in chunk.exits.values() {
+            boundary.extend(outputs);
+        }
+        let ids = boundary.into_iter().collect::<Vec<_>>();
         let mut fields = ids
             .iter()
             .map(|id| llvm_type(self.ctx, &self.function.storage[id.0 as usize].layout.repr))
@@ -224,7 +230,7 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
             .into_pointer_value();
         let mut slots = vec![pointer.const_null(); self.slots.len()];
         let mut place_flags = BTreeMap::new();
-        for id in ids {
+        for id in &chunk.storage {
             slots[id.0 as usize] = builder
                 .build_alloca(
                     llvm_type(self.ctx, &self.storage(*id)?.layout.repr)?,

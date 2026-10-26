@@ -22,7 +22,7 @@ import time
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parents[2]
 PRIMITIVES = ("hew-o0", "hew", "rust", "rust-checked", "go", "c")
-CONCURRENCY = ("hew-o0", "hew", "go", "tokio", "beam")
+CONCURRENCY = ("hew-o0", "hew", "go", "tokio", "beam", "dotnet")
 
 
 def execute(command, *, timeout, env=None, cwd=HERE):
@@ -74,6 +74,12 @@ def expected(workload, iterations, size):
         return size * iterations * (iterations + 1) // 2
     if workload == "timer":
         return iterations
+    if workload in ("stream_roundtrip", "stream_roundtrip_alloc"):
+        return iterations * (iterations - 1) // 2
+    if workload in ("stream_pipeline", "stream_pipeline_alloc"):
+        return sum(
+            (i * size + pair) % 251 for i in range(iterations) for pair in range(size)
+        )
     raise ValueError(f"unknown workload: {workload}")
 
 
@@ -88,17 +94,31 @@ def validate(stdout, workload, iterations, size):
         if value.get(key) != wanted:
             raise ValueError(f"{key}: expected {wanted}, received {value.get(key)}")
     elapsed = value.get("elapsed_ns")
-    if not isinstance(elapsed, int) or elapsed <= 0:
+    if type(elapsed) is not int or elapsed <= 0:
         raise ValueError("elapsed_ns must be a positive integer")
+    if workload.startswith("stream_") and "latencies_ns" not in value:
+        raise ValueError("stream workloads must report latencies_ns, even when empty")
     latencies = value.get("latencies_ns", [])
     if not isinstance(latencies, list) or any(
-        not isinstance(sample, int) or sample < 0 for sample in latencies
+        type(sample) is not int or sample < 0 for sample in latencies
     ):
         raise ValueError("invalid latency samples")
     if workload in ("actor_roundtrip", "timer") and len(latencies) != min(
         iterations, 10000
     ):
         raise ValueError("one latency sample is required per completed operation")
+    if workload == "stream_roundtrip" and len(latencies) != min(
+        10000, (iterations + 63) // 64
+    ):
+        raise ValueError(
+            "one latency sample is required per 64 completed stream operations"
+        )
+    if workload == "stream_pipeline" and len(latencies) != min(
+        10000, (iterations * size + 63) // 64
+    ):
+        raise ValueError("one latency sample is required per 64 pipeline messages")
+    if workload in ("stream_roundtrip_alloc", "stream_pipeline_alloc") and latencies:
+        raise ValueError("clock-free stream workloads must not report latency samples")
     return value
 
 
@@ -123,6 +143,8 @@ def command_for(output, group, language, workload, iterations, size, workers):
     arguments = [workload, str(iterations), str(size)]
     if language == "tokio":
         return [str(output / "tokio-target/release/calibration-tokio"), *arguments]
+    if language == "dotnet":
+        return ["dotnet", str(output / "dotnet/calibration-dotnet.dll"), *arguments]
     if language == "beam":
         return [
             "erl",
@@ -155,7 +177,16 @@ def cases(smoke=False):
             )
         ] + [
             ("concurrency", name, 10, 4)
-            for name in ("task_ready", "actor_roundtrip", "actor_fanout", "timer")
+            for name in (
+                "task_ready",
+                "actor_roundtrip",
+                "actor_fanout",
+                "timer",
+                "stream_roundtrip",
+                "stream_roundtrip_alloc",
+                "stream_pipeline",
+                "stream_pipeline_alloc",
+            )
         ]
     result = [("primitives", "scalar", n, 1) for n in (100_000, 1_000_000)]
     for size in (64, 4096, 65536):
@@ -173,6 +204,15 @@ def cases(smoke=False):
     result.extend(
         [("concurrency", "actor_roundtrip", 1000, 1), ("concurrency", "timer", 100, 1)]
     )
+    result.extend(
+        ("concurrency", name, 10000, 1)
+        for name in ("stream_roundtrip", "stream_roundtrip_alloc")
+    )
+    for size in (1, 2, 8):
+        result.extend(
+            ("concurrency", name, 10000, size)
+            for name in ("stream_pipeline", "stream_pipeline_alloc")
+        )
     return result
 
 
@@ -186,6 +226,7 @@ def available_languages(requested):
         "go": "go",
         "tokio": "cargo",
         "beam": "erl",
+        "dotnet": "dotnet",
     }
     present, missing = [], []
     for language in requested:
@@ -203,6 +244,7 @@ def metadata(hew):
         ("hew", [hew, "--version"]),
         ("rustc", ["rustc", "--version"]),
         ("go", ["go", "version"]),
+        ("dotnet", ["dotnet", "--version"]),
         ("clang", ["clang", "--version"]),
         (
             "beam",
@@ -242,7 +284,17 @@ def metadata(hew):
         ]
         for name in sorted(files):
             path = Path(directory) / name
-            if path.suffix in (".hew", ".rs", ".go", ".c", ".erl", ".toml", ".lock"):
+            if path.suffix in (
+                ".hew",
+                ".rs",
+                ".go",
+                ".c",
+                ".erl",
+                ".cs",
+                ".csproj",
+                ".toml",
+                ".lock",
+            ):
                 fixture_hashes[str(path.relative_to(HERE))] = hashlib.sha256(
                     path.read_bytes()
                 ).hexdigest()
@@ -378,6 +430,14 @@ def runtime(args, languages, receipt):
             for language in (PRIMITIVES if group == "primitives" else CONCURRENCY)
             if language in languages
         ]
+        if "dotnet" in choices and not workload.startswith("stream_"):
+            choices = [language for language in choices if language != "dotnet"]
+        if workload.startswith("stream_"):
+            choices = [
+                language
+                for language in choices
+                if language in ("hew", "hew-o0", "tokio", "go", "beam", "dotnet")
+            ]
         if not choices:
             continue
         for workers in [1] if group == "primitives" else args.workers:
@@ -390,6 +450,8 @@ def runtime(args, languages, receipt):
                         GOMAXPROCS=str(workers),
                         BENCH_WORKERS=str(workers),
                     )
+                    if language == "dotnet":
+                        env["DOTNET_PROCESSOR_COUNT"] = str(workers)
                     command = command_for(
                         args.output,
                         group,
@@ -425,6 +487,8 @@ def runtime(args, languages, receipt):
                         sample=sample,
                         process_elapsed_ns=process_ns,
                     )
+                    if language == "dotnet":
+                        value["dotnet_processor_count"] = workers
                     if has_rss:
                         value["process_peak_rss_kib"] = int(
                             rss_path.read_text().strip()

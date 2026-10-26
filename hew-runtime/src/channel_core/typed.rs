@@ -70,7 +70,7 @@ impl ChannelCore {
     }
 
     fn finish_typed_activity(&self) {
-        let (wakes, reader, writers) = {
+        let (wakes, reader, writers, notify_foreign) = {
             let mut inner = self.locked();
             let state = inner.typed.as_mut().expect("typed Pipe activity");
             state.active = false;
@@ -78,6 +78,7 @@ impl ChannelCore {
                 std::mem::take(&mut state.transfer_wakes),
                 inner.native_consumer.take(),
                 std::mem::take(&mut inner.native_producers),
+                inner.foreign_waiters != 0,
             )
         };
         for wake in wakes {
@@ -87,11 +88,13 @@ impl ChannelCore {
             reader.wake();
         }
         Self::wake_native(writers);
-        self.cv.notify_all();
+        if notify_foreign {
+            self.cv.notify_all();
+        }
     }
 
     fn finish_typed_transfer(&self, key: Option<usize>) {
-        let (wakes, transfers) = {
+        let (wakes, transfers, notify_foreign) = {
             let mut inner = self.locked();
             let state = inner.typed.as_mut().expect("typed Pipe descriptor");
             if state.frozen == key {
@@ -99,13 +102,19 @@ impl ChannelCore {
                 state.prepared_children = false;
             }
             let transfers = std::mem::take(&mut state.transfer_wakes);
-            (std::mem::take(&mut inner.native_producers), transfers)
+            (
+                std::mem::take(&mut inner.native_producers),
+                transfers,
+                inner.foreign_waiters != 0,
+            )
         };
         Self::wake_native(wakes);
         for wake in transfers {
             wake.wake();
         }
-        self.cv.notify_all();
+        if notify_foreign {
+            self.cv.notify_all();
+        }
     }
 
     /// Visit the receiving provider only; producer endpoints do not retain it.
@@ -346,29 +355,30 @@ impl TypedWrite {
     }
 
     fn reserve(&mut self) -> Result<(), i32> {
-        let (owner, binding, old, width) = {
-            let mut inner = self.core.locked();
-            if inner.stream_closed || inner.sink_closed || inner.sink_fault {
-                return Err(2);
-            }
-            let state = inner.typed.as_ref().expect("typed Pipe write");
-            if state.active || state.frozen.is_some() || inner.queue.len() >= inner.capacity {
-                inner
-                    .native_producers
-                    .push(NativeRegistration::Observe(Arc::downgrade(&self.waker)));
-                return Err(0);
-            }
-            let Ok(old) = ChannelCore::typed_bytes(inner.queue.len(), state.width) else {
-                std::process::abort();
+        let (owner, binding, old, width) =
+            {
+                let mut inner = self.core.locked();
+                if inner.stream_closed || inner.sink_closed || inner.sink_fault {
+                    return Err(2);
+                }
+                let state = inner.typed.as_ref().expect("typed Pipe write");
+                if state.active || state.frozen.is_some() || inner.queue.len() >= inner.capacity {
+                    inner.native_producers.push(NativeRegistration::Observe(
+                        Arc::<OwnedWaker>::downgrade(&self.waker),
+                    ));
+                    return Err(0);
+                }
+                let Ok(old) = ChannelCore::typed_bytes(inner.queue.len(), state.width) else {
+                    std::process::abort();
+                };
+                let state = inner.typed.as_mut().expect("typed Pipe write");
+                state.active = true;
+                let snapshot = (state.owner.clone(), state.binding.clone(), old, state.width);
+                inner.native_producers.push(NativeRegistration::Observe(
+                    Arc::<OwnedWaker>::downgrade(&self.waker),
+                ));
+                snapshot
             };
-            let state = inner.typed.as_mut().expect("typed Pipe write");
-            state.active = true;
-            let snapshot = (state.owner.clone(), state.binding.clone(), old, state.width);
-            inner
-                .native_producers
-                .push(NativeRegistration::Observe(Arc::downgrade(&self.waker)));
-            snapshot
-        };
         self.reserved = true;
         if let Some(owner) = &owner {
             let Some(bytes) = old.checked_add(width) else {
@@ -525,8 +535,9 @@ impl TypedRead {
             let state = inner.typed.as_ref().expect("typed Pipe read");
             if state.active || state.frozen.is_some() {
                 if let Some(waker) = &self.waker {
-                    inner.native_consumer =
-                        Some(NativeRegistration::Observe(Arc::downgrade(waker)));
+                    inner.native_consumer = Some(NativeRegistration::Observe(
+                        Arc::<OwnedWaker>::downgrade(waker),
+                    ));
                 }
                 return 0;
             }
@@ -538,8 +549,9 @@ impl TypedRead {
                     return 2;
                 }
                 if let Some(waker) = &self.waker {
-                    inner.native_consumer =
-                        Some(NativeRegistration::Observe(Arc::downgrade(waker)));
+                    inner.native_consumer = Some(NativeRegistration::Observe(
+                        Arc::<OwnedWaker>::downgrade(waker),
+                    ));
                 }
                 return 0;
             }
@@ -682,7 +694,7 @@ impl ChannelCore {
     /// Close admission, then await the one unpublished sender without holding
     /// the queue lock across provider abort, cleanup or scheduler notification.
     pub(crate) fn prepare_typed_close(&self, waker: Option<OwnedWaker>) -> bool {
-        let (ready, writers, actor_stream_cancellation) = {
+        let (ready, writers, actor_stream_cancellation, notify_foreign) = {
             let mut inner = self.locked();
             inner.stream_closed = true;
             let state = inner.typed.as_mut().expect("typed Pipe close");
@@ -696,13 +708,16 @@ impl ChannelCore {
                 ready,
                 std::mem::take(&mut inner.native_producers),
                 inner.actor_stream_cancellation.take(),
+                inner.foreign_waiters != 0,
             )
         };
         if let Some(cancellation) = actor_stream_cancellation {
             cancellation.close_reader();
         }
         Self::wake_native(writers);
-        self.cv.notify_all();
+        if notify_foreign {
+            self.cv.notify_all();
+        }
         ready
     }
 
@@ -775,10 +790,26 @@ impl ChannelCore {
             match read.poll() {
                 1 => break,
                 0 if blocking => {
-                    let guard = self.locked();
-                    let _ = self
+                    let mut guard = self.locked();
+                    let state = guard.typed.as_ref().expect("typed content read");
+                    if !state.active
+                        && state.frozen.is_none()
+                        && (!guard.queue.is_empty()
+                            || guard.sink_closed
+                            || guard.stream_closed
+                            || guard.sink_fault)
+                    {
+                        continue;
+                    }
+                    // Register under the publication predicate lock, before wait releases it.
+                    guard.foreign_waiters += 1;
+                    #[cfg(test)]
+                    self.rendezvous_before_wait();
+                    let (mut guard, _) = self
                         .cv
-                        .wait_timeout(guard, std::time::Duration::from_millis(10));
+                        .wait_timeout(guard, std::time::Duration::from_millis(10))
+                        .unwrap_or_else(std::sync::PoisonError::into_inner);
+                    guard.foreign_waiters -= 1;
                 }
                 0 | 2 => return None,
                 3 => panic!("{}", self.fault_message()),
@@ -854,10 +885,26 @@ impl ChannelCore {
             match write.poll() {
                 1 => return,
                 0 => {
-                    let guard = self.locked();
-                    let _ = self
+                    let mut guard = self.locked();
+                    let state = guard.typed.as_ref().expect("typed content write");
+                    if guard.sink_closed
+                        || guard.stream_closed
+                        || guard.sink_fault
+                        || (!state.active
+                            && state.frozen.is_none()
+                            && guard.queue.len() < guard.capacity)
+                    {
+                        continue;
+                    }
+                    // Register under the publication predicate lock, before wait releases it.
+                    guard.foreign_waiters += 1;
+                    #[cfg(test)]
+                    self.rendezvous_before_wait();
+                    let (mut guard, _) = self
                         .cv
-                        .wait_timeout(guard, std::time::Duration::from_millis(10));
+                        .wait_timeout(guard, std::time::Duration::from_millis(10))
+                        .unwrap_or_else(std::sync::PoisonError::into_inner);
+                    guard.foreign_waiters -= 1;
                 }
                 2 => {
                     // SAFETY: no semantic transfer occurred; the foreign-created image
@@ -955,6 +1002,39 @@ mod tests {
     }
     fn send(core: Arc<ChannelCore>, value: *mut c_void, layout: HewValueLayout) -> Box<TypedWrite> {
         unsafe { TypedWrite::new(core, value, layout, core::ptr::null(), waker()) }
+    }
+
+    #[test]
+    fn foreign_typed_receive_registers_and_retires_under_publication_lock() {
+        use std::sync::Barrier;
+        let metadata = hew_cabi::managed::HewManagedValueDescriptor {
+            slot_bytes: 8,
+            visit: None,
+        };
+        let layout = HewValueLayout {
+            size: 8,
+            align: 8,
+            ownership_kind: hew_cabi::value::HewTypeOwnershipKind::Plain,
+            clone_fn: None,
+            drop_fn: None,
+            release_start: None,
+            code_owner: core::ptr::null(),
+            managed: &raw const metadata,
+        };
+        // SAFETY: the descriptor and metadata outlive the scoped foreign reader and queue.
+        let core = unsafe { ChannelCore::new_typed(1, layout) };
+        let rendezvous = Arc::new(Barrier::new(2));
+        *core.wait_probe.lock().unwrap() = Some(rendezvous.clone());
+        std::thread::scope(|scope| {
+            let reader = scope.spawn(|| core.typed_content_recv(true));
+            rendezvous.wait();
+            // The reader holds the predicate lock until its condvar wait.
+            assert_eq!(core.locked().foreign_waiters, 1);
+            core.typed_content_send(&41_i64.to_ne_bytes());
+            assert_eq!(reader.join().unwrap(), Some(41_i64.to_ne_bytes().to_vec()));
+        });
+        assert_eq!(core.locked().foreign_waiters, 0);
+        core.close_typed_sync();
     }
 
     #[test]

@@ -173,6 +173,11 @@ pub(super) fn allocate_flags<'ctx>(
                 if let StorageOrigin::ActorState { state, field, .. } =
                     function.storage[leaf.storage.0 as usize].origin
                 {
+                    if !module.module.managed_types[&function.storage[leaf.storage.0 as usize].ty]
+                        .tracks_occupancy()
+                    {
+                        continue;
+                    }
                     let layout = &function.storage[state.0 as usize].layout;
                     entry.insert(super::actor::state_field_initialized(
                         module.ctx,
@@ -204,6 +209,9 @@ pub(super) fn allocate_flags<'ctx>(
         let StorageOrigin::ActorState { state, field, .. } = storage.origin else {
             continue;
         };
+        if !module.module.managed_types[&storage.ty].tracks_occupancy() {
+            continue;
+        }
         if let Entry::Vacant(entry) = flags.entry(storage.id) {
             entry.insert(super::actor::state_field_initialized(
                 module.ctx,
@@ -276,6 +284,9 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
         initialized: bool,
     ) -> CodegenResult<()> {
         if matches!(self.storage(id)?.origin, StorageOrigin::ActorState { .. }) {
+            if !self.module.managed_types[&self.storage(id)?.ty].tracks_occupancy() {
+                return Ok(());
+            }
             self.builder
                 .build_store(
                     self.place_flag(id)?,

@@ -224,9 +224,13 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
                 .build_unconditional_branch(start)
                 .llvm_ctx("start failed allocation outcome")?;
             self.builder.position_at_end(populate);
-            self.builder
-                .build_store(wrapper, self.ctx.i8_type().const_int(1, false))
-                .llvm_ctx("initialize request ownership")?;
+            super::actor::initialize_message_occupancy(
+                self.module,
+                self.ctx,
+                &self.builder,
+                handler,
+                wrapper,
+            )?;
             for (index, source) in sources.iter().skip(1).enumerate() {
                 let field = self
                     .builder

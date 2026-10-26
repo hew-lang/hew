@@ -411,6 +411,14 @@ pub struct PhysicalManagedType {
     pub recipe: PhysicalValueRecipe,
 }
 
+impl PhysicalManagedType {
+    /// Persistent actor occupancy is needed only for cleanup or child walks.
+    #[must_use]
+    pub fn tracks_occupancy(&self) -> bool {
+        self.recipe.destroy.is_some() || self.shape.has_managed_children()
+    }
+}
+
 /// One value an `#[offload]` job's environment owns.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PhysicalOffloadSlot {
@@ -1553,6 +1561,27 @@ pub struct PhysicalModule {
     /// The compilation's declaration table: every `DefId` in the module
     /// indexes it.
     pub defs: std::sync::Arc<hew_types::DefTable>,
+}
+
+impl PhysicalModule {
+    /// Occupancy bytes follow the state value and retain declaration indices.
+    /// Trailing fields with no cleanup or managed children need no storage.
+    #[must_use]
+    pub fn actor_state_flag_count(&self, actor: &hew_sir::SemActor) -> usize {
+        actor
+            .fields
+            .iter()
+            .rposition(|field| self.managed_types[&field.ty].tracks_occupancy())
+            .map_or(0, |index| index + 1)
+    }
+
+    #[must_use]
+    pub fn actor_message_tracks_occupancy(&self, handler: &hew_sir::SemActorHandler) -> bool {
+        handler
+            .params
+            .iter()
+            .any(|ty| self.managed_types[ty].tracks_occupancy())
+    }
 }
 
 pub use hew_sir::SemDebugScope;

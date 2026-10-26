@@ -229,23 +229,29 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
         builder.position_at_end(self.ctx.append_basic_block(function, "entry"));
         let source = function.get_nth_param(0).unwrap().into_pointer_value();
         let visitor = function.get_nth_param(1).unwrap().into_pointer_value();
-        let active = builder
-            .build_load(self.ctx.i8_type(), source, "message.active")
-            .llvm_ctx("read canonical request ownership")?
-            .into_int_value();
-        let live = builder
-            .build_int_compare(
-                IntPredicate::NE,
-                active,
-                self.ctx.i8_type().const_zero(),
-                "message.live",
-            )
-            .llvm_ctx("test retained request fields")?;
         let visit = self.ctx.append_basic_block(function, "message.fields");
         let done = self.ctx.append_basic_block(function, "message.done");
-        builder
-            .build_conditional_branch(live, visit, done)
-            .llvm_ctx("visit initialized request payload")?;
+        if self.module.actor_message_tracks_occupancy(handler) {
+            let active = builder
+                .build_load(self.ctx.i8_type(), source, "message.active")
+                .llvm_ctx("read canonical request ownership")?
+                .into_int_value();
+            let live = builder
+                .build_int_compare(
+                    IntPredicate::NE,
+                    active,
+                    self.ctx.i8_type().const_zero(),
+                    "message.live",
+                )
+                .llvm_ctx("test retained request fields")?;
+            builder
+                .build_conditional_branch(live, visit, done)
+                .llvm_ctx("visit initialized request payload")?;
+        } else {
+            builder
+                .build_unconditional_branch(visit)
+                .llvm_ctx("visit untracked request payload")?;
+        }
         builder.position_at_end(visit);
         let values = ValueEmitter {
             module: self.module,
@@ -446,10 +452,7 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
         // All declarations precede bodies: recursive values reference the same
         // typed rows rather than reconstructing their descendants in codegen.
         for (index, row) in self.module.managed_types.values().enumerate() {
-            let leaf = matches!(
-                row.shape,
-                Shape::Scalar | Shape::Handle(_) | Shape::Shared { weak: true, .. }
-            );
+            let leaf = !row.shape.has_managed_children();
             let visit = if leaf {
                 pointer.const_null()
             } else {

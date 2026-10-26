@@ -936,9 +936,7 @@ impl LocalHandles {
             if matches!(state.routes.get(&token), Some(Route::RetiredActor { actor_id: routed, .. }) if *routed == actor_id) {
                 return RetireActorResult::AlreadyRetired;
             }
-            if !matches!(state.routes.get(&token), Some(Route::Actor { .. }))
-                && !state.actor_tokens.contains_key(&actor_id)
-            {
+            if !state.routes.contains_key(&token) && !state.actor_tokens.contains_key(&actor_id) {
                 return RetireActorResult::AlreadyRetired;
             }
             if !matches!(
@@ -1816,6 +1814,7 @@ mod tests {
         assert!(handles.state.access(|state| state.retain_actor(token)));
 
         assert_eq!(handles.retire_actor(token, 1), RetireActorResult::Retired);
+        assert_eq!(handles.retire_actor(token, 2), RetireActorResult::Mismatch);
         assert_eq!(handles.resolve_actor(owner, token), None);
         assert_eq!(handles.observation_actor(owner, token), Some(1));
         assert_eq!(handles.observation_actor(RuntimeId(9), token), None);

@@ -68,10 +68,7 @@ count
         "9\n41\n42\n42\na\ni64\n7\n"
     );
     assert!(stderr.contains("stop"), "{stderr}");
-    assert!(
-        stderr.contains("string index 4 out of bounds for length 1"),
-        "{stderr}"
-    );
+    assert!(stderr.contains("IndexOutOfBounds (205)"), "{stderr}");
     assert!(stderr.contains("unknown_name"), "{stderr}");
     assert!(stderr.contains(":1:1: error:"), "{stderr}");
 }

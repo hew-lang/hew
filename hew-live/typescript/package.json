@@ -1,0 +1,18 @@
+{
+  "devDependencies": {
+    "@bytecodealliance/jco-transpile": "0.20.0",
+    "@bytecodealliance/preview2-shim": "0.30.0",
+    "@types/node": "24.10.0",
+    "typescript": "5.9.3"
+  },
+  "name": "hew-live-typescript",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "generate": "node generate.mjs",
+    "test": "node test.mjs"
+  }
+}

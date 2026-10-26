@@ -19,7 +19,6 @@ pub(crate) trait ReadyWork: Send + Sync {
 pub(crate) struct ReadyState(AtomicU8);
 
 impl ReadyState {
-    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn idle() -> Self {
         Self(AtomicU8::new(IDLE))
     }

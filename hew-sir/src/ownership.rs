@@ -314,7 +314,7 @@ pub enum OwnerRoot {
 }
 
 /// The semantic owner of a memory place, without a physical field offset.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PlaceOrigin {
     Local,
     Runtime,
@@ -323,7 +323,7 @@ pub enum PlaceOrigin {
     Session {
         context: ValueId,
         slot: u32,
-        initialized: bool,
+        contents: hew_types::session::SessionContents,
     },
     /// State protected by the enclosing strict actor turn. `initialized`
     /// is false only in the actor's `init` body for a field init owns

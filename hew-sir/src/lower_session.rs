@@ -35,12 +35,57 @@ impl Builder<'_, '_> {
                 origin: PlaceOrigin::Session {
                     context: ValueId(0),
                     slot: retained.slot,
-                    initialized: retained.initialized,
+                    contents: retained.contents.clone(),
                 },
             });
+            self.expand_session_partition(place)?;
             self.session_places.insert(retained.binding.id, place);
-            if retained.initialized {
+            if retained.retained {
                 self.bind_source_target(&retained.binding, BindingTarget::Place(place))?;
+            }
+        }
+        Ok(())
+    }
+    /// A persistent type has one partition independent of which fields this
+    /// submission happens to select. Ownership-marked records remain whole.
+    fn expand_session_partition(&mut self, root: PlaceId) -> Result<(), SirLoweringError> {
+        let mut pending = vec![root];
+        while let Some(place) = pending.pop() {
+            let ty = self.places[place.0 as usize].ty.clone();
+            if matches!(
+                ty,
+                hew_types::ResolvedTy::Named {
+                    is_opaque: true,
+                    ..
+                }
+            ) || !super::is_concrete_aggregate_type(
+                self.service.module,
+                &self.service.checked_facts,
+                &ty,
+            ) || self.service.checked_facts.declaration_marker(&ty)?
+                != hew_types::DeclarationMarker::None
+            {
+                continue;
+            }
+            let shape = self.service.require_aggregate_shape(&ty)?;
+            let fields = crate::aggregate_field_recipes(
+                shape,
+                &ty,
+                &self.service.aggregate_shapes,
+                self.service.checked_facts.rows(),
+            )?;
+            for (field, _) in fields.iter().enumerate() {
+                let field = u32::try_from(field)
+                    .map_err(|_| SirLoweringError::from("session field count exceeds u32"))?;
+                let child = super::projection::declare_path(
+                    &mut self.places,
+                    crate::PlaceBase::Place(place),
+                    &ty,
+                    &[(shape, field)],
+                    &self.service.aggregate_shapes,
+                    self.service.checked_facts.rows(),
+                )?;
+                pending.push(child);
             }
         }
         Ok(())

@@ -59,7 +59,7 @@ fn unexpanded_local_and_zero_sized_storage_each_have_one_content_cell() {
         assert_eq!(partition.leaves[0].storage, local.id);
         if matches!(case, Case::ZeroSized) {
             assert_eq!(local.layout.size, 0);
-            assert!(partition.leaves[0].destroy.is_none());
+            assert!(partition.leaves[0].recipe.destroy.is_none());
         }
     }
 }
@@ -373,7 +373,7 @@ fn expanded_local_partitions_refuse_missing_zero_sized_cells_and_synthetic_root_
         if root_bit {
             partition.leaves.push(PhysicalPlaceLeaf {
                 storage: root,
-                destroy: None,
+                recipe: partition.leaves[0].recipe.clone(),
             });
         } else {
             partition

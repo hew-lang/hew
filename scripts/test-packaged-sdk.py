@@ -27,6 +27,50 @@ def require(condition, message):
         raise RuntimeError(message)
 
 
+def check_live_sdk(sdk, compiler_identity, run):
+    """Exercise the relocated Linux experimental SDK's same-build boundary."""
+    require(
+        sys.platform == "linux" and platform.machine() == "x86_64",
+        "experimental live SDK acceptance is qualified only for Linux x86_64",
+    )
+    runtime = sdk / "lib/hew/libhew.so"
+    transport = sdk / "lib/hew/live-node/network.so"
+    manifest = json.loads((transport.parent / "network.json").read_text())
+    require(
+        manifest["compiler"] == compiler_identity,
+        "live transport compiler identity differs",
+    )
+    require(
+        manifest["runtime_sha256"] == digest(runtime), "live transport runtime differs"
+    )
+    require(
+        manifest["module_sha256"] == digest(transport), "live transport module differs"
+    )
+    for path in (
+        sdk / "lib/wasm32-wasip1/libhew_runtime.a",
+        sdk / "lib/wasm32-wasip1/libhew_std.a",
+        sdk / "share/hew/live/README.md",
+        sdk / "share/hew/live/router.hew",
+    ):
+        require(path.is_file(), f"missing experimental live SDK input: {path}")
+    run("live-node-help", [sdk / "bin/hew-live-node", "--help"])
+    _, stdout, stderr = run(
+        "live-native-session",
+        [sdk / "bin/hew", "tool", "live", "--runtime", runtime],
+        input=(
+            b"actor Counter { var value: i64 = 40; receive fn next() -> i64 { value += 1; value } }\n"
+            b"let counter = spawn Counter;\n"
+            b'counter.next().expect("counter")\n'
+            b'counter.next().expect("counter")\n'
+            b"stop(counter); stopped(counter);\n:quit\n"
+        ),
+    )
+    require(
+        stdout == b"41\n42\n" and not stderr, "relocated live session output changed"
+    )
+    return {"runtime_sha256": digest(runtime), "transport": manifest}
+
+
 def require_register_recurrence(ir, loop_info):
     identifier = r'"(?:[^"\\]|\\.)*"|[-A-Za-z$._0-9]+'
     functions = {}
@@ -100,6 +144,11 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--archive", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument(
+        "--experimental-live",
+        action="store_true",
+        help="require the Linux x86_64 live companions and same-build runtime",
+    )
     args = parser.parse_args()
     root = Path(__file__).resolve().parents[1]
     archive = args.archive.resolve()
@@ -166,19 +215,20 @@ def main():
     def save():
         (output / "receipt.json").write_text(json.dumps(receipt, indent=2) + "\n")
 
-    def run(label, command, *, cwd=None, seconds=120, expected=0):
+    def run(label, command, *, cwd=None, seconds=120, expected=0, input=None):
         started = time.monotonic()
         process = subprocess.Popen(
             list(map(str, command)),
             cwd=cwd or output,
             env=env,
+            stdin=subprocess.PIPE if input is not None else None,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             start_new_session=not windows,
         )
         timed_out = False
         try:
-            stdout, stderr = process.communicate(timeout=seconds)
+            stdout, stderr = process.communicate(input=input, timeout=seconds)
         except subprocess.TimeoutExpired:
             timed_out = True
             if windows:
@@ -253,9 +303,13 @@ def main():
             path.name: digest(path) for path in (sdk / "include").glob("*.h")
         }
         env["PATH"] = str(sdk / "bin") + os.pathsep + env.get("PATH", "")
+        expected_bins = [f"hew{suffix}"]
+        if args.experimental_live:
+            expected_bins += ["hew-live-host", "hew-live-node"]
         require(
-            sorted(path.name for path in (sdk / "bin").iterdir()) == [f"hew{suffix}"],
-            "SDK must ship one hew executable",
+            sorted(path.name for path in (sdk / "bin").iterdir())
+            == sorted(expected_bins),
+            "SDK executable membership differs from the selected product",
         )
         for command in ([], ["lsp"], ["observe"]):
             label = "-".join(["hew", *command])
@@ -265,6 +319,12 @@ def main():
                 seconds=30,
             )
             receipt[label + "_version"] = version.decode().strip()
+
+        if args.experimental_live:
+            receipt["experimental_live"] = check_live_sdk(
+                sdk, receipt["hew_version"], run
+            )
+            save()
 
         smoke = output / "pkg-smoke.hew"
         smoke.write_text('fn main() { println("pkg-smoke-ok"); }\n')

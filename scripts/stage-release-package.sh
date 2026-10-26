@@ -10,7 +10,8 @@ usage() {
 usage: scripts/stage-release-package.sh \
   --source-dir DIR --bin-dir DIR [--bin-suffix SUFFIX] \
   --native-lib FILE --native-triple TRIPLE --native-lib-name NAME \
-  --wasi-lib-dir DIR [--optional-wasi] --destination DIR --completion-shells "SHELL ..."
+  --wasi-lib-dir DIR [--optional-wasi] [--live-runtime FILE] \
+  --destination DIR --completion-shells "SHELL ..."
 EOF
 }
 
@@ -29,13 +30,14 @@ wasi_lib_dir=
 destination=
 completion_shells=
 optional_wasi=false
+live_runtime=
 
 while [ "$#" -gt 0 ]; do
     option=$1
     case "$option" in
     --source-dir | --bin-dir | --bin-suffix | --native-lib | \
         --native-triple | --native-lib-name | --wasi-lib-dir | \
-        --destination | --completion-shells)
+        --destination | --completion-shells | --live-runtime)
         [ "$#" -ge 2 ] || die "$option requires a value"
         value=$2
         shift 2
@@ -65,6 +67,7 @@ while [ "$#" -gt 0 ]; do
     --wasi-lib-dir) wasi_lib_dir=$value ;;
     --destination) destination=$value ;;
     --completion-shells) completion_shells=$value ;;
+    --live-runtime) live_runtime=$value ;;
     esac
 done
 
@@ -109,6 +112,14 @@ fi
 for document in LICENSE-MIT LICENSE-APACHE NOTICE THIRD-PARTY-LICENSES README.md; do
     [ -f "$source_dir/$document" ] || die "missing release document: $source_dir/$document"
 done
+if [ -n "$live_runtime" ]; then
+    [ -f "$live_runtime" ] || die "missing live shared runtime: $live_runtime"
+    [ "$include_wasi" = true ] || die "live execution requires portable WASI libraries"
+    for companion in hew-live-host hew-live-node; do
+        [ -f "$bin_dir/$companion$bin_suffix" ] || die "missing live companion: $companion$bin_suffix"
+    done
+    [ -f "$source_dir/hew-live/README.md" ] || die "missing live SDK documentation"
+fi
 
 destination_parent=$(dirname "$destination")
 mkdir -p "$destination_parent"
@@ -161,6 +172,23 @@ done
 for document in LICENSE-MIT LICENSE-APACHE NOTICE THIRD-PARTY-LICENSES README.md; do
     cp "$source_dir/$document" "$package_root/$document"
 done
+
+if [ -n "$live_runtime" ]; then
+    mkdir -p "$package_root/lib/hew" "$package_root/share/hew/live"
+    for companion in hew-live-host hew-live-node; do
+        cp "$bin_dir/$companion$bin_suffix" "$package_root/bin/"
+        chmod +x "$package_root/bin/$companion$bin_suffix"
+    done
+    runtime_name=$(basename "$live_runtime")
+    cp "$live_runtime" "$package_root/lib/hew/$runtime_name"
+    cp "$source_dir/hew-live/README.md" "$package_root/share/hew/live/README.md"
+    cp "$source_dir/hew-live/tests/fixtures/router.hew" "$package_root/share/hew/live/router.hew"
+    "$package_root/bin/hew-live-node$bin_suffix" prepare-transport \
+        --compiler "$package_root/bin/hew$bin_suffix" \
+        --runtime "$package_root/lib/hew/$runtime_name" \
+        --output "$package_root/lib/hew/live-node" >/dev/null ||
+        die "live transport preparation failed"
+fi
 
 mv "$package_root" "$destination"
 printf 'Staged Hew release package at %s\n' "$destination"

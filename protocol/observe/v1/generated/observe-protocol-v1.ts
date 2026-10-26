@@ -10,6 +10,7 @@ export const ACTIONABLE_TRACE_EVENT_TYPES = new Set([
   "supervisor_backoff",
   "actor.delivery_refused",
   "actor.rc_sweep",
+  "live.execution",
   "send",
   "spawn",
   "crash",
@@ -191,6 +192,18 @@ export interface RcSweep {
   [key: string]: unknown;
 }
 
+export interface LiveExecution {
+  deployment_id: bigint;
+  invocation_id: bigint | null;
+  activation_epoch: bigint;
+  code_id: string;
+  phase: string;
+  mode: string;
+  semantic_profile: string;
+  coverage: string;
+  [key: string]: unknown;
+}
+
 export interface TraceEvent {
   sequence: bigint;
   trace_id: string;
@@ -206,6 +219,7 @@ export interface TraceEvent {
   timestamp_ns: bigint;
   handler_name: string | null;
   rc_sweep?: RcSweep | null;
+  live_execution?: LiveExecution | null;
   reason?: string | null;
   [key: string]: unknown;
 }
@@ -503,6 +517,21 @@ export function decodeRcSweep(value: unknown): RcSweep {
   return output;
 }
 
+export function decodeLiveExecution(value: unknown): LiveExecution {
+  const input = asRecord(value);
+  const output = { ...input,
+    deployment_id: asBoundedBigInt(input.deployment_id, 0n, 18446744073709551615n),
+    invocation_id: (input.invocation_id === null ? null : asBoundedBigInt(input.invocation_id, 0n, 18446744073709551615n)),
+    activation_epoch: asBoundedBigInt(input.activation_epoch, 0n, 18446744073709551615n),
+    code_id: asString(input.code_id),
+    phase: asString(input.phase),
+    mode: asString(input.mode),
+    semantic_profile: asString(input.semantic_profile),
+    coverage: asString(input.coverage),
+  } as LiveExecution;
+  return output;
+}
+
 export function decodeTraceEvent(value: unknown): TraceEvent {
   const input = asRecord(value);
   const output = { ...input,
@@ -520,6 +549,7 @@ export function decodeTraceEvent(value: unknown): TraceEvent {
     timestamp_ns: asBoundedBigInt(input.timestamp_ns, 0n, 18446744073709551615n),
     handler_name: (input.handler_name === null ? null : asString(input.handler_name)),
     rc_sweep: input.rc_sweep === undefined ? null : (input.rc_sweep === null ? null : decodeRcSweep(input.rc_sweep)),
+    live_execution: input.live_execution === undefined ? null : (input.live_execution === null ? null : decodeLiveExecution(input.live_execution)),
     reason: input.reason === undefined ? null : (input.reason === null ? null : asString(input.reason)),
   } as TraceEvent;
   validateActorAttribution('source', output.source_attribution, output.source_actor);

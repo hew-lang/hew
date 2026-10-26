@@ -8,6 +8,7 @@ use hew_cabi::host_error::{HewError, HostStatus};
 
 use crate::coro_root::{poll_root, HewRootStart, RootExecution};
 use crate::fault::HewFault;
+#[cfg(not(target_arch = "wasm32"))]
 use crate::runtime_handle::HewRuntime;
 use crate::wake::scheduled::ReadyState;
 use crate::wake::{HewWaker, OwnedWaker};
@@ -64,6 +65,7 @@ impl HostReadiness {
 pub struct HewHostCall {
     execution: RootExecution,
     readiness: Arc<HostReadiness>,
+    #[cfg(not(target_arch = "wasm32"))]
     runtime: *mut HewRuntime,
     frame: *mut c_void,
     arguments: *mut c_void,
@@ -85,6 +87,7 @@ unsafe fn refuse(error: *mut *mut HewError, message: &str) -> i32 {
 /// callback contract; callbacks schedule a future poll and never re-enter it.
 /// The caller supplies an empty writable error slot and must eventually start,
 /// drain, take the result and release the returned invocation on this thread.
+#[cfg(not(target_arch = "wasm32"))]
 #[no_mangle]
 pub unsafe extern "C" fn hew_host_call_new(
     runtime: *mut HewRuntime,
@@ -103,6 +106,37 @@ pub unsafe extern "C" fn hew_host_call_new(
         };
         return std::ptr::null_mut();
     }
+    // SAFETY: the non-null borrowed wake target was validated above.
+    let mut call = unsafe { prepare(waker) };
+    call.runtime = runtime;
+    Box::into_raw(call)
+}
+
+/// Prepare a call owned by the enclosing Wasm instance and its private driver.
+/// # Safety
+/// `waker` obeys the retained callback contract and never re-enters execution.
+/// `error` is an empty writable slot. Drain and release the returned call before
+/// normal instance teardown; forced instance disposal cannot run guest cleanup.
+#[cfg(target_arch = "wasm32")]
+#[no_mangle]
+pub unsafe extern "C" fn hew_host_call_new_guest(
+    waker: *const HewWaker,
+    error: *mut *mut HewError,
+) -> *mut HewHostCall {
+    // SAFETY: the caller supplies an empty writable slot.
+    unsafe { *error = std::ptr::null_mut() };
+    if waker.is_null() {
+        // SAFETY: the output has not received another error owner.
+        unsafe { refuse(error, "asynchronous guest calls require a wake target") };
+        return std::ptr::null_mut();
+    }
+    // SAFETY: driver initialization has no preconditions.
+    unsafe { crate::driver::hew_sched_init() };
+    // SAFETY: the caller retains the validated wake target during preparation.
+    Box::into_raw(unsafe { prepare(waker) })
+}
+
+unsafe fn prepare(waker: *const HewWaker) -> Box<HewHostCall> {
     let readiness = Arc::new(HostReadiness {
         state: ReadyState::idle(),
         // SAFETY: the caller retains the borrowed descriptor through preparation.
@@ -111,17 +145,18 @@ pub unsafe extern "C" fn hew_host_call_new(
     let descriptor = HostReadiness::descriptor(&readiness);
     // SAFETY: readiness owns the descriptor target; the call drains before drop.
     let execution = unsafe { RootExecution::new(&descriptor) };
-    Box::into_raw(Box::new(HewHostCall {
+    Box::new(HewHostCall {
         execution,
         readiness,
-        runtime,
+        #[cfg(not(target_arch = "wasm32"))]
+        runtime: std::ptr::null_mut(),
         frame: std::ptr::null_mut(),
         arguments: std::ptr::null_mut(),
         finish: None,
         free: None,
         status: None,
         taken: false,
-    }))
+    })
 }
 
 /// Start the exact checked callable using persistent generated input storage.
@@ -264,14 +299,16 @@ pub unsafe extern "C" fn hew_host_call_release(
         *owner = std::ptr::null_mut();
         let call = Box::from_raw(pointer);
         call.free.unwrap_or_else(|| std::process::abort())(call.arguments);
+        #[cfg(not(target_arch = "wasm32"))]
         let runtime = call.runtime;
         drop(call);
+        #[cfg(not(target_arch = "wasm32"))]
         crate::runtime_handle::hew_runtime_release(runtime);
     }
     0
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(target_arch = "wasm32")))]
 mod tests {
     use super::*;
     use crate::coro_state::{hew_coro_state_finish, hew_coro_state_waker, HewCoroState};

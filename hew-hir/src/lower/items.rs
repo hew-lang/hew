@@ -750,7 +750,7 @@ impl LowerCtx {
     ) -> Option<HirFn> {
         let source_key = format!("{source_module}.{}", func.name);
         let Some(intrinsic_key) = self.intrinsic_declarations.get(&source_key).cloned() else {
-            return self.lower_fn_with_name(func, qualified, span);
+            return self.lower_fn(func, span);
         };
         let Some(_entry) = crate::stdlib_catalog::entries()
             .iter()

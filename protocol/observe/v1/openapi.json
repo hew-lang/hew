@@ -974,6 +974,49 @@
           }
         }
       },
+      "LiveExecution": {
+        "type": "object",
+        "x-hew-model": true,
+        "additionalProperties": true,
+        "description": "Host-authored live execution attribution. IDs are scoped by the enclosing producer identity. Payloads and service data are excluded; an ordinary trace is not a replay journal.",
+        "required": [
+          "deployment_id",
+          "invocation_id",
+          "activation_epoch",
+          "code_id",
+          "phase",
+          "mode",
+          "semantic_profile",
+          "coverage"
+        ],
+        "properties": {
+          "deployment_id": { "$ref": "#/components/schemas/UInt64Decimal" },
+          "invocation_id": {
+            "anyOf": [
+              { "$ref": "#/components/schemas/UInt64Decimal" },
+              { "type": "null" }
+            ]
+          },
+          "activation_epoch": { "$ref": "#/components/schemas/UInt64Decimal" },
+          "code_id": {
+            "type": "string",
+            "description": "SHA-256 content identity of the prepared component and its closed code."
+          },
+          "phase": {
+            "type": "string",
+            "description": "Open host lifecycle taxonomy: active, admitted, completed, faulted, waiting, snapshot, initializing, committed or rejected."
+          },
+          "mode": {
+            "type": "string",
+            "description": "production or preview; preview never receives production services."
+          },
+          "semantic_profile": { "type": "string" },
+          "coverage": {
+            "type": "string",
+            "description": "metadata_only does not record invocation input or nondeterminism. explicit_services uses operator-supplied ordered service fixtures."
+          }
+        }
+      },
       "TraceEvent": {
         "type": "object",
         "x-hew-model": true,
@@ -1122,6 +1165,7 @@
               "supervisor_backoff",
               "actor.delivery_refused",
               "actor.rc_sweep",
+              "live.execution",
               "lambda_spawned",
               "lambda_released",
               "unknown"
@@ -1136,6 +1180,7 @@
               "supervisor_backoff",
               "actor.delivery_refused",
               "actor.rc_sweep",
+              "live.execution",
               "send",
               "spawn",
               "crash",
@@ -1167,6 +1212,13 @@
               { "type": "null" }
             ],
             "description": "Actor-terminal Rc survivors consumed exactly once, grouped by payload type. Optional for older producers."
+          },
+          "live_execution": {
+            "anyOf": [
+              { "$ref": "#/components/schemas/LiveExecution" },
+              { "type": "null" }
+            ],
+            "description": "Optional host-authored code, invocation and activation attribution. Absent for older producers and unrelated events."
           },
           "reason": {
             "type": ["string", "null"],

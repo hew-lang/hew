@@ -1,0 +1,43 @@
+package hew:live-router@0.1.0;
+
+interface events {
+    record event {
+        source: string,
+        body: string,
+    }
+
+    record delivery {
+        destination: string,
+        body: string,
+    }
+
+    record snapshot {
+        accepted: u64,
+    }
+}
+
+interface services {
+    use events.{delivery};
+
+    destination: async func(source: string) -> result<option<string>, string>;
+    emit: async func(message: delivery) -> result<_, string>;
+}
+
+interface handler {
+    use events.{event, snapshot};
+
+    initialize: func(state: snapshot) -> result<_, string>;
+    /// Run ready autonomous work and report the next timer delay in milliseconds.
+    drive: async func() -> option<u64>;
+    route: async func(message: event) -> result<bool, string>;
+    quiesce: async func() -> result<snapshot, string>;
+    /// Reopen a paused instance or withdraw an in-progress quiescence attempt.
+    /// A withdrawn attempt cannot publish a new paused state after this returns.
+    resume: func() -> result<_, string>;
+    dispose: async func() -> result<_, string>;
+}
+
+world router {
+    import services;
+    export handler;
+}

@@ -11,6 +11,9 @@ use serde::{de::DeserializeOwned, Deserialize};
 /// Build identity shared by the compiler driver and its frontend consumers.
 pub const VERSION: &str = env!("HEW_VERSION");
 
+/// Stack budget for native threads running the recursive compiler pipeline.
+pub const COMPILER_STACK_SIZE: usize = 64 * 1024 * 1024;
+
 mod compile_time;
 mod coverage;
 mod host_admission;
@@ -147,6 +150,10 @@ impl Default for SourceSet {
 enum SourceContent {
     Text(Arc<str>),
     Bytes(Arc<[u8]>),
+    Prepared {
+        source: Arc<str>,
+        program: Arc<Program>,
+    },
 }
 
 impl SourceSet {
@@ -257,6 +264,7 @@ impl SourceSet {
         match self.content(path)? {
             SourceContent::Text(text) => Some(text.as_bytes()),
             SourceContent::Bytes(bytes) => Some(bytes),
+            SourceContent::Prepared { source, .. } => Some(source.as_bytes()),
         }
     }
     #[must_use]
@@ -311,7 +319,46 @@ impl SourceSet {
         match self.content(path)? {
             SourceContent::Text(text) => Some(text),
             SourceContent::Bytes(bytes) => std::str::from_utf8(bytes).ok(),
+            SourceContent::Prepared { source, .. } => Some(source),
         }
+    }
+
+    /// Retain compiler-prepared syntax with its original diagnostic source.
+    /// Session declaration snapshots keep expansion hygiene and source spans;
+    /// rendering and reparsing their text would discard those identities.
+    pub(crate) fn insert_prepared(&mut self, path: PathBuf, source: String, program: Program) {
+        self.insert(path.clone(), source.clone());
+        let content = SourceContent::Prepared {
+            source: source.into(),
+            program: program.into(),
+        };
+        if let Some(canonical) = self.filesystem.then(|| buffer_identity(&path)).flatten() {
+            self.sources.insert(canonical, content.clone());
+        }
+        self.sources.insert(
+            if self.filesystem {
+                path
+            } else {
+                compile_time::normalize(&path)
+            },
+            content,
+        );
+    }
+
+    fn parse_document(&self, path: &Path, source: &str) -> hew_parser::ParseResult {
+        if let Some(SourceContent::Prepared {
+            source: retained,
+            program,
+        }) = self.content(path)
+        {
+            if retained.as_ref() == source {
+                return hew_parser::ParseResult {
+                    program: (**program).clone(),
+                    errors: Vec::new(),
+                };
+            }
+        }
+        hew_parser::parse(source)
     }
 
     fn content(&self, path: &Path) -> Option<&SourceContent> {
@@ -3989,7 +4036,7 @@ fn parse_and_resolve_file_internal(
         ))
     })?;
 
-    let result = hew_parser::parse(&source);
+    let result = ctx.documents.parse_document(canonical, &source);
     let display_path = canonical.display().to_string();
     let parse_diagnostics = result
         .errors
@@ -4327,7 +4374,9 @@ fn run_document_frontend_with_dependency_cache(
         }
     };
 
-    let parse_result = hew_parser::parse(&project.source);
+    let parse_result = options
+        .documents
+        .parse_document(Path::new(input), &project.source);
     let diagnostics = parse_result
         .errors
         .iter()
@@ -4563,13 +4612,15 @@ pub fn check_file_with_state(
     Ok((output, state))
 }
 
-/// The running compiler's release version, the version `hew --version`
-/// prints. Every crate in the workspace shares it.
+/// The workspace release version. Development display identities also include
+/// their Git count and commit. Every crate in the workspace shares this base.
 pub const COMPILER_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 /// Whether a `[package] hew` compiler range admits this compiler. The one
 /// reader of that range: the frontend, `hew publish`, `hew check` and the
 /// package resolver all ask it.
+/// Ordinary ranges describe the compiler's feature version; explicit
+/// prerelease bounds compare its full release version.
 ///
 /// # Errors
 ///
@@ -4582,7 +4633,37 @@ pub fn compiler_supports(range: &str) -> Result<bool, semver::Error> {
     let range = semver::VersionReq::parse(range)?;
     let compiler =
         semver::Version::parse(COMPILER_VERSION).expect("the workspace version is semver");
-    Ok(range.matches(&compiler))
+    Ok(compiler_requirement_matches(&range, compiler))
+}
+
+fn compiler_requirement_matches(range: &semver::VersionReq, mut compiler: semver::Version) -> bool {
+    if range.comparators.iter().all(|bound| bound.pre.is_empty()) {
+        compiler.pre = semver::Prerelease::EMPTY;
+    }
+    range.matches(&compiler)
+}
+
+#[cfg(test)]
+mod compiler_range_tests {
+    #[test]
+    fn feature_ranges_and_explicit_prerelease_bounds() {
+        for (requirement, compiler, admitted) in [
+            (">=0.9.3", "0.10.0-rc1", true),
+            ("<0.10.0", "0.10.0-rc1", false),
+            ("=0.9.3", "0.10.0-rc1", false),
+            (">=0.10.0-rc2", "0.10.0-rc1", false),
+            (">=0.10.0-rc1", "0.10.0-rc1", true),
+            (">=0.10.0-rc2", "0.10.0", true),
+            (">=0.9.3", "0.9.2", false),
+        ] {
+            let requirement = semver::VersionReq::parse(requirement).unwrap();
+            let compiler = semver::Version::parse(compiler).unwrap();
+            assert_eq!(
+                super::compiler_requirement_matches(&requirement, compiler),
+                admitted
+            );
+        }
+    }
 }
 
 /// Hew language editions the compiler accepts. Sources in a package whose

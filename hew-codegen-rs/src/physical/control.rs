@@ -134,7 +134,6 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
             ),
             PhysicalTerminator::CheckedRaiseFault { kind, cleanup } => {
                 self.initialize_active_fault(trap_code(*kind))?;
-                self.attach_active_fault_site(self.terminator_site(block))?;
                 self.emit_edge(cleanup)
             }
             PhysicalTerminator::DynCall {
@@ -278,7 +277,7 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
             } => self.emit_panic(*message, *assertion, cleanup, self.terminator_site(block)),
             PhysicalTerminator::Trap(kind) => {
                 let code = trap_code(*kind);
-                self.emit_new_fault(code, self.terminator_site(block))
+                self.emit_new_fault(code)
             }
             PhysicalTerminator::PropagateFault { handback } => {
                 if let Some(handback) = handback {
@@ -886,9 +885,8 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
         Ok(())
     }
 
-    fn emit_new_fault(&self, code: i32, site: Option<u32>) -> CodegenResult<()> {
+    fn emit_new_fault(&self, code: i32) -> CodegenResult<()> {
         self.initialize_active_fault(code)?;
-        self.attach_active_fault_site(site)?;
         self.emit_propagate_fault()
     }
 

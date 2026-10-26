@@ -77,6 +77,19 @@ pub unsafe extern "C" fn hew_host_value_release(
     // SAFETY: the caller transfers the typed initialized owner.
     let value = unsafe { &*owner };
     let cursor = HewReleaseCursor::values([(value.storage, value.layout)]);
+    // SAFETY: the cursor owns the complete initialized contents of this owner.
+    unsafe { release_parts(owner, cursor, error) }
+}
+
+/// Release an exact initialized partition while retaining its root allocation.
+/// # Safety
+/// The cursor uniquely owns every remaining semantic value in `owner` and
+/// borrows only storage retained by it. `error` is an empty writable output.
+pub(crate) unsafe fn release_parts(
+    owner: *mut HewHostValue,
+    cursor: *mut HewReleaseCursor,
+    error: *mut *mut HewError,
+) -> i32 {
     let mut release = ReleaseDriver::new(cursor);
     // SAFETY: the existing release driver drains every child before returning.
     unsafe {

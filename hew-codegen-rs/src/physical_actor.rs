@@ -58,9 +58,8 @@ pub(super) fn symbol(actor: ActorId, suffix: &str) -> String {
     format!("__hew_actor_{}_{}", actor.0, suffix)
 }
 
-/// Actor state carries one persistent initialization byte per top-level field
-/// after its target layout. The runtime owns the allocation as opaque storage;
-/// generated handlers and callbacks are the sole readers and writers.
+/// Actor occupancy storage follows its target layout. Physical recipes omit
+/// trailing fields whose contents need neither cleanup nor managed traversal.
 pub(super) fn state_allocation_size(
     layout: &PhysicalLayout,
     field_count: usize,
@@ -86,8 +85,8 @@ pub(super) fn state_field_initialized<'ctx>(
         .size
         .checked_add(u64::from(field))
         .ok_or_else(|| CodegenError::FailClosed("actor state flag offset overflow".into()))?;
-    // SAFETY: actor state allocations reserve one byte for every declared
-    // field after the target-realized state value.
+    // SAFETY: physical occupancy recipes reserve this tracked field's byte
+    // after the target-realized state value.
     unsafe {
         builder.build_gep(
             ctx.i8_type(),
@@ -541,6 +540,21 @@ pub(super) fn message_type<'ctx>(
         )?);
     }
     Ok(ctx.struct_type(&fields, false))
+}
+
+pub(super) fn initialize_message_occupancy<'ctx>(
+    module: &PhysicalModule,
+    ctx: &'ctx Context,
+    builder: &Builder<'ctx>,
+    handler: &SemActorHandler,
+    payload: PointerValue<'ctx>,
+) -> CodegenResult<()> {
+    if module.actor_message_tracks_occupancy(handler) {
+        builder
+            .build_store(payload, ctx.i8_type().const_int(1, false))
+            .llvm_ctx("initialize request ownership")?;
+    }
+    Ok(())
 }
 
 pub(super) fn allocate<'ctx>(
@@ -1007,10 +1021,13 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
                 self.ctx,
                 &self.llvm,
                 &builder,
-                state_allocation_size(layout, actor.fields.len())?,
+                state_allocation_size(layout, self.module.actor_state_flag_count(actor))?,
             )?;
             values.store_value(allocation, layout, copied)?;
             for index in 0..actor.fields.len() {
+                if !self.module.managed_types[&actor.fields[index].ty].tracks_occupancy() {
+                    continue;
+                }
                 let index = u32::try_from(index)
                     .map_err(|_| CodegenError::FailClosed("actor field exceeds u32".into()))?;
                 let flag = state_field_initialized(self.ctx, &builder, allocation, layout, index)?;
@@ -1164,61 +1181,63 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
         let builder = self.ctx.create_builder();
         builder.position_at_end(self.ctx.append_basic_block(function, "entry"));
         let payload = function.get_first_param().unwrap().into_pointer_value();
-        let active = builder
-            .build_load(self.ctx.i8_type(), payload, "message.active")
-            .llvm_ctx("read message ownership")?
-            .into_int_value();
-        let destroy = self.ctx.append_basic_block(function, "destroy");
-        let done = self.ctx.append_basic_block(function, "done");
-        let live = builder
-            .build_int_compare(
-                IntPredicate::NE,
-                active,
-                self.ctx.i8_type().const_zero(),
-                "message.live",
-            )
-            .llvm_ctx("test queued message owner")?;
-        builder
-            .build_conditional_branch(live, destroy, done)
-            .llvm_ctx("drop only unconsumed message payload")?;
-        builder.position_at_end(destroy);
-        builder
-            .build_store(payload, self.ctx.i8_type().const_zero())
-            .llvm_ctx("consume queued message owner")?;
-        for (index, ty) in handler.params.iter().enumerate().rev() {
-            let recipe = &self.module.actor_recipes[ty];
-            if let Some(action) = recipe.destroy {
-                let layout = self.module.target.layout(ty).ok_or_else(|| {
-                    CodegenError::FailClosed("message drop lacks field layout".into())
-                })?;
-                let slot = builder
-                    .build_struct_gep(
-                        message_ty,
-                        payload,
-                        u32::try_from(index + 1).map_err(|_| {
-                            CodegenError::FailClosed("message field index exceeds u32".into())
-                        })?,
-                        "message.field",
-                    )
-                    .llvm_ctx("address queued field")?;
-                let loaded = builder
-                    .build_load(llvm_type(self.ctx, &layout.repr)?, slot, "message.value")
-                    .llvm_ctx("load queued field")?;
-                ValueEmitter {
-                    module: self.module,
-                    ctx: self.ctx,
-                    llvm: &self.llvm,
-                    builder: &builder,
-                    value: function,
-                    fault_sink: None,
+        if self.module.actor_message_tracks_occupancy(handler) {
+            let active = builder
+                .build_load(self.ctx.i8_type(), payload, "message.active")
+                .llvm_ctx("read message ownership")?
+                .into_int_value();
+            let destroy = self.ctx.append_basic_block(function, "destroy");
+            let done = self.ctx.append_basic_block(function, "done");
+            let live = builder
+                .build_int_compare(
+                    IntPredicate::NE,
+                    active,
+                    self.ctx.i8_type().const_zero(),
+                    "message.live",
+                )
+                .llvm_ctx("test queued message owner")?;
+            builder
+                .build_conditional_branch(live, destroy, done)
+                .llvm_ctx("drop only unconsumed message payload")?;
+            builder.position_at_end(destroy);
+            builder
+                .build_store(payload, self.ctx.i8_type().const_zero())
+                .llvm_ctx("consume queued message owner")?;
+            for (index, ty) in handler.params.iter().enumerate().rev() {
+                let recipe = &self.module.actor_recipes[ty];
+                if let Some(action) = recipe.destroy {
+                    let layout = self.module.target.layout(ty).ok_or_else(|| {
+                        CodegenError::FailClosed("message drop lacks field layout".into())
+                    })?;
+                    let slot = builder
+                        .build_struct_gep(
+                            message_ty,
+                            payload,
+                            u32::try_from(index + 1).map_err(|_| {
+                                CodegenError::FailClosed("message field index exceeds u32".into())
+                            })?,
+                            "message.field",
+                        )
+                        .llvm_ctx("address queued field")?;
+                    let loaded = builder
+                        .build_load(llvm_type(self.ctx, &layout.repr)?, slot, "message.value")
+                        .llvm_ctx("load queued field")?;
+                    ValueEmitter {
+                        module: self.module,
+                        ctx: self.ctx,
+                        llvm: &self.llvm,
+                        builder: &builder,
+                        value: function,
+                        fault_sink: None,
+                    }
+                    .destroy_loaded_value(loaded, layout, action)?;
                 }
-                .destroy_loaded_value(loaded, layout, action)?;
             }
+            builder
+                .build_unconditional_branch(done)
+                .llvm_ctx("finish queued message destruction")?;
+            builder.position_at_end(done);
         }
-        builder
-            .build_unconditional_branch(done)
-            .llvm_ctx("finish queued message destruction")?;
-        builder.position_at_end(done);
         builder
             .build_return(None)
             .llvm_ctx("return from queued message drop")?;
@@ -1647,7 +1666,7 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
                 .llvm_ctx("finish cancelled actor stream adapter")?;
             builder.position_at_end(invoke);
         }
-        if !handler.params.is_empty() {
+        if self.module.actor_message_tracks_occupancy(handler) {
             builder
                 .build_store(payload, self.ctx.i8_type().const_zero())
                 .llvm_ctx("transfer message fields to handler frame")?;
@@ -2185,7 +2204,8 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             .target
             .layout(&actor.state_ty)
             .ok_or_else(|| CodegenError::FailClosed("missing actor state layout".into()))?;
-        let allocation_size = state_allocation_size(layout, actor.fields.len())?;
+        let allocation_size =
+            state_allocation_size(layout, self.module.actor_state_flag_count(actor))?;
         let state = allocate(
             self.module,
             self.ctx,
@@ -2195,6 +2215,9 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
         )?;
         let state_repr = llvm_type(self.ctx, &layout.repr)?.into_struct_type();
         for index in 0..actor.fields.len() {
+            if !self.module.managed_types[&actor.fields[index].ty].tracks_occupancy() {
+                continue;
+            }
             let index = u32::try_from(index)
                 .map_err(|_| CodegenError::FailClosed("actor field exceeds u32".into()))?;
             let flag = state_field_initialized(self.ctx, &self.builder, state, layout, index)?;
@@ -2230,10 +2253,12 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
                 &self.storage(*source)?.layout,
                 self.load(*source, "spawn.value")?,
             )?;
-            let flag = state_field_initialized(self.ctx, &self.builder, state, layout, *index)?;
-            self.builder
-                .build_store(flag, self.ctx.bool_type().const_int(1, false))
-                .llvm_ctx("publish spawn-supplied actor field")?;
+            if self.module.managed_types[&actor.fields[*index as usize].ty].tracks_occupancy() {
+                let flag = state_field_initialized(self.ctx, &self.builder, state, layout, *index)?;
+                self.builder
+                    .build_store(flag, self.ctx.bool_type().const_int(1, false))
+                    .llvm_ctx("publish spawn-supplied actor field")?;
+            }
         }
         let ptr = self.ctx.ptr_type(AddressSpace::default());
         let target = TargetData::create(&self.module.target.data_layout);
@@ -2690,9 +2715,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             .build_conditional_branch(missing, refused, allocated)
             .llvm_ctx("branch on request allocation")?;
         self.builder.position_at_end(allocated);
-        self.builder
-            .build_store(wrapper, self.ctx.i8_type().const_int(1, false))
-            .llvm_ctx("initialize request ownership")?;
+        initialize_message_occupancy(self.module, self.ctx, &self.builder, handler, wrapper)?;
         let fields = self
             .load(*payload, "stream.start.payload")?
             .into_struct_value();
@@ -2833,9 +2856,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             .build_conditional_branch(missing, failed, allocated)
             .llvm_ctx("route timer allocation")?;
         self.builder.position_at_end(allocated);
-        self.builder
-            .build_store(wrapper, self.ctx.i8_type().const_int(1, false))
-            .llvm_ctx("initialize timer payload ownership")?;
+        initialize_message_occupancy(self.module, self.ctx, &self.builder, handler, wrapper)?;
         let fields = self.load(*payload, "timer.payload")?.into_struct_value();
         for (index, ty) in handler.params.iter().enumerate() {
             let index = u32::try_from(index)
@@ -3021,9 +3042,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             .build_unconditional_branch(submitted)
             .llvm_ctx("return allocation failure")?;
         self.builder.position_at_end(allocated);
-        self.builder
-            .build_store(wrapper, self.ctx.i8_type().const_int(1, false))
-            .llvm_ctx("initialize message ownership")?;
+        initialize_message_occupancy(self.module, self.ctx, &self.builder, handler, wrapper)?;
         for (index, ty) in params.iter().enumerate() {
             let index = u32::try_from(index)
                 .map_err(|_| CodegenError::FailClosed("message index exceeds u32".into()))?;

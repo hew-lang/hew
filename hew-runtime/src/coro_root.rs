@@ -115,13 +115,11 @@ impl RootExecution {
         result
     }
 
-    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn pending(&self) -> bool {
         // SAFETY: this execution owns its live invocation record.
         (unsafe { hew_coro_state_status(self.state) }) == CoroStatus::Pending as i32
     }
 
-    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn cancel(&self) {
         if self.pending() {
             // SAFETY: this execution owns the ancestor token and its child state.

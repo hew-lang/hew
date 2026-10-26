@@ -8,6 +8,7 @@ use crate::args::{self, Cli, Command, ToolSubcommand};
 pub(crate) trait CommandDispatcher {
     fn compile(&mut self, args: &args::CompileArgs);
     fn expand(&mut self, args: &args::ExpandArgs);
+    fn live(&mut self, args: &args::LiveArgs);
     fn generate(&mut self, args: &args::GenerateArgs);
     fn run(&mut self, args: &args::RunArgs);
     fn debug(&mut self, args: &args::DebugArgs);
@@ -37,6 +38,12 @@ pub(crate) trait CommandDispatcher {
 pub(crate) struct MainCommandDispatcher;
 
 impl CommandDispatcher for MainCommandDispatcher {
+    fn live(&mut self, args: &args::LiveArgs) {
+        if let Err(error) = crate::live::run(args) {
+            eprintln!("hew live: {error}");
+            std::process::exit(1);
+        }
+    }
     fn generate(&mut self, args: &args::GenerateArgs) {
         crate::generate::cmd_generate(args);
     }
@@ -198,6 +205,7 @@ pub(crate) fn dispatch_command(command: Option<&Command>, dispatcher: &mut impl 
             args::PlaygroundSubcommand::Verify(verify) => dispatcher.playground_verify(verify),
         },
         Some(Command::Tool(tool)) => match &tool.command {
+            ToolSubcommand::Live(args) => dispatcher.live(args),
             ToolSubcommand::Compile(args) => dispatcher.compile(args),
             ToolSubcommand::Expand(args) => dispatcher.expand(args),
             ToolSubcommand::PlaygroundVerify(args) => dispatcher.playground_verify(args),
@@ -527,6 +535,9 @@ mod tests {
     }
 
     impl CommandDispatcher for RecordingDispatcher {
+        fn live(&mut self, _args: &crate::args::LiveArgs) {
+            self.calls.push("live".to_string());
+        }
         fn generate(&mut self, _args: &crate::args::GenerateArgs) {
             self.calls.push("generate".to_string());
         }

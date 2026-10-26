@@ -2697,3 +2697,86 @@ fn lsp_editor_cancelled_pull_and_close_do_not_keep_pending_generations_alive() {
     let reopened = session.request("textDocument/diagnostic", previous);
     assert_eq!(reopened["result"]["items"], json!([]), "{reopened}");
 }
+
+#[test]
+fn lsp_analysis_context_updates_navigation_and_respects_dirty_documents() {
+    let project = TestProject::new("analysis-context");
+    let source = "import sdk_services;\nfn main() { assert(sdk_services.answer() == 42); }\n";
+    let main = project.write("router.hew", source);
+    let generated = project.0.join("sdk_services.hew");
+    let generated_uri = file_uri(&generated);
+    let mut session = RenameSession::new(Some(&project), &[]);
+    let initial = session.open(&main, source, 1);
+    assert!(!initial["params"]["diagnostics"]
+        .as_array()
+        .unwrap()
+        .is_empty());
+    let context = |text: Option<&str>| {
+        json!({"textDocument":{"uri":file_uri(&main)},
+        "sources":text.map_or_else(Vec::new, |text| vec![json!({"uri":generated_uri,"text":text})])})
+    };
+    let diagnostics = |session: &mut RenameSession| {
+        let response = session.request(
+            "textDocument/diagnostic",
+            json!({"textDocument":{"uri":file_uri(&main)}}),
+        );
+        assert!(response.get("error").is_none(), "{response}");
+        response["result"]["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|diagnostic| diagnostic["severity"] == 1)
+            .cloned()
+            .collect::<Vec<_>>()
+    };
+    let integer = "pub fn answer() -> i32 { 42 }\n";
+    let string = "pub fn answer() -> string { \"different context\" }\n";
+    let response = session.request("hew/analysisContext", context(Some(integer)));
+    assert!(response.get("error").is_none(), "{response}");
+    assert!(diagnostics(&mut session).is_empty());
+    let position = position_of(source, "answer");
+    let definition = session.request(
+        "textDocument/definition",
+        json!({"textDocument":{"uri":file_uri(&main)},"position":position}),
+    );
+    assert_eq!(definition["result"]["uri"], generated_uri);
+    let completion = session.request(
+        "textDocument/completion",
+        json!({"textDocument":{"uri":file_uri(&main)},"position":position}),
+    );
+    assert!(
+        completion["result"].to_string().contains("answer"),
+        "{completion}"
+    );
+    session.request("hew/analysisContext", context(Some(string)));
+    assert!(!diagnostics(&mut session).is_empty());
+    session.open(&generated, integer, 1);
+    session.request("hew/analysisContext", context(Some(string)));
+    assert!(
+        diagnostics(&mut session).is_empty(),
+        "authored buffer must win over SDK context"
+    );
+    session.change_uri_without_waiting(&generated_uri, "pub fn answer() -> bool { true }\n", 2);
+    session.request("hew/analysisContext", context(Some(integer)));
+    assert!(
+        !diagnostics(&mut session).is_empty(),
+        "pending dirty buffer must win before debounce"
+    );
+    send(
+        &mut session.stdin,
+        &json!({"jsonrpc":"2.0","method":"textDocument/didClose", "params":{"textDocument":{"uri":generated_uri}}}),
+    );
+    assert!(
+        diagnostics(&mut session).is_empty(),
+        "closing an authored buffer restores its SDK context"
+    );
+    session.request("hew/analysisContext", context(None));
+    assert!(
+        !diagnostics(&mut session).is_empty(),
+        "detachment removes generated inputs"
+    );
+    assert!(
+        !generated.exists(),
+        "analysis must never write a generated module into the source tree"
+    );
+}

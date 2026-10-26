@@ -8,6 +8,17 @@ use hew_mir::physical::{ParamCarrier, SemParamPassing};
 use hew_types::ResolvedTy;
 
 fn main() {
+    let build = std::thread::Builder::new()
+        .name("hew-diagnostic-renderer".into())
+        .stack_size(hew_compile::COMPILER_STACK_SIZE)
+        .spawn(build_renderer)
+        .expect("start diagnostic renderer compiler");
+    if let Err(error) = build.join() {
+        std::panic::resume_unwind(error);
+    }
+}
+
+fn build_renderer() {
     let package = PathBuf::from(std::env::var_os("CARGO_MANIFEST_DIR").unwrap());
     let source = package.join("src/diagnostic_renderer.hew");
     let root = package.parent().unwrap();

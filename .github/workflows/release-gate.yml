@@ -636,17 +636,9 @@ jobs:
         with:
           version: 22.1.5
 
-      - name: Build release crates
-        run: |
-          cargo build -p hew-cli --release
-          cargo build -p hew-lib --profile release-lib
-
-      - name: Prove release library consumer linking
-        shell: pwsh
-        run: |
-          ./scripts/test-release-lib-link.ps1 `
-            -Hew target/release/hew.exe `
-            -Archive target/release-lib/hew.lib
+      - name: Build and prove release library consumer linking
+        shell: bash
+        run: make test-release-lib-link
 
       - name: Verify binaries
         shell: bash

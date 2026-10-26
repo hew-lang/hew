@@ -474,9 +474,13 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
                 .llvm_ctx("publish only valid payload")?;
             builder.position_at_end(success);
             if !reply {
-                builder
-                    .build_store(output, self.ctx.i8_type().const_int(1, false))
-                    .llvm_ctx("publish active message payload")?;
+                actor::initialize_message_occupancy(
+                    self.module,
+                    self.ctx,
+                    &builder,
+                    handler,
+                    output,
+                )?;
             }
             builder
                 .build_store(

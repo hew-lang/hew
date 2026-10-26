@@ -64,10 +64,14 @@ pub fn prepare(
     let mut link = Command::new("cc");
     match format {
         object::BinaryFormat::Elf => {
-            link.args(["-shared", "-Wl,-z,defs"]);
+            // Even an empty declaration submission belongs to this runtime.
+            // Keep that dependency when the object needs no runtime symbols.
+            link.args(["-shared", "-Wl,-z,defs", "-Wl,--no-as-needed"]);
+            link.arg("-Wl,-rpath,$ORIGIN:$ORIGIN/..");
         }
         object::BinaryFormat::MachO => {
             link.arg("-dynamiclib");
+            link.args(["-Wl,-rpath,@loader_path", "-Wl,-rpath,@loader_path/.."]);
         }
         _ => {
             return Err("native generation linking is not implemented for this host format".into())
@@ -224,6 +228,10 @@ impl fmt::Debug for Generation {
 }
 
 impl NativeHost {
+    pub(crate) fn owns(&self, generation: &Generation) -> bool {
+        Arc::ptr_eq(&self.runtime, &generation.host.runtime)
+    }
+
     /// Open the process's sole native runtime image.
     ///
     /// # Safety
@@ -458,6 +466,12 @@ impl NativeHost {
 }
 
 impl Generation {
+    /// Host-local identity returned by this host's retirement receipts.
+    #[must_use]
+    pub const fn id(&self) -> u64 {
+        self.id
+    }
+
     /// The defining-code lease used by this generation's typed descriptors.
     /// The returned record stays valid while this handle or an acquired lease
     /// root lives. Descriptor publication must precede executing module code.

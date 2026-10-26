@@ -43,7 +43,7 @@ pub struct PhysicalAggregateStep {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PhysicalPlaceLeaf {
     pub storage: StorageId,
-    pub destroy: Option<DestroyAction>,
+    pub recipe: super::PhysicalValueRecipe,
 }
 
 /// A root has an empty path; every other entry aliases that root allocation.
@@ -145,18 +145,23 @@ impl FunctionLowerer<'_> {
                     let projection = self.projections.projection(*place).ok_or_else(|| {
                         PhysicalError::new("aggregate leaf lacks its SIR projection recipe")
                     })?;
+                    let mut recipe = super::physical_value_recipe(
+                        self.module,
+                        self.glue_ids,
+                        &projection.recipe.ty,
+                    )?;
+                    // A field of a record resource borrows its owner; only the
+                    // complete resource's close owns its destruction.
+                    recipe.destroy = if projection.recipe.own == OwnKind::Owned
+                        && (projection.path.is_empty() || !self.released_whole(projection.root)?)
+                    {
+                        Some(self.destroy_action(&projection.recipe.ty)?)
+                    } else {
+                        None
+                    };
                     Ok(PhysicalPlaceLeaf {
                         storage: self.place(*place)?,
-                        // A field of a record resource is a read through
-                        // its owner: the owner's `close` is the only release.
-                        destroy: if projection.recipe.own == OwnKind::Owned
-                            && (projection.path.is_empty()
-                                || !self.released_whole(projection.root)?)
-                        {
-                            Some(self.destroy_action(&projection.recipe.ty)?)
-                        } else {
-                            None
-                        },
+                        recipe,
                     })
                 })
                 .collect::<Result<Vec<_>, PhysicalError>>()
@@ -383,7 +388,12 @@ fn verify_partitions(
                     "place partition leaf must be a local or projection",
                 ));
             }
-            match (slot.own, leaf.destroy) {
+            if leaf.recipe.ty != slot.ty || leaf.recipe.own != slot.own {
+                return Err(PhysicalError::new(
+                    "aggregate leaf recipe differs from its typed storage",
+                ));
+            }
+            match (slot.own, leaf.recipe.destroy) {
                 (OwnKind::None, None) => {}
                 (OwnKind::Owned, Some(action)) => {
                     verify_destroy_action(module, &slot.ty, slot.own, action)?;
@@ -443,7 +453,7 @@ pub(super) fn verify_edge(
                 for (source, dest) in before.leaves.iter().zip(&after.leaves) {
                     if function.place_storage[&source.storage].path
                         != function.place_storage[&dest.storage].path
-                        || source.destroy != dest.destroy
+                        || source.recipe != dest.recipe
                     {
                         return Err(PhysicalError::new(
                             "aggregate edge changes a leaf path or recipe",
@@ -758,6 +768,31 @@ pub(super) fn require_droppable(
         return Err(PhysicalError::new(
             "physical ordinary cleanup cannot discard live linear contents",
         ));
+    }
+    Ok(())
+}
+
+/// Seed the physical availability flow from the exact retained session snapshot.
+pub(super) fn initialize_session_contents(
+    function: &PhysicalFunction,
+    entry: &mut FlowState,
+) -> Result<(), PhysicalError> {
+    for slot in &function.storage {
+        if let StorageOrigin::Session { contents, .. } = &slot.origin {
+            let partition = function.place_storage.get(&slot.id).ok_or_else(|| {
+                PhysicalError::new("session storage has no canonical content partition")
+            })?;
+            for leaf in &partition.leaves {
+                let path: Vec<_> = function.place_storage[&leaf.storage]
+                    .path
+                    .iter()
+                    .map(|step| step.field)
+                    .collect();
+                if contents.contains(&path) {
+                    entry.slots[leaf.storage.0 as usize] = InitState::Initialized;
+                }
+            }
+        }
     }
     Ok(())
 }

@@ -332,6 +332,32 @@ pub(crate) fn has_drain_blocking_suspended_actor() -> bool {
     .unwrap_or(false)
 }
 
+/// Retained guest snapshots require every actor turn and its cleanup to finish.
+#[cfg(target_arch = "wasm32")]
+pub(crate) fn has_active_guest_actor() -> bool {
+    use crate::internal::types::HewActorState;
+
+    with_live_actors_opt(|map| {
+        map.as_ref().is_some_and(|actors| {
+            actors.values().any(|entry| {
+                // SAFETY: the liveness registry retains the allocation during
+                // this inspection; the guest has one execution thread.
+                let actor = unsafe { &*entry.actor.0 };
+                let state = actor.actor_state.load(Ordering::Acquire);
+                ![
+                    HewActorState::Idle,
+                    HewActorState::Stopped,
+                    HewActorState::Crashed,
+                ]
+                .iter()
+                .any(|idle| state == *idle as i32)
+                    || !actor.checked_invocation.load(Ordering::Acquire).is_null()
+            })
+        })
+    })
+    .unwrap_or(false)
+}
+
 /// Swap `slot` to null under the live-actors registry lock.
 ///
 /// Serialization primitive for pointer slots that the shutdown drain scan

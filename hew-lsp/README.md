@@ -58,6 +58,20 @@ See [`docs/dev/lsp-editor-setup.md`](../docs/dev/lsp-editor-setup.md) for the
 build/launch/VS Code walkthrough, and [`../editors/README.md`](../editors/README.md)
 for editor-specific setup notes.
 
+## Generated SDK analysis context
+
+Clients can register SDK-generated source with `hew/analysisContext` when
+`capabilities.experimental.hewAnalysisContext` is `1`. Parameters contain
+`textDocument: {uri}` for the entry and `sources: [{uri, text}]` for its exact
+virtual file overlays. Replacing the list refreshes ordinary diagnostics and
+navigation; an empty list removes that entry's context. Nothing is written to
+the source tree. Open and pending dirty editor buffers take precedence, and
+closing such a buffer restores its generated context.
+
+Editors should use the compiler selected by the SDK and display generated
+definition targets as read-only source from that same context. This keeps WIT
+binding generation in the SDK and type checking in the ordinary compiler.
+
 ## Part of the Hew compiler
 
 This crate is an internal component of the [Hew](https://github.com/hew-lang/hew) compiler toolchain.

@@ -12,6 +12,7 @@ pub const ACTIONABLE_TRACE_EVENT_TYPES: &[&str] = &[
     "supervisor_backoff",
     "actor.delivery_refused",
     "actor.rc_sweep",
+    "live.execution",
     "send",
     "spawn",
     "crash",
@@ -481,6 +482,21 @@ pub struct RcSweep {
     pub by_type: Vec<RcSurvivorType>,
 }
 
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct LiveExecution {
+    #[serde(with = "uint64_decimal")]
+    pub deployment_id: u64,
+    #[serde(with = "optional_uint64_decimal")]
+    pub invocation_id: Option<u64>,
+    #[serde(with = "uint64_decimal")]
+    pub activation_epoch: u64,
+    pub code_id: String,
+    pub phase: String,
+    pub mode: String,
+    pub semantic_profile: String,
+    pub coverage: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct TraceEventWire {
     #[serde(with = "uint64_decimal")]
@@ -508,6 +524,8 @@ struct TraceEventWire {
     #[serde(default)]
     rc_sweep: Option<RcSweep>,
     #[serde(default)]
+    live_execution: Option<LiveExecution>,
+    #[serde(default)]
     reason: Option<String>,
 }
 
@@ -527,6 +545,7 @@ pub struct TraceEvent {
     pub timestamp_ns: u64,
     pub handler_name: Option<String>,
     pub rc_sweep: Option<RcSweep>,
+    pub live_execution: Option<LiveExecution>,
     pub reason: Option<String>,
 }
 
@@ -575,6 +594,7 @@ impl TryFrom<TraceEventWire> for TraceEvent {
             timestamp_ns: value.timestamp_ns,
             handler_name: value.handler_name,
             rc_sweep: value.rc_sweep,
+            live_execution: value.live_execution,
             reason: value.reason,
         })
     }
@@ -597,6 +617,7 @@ impl From<&TraceEvent> for TraceEventWire {
             timestamp_ns: value.timestamp_ns,
             handler_name: value.handler_name.clone(),
             rc_sweep: value.rc_sweep.clone(),
+            live_execution: value.live_execution.clone(),
             reason: value.reason.clone(),
         }
     }

@@ -419,8 +419,106 @@ test-live-native: hew-native ## Test: load native generations sharing one runtim
 	HEW_LIVE_RUNTIME_DIR="$(abspath $(DEBUG_DIR))" \
 		$(TEST_RUN_ENV) cargo nextest run --profile ci -p hew-live $(CARGO_TARGET_FLAG) --test native
 
-test-live-places: hew-native ## Test: preserve compiler-owned slots across native submissions
+.PHONY: live-host
+live-host: ## Build: isolated persistent native execution worker
+	cargo build -p hew-lib -p hew-live --lib --bin hew-live-host $(CARGO_TARGET_FLAG)
+
+.PHONY: test-live-host test-live-authoring
+test-live-host: live-host ## Test: execute persistent submissions through the native worker
+	$(TEST_RUN_ENV) cargo nextest run --profile ci -p hew-codegen-rs -p hew-compile --lib -E 'test(native_session_places_host) | test(live_frontend)'
+
+test-live-authoring: hew-native live-host ## Test: exercise persistent source authoring and recovery
+	$(TEST_RUN_ENV) cargo nextest run --profile ci -p hew-cli --test live
+
+.PHONY: test-eval-lines
+test-eval-lines: hew-native ## Test: compile-once streaming line evaluation and diagnostics
+	$(TEST_RUN_ENV) cargo nextest run --profile ci -p hew-cli --test eval_lines
+
+test-live-places: hew-native live-host ## Test: preserve compiler-owned slots across native submissions
 	$(TEST_RUN_ENV) cargo nextest run --profile ci -p hew-codegen-rs -p hew-compile --lib -E 'test(native_session_places) | test(live_retained_type)'
+
+.PHONY: live-component-bindings
+live-component-bindings: ## Generate: C, Hew and TypeScript bindings for the portable reference router
+	@test -n "$(COMPONENT_BINDINGS_DIR)" || { echo 'Set COMPONENT_BINDINGS_DIR to the output directory'; exit 1; }
+	cargo run -p hew-live --features component --example component_bindings -- "$(COMPONENT_BINDINGS_DIR)"
+	npm --prefix hew-live/typescript run generate -- "$(abspath $(COMPONENT_BINDINGS_DIR))/typescript" $(if $(COMPONENT_FILE),"$(abspath $(COMPONENT_FILE))")
+
+.PHONY: test-live-typescript
+HEW_LIVE_NODE ?= $(abspath $(DEBUG_DIR)/hew-live-node)
+test-live-typescript: ## Test: typecheck and execute generated bindings with the preview router component
+	HEW_LIVE_NODE="$(HEW_LIVE_NODE)" npm --prefix hew-live/typescript test $(if $(COMPONENT_FILE),-- "$(abspath $(COMPONENT_FILE))")
+
+.PHONY: lint-live-typescript
+LINT_GATES += lint-live-typescript
+lint-live-typescript: ## Check: validate the TypeScript binding generator and consumer runner
+	node --check hew-live/typescript/generate.mjs
+	node --check hew-live/typescript/test.mjs
+
+.PHONY: live-node
+live-node: ## Build: typed node adapter for the portable component host
+	cargo build -p hew-live --features component --bin hew-live-node
+
+LIVE_SDK_DEST ?= $(DEBUG_DIR)/live-sdk
+LIVE_SDK_RUNTIME ?= $(DEBUG_DIR)/$(if $(filter Windows_NT,$(OS)),hew.dll,$(if $(findstring apple-darwin,$(HOST_TRIPLE)),libhew.dylib,libhew.so))
+.PHONY: live-sdk
+live-sdk: require-host-cargo-target wasm-runtime-debug ## Build: stage a matched experimental live execution SDK
+	cargo build -p hew-runtime -p hew-lib -p hew-cli -p hew-live --features hew-live/component $(CARGO_TARGET_FLAG)
+	@sh "$(MAKEFILE_ROOT)/scripts/stage-release-package.sh" \
+		--source-dir "$(CURDIR)" --bin-dir "$(DEBUG_DIR)" \
+		--bin-suffix "$(if $(filter Windows_NT,$(OS)),.exe,)" \
+		--native-lib "$(LIBHEW)" --native-triple "$(HOST_TRIPLE)" \
+		--native-lib-name "$(LIBHEW_NAME)" --wasi-lib-dir "$(WASM_DEBUG_DIR)" \
+		--live-runtime "$(LIVE_SDK_RUNTIME)" --destination "$(LIVE_SDK_DEST)" \
+		--completion-shells bash
+	@printf 'Live SDK: %s\nSet HEW_WASI_SDK to your installed WASI SDK for component source builds.\n' "$(LIVE_SDK_DEST)"
+
+# Linux experimental SDKs use one optimized, non-LTO profile for the compiler, runtime
+# and companions. Keep ordinary release products on their existing profiles.
+.PHONY: live-release-artifacts live-sdk-release
+live-release-artifacts: require-host-cargo-target ## Build: matched optimized experimental live execution tools
+	@test "$(HOST_TRIPLE)" = x86_64-unknown-linux-gnu || { echo 'The release live SDK is qualified only for Linux x86_64'; exit 1; }
+	cargo build -p hew-lib -p hew-cli -p hew-live --features hew-live/component --profile release-lib $(CARGO_TARGET_FLAG)
+
+LIVE_RELEASE_SDK_DEST ?= $(RELEASE_LIB_DIR)/live-sdk
+live-sdk-release: live-release-artifacts wasm-runtime-release ## Release: stage the optimized experimental Linux live SDK
+	$(MAKE) stage-release-package \
+		RELEASE_PACKAGE_BIN_DIR="$(RELEASE_LIB_DIR)" \
+		RELEASE_PACKAGE_NATIVE_LIB="$(RELEASE_LIBHEW)" \
+		RELEASE_PACKAGE_WASI_LIB_DIR="$(WASM_RELEASE_DIR)" \
+		RELEASE_PACKAGE_LIVE_RUNTIME="$(RELEASE_LIB_DIR)/libhew.so" \
+		RELEASE_PACKAGE_DEST="$(LIVE_RELEASE_SDK_DEST)"
+
+LIVE_BENCH_SDK ?= $(LIVE_SDK_DEST)
+LIVE_BENCH_SAMPLES ?= 20
+LIVE_BENCH_GENERATIONS ?= 4
+.PHONY: bench-live-loop
+bench-live-loop: require-host-cargo-target ## Measure: authoring and retained runtime loops against a matched live SDK
+	@HEW_LIVE_BENCH_REVISION="$$(git rev-parse HEAD)" cargo run -p hew-live --features component --example live_loop $(CARGO_TARGET_FLAG) -- \
+		--sdk "$(LIVE_BENCH_SDK)" --samples "$(LIVE_BENCH_SAMPLES)" --generations "$(LIVE_BENCH_GENERATIONS)"
+
+.PHONY: test-live-network
+LIVE_NETWORK_TEST_ARGS ?=
+test-live-network: hew-native live-node wasm-runtime-debug ## Test: source replacement through authenticated QUIC nodes
+	HEW_LIVE_COMPILER="$(abspath $(DEBUG_HEW))" \
+	HEW_LIVE_RUNTIME_DIR="$(abspath $(DEBUG_DIR))" \
+	HEW_LIVE_WASM_LIB_DIR="$(abspath $(WASM_DEBUG_DIR))" \
+		$(TEST_RUN_ENV) cargo nextest run --profile ci -p hew-live --features component --test network $(LIVE_NETWORK_TEST_ARGS)
+
+.PHONY: test-live-source
+test-live-source: hew-native live-node wasm-runtime-debug ## Test: portable source builds preserve project and diagnostic context
+	HEW_LIVE_COMPILER="$(abspath $(DEBUG_HEW))" \
+	HEW_LIVE_WASM_LIB_DIR="$(abspath $(WASM_DEBUG_DIR))" \
+		$(TEST_RUN_ENV) cargo nextest run --profile ci -p hew-live --features component --test source_build
+
+.PHONY: test-live-component live-component-foreign
+live-component-foreign:
+	cargo build --manifest-path hew-live/tests/fixtures/foreign-router/Cargo.toml --target wasm32-wasip1
+
+test-live-component: hew-native wasm-runtime-debug live-component-foreign ## Test: execute the portable Hew reference component
+	HEW_LIVE_COMPILER="$(abspath $(DEBUG_HEW))" \
+	HEW_LIVE_WASM_LIB_DIR="$(abspath $(WASM_DEBUG_DIR))" \
+	HEW_LIVE_FOREIGN_COMPONENT="$(abspath $(WASM_DEBUG_DIR))/hew_foreign_router.wasm" \
+		$(TEST_RUN_ENV) cargo nextest run --profile ci -p hew-live --features component --lib --test component
 
 test-live-code-ownership: hew-native ## Test: retain native code through typed ownership and cleanup
 	$(TEST_RUN_ENV) cargo nextest run --profile ci -p hew-runtime --no-default-features --lib -E 'test(code_owner)'
@@ -530,6 +628,7 @@ RELEASE_PACKAGE_NATIVE_TRIPLE ?= $(HOST_TRIPLE)
 RELEASE_PACKAGE_NATIVE_LIB_NAME ?= $(LIBHEW_NAME)
 RELEASE_PACKAGE_WASI_LIB_DIR ?= $(WASM_RELEASE_DIR)
 RELEASE_PACKAGE_DEST ?= $(BUILD_DIR)/release-package
+RELEASE_PACKAGE_LIVE_RUNTIME ?=
 RELEASE_PACKAGE_COMPLETIONS ?= $(if $(filter Windows_NT,$(OS)),bash zsh fish powershell,bash zsh fish)
 
 # `make dev-dist` produces a self-contained, host-specific development
@@ -548,6 +647,7 @@ stage-release-package: ## Release: stage a validated distributable toolchain tre
 		--native-triple "$(RELEASE_PACKAGE_NATIVE_TRIPLE)" \
 		--native-lib-name "$(RELEASE_PACKAGE_NATIVE_LIB_NAME)" \
 		--wasi-lib-dir "$(RELEASE_PACKAGE_WASI_LIB_DIR)" \
+		$(if $(RELEASE_PACKAGE_LIVE_RUNTIME),--live-runtime "$(RELEASE_PACKAGE_LIVE_RUNTIME)") \
 		--destination "$(RELEASE_PACKAGE_DEST)" \
 		--completion-shells "$(RELEASE_PACKAGE_COMPLETIONS)"
 
@@ -1000,8 +1100,9 @@ build-docs-reference: ## Release: generate the versioned language and API refere
 
 PACKAGED_SDK_ARCHIVE ?=
 PACKAGED_SDK_RESULTS ?= build/packaged-sdk-acceptance
+PACKAGED_SDK_EXPERIMENTAL_LIVE ?= 0
 test-packaged-sdk: ## Release: execute SDK source/ABI contracts (PACKAGED_SDK_ARCHIVE=...)
-	$(PYTHON) scripts/test-packaged-sdk.py --archive "$(PACKAGED_SDK_ARCHIVE)" --output "$(PACKAGED_SDK_RESULTS)"
+	$(PYTHON) scripts/test-packaged-sdk.py --archive "$(PACKAGED_SDK_ARCHIVE)" --output "$(PACKAGED_SDK_RESULTS)" $(if $(filter 1,$(PACKAGED_SDK_EXPERIMENTAL_LIVE)),--experimental-live)
 
 # Prove the shipped archive can link a real Rust staticlib through the public
 # `hew build --link-lib` interface. Rust controls archive member names, so the

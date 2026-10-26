@@ -82,8 +82,8 @@ fn rung(function: &SemFunction, landing: BlockId) -> BlockId {
     }
 }
 
-/// Each ask borrows its own copied target. Cancellation and unwind share
-/// that target's release, then enter the suffix for the remaining owners.
+/// Each ask borrows its stable receiver. Cancellation and unwind enter the
+/// same cleanup suffix without destroying that receiver.
 fn ask_suffixes(function: &SemFunction) -> Vec<BlockId> {
     function
         .blocks
@@ -104,20 +104,15 @@ fn ask_suffixes(function: &SemFunction) -> Vec<BlockId> {
                     cancel, unwind,
                     "one ask shares cancellation and unwind cleanup"
                 );
-                let releases = chain(function, cancel)
+                let destroys_target = chain(function, cancel)
                     .into_iter()
-                    .flat_map(|id| block(function, id).ops.iter().map(move |op| (id, op)))
-                    .filter_map(|(id, op)| match &op.kind {
-                        SemOpKind::DestroyValue { value } if value == &target.operand => Some(id),
-                        _ => None,
-                    })
-                    .collect::<Vec<_>>();
-                assert_eq!(
-                    releases.len(),
-                    1,
-                    "the borrowed target is released exactly once"
+                    .flat_map(|id| &block(function, id).ops)
+                    .any(|op| matches!(&op.kind, SemOpKind::DestroyValue { value } if value == &target.operand));
+                assert!(
+                    !destroys_target,
+                    "ask cleanup must not destroy a borrowed receiver"
                 );
-                Some(rung(function, releases[0]))
+                Some(cancel)
             }
             _ => None,
         })
@@ -144,7 +139,7 @@ fn chain(function: &SemFunction, start: BlockId) -> Vec<BlockId> {
 }
 
 #[test]
-fn fault_sites_share_the_suffix_after_releasing_their_own_targets() {
+fn borrowed_asks_share_the_remaining_fault_cleanup_suffix() {
     let module = lower_source(
         r#"fn pair(first: Store, second: Store) -> i64 fails ActorError {
     let lease = Lease { name: "a" };
@@ -160,7 +155,7 @@ fn fault_sites_share_the_suffix_after_releasing_their_own_targets() {
     let shared = rungs[0];
     assert!(
         rungs.iter().all(|&suffix| suffix == shared),
-        "both asks enter the same suffix after releasing their targets: {rungs:?}"
+        "both borrowed asks enter the same remaining cleanup suffix: {rungs:?}"
     );
     assert_eq!(resume_unwinds(pair), 1, "one body, one unwind");
     let ends = chain(pair, shared)
@@ -251,8 +246,8 @@ fn a_defer_rung_dispatches_its_outcome_and_no_other_fault_rung_does() {
 #[test]
 fn a_defer_reading_rewritten_places_keeps_one_shared_suffix() {
     // The deferred body reads `n` and `text` through their places, so every
-    // ask releases its own target, then runs the same deferred body whatever
-    // has been stored there since.
+    // ask borrows its target and runs the same deferred body whatever has
+    // been stored there since.
     let module = lower_source(
         r#"fn track(store: Store, label: string) -> i64 fails ActorError {
     var n = 1;

@@ -1,0 +1,82 @@
+import router_services;
+
+actor Counter {
+    var accepted: u64;
+
+    receive fn record() {
+        accepted += 1;
+    }
+
+    receive fn snapshot() -> u64 {
+        accepted
+    }
+}
+
+actor Background {
+    var ticks: u64 = 0;
+
+    // Leave room for the sleeping turn and its imported service call.
+    #[every(20ms)]
+    receive fn tick() {
+        sleep(2ms);
+        ticks += 1;
+        router_services.destination("idle").expect("background service");
+    }
+
+    receive fn count() -> u64 {
+        ticks
+    }
+}
+
+supervisor BackgroundTree {
+    child worker: Background;
+}
+
+#[resource]
+pub type Router {
+    counter: Counter;
+    background: BackgroundTree;
+}
+
+impl Router {
+    fn close(consume self) {
+        stop(self.counter);
+        stopped(self.counter);
+        stop(self.background);
+        stopped(self.background);
+    }
+}
+
+pub fn create(accepted: u64) -> Router {
+    Router { counter: spawn Counter { accepted: accepted }, background: spawn BackgroundTree }
+}
+
+// A replacement candidate that never finishes pure initialization. The host
+// must expire its attempt without trapping or destroying the old instance.
+pub fn create_stalled(_accepted: u64) -> Router {
+    loop {}
+}
+
+pub fn snapshot(router: Router) -> u64 {
+    let ticks = router.background.worker.count().expect("background drained");
+    sleep(5ms);
+    assert(router.background.worker.count().expect("background retained") == ticks);
+    router.counter.snapshot().expect("counter snapshot")
+}
+
+pub fn dispose(consume router: Router) {}
+
+pub fn route(router: Router, source: string, body: string) -> bool {
+    let ticks = router.background.worker.count().expect("background running");
+    while router.background.worker.count().expect("background resumed") <= ticks {
+        sleep(1ms);
+    }
+    match router_services.destination(source).expect("destination service") {
+        .None => false,
+        .Some(target) => {
+            router_services.emit(router_services.Delivery { destination: target, body: body }).expect("delivery service");
+            router.counter.record().expect("counter record");
+            true
+        }
+    }
+}

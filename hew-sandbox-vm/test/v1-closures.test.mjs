@@ -32,7 +32,7 @@ const PRINT_I64 = {
 function closurePackage(captureAt = 1) {
   return {
     schema_version: "hew.sandbox.bytecode.v1",
-    hew_version: "0.9.4",
+    hew_version: "0.10.0-rc1",
     compiler_version: "v1-closure-test",
     profile: "sandbox-vm-export",
     entry: { function: 0, exit: "unit" },

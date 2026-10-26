@@ -510,6 +510,84 @@ pub(crate) fn run_to_quiescence() {
     }
 }
 
+/// Run at most one ready guest participant without blocking or advancing time.
+/// Component callbacks use this same driver while external service calls wait.
+#[cfg(target_arch = "wasm32")]
+#[no_mangle]
+pub extern "C" fn hew_guest_step() -> bool {
+    let fired = fire_due_timers();
+    if let Some(participant) = pick() {
+        run_participant(participant);
+        true
+    } else {
+        fired != 0
+    }
+}
+
+/// Delay until the existing guest driver's next timer, or -1 with none pending.
+/// The embedding host waits for this delay or new ingress before driving again.
+#[cfg(target_arch = "wasm32")]
+#[no_mangle]
+pub extern "C" fn hew_guest_next_timer_ms() -> i64 {
+    if has_queued_work() {
+        return 0;
+    }
+    let wheel = global_wheel();
+    // SAFETY: the process-owned wheel is live; both queries take its lock.
+    let (remaining, cursor) = unsafe {
+        (
+            hew_timer_wheel_next_deadline_ms(wheel),
+            timer_wheel_cursor_ms(wheel),
+        )
+    };
+    if remaining < 0 {
+        return -1;
+    }
+    let delay = cursor
+        .saturating_add(remaining.cast_unsigned())
+        .saturating_sub(now_ms());
+    i64::try_from(delay).unwrap_or(i64::MAX)
+}
+
+#[cfg(target_arch = "wasm32")]
+static GUEST_INGRESS_OPEN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
+
+#[cfg(target_arch = "wasm32")]
+pub(crate) fn guest_ingress_open() -> bool {
+    GUEST_INGRESS_OPEN.load(Ordering::Acquire)
+}
+
+/// Fence autonomous periodic admission without destroying the retained guest.
+/// The host must first fence its own ingress and finish all admitted root calls,
+/// including their release. Continue stepping until `hew_guest_is_drained`.
+#[cfg(target_arch = "wasm32")]
+#[no_mangle]
+pub extern "C" fn hew_guest_begin_drain() {
+    GUEST_INGRESS_OPEN.store(false, Ordering::Release);
+}
+
+/// Whether all admitted guest work has finished, including suspended actor
+/// turns, child tasks, delayed messages and queued cleanup. This does not run
+/// user code or freeze a continuation. Root-call ownership remains with the
+/// host, which must finish those calls before asking for this observation.
+#[cfg(target_arch = "wasm32")]
+#[no_mangle]
+pub extern "C" fn hew_guest_is_drained() -> bool {
+    !guest_ingress_open()
+        && !has_queued_work()
+        && !crate::task_scope::checked::TaskExecution::has_live_tasks()
+        && !crate::lifetime::live_actors::has_active_guest_actor()
+        && !crate::timer_periodic::has_pending_guest_requests()
+        && !crate::supervisor::roots::has_pending_guest_work()
+}
+
+/// Restore autonomous admission after a retained snapshot or aborted attempt.
+#[cfg(target_arch = "wasm32")]
+#[no_mangle]
+pub extern "C" fn hew_guest_resume() {
+    GUEST_INGRESS_OPEN.store(true, Ordering::Release);
+}
+
 /// The shutdown drain's poll: where the threaded runtime sleeps while workers
 /// finish, the driver runs the work itself, moving the clock to the next timer
 /// once nothing is ready so cleanup that sleeps still completes.

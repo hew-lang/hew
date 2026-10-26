@@ -374,8 +374,11 @@ release identity and `make release-checks`, then runs:
 | Windows x86_64 | hew-cli, hew-lib               | Rust workspace + C-ABI + executable release-library consumer |
 | FreeBSD x86_64 | hew-cli, hew-lib               | Rust workspace + C-ABI + executable release-library consumer |
 
-Each toolchain carries one executable. Language-server and Observe entry points
-are `hew lsp` and `hew observe`; neither needs a sibling executable.
+Ordinary toolchains carry one executable, with language-server and Observe entry
+points at `hew lsp` and `hew observe`. The experimental Linux x86_64 live SDK
+also carries `hew-live-host`, `hew-live-node`, their matching shared runtime and
+prepared transport. Its packaged acceptance uses `--experimental-live` to check
+that complete layout and execute a relocated persistent actor session.
 
 Apply the platform policy above to every result on the recorded `release_sha`.
 Require successful Linux qualification and the relevant `release.yml` packaging

@@ -268,7 +268,7 @@ impl Default for ReplSession {
 }
 
 /// The checker errors of a frontend run, or `None` when it reported none.
-fn frontend_type_errors(
+pub(super) fn frontend_type_errors(
     state: &hew_compile::DocumentFrontendState,
 ) -> Option<&[hew_types::TypeError]> {
     let errors = state
@@ -319,7 +319,7 @@ fn generator_description(ty: &hew_types::Ty) -> Option<String> {
 /// list as errors; only error-severity diagnostics may abort evaluation.
 /// Treating a warning as fatal exits 1 with nothing but warning text on
 /// stderr — the silent-failure defect this guards against.
-fn parse_errors_are_fatal(errors: &[hew_parser::ParseError]) -> bool {
+pub(super) fn parse_errors_are_fatal(errors: &[hew_parser::ParseError]) -> bool {
     errors
         .iter()
         .any(|error| error.severity == hew_parser::Severity::Error)
@@ -334,7 +334,7 @@ pub(crate) fn program_defines_main(program: &hew_parser::ast::Program) -> bool {
     })
 }
 
-fn render_eval_parse_diagnostics(
+pub(super) fn render_eval_parse_diagnostics(
     source: &str,
     input_name: &str,
     diagnostic_view: Option<&SyntheticDiagnosticView>,
@@ -354,7 +354,7 @@ fn render_eval_parse_diagnostics(
     crate::diagnostic::render_parse_diagnostics(source, input_name, errors);
 }
 
-fn render_eval_type_diagnostics(
+pub(super) fn render_eval_type_diagnostics(
     source: &str,
     input_name: &str,
     diagnostic_view: Option<&SyntheticDiagnosticView>,
@@ -1390,7 +1390,7 @@ fn handle_interactive_input(session: &mut ReplSession, input: &str) -> Interacti
 }
 
 /// Use the same project resolution and compilation options for native and WASI eval.
-fn eval_compile_options(
+pub(super) fn eval_compile_options(
     project_dir: Option<PathBuf>,
     target: Option<&str>,
 ) -> crate::compile::CompileOptions {

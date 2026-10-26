@@ -16,6 +16,11 @@ line and do NOT carry over â€” their side effects (file writes, channel sends, â
 execute exactly once and never replay. For a multi-statement program with
 persistent state, use `hew eval -f <file>` or `hew run`.
 
+`hew eval --lines 'println(line);'` compiles once and processes standard input
+in order, with each line bound as an immutable string. Use `--show-wrapper` to
+inspect the generated program. For retained resources, closures and actors across
+submissions, the experimental live SDK provides `hew tool live`.
+
 REPL commands:
   :help, :h           Show command help
   :session, :show     List remembered top-level definitions
@@ -264,6 +269,26 @@ fn resolve_lint_levels(
 // Shared build options
 // ---------------------------------------------------------------------------
 
+/// An explicit source input supplied at its compiler-visible path.
+#[derive(Debug, Clone)]
+pub struct SourceOverlay {
+    path: PathBuf,
+    source: String,
+}
+
+fn parse_source_overlay(value: &str) -> Result<SourceOverlay, String> {
+    let (path, input) = value.split_once('=').ok_or("expected VIRTUAL=FILE")?;
+    if path.is_empty() || input.is_empty() {
+        return Err("source overlay requires both VIRTUAL and FILE".into());
+    }
+    let path = std::env::current_dir()
+        .map_err(|error| error.to_string())?
+        .join(path);
+    let source = std::fs::read_to_string(input)
+        .map_err(|error| format!("cannot read source overlay {input}: {error}"))?;
+    Ok(SourceOverlay { path, source })
+}
+
 #[derive(Debug, Args, Clone, Default)]
 pub struct CommonBuildArgs {
     /// Treat warnings as errors.
@@ -278,6 +303,9 @@ pub struct CommonBuildArgs {
     /// Override project directory for manifest and package resolution.
     #[arg(long, value_name = "DIR")]
     pub project_dir: Option<PathBuf>,
+    /// Supply generated source at a virtual path without changing project files.
+    #[arg(long, value_name = "VIRTUAL=FILE", value_parser = parse_source_overlay)]
+    pub source_overlay: Vec<SourceOverlay>,
     /// Downgrade a lint to `allow` (suppress it). Repeatable; accepts a lint
     /// name (e.g. `needless_range_loop`) or `all`.
     #[arg(long = "allow", short = 'A', value_name = "LINT", value_parser = parse_lint_selector)]
@@ -301,7 +329,12 @@ impl CommonBuildArgs {
     /// crate::compile::CompileOptions { target: self.target.clone(), ..self.common.base_compile_options() }
     /// ```
     pub fn base_compile_options(&self) -> crate::compile::CompileOptions {
+        let mut documents = hew_compile::SourceSet::new();
+        for overlay in &self.source_overlay {
+            documents.insert(overlay.path.clone(), overlay.source.clone());
+        }
         crate::compile::CompileOptions {
+            documents,
             no_typecheck: self.no_typecheck,
             werror: self.werror,
             pkg_path: self.pkg_path.clone(),
@@ -635,10 +668,20 @@ pub struct DocArgs {
 
 #[derive(Debug, Args)]
 #[command(after_help = EVAL_AFTER_HELP)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "independent command-line switches"
+)]
 pub struct EvalArgs {
     /// Execute file in REPL context (`-` reads from stdin).
     #[arg(short = 'f')]
     pub file: Option<PathBuf>,
+    /// Compile once and run the body for each standard-input line, bound as `line`.
+    #[arg(long)]
+    pub lines: bool,
+    /// Show the generated line-processing program on stderr before compilation.
+    #[arg(long, requires = "lines")]
+    pub show_wrapper: bool,
     /// Per-evaluation timeout (`500ms`, `30s`, `1m`; bare integers mean seconds).
     #[arg(long, default_value = "30", value_name = "DURATION")]
     pub timeout: String,
@@ -1046,6 +1089,8 @@ pub struct ToolCommand {
 
 #[derive(Debug, Subcommand)]
 pub enum ToolSubcommand {
+    /// Experimental persistent native session using a same-build shared runtime.
+    Live(LiveArgs),
     /// Show macro-expanded source with hygiene context annotations.
     Expand(ExpandArgs),
     /// Compile a .hew file through the v0.5 IR ladder.
@@ -1054,6 +1099,28 @@ pub enum ToolSubcommand {
     /// against the checked-in `.expected` file.
     #[command(name = "playground-verify")]
     PlaygroundVerify(PlaygroundVerifyArgs),
+}
+
+#[derive(Debug, Args)]
+pub struct LiveArgs {
+    /// Shared libhew from this compiler build.
+    #[arg(long)]
+    pub runtime: PathBuf,
+    /// Execution worker. Defaults to hew-live-host beside this compiler.
+    #[arg(long)]
+    pub worker: Option<PathBuf>,
+    /// Source directory for ordinary package and module resolution.
+    #[arg(long)]
+    pub project: Option<PathBuf>,
+    /// Maximum time to wait for one worker operation; an uncertain run is never retried.
+    #[arg(long, default_value = "5m")]
+    pub timeout: String,
+    /// Optimize prepared submissions with the ordinary O2 pipeline.
+    #[arg(long)]
+    pub release: bool,
+    /// Show compiler-generated submission wrappers on stderr.
+    #[arg(long)]
+    pub show_wrapper: bool,
 }
 
 #[derive(Debug, Args)]

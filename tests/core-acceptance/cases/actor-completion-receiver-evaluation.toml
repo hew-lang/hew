@@ -1,0 +1,12 @@
+[[case]]
+id = "actor-completion-receiver-evaluation"
+intent = "Completion calls borrow stable handle and projected receivers, preserve the addressed actor across effectful argument evaluation, and retain policy views through completion."
+source = "cases/actor-completion-receiver-evaluation.hew"
+suites = ["acceptance", "safety"]
+kind = "run"
+timeout_seconds = 60
+env = { HEW_ACTOR_LEAK_CHECK = "1" }
+
+[case.expected]
+stdout = "8\n8\n107\n8\n8\n"
+exit = 0

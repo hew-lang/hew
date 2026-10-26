@@ -109,6 +109,17 @@ pub enum ManagedStorageShape {
     },
 }
 
+impl ManagedStorageShape {
+    /// Whether a stored value can retain managed storage beyond its own slot.
+    #[must_use]
+    pub const fn has_managed_children(&self) -> bool {
+        !matches!(
+            self,
+            Self::Scalar | Self::Handle(_) | Self::Shared { weak: true, .. }
+        )
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ManagedHandleKind {
     Actor,

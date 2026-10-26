@@ -34,6 +34,43 @@ pub(crate) fn with_supervisor_roots<R>(f: impl FnOnce(&mut Vec<SupervisorPtr>) -
     }
 }
 
+/// Delayed restarts and retiring children remain admitted work even while the
+/// supervisor's actor has no runnable message. Inspect the existing rooted tree
+/// without consuming its registration or cancelling its restart policy.
+#[cfg(target_arch = "wasm32")]
+pub(crate) fn has_pending_guest_work() -> bool {
+    use crate::util::MutexExt;
+
+    unsafe fn pending(supervisor: *mut HewSupervisor) -> bool {
+        // SAFETY: the caller retains either the roots lock or the parent's
+        // roster. The guest runs no user code during this tree observation.
+        let Some(supervisor) = (unsafe { supervisor.as_ref() }) else {
+            return false;
+        };
+        if supervisor.restart_timers.state.lock_or_recover().pending != 0 {
+            return true;
+        }
+        let roster = supervisor.roster.lock_or_recover();
+        roster.pending_group_restart.is_some()
+            || !roster.construction_events.is_empty()
+            || roster
+                .retiring_children
+                .iter()
+                .any(|child| !child.is_finished())
+            || roster.child_supervisors.iter().any(|child| {
+                // SAFETY: this roster retains the nested supervisor.
+                unsafe { pending(*child) }
+            })
+    }
+
+    with_supervisor_roots(|roots| {
+        roots.iter().any(|root| {
+            // SAFETY: the roots lock retains the registered supervisor.
+            unsafe { pending(root.0) }
+        })
+    })
+}
+
 /// Register a top-level supervisor for ordered shutdown.
 ///
 /// During graceful shutdown, registered supervisors are stopped

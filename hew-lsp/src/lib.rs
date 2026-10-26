@@ -49,6 +49,7 @@ pub fn run(options: &Options) -> std::io::Result<()> {
         let (service, socket) = LspService::build(move |client| {
             HewLanguageServer::new_with_options(client, extra_pkg_paths.clone())
         })
+        .custom_method("hew/analysisContext", HewLanguageServer::analysis_context)
         .custom_method("hew/tests", HewLanguageServer::tests)
         .custom_method("hew/expandMacro", HewLanguageServer::expand_macro)
         .finish();

@@ -674,10 +674,6 @@ pub(crate) fn verify_initialization(
         if matches!(
             slot.origin,
             StorageOrigin::Capture { .. }
-                | StorageOrigin::Session {
-                    initialized: true,
-                    ..
-                }
                 | StorageOrigin::ActorState {
                     initialized: true,
                     ..
@@ -687,6 +683,7 @@ pub(crate) fn verify_initialization(
             partial::set_leaves(function, &mut entry, slot.id, InitState::Initialized);
         }
     }
+    partial::initialize_session_contents(function, &mut entry)?;
     let borrows = &BorrowDependents::of(function);
     let mut frame_roots = persistent_frame_roots(function);
     let mut incoming = BTreeMap::from([(function.entry, vec![entry])]);
@@ -1410,7 +1407,7 @@ pub(crate) fn arm_release_fault(
                 place
                     .leaves
                     .iter()
-                    .any(|leaf| leaf.destroy.as_ref().is_some_and(raises))
+                    .any(|leaf| leaf.recipe.destroy.as_ref().is_some_and(raises))
             })
     {
         state.fault = FaultState::MaybeActive;

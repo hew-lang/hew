@@ -20,6 +20,12 @@ an addition declares its minimum compiler version, for example
 `hew = ">=0.6.3"`. Edition 2026 is still under development; a shared edition
 does not make every newer feature available in an older compiler.
 
+Compiler ranges without prerelease bounds compare the feature version:
+`0.10.0-rc1` satisfies `hew = ">=0.9.3"` but fails `hew = "<0.10.0"`.
+An explicit prerelease bound compares the full version, so
+`hew = ">=0.10.0-rc2"` rejects rc1. Package dependency versions retain ordinary
+SemVer prerelease selection.
+
 The [language specification](specs/HEW-SPEC-2026.md#editions-and-release-alignment)
 owns the version and edition contract. Contributor release guidance lives in
 the [versioning policy](internal/versioning.md) and

@@ -142,8 +142,61 @@ HEW_WASI_SDK=/path/to/wasi-sdk make test-live-component
 
 The oracle checks concurrent calls, service errors, Unicode and embedded NULs,
 admission refusal while paused, retained-state resume, disposal and snapshot
-activation with different instance grants. Guest C bindings can be generated
-with `make live-component-bindings COMPONENT_BINDINGS_DIR=output`.
+activation with different instance grants. Generate guest C/Hew bindings and
+TypeScript declarations from the same WIT with:
+
+```sh
+npm --prefix hew-live/typescript ci
+make live-component-bindings COMPONENT_BINDINGS_DIR=output
+```
+
+The TypeScript generator uses the pinned Bytecode Alliance Jco transpiler.
+Pass `COMPONENT_FILE=router.wasm` to the same Make command to also generate
+executable ES modules and core Wasm under `output/typescript/component`.
+`output/typescript/wit` contains the canonical contract declarations; generated
+component declarations describe its concrete imports, including WASI.
+Use the component's generated `instantiate` function to supply its
+services and a core-module loader; see `typescript/consumer.ts` for a complete
+host consumer. The runtime output contains the lifting/lowering and cleanup
+code, rather than relying on TypeScript declarations alone.
+
+WIT `u64` is `bigint`, `option<T>` is `T | undefined`, and `async func` returns
+a `Promise`. Top-level `result` errors reject/throw their WIT error payload
+(a string in this contract); successful results return the success value.
+Errors must be caught as `unknown`, since a Wasm trap or JavaScript host failure
+can also reject. Jco owns canonical ABI allocation and copying. This contract
+has value records and strings, with no borrowed resource handles. Its versioned
+interface names are retained in the generated declarations. This Jco version
+uses unversioned runtime import keys despite emitting versioned declaration
+keys; the consumer supplies both spellings to the same objects. It also confines
+a type assertion to WASI's component-specific resource classes, whose methods
+are narrower than the shim's full declarations. The Hew services and handler
+are checked directly against the generated WIT declarations.
+
+Cancellation remains the contract's cooperative `resume()` withdrawal of
+quiescence. Dropping a JavaScript promise does not cancel a call or undo a
+service effect. Await admitted calls and quiescence, then disposal, before
+discarding an instance; do not infer that a timeout or promise rejection freed
+its guest state. The existing Rust host remains the lifecycle authority for
+the full replacement protocol.
+
+Node 24 needs `--experimental-wasm-jspi` when executing these async components.
+With a matched SDK and WASI SDK installed, run the actual generated binding
+consumer (it builds the existing `preview_router.hew` fixture):
+
+```sh
+HEW_WASI_SDK=/path/to/wasi-sdk make test-live-typescript \
+  HEW_LIVE_NODE=/path/to/live-sdk/bin/hew-live-node
+make lint-live-typescript
+```
+
+The consumer typechecks the real component against the canonical WIT types,
+then checks a suspended imported service, missing values, service errors,
+Unicode/NUL strings, a snapshot above JavaScript's exact-number range,
+pause/resume, disposal and replacement. `COMPONENT_FILE` can reuse a component
+already built from that fixture. This Linux Node consumer is an experimental
+host example; the generator uses portable Node filesystem APIs, but other
+platforms and browsers need their own execution validation.
 
 The Hew reference also runs a sleeping periodic actor. The adapter fences host
 calls before pausing periodic admission, then drains existing actor turns, child

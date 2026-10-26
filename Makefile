@@ -438,9 +438,21 @@ test-live-places: hew-native live-host ## Test: preserve compiler-owned slots ac
 	$(TEST_RUN_ENV) cargo nextest run --profile ci -p hew-codegen-rs -p hew-compile --lib -E 'test(native_session_places) | test(live_retained_type)'
 
 .PHONY: live-component-bindings
-live-component-bindings: ## Generate: C guest bindings for the portable reference router
+live-component-bindings: ## Generate: C, Hew and TypeScript bindings for the portable reference router
 	@test -n "$(COMPONENT_BINDINGS_DIR)" || { echo 'Set COMPONENT_BINDINGS_DIR to the output directory'; exit 1; }
 	cargo run -p hew-live --features component --example component_bindings -- "$(COMPONENT_BINDINGS_DIR)"
+	npm --prefix hew-live/typescript run generate -- "$(abspath $(COMPONENT_BINDINGS_DIR))/typescript" $(if $(COMPONENT_FILE),"$(abspath $(COMPONENT_FILE))")
+
+.PHONY: test-live-typescript
+HEW_LIVE_NODE ?= $(abspath $(DEBUG_DIR)/hew-live-node)
+test-live-typescript: ## Test: typecheck and execute generated bindings with the preview router component
+	HEW_LIVE_NODE="$(HEW_LIVE_NODE)" npm --prefix hew-live/typescript test $(if $(COMPONENT_FILE),-- "$(abspath $(COMPONENT_FILE))")
+
+.PHONY: lint-live-typescript
+LINT_GATES += lint-live-typescript
+lint-live-typescript: ## Check: validate the TypeScript binding generator and consumer runner
+	node --check hew-live/typescript/generate.mjs
+	node --check hew-live/typescript/test.mjs
 
 .PHONY: live-node
 live-node: ## Build: typed node adapter for the portable component host

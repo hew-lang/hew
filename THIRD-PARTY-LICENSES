@@ -9660,9 +9660,9 @@ limitations under the License.
 
 ================================================================================
 BSD 3-Clause "New" or "Revised" License
-  * zstd-safe 8.0.0 — https://github.com/gyscos/zstd-rs
-  * zstd-sys 2.1.0+zstd.1.5.7 — https://github.com/gyscos/zstd-rs
-  * zstd 0.14.0 — https://github.com/gyscos/zstd-rs
+  * zstd-safe 8.2.0 — https://github.com/gyscos/zstd-rs
+  * zstd-sys 2.1.2+zstd.1.5.7 — https://github.com/gyscos/zstd-rs
+  * zstd 0.14.3 — https://github.com/gyscos/zstd-rs
 
 BSD 3-Clause License
 

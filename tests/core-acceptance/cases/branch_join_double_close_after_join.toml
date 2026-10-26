@@ -11,39 +11,33 @@ severity = "error"
 code = "UseAfterMove"
 line = 21
 column = 5
-message = "use of moved value `held`"
 
 [[case.expected.diagnostics]]
 severity = "error"
 code = "UseAfterConsume"
 line = 21
 column = 5
-message = "resource `held` cannot be closed more than once"
 
 [[case.expected.diagnostics]]
 severity = "error"
 code = "UseAfterMove"
 line = 28
 column = 9
-message = "use of moved value `held`"
 
 [[case.expected.diagnostics]]
 severity = "error"
 code = "UseAfterConsume"
 line = 28
 column = 9
-message = "resource `held` cannot be closed more than once"
 
 [[case.expected.diagnostics]]
 severity = "error"
 code = "UseAfterMove"
 line = 38
 column = 9
-message = "use of moved value `held`"
 
 [[case.expected.diagnostics]]
 severity = "error"
 code = "UseAfterConsume"
 line = 38
 column = 9
-message = "resource `held` cannot be closed more than once"

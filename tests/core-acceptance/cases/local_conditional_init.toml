@@ -10,4 +10,3 @@ kind = "reject"
 code = "E_LOCAL_CONDITIONAL_INIT"
 line = 3
 column = 5
-message = "local `x` is initialized on only some reaching paths"

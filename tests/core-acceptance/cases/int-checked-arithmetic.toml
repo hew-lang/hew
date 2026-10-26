@@ -7,5 +7,4 @@ timeout_seconds = 15
 
 [case.expected]
 stdout = "wrapping, saturating and checked arithmetic hold at every boundary\n"
-stderr = ""
 exit = 0

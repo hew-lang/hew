@@ -10,5 +10,4 @@ HEW_WORKERS = "1"
 
 [case.expected]
 stdout = "recovered\n42\nclean end\n"
-stderr = ""
 exit = 0

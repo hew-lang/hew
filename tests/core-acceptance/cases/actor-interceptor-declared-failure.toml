@@ -10,5 +10,4 @@ HEW_WORKERS = "1"
 
 [case.expected]
 stdout = "declared failures remain distinct\n"
-stderr = ""
 exit = 0

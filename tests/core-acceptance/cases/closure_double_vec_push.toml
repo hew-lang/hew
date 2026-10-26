@@ -10,4 +10,3 @@ kind = "reject"
 code = "UseAfterMove"
 line = 12
 column = 14
-message = "use of moved value `f`"

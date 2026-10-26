@@ -10,4 +10,3 @@ kind = "reject"
 code = "Mismatch"
 line = 19
 column = 9
-message = "type mismatch: expected `i64`, found `Result<i64, ActorError<Never, Never>>`"

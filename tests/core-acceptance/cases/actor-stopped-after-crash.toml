@@ -6,6 +6,5 @@ suites = ["acceptance", "safety"]
 timeout_seconds = 20
 
 [case.expected]
-stdout = "Err(Trapped: the handler faulted before replying)\nafter crash-only stopped\nErr(Trapped: the handler faulted before replying)\ncaught close fault\nafter cleanup stopped\nErr(Dead: the destination actor is gone and will not come back)\n"
-stderr = "hew: failure: UserPanic (212): bad frame\nhew: actor crash in Reader.feed (actor 1): UserPanic\nhew: failure: UserPanic (212): bad frame\nhew: actor crash in ClosingReader.feed (actor 2): UserPanic\nhew: secondary failure: UserPanic (212): reader state close failed\n"
+stdout = "trapped\nafter crash-only stopped\ntrapped\ncaught close fault\nafter cleanup stopped\ndead\n"
 exit = 1

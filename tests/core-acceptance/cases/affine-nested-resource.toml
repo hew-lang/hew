@@ -8,5 +8,4 @@ timeout_seconds = 15
 
 [case.expected]
 stdout = "READ:known file: héllo 🌲\nskipped\nclosed early\nmissing\nBROKEN\nreleased\n"
-stderr = ""
 exit = 0

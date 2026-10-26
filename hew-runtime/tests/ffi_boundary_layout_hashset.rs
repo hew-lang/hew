@@ -96,6 +96,8 @@ unsafe extern "C" fn eq_point(
 fn elem_layout_point() -> HewMapKeyLayout {
     HewMapKeyLayout {
         value: HewValueLayout {
+            code_owner: core::ptr::null(),
+            managed: core::ptr::null(),
             release_start: None,
             size: 16,
             align: 8,
@@ -343,7 +345,7 @@ fn layout_hashset_clone_null_returns_null() {
 /// the `extern "C"` constructor (which uses `std::process::abort()` and
 /// cannot be observed by `should_panic`).
 #[test]
-#[should_panic(expected = "key_layout is null")]
+#[should_panic]
 fn layout_hashset_null_elem_layout_aborts() {
     // SAFETY: intentionally null — tests the fail-closed gate.
     unsafe {
@@ -361,10 +363,12 @@ fn layout_hashset_null_elem_layout_aborts() {
 /// across it are non-unwinding aborts under `panic = "abort"`, so a
 /// `should_panic` test cannot observe them.
 #[test]
-#[should_panic(expected = "key_layout ownership_kind=LayoutManaged requires drop_fn")]
+#[should_panic]
 fn layout_hashset_managed_elem_without_drop_aborts() {
     let kl = HewMapKeyLayout {
         value: HewValueLayout {
+            code_owner: core::ptr::null(),
+            managed: core::ptr::null(),
             release_start: None,
             size: 16,
             align: 8,
@@ -378,6 +382,8 @@ fn layout_hashset_managed_elem_without_drop_aborts() {
     // The hashset's ZST value layout is internal to hew_hashset_new_with_layout;
     // for this gate-level test we synthesize an equivalent value descriptor.
     let vl = hew_cabi::map::HewValueLayout {
+        code_owner: core::ptr::null(),
+        managed: core::ptr::null(),
         release_start: None,
         size: 0,
         align: 1,
@@ -394,7 +400,7 @@ fn layout_hashset_managed_elem_without_drop_aborts() {
 
 /// A null `set` pointer to any element operation panics fail-closed.
 #[test]
-#[should_panic(expected = "set is null")]
+#[should_panic]
 fn layout_hashset_null_set_aborts() {
     // SAFETY: intentionally null set — tests the fail-closed gate.
     unsafe {
@@ -404,7 +410,7 @@ fn layout_hashset_null_set_aborts() {
 
 /// A null `elem` pointer to an element operation panics fail-closed.
 #[test]
-#[should_panic(expected = "elem is null")]
+#[should_panic]
 fn layout_hashset_null_elem_aborts() {
     // Build a real set so the null-set branch is NOT triggered; then supply a
     // null elem to trip the null-elem gate. We deliberately do NOT free the

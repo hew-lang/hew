@@ -4638,6 +4638,8 @@ fn native_graceful_stop_drains_accepted_turns_before_completion() {
             None,
             ptr::null_mut(),
             construction,
+            0,
+            ptr::null(),
         )
     };
     // A message admitted during construction cannot wake the actor yet.
@@ -4700,6 +4702,7 @@ fn native_graceful_stop_drains_accepted_turns_before_completion() {
     assert_eq!(drops.load(Ordering::SeqCst), 1);
     // SAFETY: the test owns its wait descriptor until this release.
     unsafe { crate::actor_native::hew_actor_wait_free(wait) };
+    crate::lifetime::local_handles::hew_actor_handle_release(token);
     drop(runtime);
 }
 

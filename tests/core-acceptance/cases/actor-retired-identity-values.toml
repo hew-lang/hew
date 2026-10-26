@@ -1,0 +1,13 @@
+[[case]]
+id = "actor-retired-identity-values"
+intent = "Retained self results, captures and collection copies preserve terminal actor identity and immediate DOWN after actor allocation cleanup."
+source = "cases/actor-retired-identity-values.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 30
+
+[case.env]
+HEW_WORKERS = "1"
+
+[case.expected]
+stdout = "retired actor values preserve identity and DOWN\n"
+exit = 0

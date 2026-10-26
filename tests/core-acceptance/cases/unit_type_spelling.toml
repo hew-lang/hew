@@ -10,4 +10,3 @@ kind = "reject"
 code = "UndefinedType"
 line = 10
 column = 14
-message = "unknown type `Unit`"

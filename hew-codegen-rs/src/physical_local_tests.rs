@@ -90,7 +90,7 @@ fn symbol(module: &PhysicalModule, name: &str) -> String {
 }
 fn bind_trace(llvm: &Module<'_>, engine: &ExecutionEngine<'_>) {
     engine.add_global_mapping(
-        &llvm.get_function("hew_string_drop").unwrap(),
+        &llvm.get_function("hew_string_drop_managed").unwrap(),
         release as *const () as usize,
     );
     if let Some(function) = llvm.get_function("hew_string_length") {

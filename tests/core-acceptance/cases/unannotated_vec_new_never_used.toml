@@ -10,4 +10,3 @@ kind = "reject"
 code = "InferenceFailed"
 line = 5
 column = 5
-message = "cannot infer type for local binding `pending`"

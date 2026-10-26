@@ -10,4 +10,3 @@ kind = "reject"
 code = "InvalidOperation"
 line = 31
 column = 19
-message = "copies each value out of the map"

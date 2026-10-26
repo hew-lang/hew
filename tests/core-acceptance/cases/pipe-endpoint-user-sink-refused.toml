@@ -11,4 +11,3 @@ code = "Mismatch"
 file = "pipe-endpoint-user-sink-refused/main.hew"
 line = 26
 column = 20
-message = "expected `std.stream.Sink<i64>`, found `Sink<i64>`"

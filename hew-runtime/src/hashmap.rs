@@ -84,7 +84,7 @@ const LOAD_PCTG: usize = 75;
 // semantic copy/drop protocol used by descriptor-backed vectors.
 
 /// Initial capacity for a layout-backed map (must be a power of two).
-const LAYOUT_INIT_CAP: usize = 16;
+pub(crate) const LAYOUT_INIT_CAP: usize = 16;
 
 /// Test-only linker anchor (W4.001 Stage C0b).
 ///
@@ -145,6 +145,29 @@ pub struct HewLayoutHashMap {
     pub val_layout: HewValueLayout,
 }
 
+impl HewLayoutHashMap {
+    /// Borrow the typed live payload in one slot, excluding probe metadata.
+    /// # Safety
+    /// The map remains live and unmodified; `index` is below its capacity.
+    pub(crate) unsafe fn managed_slot(
+        &self,
+        index: usize,
+    ) -> Option<(*const c_void, *const c_void)> {
+        // SAFETY: the caller retains the validated map and bounds the index.
+        unsafe {
+            if *slot_state(self.entries, index, self.stride) != OCCUPIED {
+                return None;
+            }
+            Some((
+                slot_key(self.entries, index, self.stride, self.key_offset).cast(),
+                self.entries
+                    .add(index * self.stride + self.val_offset)
+                    .cast(),
+            ))
+        }
+    }
+}
+
 /// Opaque cursor for borrowing occupied entries from a layout-backed map.
 ///
 /// The cursor owns no collection data. The map must remain alive and must not
@@ -158,6 +181,8 @@ pub struct HewLayoutHashMapIter {
 
 mod probe;
 pub use probe::*;
+pub(crate) mod managed;
+pub use managed::*;
 
 /// Create an iterator over the occupied entries in `m`.
 ///
@@ -677,6 +702,8 @@ pub unsafe extern "C" fn hew_hashmap_new_with_layout(
     }
     // SAFETY: raw is a fresh allocation of HewLayoutHashMap size.
     unsafe {
+        crate::code_owner::CodeRoot::retain_for_carrier(key_layout_snapshot.value.code_owner);
+        crate::code_owner::CodeRoot::retain_for_carrier(val_layout_snapshot.code_owner);
         ptr::write(
             raw,
             HewLayoutHashMap {
@@ -759,6 +786,8 @@ pub unsafe extern "C" fn hew_hashmap_clone_layout(
     }
     // SAFETY: cloned is a fresh allocation of HewLayoutHashMap size.
     unsafe {
+        crate::code_owner::CodeRoot::retain_for_carrier(src.key_layout.value.code_owner);
+        crate::code_owner::CodeRoot::retain_for_carrier(src.val_layout.code_owner);
         ptr::write(
             cloned,
             HewLayoutHashMap {
@@ -1394,6 +1423,16 @@ pub(crate) unsafe fn release_slot_chunk(
 pub(crate) unsafe fn free_map_storage(m: *mut HewLayoutHashMap) {
     // SAFETY: caller guarantees the allocation contract.
     let map_ref = unsafe { &*m };
+    if let Some(owner) = crate::owned_value_budget::current_owner() {
+        let bytes =
+            managed::backing_bytes(map_ref, map_ref.cap).unwrap_or_else(|_| std::process::abort());
+        owner.release_backing(map_ref.entries.cast(), bytes);
+    }
+    // SAFETY: final storage release transfers both retained descriptor roots.
+    let _key_code =
+        unsafe { crate::code_owner::CodeRoot::take(map_ref.key_layout.value.code_owner) };
+    // SAFETY: the value descriptor has its own independent root.
+    let _value_code = unsafe { crate::code_owner::CodeRoot::take(map_ref.val_layout.code_owner) };
     let entries_align = core::cmp::max(map_ref.key_layout.value.align, map_ref.val_layout.align);
     // SAFETY: entries allocated by alloc_layout_entries with these exact params.
     unsafe { dealloc_layout_entries(map_ref.entries, map_ref.cap, map_ref.stride, entries_align) };

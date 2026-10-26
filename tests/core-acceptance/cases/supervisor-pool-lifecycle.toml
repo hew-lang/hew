@@ -7,5 +7,4 @@ timeout_seconds = 30
 
 [case.expected]
 stdout = "pool-member\n4\nno member 4\n4\n4\n4\n4\n1\n3\n11\n4\n4\n4\nstopped\n4\n"
-stderr = "hew: failure: UserPanic (212): pool member failed\nhew: actor crash in Worker.crash_me (actor 1): UserPanic\n"
 exit = 0

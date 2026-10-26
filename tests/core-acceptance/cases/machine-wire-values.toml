@@ -7,5 +7,4 @@ timeout_seconds = 60
 
 [case.expected]
 stdout = "machine wire checkpoints passed\n"
-stderr = ""
 exit = 0

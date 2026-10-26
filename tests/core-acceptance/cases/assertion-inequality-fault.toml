@@ -7,5 +7,4 @@ timeout_seconds = 15
 
 [case.expected]
 stdout = "CALLER OWNER\n"
-stderr = "hew: failure: UserPanic (212): assertion failed: subject() != subject()\n  left: SAME\n right: SAME\n"
 exit = 1

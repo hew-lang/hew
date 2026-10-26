@@ -1,0 +1,13 @@
+[[case]]
+id = "actor-owned-budget-map"
+intent = "Map and set state charge canonical table capacity and snapshots refund their actual vector capacity."
+source = "cases/actor-owned-budget-map.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 30
+
+[case.env]
+HEW_WORKERS = "2"
+
+[case.expected]
+stdout = "2\n2\nsnapshot limit\n"
+exit = 1

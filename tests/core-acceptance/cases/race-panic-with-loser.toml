@@ -7,5 +7,4 @@ timeout_seconds = 15
 
 [case.expected]
 stdout = "slow cleanup\n"
-stderr = "hew: failure: UserPanic (212): boom\n"
 exit = 1

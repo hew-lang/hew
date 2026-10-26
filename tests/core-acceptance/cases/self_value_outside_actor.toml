@@ -10,4 +10,3 @@ kind = "reject"
 code = "UndefinedVariable"
 line = 5
 column = 14
-message = "`self` is the actor's own handle and exists only inside an actor body"

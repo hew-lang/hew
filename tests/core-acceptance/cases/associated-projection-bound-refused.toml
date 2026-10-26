@@ -11,11 +11,9 @@ severity = "error"
 line = 10
 column = 5
 code = "BoundsNotSatisfied"
-message = "does not implement trait `Display`"
 
 [[case.expected.diagnostics]]
 severity = "error"
 line = 11
 column = 5
 code = "BoundsNotSatisfied"
-message = "does not implement trait `Display`"

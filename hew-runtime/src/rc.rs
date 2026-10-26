@@ -31,6 +31,12 @@ struct HewRcInner {
     type_name: *const c_char,
     owner: Option<Arc<RcAllocations>>,
     owner_index: Cell<usize>,
+    value_owner: Option<crate::owned_value_budget::ValueOwner>,
+    managed_published: bool,
+    membership_live: bool,
+    payload_live: bool,
+    transfer_key: usize,
+    transfer_owner: Option<Arc<RcAllocations>>,
     dying: bool,
     data_size: usize,
     data_align: usize,
@@ -41,12 +47,14 @@ struct HewRcInner {
 #[derive(Debug, Default)]
 pub(crate) struct RcAllocations {
     inner: Mutex<Allocations>,
+    waiters: crate::wake::ReadinessRegistrations,
 }
 
 #[derive(Debug, Default)]
 struct Allocations {
     blocks: Vec<*mut HewRcInner>,
     closed: bool,
+    transfer_pins: usize,
 }
 // SAFETY: membership and slot indices are protected by `inner`; each payload
 // and its non-atomic counts remain with their checked single-actor owner.
@@ -54,12 +62,13 @@ unsafe impl Send for Allocations {}
 
 impl RcAllocations {
     pub(crate) fn is_empty(&self) -> bool {
-        self.inner.lock_or_recover().blocks.is_empty()
+        let allocations = self.inner.lock_or_recover();
+        allocations.blocks.is_empty() && allocations.transfer_pins == 0
     }
 
     pub(crate) fn close_empty(&self) -> bool {
         let mut allocations = self.inner.lock_or_recover();
-        if !allocations.blocks.is_empty() {
+        if !allocations.blocks.is_empty() || allocations.transfer_pins != 0 {
             return false;
         }
         allocations.closed = true;
@@ -88,16 +97,15 @@ impl RcAllocations {
         self: &Arc<Self>,
     ) -> Option<*mut crate::release_walker::HewReleaseCursor> {
         let mut allocations = self.inner.lock_or_recover();
-        if allocations.blocks.is_empty() {
+        if allocations.blocks.is_empty() && allocations.transfer_pins == 0 {
             allocations.closed = true;
             return None;
         }
-        let blocks = std::mem::take(&mut allocations.blocks);
         drop(allocations);
         Some(crate::release_walker::HewReleaseCursor::new(vec![
             crate::release_walker::ReleaseItem::RcSurvivors(Box::new(RcSurvivors {
-                count: blocks.len() as u64,
-                blocks,
+                count: 0,
+                blocks: Vec::new(),
                 owner: self.clone(),
                 waves_complete: false,
                 marked: 0,
@@ -105,6 +113,7 @@ impl RcAllocations {
                 freed: 0,
                 by_type: std::collections::BTreeMap::new(),
                 summary: Vec::new(),
+                waiting: None,
             })),
         ]))
     }
@@ -123,9 +132,66 @@ pub(crate) struct RcSurvivors {
     freed: usize,
     by_type: std::collections::BTreeMap<String, u64>,
     summary: Vec<hew_observe_protocol::RcSurvivorType>,
+    waiting: Option<Arc<crate::wake::OwnedWaker>>,
 }
 
 impl RcSurvivors {
+    /// Describe retained membership backings separately from payloads already
+    /// handed to the active cleanup cursor.
+    pub(crate) unsafe fn visit(
+        &self,
+        visitor: *const hew_cabi::managed::HewManagedStorageVisitor,
+    ) -> i32 {
+        for (index, &header) in self.blocks.iter().enumerate().skip(self.freed) {
+            // SAFETY: the detached wave pins every remaining header until all payloads drain.
+            let status = unsafe {
+                visit_managed_inner(
+                    header.cast::<u8>().add((*header).data_offset),
+                    visitor,
+                    index >= self.released,
+                )
+            };
+            if status != 0 {
+                return status;
+            }
+        }
+        0
+    }
+
+    /// Hold every wave at the existing membership lock until selected-cell
+    /// transfers commit or abort; no lock crosses typed cleanup callbacks.
+    pub(crate) unsafe fn prepare(&mut self, state: *const crate::coro_state::HewCoroState) -> bool {
+        if self.freed != self.blocks.len() || self.waves_complete {
+            return true;
+        }
+        let mut allocations = self.owner.inner.lock_or_recover();
+        if allocations.transfer_pins == 0 {
+            self.waiting = None;
+            self.blocks = std::mem::take(&mut allocations.blocks);
+            if self.blocks.is_empty() {
+                allocations.closed = true;
+                self.waves_complete = true;
+            }
+            self.count += self.blocks.len() as u64;
+            self.marked = 0;
+            self.released = 0;
+            self.freed = 0;
+            return true;
+        }
+        if !state.is_null() {
+            let waker = self.waiting.get_or_insert_with(|| {
+                // SAFETY: the release driver retains this state and its wake descriptor.
+                Arc::new(unsafe {
+                    crate::wake::OwnedWaker::retain(&*crate::coro_state::hew_coro_state_waker(
+                        state,
+                    ))
+                })
+            });
+            self.owner.waiters.register(waker);
+        }
+        false
+    }
+
     /// # Safety
     /// The cursor owns this detached wave after actor/construction quiescence.
     pub(crate) unsafe fn step(
@@ -133,6 +199,12 @@ impl RcSurvivors {
         pending: &mut Vec<crate::release_walker::ReleaseItem>,
     ) -> Option<hew_observe_protocol::RcSweep> {
         use crate::release_walker::ReleaseItem;
+        // SAFETY: synchronous expansion is valid only once transfer exclusion cleared.
+        assert!(
+            // SAFETY: synchronous expansion has no producer borrowing this detached wave.
+            unsafe { self.prepare(ptr::null()) },
+            "synchronous Rc sweep during transfer"
+        );
         if let Some(&header) = self.blocks.get(self.marked) {
             // SAFETY: no ordinary turn or scoped child can access this wave.
             let inner = unsafe { &mut *header };
@@ -164,24 +236,30 @@ impl RcSurvivors {
                 }
             };
             pending.push(ReleaseItem::RcSurvivors(self));
+            // SAFETY: the detached wave pins every header through child cleanup.
+            if unsafe { (*header).membership_live } {
+                pending.push(ReleaseItem::ManagedBacking {
+                    // SAFETY: the wave retains this header and canonical payload offset.
+                    pointer: unsafe { header.cast::<u8>().add((*header).data_offset).cast() },
+                    // SAFETY: publication checked and retained this immutable payload descriptor.
+                    bytes: unsafe {
+                        crate::owned_value_budget::visit::slot_bytes(&(*header).layout)
+                    }
+                    .expect("published Rc payload descriptor"),
+                    free: finish_managed_membership,
+                });
+            } else {
+                pending.push(ReleaseItem::Storage {
+                    // SAFETY: this detached wave retains its exact payload allocation.
+                    owner: unsafe { header.cast::<u8>().add((*header).data_offset).cast() },
+                    free: finish_managed_membership,
+                });
+            }
             pending.push(value);
         } else if let Some(&header) = self.blocks.get(self.freed) {
             self.freed += 1;
             // SAFETY: all payloads have completed; this consumes one reserved pin.
             unsafe { release_pin(header.cast()) };
-            pending.push(ReleaseItem::RcSurvivors(self));
-        } else if !self.waves_complete {
-            let mut allocations = self.owner.inner.lock_or_recover();
-            self.blocks = std::mem::take(&mut allocations.blocks);
-            if self.blocks.is_empty() {
-                allocations.closed = true;
-                self.waves_complete = true;
-            }
-            drop(allocations);
-            self.count += self.blocks.len() as u64;
-            self.marked = 0;
-            self.released = 0;
-            self.freed = 0;
             pending.push(ReleaseItem::RcSurvivors(self));
         } else if let Some((type_name, count)) = self.by_type.pop_first() {
             self.summary
@@ -284,6 +362,235 @@ unsafe fn header_from_data(data_ptr: *mut u8) -> *mut HewRcInner {
     unsafe { data_ptr.sub(offset) }.cast()
 }
 
+/// Retain the creator's membership after the ordinary typed result is adopted.
+/// This adds an alias to already acquired storage, so it cannot require quota.
+/// # Safety
+/// `value` is a fresh live Rc whose managed construction has successfully committed.
+unsafe fn publish(value: *mut u8) {
+    if value.is_null() {
+        return;
+    }
+    // SAFETY: successful construction retains this exclusive unpublished header.
+    unsafe {
+        let header = &mut *header_from_data(value);
+        if header.managed_published {
+            return;
+        }
+        if let Some(owner) = &header.value_owner {
+            let bytes = crate::owned_value_budget::visit::slot_bytes(&header.layout)
+                .expect("committed Rc payload descriptor");
+            owner
+                .acquire(&[crate::owned_value_budget::ManagedStorage {
+                    identity: value as usize,
+                    bytes,
+                }])
+                .expect("committed Rc backing must already be retained")
+                .commit();
+            header.managed_published = true;
+            header.membership_live = true;
+        }
+    }
+}
+
+unsafe fn release_managed_edge(value: *mut u8) {
+    // SAFETY: the semantic Rc owner pins the header through this count transition.
+    unsafe {
+        let header = &*header_from_data(value);
+        if header.managed_published {
+            let owner = header.value_owner.as_ref().expect("published Rc account");
+            let bytes = crate::owned_value_budget::visit::slot_bytes(&header.layout)
+                .expect("published Rc payload descriptor");
+            owner.release_backing(value.cast(), bytes);
+        }
+    }
+}
+
+unsafe fn retain_managed_edge(value: *mut u8) {
+    if value.is_null() {
+        return;
+    }
+    // SAFETY: a published live cell already owns its payload and creator interest.
+    unsafe {
+        let header = &*header_from_data(value);
+        if header.managed_published {
+            let bytes = crate::owned_value_budget::visit::slot_bytes(&header.layout)
+                .expect("published Rc payload descriptor");
+            header
+                .value_owner
+                .as_ref()
+                .expect("published Rc account")
+                .acquire(&[crate::owned_value_budget::ManagedStorage {
+                    identity: value as usize,
+                    bytes,
+                }])
+                .expect("same-incarnation Rc alias must already be retained")
+                .commit();
+        }
+    }
+}
+
+unsafe fn finish_managed_membership(value: *mut c_void) {
+    // SAFETY: the membership pin retains this header after its typed payload drained.
+    unsafe {
+        let header = &mut *header_from_data(value.cast());
+        header.membership_live = false;
+        header.payload_live = false;
+    }
+}
+
+unsafe fn finish_transfer(header: *mut HewRcInner, key: usize) {
+    // SAFETY: the frozen graph retains each prepared header until final resume or abort.
+    unsafe {
+        if (*header).transfer_key != key {
+            return;
+        }
+        (*header).transfer_key = 0;
+        if let Some(owner) = (*header).transfer_owner.take() {
+            {
+                let mut allocations = owner.inner.lock_or_recover();
+                allocations.transfer_pins = allocations
+                    .transfer_pins
+                    .checked_sub(1)
+                    .expect("Rc transfer reservation disappeared");
+            }
+            owner.waiters.notify();
+        }
+    }
+}
+
+unsafe fn rehome(
+    header: *mut HewRcInner,
+    data: *mut u8,
+    visitor: *const hew_cabi::managed::HewManagedStorageVisitor,
+) {
+    use crate::owned_value_budget::transfer;
+    // SAFETY: graph-wide commit excludes execution and both creator sweeps.
+    unsafe {
+        let destination = transfer::destination_owner(visitor);
+        let same_account = match (&(*header).value_owner, &destination) {
+            (None, None) => true,
+            (Some(source), Some(destination)) => source.same_account(destination),
+            _ => false,
+        };
+        if !same_account && !(*header).dying {
+            if let Some(source) = &(*header).value_owner {
+                if (*header).managed_published {
+                    source
+                        .release_transferred_payload(&(*header).layout, data.cast())
+                        .expect("frozen Rc creator payload was not retained");
+                    release_managed_edge(data);
+                }
+            }
+            if let Some(destination) = &destination {
+                let bytes = crate::owned_value_budget::visit::slot_bytes(&(*header).layout)
+                    .expect("transferred Rc payload descriptor");
+                destination
+                    .acquire(&[crate::owned_value_budget::ManagedStorage {
+                        identity: data as usize,
+                        bytes,
+                    }])
+                    .expect("transferred Rc backing was already adopted")
+                    .commit();
+            }
+        }
+        (*header).value_owner = destination;
+        (*header).managed_published = (*header).value_owner.is_some();
+        if !(*header).dying {
+            (*header).membership_live = (*header).managed_published;
+            if let Some(binding) = transfer::destination_binding(visitor) {
+                let same_registry = match (&(*header).owner, &binding.rc_owner) {
+                    (None, None) => true,
+                    (Some(source), Some(destination)) => Arc::ptr_eq(source, destination),
+                    _ => false,
+                };
+                if !same_registry {
+                    unlink(header);
+                    if let Some(owner) = binding.rc_owner {
+                        owner.register(header);
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Visit one actual cell and its source-authored payload descriptor.
+/// # Safety
+/// The caller retains this header and excludes ordinary mutation through the walk.
+pub(crate) unsafe fn visit_managed(
+    data: *mut u8,
+    visitor: *const hew_cabi::managed::HewManagedStorageVisitor,
+) -> i32 {
+    // SAFETY: the ordinary Rc descriptor retains its live payload.
+    unsafe { visit_managed_inner(data, visitor, true) }
+}
+
+unsafe fn visit_managed_inner(
+    data: *mut u8,
+    visitor: *const hew_cabi::managed::HewManagedStorageVisitor,
+    payload: bool,
+) -> i32 {
+    use hew_cabi::managed::{
+        visit_value, HewManagedWalkKind as Kind, DESCEND, SKIP_DESCENDANTS, TRANSFER_PENDING,
+    };
+    if data.is_null() {
+        return 0;
+    }
+    // SAFETY: the typed owner pins the header and descriptor through this synchronous phase.
+    unsafe {
+        let header = header_from_data(data);
+        let key = (*visitor).context as usize;
+        let kind = (*visitor).kind;
+        if kind == Kind::PrepareTransfer {
+            if (*header).transfer_key != 0 && (*header).transfer_key != key {
+                return TRANSFER_PENDING;
+            }
+            if (*header).transfer_key == 0 {
+                if let Some(owner) = (*header).owner.clone() {
+                    let mut allocations = owner.inner.lock_or_recover();
+                    if allocations.closed {
+                        return hew_cabi::managed::UNDESCRIBED;
+                    }
+                    allocations.transfer_pins = allocations
+                        .transfer_pins
+                        .checked_add(1)
+                        .expect("Rc transfer pin overflow");
+                    (*header).transfer_owner = Some(owner.clone());
+                }
+                (*header).transfer_key = key;
+            }
+        } else if kind == Kind::CommitTransfer {
+            rehome(header, data, visitor);
+        }
+        let width = match crate::owned_value_budget::visit::slot_bytes(&(*header).layout) {
+            Ok(width) => width,
+            Err(status) => return status,
+        };
+        let status = crate::owned_value_budget::visit::storage(visitor, data.cast(), width);
+        let mut status = match status {
+            DESCEND
+                if payload && (*header).payload_live && kind != Kind::ReleaseTransferredPayload =>
+            {
+                let mut payload_visitor = *visitor;
+                if kind == Kind::ClonePlan {
+                    payload_visitor.kind = Kind::Retain;
+                }
+                visit_value(&(*header).layout, data.cast(), &raw const payload_visitor)
+            }
+            DESCEND | SKIP_DESCENDANTS => 0,
+            failure => failure,
+        };
+        if matches!(kind, Kind::AbortTransfer | Kind::ResumeTransfer) {
+            finish_transfer(header, key);
+            // A failed child preparation must not strand the creator's sweep reservation.
+            if kind == Kind::AbortTransfer {
+                status = 0;
+            }
+        }
+        status
+    }
+}
+
 /// Normalise the caller-supplied payload alignment into a valid `Layout`
 /// alignment (a non-zero power of two).
 ///
@@ -358,6 +665,7 @@ pub unsafe extern "C" fn hew_rc_new(
     let header = ptr.cast::<HewRcInner>();
     // SAFETY: ptr is freshly allocated with correct alignment.
     unsafe {
+        crate::code_owner::CodeRoot::retain_for_carrier(value_layout.code_owner);
         header.write(HewRcInner {
             strong: Cell::new(1),
             weak: Cell::new(0),
@@ -365,6 +673,12 @@ pub unsafe extern "C" fn hew_rc_new(
             type_name,
             owner: None,
             owner_index: Cell::new(0),
+            value_owner: crate::owned_value_budget::materialize::invocation_owner(invocation),
+            managed_published: false,
+            membership_live: false,
+            payload_live: true,
+            transfer_key: 0,
+            transfer_owner: None,
             dying: false,
             data_size: size,
             data_align,
@@ -402,6 +716,73 @@ pub unsafe extern "C" fn hew_rc_new(
         crate::observe::record_rc_allocation(&label);
     }
     data_ptr
+}
+
+/// Construct and publish a typed Rc only after reserving its exact payload.
+/// # Safety
+/// The raw constructor contract holds; `result_layout` describes this Rc handle,
+/// and `out_status` remains writable. Refusal leaves `data` initialized.
+/// # Panics
+/// Panics if an unpublished fresh wrapper violates its construction invariants.
+#[no_mangle]
+pub unsafe extern "C" fn hew_rc_new_managed(
+    data: *const u8,
+    layout: *const HewValueLayout,
+    type_name: *const c_char,
+    invocation: *const crate::coro_state::HewCoroState,
+    result_layout: *const HewValueLayout,
+    out_status: *mut i32,
+) -> *mut u8 {
+    use crate::owned_value_budget::materialize::{
+        invocation_owner, HewManagedInput, MaterializationPermit,
+    };
+    // SAFETY: the compiler provides exact immutable descriptors and writable status.
+    unsafe {
+        out_status.write(0);
+        let permit = if let Some(owner) = invocation_owner(invocation) {
+            let width = match crate::owned_value_budget::visit::slot_bytes(&*layout) {
+                Ok(width) => width,
+                Err(status) => {
+                    out_status.write(status);
+                    return ptr::null_mut();
+                }
+            };
+            match MaterializationPermit::prepare(
+                owner,
+                width,
+                &[HewManagedInput {
+                    layout,
+                    slot: data.cast(),
+                    copies: 0,
+                    consume: 1,
+                }],
+            ) {
+                Ok(permit) => Some(permit),
+                Err(status) => {
+                    out_status.write(status);
+                    return ptr::null_mut();
+                }
+            }
+        } else {
+            None
+        };
+        let value = hew_rc_new(data, layout, type_name, invocation);
+        if value.is_null() {
+            out_status.write(hew_cabi::managed::HEAP_EXCEEDED);
+            return ptr::null_mut();
+        }
+        if let Some(permit) = permit {
+            if let Err(status) = permit.commit(&*result_layout, (&raw const value).cast()) {
+                // No result was adopted: the shallow wrapper borrows the still-live input.
+                let (header, _) = release_strong(value).expect("unpublished fresh Rc");
+                release_pin(header.cast());
+                out_status.write(status);
+                return ptr::null_mut();
+            }
+            publish(value);
+        }
+        value
+    }
 }
 
 /// Return an owned ordinary fault for access to terminally consumed storage.
@@ -482,6 +863,34 @@ pub unsafe extern "C-unwind" fn hew_rc_drop(ptr: *mut u8) {
     }
 }
 
+/// Release a source-owned Rc through the canonical semantic cleanup path.
+/// Raw descriptor candidates use [`hew_rc_drop`] before managed publication.
+/// # Safety
+/// `value` transfers one live strong reference in the current explicit account.
+/// Its payload has synchronous release, as required by the selected drop action.
+/// # Panics
+/// Panics if a resumable payload is passed to synchronous cleanup.
+#[no_mangle]
+pub unsafe extern "C-unwind" fn hew_rc_drop_managed(value: *mut u8) {
+    if value.is_null() {
+        return;
+    }
+    if crate::owned_value_budget::current_owner().is_none() {
+        // SAFETY: unbounded source cleanup needs only the ordinary physical release.
+        unsafe { hew_rc_drop(value) };
+        return;
+    }
+    // SAFETY: the source strong reference retains its exact stored descriptor.
+    unsafe {
+        let layout = (*header_from_data(value)).layout;
+        assert!(
+            layout.release_start.is_none(),
+            "Rc payload needs resumable release"
+        );
+        crate::release_walker::hew_release_sync(hew_rc_release_begin(value, &raw const layout));
+    }
+}
+
 /// Release one strong reference, transferring the final payload to a cursor.
 /// A temporary weak reference pins the header while the payload close suspends.
 /// # Safety
@@ -496,6 +905,13 @@ pub unsafe extern "C" fn hew_rc_release_begin(
 ) -> *mut crate::release_walker::HewReleaseCursor {
     use crate::release_walker::{HewReleaseCursor, ReleaseItem};
     let mut pending = Vec::new();
+    let owner = crate::owned_value_budget::current_owner();
+    if !value.is_null() && owner.is_some() {
+        // SAFETY: this semantic handle keeps its account and exact header alive.
+        unsafe {
+            release_managed_edge(value);
+        }
+    }
     // SAFETY: the caller transfers one strong owner and its payload descriptor.
     if let Some((header, stored)) = unsafe { release_strong(value) } {
         // SAFETY: the retained header stores the construction descriptor.
@@ -506,6 +922,21 @@ pub unsafe extern "C" fn hew_rc_release_begin(
             owner: header.cast(),
             free: release_pin,
         });
+        // SAFETY: final strong release reserved a header pin until this cursor completes.
+        if unsafe { (*header).membership_live } {
+            pending.push(ReleaseItem::ManagedBacking {
+                pointer: value.cast(),
+                // SAFETY: construction and publication checked this exact stored descriptor.
+                bytes: unsafe { crate::owned_value_budget::visit::slot_bytes(&stored) }
+                    .expect("published Rc payload descriptor"),
+                free: finish_managed_membership,
+            });
+        } else {
+            pending.push(ReleaseItem::Storage {
+                owner: value.cast(),
+                free: finish_managed_membership,
+            });
+        }
         if stored.drop_fn.is_some() || stored.release_start.is_some() {
             pending.push(ReleaseItem::Value {
                 slot: value.cast(),
@@ -513,7 +944,10 @@ pub unsafe extern "C" fn hew_rc_release_begin(
             });
         }
     }
-    HewReleaseCursor::new(pending)
+    let cursor = HewReleaseCursor::new(pending);
+    // SAFETY: the cursor pins the actual creator account through all child cleanup.
+    unsafe { (*cursor).set_value_owner(owner) };
+    cursor
 }
 
 /// Get the current strong reference count.
@@ -558,6 +992,19 @@ pub unsafe extern "C" fn hew_rc_weak_count(ptr: *mut u8) -> usize {
 #[no_mangle]
 pub unsafe extern "C" fn hew_rc_get(ptr: *mut u8) -> *mut u8 {
     ptr
+}
+
+/// Retain a source Rc alias in its existing incarnation account.
+/// # Safety
+/// The receiver is one live checked strong reference.
+#[no_mangle]
+pub unsafe extern "C" fn hew_rc_clone_managed(value: *mut u8) -> *mut u8 {
+    // SAFETY: the source retains one physical handle and one already charged backing.
+    unsafe {
+        let alias = hew_rc_clone(value);
+        retain_managed_edge(alias);
+        alias
+    }
 }
 
 /// Replace the payload shared by every strong alias.
@@ -608,6 +1055,57 @@ pub unsafe extern "C-unwind" fn hew_rc_set_release(
         assert_eq!(inner.data_align, (*layout).align);
         swap_payload(ptr, replacement);
         crate::release_walker::HewReleaseCursor::values([(replacement.cast(), *layout)])
+    }
+}
+
+/// Replace an Rc payload after acquiring the replacement's typed descendants.
+/// # Safety
+/// The ordinary checked set contract holds. Refusal preserves both inputs;
+/// success returns the displaced payload for its ordinary semantic cleanup.
+#[no_mangle]
+pub unsafe extern "C-unwind" fn hew_rc_set_release_checked(
+    value: *mut u8,
+    replacement: *mut u8,
+    layout: *const HewValueLayout,
+    out_status: *mut i32,
+) -> *mut crate::release_walker::HewReleaseCursor {
+    use crate::owned_value_budget::materialize::{HewManagedInput, MaterializationPermit};
+    // SAFETY: checked source execution retains the exact initialized payload slots.
+    unsafe {
+        out_status.write(0);
+        let owner = (*header_from_data(value)).value_owner.clone();
+        let permit = if let Some(owner) = owner.clone() {
+            match MaterializationPermit::prepare(
+                owner,
+                0,
+                &[HewManagedInput {
+                    layout,
+                    slot: replacement.cast(),
+                    copies: 0,
+                    consume: 1,
+                }],
+            ) {
+                Ok(permit) => Some(permit),
+                Err(status) => {
+                    out_status.write(status);
+                    return ptr::null_mut();
+                }
+            }
+        } else {
+            None
+        };
+        // Adoption precedes the swap; its shallow input snapshot is still valid.
+        if let Some(permit) = permit {
+            if let Err(status) = permit.commit(&*layout, replacement.cast()) {
+                out_status.write(status);
+                return ptr::null_mut();
+            }
+        }
+        let cursor = hew_rc_set_release(value, replacement, layout);
+        if let Some(cursor) = cursor.as_mut() {
+            cursor.set_value_owner(owner);
+        }
+        cursor
     }
 }
 
@@ -752,6 +1250,19 @@ pub unsafe extern "C" fn hew_weak_upgrade_rc(weak_ptr: *mut u8) -> *mut u8 {
     unsafe { weak_ptr.add(inner.data_offset) }
 }
 
+/// Upgrade a source weak reference, retaining the successful alias account edge.
+/// # Safety
+/// The weak header remains live through this non-suspending operation.
+#[no_mangle]
+pub unsafe extern "C" fn hew_weak_upgrade_rc_managed(weak: *mut u8) -> *mut u8 {
+    // SAFETY: a successful physical upgrade retains its already published backing.
+    unsafe {
+        let value = hew_weak_upgrade_rc(weak);
+        retain_managed_edge(value);
+        value
+    }
+}
+
 /// Drop a `Weak` reference. Decrements the weak count. If both strong
 /// and weak counts reach zero, frees the allocation.
 ///
@@ -796,7 +1307,14 @@ pub unsafe extern "C" fn hew_weak_drop_rc(weak_ptr: *mut u8) {
             let label = unsafe { std::ffi::CStr::from_ptr(inner.type_name) }.to_string_lossy();
             crate::observe::record_rc_free(&label);
         }
+        // Keep immutable code metadata, including the type label, alive until
+        // the final weak header disappears after payload cleanup.
+        // SAFETY: this final header free transfers its retained descriptor root.
+        let _code = unsafe { crate::code_owner::CodeRoot::take(inner.layout.code_owner) };
         // SAFETY: header was allocated with this layout.
+        // SAFETY: no strong or weak owner can access these retained account fields now.
+        unsafe { ptr::drop_in_place(header) };
+        // SAFETY: the exact header allocation is retired after its final native owner.
         unsafe { dealloc(header.cast(), layout) };
     }
 }
@@ -816,6 +1334,8 @@ mod tests {
         drop_fn: Option<unsafe extern "C" fn(*mut u8)>,
     ) -> *mut u8 {
         let layout = HewValueLayout {
+            code_owner: core::ptr::null(),
+            managed: core::ptr::null(),
             size,
             align,
             ownership_kind: hew_cabi::value::HewTypeOwnershipKind::LayoutManaged,
@@ -1241,3 +1761,7 @@ mod tests {
         assert_eq!(normalise_align(48), 64);
     }
 }
+
+#[cfg(test)]
+#[path = "rc_managed_tests.rs"]
+mod managed_tests;

@@ -79,6 +79,12 @@ fn main() fails dyn Error {
     let tagged: Tagged<i64> = Tagged.Tag(5);
     println(f"{tagged}");
     println(f"{report("host")?}");
-    let port = load("port").context("reading the listen port")?;
+    let port = match load("port").context("reading the listen port") {
+        .Ok(value) => value,
+        .Err(problem) => {
+            println(problem.fmt());
+            return error problem;
+        }
+    };
     println(f"unreachable {port}");
 }

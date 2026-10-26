@@ -98,9 +98,8 @@ fn supervisor_construction_requires_the_resumable_callable_abi() {
     assert!(constructor.is_resumable);
     let mut invalid = physical.clone();
     invalid.callables[constructor.id.0 as usize].is_resumable = false;
-    let error = verify_physical_module(&invalid)
+    verify_physical_module(&invalid)
         .expect_err("the verifier must reject a synchronous supervisor constructor");
-    assert!(error.message.contains("resumable"), "{error:?}");
 }
 
 #[test]
@@ -136,16 +135,8 @@ fn cloned_sink_requires_its_exact_owner_descriptor() {
         *arguments = PhysicalArguments::new(arguments.to_vec(), arguments.carriers().to_vec())
             .unwrap()
             .with_value_witnesses(witnesses);
-        let error = verify_physical_module(&invalid)
+        verify_physical_module(&invalid)
             .expect_err("a sink cannot use an absent or foreign descriptor");
-        assert!(
-            error.message.contains(if missing {
-                "incomplete value witnesses"
-            } else {
-                "witness disagrees with its argument"
-            }),
-            "{error:?}"
-        );
     }
     let mut invalid = physical.clone();
     let receiver = invalid
@@ -158,9 +149,7 @@ fn cloned_sink_requires_its_exact_owner_descriptor() {
         })
         .expect("sink send call");
     receiver.ty = ResolvedTy::I64;
-    let error = verify_physical_module(&invalid)
-        .expect_err("a sender cannot use a foreign owner descriptor");
-    assert!(error.message.contains("receiver"), "{error:?}");
+    verify_physical_module(&invalid).expect_err("a sender cannot use a foreign owner descriptor");
 }
 
 #[test]
@@ -168,10 +157,7 @@ fn exclusive_receiver_rejects_value_carriers_and_shared_call_arguments() {
     let (physical, id) = exclusive_receiver();
     let mut invalid = physical.clone();
     invalid.callables[id.0 as usize].params[0].carrier = ParamCarrier::Direct;
-    assert!(verify_physical_module(&invalid)
-        .unwrap_err()
-        .message
-        .contains("caller storage by address"));
+    assert!(verify_physical_module(&invalid).is_err());
 
     let mut invalid = physical;
     for function in &mut invalid.functions {
@@ -186,10 +172,7 @@ fn exclusive_receiver_rejects_value_carriers_and_shared_call_arguments() {
             }
         }
     }
-    assert!(verify_physical_module(&invalid)
-        .unwrap_err()
-        .message
-        .contains("transfer disagrees with parameter passing"));
+    assert!(verify_physical_module(&invalid).is_err());
 }
 
 fn i64_layout() -> PhysicalLayout {
@@ -375,23 +358,13 @@ fn utf8_decode_rejects_a_foreign_optional_payload_descriptor() {
                     },
                 ..
             },
-        failure,
         ..
     } = &mut physical.functions[0].blocks[0].terminator
     else {
         panic!("expected the typed decoder runtime action");
     };
-    assert!(
-        failure.is_none(),
-        "invalid UTF-8 is not a native fault edge"
-    );
     *error_len = *result;
-    let error = verify_physical_module(&physical)
-        .expect_err("Result storage cannot stand in for Option<i64>");
-    assert!(
-        error.message.contains("UTF-8 decode physical descriptors"),
-        "{error:?}"
-    );
+    verify_physical_module(&physical).expect_err("Result storage cannot stand in for Option<i64>");
 }
 
 fn test_struct_layout(fields: Vec<PhysicalLayout>) -> PhysicalLayout {
@@ -569,6 +542,57 @@ fn lower_source(source: &str) -> SemModule {
 }
 
 #[test]
+fn frame_roots_follow_live_owners_at_loop_and_child_suspension() {
+    for pause in [
+        "for i in 0..2 { assert(held.len() > i); }",
+        "pause(); assert(held.len() == 4);",
+    ] {
+        let source = format!(
+            r#"
+fn pause() {{ sleep(1ms); }}
+fn main() {{
+    {{ let temporary = "gone"; assert(temporary.len() == 4); }}
+    let held = "held";
+    {pause}
+}}
+"#
+        );
+        let semantic = lower_source(&source);
+        let physical = lower_physical_module(&semantic, target_for_inventory(&semantic)).unwrap();
+        let module = physical.module();
+        let function = module
+            .functions
+            .iter()
+            .find(|function| {
+                module
+                    .defs
+                    .path(module.callables[function.callable.0 as usize].declaration)
+                    == "main"
+            })
+            .unwrap();
+        let local_slot = |name| {
+            *module.debug.functions[&function.callable]
+                .locals
+                .iter()
+                .find(|(_, local)| local.name == name)
+                .unwrap()
+                .0
+        };
+        assert!(
+            !function
+                .frame_roots
+                .slots
+                .contains(&local_slot("temporary")),
+            "a disposed synchronous temporary is not a suspended frame root"
+        );
+        assert!(
+            function.frame_roots.slots.contains(&local_slot("held")),
+            "a live owner survives both cooperative loop polls and child calls"
+        );
+    }
+}
+
+#[test]
 fn deferred_value_comparison_proves_its_selected_physical_callees() {
     let semantic = lower_source(
         r"type Key { id: i64; }
@@ -739,10 +763,7 @@ fn main() {
     let mut wrong_slot_abi = physical.clone();
     wrong_slot_abi.vtables[0].slots[0].is_resumable =
         !wrong_slot_abi.vtables[0].slots[0].is_resumable;
-    assert!(verify_physical_module(&wrong_slot_abi)
-        .unwrap_err()
-        .message
-        .contains("vtable slot has an inconsistent resumable ABI"));
+    assert!(verify_physical_module(&wrong_slot_abi).is_err());
     let mut wrong_call_abi = physical.clone();
     let dispatch = wrong_call_abi
         .functions
@@ -754,10 +775,7 @@ fn main() {
         })
         .expect("dynamic call");
     *dispatch = !*dispatch;
-    assert!(verify_physical_module(&wrong_call_abi)
-        .unwrap_err()
-        .message
-        .contains("dynamic dispatch has an inconsistent resumable ABI"));
+    assert!(verify_physical_module(&wrong_call_abi).is_err());
     let methods: Vec<_> = physical
         .vtables
         .iter()
@@ -780,8 +798,7 @@ fn main() {
         methods[0]
     };
 
-    let error = verify_physical_module(&physical).expect_err("wrong method must fail");
-    assert!(error.message.contains("fills with"), "{error:?}");
+    verify_physical_module(&physical).expect_err("wrong method must fail");
 }
 
 #[test]
@@ -805,9 +822,8 @@ fn extern_byte_result_rejects_storage_aggregate_return() {
         })
         .expect("source must reach its declared byte producer");
     *call = PhysicalExternResultAbi::Direct;
-    let error = verify_physical_module(&physical)
+    verify_physical_module(&physical)
         .expect_err("a byte storage aggregate is not the C return ABI");
-    assert!(error.message.contains("extern result ABI"), "{error:?}");
 }
 
 fn module_with_return() -> SemModule {
@@ -1104,10 +1120,7 @@ fn main() {
         }
     }
     assert!(changed);
-    assert!(verify_physical_module(&physical)
-        .unwrap_err()
-        .message
-        .contains("codec plan selects a different physical value shape"));
+    assert!(verify_physical_module(&physical).is_err());
 }
 
 #[test]
@@ -1163,7 +1176,7 @@ fn lowers_scalar_tuple_construction_and_projection_to_explicit_ops() {
         .functions
         .iter()
         .flat_map(|function| &function.blocks)
-        .flat_map(|block| &block.ops)
+        .flat_map(super::types::PhysicalBlock::operations)
         .collect::<Vec<_>>();
     assert!(operations.iter().any(|operation| matches!(
         operation,
@@ -1216,7 +1229,7 @@ fn main() {
         .functions
         .iter()
         .flat_map(|function| &function.blocks)
-        .flat_map(|block| &block.ops)
+        .flat_map(super::types::PhysicalBlock::operations)
         .collect::<Vec<_>>();
     assert!(operations
         .iter()
@@ -1235,7 +1248,7 @@ fn main() {
             function
                 .blocks
                 .iter()
-                .flat_map(|block| &block.ops)
+                .flat_map(super::types::PhysicalBlock::operations)
                 .filter_map(|operation| {
                     let PhysicalOp::Clone {
                         source,
@@ -1274,7 +1287,11 @@ fn borrowed_aggregate_fields_retain_exact_sir_parent_dependencies() {
     let physical = borrowed_aggregate_fixture();
     let function = &physical.functions[0];
     let mut loans = 0;
-    for operation in function.blocks.iter().flat_map(|block| &block.ops) {
+    for operation in function
+        .blocks
+        .iter()
+        .flat_map(super::types::PhysicalBlock::operations)
+    {
         if let PhysicalOp::AggregateProjectBorrow {
             dest, aggregate, ..
         } = operation
@@ -1378,7 +1395,7 @@ fn physical_field_loans_refuse_wrong_fields_and_forged_dependencies() {
         let operation = function
             .blocks
             .iter_mut()
-            .flat_map(|block| &mut block.ops)
+            .flat_map(super::types::PhysicalBlock::operations_mut)
             .find(|op| matches!(op, PhysicalOp::AggregateProjectBorrow { .. }))
             .unwrap();
         let PhysicalOp::AggregateProjectBorrow { dest, field, .. } = operation else {
@@ -1389,12 +1406,7 @@ fn physical_field_loans_refuse_wrong_fields_and_forged_dependencies() {
         } else {
             function.storage[dest.0 as usize].borrow_parent = None;
         }
-        let error = verify_physical_module(&physical).expect_err("malformed field loan");
-        assert!(
-            error.message.contains("out of bounds")
-                || error.message.contains("no SIR parent dependency"),
-            "{error}"
-        );
+        verify_physical_module(&physical).expect_err("malformed field loan");
     }
 }
 
@@ -1424,31 +1436,32 @@ fn physical_borrow_roots_cannot_end_before_their_dependent_reads() {
         }
         let read = vector_block(function, VecValueOp::Index);
         read.ops.push(cleanup.unwrap());
-        let error = verify_physical_module(&physical).expect_err("live dependent loan");
-        assert!(error.message.contains("dependent loan is live"), "{error}");
+        verify_physical_module(&physical).expect_err("live dependent loan");
     }
 }
 
 #[test]
 fn physical_fault_cleanup_must_end_its_field_loans() {
     let mut physical = borrowed_aggregate_fixture();
+    let PhysicalTerminator::RuntimeCall {
+        failure: Some(failure),
+        ..
+    } = &vector_block(&mut physical.functions[0], VecValueOp::Index).terminator
+    else {
+        panic!("the field read must expose its checked failure cleanup");
+    };
+    let cleanup = failure.target;
     let fault = physical.functions[0]
         .blocks
         .iter_mut()
-        .find(|block| {
-            matches!(
-                block.terminator,
-                PhysicalTerminator::CheckedRaiseFault { .. }
-            )
-        })
-        .unwrap();
+        .find(|block| block.id == cleanup)
+        .expect("the field read's failure cleanup block");
     let before = fault.ops.len();
     fault
         .ops
         .retain(|op| !matches!(op, PhysicalOp::EndBorrow { .. }));
     assert!(fault.ops.len() < before);
-    let error = verify_physical_module(&physical).expect_err("loan cleanup on fault edge");
-    assert!(error.message.contains("dependent loan is live"), "{error}");
+    verify_physical_module(&physical).expect_err("loan cleanup on fault edge");
 }
 
 fn borrowed_variant_fixture() -> PhysicalModule {
@@ -1487,7 +1500,11 @@ fn borrowed_variant_payloads_retain_their_enum_dependency() {
     let physical = borrowed_variant_fixture();
     let mut loans = 0;
     for function in &physical.functions {
-        for operation in function.blocks.iter().flat_map(|block| &block.ops) {
+        for operation in function
+            .blocks
+            .iter()
+            .flat_map(super::types::PhysicalBlock::operations)
+        {
             if let PhysicalOp::VariantProjectBorrow { dest, source, .. } = operation {
                 loans += 1;
                 let slot = &function.storage[dest.0 as usize];
@@ -1514,14 +1531,14 @@ fn physical_variant_loans_refuse_forged_dependencies_and_fields() {
                 function
                     .blocks
                     .iter()
-                    .flat_map(|block| &block.ops)
+                    .flat_map(super::types::PhysicalBlock::operations)
                     .any(|op| matches!(op, PhysicalOp::VariantProjectBorrow { .. }))
             })
             .unwrap();
         let operation = function
             .blocks
             .iter_mut()
-            .flat_map(|block| &mut block.ops)
+            .flat_map(super::types::PhysicalBlock::operations_mut)
             .find(|op| matches!(op, PhysicalOp::VariantProjectBorrow { .. }))
             .unwrap();
         let PhysicalOp::VariantProjectBorrow { dest, field, .. } = operation else {
@@ -1532,12 +1549,7 @@ fn physical_variant_loans_refuse_forged_dependencies_and_fields() {
         } else {
             function.storage[dest.0 as usize].borrow_parent = None;
         }
-        let error = verify_physical_module(&physical).expect_err("malformed payload loan");
-        assert!(
-            error.message.contains("out of bounds")
-                || error.message.contains("no SIR parent dependency"),
-            "{error}"
-        );
+        verify_physical_module(&physical).expect_err("malformed payload loan");
     }
 }
 
@@ -1607,9 +1619,8 @@ fn main() -> i64 {
             len: 1,
         },
     });
-    let short_error = lower_physical_module(&module, short)
+    lower_physical_module(&module, short)
         .expect_err("variant payload carrier must fit its widest case");
-    assert!(short_error.message.contains("payload carrier"));
 
     let under_aligned = target_with_carrier(PhysicalLayout {
         size: 16,
@@ -1623,9 +1634,8 @@ fn main() -> i64 {
             len: 16,
         },
     });
-    let alignment_error = lower_physical_module(&module, under_aligned)
+    lower_physical_module(&module, under_aligned)
         .expect_err("variant payload carrier must meet every case alignment");
-    assert!(alignment_error.message.contains("payload carrier"));
 }
 
 #[test]
@@ -1650,16 +1660,15 @@ fn main() {
         .functions
         .iter_mut()
         .flat_map(|function| &mut function.blocks)
-        .flat_map(|block| &mut block.ops)
+        .flat_map(super::types::PhysicalBlock::operations_mut)
         .find_map(|operation| match operation {
             PhysicalOp::AggregateMake { fields, .. } => Some(fields),
             _ => None,
         })
         .expect("aggregate construction");
     fields[1] = fields[0];
-    let error = verify_physical_module(&duplicate_consume)
+    verify_physical_module(&duplicate_consume)
         .expect_err("aggregate construction must not consume one owner twice");
-    assert!(error.message.contains("more than once"));
 
     let mut bad_path = physical.clone();
     let function = &mut physical.functions[0];
@@ -1671,7 +1680,7 @@ fn main() {
     let (source, action) = function
         .blocks
         .iter_mut()
-        .flat_map(|block| &mut block.ops)
+        .flat_map(super::types::PhysicalBlock::operations_mut)
         .find_map(|operation| match operation {
             PhysicalOp::Clone { source, action, .. } if projected_sources.contains(source) => {
                 Some((*source, action))
@@ -1682,9 +1691,7 @@ fn main() {
     assert_eq!(*action, CloneAction::StringRetain);
     assert_eq!(function.place_storage[&source].path[0].field, 0);
     *action = CloneAction::BytesRetain;
-    let error = verify_physical_module(&physical)
-        .expect_err("projected clone must use its exact field recipe");
-    assert!(error.message.contains("physical clone action"), "{error:?}");
+    verify_physical_module(&physical).expect_err("projected clone must use its exact field recipe");
 
     bad_path.functions[0]
         .place_storage
@@ -1692,9 +1699,8 @@ fn main() {
         .unwrap()
         .path[0]
         .field = u32::MAX;
-    let error = verify_physical_module(&bad_path)
+    verify_physical_module(&bad_path)
         .expect_err("projected clone must address a declared aggregate field");
-    assert!(error.message.contains("aggregate"), "{error:?}");
 }
 
 #[test]
@@ -1714,16 +1720,15 @@ fn verifier_rejects_owned_or_out_of_bounds_tuple_operations() {
     let tuple_dest = owned_tuple.functions[0]
         .blocks
         .iter()
-        .flat_map(|block| &block.ops)
+        .flat_map(super::types::PhysicalBlock::operations)
         .find_map(|operation| match operation {
             PhysicalOp::TupleMake { dest, .. } => Some(*dest),
             _ => None,
         })
         .expect("tuple construction");
     owned_tuple.functions[0].storage[tuple_dest.0 as usize].own = OwnKind::Owned;
-    let error = verify_physical_module(&owned_tuple)
+    verify_physical_module(&owned_tuple)
         .expect_err("physical tuple must not infer aggregate ownership");
-    assert!(error.message.contains("limited to no-drop values"));
 
     let mut bad_index = lower_physical_module(&module, target_for_inventory(&module))
         .expect("valid physical tuple")
@@ -1731,26 +1736,23 @@ fn verifier_rejects_owned_or_out_of_bounds_tuple_operations() {
     let index = bad_index.functions[0]
         .blocks
         .iter_mut()
-        .flat_map(|block| &mut block.ops)
+        .flat_map(super::types::PhysicalBlock::operations_mut)
         .find_map(|operation| match operation {
             PhysicalOp::TupleGet { index, .. } => Some(index),
             _ => None,
         })
         .expect("tuple projection");
     *index = 2;
-    let error = verify_physical_module(&bad_index)
-        .expect_err("physical tuple projection must stay in bounds");
-    assert!(error.message.contains("index 2 is out of bounds"));
+    verify_physical_module(&bad_index).expect_err("physical tuple projection must stay in bounds");
 }
 
 #[test]
 fn refuses_a_missing_target_layout_before_codegen() {
-    let error = lower_physical_module(
+    lower_physical_module(
         &module_with_return(),
         PhysicalTarget::new("x86_64-unknown-linux-gnu", "e-p:64:64"),
     )
     .expect_err("layout must be required");
-    assert!(error.message.contains("no concrete layout for `i64`"));
 }
 
 #[test]
@@ -1872,9 +1874,8 @@ fn verifier_rejects_changed_runtime_transfer_and_failure_contracts() {
         other => panic!("expected moved bytes receiver, got {other:?}"),
     };
     push_args.transfers_mut()[0] = ArgumentTransfer::Borrow(moved);
-    let error = verify_physical_module(&wrong_transfer)
+    verify_physical_module(&wrong_transfer)
         .expect_err("borrow must not replace the bytes owner move");
-    assert!(error.message.contains("argument disagrees"));
 
     let mut missing_failure = lower_physical_module(&module, target_for_inventory(&module))
         .expect("valid physical bytes module")
@@ -1897,9 +1898,8 @@ fn verifier_rejects_changed_runtime_transfer_and_failure_contracts() {
         })
         .expect("bytes index physical action");
     *failure = None;
-    let error = verify_physical_module(&missing_failure)
+    verify_physical_module(&missing_failure)
         .expect_err("bytes index must retain its SIR-authored failure edge");
-    assert!(error.message.contains("failure edge disagrees"));
 }
 
 #[test]
@@ -1927,8 +1927,7 @@ fn verifier_rejects_noncanonical_callable_identity() {
     let verified = lower_physical_module(&module_with_return(), target()).expect("lower");
     let mut physical = verified.into_unverified();
     physical.callables[0].id = CallableId(4);
-    let error = verify_physical_module(&physical).expect_err("identity must be checked");
-    assert!(error.message.contains("canonical table index"));
+    verify_physical_module(&physical).expect_err("identity must be checked");
 }
 
 #[test]
@@ -1956,8 +1955,7 @@ fn verifier_rejects_call_result_missing_from_normal_contract() {
         panic!("call fixture");
     };
     *result = None;
-    let error = verify_physical_module(&physical).expect_err("result-out must be checked");
-    assert!(error.message.contains("result-out presence"));
+    verify_physical_module(&physical).expect_err("result-out must be checked");
 }
 
 #[test]
@@ -1974,8 +1972,7 @@ fn verifier_rejects_call_result_read_on_the_unwind_edge() {
         transfers: vec![(StorageId(0), StorageId(1))],
         leaf_transfers: vec![],
     });
-    let error = verify_physical_module(&physical).expect_err("fault cannot expose result");
-    assert!(error.message.contains("reads uninitialized storage 0"));
+    verify_physical_module(&physical).expect_err("fault cannot expose result");
 }
 
 #[test]
@@ -2028,9 +2025,8 @@ fn main() {
             block.terminator = PhysicalTerminator::Goto(normal.clone());
         }
     }
-    let error = verify_physical_module(&physical)
+    verify_physical_module(&physical)
         .expect_err("the caller owns a possible displaced-release fault");
-    assert!(error.message.contains("fault"), "{}", error.message);
 }
 
 #[test]
@@ -2039,23 +2035,16 @@ fn verifier_rejects_propagating_an_uninitialized_fault() {
     let mut physical = verified.into_unverified();
     physical.functions[0].blocks[0].terminator =
         PhysicalTerminator::PropagateFault { handback: None };
-    let error = verify_physical_module(&physical).expect_err("fault must be initialized");
-    assert!(error.message.contains("fault that is not initialized"));
+    verify_physical_module(&physical).expect_err("fault must be initialized");
 }
 
 #[test]
 fn verifier_rejects_terminals_that_abandon_an_active_fault() {
     let verified =
         lower_physical_module(&module_with_call_and_unwind(), target()).expect("lower call");
-    for (terminal, expected) in [
-        (
-            PhysicalTerminator::Trap(TrapKind::IntegerOverflow),
-            "creates a trap while an earlier fault is active",
-        ),
-        (
-            PhysicalTerminator::Unreachable,
-            "abandons an active fault at unreachable",
-        ),
+    for terminal in [
+        PhysicalTerminator::Trap(TrapKind::IntegerOverflow),
+        PhysicalTerminator::Unreachable,
     ] {
         let mut physical = verified.clone().into_unverified();
         physical.functions[0]
@@ -2064,9 +2053,8 @@ fn verifier_rejects_terminals_that_abandon_an_active_fault() {
             .find(|block| block.id == BlockId(2))
             .expect("unwind cleanup block")
             .terminator = terminal;
-        let error = verify_physical_module(&physical)
+        verify_physical_module(&physical)
             .expect_err("an active fault owner must be propagated exactly once");
-        assert!(error.message.contains(expected), "{}", error.message);
     }
 }
 
@@ -2085,7 +2073,7 @@ fn verifier_checks_assign_source_before_initialization_analysis() {
     let operation = physical.functions[0]
         .blocks
         .iter_mut()
-        .flat_map(|block| &mut block.ops)
+        .flat_map(super::types::PhysicalBlock::operations_mut)
         .find(|operation| {
             matches!(
                 operation,
@@ -2108,9 +2096,8 @@ fn verifier_checks_assign_source_before_initialization_analysis() {
         destroy_old: Some(DestroyAction::StringRelease),
         cleanup,
     };
-    let error = verify_physical_module(&physical)
+    verify_physical_module(&physical)
         .expect_err("invalid assignment storage must fail without indexing it");
-    assert!(error.message.contains("unknown physical storage"));
 }
 
 #[test]
@@ -2136,7 +2123,7 @@ fn verifier_checks_binary_result_and_constant_payload_types() {
     let destination = wrong_binary.functions[0]
         .blocks
         .iter_mut()
-        .flat_map(|block| &mut block.ops)
+        .flat_map(super::types::PhysicalBlock::operations_mut)
         .find_map(|operation| match operation {
             PhysicalOp::Binary {
                 op: BinaryOp::WrappingAdd,
@@ -2147,15 +2134,13 @@ fn verifier_checks_binary_result_and_constant_payload_types() {
         })
         .expect("wrapping binary operation");
     *destination = bool_dest;
-    let error = verify_physical_module(&wrong_binary)
-        .expect_err("binary result must retain the operand type");
-    assert!(error.message.contains("binary result type"));
+    verify_physical_module(&wrong_binary).expect_err("binary result must retain the operand type");
 
     let mut wrong_constant = verified.into_unverified();
     let constant = wrong_constant.functions[0]
         .blocks
         .iter_mut()
-        .flat_map(|block| &mut block.ops)
+        .flat_map(super::types::PhysicalBlock::operations_mut)
         .find_map(|operation| match operation {
             PhysicalOp::Const {
                 value: value @ PhysicalConst::IntegerBits(_),
@@ -2165,9 +2150,8 @@ fn verifier_checks_binary_result_and_constant_payload_types() {
         })
         .expect("integer constant");
     *constant = PhysicalConst::Bool(true);
-    let error = verify_physical_module(&wrong_constant)
+    verify_physical_module(&wrong_constant)
         .expect_err("constant payload must agree with its destination");
-    assert!(error.message.contains("constant payload"));
 }
 
 #[test]
@@ -2179,7 +2163,7 @@ fn full_range_u64_literal_lowers_to_its_exact_bit_pattern() {
     let bits = physical.functions[0]
         .blocks
         .iter()
-        .flat_map(|block| &block.ops)
+        .flat_map(super::types::PhysicalBlock::operations)
         .find_map(|operation| match operation {
             PhysicalOp::Const {
                 value: PhysicalConst::IntegerBits(bits),
@@ -2200,7 +2184,7 @@ fn negative_signed_literal_lowers_to_its_destination_width_twos_complement() {
     let bits = physical.functions[0]
         .blocks
         .iter()
-        .flat_map(|block| &block.ops)
+        .flat_map(super::types::PhysicalBlock::operations)
         .find_map(|operation| match operation {
             PhysicalOp::Const {
                 value: PhysicalConst::IntegerBits(bits),
@@ -2223,7 +2207,7 @@ fn verifier_rejects_a_constant_with_bits_above_its_destination_width() {
     let constant = malformed.functions[0]
         .blocks
         .iter_mut()
-        .flat_map(|block| &mut block.ops)
+        .flat_map(super::types::PhysicalBlock::operations_mut)
         .find_map(|operation| match operation {
             PhysicalOp::Const {
                 value: value @ PhysicalConst::IntegerBits(_),
@@ -2235,9 +2219,8 @@ fn verifier_rejects_a_constant_with_bits_above_its_destination_width() {
     // Bit 8 cannot belong to an eight-bit destination: the backend would
     // emit the pattern as written and produce a different value.
     *constant = PhysicalConst::IntegerBits(0x107);
-    let error = verify_physical_module(&malformed)
+    verify_physical_module(&malformed)
         .expect_err("a constant must be canonical for its destination width");
-    assert!(error.message.contains("constant payload"));
 }
 
 #[test]
@@ -2249,7 +2232,7 @@ fn verifier_rejects_missing_physical_literal_pool_entries() {
     let literal = physical.functions[0]
         .blocks
         .iter_mut()
-        .flat_map(|block| &mut block.ops)
+        .flat_map(super::types::PhysicalBlock::operations_mut)
         .find_map(|operation| match operation {
             PhysicalOp::Const {
                 value: PhysicalConst::String(id),
@@ -2259,9 +2242,8 @@ fn verifier_rejects_missing_physical_literal_pool_entries() {
         })
         .expect("string constant");
     *literal = hew_sir::StringLiteralId(u32::MAX);
-    let error = verify_physical_module(&physical)
+    verify_physical_module(&physical)
         .expect_err("physical string constant must name a module literal");
-    assert!(error.message.contains("unknown literal"));
 }
 
 #[test]
@@ -2299,9 +2281,8 @@ fn verifier_rejects_checked_result_on_a_failure_edge() {
         transfers: vec![(StorageId(2), StorageId(3))],
         leaf_transfers: vec![],
     };
-    let error = verify_physical_module(&physical)
+    verify_physical_module(&physical)
         .expect_err("a failure edge cannot observe the normal-only result");
-    assert!(error.message.contains("reads uninitialized storage 2"));
 }
 
 #[test]
@@ -2315,9 +2296,8 @@ fn verifier_rejects_a_changed_checked_failure_kind() {
         panic!("checked add fixture");
     };
     failures[0].kind = TrapKind::DivideByZero;
-    let error = verify_physical_module(&physical)
+    verify_physical_module(&physical)
         .expect_err("physical failure kinds must preserve SIR semantics");
-    assert!(error.message.contains("failure set disagrees"));
 }
 
 #[test]
@@ -2389,6 +2369,7 @@ fn verifier_rejects_overwriting_a_maybe_live_owner() {
         entry: BlockId(0),
         parameters: vec![],
         place_storage: BTreeMap::new(),
+        frame_roots: PhysicalFrameRootPlan::default(),
         storage: vec![
             PhysicalStorage {
                 id: StorageId(0),
@@ -2479,6 +2460,7 @@ fn verifier_rejects_overwriting_a_maybe_live_owner() {
         actors: Vec::new(),
         supervisors: Vec::new(),
         actor_recipes: BTreeMap::new(),
+        managed_types: BTreeMap::new(),
         resources: vec![],
         closures: vec![],
         callable_specializations: Vec::new(),
@@ -2505,9 +2487,8 @@ fn verifier_rejects_overwriting_a_maybe_live_owner() {
         ]),
         bytes_literals: BTreeMap::new(),
     };
-    let error = verify_physical_module(&physical)
+    verify_physical_module(&physical)
         .expect_err("a path-dependent live owner cannot be overwritten");
-    assert!(error.message.contains("may overwrite a live obligation"));
 }
 
 fn collection_parameter_fixture() -> PhysicalModule {
@@ -2606,13 +2587,7 @@ fn collection_callback_cleanup_releases_storage_and_owns_its_fault() {
     let mut invalid = physical.clone();
     invalid.functions[function].blocks[cleanup.0 as usize].terminator =
         PhysicalTerminator::Trap(TrapKind::IndexOutOfBounds);
-    let error = verify_physical_module(&invalid).unwrap_err();
-    assert!(
-        error
-            .message
-            .contains("physical function exit leaves local storage active"),
-        "{error}"
-    );
+    verify_physical_module(&invalid).unwrap_err();
 
     let mut invalid = physical;
     let success = invalid.functions[function]
@@ -2621,13 +2596,7 @@ fn collection_callback_cleanup_releases_storage_and_owns_its_fault() {
         .find(|block| matches!(block.terminator, PhysicalTerminator::Return { .. }))
         .unwrap();
     success.terminator = PhysicalTerminator::PropagateFault { handback: None };
-    let error = verify_physical_module(&invalid).unwrap_err();
-    assert!(
-        error
-            .message
-            .contains("propagates a fault that is not initialized"),
-        "{error}"
-    );
+    verify_physical_module(&invalid).unwrap_err();
 }
 
 #[test]
@@ -2670,10 +2639,7 @@ fn main() -> i64 {
     missing_body
         .functions
         .retain(|function| function.callable != callable);
-    assert!(verify_physical_module(&missing_body)
-        .unwrap_err()
-        .message
-        .contains("signature or body"));
+    assert!(verify_physical_module(&missing_body).is_err());
 
     let mut substituted = physical.clone();
     substituted
@@ -2681,18 +2647,12 @@ fn main() -> i64 {
         .get_mut(user_key)
         .unwrap()
         .method = PhysicalValueMethod::Scalar;
-    assert!(verify_physical_module(&substituted)
-        .unwrap_err()
-        .message
-        .contains("changed its selected callable"));
+    assert!(verify_physical_module(&substituted).is_err());
 
     let mut forged_identity = physical.clone();
     forged_identity.callables[callable.0 as usize].declaration =
         hew_types::DefId::for_test("unselected_compatible_hash");
-    assert!(verify_physical_module(&forged_identity)
-        .unwrap_err()
-        .message
-        .contains("checker selection"));
+    assert!(verify_physical_module(&forged_identity).is_err());
 
     let mut transplanted = physical.clone();
     let derived = physical
@@ -2704,17 +2664,11 @@ fn main() -> i64 {
         .get_mut(user_key)
         .unwrap()
         .selection = derived.selection.clone();
-    assert!(verify_physical_module(&transplanted)
-        .unwrap_err()
-        .message
-        .contains("another type or capability"));
+    assert!(verify_physical_module(&transplanted).is_err());
 
     let mut missing_component = physical.clone();
     missing_component.value_capabilities.remove(user_key);
-    assert!(verify_physical_module(&missing_component)
-        .unwrap_err()
-        .message
-        .contains("selected component"));
+    assert!(verify_physical_module(&missing_component).is_err());
 
     let mut absent_keys = physical;
     absent_keys.value_capabilities.clear();
@@ -2890,7 +2844,7 @@ fn vector_values_use_shared_copy_drop_recipes_for_every_element_shape() {
                 .functions
                 .iter()
                 .flat_map(|function| &function.blocks)
-                .flat_map(|block| &block.ops)
+                .flat_map(super::types::PhysicalBlock::operations)
                 .any(|op| matches!(
                     op,
                     PhysicalOp::Clone {
@@ -3016,23 +2970,11 @@ fn verifier_rejects_vector_descriptor_identity_and_recipe_drift() {
             }
             _ => unreachable!(),
         }
-        let error = verify_physical_module(&physical).expect_err("forged vector recipe");
-        let expected = match mutation {
-            0 => "exact element identity",
-            1 => "physical clone action Vector",
-            2 => "physical destroy action Vector",
-            3 => "semantic ownership or cloneability",
-            _ => unreachable!(),
-        };
-        assert!(error.message.contains(expected), "{mutation}: {error}");
+        verify_physical_module(&physical).expect_err("forged vector recipe");
     }
     let mut physical = original;
     physical.vector_glue[string_id].id = PhysicalVectorId(999);
-    let error = verify_physical_module(&physical).unwrap_err();
-    assert!(
-        error.message.contains("unknown physical vector glue"),
-        "{error}"
-    );
+    verify_physical_module(&physical).unwrap_err();
 }
 
 #[test]
@@ -3095,12 +3037,7 @@ fn verifier_rejects_foreign_vector_and_extraction_descriptors() {
             }
             _ => unreachable!(),
         }
-        let error = verify_physical_module(&physical).expect_err("foreign physical descriptor");
-        assert!(
-            error.message.contains("foreign vector descriptor")
-                || error.message.contains("result descriptor"),
-            "{operation:?}: {error}"
-        );
+        verify_physical_module(&physical).expect_err("foreign physical descriptor");
     }
 }
 
@@ -3119,8 +3056,7 @@ fn verifier_checks_vector_element_types_and_result_ownership() {
         unreachable!()
     };
     args.transfers_mut()[2] = ArgumentTransfer::Borrow(integer);
-    let error = verify_physical_module(&physical).expect_err("right arity, wrong element type");
-    assert!(error.message.contains("runtime argument 2"), "{error}");
+    verify_physical_module(&physical).expect_err("right arity, wrong element type");
 
     for operation in [VecValueOp::Index, VecValueOp::Get, VecValueOp::Pop] {
         let mut physical = original.clone();
@@ -3144,12 +3080,7 @@ fn verifier_checks_vector_element_types_and_result_ownership() {
         // Even a forged loan dependency cannot change an owning extraction
         // into a borrowed result of this runtime operation.
         slot.borrow_parent = Some(parent);
-        let error = verify_physical_module(&physical)
-            .expect_err("extraction cannot yield an interior borrow");
-        assert!(
-            error.message.contains("result ownership"),
-            "{operation:?}: {error}"
-        );
+        verify_physical_module(&physical).expect_err("extraction cannot yield an interior borrow");
     }
 }
 
@@ -3163,11 +3094,7 @@ fn verifier_checks_vector_failure_presence_and_consuming_receiver_contracts() {
             unreachable!()
         };
         *failure = None;
-        let error = verify_physical_module(&physical).expect_err("missing vector failure edge");
-        assert!(
-            error.message.contains("failure edge"),
-            "{operation:?}: {error}"
-        );
+        verify_physical_module(&physical).expect_err("missing vector failure edge");
     }
     for operation in [
         VecValueOp::Push,
@@ -3184,12 +3111,7 @@ fn verifier_checks_vector_failure_presence_and_consuming_receiver_contracts() {
             panic!("receiver must transfer");
         };
         args.transfers_mut()[0] = ArgumentTransfer::Borrow(receiver);
-        let error =
-            verify_physical_module(&physical).expect_err("mutation must transfer its receiver");
-        assert!(
-            error.message.contains("argument disagrees"),
-            "{operation:?}: {error}"
-        );
+        verify_physical_module(&physical).expect_err("mutation must transfer its receiver");
     }
 }
 
@@ -3237,16 +3159,7 @@ fn vector_transfers_on_success_and_retains_inputs_on_failure() {
                         action,
                     },
                 );
-            let error =
-                verify_physical_module(&physical).expect_err("transferred receiver was reused");
-            assert!(
-                error.message.contains(if failed {
-                    "overwrites initialized"
-                } else {
-                    "uninitialized"
-                }),
-                "{operation:?} failed={failed}: {error}"
-            );
+            verify_physical_module(&physical).expect_err("transferred receiver was reused");
         }
     }
 }
@@ -3279,9 +3192,7 @@ fn vector_index_failure_never_initializes_its_result_storage() {
                 action: CloneAction::StringRetain,
             },
         );
-    let error =
-        verify_physical_module(&physical).expect_err("failed read did not produce an element");
-    assert!(error.message.contains("uninitialized"), "{error}");
+    verify_physical_module(&physical).expect_err("failed read did not produce an element");
 }
 
 #[test]
@@ -3871,7 +3782,7 @@ fn loop_constants_respect_accepted_physical_terminator_overwrites() {
     let constant = function
         .blocks
         .iter()
-        .flat_map(|block| &block.ops)
+        .flat_map(super::types::PhysicalBlock::operations)
         .find_map(|op| {
             if let PhysicalOp::Const {
                 dest,

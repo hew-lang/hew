@@ -11,4 +11,3 @@ severity = "warning"
 code = "dead_code"
 line = 14
 column = 1
-message = "function `export_worker` is never called"

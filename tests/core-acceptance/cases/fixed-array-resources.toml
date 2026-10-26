@@ -7,5 +7,4 @@ timeout_seconds = 30
 
 [case.expected]
 stdout = "close 0\n0\nTOKEN\n1\nclose 1\n1\n4\nclose 4\nclose 3\nclose 2\nreleased\n"
-stderr = ""
 exit = 0

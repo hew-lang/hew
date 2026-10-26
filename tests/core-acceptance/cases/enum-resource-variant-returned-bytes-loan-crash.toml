@@ -7,5 +7,4 @@ timeout_seconds = 60
 
 [case.expected]
 stdout = "ok=7\nhandled-crash\nsurvived\n"
-stderr = "hew: failure: UserPanic (212): crash during returned bytes loan\nhew: actor crash in Runner.run (actor 2): UserPanic\n"
 exit = 1

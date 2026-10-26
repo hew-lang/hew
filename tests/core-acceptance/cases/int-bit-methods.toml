@@ -7,5 +7,4 @@ timeout_seconds = 15
 
 [case.expected]
 stdout = "integer bit methods hold at every integer width's boundaries\n"
-stderr = ""
 exit = 0

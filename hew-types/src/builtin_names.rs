@@ -17,7 +17,6 @@ pub enum BuiltinMethodSigTemplate {
     ReturnString,
     ReturnUnit,
     ReturnBool,
-    ReturnContainerOfString,
     CountToSelf,
 }
 
@@ -136,9 +135,8 @@ builtin_named_types! {
             // The read half of a pipe. `recv` parks until an item, EOF or a
             // fault is ready; `try_recv` never parks. Both ride the
             // element-layout witness entries, one symbol for every
-            // describable element type. `lines`, `chunks` and `take` are the
-            // lazy adaptors: each consumes its source stream and returns a
-            // fresh one.
+            // describable element type. Content adapters are ordinary source
+            // methods in std.stream.
             "recv" => {
                 signature: ReturnOptionT,
                 runtime: BuiltinMethodRuntime::Fixed("hew_stream_next_layout")
@@ -151,27 +149,9 @@ builtin_named_types! {
                 signature: ReturnUnit,
                 runtime: BuiltinMethodRuntime::Fixed("hew_stream_close")
             },
-            // `Stream<bytes>.lines()` is the `frames(Lines)` case of the
-            // codec seam: one newline-terminated item at a time, as text.
-            "lines" => {
-                signature: ReturnContainerOfString,
-                runtime: BuiltinMethodRuntime::Fixed("hew_stream_lines")
-            },
-            "chunks" => {
-                signature: CountToSelf,
-                runtime: BuiltinMethodRuntime::Fixed("hew_stream_chunks")
-            },
             "take" => {
                 signature: CountToSelf,
                 runtime: BuiltinMethodRuntime::Fixed("hew_stream_take")
-            },
-            // String-specific collect: drains a Stream<string> into a single
-            // string. Only string elements have a runtime symbol; other element
-            // types are rejected by the checker's element-type gate before this
-            // table is consulted.
-            "collect" => {
-                signature: ReturnString,
-                runtime: BuiltinMethodRuntime::Fixed("hew_stream_collect_string")
             },
         ]
     },
@@ -327,10 +307,6 @@ impl BuiltinMethodSigTemplate {
             },
             Self::ReturnBool => FnSig {
                 return_type: Ty::Bool,
-                ..FnSig::default()
-            },
-            Self::ReturnContainerOfString => FnSig {
-                return_type: self_container_ty(owner, Ty::String),
                 ..FnSig::default()
             },
             Self::CountToSelf => FnSig {

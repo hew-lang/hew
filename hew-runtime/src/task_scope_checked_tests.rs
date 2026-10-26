@@ -1,6 +1,7 @@
 use super::*;
 use crate::callable::{hew_callable_drop, hew_callable_env_alloc, HewCallableDescriptor};
 use crate::coro_state::{hew_coro_state_finish, hew_coro_state_is_cancelled};
+use crate::task_scope::hew_task_free;
 use crate::wake::blocking::Readiness;
 use hew_cabi::value::HewTypeOwnershipKind;
 use std::sync::{mpsc, Condvar};
@@ -99,6 +100,8 @@ unsafe extern "C" fn invoke(
 }
 
 static ENVIRONMENT: HewValueLayout = HewValueLayout {
+    code_owner: core::ptr::null(),
+    managed: core::ptr::null(),
     release_start: None,
     size: size_of::<Environment>(),
     align: align_of::<Environment>(),
@@ -107,6 +110,8 @@ static ENVIRONMENT: HewValueLayout = HewValueLayout {
     drop_fn: Some(drop_environment),
 };
 static RESULT: HewValueLayout = HewValueLayout {
+    code_owner: core::ptr::null(),
+    managed: core::ptr::null(),
     release_start: None,
     size: size_of::<i64>(),
     align: align_of::<i64>(),
@@ -123,6 +128,8 @@ unsafe extern "C-unwind" fn drop_result(slot: *mut c_void) {
     }
 }
 static OWNED_RESULT: HewValueLayout = HewValueLayout {
+    code_owner: core::ptr::null(),
+    managed: core::ptr::null(),
     release_start: None,
     size: size_of::<*mut c_void>(),
     align: align_of::<*mut c_void>(),
@@ -211,6 +218,8 @@ unsafe extern "C" fn release_result(
 }
 
 static CLOSE_RESULT: HewValueLayout = HewValueLayout {
+    code_owner: core::ptr::null(),
+    managed: core::ptr::null(),
     size: size_of::<*mut c_void>(),
     align: align_of::<*mut c_void>(),
     ownership_kind: HewTypeOwnershipKind::LayoutManaged,
@@ -460,11 +469,130 @@ unsafe fn spawn(
             environment: raw,
             descriptor: ptr::from_ref(&DESCRIPTOR),
         };
-        let task = hew_checked_task_spawn(scope, &raw mut callable, ptr::from_ref(layout));
+        let task = hew_checked_task_spawn(
+            scope,
+            &raw mut callable,
+            ptr::from_ref(layout),
+            8,
+            ptr::null(),
+        );
         assert!(callable.environment.is_null());
         assert!(callable.descriptor.is_null());
+        hew_checked_task_start(task);
         task
     }
+}
+
+#[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one task creation, execution and scope-release lifecycle"
+)]
+fn managed_task_starts_after_adoption_and_keeps_result_slot_through_scope() {
+    use hew_cabi::managed::HewManagedValueDescriptor;
+    static CALLS: AtomicU64 = AtomicU64::new(0);
+    static PLAIN: HewManagedValueDescriptor = HewManagedValueDescriptor {
+        slot_bytes: 8,
+        visit: None,
+    };
+    static EMPTY: HewManagedValueDescriptor = HewManagedValueDescriptor {
+        slot_bytes: 0,
+        visit: None,
+    };
+    static TASK: HewManagedValueDescriptor = HewManagedValueDescriptor {
+        slot_bytes: 8,
+        visit: Some(hew_managed_visit_task),
+    };
+    static RESULT_LAYOUT: HewValueLayout = HewValueLayout {
+        managed: &raw const PLAIN,
+        ..RESULT
+    };
+    static ENV_LAYOUT: HewValueLayout = HewValueLayout {
+        size: 0,
+        align: 1,
+        managed: &raw const EMPTY,
+        ..RESULT
+    };
+    static TASK_LAYOUT: HewValueLayout = HewValueLayout {
+        size: size_of::<*mut HewTask>(),
+        align: align_of::<*mut HewTask>(),
+        managed: &raw const TASK,
+        ..RESULT
+    };
+    unsafe extern "C" fn run(
+        _: *mut c_void,
+        _: *const *mut c_void,
+        output: *mut c_void,
+        _: *mut *mut c_void,
+        state: *mut c_void,
+    ) -> *mut c_void {
+        CALLS.fetch_add(1, Ordering::SeqCst);
+        // SAFETY: this fixture has the checked i64 result and invocation ABI.
+        unsafe {
+            output.cast::<i64>().write(42);
+            hew_coro_state_finish(state.cast(), 0);
+        }
+        ptr::null_mut()
+    }
+    const CALLABLE: HewCallableDescriptor = HewCallableDescriptor {
+        environment: &raw const ENV_LAYOUT,
+        invoke_once: Some(run),
+        ..DESCRIPTOR
+    };
+    let runtime = TaskRuntime::new();
+    let owner = crate::owned_value_budget::ValueOwner::new(Some(16));
+    let (readiness, waker) = Readiness::new();
+    // SAFETY: all static descriptors match their slots and the scope drains
+    // before runtime shutdown; this fixture models the compiler's preflight.
+    unsafe {
+        let scope = hew_checked_scope_new(ptr::null_mut());
+        (*scope).value_owner = Some(owner.clone());
+        let mut callable = HewCallableValue {
+            environment: ptr::null_mut(),
+            descriptor: &CALLABLE,
+        };
+        let reservation = owner.reserve_new(16).unwrap();
+        let task = hew_checked_task_spawn(
+            scope,
+            &raw mut callable,
+            &raw const RESULT_LAYOUT,
+            8,
+            &raw const TASK_LAYOUT,
+        );
+        assert_eq!(CALLS.load(Ordering::SeqCst), 0);
+        reservation
+            .commit_value(&TASK_LAYOUT, (&raw const task).cast())
+            .unwrap();
+        assert_eq!(owner.live_bytes(), 16);
+        hew_checked_task_start(task);
+        let wait = hew_checked_task_wait_new(task, waker.descriptor());
+        while hew_checked_task_wait_status(wait) == PENDING {
+            readiness.wait();
+        }
+        assert_eq!(CALLS.load(Ordering::SeqCst), 1);
+        assert_eq!(owner.live_bytes(), 8);
+        let mut value = 0_i64;
+        let mut fault = ptr::null_mut();
+        assert_eq!(
+            hew_checked_task_wait_take(
+                wait,
+                (&raw mut value).cast(),
+                &raw mut fault,
+                ptr::null_mut()
+            ),
+            READY
+        );
+        assert_eq!(value, 42);
+        assert!(fault.is_null());
+        hew_checked_task_wait_free(wait);
+        assert_eq!(owner.live_bytes(), 8, "scope still retains result storage");
+        let drain = hew_checked_scope_wait_new(scope, waker.descriptor(), ptr::null());
+        assert_eq!(hew_checked_scope_wait_status(drain), READY);
+        hew_checked_scope_wait_free(drain);
+        hew_checked_scope_close(scope);
+    }
+    drop(runtime);
+    assert_eq!(owner.live_bytes(), 0);
 }
 
 #[test]
@@ -900,4 +1028,100 @@ fn race_selection_uses_completion_order_and_drain_suppresses_only_its_cancellati
             assert_eq!(drops.load(Ordering::SeqCst), 3);
         }
     }
+}
+
+#[test]
+fn transfer_waits_for_running_task_and_abort_preserves_sender_execution() {
+    use hew_cabi::managed::HewManagedValueDescriptor;
+    static TASK_MANAGED: HewManagedValueDescriptor = HewManagedValueDescriptor {
+        slot_bytes: 8,
+        visit: Some(hew_managed_visit_task),
+    };
+    static TASK_LAYOUT: HewValueLayout = HewValueLayout {
+        managed: &raw const TASK_MANAGED,
+        ..RESULT
+    };
+    static RESULT_MANAGED: HewManagedValueDescriptor = HewManagedValueDescriptor {
+        slot_bytes: 8,
+        visit: None,
+    };
+    static MANAGED_RESULT: HewValueLayout = HewValueLayout {
+        managed: &raw const RESULT_MANAGED,
+        ..RESULT
+    };
+    let _runtime = TaskRuntime::new();
+    let (readiness, waker) = Readiness::new();
+    let (started, receive) = mpsc::channel();
+    let gate = Arc::new((Mutex::new(false), Condvar::new()));
+    let drops = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let destination = crate::owned_value_budget::ValueOwner::new(Some(64));
+    // SAFETY: the scope and handle retain the running child throughout the
+    // attempted transfer, and the explicit gate excludes timing assumptions.
+    unsafe {
+        let scope = hew_checked_scope_new(ptr::null_mut());
+        let task = spawn(
+            scope,
+            started,
+            gate.clone(),
+            drops.clone(),
+            ResultValue::Scalar(42),
+        );
+        receive.recv().unwrap();
+        let execution = {
+            let mut state = checked(task).lock_or_recover();
+            // The fixture produces the same i64 slot; supply its budget witness.
+            state.layout = &raw const MANAGED_RESULT;
+            state.execution.upgrade().unwrap()
+        };
+        let mut transfer = crate::owned_value_budget::transfer::ValueTransfer::begin(
+            None,
+            Some(destination.clone()),
+            &raw const TASK_LAYOUT,
+            (&raw const task).cast(),
+        );
+        transfer.set_waker(OwnedWaker::retain(waker.descriptor()));
+        assert!(
+            !transfer.poll_prepare().unwrap(),
+            "a running frame is never inspected"
+        );
+        assert_eq!(destination.live_bytes(), 0);
+        drop(transfer);
+        let wait = hew_checked_task_wait_new(task, waker.descriptor());
+        release(&gate);
+        while hew_checked_task_wait_status(wait) == PENDING {
+            readiness.wait();
+        }
+        // Completion wakes the observer before the executor's final Arc is
+        // necessarily gone. A retained executor must not make its dead frame
+        // part of ordinary result acquisition or final release.
+        destination
+            .acquire_value(&TASK_LAYOUT, (&raw const task).cast())
+            .unwrap()
+            .commit();
+        assert_eq!(destination.live_bytes(), 8);
+        destination
+            .release_value(&TASK_LAYOUT, (&raw const task).cast())
+            .unwrap();
+        assert_eq!(destination.live_bytes(), 0);
+        drop(execution);
+        let mut value = 0_i64;
+        let mut fault = ptr::null_mut();
+        assert_eq!(
+            hew_checked_task_wait_take(
+                wait,
+                (&raw mut value).cast(),
+                &raw mut fault,
+                ptr::null_mut()
+            ),
+            READY
+        );
+        assert_eq!(value, 42);
+        assert!(fault.is_null());
+        hew_checked_task_wait_free(wait);
+        let drain = hew_checked_scope_wait_new(scope, waker.descriptor(), ptr::null());
+        assert_eq!(hew_checked_scope_wait_status(drain), READY);
+        hew_checked_scope_wait_free(drain);
+        hew_checked_scope_close(scope);
+    }
+    assert_eq!(drops.load(Ordering::SeqCst), 1);
 }

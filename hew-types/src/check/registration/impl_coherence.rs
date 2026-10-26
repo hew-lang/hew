@@ -230,7 +230,7 @@ impl Checker {
         if owner.is_some_and(|owner| {
             self.lang_items
                 .get(crate::LangItem::Machine.key())
-                .is_some_and(|binding| binding.trait_id == owner)
+                .is_some_and(|binding| binding.trait_id == Some(owner))
         }) && !id
             .methods
             .iter()

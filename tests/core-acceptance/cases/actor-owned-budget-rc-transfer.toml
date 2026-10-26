@@ -1,0 +1,13 @@
+[[case]]
+id = "actor-owned-budget-rc-transfer"
+intent = "A generator transfers a live gated task's existing Rc cells into its receiving actor's lifetime and account."
+source = "cases/actor-owned-budget-rc-transfer.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 30
+
+[case.env]
+HEW_WORKERS = "2"
+
+[case.expected]
+stdout = "9\n"
+exit = 0

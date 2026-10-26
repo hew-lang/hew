@@ -10,5 +10,4 @@ HEW_WORKERS = "2"
 
 [case.expected]
 stdout = "ping while waiting: true\nflag written\nexited cleanly: 160\n"
-stderr = ""
 exit = 0

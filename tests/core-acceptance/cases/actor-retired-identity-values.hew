@@ -1,0 +1,55 @@
+import std.link_monitor;
+
+actor Target {
+    receive fn instance() -> Target {
+        self
+    }
+}
+
+actor Observer {
+    var notifications: i64 = 0;
+    var expected_monitor: u64 = 0;
+
+    receive fn watch(target: Target) -> link_monitor.MonitorRef {
+        let observation = monitor(target).expect("observe retired actor");
+        expected_monitor = observation.id().value;
+        observation
+    }
+
+    receive fn count() -> i64 {
+        notifications
+    }
+
+    #[on(down)]
+    fn down(note: link_monitor.DownNotification) {
+        assert(note.monitor.value == expected_monitor);
+        assert(match note.target {
+            .Local(id) => id > 0,
+            _ => false,
+        });
+        assert(match note.reason {
+            .Stopped => true,
+            _ => false,
+        });
+        notifications += 1;
+    }
+}
+
+fn main() {
+    let target = spawn Target;
+    let alias = target.instance().expect("owned self value");
+    let captured = || alias;
+    let handles = [target, captured()];
+    let copied = handles;
+    stop(target);
+    stopped(target);
+    assert(handles[0] is copied[1]);
+    assert(alias is captured());
+    let observer = spawn Observer;
+    let observation = observer.watch(copied[1]).expect("register late monitor");
+    while observer.count().expect("terminal notification") != 1 {}
+    observation.close();
+    stop(observer);
+    stopped(observer);
+    println("retired actor values preserve identity and DOWN");
+}

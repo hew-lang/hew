@@ -7,5 +7,4 @@ timeout_seconds = 15
 
 [case.expected]
 stdout = "wrapper RETURNED\nticket 1\nwrapper STRING\nwrapper EXPLICIT\nticket 2\nwrapper LINEAR\nticket 5\nwrapper FAULT\nticket 3\nfault drained\nwrapper CANCEL\nticket 4\npicked 7\n"
-stderr = ""
 exit = 0

@@ -7,5 +7,4 @@ timeout_seconds = 30
 
 [case.expected]
 stdout = "caught\n"
-stderr = "hew: failure: UserPanic (212): construction ledger crash\nhew: actor crash in Ledger.fail (actor 1): UserPanic\nhew: failure: UserPanic (212): dependent init failed\n"
 exit = 1

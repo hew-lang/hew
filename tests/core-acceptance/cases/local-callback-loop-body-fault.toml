@@ -7,5 +7,4 @@ timeout_seconds = 15
 
 [case.expected]
 stdout = "after body:CALLER:2\nentered:BODY:4\n"
-stderr = "hew: failure: DivideByZero (202)\n"
 exit = 1

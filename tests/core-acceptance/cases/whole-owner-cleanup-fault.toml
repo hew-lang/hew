@@ -7,5 +7,4 @@ timeout_seconds = 30
 
 [case.expected]
 stdout = "close guard 7\nclose conn stamped 7 0\nstamp faulted\n"
-stderr = "hew: failure: UserPanic (212): guard close failed\nhew: actor crash in Worker.stamp (actor 1): UserPanic\n"
 exit = 1

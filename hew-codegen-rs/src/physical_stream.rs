@@ -19,7 +19,7 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
     pub(super) fn emit_stream_descriptors(&self) -> CodegenResult<()> {
         for function in &self.module.functions {
             for block in &function.blocks {
-                for operation in &block.ops {
+                for operation in block.operations() {
                     if let PhysicalOp::StreamPipe {
                         stream, element, ..
                     } = operation
@@ -74,6 +74,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
         family: RuntimeCallFamily,
         arguments: &[ArgumentTransfer],
         result: StorageId,
+        failure: Option<&PhysicalEdge>,
     ) -> CodegenResult<()> {
         let index = usize::from(family == RuntimeCallFamily::SinkFromEncoder);
         let source = argument_source(&arguments[index]);
@@ -110,13 +111,122 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             inputs.push(sink_witness.as_pointer_value().into());
         }
         inputs.push(witness.into());
+        let checked = matches!(
+            family,
+            RuntimeCallFamily::StreamFromGenerator
+                | RuntimeCallFamily::SinkClone
+                | RuntimeCallFamily::SinkFromEncoder
+        );
+        let status = if checked {
+            let status = self
+                .value_emitter()
+                .entry_scratch(self.ctx.i32_type().into(), "sink.status")?;
+            inputs.push(status.into());
+            Some(status)
+        } else {
+            None
+        };
         let function = get_or_declare_external(
             self.llvm,
-            family.c_symbol(),
+            if family == RuntimeCallFamily::SinkClone {
+                "hew_sink_clone_checked"
+            } else {
+                family.c_symbol()
+            },
             pointer.fn_type(&vec![pointer.into(); inputs.len()], false),
         )?;
         let value = suspend::call_value(&self.builder, function, &inputs, "stream.codec")?;
+        if let Some(status) = status {
+            let status = self
+                .builder
+                .build_load(self.ctx.i32_type(), status, "sink.status")
+                .llvm_ctx("read checked Sink construction")?
+                .into_int_value();
+            self.check_budget_status(
+                status,
+                failure.ok_or_else(|| {
+                    CodegenError::FailClosed("checked Sink construction lacks cleanup".into())
+                })?,
+            )?;
+        }
+        for transfer in arguments {
+            if let ArgumentTransfer::Move(source) = transfer {
+                self.clear_owned(*source)?;
+            }
+        }
         self.store(result, value)
+    }
+
+    pub(super) fn emit_stream_pipe_pair(
+        &self,
+        capacity: StorageId,
+        result: StorageId,
+    ) -> CodegenResult<()> {
+        let ResolvedTy::Tuple(halves) = &self.storage(result)?.ty else {
+            return Err(CodegenError::FailClosed(
+                "pipe result lacks typed endpoints".into(),
+            ));
+        };
+        let [sink, stream, ResolvedTy::Bool] = halves.as_slice() else {
+            return Err(CodegenError::FailClosed(
+                "pipe result lacks two endpoints".into(),
+            ));
+        };
+        let element = hew_mir::physical::pipe_parts(stream, sink).ok_or_else(|| {
+            CodegenError::FailClosed("pipe endpoint element types disagree".into())
+        })?;
+        let witness = self.managed_value_layout(element)?;
+        let pointer = self.ctx.ptr_type(AddressSpace::default());
+        let sink_out = self
+            .value_emitter()
+            .entry_scratch(pointer.into(), "pipe.sink")?;
+        let make = get_or_declare_external(
+            self.llvm,
+            "hew_stream_pipe_native",
+            pointer.fn_type(
+                &[self.ctx.i64_type().into(), pointer.into(), pointer.into()],
+                false,
+            ),
+        )?;
+        let input = suspend::call_value(
+            &self.builder,
+            make,
+            &[
+                self.load(capacity, "pipe.capacity")?.into(),
+                witness.into(),
+                sink_out.into(),
+            ],
+            "pipe.stream",
+        )?;
+        let output = self
+            .builder
+            .build_load(pointer, sink_out, "pipe.sink")
+            .llvm_ctx("load typed pipe sink")?;
+        let pair = llvm_type(self.ctx, &self.storage(result)?.layout.repr)?
+            .into_struct_type()
+            .const_zero();
+        let pair = self
+            .builder
+            .build_insert_value(pair, output, 0, "pipe.sink.field")
+            .llvm_ctx("initialize pipe sink")?
+            .into_struct_value();
+        let pair = self
+            .builder
+            .build_insert_value(pair, input, 1, "pipe.stream.field")
+            .llvm_ctx("initialize pipe stream")?;
+        let valid = self
+            .builder
+            .build_is_not_null(input.into_pointer_value(), "pipe.valid")
+            .llvm_ctx("inspect typed pipe allocation")?;
+        let valid = self
+            .builder
+            .build_int_z_extend(valid, self.ctx.i8_type(), "pipe.valid.byte")
+            .llvm_ctx("materialize source bool representation")?;
+        let pair = self
+            .builder
+            .build_insert_value(pair.into_struct_value(), valid, 2, "pipe.valid.field")
+            .llvm_ctx("initialize pipe allocation status")?;
+        self.store(result, pair.into_struct_value().into())
     }
 
     pub(super) fn emit_stream_pipe(
@@ -255,7 +365,8 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             pointer.fn_type(&[pointer.into()], false),
         )?;
         let fault = suspend::call_value(&self.builder, fault, &[request.into()], "stream.fault")?;
-        self.store_active_fault(fault, HEW_TRAP_USER_PANIC)
+        let code = self.state_value("hew_fault_code", fault.into_pointer_value())?;
+        self.store_active_fault_value(fault, code)
     }
 
     fn finish_stream(
@@ -329,7 +440,8 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             .build_conditional_branch(faulted, failed, ready)
             .llvm_ctx("dispatch generator poll fault")?;
         self.builder.position_at_end(failed);
-        self.store_active_fault(fault.into(), HEW_TRAP_USER_PANIC)?;
+        let code = self.state_value("hew_fault_code", fault)?;
+        self.store_active_fault_value(fault.into(), code)?;
         self.emit_edge(unwind)?;
         self.builder.position_at_end(ready);
         let some = self
@@ -361,6 +473,160 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
         self.write_variant_value(self.slots[result.0 as usize], 1, &[], option)?;
         self.set_place_initialized(result, true)?;
         self.emit_edge(normal)
+    }
+
+    /// Complete ready pipe receives before allocating parked-operation state.
+    /// Pending pipes and other backings continue through the native lifecycle.
+    fn emit_stream_ready(
+        &self,
+        block: &PhysicalBlock,
+        handle: BasicValueEnum<'ctx>,
+        slot: PointerValue<'ctx>,
+        element: &PhysicalLayout,
+        witness: PointerValue<'ctx>,
+        option: PhysicalVariantId,
+    ) -> CodegenResult<()> {
+        let PhysicalTerminator::StreamNext {
+            element: recipe,
+            result,
+            normal,
+            cancel,
+            unwind,
+            ..
+        } = &block.terminator
+        else {
+            unreachable!("ready receive belongs to StreamNext")
+        };
+        let frame = self.stream_frame()?;
+        let pointer = self.ctx.ptr_type(AddressSpace::default());
+        let start = self.ctx.append_basic_block(self.value, "stream.next.start");
+        let probe = self
+            .ctx
+            .append_basic_block(self.value, "stream.next.ready.probe");
+        let completed = self
+            .ctx
+            .append_basic_block(self.value, "stream.next.ready.completed");
+        let stopping = self
+            .ctx
+            .append_basic_block(self.value, "stream.next.ready.cancel");
+        let admitted = self
+            .ctx
+            .append_basic_block(self.value, "stream.next.ready.admitted");
+        let some = self
+            .ctx
+            .append_basic_block(self.value, "stream.next.ready.some");
+        let none = self
+            .ctx
+            .append_basic_block(self.value, "stream.next.ready.none");
+        let failed = self
+            .ctx
+            .append_basic_block(self.value, "stream.next.ready.failed");
+        let cancelled = self.stream_cancelled(frame, "stream.ready.cancelled.before")?;
+        self.builder
+            .build_conditional_branch(cancelled, start, probe)
+            .llvm_ctx("preserve cancellation before receive")?;
+        self.builder.position_at_end(probe);
+        let fault_out = self
+            .value_emitter()
+            .entry_scratch(pointer.into(), "stream.ready.fault")?;
+        let read = get_or_declare_external(
+            self.llvm,
+            "hew_stream_read_ready_native",
+            self.ctx.i32_type().fn_type(&[pointer.into(); 4], false),
+        )?;
+        let status = suspend::call_value(
+            &self.builder,
+            read,
+            &[handle.into(), witness.into(), slot.into(), fault_out.into()],
+            "stream.ready.status",
+        )?
+        .into_int_value();
+        let pending = self
+            .builder
+            .build_int_compare(
+                IntPredicate::EQ,
+                status,
+                self.ctx.i32_type().const_zero(),
+                "stream.ready.pending",
+            )
+            .llvm_ctx("test immediate receive completion")?;
+        self.builder
+            .build_conditional_branch(pending, start, completed)
+            .llvm_ctx("select parked receive lifecycle")?;
+        self.builder.position_at_end(completed);
+        let fault = self
+            .builder
+            .build_load(pointer, fault_out, "stream.ready.fault.value")
+            .llvm_ctx("load ready receive fault")?;
+        let cancelled = self.stream_cancelled(frame, "stream.ready.cancelled.after")?;
+        self.builder
+            .build_conditional_branch(cancelled, stopping, admitted)
+            .llvm_ctx("admit ready receive after cancellation check")?;
+        self.builder.position_at_end(stopping);
+        self.initialize_cancellation_fault()?;
+        let drop_fault = get_or_declare_external(
+            self.llvm,
+            "hew_fault_drop",
+            self.ctx.void_type().fn_type(&[pointer.into()], false),
+        )?;
+        self.builder
+            .build_call(drop_fault, &[fault.into()], "")
+            .llvm_ctx("release unobserved ready receive fault")?;
+        if let Some(action) = recipe.destroy {
+            let release = self
+                .ctx
+                .append_basic_block(self.value, "stream.next.ready.release");
+            let done = self
+                .ctx
+                .append_basic_block(self.value, "stream.next.ready.released");
+            let received = self
+                .builder
+                .build_int_compare(
+                    IntPredicate::EQ,
+                    status,
+                    self.ctx.i32_type().const_int(1, false),
+                    "stream.ready.received",
+                )
+                .llvm_ctx("test cancelled receive ownership")?;
+            self.builder
+                .build_conditional_branch(received, release, done)
+                .llvm_ctx("release only received element ownership")?;
+            self.builder.position_at_end(release);
+            release::slot(&self.value_emitter(), frame, slot, element, action)?;
+            self.builder
+                .build_unconditional_branch(done)
+                .llvm_ctx("finish cancelled receive release")?;
+            self.builder.position_at_end(done);
+        }
+        self.emit_edge(cancel)?;
+        self.builder.position_at_end(admitted);
+        self.builder
+            .build_switch(
+                status,
+                failed,
+                &[
+                    (self.ctx.i32_type().const_int(1, false), some),
+                    (self.ctx.i32_type().const_int(2, false), none),
+                ],
+            )
+            .llvm_ctx("dispatch ready pipe receive")?;
+        self.builder.position_at_end(some);
+        let value = self
+            .value_emitter()
+            .load_value(slot, element, "stream.element")?;
+        self.write_variant_value(self.slots[result.0 as usize], 0, &[value], option)?;
+        self.set_place_initialized(*result, true)?;
+        self.emit_edge(normal)?;
+        self.builder.position_at_end(none);
+        self.write_variant_value(self.slots[result.0 as usize], 1, &[], option)?;
+        self.set_place_initialized(*result, true)?;
+        self.emit_edge(normal)?;
+        self.builder.position_at_end(failed);
+        let code = self.state_value("hew_fault_code", fault.into_pointer_value())?;
+        self.store_active_fault_value(fault, code)?;
+        self.emit_edge(unwind)?;
+        self.builder.position_at_end(start);
+        Ok(())
     }
 
     pub(super) fn emit_stream_next(&self, block: &PhysicalBlock) -> CodegenResult<()> {
@@ -409,6 +675,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
                 handle, slot, element, witness, result, option.id, normal, unwind,
             );
         }
+        self.emit_stream_ready(block, handle, slot, element, witness, option.id)?;
         let frame = self.stream_frame()?;
         let waker = self.task_pointer_call("hew_coro_state_waker", &[frame.state.into()])?;
         let start = get_or_declare_external(
@@ -428,6 +695,12 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             "stream.read.operation",
         )?
         .into_pointer_value();
+        frame.bind_operation(
+            self.ctx,
+            &self.builder,
+            managed::operation_layout(self.ctx, self.llvm, "hew_managed_visit_stream_operation")?,
+            request,
+        )?;
         let poll = self.ctx.append_basic_block(self.value, "stream.next.poll");
         let inspect = self
             .ctx
@@ -481,12 +754,39 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             "hew_stream_read_take_native",
             self.ctx.i32_type().fn_type(&[pointer.into(); 2], false),
         )?;
-        suspend::call_value(
+        let taken = suspend::call_value(
             &self.builder,
             take,
             &[request.into(), slot.into()],
             "stream.read.taken",
-        )?;
+        )?
+        .into_int_value();
+        let accepted = self
+            .ctx
+            .append_basic_block(self.value, "stream.read.accepted");
+        let refused = self
+            .ctx
+            .append_basic_block(self.value, "stream.read.refused");
+        let absent = self
+            .ctx
+            .append_basic_block(self.value, "stream.read.absent");
+        self.builder
+            .build_switch(
+                taken,
+                invalid,
+                &[
+                    (self.ctx.i32_type().const_int(1, false), accepted),
+                    (self.ctx.i32_type().const_int(3, false), refused),
+                    (self.ctx.i32_type().const_zero(), absent),
+                ],
+            )
+            .llvm_ctx("publish only an acquired stream read result")?;
+        self.builder.position_at_end(refused);
+        self.initialize_stream_fault(request)?;
+        self.leave(&mut join, suspend::EXIT_UNWIND)?;
+        self.builder.position_at_end(absent);
+        self.leave(&mut join, NONE)?;
+        self.builder.position_at_end(accepted);
         self.leave(&mut join, SOME)?;
         self.builder.position_at_end(none);
         self.finish_stream(request, waker, cancelled)?;
@@ -561,6 +861,14 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
         let frame = self.stream_frame()?;
         let pointer = self.ctx.ptr_type(AddressSpace::default());
         let waker = self.task_pointer_call("hew_coro_state_waker", &[frame.state.into()])?;
+        let quota_status = frame.storage(
+            self.ctx,
+            self.ctx.i32_type().into(),
+            "stream.write.quota.status",
+        )?;
+        self.builder
+            .build_store(quota_status, self.ctx.i32_type().const_zero())
+            .llvm_ctx("initialize checked stream envelope")?;
         let start = get_or_declare_external(
             self.llvm,
             "hew_stream_write_start_native",
@@ -572,6 +880,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
                     pointer.into(),
                     pointer.into(),
                     self.ctx.bool_type().into(),
+                    pointer.into(),
                     pointer.into(),
                 ],
                 false,
@@ -597,10 +906,61 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
                     })?
                     .as_pointer_value()
                     .into(),
+                quota_status.into(),
             ],
             "stream.write.operation",
         )?
         .into_pointer_value();
+        let quota = self
+            .builder
+            .build_load(
+                self.ctx.i32_type(),
+                quota_status,
+                "stream.write.quota.status",
+            )
+            .llvm_ctx("read stream envelope reservation")?
+            .into_int_value();
+        let sealed = self
+            .ctx
+            .append_basic_block(self.value, "stream.write.sealed");
+        let quota_refused = self
+            .ctx
+            .append_basic_block(self.value, "stream.write.quota.refused");
+        let ok = self
+            .builder
+            .build_int_compare(
+                IntPredicate::EQ,
+                quota,
+                self.ctx.i32_type().const_zero(),
+                "stream.write.quota.ok",
+            )
+            .llvm_ctx("check stream envelope acquisition")?;
+        self.builder
+            .build_conditional_branch(ok, sealed, quota_refused)
+            .llvm_ctx("retain stream input until checked acquisition")?;
+        self.builder.position_at_end(quota_refused);
+        self.initialize_active_fault(hew_runtime::internal::types::HEW_TRAP_HEAP_EXCEEDED)?;
+        let recipe = &self
+            .module
+            .managed_types
+            .get(&self.storage(*value)?.ty)
+            .ok_or_else(|| {
+                CodegenError::FailClosed("stream input lacks canonical value recipe".into())
+            })?
+            .recipe;
+        if let Some(action) = recipe.destroy {
+            self.destroy_owned_operand(*value, action)?;
+        } else {
+            self.clear_owned(*value)?;
+        }
+        self.emit_edge(unwind)?;
+        self.builder.position_at_end(sealed);
+        frame.bind_operation(
+            self.ctx,
+            &self.builder,
+            managed::operation_layout(self.ctx, self.llvm, "hew_managed_visit_stream_operation")?,
+            request,
+        )?;
         self.clear_owned(*value)?;
         let poll = self.ctx.append_basic_block(self.value, "stream.send.poll");
         let inspect = self

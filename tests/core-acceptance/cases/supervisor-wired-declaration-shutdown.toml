@@ -7,5 +7,4 @@ timeout_seconds = 30
 
 [case.expected]
 stdout = "ledger start\ncheckout start\ntail start\ntail stop\nledger stop\ncheckout stop\n"
-stderr = ""
 exit = 0

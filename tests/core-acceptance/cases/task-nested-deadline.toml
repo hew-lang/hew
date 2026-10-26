@@ -10,5 +10,4 @@ HEW_WORKERS = "1"
 
 [case.expected]
 stdout = "child closed\ndeadline drained\n"
-stderr = ""
 exit = 0

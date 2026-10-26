@@ -10,4 +10,3 @@ kind = "reject"
 code = "MutabilityError"
 line = 23
 column = 5
-message = "method `bump` on `Box` requires a mutable binding receiver; `b` is not declared with `var`"

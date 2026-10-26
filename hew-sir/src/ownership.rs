@@ -310,6 +310,7 @@ pub enum PlaceBase {
 pub enum OwnerRoot {
     Value(ValueId),
     Local(PlaceId),
+    Session(PlaceId),
 }
 
 /// The semantic owner of a memory place, without a physical field offset.
@@ -317,6 +318,13 @@ pub enum OwnerRoot {
 pub enum PlaceOrigin {
     Local,
     Runtime,
+    /// A typed binding owned by the surrounding interactive session. Its
+    /// initialized state survives the entry's normal and failure exits.
+    Session {
+        context: ValueId,
+        slot: u32,
+        initialized: bool,
+    },
     /// State protected by the enclosing strict actor turn. `initialized`
     /// is false only in the actor's `init` body for a field init owns
     /// (D447): that seat holds no value until init's first store.
@@ -356,6 +364,7 @@ pub struct BytesLiteralId(pub u32);
 /// panic traps arrive with the `Index`/`Slice` rows they come from.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum TrapKind {
+    HeapExceeded,
     /// Private delivery completion, normalized before actor fault reporting.
     ActorRefused,
     IntegerOverflow,
@@ -370,7 +379,9 @@ pub const fn runtime_failure_trap_kind(
     failure: hew_types::RuntimeLogicalFailure,
 ) -> Option<TrapKind> {
     match failure {
-        hew_types::RuntimeLogicalFailure::IndexOutOfBounds => Some(TrapKind::IndexOutOfBounds),
+        hew_types::RuntimeLogicalFailure::HeapExceeded => Some(TrapKind::HeapExceeded),
+        hew_types::RuntimeLogicalFailure::IndexOutOfBounds
+        | hew_types::RuntimeLogicalFailure::BoundsFault => Some(TrapKind::IndexOutOfBounds),
         hew_types::RuntimeLogicalFailure::IntegerOverflow => Some(TrapKind::IntegerOverflow),
         hew_types::RuntimeLogicalFailure::CallbackFault
         | hew_types::RuntimeLogicalFailure::RcUnavailable => None,

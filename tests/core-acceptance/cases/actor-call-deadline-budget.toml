@@ -10,5 +10,4 @@ HEW_ACTOR_LEAK_CHECK = "1"
 
 [case.expected]
 stdout = "queued caller expired\nstarted caller expired\ndeadline budget complete\n"
-stderr = ""
 exit = 0

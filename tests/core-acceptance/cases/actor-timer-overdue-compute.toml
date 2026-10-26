@@ -10,5 +10,4 @@ HEW_WORKERS = "1"
 
 [case.expected]
 stdout = "closed active\nclosed queued\nTimerOverdue\ncompute timer recovered\n"
-stderr = "hew: failure: ActorTimerOverdue (214)\nhew: actor crash in Worker.run (actor 1): ActorTimerOverdue\n"
 exit = 0

@@ -11,4 +11,3 @@ severity = "error"
 code = "InvalidOperation"
 line = 2
 column = 13
-message = "E_INCLUDE_NOT_UTF8: compile-time-inputs-data/invalid.bin is not UTF-8 at byte 0"

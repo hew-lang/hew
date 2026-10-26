@@ -17,6 +17,7 @@ path = "src/main.rs"
 hew-runtime = { path = "../hew-runtime", default-features = false, features = [
   "quic",
 ] }
+hew-cabi = { path = "../hew-cabi" }
 hew-lsp = { path = "../hew-lsp" }
 hew-observe = { path = "../hew-observe" }
 hew-analysis = { path = "../hew-analysis" }
@@ -57,11 +58,18 @@ windows-sys = { version = "0.61.2", features = [
 [dev-dependencies]
 url = "2"
 filetime = "0.2"
-hew-cabi = { path = "../hew-cabi" }
 hew-testutil = { path = "../hew-testutil" }
 finl_unicode = { version = "=1.5.0", default-features = false, features = [
   "categories",
 ] }
+
+[build-dependencies]
+hew-compile = { path = "../hew-compile" }
+hew-hir = { path = "../hew-hir" }
+hew-mir = { path = "../hew-mir" }
+hew-types = { path = "../hew-types" }
+hew-codegen-rs = { path = "../hew-codegen-rs" }
+cc = "1"
 
 [lints]
 workspace = true

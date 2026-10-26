@@ -24,9 +24,26 @@ struct ActiveInvocation {
     state: crate::coro_state::HewCoroState,
     frame: *mut c_void,
     fault: *mut crate::fault::HewFault,
+    _code: crate::code_owner::CodeRoot,
 }
 
 impl BorrowedInvocation {
+    /// Visit owned callback locals while its enclosing operation is frozen.
+    pub(crate) unsafe fn visit_managed(
+        &self,
+        visitor: *const hew_cabi::managed::HewManagedStorageVisitor,
+    ) -> i32 {
+        self.active.as_ref().map_or(0, |active| {
+            // SAFETY: the enclosing operation serializes callback execution and teardown.
+            unsafe {
+                crate::owned_value_budget::frame::hew_managed_visit_invocation(
+                    std::ptr::from_ref(&active.state).cast_mut(),
+                    visitor,
+                )
+            }
+        })
+    }
+
     pub(crate) fn new() -> Self {
         Self {
             active: None,
@@ -68,6 +85,10 @@ impl BorrowedInvocation {
             // SAFETY: the operation pins this exact compiler descriptor.
             let descriptor =
                 unsafe { callable.descriptor.as_ref() }.unwrap_or_else(|| std::process::abort());
+            // SAFETY: the caller's callable owner pins this environment layout.
+            let code = unsafe {
+                crate::code_owner::CodeRoot::acquire((*descriptor.environment).code_owner)
+            };
             if let Some(invoke) = descriptor.invoke_borrow_sync {
                 // SAFETY: the operation retains all exact typed slots for this synchronous invocation.
                 let status = unsafe {
@@ -85,6 +106,7 @@ impl BorrowedInvocation {
             // SAFETY: the operation supplies the live caller during construction.
             let parent = unsafe { parent.as_ref() }.unwrap_or_else(|| std::process::abort());
             let mut active = Box::new(ActiveInvocation {
+                _code: code,
                 // SAFETY: the parent retains its token and wake target during creation.
                 state: unsafe { crate::coro_state::operation_child(parent) },
                 frame: ptr::null_mut(),
@@ -299,6 +321,7 @@ pub unsafe extern "C" fn hew_callable_clone(
     // SAFETY: The output is writable and does not alias the source. Publish
     // the complete independent owner only after every fallible action succeeds.
     unsafe {
+        crate::code_owner::CodeRoot::retain_for_carrier(layout.code_owner);
         out.write(HewCallableValue {
             environment,
             descriptor: source.descriptor,
@@ -349,7 +372,7 @@ pub unsafe extern "C" fn hew_callable_release_begin(
 /// The caller transfers a null, cleared, or uniquely owned valid carrier.
 unsafe fn take_release_items(
     value: *mut HewCallableValue,
-) -> Option<[Option<crate::release_walker::ReleaseItem>; 2]> {
+) -> Option<[Option<crate::release_walker::ReleaseItem>; 3]> {
     use crate::release_walker::ReleaseItem;
     if !value.is_null() {
         // SAFETY: detach ownership before any callback may execute.
@@ -367,6 +390,8 @@ unsafe fn take_release_items(
             if (layout.size == 0) != carrier.environment.is_null() {
                 std::process::abort();
             }
+            // SAFETY: this detached carrier transfers its retained code root.
+            let code = unsafe { crate::code_owner::CodeRoot::take(layout.code_owner) };
             if layout.size != 0 {
                 return Some([
                     (layout.drop_fn.is_some() || layout.release_start.is_some()).then_some(
@@ -379,9 +404,14 @@ unsafe fn take_release_items(
                         pointer: carrier.environment,
                         size: layout.size,
                         align: layout.align,
+                        // SAFETY: this carrier retains its defining layout through release.
+                        managed_bytes: unsafe { layout.managed.as_ref() }
+                            .map(|managed| managed.slot_bytes),
                     }),
+                    Some(ReleaseItem::CodeRoot(code)),
                 ]);
             }
+            return Some([None, None, Some(ReleaseItem::CodeRoot(code))]);
         }
     }
     None
@@ -423,6 +453,8 @@ mod tests {
     }
 
     const ENVIRONMENT_LAYOUT: HewValueLayout = HewValueLayout {
+        code_owner: core::ptr::null(),
+        managed: core::ptr::null(),
         release_start: None,
         size: size_of::<Environment>(),
         align: align_of::<Environment>(),
@@ -688,6 +720,8 @@ mod tests {
         assert_eq!(counts.drops.load(Ordering::SeqCst), 2);
         // A captured ZST still has a mask byte, independently allocated/copied.
         let layout = HewValueLayout {
+            code_owner: core::ptr::null(),
+            managed: core::ptr::null(),
             release_start: None,
             size: 1,
             align: 1,
@@ -741,6 +775,8 @@ mod tests {
             ptr::null_mut()
         }
         let layout = HewValueLayout {
+            code_owner: core::ptr::null(),
+            managed: core::ptr::null(),
             release_start: None,
             size: 0,
             align: 1,

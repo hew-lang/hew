@@ -1,11 +1,10 @@
 [[case]]
 id = "dyn-error-main-exit"
-intent = "A `dyn Error` propagated out of `main` renders on stderr and exits 1."
+intent = "A `dyn Error` propagated out of `main` retains its authored Display data and exits 1."
 source = "cases/dyn-error-main-exit.hew"
 suites = ["acceptance", "safety"]
 timeout_seconds = 15
 
 [case.expected]
-stdout = "width=5\n"
-stderr = "error: parse failed: empty input\n"
+stdout = "width=5\nparse failed: empty input\n"
 exit = 1

@@ -11,4 +11,3 @@ severity = "error"
 code = "UseAfterMove"
 line = 17
 column = 9
-message = "use of moved value `t`"

@@ -10,7 +10,7 @@ fn result_descriptor(callable: CallableId, storage: StorageId) -> String {
 impl ModuleEmitter<'_, '_> {
     pub(super) fn emit_task_descriptors(&self) -> CodegenResult<()> {
         for function in &self.module.functions {
-            for op in function.blocks.iter().flat_map(|block| &block.ops) {
+            for op in function.blocks.iter().flat_map(|block| block.operations()) {
                 if let PhysicalOp::TaskSpawn {
                     dest,
                     output: Some(output),
@@ -137,7 +137,14 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
 
     pub(super) fn emit_task_scope_close(&self, scope: TaskScopeId) -> CodegenResult<()> {
         self.free_handle("hew_coro_state_leave_token", self.task_frame()?.state)?;
-        self.free_handle("hew_checked_scope_close", self.task_scope_handle(scope)?)
+        self.free_handle("hew_checked_scope_close", self.task_scope_handle(scope)?)?;
+        self.builder
+            .build_store(
+                self.task_scopes[&scope],
+                self.ctx.ptr_type(AddressSpace::default()).const_null(),
+            )
+            .llvm_ctx("retire the drained lexical scope root")?;
+        Ok(())
     }
 
     fn task_result_descriptor(&self, dest: StorageId) -> CodegenResult<PointerValue<'ctx>> {
@@ -159,18 +166,40 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
         scope: TaskScopeId,
         callable: StorageId,
         dest: StorageId,
+        callable_slot_bytes: u64,
     ) -> CodegenResult<()> {
-        let descriptor = self.task_result_descriptor(dest)?;
-        let task = self.task_pointer_call(
+        let pointer = self.ctx.ptr_type(AddressSpace::default());
+        let spawn = get_or_declare_external(
+            self.llvm,
             "hew_checked_task_spawn",
+            pointer.fn_type(
+                &[
+                    pointer.into(),
+                    pointer.into(),
+                    pointer.into(),
+                    self.ctx.i64_type().into(),
+                    pointer.into(),
+                ],
+                false,
+            ),
+        )?;
+        let task = suspend::call_value(
+            &self.builder,
+            spawn,
             &[
                 self.task_scope_handle(scope)?.into(),
                 self.slots[callable.0 as usize].into(),
-                descriptor.into(),
+                self.task_result_descriptor(dest)?.into(),
+                self.ctx
+                    .i64_type()
+                    .const_int(callable_slot_bytes, false)
+                    .into(),
+                self.managed_value_layout(&self.storage(dest)?.ty)?.into(),
             ],
+            "task.spawn",
         )?;
         self.clear_owned(callable)?;
-        self.store(dest, task.into())
+        self.store(dest, task)
     }
 
     pub(super) fn emit_task_invoke(
@@ -179,6 +208,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
         callee: &hew_mir::physical::PhysicalInvocationCallee,
         args: &[ArgumentTransfer],
         dest: StorageId,
+        callable_slot_bytes: u64,
     ) -> CodegenResult<()> {
         let pointer = self.ctx.ptr_type(AddressSpace::default());
         let (carrier, source, consuming) = match callee {
@@ -327,6 +357,8 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
                     pointer.into(),
                     self.ctx.i32_type().into(),
                     pointer.into(),
+                    self.ctx.i64_type().into(),
+                    pointer.into(),
                 ],
                 false,
             ),
@@ -343,6 +375,11 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
                     .const_int(u64::from(consuming), false)
                     .into(),
                 self.task_result_descriptor(dest)?.into(),
+                self.ctx
+                    .i64_type()
+                    .const_int(callable_slot_bytes, false)
+                    .into(),
+                self.managed_value_layout(&self.storage(dest)?.ty)?.into(),
             ],
             "select.call",
         )?;
@@ -360,6 +397,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
         scope: TaskScopeId,
         members: &[StorageId],
         dest: StorageId,
+        member_slot_bytes: u64,
     ) -> CodegenResult<()> {
         let count = u32::try_from(members.len())
             .map_err(|_| CodegenError::FailClosed("too many race members".into()))?;
@@ -391,6 +429,8 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
                     pointer.into(),
                     self.ctx.i32_type().into(),
                     pointer.into(),
+                    self.ctx.i64_type().into(),
+                    pointer.into(),
                 ],
                 false,
             ),
@@ -406,6 +446,11 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
                     .const_int(u64::from(count), false)
                     .into(),
                 descriptor.into(),
+                self.ctx
+                    .i64_type()
+                    .const_int(member_slot_bytes, false)
+                    .into(),
+                self.managed_value_layout(&self.storage(dest)?.ty)?.into(),
             ],
             "race.group",
         )?;
@@ -453,6 +498,12 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
         let wait = self.task_pointer_call(
             "hew_checked_task_wait_new",
             &[task_value.into(), waker.into()],
+        )?;
+        frame.bind_operation(
+            self.ctx,
+            &self.builder,
+            managed::operation_layout(self.ctx, self.llvm, "hew_managed_visit_task_wait")?,
+            wait,
         )?;
         self.clear_owned(*task)?;
         let poll = self.ctx.append_basic_block(self.value, "await.poll");
@@ -515,6 +566,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             .build_conditional_branch(cancellation, abandoned, take)
             .llvm_ctx("choose task result transfer")?;
         self.builder.position_at_end(abandoned);
+        frame.clear_operation(self.ctx, &self.builder)?;
         self.free_handle("hew_checked_task_wait_free", wait)?;
         self.initialize_cancellation_fault()?;
         self.emit_edge(cancel)?;
@@ -609,6 +661,12 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             "hew_checked_scope_wait_new",
             &[handle.into(), waker.into(), frame.state.into()],
         )?;
+        frame.bind_operation(
+            self.ctx,
+            &self.builder,
+            managed::operation_layout(self.ctx, self.llvm, "hew_managed_visit_scope_wait")?,
+            wait,
+        )?;
         if mode == hew_mir::physical::TaskScopeJoinMode::CancelLosers {
             self.free_handle("hew_checked_scope_wait_cancel_losers", wait)?;
         }
@@ -684,6 +742,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             &[wait.into(), child_fault_slot.into()],
             "scope.child.status",
         )?;
+        frame.clear_operation(self.ctx, &self.builder)?;
         self.free_handle("hew_checked_scope_wait_free", wait)?;
         let primary = self
             .builder

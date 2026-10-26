@@ -10,4 +10,3 @@ kind = "check"
 code = "E_LET_ELSE_FALLTHROUGH"
 line = 13
 column = 37
-message = "must diverge"

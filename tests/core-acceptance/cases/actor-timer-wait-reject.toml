@@ -10,4 +10,3 @@ kind = "reject"
 code = "E_TIMER_WAIT"
 line = 4
 column = 52
-message = "a timer cannot wait for mailbox capacity; use .Reject or .DropNewest"

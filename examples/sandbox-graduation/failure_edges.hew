@@ -56,6 +56,9 @@ fn main() fails string {
     let source = Fixed { text: "abc" };
     println(f"{source.read():?} {Fixed { text: "" }.read():?}");
     println(f"{total(["port", "port"]):?}");
-    let sum = total(["port", "host"])?;
+    let sum = total(["port", "host"]).map_err(|problem| {
+        println(problem);
+        problem
+    })?;
     println(f"unreachable {sum}");
 }

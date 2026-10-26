@@ -1,3 +1,6 @@
+#[path = "support/checked.rs"]
+mod checked;
+
 use hew_hir::{lower_program_host_target, ResolutionCtx};
 use hew_sir::{
     lower_module, verify_module, BindingTarget, CallUnwind, OwnKind, SemModule, SemOpKind,
@@ -103,7 +106,7 @@ fn main() -> i64 {
     for operation in main
         .blocks
         .iter()
-        .flat_map(|block| &block.ops)
+        .flat_map(hew_sir::SemBlock::operations)
         .skip_while(|operation| !matches!(operation.kind, SemOpKind::StoreInit { place, .. } if place == initial))
         .skip(1)
     {
@@ -194,11 +197,8 @@ fn assert_receiver_update_order(module: &SemModule) {
     else {
         unreachable!()
     };
-    let push = main
-        .blocks
-        .iter()
-        .find(|block| block.id == normal.target)
-        .unwrap();
+    let path = checked::normal_path(main, normal.target);
+    let push = *path.last().unwrap();
     let SemTerminator::RtCall {
         family: RuntimeCallFamily::Vector(VecValueOp::Push),
         args,
@@ -242,14 +242,15 @@ fn assert_receiver_update_order(module: &SemModule) {
         sibling_write < clear_take,
         "sibling replacement precedes clearing the receiver"
     );
-    let clear_write = returned_receiver_store(push, place);
+    let after_clear = path[0];
+    let clear_write = returned_receiver_store(after_clear, place);
     let push_take = push
         .ops
         .iter()
         .position(|op| matches!(op.kind, SemOpKind::LoadTake { place: p } if p == place))
         .unwrap();
     assert!(
-        clear_write < push_take,
+        after_clear.id != push.id || clear_write < push_take,
         "push takes the field after installing clear's returned receiver"
     );
     let after_push = main

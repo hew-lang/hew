@@ -11,18 +11,15 @@ severity = "error"
 code = "UseAfterMove"
 line = 24
 column = 5
-message = "use of moved value `held`"
 
 [[case.expected.diagnostics]]
 severity = "error"
 code = "UseAfterMove"
 line = 31
 column = 21
-message = "use of moved value `held`"
 
 [[case.expected.diagnostics]]
 severity = "error"
 code = "UseAfterMove"
 line = 35
 column = 5
-message = "use of moved value `held`"

@@ -11,4 +11,3 @@ severity = "error"
 code = "UseAfterConsume"
 line = 27
 column = 17
-message = "`#[on(crash)]` hook reads actor state `sock`, which `swap` consumes"

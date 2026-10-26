@@ -11,4 +11,3 @@ severity = "error"
 code = "Other"
 line = 5
 column = 23
-message = "positional arguments must come before named arguments"

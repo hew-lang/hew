@@ -10,4 +10,3 @@ kind = "reject"
 code = "Other"
 line = 6
 column = 5
-message = "E_UNKNOWN_ATTRIBUTE: unknown macro `bogus`"

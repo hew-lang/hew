@@ -1869,6 +1869,7 @@ dependencies = [
 name = "hew-cli"
 version = "0.9.4"
 dependencies = [
+ "cc",
  "clap",
  "clap_complete",
  "dirs",
@@ -1992,6 +1993,18 @@ version = "0.9.4"
 dependencies = [
  "hew-runtime",
  "hew-std",
+]
+
+[[package]]
+name = "hew-live"
+version = "0.9.4"
+dependencies = [
+ "hew-cabi",
+ "libloading",
+ "object 0.40.0",
+ "serde",
+ "sha2 0.11.0",
+ "tempfile",
 ]
 
 [[package]]
@@ -2857,6 +2870,16 @@ name = "libc"
 version = "0.2.189"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3eaf3ede3fee6db1a4c2ee091bf8a8b4dccdc6d17f656fb07896ee72867612f2"
+
+[[package]]
+name = "libloading"
+version = "0.9.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "754ca22de805bb5744484a5b151a9e1a8e837d5dc232c2d7d8c2e3492edc8b60"
+dependencies = [
+ "cfg-if",
+ "windows-link",
+]
 
 [[package]]
 name = "libm"
@@ -4905,7 +4928,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "32497e9a4c7b38532efcdebeef879707aa9f794296a4f0244f6f69e9bc8574bd"
 dependencies = [
  "fastrand",
- "getrandom 0.3.4",
+ "getrandom 0.4.3",
  "once_cell",
  "rustix",
  "windows-sys 0.61.2",

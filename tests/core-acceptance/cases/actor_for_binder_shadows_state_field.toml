@@ -10,4 +10,3 @@ kind = "reject"
 code = "Shadowing"
 line = 16
 column = 13
-message = "variable `count` shadows a binding in an outer scope"

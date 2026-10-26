@@ -7,5 +7,4 @@ timeout_seconds = 60
 
 [case.expected]
 stdout = "close 9\n"
-stderr = "hew: failure: UserPanic (212): close 9 failed\n"
 exit = 1

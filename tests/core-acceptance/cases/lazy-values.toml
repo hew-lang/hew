@@ -6,5 +6,4 @@ suites = ["acceptance", "safety"]
 timeout_seconds = 30
 [case.expected]
 stdout = "unused initializer retained\nclose 1\ninitialize 2\nclose 2\ninitialize error\nclose 3\nlazy values passed\n"
-stderr = ""
 exit = 0

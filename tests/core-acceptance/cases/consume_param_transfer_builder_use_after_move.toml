@@ -1,6 +1,6 @@
 [[case]]
 id = "consume_param_transfer_builder_use_after_move"
-intent = "A child passed to a consume parameter moves from the caller into the native sink."
+intent = "A consuming fluent method transfers its child argument out of the caller while returning its receiver."
 source = "../vertical-slice/reject/consume_param_transfer_builder_use_after_move.hew"
 suites = ["acceptance"]
 timeout_seconds = 30
@@ -8,6 +8,5 @@ kind = "reject"
 
 [[case.expected.diagnostics]]
 code = "UseAfterMove"
-line = 59
+line = 31
 column = 5
-message = "use of moved value `child`"

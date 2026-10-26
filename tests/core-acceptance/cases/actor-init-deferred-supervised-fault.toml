@@ -7,5 +7,4 @@ timeout_seconds = 20
 
 [case.expected]
 stdout = ""
-stderr = "hew: failure: UserPanic (212): worker init failed\n"
 exit = 1

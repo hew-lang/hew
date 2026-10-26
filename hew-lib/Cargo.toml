@@ -2,13 +2,13 @@
 name = "hew-lib"
 version.workspace = true
 edition = "2024"
-description = "Combined Hew runtime + standard library — single staticlib for linking"
+description = "Combined Hew runtime and standard library for native linking"
 license.workspace = true
 publish = false
 
 [lib]
 name = "hew"
-crate-type = ["staticlib"]
+crate-type = ["staticlib", "cdylib"]
 
 [dependencies]
 hew-runtime = { path = "../hew-runtime" }

@@ -10,4 +10,3 @@ kind = "reject"
 code = "InvalidOperation"
 line = 16
 column = 11
-message = "`Holder::same` requires Eq for `Option<T>`; this instantiation `Option<HashMap<string, i64>>` has no selected Eq implementation"

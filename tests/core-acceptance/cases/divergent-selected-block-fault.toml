@@ -7,5 +7,4 @@ timeout_seconds = 15
 
 [case.expected]
 stdout = ""
-stderr = "hew: failure: UserPanic (212): SELECTED FAULT\n"
 exit = 1

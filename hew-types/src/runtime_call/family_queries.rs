@@ -514,6 +514,7 @@ impl RuntimeCallFamily {
                     | RuntimeValueKind::PoolMember
                     | RuntimeValueKind::PipeHalf(_)
                     | RuntimeValueKind::PipeHalfResult(_)
+                    | RuntimeValueKind::PipePairResult
                     | RuntimeValueKind::StreamPair
                     | RuntimeValueKind::ActorRequestOwner
                     | RuntimeValueKind::ActorRequestAdmission
@@ -707,12 +708,11 @@ impl RuntimeCallFamily {
             | F::Encoding { .. }
             | F::StreamClose
             // Wrapping a source stream in an adaptor is a pointer handoff.
-            | F::StreamChunks
-            | F::StreamLines
             | F::StreamTake
             | F::StreamTryNextLayout
             | F::StreamTrySendLayout
             | F::StreamForward
+            | F::StreamPipe
             | F::StreamFromGenerator
             | F::SinkFromEncoder
             | F::StreamPairSink

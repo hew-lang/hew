@@ -33,6 +33,7 @@ pub mod range_value;
 pub mod resolved_ty;
 pub mod runtime_call;
 pub mod runtime_calling_convention;
+pub mod session;
 pub mod stdlib;
 pub mod stdlib_authority;
 pub mod stdlib_catalog_identity;

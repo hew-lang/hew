@@ -6,6 +6,5 @@ suites = ["acceptance", "safety"]
 timeout_seconds = 15
 
 [case.expected]
-stdout = "text: auxiliary\n"
-stderr = "error: number: 42\n"
+stdout = "text: auxiliary\nnumber: 42\n"
 exit = 1

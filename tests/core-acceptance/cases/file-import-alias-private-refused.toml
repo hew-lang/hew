@@ -11,4 +11,3 @@ severity = "error"
 code = "VisibilityViolationPrivate"
 line = 4
 column = 13
-message = "`tag` is private to module `codecs.huffman`"

@@ -10,4 +10,3 @@ kind = "reject"
 code = "UndefinedMethod"
 line = 28
 column = 13
-message = "type `Wrapper` cannot be cloned because member `inner` contains opaque value `Handle`"

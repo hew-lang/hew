@@ -10,4 +10,3 @@ kind = "reject"
 code = "ArityMismatch"
 line = 6
 column = 5
-message = "`stop` takes 1 argument(s) but 2 were supplied"

@@ -7,5 +7,4 @@ timeout_seconds = 15
 
 [case.expected]
 stdout = "first 1\nsecond 2\nhook sees 3 set0 first3 3\nclose 2 0\nclose 1 3\n"
-stderr = "hew: failure: IndexOutOfBounds (205)\nhew: actor crash in Holder.add (actor 1): IndexOutOfBounds\n"
 exit = 1

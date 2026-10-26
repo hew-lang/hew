@@ -10,4 +10,3 @@ kind = "reject"
 code = "InvalidSend"
 line = 8
 column = 19
-message = "lambda actor message type `Rc<i64>` is not Send (E_DUPLEX_NON_SEND)"

@@ -139,6 +139,8 @@ unsafe extern "C" fn eq_i64(
 
 fn layout<T>(drop_fn: unsafe extern "C-unwind" fn(*mut c_void)) -> HewValueLayout {
     HewValueLayout {
+        code_owner: core::ptr::null(),
+        managed: core::ptr::null(),
         release_start: None,
         size: size_of::<T>(),
         align: align_of::<T>(),
@@ -248,6 +250,8 @@ fn assert_map_value_releases() {
     let inner_layout = layout::<RecordOwningHeap>(drop_map_inner_record);
     let key_layout = HewMapKeyLayout {
         value: HewValueLayout {
+            code_owner: core::ptr::null(),
+            managed: core::ptr::null(),
             release_start: None,
             size: size_of::<i64>(),
             align: align_of::<i64>(),
@@ -259,6 +263,8 @@ fn assert_map_value_releases() {
         eq_fn: Some(eq_i64),
     };
     let value_layout = HewValueLayout {
+        code_owner: core::ptr::null(),
+        managed: core::ptr::null(),
         release_start: None,
         size: size_of::<*mut HewVec>(),
         align: align_of::<*mut HewVec>(),
@@ -358,6 +364,8 @@ fn suppressed_release_fails_exact_count_for_each_issue_2553_shape() {
     let vec = unsafe { make_vec(&inner_layout, &inner) };
     let key_layout = HewMapKeyLayout {
         value: HewValueLayout {
+            code_owner: core::ptr::null(),
+            managed: core::ptr::null(),
             release_start: None,
             size: size_of::<i64>(),
             align: align_of::<i64>(),
@@ -369,6 +377,8 @@ fn suppressed_release_fails_exact_count_for_each_issue_2553_shape() {
         eq_fn: Some(eq_i64),
     };
     let shallow_value_layout = HewValueLayout {
+        code_owner: core::ptr::null(),
+        managed: core::ptr::null(),
         release_start: None,
         size: size_of::<*mut HewVec>(),
         align: align_of::<*mut HewVec>(),
@@ -477,6 +487,8 @@ fn injected_extra_release_helper() {
             let vec = unsafe { make_vec(&inner_layout, &inner) };
             let key_layout = HewMapKeyLayout {
                 value: HewValueLayout {
+                    code_owner: core::ptr::null(),
+                    managed: core::ptr::null(),
                     release_start: None,
                     size: size_of::<i64>(),
                     align: align_of::<i64>(),
@@ -488,6 +500,8 @@ fn injected_extra_release_helper() {
                 eq_fn: Some(eq_i64),
             };
             let value_layout = HewValueLayout {
+                code_owner: core::ptr::null(),
+                managed: core::ptr::null(),
                 release_start: None,
                 size: size_of::<*mut HewVec>(),
                 align: align_of::<*mut HewVec>(),

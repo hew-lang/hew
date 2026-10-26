@@ -97,7 +97,7 @@ fn map_bindings_copies_calls_and_returns_share_semantic_value_contracts() {
         .functions
         .iter()
         .flat_map(|f| &f.blocks)
-        .flat_map(|b| &b.ops)
+        .flat_map(hew_sir::SemBlock::operations)
         .any(|op| {
             matches!(op.kind, SemOpKind::CopyValue { .. }) && op.results[0].own == OwnKind::Owned
         }));
@@ -138,7 +138,7 @@ fn set_mutations_return_values_and_rebind_the_receiver() {
             .functions
             .iter()
             .flat_map(|f| &f.blocks)
-            .flat_map(|b| &b.ops)
+            .flat_map(hew_sir::SemBlock::operations)
             .any(|op| {
                 matches!(op.kind, SemOpKind::Destructure { .. })
                     && op.results.len() == 2
@@ -292,7 +292,7 @@ fn main() -> i64 {
         .functions
         .iter()
         .flat_map(|f| &f.blocks)
-        .flat_map(|b| &b.ops)
+        .flat_map(hew_sir::SemBlock::operations)
         .collect();
     let field_loan = operations
         .iter()
@@ -353,7 +353,7 @@ fn main() -> i64 {
     let parent = main
         .blocks
         .iter()
-        .flat_map(|b| &b.ops)
+        .flat_map(hew_sir::SemBlock::operations)
         .find_map(|op| match &op.kind {
             SemOpKind::LoadBorrow { place } if op.results[0].id == borrowed => {
                 let plan = place_plan_of(&module, main);
@@ -378,8 +378,8 @@ fn main() -> i64 {
     let cleanup = cleanup_path(main, fault.id);
     assert_eq!(
         cleanup
-            .iter()
-            .flat_map(|block| &block.ops)
+            .iter().copied()
+            .flat_map(hew_sir::SemBlock::operations)
             .filter(
                 |op| matches!(&op.kind, SemOpKind::EndLifetime { place } if hew_sir::OwnerRoot::Local(*place) == parent)
             )

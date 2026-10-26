@@ -128,6 +128,8 @@ fn vector_descriptor_matches_the_runtime_c_abi() {
         offset_of!(HewValueLayout, clone_fn),
         offset_of!(HewValueLayout, drop_fn),
         offset_of!(HewValueLayout, release_start),
+        offset_of!(HewValueLayout, code_owner),
+        offset_of!(HewValueLayout, managed),
     ]
     .into_iter()
     .enumerate()
@@ -164,6 +166,15 @@ fn utf8_decode_emits_typed_outcomes_with_reusable_scratch() {
         vec![ctx.ptr_type(AddressSpace::default()).into(); 4]
     );
     for function in module.get_functions() {
+        // Typed destruction adds helper callbacks with bounded invocation-local
+        // scratch. Only the source body's loop can accumulate decoder scratch.
+        if !function
+            .get_basic_blocks()
+            .iter()
+            .any(|block| block.get_name().to_bytes() == b"physical.prologue")
+        {
+            continue;
+        }
         for block in function.get_basic_blocks() {
             if block.get_name().to_bytes() == b"physical.prologue" {
                 continue;
@@ -239,6 +250,7 @@ fn collection_operation_module(family: hew_types::RuntimeCallFamily) -> SemModul
         module.variant_shapes = seed.variant_shapes;
     }
     let mut facts = TypeFactService::new(TypeFactContext::default(), module.type_facts);
+    facts.require(&ResolvedTy::Unit).unwrap();
     facts.require(&result_ty).unwrap();
     let mut copies = Vec::new();
     let mut operands = Vec::new();
@@ -1019,8 +1031,8 @@ fn owned_record_layout_and_recursive_glue_emit_verified_llvm() {
     );
     assert!(module.get_function("hew_string_clone").is_some());
     assert!(module.get_function("hew_bytes_clone_ref").is_some());
-    assert!(module.get_function("hew_string_drop").is_some());
-    assert!(module.get_function("hew_bytes_drop").is_some());
+    assert!(module.get_function("hew_string_drop_managed").is_some());
+    assert!(module.get_function("hew_bytes_drop_managed").is_some());
 }
 
 #[test]
@@ -1095,7 +1107,7 @@ fn main() -> i64 {
         assert!(ir.contains("call void @llvm.trap"));
         assert!(module.get_function("llvm.trap").is_some());
         assert!(module.get_function("hew_string_clone").is_some());
-        assert!(module.get_function("hew_string_drop").is_some());
+        assert!(module.get_function("hew_string_drop_managed").is_some());
         for callable in &verified.module().callables {
             let function = module
                 .get_function(&emitted_symbol(verified.module(), callable))
@@ -1367,6 +1379,8 @@ fn scalar_and_vector_loop_chunks_preserve_the_shared_budget_across_serial_calls(
         static BUDGET: Cell<u32> = const { Cell::new(0) };
         static POLLS: Cell<u32> = const { Cell::new(0) };
         static SUPPRESSED: Cell<bool> = const { Cell::new(false) };
+        static CANCELLING: Cell<bool> = const { Cell::new(false) };
+        static VECTOR_RELEASES: Cell<u32> = const { Cell::new(0) };
     }
     unsafe extern "C" fn countdown(_: *mut std::ffi::c_void, _: u32) -> *mut u32 {
         if SUPPRESSED.get() {
@@ -1375,7 +1389,7 @@ fn scalar_and_vector_loop_chunks_preserve_the_shared_budget_across_serial_calls(
             BUDGET.with(Cell::as_ptr)
         }
     }
-    unsafe extern "C" fn poll(_: *mut std::ffi::c_void, budget: u32) -> i32 {
+    unsafe extern "C" fn poll(state: *mut std::ffi::c_void, budget: u32) -> i32 {
         assert_eq!(
             BUDGET.get(),
             0,
@@ -1383,7 +1397,26 @@ fn scalar_and_vector_loop_chunks_preserve_the_shared_budget_across_serial_calls(
         );
         BUDGET.set(budget);
         POLLS.set(POLLS.get() + 1);
-        0
+        if CANCELLING.get() {
+            // SAFETY: generated polling borrows the live invocation state;
+            // its execution owner retains the token throughout this call.
+            unsafe {
+                let token = hew_runtime::coro_state::hew_coro_state_token(state.cast());
+                hew_runtime::cancel_token::hew_cancel_token_cancel(
+                    token,
+                    hew_runtime::fault::HEW_FAULT_CANCELLED,
+                );
+            }
+            2
+        } else {
+            0
+        }
+    }
+    unsafe extern "C-unwind" fn release_vector(vector: *mut std::ffi::c_void) {
+        VECTOR_RELEASES.set(VECTOR_RELEASES.get() + 1);
+        // SAFETY: scalar-vector cleanup is synchronous and transfers one live
+        // owner to the consuming walk, including cancellation cleanup.
+        unsafe { hew_runtime::vec::hew_vec_free_owned_walk(vector.cast()) };
     }
     let semantic = lower_source(
         r"
@@ -1425,8 +1458,17 @@ fn scalar_and_vector_loop_chunks_preserve_the_shared_budget_across_serial_calls(
         for (name, address) in [
             ("hew_coro_safepoint_budget", countdown as *const () as usize),
             ("hew_coro_safepoint", poll as *const () as usize),
+            (
+                "hew_vec_free_owned_walk",
+                release_vector as *const () as usize,
+            ),
         ] {
-            engine.add_global_mapping(&llvm.get_function(name).unwrap(), address);
+            engine.add_global_mapping(
+                &llvm
+                    .get_function(name)
+                    .unwrap_or_else(|| panic!("missing runtime boundary {name}")),
+                address,
+            );
         }
         type Main = unsafe extern "C" fn(*mut i64, *mut *mut hew_runtime::fault::HewFault) -> i32;
         // SAFETY: the generated main wrapper has the physical result/fault ABI.
@@ -1460,6 +1502,34 @@ fn scalar_and_vector_loop_chunks_preserve_the_shared_budget_across_serial_calls(
         assert_eq!(BUDGET.get(), 17, "suppression leaves the budget untouched");
         assert_eq!(POLLS.get(), 0);
         SUPPRESSED.set(false);
+
+        // Main entry, outer header and callee entry consume three ticks.
+        // Cancel on the next scan header after one element, with its vector
+        // owner and private recurrence live across the chunk's budget exit.
+        BUDGET.set(5);
+        POLLS.set(0);
+        VECTOR_RELEASES.set(0);
+        CANCELLING.set(true);
+        let mut result = -77;
+        let mut fault = std::ptr::null_mut();
+        // SAFETY: output carriers remain live through the synchronous root.
+        assert_eq!(
+            unsafe { main.call(&raw mut result, &raw mut fault) },
+            hew_runtime::fault::HEW_FAULT_CANCELLED
+        );
+        assert_eq!(result, -77, "cancelled scans must not publish a result");
+        assert!(!fault.is_null());
+        assert_eq!(POLLS.get(), 1);
+        assert_eq!(
+            VECTOR_RELEASES.get(),
+            1,
+            "cancellation releases the live vector once"
+        );
+        // SAFETY: the cancelled call published one owned fault.
+        unsafe {
+            hew_runtime::fault::hew_fault_drop(fault);
+        }
+        CANCELLING.set(false);
     }
 }
 
@@ -1524,6 +1594,89 @@ fn vector_loop_chunks_preserve_empty_scans_bounds_and_overflow_at_o0_o2() {
                     hew_runtime::fault::hew_fault_drop(fault);
                 }
             }
+        }
+    }
+}
+
+#[test]
+fn active_operation_root_uses_the_split_coroutine_owner_slot() {
+    use std::cell::Cell;
+    use std::ffi::c_void;
+
+    thread_local! {
+        static FRAME_BYTES: Cell<usize> = const { Cell::new(0) };
+    }
+    unsafe extern "C" fn allocate(size: u64) -> *mut c_void {
+        FRAME_BYTES.set(usize::try_from(size).unwrap());
+        // SAFETY: the coroutine requests its complete frame allocation.
+        unsafe { hew_runtime::cont::hew_cont_frame_alloc(size) }
+    }
+
+    for opt in [OptLevel::O0, OptLevel::O2] {
+        let ctx = Context::create();
+        let llvm = ctx.create_module("operation_root");
+        let triple = native_emission_triple();
+        let machine = crate::llvm::target_machine_for_triple_with_opt_level(&triple, opt).unwrap();
+        llvm.set_data_layout(&machine.get_target_data().get_data_layout());
+        let pointer = ctx.ptr_type(AddressSpace::default());
+        let function =
+            llvm.add_function("probe", pointer.fn_type(&[pointer.into(); 2], false), None);
+        let builder = ctx.create_builder();
+        builder.position_at_end(ctx.append_basic_block(function, "entry"));
+        let state = function.get_nth_param(0).unwrap().into_pointer_value();
+        let owner = function.get_nth_param(1).unwrap().into_pointer_value();
+        let frame = coro::begin(&ctx, &llvm, &builder, function, state).unwrap();
+        let descriptor = llvm.add_global(ctx.i8_type(), None, "descriptor");
+        descriptor.set_initializer(&ctx.i8_type().const_zero());
+        frame
+            .bind_operation(&ctx, &builder, descriptor.as_pointer_value(), owner)
+            .unwrap();
+        let done = ctx.append_basic_block(function, "done");
+        frame.suspend(&ctx, &builder, done, done).unwrap();
+        builder.position_at_end(done);
+        frame.clear_operation(&ctx, &builder).unwrap();
+        builder.build_unconditional_branch(frame.finish).unwrap();
+        llvm.verify().unwrap();
+        crate::llvm::run_module_pipeline(&llvm, &machine, opt).unwrap();
+        let engine = llvm
+            .create_jit_execution_engine(inkwell::OptimizationLevel::None)
+            .unwrap();
+        super::test_runtime::bind_runtime(&llvm, &engine);
+        engine.add_global_mapping(
+            &llvm.get_function("hew_cont_frame_alloc").unwrap(),
+            allocate as *const () as usize,
+        );
+        let (_ready, wake) = hew_runtime::wake::blocking::Readiness::new();
+        // SAFETY: the state, dummy operation and generated module outlive the
+        // suspended frame. Inspect the registered slot before dereferencing it.
+        unsafe {
+            let state = hew_runtime::coro_state::hew_coro_state_new(
+                wake.descriptor(),
+                std::ptr::null_mut(),
+            );
+            let mut operation = 17_u64;
+            let expected = (&raw mut operation).cast::<c_void>();
+            let probe = engine
+                .get_function::<unsafe extern "C" fn(
+                    *mut hew_runtime::coro_state::HewCoroState,
+                    *mut c_void,
+                ) -> *mut c_void>("probe")
+                .unwrap();
+            let handle = probe.call(state, expected);
+            let view = (*state.cast::<hew_cabi::coro::HewCoroInvocation>())
+                .managed_frame
+                .as_ref()
+                .unwrap();
+            let root = view.operation.as_ref().unwrap();
+            let address = root.slot as usize;
+            assert!(
+                (handle as usize..handle as usize + FRAME_BYTES.get()).contains(&address),
+                "{opt:?}: active operation slot must belong to the retained coroutine frame"
+            );
+            assert_eq!(root.slot.cast::<*mut c_void>().read(), expected);
+            hew_runtime::cont::hew_cont_resume(handle);
+            hew_runtime::cont::hew_cont_destroy(handle);
+            hew_runtime::coro_state::hew_coro_state_free(state);
         }
     }
 }

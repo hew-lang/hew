@@ -1,0 +1,13 @@
+[[case]]
+id = "actor-owned-budget-encoding-message"
+intent = "Encoding values retain their canonical type facts and payloads through local actor messages."
+source = "cases/actor-owned-budget-encoding-message.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 30
+
+[case.env]
+HEW_WORKERS = "2"
+
+[case.expected]
+stdout = "40\n41\n42\n"
+exit = 0

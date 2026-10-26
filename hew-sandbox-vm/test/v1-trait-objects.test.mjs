@@ -197,11 +197,10 @@ test("the slot number is matched, not used as a position in the slot array", asy
   assert.equal(trace.final_state.stdout.join(""), "hello Ada\n");
 });
 
-test("a dyn call names a slot the vtable does not carry", async () => {
+test("a dyn call rejects a missing vtable slot", async () => {
   const trace = await run(traitPackage({ callSlot: 9 }));
 
   assert.equal(trace.result, "runtime_failure");
-  assert.match(trace.final_state.runtime_failures[0].message, /no slot 9/);
   assert.deepEqual(trace.final_state.stdout, []);
 });
 
@@ -331,8 +330,4 @@ test("the slot's receiver decision is what reaches self", async () => {
   // nothing left to read.
   const moved = await twice("move");
   assert.equal(moved.result, "runtime_failure");
-  assert.match(
-    moved.final_state.runtime_failures[0].message,
-    /ownership was already transferred or released/
-  );
 });

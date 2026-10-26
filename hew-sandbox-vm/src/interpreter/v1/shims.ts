@@ -11,6 +11,10 @@ import type { Pipes } from "./pipes.js";
 
 import {
   UNIT,
+  byteVectorValue,
+  clearByteVector,
+  mutableVector,
+  sliceByteVector,
   cloneValue,
   compareUtf8,
   stringValue,
@@ -80,6 +84,7 @@ export interface ShimHost {
   /// The program's own generator. `hew_random_seed` replaces it, and it is
   /// separate from the scheduler's chaos stream.
   prng: Mt19937;
+  arenaInstanceId(): bigint;
   /// The package's regex literal pool.
   regexPatterns: readonly string[];
   /// Build a value of the enum descriptor the call demands. The tag comes from
@@ -278,7 +283,6 @@ export function resolveRuntime(entry: RuntimeFamilyEntry): RuntimeRegistration {
           });
         case "GetBorrow":
         case "TakeFirst":
-        case "Append":
           return refused(`Vector::${entry.detail}`);
         default:
           return ordinary(VECTOR_SHIMS[entry.detail]);
@@ -498,13 +502,22 @@ const UNIT_FAMILIES = {
     host.writeStderr(text(args, 0));
     return UNIT;
   },
-  StringToBytes: (_host, args) => ({
-    kind: "vector",
-    elementType: "u8",
-    items: [...indexed(args, 0).encoded()].map((byte) => int(BigInt(byte))),
-  }),
+  StringToBytes: (_host, args) =>
+    byteVectorValue(
+      [...indexed(args, 0).encoded()].map((byte) => int(BigInt(byte))),
+    ),
   StringToUppercase: (_host, args) => str(text(args, 0).toUpperCase()),
   StringToLowercase: (_host, args) => str(text(args, 0).toLowerCase()),
+  StreamPipe: (host, args) => {
+    const pair = host.newPipe!(Number(integer(args, 0)));
+    const fields = [
+      host.pipes!.extract(pair, "sink"),
+      host.pipes!.extract(pair, "stream"),
+      bool(true),
+    ];
+    host.pipes!.freePair(pair);
+    return { kind: "record", typeId: "", fields };
+  },
   StreamPairSink: (host, args) => host.pipes!.extract(arg(args, 0), "sink"),
   StreamPairStream: (host, args) => host.pipes!.extract(arg(args, 0), "stream"),
   StreamFromGenerator: (host, args) => host.generatorStream!(arg(args, 0)),
@@ -657,7 +670,7 @@ const UNIT_FAMILIES = {
   // TextDecoder replaces each maximal invalid subsequence with U+FFFD, as
   // native lossy decoding does.
   BytesDecodeUtf8Lossy: (_host, args) => str(decodeUtf8(arg(args, 0))),
-  BytesNew: () => ({ kind: "vector", elementType: "u8", items: [] }),
+  BytesNew: () => byteVectorValue([]),
   BytesIsEmpty: (_host, args) => bool(vec(args, 0).items.length === 0),
   BytesLen: (_host, args) => int(BigInt(vec(args, 0).items.length)),
   BytesContains: (_host, args) => {
@@ -675,20 +688,19 @@ const UNIT_FAMILIES = {
     }
     return cloneValue(items[at]!);
   },
-  // A native bytes range shares the buffer; a VM value is never aliased, so
-  // a copy is observably the same.
+  // Nonempty views retain the exact original allocation and payload capacity.
   BytesSlice: (_host, args) => {
     const items = vec(args, 0).items;
     const start = index(args, 1);
     const end = index(args, 2);
     checkSliceBounds(start, end, items.length);
-    return byteVector(items.slice(start, end));
+    return sliceByteVector(vec(args, 0), start, end);
   },
   BytesSliceFrom: (_host, args) => {
     const items = vec(args, 0).items;
     const start = index(args, 1);
     checkSliceBounds(start, items.length, items.length);
-    return byteVector(items.slice(start));
+    return sliceByteVector(vec(args, 0), start, items.length);
   },
   BytesConcat: (_host, args) =>
     byteVector([...vec(args, 0).items, ...vec(args, 1).items]),
@@ -702,6 +714,7 @@ const UNIT_FAMILIES = {
   // A mutating call receives its receiver by `move` and returns it.
   BytesPush: (_host, args) => {
     const target = vec(args, 0);
+    mutableVector(target, target.items.length + 1);
     target.items.push(cloneValue(arg(args, 1)));
     return target;
   },
@@ -714,13 +727,13 @@ const UNIT_FAMILIES = {
         `bytes index ${at} out of bounds for length ${target.items.length}`,
       );
     }
+    mutableVector(target);
     target.items[at] = cloneValue(arg(args, 2));
     return target;
   },
   BytesClear: (_host, args) => {
     const target = vec(args, 0);
-    target.items.length = 0;
-    return target;
+    return clearByteVector(target);
   },
   BytesGet: (host, args, shape) => {
     if (!shape) {
@@ -738,7 +751,9 @@ const UNIT_FAMILIES = {
   // append, paired with the removed byte for a pop.
   BytesAppend: (_host, args) => {
     const target = vec(args, 0);
-    target.items.push(...vec(args, 1).items.map(cloneValue));
+    const added = vec(args, 1).items.map(cloneValue);
+    mutableVector(target, target.items.length + added.length);
+    target.items.push(...added);
     return target;
   },
   BytesPop: (host, args, shape) => {
@@ -748,6 +763,7 @@ const UNIT_FAMILIES = {
       );
     }
     const target = vec(args, 0);
+    if (target.items.length) mutableVector(target);
     const last = target.items.pop();
     return {
       kind: "record",
@@ -883,9 +899,7 @@ const UNIT_FAMILIES = {
   ReplyPayloadFree: refused("ReplyPayloadFree"),
   ReplyWait: refused("ReplyWait"),
   SelectFirst: refused("SelectFirst"),
-  StreamChunks: refused("StreamChunks"),
   StreamForward: refused("StreamForward"),
-  StreamLines: refused("StreamLines"),
   StreamNextLayout: refused("StreamNextLayout"),
   StreamSendLayout: refused("StreamSendLayout"),
   StreamTake: refused("StreamTake"),
@@ -951,6 +965,7 @@ const VECTOR_SHIMS = {
     ) {
       throw new ShimFault("vector_bounds", "vector swap index out of bounds");
     }
+    mutableVector(target);
     [target.items[left], target.items[right]] = [
       target.items[right]!,
       target.items[left]!,
@@ -962,6 +977,7 @@ const VECTOR_SHIMS = {
     if (target.items.length === 0) {
       throw new ShimFault("vector_bounds", "pop from empty vector");
     }
+    mutableVector(target);
     return {
       kind: "record",
       typeId: "",
@@ -974,7 +990,17 @@ const VECTOR_SHIMS = {
   // ownership decision SIR proved, so it moves in as it arrives.
   Push: (_host, args) => {
     const target = vec(args, 0);
+    mutableVector(target, target.items.length + 1);
     target.items.push(arg(args, 1));
+    return target;
+  },
+  Append: (_host, args) => {
+    const target = vec(args, 0);
+    const added = [...vec(args, 1).items];
+    if (added.length) {
+      mutableVector(target, target.items.length + added.length, added);
+      target.items.push(...added.map(cloneValue));
+    }
     return target;
   },
   Remove: (_host, args) => {
@@ -986,6 +1012,7 @@ const VECTOR_SHIMS = {
         `vector index ${at} out of bounds for length ${target.items.length}`,
       );
     }
+    mutableVector(target);
     const [item] = target.items.splice(at, 1);
     return { kind: "record", typeId: "", fields: [target, item!] };
   },
@@ -1017,23 +1044,26 @@ const VECTOR_SHIMS = {
     const start = index(args, 1);
     const end = index(args, 2);
     checkSliceBounds(start, end, items.length);
-    return {
-      kind: "vector",
-      elementType: "",
-      items: items.slice(start, end).map(cloneValue),
-    };
+    return vectorSlice(items.slice(start, end));
   },
   SliceFrom: (_host, args) => {
     const items = vec(args, 0).items;
     const start = index(args, 1);
     checkSliceBounds(start, items.length, items.length);
-    return {
-      kind: "vector",
-      elementType: "",
-      items: items.slice(start).map(cloneValue),
-    };
+    return vectorSlice(items.slice(start));
   },
 } satisfies Record<string, RuntimeShim>;
+
+function vectorSlice(items: readonly VmValue[]): VmValue {
+  const result: Extract<VmValue, { kind: "vector" }> = {
+    kind: "vector",
+    elementType: "",
+    items: [],
+  };
+  mutableVector(result, items.length);
+  result.items.push(...items.map(cloneValue));
+  return result;
+}
 
 function sequenceElement(args: VmValue[]): VmValue {
   const items = vec(args, 0).items;
@@ -1048,7 +1078,7 @@ function sequenceElement(args: VmValue[]): VmValue {
 }
 
 function byteVector(items: readonly VmValue[]): VmValue {
-  return { kind: "vector", elementType: "u8", items: items.map(cloneValue) };
+  return byteVectorValue(items.map(cloneValue));
 }
 
 /// Whether `run` occurs in `items` starting at `at`.
@@ -1407,6 +1437,10 @@ function saturatingI64(value: bigint): bigint {
 // ── externs ─────────────────────────────────────────────────────────────────
 
 const EXTERN_SHIMS: Record<string, RuntimeShim | Ordinary | undefined> = {
+  hew_arena_instance_id_new: (host) => ({
+    kind: "i64",
+    value: host.arenaInstanceId(),
+  }),
   hew_semaphore_new: (host, args) => host.semaphores!.create(integer(args, 0)),
   hew_semaphore_clone: (host, args) => host.semaphores!.clone(arg(args, 0)),
   hew_semaphore_try_acquire: (host, args) =>

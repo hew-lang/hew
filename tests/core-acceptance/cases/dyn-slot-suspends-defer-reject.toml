@@ -10,4 +10,3 @@ kind = "reject"
 code = "InvalidOperation"
 line = 17
 column = 17
-message = "a deferred body cannot suspend: `tick(...)` may suspend"

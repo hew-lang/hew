@@ -10,4 +10,3 @@ kind = "reject"
 code = "ResourceCloseMustReturnUnit"
 line = 13
 column = 8
-message = "E_HIR: `#[resource]` type `Conn` declares `close` returning `i64`; the implicit drop contract dispatches `close` on every scope-exit path and only unit return is admitted in v0.5 \u2014 compose fallible cleanup via `defer` instead"

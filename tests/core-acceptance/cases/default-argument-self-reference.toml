@@ -11,4 +11,3 @@ severity = "error"
 code = "UndefinedVariable"
 line = 2
 column = 46
-message = "`self` is the actor's own handle and exists only inside an actor body or a method that declares it; add a `self` receiver: `fn method(self)`"

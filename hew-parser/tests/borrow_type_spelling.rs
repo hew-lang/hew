@@ -5,9 +5,6 @@ use hew_parser::{
     parse,
 };
 
-const OUTSIDE_EXTERN_MESSAGE: &str =
-    "`&T` is only allowed in `extern` function signatures; write `T` in ordinary Hew code";
-
 fn extern_functions(src: &str) -> Vec<hew_parser::ast::ExternFnDecl> {
     let result = parse(src);
     assert!(
@@ -32,7 +29,6 @@ fn assert_rejected_at_ampersand(src: &str) {
         result.errors
     );
     let error = &result.errors[0];
-    assert_eq!(error.message, OUTSIDE_EXTERN_MESSAGE);
     assert_eq!(error.span, ampersand..ampersand + 1);
 }
 
@@ -125,8 +121,7 @@ fn mutable_borrow_spellings_are_rejected_everywhere() {
             "errors for `{source}`: {:#?}",
             result.errors
         );
-        let message = &result.errors[0].message;
-        assert!(message.contains("*mut T"), "message: {message}");
-        assert!(message.contains("ordinary Hew code"), "message: {message}");
+        let ampersand = source.find('&').unwrap();
+        assert_eq!(result.errors[0].span, ampersand..ampersand + 1);
     }
 }

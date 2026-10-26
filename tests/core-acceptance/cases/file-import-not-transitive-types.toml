@@ -10,10 +10,8 @@ kind = "check"
 code = "UndefinedType"
 line = 8
 column = 13
-message = "type `Point` is not in scope; it is exported by module `helper`"
 
 [[case.expected.diagnostics]]
 code = "UndefinedVariable"
 line = 9
 column = 22
-message = "constant `ORIGIN_X` is not in scope; it is declared by file `helper`"

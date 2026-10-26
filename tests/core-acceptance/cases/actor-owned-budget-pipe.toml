@@ -1,0 +1,13 @@
+[[case]]
+id = "actor-owned-budget-pipe"
+intent = "Typed Pipe admission and prefilled receiver transfer charge retained string payloads to the receiver."
+source = "cases/actor-owned-budget-pipe.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 30
+
+[case.env]
+HEW_WORKERS = "2"
+
+[case.expected]
+stdout = "6\n6\npipe limit\nsender retained\n"
+exit = 1

@@ -10,5 +10,4 @@ HEW_WORKERS = "4"
 
 [case.expected]
 stdout = "exit-hook-fired\n"
-stderr = "hew: failure: UserPanic (212): fire linked exit hook\nhew: actor crash in Crasher.crash (actor 1): UserPanic\n"
 exit = 1

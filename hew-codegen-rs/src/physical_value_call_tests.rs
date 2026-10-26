@@ -396,7 +396,10 @@ fn generic_user_eq_keeps_borrowed_owners_on_success_and_fault_at_o0_o2() {
         let engine = engine(&llvm, optimized);
         for (name, address) in [
             ("hew_string_clone", count_string_clone as *const () as usize),
-            ("hew_string_drop", count_string_drop as *const () as usize),
+            (
+                "hew_string_drop_managed",
+                count_string_drop as *const () as usize,
+            ),
             ("hew_fault_new", capture_fault as *const () as usize),
         ] {
             if let Some(function) = llvm.get_function(name) {

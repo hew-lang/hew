@@ -26,13 +26,16 @@ impl<'hir, 'service> Builder<'hir, 'service> {
         let source_params = source.parameters(&function)?.to_vec();
         let receiver_count = usize::from(matches!(
             source,
-            BodySource::Closure(_) | BodySource::Actor { .. }
+            BodySource::Closure(_) | BodySource::Actor { .. } | BodySource::Session(_)
         ));
         // A stream producer owns the caller's sink as an implicit trailing
         // parameter with no source binding.
         let stream = match source {
             BodySource::Actor { stream, .. } => stream.clone(),
-            BodySource::Function | BodySource::Closure(_) | BodySource::EntryAdapter(_) => None,
+            BodySource::Function
+            | BodySource::Closure(_)
+            | BodySource::EntryAdapter(_)
+            | BodySource::Session(_) => None,
         };
         if source_params.len() + receiver_count + usize::from(stream.is_some())
             != callable.signature.params.len()
@@ -117,6 +120,7 @@ impl<'hir, 'service> Builder<'hir, 'service> {
             bindings,
             binding_declarations,
             owned_live,
+            live_loans: BTreeSet::new(),
             borrow_parents: HashMap::new(),
             scope_loans: Vec::new(),
             scope_loan_floors: vec![0],
@@ -129,6 +133,7 @@ impl<'hir, 'service> Builder<'hir, 'service> {
             loops: Vec::new(),
             places: Vec::new(),
             capture_places: HashMap::new(),
+            session_places: HashMap::new(),
             argument_receiver_loans: Vec::new(),
             defers: Vec::new(),
             defer_bodies: Vec::new(),
@@ -146,8 +151,9 @@ impl<'hir, 'service> Builder<'hir, 'service> {
         };
         builder.bind_captures(source)?;
         builder.bind_actor_state(source)?;
-        builder.bind_private_value_parameters(&source_params)?;
+        builder.bind_session_places(source)?;
         for parameter in &source_params {
+            builder.bind_private_value_parameter(parameter)?;
             if let BindingTarget::Value(value) = builder.binding_target(parameter.id)? {
                 if (parameter.mutable && builder.value_own_kind(value) == Some(OwnKind::None))
                     || builder.value_own_kind(value) == Some(OwnKind::Owned)
@@ -170,44 +176,42 @@ impl<'hir, 'service> Builder<'hir, 'service> {
     /// Mutable value parameters operate on private values. Use the canonical
     /// copy contract for both direct callables and their aggregate containers;
     /// the incoming borrowed ABI keeps the caller's value intact.
-    pub(super) fn bind_private_value_parameters(
+    pub(super) fn bind_private_value_parameter(
         &mut self,
-        parameters: &[HirBinding],
+        parameter: &HirBinding,
     ) -> Result<(), SirLoweringError> {
-        for parameter in parameters {
-            if !parameter.mutable || parameter.is_consume {
-                continue;
-            }
-            let ty = self.ty(&parameter.ty);
-            let BindingTarget::Value(source) = self.binding_target(parameter.id)? else {
-                continue;
-            };
-            if self.value_own_kind(source) != Some(OwnKind::Guaranteed) {
-                continue;
-            }
-            self.service.require_type_facts(&ty)?;
-            if self.service.checked_facts.rows()[&hew_types::TypeInstanceKey(ty.clone())].clone
-                == hew_types::CloneKind::None
-            {
-                // Replacements own one parameter-scope slot. The incoming
-                // borrow remains the readable value until this path assigns.
-                let place = self.allocate_local(ty)?;
-                let declaration = self.binding_declarations[&parameter.id];
-                self.source_bindings[declaration].target = BindingTarget::Place(place);
-                continue;
-            }
-            let copied = self.emit_typed(
-                Provenance::Synthesized,
-                &ty,
-                SemOpKind::CopyValue {
-                    source: Operand { value: source },
-                },
-            )?;
-            let target = self.acquire_binding_target(copied)?;
-            self.bindings.insert(parameter.id, target);
-            let declaration = self.binding_declarations[&parameter.id];
-            self.source_bindings[declaration].target = target;
+        if !parameter.mutable || parameter.is_consume {
+            return Ok(());
         }
+        let ty = self.ty(&parameter.ty);
+        let BindingTarget::Value(source) = self.binding_target(parameter.id)? else {
+            return Ok(());
+        };
+        if self.value_own_kind(source) != Some(OwnKind::Guaranteed) {
+            return Ok(());
+        }
+        self.service.require_type_facts(&ty)?;
+        if self.service.checked_facts.rows()[&hew_types::TypeInstanceKey(ty.clone())].clone
+            == hew_types::CloneKind::None
+        {
+            // Replacements own one parameter-scope slot. The incoming
+            // borrow remains the readable value until this path assigns.
+            let place = self.allocate_local(ty)?;
+            let declaration = self.binding_declarations[&parameter.id];
+            self.source_bindings[declaration].target = BindingTarget::Place(place);
+            return Ok(());
+        }
+        let copied = self.emit_typed(
+            Provenance::Synthesized,
+            &ty,
+            SemOpKind::CopyValue {
+                source: Operand { value: source },
+            },
+        )?;
+        let target = self.acquire_binding_target(copied)?;
+        self.bindings.insert(parameter.id, target);
+        let declaration = self.binding_declarations[&parameter.id];
+        self.source_bindings[declaration].target = target;
         Ok(())
     }
 
@@ -419,7 +423,7 @@ impl<'hir, 'service> Builder<'hir, 'service> {
                 self.lower_intercept_entry(actor, handler, interceptor)?;
                 Ok(None)
             }
-            BodySource::Function | BodySource::Actor { .. } => {
+            BodySource::Function | BodySource::Actor { .. } | BodySource::Session(_) => {
                 let body = self.function.body.clone();
                 self.lower_block(&body, OwnedBindingUse::Return)
             }
@@ -744,7 +748,6 @@ impl<'hir, 'service> Builder<'hir, 'service> {
                 }
                 BindingTarget::Value(source) => {
                     if take && self.value_own_kind(source) == Some(OwnKind::Owned) {
-                        self.owned_live.remove(&source);
                         source
                     } else if OwnKind::of_ty(&ty, self.service.checked_facts.rows())?
                         == OwnKind::Owned
@@ -761,8 +764,12 @@ impl<'hir, 'service> Builder<'hir, 'service> {
                     }
                 }
             };
-            self.owned_live.remove(&value);
             fields.push(Operand { value });
+        }
+        // Every acquired capture remains a temporary owner while subsequent
+        // captures can still fail. The constructor commits them together.
+        for field in &fields {
+            self.owned_live.remove(&field.value);
         }
         self.emit(expression, SemOpKind::ClosureMake { closure, fields })
     }
@@ -944,6 +951,17 @@ impl<'hir, 'service> Builder<'hir, 'service> {
         binding: &HirBinding,
         value: ValueId,
     ) -> Result<(), SirLoweringError> {
+        if let Some(&place) = self.session_places.get(&binding.id) {
+            self.emit_place_operation(
+                SemOpKind::StoreInit {
+                    place,
+                    value: Operand { value },
+                },
+                Provenance::Synthesized,
+            )?;
+            self.owned_live.remove(&value);
+            return self.bind_source_target(binding, BindingTarget::Place(place));
+        }
         if binding.mutable && self.value_own_kind(value) == Some(OwnKind::Guaranteed) {
             // Like an affine borrowed parameter, the incoming loan remains the
             // readable value; only a replacement initializes this local owner.
@@ -1056,6 +1074,7 @@ impl<'hir, 'service> Builder<'hir, 'service> {
             bindings: self.bindings.clone(),
             binding_declarations: self.binding_declarations.clone(),
             owned_live: self.owned_live.clone(),
+            live_loans: self.live_loans.clone(),
             loans: self.argument_receiver_loans.clone(),
             scopes: self.scopes.clone(),
             scope_loans: self.scope_loans.clone(),
@@ -1077,6 +1096,7 @@ impl<'hir, 'service> Builder<'hir, 'service> {
         self.binding_declarations
             .clone_from(&state.binding_declarations);
         self.owned_live = state.owned_live.clone();
+        self.live_loans.clone_from(&state.live_loans);
         self.argument_receiver_loans.clone_from(&state.loans);
         self.scopes.clone_from(&state.scopes);
         self.scope_loans.clone_from(&state.scope_loans);

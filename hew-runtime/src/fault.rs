@@ -294,6 +294,60 @@ pub extern "C" fn hew_fault_new(code: i32) -> *mut HewFault {
     Box::into_raw(Box::new(HewFault::new(code, None)))
 }
 
+/// Ordinary vector indexing diagnostic.
+pub const BOUNDS_VECTOR_INDEX: u32 = 0;
+/// Two-index vector swap diagnostic.
+pub const BOUNDS_VECTOR_SWAP: u32 = 1;
+/// Byte sequence indexing diagnostic.
+pub const BOUNDS_BYTES_INDEX: u32 = 2;
+/// Unicode scalar indexing diagnostic.
+pub const BOUNDS_STRING_INDEX: u32 = 3;
+/// Vector or byte sequence range diagnostic.
+pub const BOUNDS_SLICE: u32 = 4;
+/// Unicode scalar range diagnostic.
+pub const BOUNDS_STRING_SLICE: u32 = 5;
+/// Open-ended Unicode scalar range diagnostic.
+pub const BOUNDS_STRING_SLICE_FROM: u32 = 6;
+/// General string range diagnostic.
+pub const BOUNDS_STRING_RANGE: u32 = 7;
+/// Missing map index diagnostic.
+pub const BOUNDS_MAP_INDEX: u32 = 8;
+
+/// Create an owned checked bounds fault with its operation detail.
+#[no_mangle]
+#[must_use]
+pub extern "C" fn hew_fault_new_bounds(
+    kind: u32,
+    start: i64,
+    end: i64,
+    length: i64,
+) -> *mut HewFault {
+    let detail = match kind {
+        BOUNDS_VECTOR_SWAP => "vector swap index out of bounds".to_owned(),
+        BOUNDS_MAP_INDEX => "map key not found".to_owned(),
+        BOUNDS_STRING_RANGE => "string range out of bounds".to_owned(),
+        BOUNDS_SLICE => format!("slice {start}..{end} out of bounds for length {length}"),
+        BOUNDS_STRING_SLICE => {
+            format!("string slice {start}..{end} out of bounds for length {length}")
+        }
+        BOUNDS_STRING_SLICE_FROM => {
+            format!("string slice {start}.. out of bounds for length {length}")
+        }
+        _ => {
+            let sequence = match kind {
+                BOUNDS_BYTES_INDEX => "bytes",
+                BOUNDS_STRING_INDEX => "string",
+                _ => "vector",
+            };
+            format!("{sequence} index {start} out of bounds for length {length}")
+        }
+    };
+    Box::into_raw(Box::new(HewFault::with_message(
+        crate::internal::types::HEW_TRAP_INDEX_OUT_OF_BOUNDS,
+        detail,
+    )))
+}
+
 /// Copy a borrowed managed string into one owned logical panic fault.
 /// The caller may release the original string immediately after this returns.
 /// Allocation failure remains process-fatal, as with [`hew_fault_new`].

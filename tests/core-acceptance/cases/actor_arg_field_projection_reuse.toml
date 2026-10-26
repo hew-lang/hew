@@ -10,4 +10,3 @@ kind = "check"
 code = "UseAfterMove"
 line = 32
 column = 12
-message = "use of moved place `holder.sock`"

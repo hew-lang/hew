@@ -1,0 +1,13 @@
+[[case]]
+id = "actor-owned-budget-encoding"
+intent = "Growing a retained encoding tree checks quota before committing mutation."
+source = "cases/actor-owned-budget-encoding.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 30
+
+[case.env]
+HEW_WORKERS = "2"
+
+[case.expected]
+stdout = "32\nencoding limit\n"
+exit = 1

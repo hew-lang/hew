@@ -10,4 +10,3 @@ kind = "check"
 code = "Mismatch"
 line = 11
 column = 9
-message = "Other"

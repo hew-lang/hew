@@ -74,16 +74,33 @@ impl Drop for OwnedWaker {
     }
 }
 
+/// A retained readiness target. Registrations observe its allocation weakly;
+/// each implementation keeps notification independent of mutable operation state.
+pub(crate) trait WakeTarget: Send + Sync {
+    fn owned_waker(&self) -> &OwnedWaker;
+
+    fn wake(&self) {
+        self.owned_waker().wake();
+    }
+}
+
+impl WakeTarget for OwnedWaker {
+    fn owned_waker(&self) -> &OwnedWaker {
+        self
+    }
+}
+
 /// Registrations are weak so cancelling a sender immediately releases its
 /// readiness target. A notification retains each live target outside the lock.
 #[derive(Debug, Default)]
-pub(crate) struct ReadinessRegistrations(std::sync::Mutex<Vec<std::sync::Weak<OwnedWaker>>>);
+pub(crate) struct ReadinessRegistrations(std::sync::Mutex<Vec<std::sync::Weak<dyn WakeTarget>>>);
 
 impl ReadinessRegistrations {
-    pub(crate) fn register(&self, waker: &std::sync::Arc<OwnedWaker>) {
+    pub(crate) fn register<T: WakeTarget + 'static>(&self, waker: &std::sync::Arc<T>) {
         let mut waiters = crate::util::MutexExt::lock_or_recover(&self.0);
         waiters.retain(|waiter| waiter.strong_count() != 0);
         let weak = std::sync::Arc::downgrade(waker);
+        let weak: std::sync::Weak<dyn WakeTarget> = weak;
         if !waiters.iter().any(|existing| existing.ptr_eq(&weak)) {
             waiters.push(weak);
         }

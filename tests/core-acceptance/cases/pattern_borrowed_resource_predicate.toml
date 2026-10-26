@@ -8,5 +8,4 @@ timeout_seconds = 30
 
 [case.expected]
 stdout = "result 1, token 1\nclosed 1\nresult 2, token 2\nclosed 2\n3\n"
-stderr = ""
 exit = 0

@@ -10,4 +10,3 @@ kind = "reject"
 code = "InvalidOperation"
 line = 1
 column = 1
-message = "coalesce fallback 'block' is unsupported"

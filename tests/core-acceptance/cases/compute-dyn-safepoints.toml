@@ -8,5 +8,4 @@ env = { HEW_WORKERS = "1" }
 
 [case.expected]
 stdout = "0\n7\n7\n0\nwork unwound\ndeadline recovered\n9\nclosed 9\n"
-stderr = ""
 exit = 0

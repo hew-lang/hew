@@ -10,4 +10,3 @@ kind = "reject"
 code = "ClosureExplicitMoveRequired"
 line = 2
 column = 9
-message = "capture `f` has no independent snapshot operation; use `move` to transfer it into the closure"

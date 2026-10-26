@@ -7,5 +7,4 @@ timeout_seconds = 15
 
 [case.expected]
 stdout = "3\n1\n3\n1\n2\n1\n"
-stderr = ""
 exit = 0

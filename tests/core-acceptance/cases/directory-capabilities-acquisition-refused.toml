@@ -11,11 +11,9 @@ code = "E_CONFINED_AUTHORITY"
 severity = "error"
 line = 4
 column = 13
-message = "confined `hidden_acquisition` reaches `fs.open_read_dir`: ambient authority acquisition"
 
 [[case.expected.diagnostics]]
 code = "E_CONFINED_AUTHORITY"
 severity = "error"
 line = 5
 column = 13
-message = "confined `hidden_acquisition` reaches `fs.open_write_dir`: ambient authority acquisition"

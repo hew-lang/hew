@@ -10,4 +10,3 @@ kind = "reject"
 code = "MachineExhaustivenessError"
 line = 20
 column = 5
-message = "machine transition references an undeclared state or input event"

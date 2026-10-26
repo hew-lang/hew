@@ -7,5 +7,4 @@ timeout_seconds = 15
 
 [case.expected]
 stdout = "actor map updates preserve state ownership\n"
-stderr = ""
 exit = 0

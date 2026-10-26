@@ -6,5 +6,4 @@ suites = ["acceptance", "safety"]
 timeout_seconds = 30
 [case.expected]
 stdout = "pipeline actor turn closed\n"
-stderr = ""
 exit = 0

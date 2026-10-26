@@ -1,0 +1,13 @@
+[[case]]
+id = "actor-owned-budget-string"
+intent = "String mutation reserves exact retained capacity before growth and copy-on-write commit."
+source = "cases/actor-owned-budget-string.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 30
+
+[case.env]
+HEW_WORKERS = "2"
+
+[case.expected]
+stdout = "16\n17\nstring limit\n"
+exit = 1

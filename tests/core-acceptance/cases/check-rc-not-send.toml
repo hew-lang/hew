@@ -10,4 +10,3 @@ kind = "check"
 code = "InvalidSend"
 line = 15
 column = 21
-message = "cannot send `Rc<i64>` to actor: type is not Send"

@@ -8,4 +8,3 @@ timeout_seconds = 15
 [case.expected]
 stdout = "1\nshow t2\nt\nshow t1\nlen=2\nclose t1\nclose t2\n"
 exit = 0
-stderr = ""

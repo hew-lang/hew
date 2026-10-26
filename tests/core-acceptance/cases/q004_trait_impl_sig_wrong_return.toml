@@ -10,4 +10,3 @@ kind = "reject"
 code = "TraitImplSignatureMismatch"
 line = 24
 column = 8
-message = "impl method `Holder.unwrap` returns `i64` but trait `Container` requires `Option<i64>`"

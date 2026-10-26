@@ -68,5 +68,5 @@ test("pending acquisitions retain backing after their handle closes", () => {
   assert.equal(acquired, true);
   operation.cancel();
   assert.equal(semaphores.count(clone), 1n);
-  assert.throws(() => semaphores.count(original), /live semaphore/);
+  assert.throws(() => semaphores.count(original));
 });

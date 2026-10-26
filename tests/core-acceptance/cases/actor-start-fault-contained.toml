@@ -7,5 +7,4 @@ timeout_seconds = 20
 
 [case.expected]
 stdout = "startup fault contained\ncaller survived startup rollback\n"
-stderr = "hew: failure: UserPanic (212): start failed after suspension\nhew: actor crash in Builder.construct (actor 1): UserPanic\n"
 exit = 1

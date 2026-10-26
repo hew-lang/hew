@@ -243,8 +243,25 @@ pub(crate) fn verify(
         places: flow
             .places
             .iter()
-            .map(|(id, _)| {
-                if flow.projections.projection(*id).is_some() || flow.deferred_places.contains(id) {
+            .map(|(id, owner)| {
+                if let OwnerRoot::Session(root) = owner {
+                    if function.places.iter().any(|place| {
+                        place.id == *root
+                            && matches!(
+                                place.origin,
+                                crate::PlaceOrigin::Session {
+                                    initialized: true,
+                                    ..
+                                }
+                            )
+                    }) {
+                        LIVE
+                    } else {
+                        DEAD
+                    }
+                } else if flow.projections.projection(*id).is_some()
+                    || flow.deferred_places.contains(id)
+                {
                     DEAD
                 } else {
                     LIVE
@@ -571,7 +588,7 @@ impl<'a> Flow<'a> {
         let mut parents = BTreeMap::new();
         let mut local_borrows = BTreeSet::new();
         let mut exclusive_borrows = BTreeSet::new();
-        for op in function.blocks.iter().flat_map(|block| &block.ops) {
+        for op in function.blocks.iter().flat_map(crate::SemBlock::operations) {
             if let SemOpKind::TaskInvoke { callee, args, .. } = &op.kind {
                 exclusive_borrows.extend(
                     callee
@@ -1143,6 +1160,26 @@ impl<'a> Flow<'a> {
         }
         let mut successors = Vec::new();
         match &block.terminator {
+            SemTerminator::Materialize {
+                operation,
+                normal,
+                failure,
+            } => {
+                Self::require_fault(id, DEAD, &state, emit);
+                let mut acquired = state.clone();
+                self.operations(
+                    id,
+                    std::slice::from_ref(operation.as_ref()),
+                    &mut acquired,
+                    cleanup_exit,
+                    emit,
+                    lifetimes,
+                );
+                successors.extend(self.edge(id, normal, acquired, emit));
+                // The failure block raises HeapExceeded before cleanup. No
+                // input ownership or initialized place has changed here.
+                successors.extend(self.edge(id, failure, state, emit));
+            }
             SemTerminator::EnterDefer { defer, park, body } => {
                 if let Some(registration) = self.defers.registrations.get(defer) {
                     for place in &registration.dependencies {
@@ -1712,6 +1749,7 @@ impl<'a> Flow<'a> {
         if let Some(projection) = self.projections.projection(place) {
             match projection.root {
                 OwnerRoot::Local(root) => self.require_active(block, root, state, emit),
+                OwnerRoot::Session(_) => {}
                 OwnerRoot::Value(root) => {
                     if self
                         .indices
@@ -1963,6 +2001,10 @@ impl<'a> Flow<'a> {
         }
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one ownership transfer handles local, session, actor and capture places"
+    )]
     fn projected_operation(
         &self,
         block: BlockId,
@@ -1991,6 +2033,7 @@ impl<'a> Flow<'a> {
                     self.require_active(block, root, state, emit);
                     None
                 }
+                OwnerRoot::Session(_) => None,
             };
             if matches!(kind, SemOpKind::StoreAssign { .. }) {
                 self.require_droppable_places(

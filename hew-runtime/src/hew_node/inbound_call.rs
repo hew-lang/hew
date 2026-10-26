@@ -322,7 +322,7 @@ impl PendingCall {
                 request.ask_start(
                     self.token,
                     self.message,
-                    self.reply,
+                    self.reply.as_ref(),
                     self.caller,
                     waker,
                     self.deadline,
@@ -355,7 +355,7 @@ impl PendingCall {
         match unsafe {
             InboundRequest::ask_take(
                 operation,
-                self.reply.expect("completion reply codec"),
+                self.reply.as_ref().expect("completion reply codec"),
                 status,
             )
         } {

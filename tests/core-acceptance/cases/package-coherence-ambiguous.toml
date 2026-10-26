@@ -10,4 +10,3 @@ kind = "reject"
 code = "AmbiguousTraitMethod"
 line = 22
 column = 13
-message = "ambiguous method `label` on `bool`: traits `First` and `Second` both provide it"

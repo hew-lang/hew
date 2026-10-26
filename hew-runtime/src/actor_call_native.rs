@@ -69,6 +69,52 @@ pub struct HewActorCall {
     rejected_payload: *mut HewReleaseCursor,
 }
 
+/// Visit typed reply storage currently retained by a scoped actor call.
+/// # Safety
+/// The slot contains a live call operation outside a concurrent poll or take.
+#[no_mangle]
+pub unsafe extern "C" fn hew_managed_visit_actor_call(
+    slot: *const c_void,
+    visitor: *const hew_cabi::managed::HewManagedStorageVisitor,
+) -> i32 {
+    // SAFETY: the select/invocation owner retains its affine operation.
+    unsafe {
+        let pointer = slot.cast::<*mut HewActorCall>().read();
+        let Some(call) = pointer.as_mut() else {
+            return 0;
+        };
+        if let Some(driver) = &mut call.cleanup {
+            let status = crate::release_walker::hew_managed_visit_release_driver(
+                ptr::from_mut(&mut **driver).cast(),
+                visitor,
+            );
+            if status != 0 {
+                return status;
+            }
+        }
+        match &call.route {
+            CallRoute::Local(local) => {
+                let status =
+                    crate::mailbox::native::visit_managed_request(local.admission, visitor);
+                if status != 0 {
+                    return status;
+                }
+                crate::reply_channel::native::visit_managed_reply(local.channel, visitor)
+            }
+            // Wire bytes belong to the transport. This route decodes directly
+            // into the selected caller result, retaining no typed reply slot.
+            #[cfg(not(target_arch = "wasm32"))]
+            CallRoute::Imported { request, .. } => {
+                if request.is_null() {
+                    0
+                } else {
+                    crate::cow_envelope::visit_managed((*request).cast(), visitor)
+                }
+            }
+        }
+    }
+}
+
 impl HewActorCall {
     unsafe fn prepare_cleanup(&mut self) {
         if self.cleanup_started {
@@ -153,6 +199,14 @@ impl HewActorCall {
                         poll_request_admission(admission)
                     });
                 let discarded = match result {
+                    Ok(SendOutcome::Failed)
+                        // SAFETY: this operation exclusively owns the same pending admission.
+                        if unsafe {
+                            crate::mailbox::native::request_transfer_pending(self.local().admission)
+                        } =>
+                    {
+                        return self.poll_deadline()
+                    }
                     Ok(SendOutcome::Failed) => match self.kind {
                         RequestKind::CallWait | RequestKind::SendWait => {
                             return self.poll_deadline()
@@ -361,15 +415,31 @@ pub unsafe extern "C" fn hew_actor_call_new(
     reply_release: Option<HewValueReleaseStart>,
     caller: *const crate::actor_caller::HewCallerStamp,
     dispatch: *const c_void,
+    payload_layout: *const hew_cabi::value::HewValueLayout,
+    reply_layout: *const hew_cabi::value::HewValueLayout,
+    out_status: *mut i32,
 ) -> *mut HewActorCall {
-    // SAFETY: forwards the owned request and captures its local sender.
+    // SAFETY: the caller retains initialized source fields until checked sealing succeeds.
     unsafe {
-        actor_call_new(
-            token,
-            message,
+        out_status.write(0);
+        let envelope = match crate::cow_envelope::seal_checked(
             payload,
             size,
             drop_payload,
+            payload_release,
+            payload_layout,
+            waker,
+        ) {
+            Ok(envelope) => envelope,
+            Err(status) => {
+                out_status.write(status);
+                return ptr::null_mut();
+            }
+        };
+        actor_call_resume(
+            token,
+            message,
+            envelope,
             reply_size,
             drop_reply,
             waker,
@@ -379,12 +449,12 @@ pub unsafe extern "C" fn hew_actor_call_new(
             } else {
                 RequestKind::CallReject
             },
-            payload_release,
             reply_release,
             *caller,
             dispatch,
             #[cfg(not(target_arch = "wasm32"))]
             None,
+            reply_layout,
         )
     }
 }
@@ -411,6 +481,8 @@ pub(crate) unsafe fn actor_call_new(
     #[cfg(not(target_arch = "wasm32"))] remote_admission: Option<
         crate::hew_node::service::RemoteAdmission,
     >,
+    payload_layout: *const hew_cabi::value::HewValueLayout,
+    reply_layout: *const hew_cabi::value::HewValueLayout,
 ) -> *mut HewActorCall {
     let mut rejected_payload = ptr::null_mut();
     let envelope = if payload.is_null() {
@@ -431,7 +503,10 @@ pub(crate) unsafe fn actor_call_new(
         }
         if !envelope.is_null() {
             // SAFETY: this unpublished envelope belongs to the operation.
-            unsafe { (*envelope).release_start = payload_release };
+            unsafe {
+                (*envelope).release_start = payload_release;
+                crate::cow_envelope::set_layout(envelope, payload_layout);
+            };
         }
         envelope
     };
@@ -451,6 +526,7 @@ pub(crate) unsafe fn actor_call_new(
             dispatch,
             #[cfg(not(target_arch = "wasm32"))]
             remote_admission,
+            reply_layout,
         );
         (*operation).rejected_payload = rejected_payload;
         operation
@@ -480,6 +556,7 @@ pub unsafe extern "C" fn hew_actor_call_resume(
     reply_release: Option<HewValueReleaseStart>,
     caller: *const crate::actor_caller::HewCallerStamp,
     dispatch: *const c_void,
+    reply_layout: *const hew_cabi::value::HewValueLayout,
 ) -> *mut HewActorCall {
     // SAFETY: forwards the owned request and captures its local sender.
     unsafe {
@@ -501,6 +578,7 @@ pub unsafe extern "C" fn hew_actor_call_resume(
             dispatch,
             #[cfg(not(target_arch = "wasm32"))]
             None,
+            reply_layout,
         )
     }
 }
@@ -525,6 +603,7 @@ pub(crate) unsafe fn actor_call_resume(
     #[cfg(not(target_arch = "wasm32"))] remote_admission: Option<
         crate::hew_node::service::RemoteAdmission,
     >,
+    reply_layout: *const hew_cabi::value::HewValueLayout,
 ) -> *mut HewActorCall {
     #[cfg(not(target_arch = "wasm32"))]
     if let Some(service) = crate::lifetime::local_handles::current_imported_actor(token) {
@@ -567,7 +646,7 @@ pub(crate) unsafe fn actor_call_resume(
     let _ = dispatch;
     let channel = if kind.completion_policy().is_some() {
         // SAFETY: registration precedes any request publication.
-        unsafe { hew_reply_channel_new_native(waker, drop_reply, reply_release) }
+        unsafe { hew_reply_channel_new_native(waker, drop_reply, reply_release, reply_layout) }
     } else {
         ptr::null_mut()
     };
@@ -662,6 +741,8 @@ pub unsafe extern "C" fn hew_actor_submit_new(
     caller: *const crate::actor_caller::HewCallerStamp,
     dispatch: *const c_void,
     owns_target: bool,
+    payload_layout: *const hew_cabi::value::HewValueLayout,
+    out_status: *mut i32,
 ) -> *mut HewActorCall {
     let Some(
         kind @ (RequestKind::SendWait | RequestKind::SendReject | RequestKind::SendDropNewest),
@@ -672,12 +753,21 @@ pub unsafe extern "C" fn hew_actor_submit_new(
     // SAFETY: sealing only allocates the envelope; the fields still belong to
     // the caller on failure and the shallow wrapper then has no ownership.
     unsafe {
-        let envelope = hew_msg_envelope_new(payload, size, Some(drop_payload));
-        if envelope.is_null() {
-            crate::mem::buf_free(payload);
-            return ptr::null_mut();
-        }
-        (*envelope).release_start = payload_release;
+        out_status.write(0);
+        let envelope = match crate::cow_envelope::seal_checked(
+            payload,
+            size,
+            drop_payload,
+            payload_release,
+            payload_layout,
+            waker,
+        ) {
+            Ok(envelope) => envelope,
+            Err(status) => {
+                out_status.write(status);
+                return ptr::null_mut();
+            }
+        };
         let operation = actor_call_resume(
             token,
             message,
@@ -692,6 +782,7 @@ pub unsafe extern "C" fn hew_actor_submit_new(
             dispatch,
             #[cfg(not(target_arch = "wasm32"))]
             None,
+            core::ptr::null(),
         );
         (*operation).owned_target = owns_target.then_some(token);
         operation
@@ -722,8 +813,7 @@ pub unsafe extern "C" fn hew_actor_submit_take(
                 !envelope.is_null(),
                 "refused submission retains its original fields"
             );
-            crate::mem::buf_free((*envelope).payload);
-            crate::cow_envelope::free_allocation(envelope);
+            crate::cow_envelope::return_fields(envelope);
             operation.owned_target.take();
         }
         outcome.code()
@@ -878,8 +968,12 @@ mod tests {
             // SAFETY: the fixture owns the actor/mailbox, request envelope and
             // receiver; successful admission transfers one retained sender debt.
             unsafe {
-                let channel =
-                    hew_reply_channel_new_native(waker.descriptor(), Some(drop_counted), None);
+                let channel = hew_reply_channel_new_native(
+                    waker.descriptor(),
+                    Some(drop_counted),
+                    None,
+                    core::ptr::null(),
+                );
                 crate::reply_channel::configure_native_request(
                     channel,
                     crate::request_deadline::RequestDeadline::from_raw(if expired {
@@ -968,8 +1062,12 @@ mod tests {
         // SAFETY: the call has one receiver and one sender; the typed Arc is
         // transferred to the reply and then to the selected output exactly once.
         unsafe {
-            let channel =
-                hew_reply_channel_new_native(waker.descriptor(), Some(drop_counted), None);
+            let channel = hew_reply_channel_new_native(
+                waker.descriptor(),
+                Some(drop_counted),
+                None,
+                core::ptr::null(),
+            );
             crate::reply_channel::configure_native_request(
                 channel,
                 crate::request_deadline::RequestDeadline::default(),

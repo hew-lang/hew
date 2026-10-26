@@ -10,4 +10,3 @@ kind = "reject"
 code = "BoundsNotSatisfied"
 line = 24
 column = 5
-message = "type `Generator<i64, ()>` does not implement trait `Factory` required by `I`"

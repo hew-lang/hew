@@ -10,4 +10,3 @@ kind = "reject"
 code = "MachineExhaustivenessError"
 line = 22
 column = 30
-message = "machine `ConnSession` state `Active` field `h` holds `Handle`, which has no independent value copy"

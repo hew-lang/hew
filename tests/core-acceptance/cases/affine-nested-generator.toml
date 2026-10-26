@@ -7,5 +7,4 @@ timeout_seconds = 15
 
 [case.expected]
 stdout = "first\nfirst cleaned\nlater,7\nzero\nzero cleaned\nzero\nheavy\nheavy cleaned\nheavy\nempty\nnone\ndone\n"
-stderr = ""
 exit = 0

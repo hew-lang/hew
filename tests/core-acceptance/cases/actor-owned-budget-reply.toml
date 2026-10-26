@@ -1,0 +1,13 @@
+[[case]]
+id = "actor-owned-budget-reply"
+intent = "Ordinary select replies charge the actual reply envelope and preserve the replying actor on recipient refusal."
+source = "cases/actor-owned-budget-reply.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 30
+
+[case.env]
+HEW_WORKERS = "2"
+
+[case.expected]
+stdout = "7\nreply limit\n7\n"
+exit = 1

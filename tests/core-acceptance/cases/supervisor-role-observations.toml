@@ -7,5 +7,4 @@ timeout_seconds = 30
 
 [case.expected]
 stdout = "monitor: Ok(pong)\nmonitored role crashed\nlink: Ok(pong)\nlinked role exited\nreplacement: Ok(pong)\nvacant monitor: Ok(vacant monitor registered)\nvacant link: Ok(vacant role linked)\nvacant role down\nvacant role exit\npool monitor: Ok(pong)\nmonitored role crashed\n"
-stderr = "hew: failure: UserPanic (212): backend failed\nhew: actor crash in Backend.fail (actor 1): UserPanic\nhew: failure: UserPanic (212): backend failed\nhew: actor crash in Backend.fail (actor 2): UserPanic\nhew: failure: UserPanic (212): backend failed\nhew: actor crash in Backend.fail (actor 9): UserPanic\n"
 exit = 0

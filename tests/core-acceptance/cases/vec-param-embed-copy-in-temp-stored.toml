@@ -10,4 +10,3 @@ kind = "reject"
 code = "E_OWN_CONSUME_BORROWED"
 line = 6
 column = 22
-message = "cannot consume a value through borrowed parameter `f`"

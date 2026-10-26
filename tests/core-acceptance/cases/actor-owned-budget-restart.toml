@@ -1,0 +1,13 @@
+[[case]]
+id = "actor-owned-budget-restart"
+intent = "Supervised restart starts a fresh incarnation account after terminal cleanup."
+source = "cases/actor-owned-budget-restart.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 30
+
+[case.env]
+HEW_WORKERS = "2"
+
+[case.expected]
+stdout = "fresh account after cleanup\n"
+exit = 0

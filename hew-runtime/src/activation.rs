@@ -420,6 +420,7 @@ unsafe fn resume_suspended_activation(actor: *mut HewActor) {
         checked_fault: crate::actor_native::CheckedActorFault::default(),
         caller,
         request_deadline,
+        value_owner: std::ptr::null(),
     };
     let prev_context = resume_context.prev_context;
     let installed_prev = crate::execution_context::set_current_context(&raw mut resume_context);
@@ -958,6 +959,7 @@ pub(crate) fn activate_queued_actor(actor: *mut HewActor) {
                     request_deadline: unsafe {
                         crate::request_state::message_deadline(msg_ref.envelope)
                     },
+                    value_owner: std::ptr::null(),
                 };
                 let prev_context = execution_context.prev_context;
                 // Publish a single raw pointer to the dispatch-local context
@@ -1384,6 +1386,13 @@ pub(crate) fn activate_queued_actor(actor: *mut HewActor) {
 
     // After a crash, do not enter the normal Running-state settle.
     if crashed {
+        return;
+    }
+
+    // An idle native actor can be faulted before its first handler starts.
+    // Its stop latch must publish that deferred crash after draining, rather
+    // than finalizing the activation as an ordinary clean stop.
+    if publish_deferred_external_trap(actor, a) {
         return;
     }
 
@@ -1908,6 +1917,21 @@ pub(crate) unsafe fn settle_native_cleanup(actor: *mut HewActor) {
     settle_after_activation(actor, 0);
 }
 
+fn publish_deferred_external_trap(actor: *mut HewActor, a: &HewActor) -> bool {
+    let Some(code) = crate::actor::take_deferred_external_trap(a) else {
+        return false;
+    };
+    debug_assert!(
+        a.checked_invocation.load(Ordering::Acquire).is_null(),
+        "a deferred external trap must wait for the checked turn to drain"
+    );
+    // SAFETY: the activation has completed its checked cancellation and still
+    // owns the mailbox consumer. The existing terminal path publishes both
+    // the originally requested crash and its supervision outcome.
+    unsafe { crate::actor::hew_actor_trap_from_activation(actor, code) };
+    true
+}
+
 #[expect(
     clippy::too_many_lines,
     reason = "mailbox and consuming cleanup share one atomic idle recheck protocol"
@@ -1917,15 +1941,7 @@ fn settle_after_activation(actor: *mut HewActor, msgs_processed: u32) {
     let a = unsafe { &*actor };
     let mailbox = a.mailbox.cast::<HewMailbox>();
 
-    if let Some(code) = crate::actor::take_deferred_external_trap(a) {
-        debug_assert!(
-            a.checked_invocation.load(Ordering::Acquire).is_null(),
-            "a deferred external trap must wait for the checked turn to drain"
-        );
-        // SAFETY: this activation has completed its checked cancellation and
-        // still owns the mailbox consumer. Publish the originally requested
-        // crash through the ordinary activation-owned terminal path.
-        unsafe { crate::actor::hew_actor_trap_from_activation(actor, code) };
+    if publish_deferred_external_trap(actor, a) {
         return;
     }
 
@@ -2119,6 +2135,7 @@ fn settle_after_activation(actor: *mut HewActor, msgs_processed: u32) {
 /// authority to discard the last runnable entry.
 pub(crate) struct ActivationOwnership<'a> {
     pub(crate) actor: &'a HewActor,
+    pub(crate) _code: Option<crate::code_owner::CodeRoot>,
 }
 impl<'a> ActivationOwnership<'a> {
     /// Mark the activation owned. Call BEFORE the `Runnable -> Running` CAS so
@@ -2128,7 +2145,13 @@ impl<'a> ActivationOwnership<'a> {
             .dispatch_active
             .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
             .ok()
-            .map(|_| Self { actor })
+            .map(|_| Self {
+                actor,
+                _code: actor
+                    .native_completion
+                    .as_ref()
+                    .and_then(|completion| completion.cleanup.code.clone()),
+            })
     }
 
     /// Transfer a popped `Runnable` queue entry to exclusive activation

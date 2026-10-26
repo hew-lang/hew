@@ -5,7 +5,13 @@ use hew_mir::physical::PhysicalLoopChunk;
 
 impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
     pub(super) fn emit_loop_chunk(&self, chunk: &PhysicalLoopChunk) -> CodegenResult<()> {
-        let ids = chunk.storage.iter().copied().collect::<Vec<_>>();
+        // Only carriers crossing the call boundary need persistent coroutine
+        // storage. Private chunk temporaries remain in the helper's locals.
+        let mut boundary = chunk.inputs.clone();
+        for outputs in chunk.exits.values() {
+            boundary.extend(outputs);
+        }
+        let ids = boundary.into_iter().collect::<Vec<_>>();
         let mut fields = ids
             .iter()
             .map(|id| llvm_type(self.ctx, &self.function.storage[id.0 as usize].layout.repr))
@@ -90,6 +96,8 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                 budget.as_basic_value().into(),
                 skip.as_basic_value().into(),
                 enabled.into(),
+                self.active_fault.into(),
+                self.active_status.into(),
             ],
             "loop.exit",
         )?
@@ -197,6 +205,8 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                     self.ctx.i32_type().into(),
                     self.ctx.bool_type().into(),
                     self.ctx.bool_type().into(),
+                    pointer.into(),
+                    pointer.into(),
                 ],
                 false,
             ),
@@ -220,7 +230,7 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
             .into_pointer_value();
         let mut slots = vec![pointer.const_null(); self.slots.len()];
         let mut place_flags = BTreeMap::new();
-        for id in ids {
+        for id in &chunk.storage {
             slots[id.0 as usize] = builder
                 .build_alloca(
                     llvm_type(self.ctx, &self.storage(*id)?.layout.repr)?,
@@ -247,12 +257,16 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
             .get_nth_param(3)
             .expect("poll enabled")
             .into_int_value();
-        let active_fault = builder
-            .build_alloca(pointer, "unused.fault")
-            .llvm_ctx("allocate chunk fault slot")?;
-        let active_status = builder
-            .build_alloca(self.ctx.i32_type(), "unused.status")
-            .llvm_ctx("allocate chunk status slot")?;
+        // Inline checked reads publish into the caller's authored fault pair.
+        // The helper returns to that caller for semantic owner cleanup.
+        let active_fault = value
+            .get_nth_param(4)
+            .expect("caller fault slot")
+            .into_pointer_value();
+        let active_status = value
+            .get_nth_param(5)
+            .expect("caller fault status")
+            .into_pointer_value();
         let mut blocks = chunk
             .blocks
             .iter()
@@ -281,6 +295,7 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
             fault_out: active_fault,
             active_fault,
             active_status,
+            fault_site: std::cell::Cell::new(None),
             fault_parks: BTreeMap::new(),
             functions: self.functions,
             value_callbacks: self.value_callbacks,

@@ -11,4 +11,3 @@ severity = "error"
 code = "UndefinedVariable"
 line = 11
 column = 36
-message = "undefined variable `cap`"

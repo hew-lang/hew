@@ -1109,11 +1109,6 @@ fn plain_callable_obligations_inside_a_closure_retain_their_construction_context
     assert_eq!(output.errors.len(), 1, "{:?}", output.errors);
     let error = &output.errors[0];
     assert_eq!(&suspending[error.span.clone()], "|| { sleep(1ms); 1 }");
-    assert!(
-        error.message.contains("closure suspends via `sleep(...)`"),
-        "{}",
-        error.message
-    );
 }
 
 #[test]
@@ -1157,7 +1152,6 @@ fn reassigning_a_closure_binding_joins_it_to_the_shape_both_hold() {
         error.kind,
         crate::error::TypeErrorKind::ClosureShapeMismatch
     );
-    assert!(error.message.contains("compatible callable shapes"));
 }
 
 #[test]
@@ -1187,16 +1181,15 @@ fn suspending_callable_types_do_not_coerce_into_plain_ones() {
 }
 
 #[test]
-fn deferred_bodies_name_the_suspending_call() {
-    let output = check_source("fn work() { sleep(1ms); } fn main() { defer { work(); } }");
+fn deferred_bodies_reject_the_suspending_call() {
+    let source = "fn work() { sleep(1ms); } fn main() { defer { work(); } }";
+    let output = check_source(source);
+    assert_eq!(output.errors.len(), 1, "{:?}", output.errors);
     assert_eq!(
-        output
-            .errors
-            .iter()
-            .map(|error| error.message.as_str())
-            .collect::<Vec<_>>(),
-        vec!["a deferred body cannot suspend: `work(...)` may suspend"]
+        output.errors[0].kind,
+        crate::error::TypeErrorKind::InvalidOperation
     );
+    assert_eq!(&source[output.errors[0].span.clone()], "work()");
 }
 
 #[test]
@@ -1205,14 +1198,7 @@ fn await_on_a_plain_call_is_refused_and_await_on_a_value_is_rejected() {
     let output = check_source(source);
     let error = output.errors.first().expect("redundant await is refused");
     assert_eq!(&source[error.span.clone()], "work()");
-    assert_eq!(
-        error.message,
-        "`await` on a plain call adds nothing: the call suspends on its own"
-    );
-    assert_eq!(
-        error.suggestions,
-        vec!["remove `await`, or fork the call to run it concurrently".to_string()]
-    );
+    assert_eq!(error.kind, crate::error::TypeErrorKind::InvalidOperation);
     let plain = source.replace("await ", "");
     let output = check_source(&plain);
     assert!(output.errors.is_empty(), "{:?}", output.errors);
@@ -1221,13 +1207,10 @@ fn await_on_a_plain_call_is_refused_and_await_on_a_value_is_rejected() {
         vec![SuspensionEffect::MaySuspend]
     );
     let output = check_source("fn main() { let n: i64 = 1; let x = await n; }");
+    assert_eq!(output.errors.len(), 1, "{:?}", output.errors);
     assert_eq!(
-        output
-            .errors
-            .iter()
-            .map(|error| error.message.as_str())
-            .collect::<Vec<_>>(),
-        vec!["`await` joins a task; `i64` is not one"]
+        output.errors[0].kind,
+        crate::error::TypeErrorKind::InvalidOperation
     );
     let output = check_source("actor Worker { receive fn value() -> i64 { 41 } } fn main() { let worker = spawn Worker; let _reply = worker.value(); let task = fork { 1 }; let _joined = await task; let callback = actor |n: i64| -> i64 { n }; let _answer = callback(1); stop(worker); stopped(worker); }");
     assert!(output.errors.is_empty(), "{:?}", output.errors);

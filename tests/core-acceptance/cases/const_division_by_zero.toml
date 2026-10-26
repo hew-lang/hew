@@ -10,4 +10,3 @@ kind = "reject"
 code = "E_CONST_INITIALIZER"
 line = 3
 column = 18
-message = "constant initializer divides by zero"

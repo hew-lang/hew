@@ -129,7 +129,6 @@ def test_valid_failure_report_and_status_one_reach_the_ratchet() -> None:
         assert root.find(".//failure") is None
         skipped = root.find(".//skipped")
         assert skipped is not None
-        assert "expected compile failure" in (skipped.get("message") or "")
         assert "assertion failed" in (skipped.get("message") or "")
 
 

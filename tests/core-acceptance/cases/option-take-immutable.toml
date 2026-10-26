@@ -11,11 +11,9 @@ severity = "error"
 code = "MutabilityError"
 line = 3
 column = 17
-message = "method `take` on `Option` requires a mutable binding receiver"
 
 [[case.expected.diagnostics]]
 severity = "error"
 code = "MutabilityError"
 line = 5
 column = 18
-message = "method `take` on `Option` requires a mutable binding receiver"

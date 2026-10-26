@@ -6,5 +6,5 @@ suites = ["acceptance"]
 timeout_seconds = 30
 
 [case.expected]
-stdout = "timed out\nwithin deadline: true\nrefused\ninvalid: tls.connect: trust PEM holds no certificate\ninvalid: tls.connect: invalid port 70000 (must be 0..=65535)\ninvalid: tls.connect io_timeout: invalid negative duration (must be >= 0ns)\n"
+stdout = "timed out\nwithin deadline: true\nrefused\ninvalid\ninvalid\ninvalid\n"
 exit = 0

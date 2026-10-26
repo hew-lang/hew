@@ -1,0 +1,10 @@
+[[case]]
+id = "stream-content-framing"
+intent = "Implicit source Stream methods preserve split CRLF, empty and final lines, chunk boundaries, width clamping and early producer cleanup."
+source = "cases/stream-content-framing.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 30
+
+[case.expected]
+stdout = "source stream framing\n"
+exit = 0

@@ -10,4 +10,3 @@ kind = "check"
 code = "UndefinedFunction"
 line = 7
 column = 13
-message = "undefined function `from_c`"

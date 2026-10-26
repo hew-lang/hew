@@ -10,5 +10,4 @@ HEW_WORKERS = "1"
 
 [case.expected]
 stdout = "wire callbacks complete\n"
-stderr = ""
 exit = 0

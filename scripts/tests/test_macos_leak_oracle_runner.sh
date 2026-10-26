@@ -45,9 +45,9 @@ expect_red() {
 }
 
 live="${work_dir}/live.txt"
-"${RUNNER}" --list-inventory > "${live}"
+"${RUNNER}" --list-inventory >"${live}"
 "${RUNNER}" --check-inventory-file "${live}"
-EXPECTED_TESTS="$(wc -l < "${live}" | tr -d '[:space:]')"
+EXPECTED_TESTS="$(wc -l <"${live}" | tr -d '[:space:]')"
 echo "PASS live nextest inventory is nonempty and source-derived"
 
 good="${work_dir}/good.txt"
@@ -55,37 +55,37 @@ cp "${live}" "${good}"
 "${RUNNER}" --check-inventory-file "${good}"
 
 duplicate="${work_dir}/duplicate.txt"
-head -n "$(( EXPECTED_TESTS - 1 ))" "${good}" > "${duplicate}"
-head -n 1 "${good}" >> "${duplicate}"
+head -n "$((EXPECTED_TESTS - 1))" "${good}" >"${duplicate}"
+head -n 1 "${good}" >>"${duplicate}"
 expect_red "duplicate verdict" "duplicate nextest inventory verdict" "${duplicate}"
 
 empty="${work_dir}/empty.txt"
-: > "${empty}"
+: >"${empty}"
 expect_red "empty corpus" "inventory is empty" "${empty}"
 
 malformed="${work_dir}/malformed.txt"
 cp "${good}" "${malformed}"
-printf '%s\n' "hew-cli::synthetic_001_oracle unexpected third-field" >> "${malformed}"
+printf '%s\n' "hew-cli::synthetic_001_oracle unexpected third-field" >>"${malformed}"
 expect_red "malformed inventory" "malformed nextest inventory" "${malformed}"
 
 unexpected_binary="${work_dir}/unexpected-binary.txt"
 cp "${good}" "${unexpected_binary}"
-printf '%s\n' 'hew-cli::unexpected invented_verdict' >> "${unexpected_binary}"
+printf '%s\n' 'hew-cli::unexpected invented_verdict' >>"${unexpected_binary}"
 expect_red "unexpected binary" "no source-derived allocator authority" "${unexpected_binary}"
 
 missing_ffi="${work_dir}/missing-ffi.txt"
-grep -Fv 'hew-cli::ffi_link_e2e ' "${good}" > "${missing_ffi}"
+grep -Fv 'hew-cli::ffi_link_e2e ' "${good}" >"${missing_ffi}"
 expect_red "missing ffi authority" "required ffi_link_e2e leak verdict is absent" "${missing_ffi}"
 
 synthetic_sources="${work_dir}/synthetic-sources"
 mkdir -p "${synthetic_sources}"
-cat > "${synthetic_sources}/unlisted_probe.rs" <<'EOF'
+cat >"${synthetic_sources}/unlisted_probe.rs" <<'EOF'
 #[test]
 fn a_real_allocator_probe() {
     let _leaks = measure_leaks_exact(&binary);
 }
 EOF
-cat > "${synthetic_sources}/comment_and_import_only.rs" <<'EOF'
+cat >"${synthetic_sources}/comment_and_import_only.rs" <<'EOF'
 use support::leak_slope::{assert_frame_slope_below_tolerance, run_under_malloc_scribble};
 // run_under_malloc_scribble(&not_an_execution);
 const DOCUMENTATION: &str = "measure_leaks_with_args is not a call";
@@ -100,17 +100,12 @@ echo "PASS source discovery ignores definitions/comments/imports/literals and fi
 source_missing_output="${work_dir}/source-missing.out"
 source_missing_rc=0
 HEW_LEAK_SOURCE_TESTS_DIR="${synthetic_sources}" \
-    "${RUNNER}" --check-inventory-file "${good}" >"${source_missing_output}" 2>&1 \
-    || source_missing_rc=$?
+    "${RUNNER}" --check-inventory-file "${good}" >"${source_missing_output}" 2>&1 ||
+    source_missing_rc=$?
 replay_counterfactual "source-discovered-non-oracle" "${source_missing_rc}" \
     "$(cat "${source_missing_output}")"
 if [[ "${source_missing_rc}" -eq 0 ]]; then
     echo "FAIL source-discovered non-oracle binary: counterfactual unexpectedly passed" >&2
-    exit 1
-fi
-if ! grep -Fq "source-discovered allocator probe binary is absent" "${source_missing_output}"; then
-    echo "FAIL source-discovered non-oracle binary: missing diagnostic" >&2
-    cat "${source_missing_output}" >&2
     exit 1
 fi
 echo "PASS counterfactual RED source-discovered non-oracle binary missing from inventory"

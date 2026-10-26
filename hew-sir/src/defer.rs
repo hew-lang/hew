@@ -40,7 +40,7 @@ pub(crate) fn plan(function: &SemFunction) -> Result<Plan, &'static str> {
     let blocks: BTreeMap<_, _> = function.blocks.iter().map(|b| (b.id, b)).collect();
     let mut plan = Plan::default();
     for block in &function.blocks {
-        for op in &block.ops {
+        for op in block.operations() {
             if let SemOpKind::RegisterDefer {
                 defer,
                 scope,
@@ -99,7 +99,7 @@ pub(crate) fn plan(function: &SemFunction) -> Result<Plan, &'static str> {
             for arg in &block.args {
                 region.values.insert(arg.value);
             }
-            for op in &block.ops {
+            for op in block.operations() {
                 if let SemOpKind::AllocPlace { place } = op.kind {
                     region.locals.insert(place);
                 }

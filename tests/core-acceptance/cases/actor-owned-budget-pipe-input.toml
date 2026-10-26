@@ -1,0 +1,13 @@
+[[case]]
+id = "actor-owned-budget-pipe-input"
+intent = "A pending write reserves its actual typed input slot before consuming it."
+source = "cases/actor-owned-budget-pipe-input.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 30
+
+[case.env]
+HEW_WORKERS = "2"
+
+[case.expected]
+stdout = "7\ninput limit\n"
+exit = 1

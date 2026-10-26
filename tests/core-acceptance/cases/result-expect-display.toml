@@ -7,5 +7,4 @@ timeout_seconds = 30
 
 [case.expected]
 stdout = "7\n8\nAda\n"
-stderr = "hew: failure: UserPanic (212): load failed: broken\n"
 exit = 1

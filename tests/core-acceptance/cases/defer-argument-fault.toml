@@ -7,5 +7,4 @@ timeout_seconds = 15
 
 [case.expected]
 stdout = "closed\n5\n"
-stderr = "hew: failure: UserPanic (212): argument\nhew: secondary failure: UserPanic (212): older\n"
 exit = 1

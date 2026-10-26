@@ -6,7 +6,11 @@ use std::collections::{BTreeMap, BTreeSet};
 pub(super) fn verify_task_scopes(function: &super::PhysicalFunction) -> Result<(), PhysicalError> {
     use super::{PhysicalOp, TaskScopeId};
     let mut declared = BTreeSet::new();
-    for op in function.blocks.iter().flat_map(|block| &block.ops) {
+    for op in function
+        .blocks
+        .iter()
+        .flat_map(super::types::PhysicalBlock::operations)
+    {
         if let PhysicalOp::TaskScopeEnter { scope, .. } = op {
             if !declared.insert(*scope) {
                 return Err(PhysicalError::new(
@@ -28,7 +32,7 @@ pub(super) fn verify_task_scopes(function: &super::PhysicalFunction) -> Result<(
             continue;
         };
         let mut stack = states[&id].clone();
-        for op in &block.ops {
+        for op in block.operations() {
             match op {
                 PhysicalOp::TaskScopeEnter { scope, parent, .. } => {
                     if stack.last().map(|(scope, _)| scope) != parent.as_ref()
@@ -240,7 +244,7 @@ pub(super) fn semantic_callables(checked: &hew_sir::CheckedModule<'_>) -> BTreeS
             for parameter in &block.args {
                 types.insert(parameter.value, parameter.ty.clone());
             }
-            for operation in &block.ops {
+            for operation in block.operations() {
                 for result in &operation.results {
                     types.insert(result.id, result.ty.clone());
                 }
@@ -274,7 +278,7 @@ pub(super) fn semantic_callables(checked: &hew_sir::CheckedModule<'_>) -> BTreeS
             .iter()
             .filter(|block| lifetimes.is_reachable(block.id))
         {
-            for operation in &block.ops {
+            for operation in block.operations() {
                 // A scope's runtime handle lives in the resumable frame even
                 // when `exit` leaves its drain unreachable.
                 if matches!(operation.kind, hew_sir::SemOpKind::TaskScopeEnter { .. }) {
@@ -534,10 +538,206 @@ pub(super) fn semantic_callables(checked: &hew_sir::CheckedModule<'_>) -> BTreeS
     close_callers(resumable, &calls)
 }
 
+pub(super) fn operation_suspends(
+    releases: &super::ReleaseEffects,
+    operation: &super::PhysicalOp,
+) -> bool {
+    let action = match operation {
+        super::PhysicalOp::Destroy { action, .. } => Some(*action),
+        super::PhysicalOp::Assign { destroy_old, .. } => *destroy_old,
+        super::PhysicalOp::StorageDead { destroy, .. } => *destroy,
+        _ => None,
+    };
+    action.is_some_and(|action| releases.suspends(action))
+        || matches!(operation, super::PhysicalOp::TaskScopeEnter { .. })
+}
+
 #[expect(
     clippy::too_many_lines,
-    reason = "verify physical suspension against every direct and selected callback edge"
+    reason = "one suspension authority for direct and selected callback edges"
 )]
+fn terminator_dependencies(
+    module: &PhysicalModule,
+    function: &super::PhysicalFunction,
+    terminator: &PhysicalTerminator,
+    releases: &super::ReleaseEffects,
+) -> Result<(bool, Vec<CallableId>), PhysicalError> {
+    let mut direct = false;
+    let mut callees = Vec::new();
+    if let PhysicalTerminator::ActorCall { operation, .. } = terminator {
+        if matches!(
+            operation,
+            hew_sir::ActorOperation::SelfHandle(_)
+                | hew_sir::ActorOperation::Submit { .. }
+                | hew_sir::ActorOperation::TimerSchedule { .. }
+        ) {
+            direct = true;
+        }
+        if let hew_sir::ActorOperation::Spawn(actor) = operation {
+            let actor = &module.actors[actor.0 as usize];
+            callees.extend(actor.init.iter().chain(&actor.start).copied());
+            if let Some(init) = actor.init {
+                for param in module.callables[init.0 as usize].params.iter().skip(1) {
+                    if module
+                        .actor_recipes
+                        .get(&param.ty)
+                        .and_then(|recipe| recipe.destroy)
+                        .is_some_and(|action| {
+                            releases.suspends(action) || releases.raises_fault(action)
+                        })
+                    {
+                        direct = true;
+                    }
+                }
+            }
+        }
+        for ty in actor_release_types(&module.actors, operation) {
+            if module
+                .actor_recipes
+                .get(ty)
+                .and_then(|recipe| recipe.destroy)
+                .is_some_and(|action| releases.suspends(action) || releases.raises_fault(action))
+            {
+                direct = true;
+            }
+        }
+    }
+    match terminator {
+        PhysicalTerminator::RecoverFault { .. }
+        | PhysicalTerminator::NativeIo { .. }
+        | PhysicalTerminator::SemaphoreAcquire { .. }
+        | PhysicalTerminator::ServiceAcquire { .. }
+        | PhysicalTerminator::Offload { .. }
+        | PhysicalTerminator::Safepoint { .. }
+        | PhysicalTerminator::Sleep { .. }
+        | PhysicalTerminator::SleepUntil { .. }
+        | PhysicalTerminator::TaskSelect { .. }
+        | PhysicalTerminator::GeneratorYield { .. }
+        | PhysicalTerminator::GeneratorNext { .. }
+        | PhysicalTerminator::StreamNext { park: true, .. }
+        | PhysicalTerminator::StreamSend { .. }
+        | PhysicalTerminator::TaskAwait { .. }
+        | PhysicalTerminator::ActorAsk { .. }
+        | PhysicalTerminator::TaskScopeJoin { .. }
+        | PhysicalTerminator::ActorCall {
+            operation:
+                hew_sir::ActorOperation::SupervisorSpawn(_)
+                | hew_sir::ActorOperation::Submit { .. }
+                | hew_sir::ActorOperation::AwaitStopped(_)
+                | hew_sir::ActorOperation::LocalObservation {
+                    kind:
+                        hew_sir::LocalObservationKind::Link | hew_sir::LocalObservationKind::Monitor,
+                    ..
+                }
+                | hew_sir::ActorOperation::AwaitRestarted(_)
+                | hew_sir::ActorOperation::StreamStart { .. }
+                | hew_sir::ActorOperation::CallStart(_),
+            ..
+        } => {
+            direct = true;
+        }
+        PhysicalTerminator::IndirectCall {
+            targets, callee, ..
+        } => {
+            if targets.may_be_unknown || matches!(callee, super::ArgumentTransfer::Move(_)) {
+                direct = true;
+            }
+            callees.extend(&targets.known);
+        }
+        PhysicalTerminator::RuntimeCall { action, args, .. } => {
+            if action.family == hew_types::RuntimeCallFamily::RcNew {
+                direct = true;
+            }
+            if super::runtime_receiver_release(module, action)?
+                .is_some_and(|action| releases.suspends(action))
+            {
+                direct = true;
+            }
+            for capability in action.family.value_callback_capabilities() {
+                let argument = args.first().ok_or_else(|| {
+                    PhysicalError::new("collection callback has no receiver operand")
+                })?;
+                let source = match *argument {
+                    super::ArgumentTransfer::Borrow(source)
+                    | super::ArgumentTransfer::BorrowMut(source)
+                    | super::ArgumentTransfer::Move(source)
+                    | super::ArgumentTransfer::Clone { source, .. } => source,
+                };
+                let receiver = function.storage.get(source.0 as usize).ok_or_else(|| {
+                    PhysicalError::new("collection callback has no receiver storage")
+                })?;
+                let (_, arguments) = hew_types::runtime_call::collection_type_arguments(
+                    &receiver.ty,
+                )
+                .ok_or_else(|| PhysicalError::new("collection callback has no receiver type"))?;
+                callees.extend(super::capability::callees(
+                    module,
+                    &arguments[0],
+                    *capability,
+                )?);
+            }
+            if let super::PhysicalRuntimeCarrier::StructuralFormat(glue) = action.carrier {
+                callees.extend(super::structural::display_callees(
+                    &module.structural_glue,
+                    glue,
+                )?);
+            }
+        }
+        PhysicalTerminator::ValueCall { ty, capability, .. } => {
+            callees.extend(super::capability::callees(module, ty, *capability)?);
+        }
+        PhysicalTerminator::WireCodec {
+            codec,
+            plan,
+            recipes,
+            ..
+        } if !codec.is_serialize() => {
+            if recipes.values().any(|recipe| {
+                recipe
+                    .destroy
+                    .is_some_and(|action| releases.suspends(action))
+            }) {
+                direct = true;
+            }
+            let mut dependencies = Vec::new();
+            plan.visit_decode_capabilities(&mut |ty, capability| {
+                dependencies.push(super::capability::callees(module, ty, capability));
+            });
+            for dependency in dependencies {
+                callees.extend(dependency?);
+            }
+        }
+        PhysicalTerminator::DynCall { method, .. } => {
+            callees.extend(
+                module
+                    .vtables
+                    .iter()
+                    .flat_map(|table| &table.slots)
+                    .filter(|slot| slot.method == *method)
+                    .map(|slot| slot.callee),
+            );
+        }
+        PhysicalTerminator::Call { callee, .. } => {
+            callees.push(*callee);
+        }
+        _ => {}
+    }
+    Ok((direct, callees))
+}
+
+pub(super) fn terminator_suspends(
+    module: &PhysicalModule,
+    function: &super::PhysicalFunction,
+    terminator: &PhysicalTerminator,
+) -> Result<bool, PhysicalError> {
+    let (direct, callees) =
+        terminator_dependencies(module, function, terminator, &module.releases)?;
+    Ok(direct
+        || callees
+            .iter()
+            .any(|id| module.callables[id.0 as usize].is_resumable))
+}
+
 pub(super) fn verify_callables(module: &PhysicalModule) -> Result<(), PhysicalError> {
     let mut resumable = BTreeSet::new();
     let mut calls = BTreeMap::<_, Vec<_>>::new();
@@ -550,193 +750,18 @@ pub(super) fn verify_callables(module: &PhysicalModule) -> Result<(), PhysicalEr
             resumable.insert(function.callable);
         }
         for block in &function.blocks {
-            for operation in &block.ops {
-                let action = match operation {
-                    super::PhysicalOp::Destroy { action, .. } => Some(*action),
-                    super::PhysicalOp::Assign { destroy_old, .. } => *destroy_old,
-                    super::PhysicalOp::StorageDead { destroy, .. } => *destroy,
-                    _ => None,
-                };
-                if action.is_some_and(|action| releases.suspends(action)) {
-                    resumable.insert(function.callable);
-                }
-                if matches!(operation, super::PhysicalOp::TaskScopeEnter { .. }) {
-                    resumable.insert(function.callable);
-                }
+            if block
+                .operations()
+                .any(|op| operation_suspends(&releases, op))
+            {
+                resumable.insert(function.callable);
             }
-            if let PhysicalTerminator::ActorCall { operation, .. } = &block.terminator {
-                if matches!(
-                    operation,
-                    hew_sir::ActorOperation::SelfHandle(_)
-                        | hew_sir::ActorOperation::Submit { .. }
-                        | hew_sir::ActorOperation::TimerSchedule { .. }
-                ) {
-                    resumable.insert(function.callable);
-                }
-                if let hew_sir::ActorOperation::Spawn(actor) = operation {
-                    let actor = &module.actors[actor.0 as usize];
-                    calls
-                        .entry(function.callable)
-                        .or_default()
-                        .extend(actor.init.iter().chain(&actor.start).copied());
-                    if let Some(init) = actor.init {
-                        for param in module.callables[init.0 as usize].params.iter().skip(1) {
-                            if module
-                                .actor_recipes
-                                .get(&param.ty)
-                                .and_then(|recipe| recipe.destroy)
-                                .is_some_and(|action| {
-                                    releases.suspends(action) || releases.raises_fault(action)
-                                })
-                            {
-                                resumable.insert(function.callable);
-                            }
-                        }
-                    }
-                }
-                for ty in actor_release_types(&module.actors, operation) {
-                    if module
-                        .actor_recipes
-                        .get(ty)
-                        .and_then(|recipe| recipe.destroy)
-                        .is_some_and(|action| {
-                            releases.suspends(action) || releases.raises_fault(action)
-                        })
-                    {
-                        resumable.insert(function.callable);
-                    }
-                }
+            let (direct, callees) =
+                terminator_dependencies(module, function, &block.terminator, &releases)?;
+            if direct {
+                resumable.insert(function.callable);
             }
-            match &block.terminator {
-                PhysicalTerminator::RecoverFault { .. }
-                | PhysicalTerminator::NativeIo { .. }
-                | PhysicalTerminator::SemaphoreAcquire { .. }
-                | PhysicalTerminator::ServiceAcquire { .. }
-                | PhysicalTerminator::Offload { .. }
-                | PhysicalTerminator::Safepoint { .. }
-                | PhysicalTerminator::Sleep { .. }
-                | PhysicalTerminator::SleepUntil { .. }
-                | PhysicalTerminator::TaskSelect { .. }
-                | PhysicalTerminator::GeneratorYield { .. }
-                | PhysicalTerminator::GeneratorNext { .. }
-                | PhysicalTerminator::StreamNext { park: true, .. }
-                | PhysicalTerminator::StreamSend { .. }
-                | PhysicalTerminator::TaskAwait { .. }
-                | PhysicalTerminator::ActorAsk { .. }
-                | PhysicalTerminator::TaskScopeJoin { .. }
-                | PhysicalTerminator::ActorCall {
-                    operation:
-                        hew_sir::ActorOperation::SupervisorSpawn(_)
-                        | hew_sir::ActorOperation::Submit { .. }
-                        | hew_sir::ActorOperation::AwaitStopped(_)
-                        | hew_sir::ActorOperation::LocalObservation {
-                            kind:
-                                hew_sir::LocalObservationKind::Link
-                                | hew_sir::LocalObservationKind::Monitor,
-                            ..
-                        }
-                        | hew_sir::ActorOperation::AwaitRestarted(_)
-                        | hew_sir::ActorOperation::StreamStart { .. }
-                        | hew_sir::ActorOperation::CallStart(_),
-                    ..
-                } => {
-                    resumable.insert(function.callable);
-                }
-                PhysicalTerminator::IndirectCall {
-                    targets, callee, ..
-                } => {
-                    if targets.may_be_unknown || matches!(callee, super::ArgumentTransfer::Move(_))
-                    {
-                        resumable.insert(function.callable);
-                    }
-                    calls
-                        .entry(function.callable)
-                        .or_default()
-                        .extend(&targets.known);
-                }
-                PhysicalTerminator::RuntimeCall { action, args, .. } => {
-                    if action.family == hew_types::RuntimeCallFamily::RcNew {
-                        resumable.insert(function.callable);
-                    }
-                    if super::runtime_receiver_release(module, action)?
-                        .is_some_and(|action| releases.suspends(action))
-                    {
-                        resumable.insert(function.callable);
-                    }
-                    for capability in action.family.value_callback_capabilities() {
-                        let argument = args.first().ok_or_else(|| {
-                            PhysicalError::new("collection callback has no receiver operand")
-                        })?;
-                        let source = match *argument {
-                            super::ArgumentTransfer::Borrow(source)
-                            | super::ArgumentTransfer::BorrowMut(source)
-                            | super::ArgumentTransfer::Move(source)
-                            | super::ArgumentTransfer::Clone { source, .. } => source,
-                        };
-                        let receiver =
-                            function.storage.get(source.0 as usize).ok_or_else(|| {
-                                PhysicalError::new("collection callback has no receiver storage")
-                            })?;
-                        let (_, arguments) =
-                            hew_types::runtime_call::collection_type_arguments(&receiver.ty)
-                                .ok_or_else(|| {
-                                    PhysicalError::new("collection callback has no receiver type")
-                                })?;
-                        calls.entry(function.callable).or_default().extend(
-                            super::capability::callees(module, &arguments[0], *capability)?,
-                        );
-                    }
-                    if let super::PhysicalRuntimeCarrier::StructuralFormat(glue) = action.carrier {
-                        calls.entry(function.callable).or_default().extend(
-                            super::structural::display_callees(&module.structural_glue, glue)?,
-                        );
-                    }
-                }
-                PhysicalTerminator::ValueCall { ty, capability, .. } => {
-                    calls
-                        .entry(function.callable)
-                        .or_default()
-                        .extend(super::capability::callees(module, ty, *capability)?);
-                }
-                PhysicalTerminator::WireCodec {
-                    codec,
-                    plan,
-                    recipes,
-                    ..
-                } if !codec.is_serialize() => {
-                    if recipes.values().any(|recipe| {
-                        recipe
-                            .destroy
-                            .is_some_and(|action| releases.suspends(action))
-                    }) {
-                        resumable.insert(function.callable);
-                    }
-                    let mut dependencies = Vec::new();
-                    plan.visit_decode_capabilities(&mut |ty, capability| {
-                        dependencies.push(super::capability::callees(module, ty, capability));
-                    });
-                    for dependency in dependencies {
-                        calls
-                            .entry(function.callable)
-                            .or_default()
-                            .extend(dependency?);
-                    }
-                }
-                PhysicalTerminator::DynCall { method, .. } => {
-                    calls.entry(function.callable).or_default().extend(
-                        module
-                            .vtables
-                            .iter()
-                            .flat_map(|table| &table.slots)
-                            .filter(|slot| slot.method == *method)
-                            .map(|slot| slot.callee),
-                    );
-                }
-                PhysicalTerminator::Call { callee, .. } => {
-                    calls.entry(function.callable).or_default().push(*callee);
-                }
-                _ => {}
-            }
+            calls.entry(function.callable).or_default().extend(callees);
         }
     }
     let expected = close_callers(resumable, &calls);

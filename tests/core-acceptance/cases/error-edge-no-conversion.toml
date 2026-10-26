@@ -10,4 +10,3 @@ kind = "check"
 code = "E_ERROR_NO_CONVERSION"
 line = 22
 column = 16
-message = "`?` cannot convert `std.fs.IoError` into `ConfigError`"

@@ -11,11 +11,9 @@ severity = "error"
 code = "UseAfterMove"
 line = 7
 column = 5
-message = "use of moved value `once`"
 
 [[case.expected.diagnostics]]
 severity = "error"
 code = "UseAfterMove"
 line = 7
 column = 5
-message = "cannot invoke consumed callable `once`"

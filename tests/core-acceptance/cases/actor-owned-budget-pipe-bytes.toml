@@ -1,0 +1,13 @@
+[[case]]
+id = "actor-owned-budget-pipe-bytes"
+intent = "Typed Pipe admission preserves Bytes backing identity and charges retained slice capacity to the receiver."
+source = "cases/actor-owned-budget-pipe-bytes.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 30
+
+[case.env]
+HEW_WORKERS = "2"
+
+[case.expected]
+stdout = "1\nretained slice capacity\nsender retained\n"
+exit = 1

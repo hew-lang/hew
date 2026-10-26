@@ -1,0 +1,13 @@
+[[case]]
+id = "actor-owned-budget-sink-encoder"
+intent = "Framed sinks retain typed fields once across aliases and refund them after final cleanup."
+source = "cases/actor-owned-budget-sink-encoder.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 30
+
+[case.env]
+HEW_WORKERS = "2"
+
+[case.expected]
+stdout = "encoder ready\nencoder limit\n"
+exit = 1

@@ -11,4 +11,3 @@ severity = "error"
 code = "E_CONFINED_AUTHORITY"
 line = 3
 column = 37
-message = "confined `acquire` reaches `Node.peer`: ambient authority acquisition; supply a narrow resource or service at construction"

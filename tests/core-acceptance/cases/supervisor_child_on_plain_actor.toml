@@ -10,4 +10,3 @@ kind = "reject"
 code = "UndefinedField"
 line = 15
 column = 14
-message = "no field `child` on type `Worker`"

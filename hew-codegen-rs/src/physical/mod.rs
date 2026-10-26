@@ -50,6 +50,8 @@ mod stream;
 #[path = "../physical_suspend.rs"]
 mod suspend;
 
+#[path = "../physical_session.rs"]
+mod session;
 #[path = "../physical_tasks.rs"]
 mod tasks;
 
@@ -70,6 +72,8 @@ mod control;
 mod function;
 mod helpers;
 mod loop_chunks;
+mod managed;
+mod materialize;
 mod module_emitter;
 mod runtime_calls;
 mod text;
@@ -912,6 +916,7 @@ struct FunctionEmitter<'a, 'ctx> {
     fault_out: PointerValue<'ctx>,
     active_fault: PointerValue<'ctx>,
     active_status: PointerValue<'ctx>,
+    fault_site: std::cell::Cell<Option<u32>>,
     fault_parks: BTreeMap<hew_mir::physical::FaultParkId, (PointerValue<'ctx>, PointerValue<'ctx>)>,
     functions: &'a BTreeMap<CallableId, FunctionValue<'ctx>>,
     value_callbacks: &'a key::CallbackTable<'ctx>,
@@ -951,6 +956,10 @@ mod test_runtime;
 #[cfg(test)]
 #[path = "../physical_resource_tests.rs"]
 mod resource_tests;
+
+#[cfg(all(test, target_os = "linux"))]
+#[path = "../physical_session_tests.rs"]
+mod session_tests;
 
 #[cfg(test)]
 mod tests;

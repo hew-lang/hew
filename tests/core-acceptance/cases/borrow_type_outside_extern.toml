@@ -10,4 +10,3 @@ kind = "reject"
 code = "Other"
 line = 1
 column = 20
-message = "`&T` is only allowed in `extern` function signatures; write `T` in ordinary Hew code"

@@ -10,4 +10,3 @@ kind = "reject"
 code = "BoundsNotSatisfied"
 line = 6
 column = 13
-message = "type `NoDisplay` does not implement trait `Display` required by `T`"

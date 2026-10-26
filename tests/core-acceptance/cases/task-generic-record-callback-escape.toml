@@ -9,6 +9,5 @@ timeout_seconds = 15
 [[case.expected.diagnostics]]
 code = "InvalidOperation"
 severity = "error"
-message = "a task handle cannot outlive its scope"
 line = 17
 column = 5

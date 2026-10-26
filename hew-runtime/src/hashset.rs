@@ -80,6 +80,11 @@ use crate::vec::HewVec;
 /// A `static` binding provides program-lifetime validity without any
 /// heap allocation.
 static VALUE_LAYOUT: HewValueLayout = HewValueLayout {
+    code_owner: core::ptr::null(),
+    managed: &hew_cabi::managed::HewManagedValueDescriptor {
+        slot_bytes: 0,
+        visit: None,
+    },
     release_start: None,
     size: 0,
     align: 1,
@@ -112,6 +117,13 @@ static VALUE_LAYOUT: HewValueLayout = HewValueLayout {
 pub struct HewLayoutHashSet {
     /// Underlying layout-backed map. Elements are keys; values are ZST.
     map: *mut HewLayoutHashMap,
+}
+
+/// # Safety
+/// The caller retains the set throughout the borrow.
+pub(crate) unsafe fn managed_map(set: *const HewLayoutHashSet) -> *const HewLayoutHashMap {
+    // SAFETY: the live set owns its map.
+    unsafe { (*set).map }
 }
 
 /// Begin a borrowed set lookup or insertion using the map's shared probe.
@@ -294,6 +306,37 @@ pub unsafe extern "C-unwind" fn hew_hashset_new_with_layout(
     // SAFETY: set is a fresh sized-block allocation sized for HewLayoutHashSet.
     unsafe { (*set).map = map };
     set
+}
+
+/// Construct a set after reserving its ordinary initial element capacity.
+/// # Safety
+/// Descriptors match the source set and status is a writable compiler output.
+#[no_mangle]
+pub unsafe extern "C-unwind" fn hew_hashset_new_with_layout_checked(
+    element: *const HewMapKeyLayout,
+    layout: *const HewValueLayout,
+    status: *mut i32,
+) -> *mut HewLayoutHashSet {
+    // SAFETY: the source descriptor remains live through construction.
+    unsafe {
+        crate::hashmap::managed::result(
+            layout,
+            status,
+            || {
+                let width = (*element)
+                    .value
+                    .managed
+                    .as_ref()
+                    .ok_or(hew_cabi::managed::UNDESCRIBED)?
+                    .slot_bytes;
+                let bytes = width
+                    .checked_mul(crate::hashmap::LAYOUT_INIT_CAP as u64)
+                    .ok_or(hew_cabi::managed::HEAP_EXCEEDED)?;
+                Ok((bytes, Vec::new()))
+            },
+            || hew_hashset_new_with_layout(element),
+        )
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -600,6 +643,22 @@ pub unsafe extern "C" fn hew_hashset_to_vec_layout(set: *const HewLayoutHashSet)
     }
 }
 
+/// Snapshot set elements through the checked map projection authority.
+/// # Safety
+/// Set and result descriptor are live and status is writable.
+#[no_mangle]
+pub unsafe extern "C" fn hew_hashset_to_vec_layout_checked(
+    set: *const HewLayoutHashSet,
+    layout: *const HewValueLayout,
+    status: *mut i32,
+) -> *mut HewVec {
+    // SAFETY: a set uniquely owns this same layout-backed map.
+    unsafe {
+        let map = set.as_ref().map_or(ptr::null(), |set| set.map.cast_const());
+        crate::hashmap::hew_hashmap_keys_layout_checked(map, layout, status)
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Clone (layout-backed)
 // ---------------------------------------------------------------------------
@@ -642,6 +701,34 @@ pub unsafe extern "C-unwind" fn hew_hashset_clone_layout(
     // SAFETY: cloned is a fresh sized-block allocation sized for HewLayoutHashSet.
     unsafe { (*cloned).map = cloned_map };
     cloned
+}
+
+/// Clone a set through its compiler-authored typed copy plan.
+/// # Safety
+/// Set and matching result descriptor remain live; status is writable.
+#[no_mangle]
+pub unsafe extern "C-unwind" fn hew_hashset_clone_layout_checked(
+    set: *const HewLayoutHashSet,
+    layout: *const HewValueLayout,
+    status: *mut i32,
+) -> *mut HewLayoutHashSet {
+    // SAFETY: the source handle slot borrows the original set until adoption.
+    unsafe {
+        crate::hashmap::managed::result(
+            layout,
+            status,
+            || {
+                Ok((
+                    0,
+                    vec![crate::hashmap::managed::copied(
+                        layout,
+                        (&raw const set).cast(),
+                    )],
+                ))
+            },
+            || hew_hashset_clone_layout(set),
+        )
+    }
 }
 
 // ---------------------------------------------------------------------------

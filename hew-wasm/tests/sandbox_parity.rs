@@ -148,12 +148,6 @@ const PARITY_CASES: &[ParityCase] = &[
         source_rel: "examples/sandbox-graduation/closure_edges.hew",
     },
     ParityCase {
-        // `impl Error` alone supplies an error type's Display, so both engines
-        // print the same implied text.
-        test_name: "error_display",
-        source_rel: "examples/sandbox-graduation/error_display.hew",
-    },
-    ParityCase {
         // A failure edge wraps an error in the one variant carrying it alone.
         test_name: "variant_edges",
         source_rel: "examples/sandbox-graduation/variant_edges.hew",
@@ -162,11 +156,6 @@ const PARITY_CASES: &[ParityCase] = &[
         // A failing generator yields `Result` items and ends on its error.
         test_name: "failing_generators",
         source_rel: "examples/sandbox-graduation/failing_generators.hew",
-    },
-    ParityCase {
-        // `fails E` is the failure edge and `-> Result` a value of one type.
-        test_name: "failure_edges",
-        source_rel: "examples/sandbox-graduation/failure_edges.hew",
     },
     ParityCase {
         // Failure edges: `?` and `return error` keep the same error, apply a
@@ -653,6 +642,17 @@ const PARITY_CASES: &[ParityCase] = &[
     },
 ];
 
+const ERROR_PARITY_CASES: &[ParityCase] = &[
+    ParityCase {
+        test_name: "error_display",
+        source_rel: "examples/sandbox-graduation/error_display.hew",
+    },
+    ParityCase {
+        test_name: "failure_edges",
+        source_rel: "examples/sandbox-graduation/failure_edges.hew",
+    },
+];
+
 #[derive(Debug, Clone, Copy)]
 struct ParityCase {
     #[cfg_attr(
@@ -752,19 +752,19 @@ fn main() {
         std::fs::write(root.path().join(format!("{name}.hew")), source).unwrap();
     }
     std::fs::write(
+        root.path().join("cases/configured.toml"),
+        "[[case]]\nsource = \"configured.hew\"\n[case.env]\nHEW_WORKERS = \"1\"\n",
+    )
+    .unwrap();
+    std::fs::write(
         root.path().join("cases/unconfigured.toml"),
         "[[case]]\nsource = \"unconfigured.hew\"\n",
     )
     .unwrap();
     let cases = load_case_environments(root.path());
-    let ring = repo_root().join("tests/core-acceptance/cases/actor-same-type-completion-ring.hew");
     for name in ["configured", "unconfigured", "unregistered"] {
         let path = root.path().join(format!("{name}.hew"));
-        let environment = if name == "configured" {
-            fixture_environment(&ring)
-        } else {
-            environment_for_source(&cases, &path)
-        };
+        let environment = environment_for_source(&cases, &path);
         let output = run_native(&path, "", &environment);
         let workers = if name == "configured" {
             "1".to_string()
@@ -800,6 +800,7 @@ fn sandbox_graduation_corpus_is_fully_covered() {
         .collect();
     let actual: BTreeSet<PathBuf> = PARITY_CASES
         .iter()
+        .chain(ERROR_PARITY_CASES)
         .filter_map(|case| {
             case.source_rel
                 .strip_prefix("examples/sandbox-graduation/")
@@ -1072,7 +1073,26 @@ fn playground_sources_match_native() {
     ensure_native_toolchain();
     ensure_parity_runner_built();
 
+    let mut failures = Vec::new();
     for case in PARITY_CASES {
+        if std::panic::catch_unwind(|| assert_case(case, "")).is_err() {
+            failures.push(case.test_name);
+        }
+    }
+    assert!(
+        failures.is_empty(),
+        "playground parity failed: {}",
+        failures.join(", ")
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn authored_error_sources_match_native() {
+    set_test_hewpath();
+    ensure_native_toolchain();
+    ensure_parity_runner_built();
+    for case in ERROR_PARITY_CASES {
         assert_case(case, "");
     }
 }
@@ -1835,7 +1855,20 @@ fn assert_stderr_parity(case: &ParityCase, native: &Output, sandbox: &Output) {
 
 #[cfg(unix)]
 fn assert_exact_stdout(case: &ParityCase, native: &Output) {
-    let expected = match case.test_name {
+    let manifest = match case.test_name {
+        "error_display" => Some(include_str!(
+            "../../tests/core-acceptance/cases/error-display.toml"
+        )),
+        "failure_edges" => Some(include_str!(
+            "../../tests/core-acceptance/cases/failure-edges.toml"
+        )),
+        _ => None,
+    }
+    .map(|text| toml::from_str::<toml::Value>(text).expect("core acceptance manifest"));
+    let expected = manifest
+        .as_ref()
+        .map(|manifest| manifest["case"][0]["expected"]["stdout"].as_str().expect("authored stdout"))
+        .or(match case.test_name {
         "package_coherence" => Some("blue\nwidget: blue\nnumbers: 2\nwords: 1\n1\none\ninteger: 42\ntext: hello\nyes\nno\nflag: yes\n"),
         "trap_residual" => Some(
             "repeat-value\nrepeat-count\n3\n7\n7\n7\n65535\n18446744073709551615\n-1\n255\n1\ntrue\n65\n42\nboom\n6\nnone\n",
@@ -1867,23 +1900,17 @@ fn assert_exact_stdout(case: &ParityCase, native: &Output) {
         "closure_edges" => Some(
             "Err(empty) Ok(6) Err(not a number: x)\nOk(4) Err(not a number: x)\nprinted\nErr(nothing to print) Ok(())\nOk(7) Ok(3) Err(not a number: x)\nOk([6, 6])\nErr(not a number: x)\nErr(blank entry)\n[Some(2), None]\nSome(9) None\n",
         ),
-        "error_display" => Some(
-            "Missing: port\nPair: retries, 3\nOutOfRange: name: port, value: 70000\nClosed\nLocation: file: app.hew, line: 12\nStore: Closed\nRefused: the store is busy\nOther: Location: file: lib.hew, line: 4\nLabeled: label: port, code: 2\nTag: 5\n8080\n",
-        ),
         "variant_edges" => Some(
             "port: 8080\nhost: not a number: localhost\nuser: no setting named user\nlock: Store: Locked\nErr(Code: -2) Ok(3)\nErr(Note: noted: busy)\n",
         ),
         "failing_generators" => Some(
             "Ok(line 0)\nOk(line 1)\nvalue 0\nvalue 10\nvalue 20\nvalue 30\nskipped: four is unlucky\nvalue -1\nline 0\nline 1\ncounted 2\nline 0\nline 1\nline 2\nstopped: Corrupt: 3\n",
         ),
-        "failure_edges" => Some(
-            "Ok(8080) Err(empty)\nOk(Ok(1)) Ok(Err(zero)) Err(refused)\nOk(abc) Err(nothing to read)\nOk(16160)\n",
-        ),
         "error_edges" => Some(
             "ok 8080\nparse arm: Empty\nparse arm: NotANumber: abc\nmissing arm: port\nrange arm: 8080\nload failed: port 8080 is reserved\nreport: NotANumber: xyz\nhandled: NotANumber: xyz\nzero 0\nload failed: loading config: Parse: NotANumber: abc\n",
         ),
         _ => None,
-    };
+    });
     if let Some(expected) = expected {
         assert_eq!(
             String::from_utf8_lossy(&native.stdout),

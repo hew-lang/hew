@@ -2618,14 +2618,10 @@ impl Checker {
     /// Reject an opaque handle type used as a receive-fn (actor message)
     /// parameter, directly or nested inside a record/enum/tuple payload.
     ///
-    /// Actor message payloads are CBOR-serialized to cross the mailbox
-    /// dispatch boundary. Opaque handle types (e.g. `net.Listener`,
-    /// `net.Connection`, user `#[opaque]` types) are pointer-shaped runtime
-    /// resources with no serializable record layout, so they can never be a
-    /// message payload. Without this checker-layer diagnostic the failure
-    /// surfaces late as a raw codegen-front `wire CBOR serialize: named type
-    /// ... is not a registered record layout` message that names an internal
-    /// wire detail instead of the offending parameter. See #2511.
+    /// Opaque representations need a supported local transfer layout.
+    /// Canonical encoding values have owned layouts and Send facts; their
+    /// local messages use those layouts. Remote serializability is checked
+    /// independently at the wire boundary.
     fn reject_opaque_message_payload(&mut self, ty: &Ty, param_span: &Span, handler: &str) {
         let Some(opaque_name) = self.ty_message_payload_contains_opaque(ty) else {
             return;
@@ -2637,10 +2633,9 @@ impl Checker {
             },
             param_span,
             format!(
-                "opaque type `{opaque_name}` cannot be used as a receive-fn \
-                 parameter; actor message payloads must be CBOR-serializable, \
-                 and opaque handles have no serializable layout. Open or \
-                 construct the handle locally inside the handler instead \
+                "opaque type `{opaque_name}` has no supported actor message \
+                 transfer layout. Open or construct the handle locally inside \
+                 the handler instead \
                  [E_OPAQUE_MESSAGE_PAYLOAD]"
             ),
         );
@@ -2981,7 +2976,7 @@ impl Checker {
         let from = self
             .lang_items
             .get(crate::LangItem::From.key())
-            .map(|binding| binding.trait_id);
+            .and_then(|binding| binding.trait_id);
         from.is_some() && self.resolve_trait_path(&bound.path) == from
     }
 

@@ -160,6 +160,11 @@ pub(super) fn terminator_effects(
         );
     }
     match term {
+        PhysicalTerminator::Materialize { operations, .. } => {
+            for operation in operations {
+                operation_storage(operation, used, defined, &mut BTreeSet::new());
+            }
+        }
         PhysicalTerminator::StreamNext { stream, result, .. }
         | PhysicalTerminator::GeneratorNext {
             generator: stream,

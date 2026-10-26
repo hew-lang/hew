@@ -1,3 +1,6 @@
+#[path = "support/checked.rs"]
+mod checked;
+
 use hew_hir::{lower_program_host_target, ResolutionCtx};
 use hew_sir::{
     lower_module, verify_module, BoundaryDecision, CallResult, CallUnwind, SemModule,
@@ -296,8 +299,12 @@ fn equality_snapshots_a_whole_binding_before_later_mutation() {
         let snapshot = main
             .blocks
             .iter()
-            .flat_map(|block| &block.ops)
-            .find(|op| op.results.iter().any(|result| result.id == argument))
+            .flat_map(hew_sir::SemBlock::operations)
+            .find(|op| {
+                op.results
+                    .iter()
+                    .any(|result| result.id == checked::source(main, argument))
+            })
             .unwrap();
         assert_eq!(snapshot.results[0].own, hew_sir::OwnKind::Owned);
         let hew_sir::BindingTarget::Place(left) = main
@@ -326,7 +333,10 @@ fn equality_snapshots_a_whole_binding_before_later_mutation() {
             })
             .unwrap();
         assert!(
-            mutation.ops.iter().any(|op| op.id == snapshot.id),
+            main.blocks
+                .iter()
+                .any(|block| block.operations().any(|op| op.id == snapshot.id)
+                    && hew_sir::compute_dominators(main).dominates(block.id, mutation.id)),
             "snapshot must be available before the later argument clears left"
         );
     }
@@ -394,8 +404,8 @@ fn main() -> i64 {
         };
         assert_eq!(
             cleanup_blocks
-                .iter()
-                .flat_map(|block| &block.ops)
+                .iter().copied()
+                .flat_map(hew_sir::SemBlock::operations)
                 .filter(|op| matches!(op.kind, hew_sir::SemOpKind::EndLifetime { place } if place == owner))
                 .count(),
             1

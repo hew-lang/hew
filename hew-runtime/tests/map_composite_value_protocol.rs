@@ -144,6 +144,8 @@ unsafe extern "C-unwind" fn drop_pair(slot: *mut c_void) {
 }
 
 const RECORD_LAYOUT: HewValueLayout = HewValueLayout {
+    code_owner: core::ptr::null(),
+    managed: core::ptr::null(),
     release_start: None,
     size: size_of::<Record>(),
     align: align_of::<Record>(),
@@ -159,6 +161,8 @@ const KEY_LAYOUT: HewMapKeyLayout = HewMapKeyLayout {
 };
 
 const PAIR_LAYOUT: HewValueLayout = HewValueLayout {
+    code_owner: core::ptr::null(),
+    managed: core::ptr::null(),
     release_start: None,
     size: size_of::<Pair>(),
     align: align_of::<Pair>(),
@@ -453,6 +457,8 @@ fn zero_sized_value_callbacks_follow_logical_owners() {
     let _guard = TEST_LOCK.lock().unwrap();
     assert_eq!(ZERO_OWNERS.load(Ordering::SeqCst), 0);
     let layout = HewValueLayout {
+        code_owner: core::ptr::null(),
+        managed: core::ptr::null(),
         release_start: None,
         size: 0,
         align: 1,
@@ -538,6 +544,8 @@ fn aligned_zero_sized_vector_preserves_callback_alignment() {
     let _guard = TEST_LOCK.lock().unwrap();
     assert_eq!(ZERO_OWNERS.load(Ordering::SeqCst), 0);
     let layout = HewValueLayout {
+        code_owner: core::ptr::null(),
+        managed: core::ptr::null(),
         release_start: None,
         size: size_of::<AlignedUnit>(),
         align: align_of::<AlignedUnit>(),

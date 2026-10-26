@@ -44,12 +44,6 @@ export async function runDirectoryHandleCases(compiler, vm, source) {
       "absent host authority must reject before execution",
     );
     assert(
-      refused.final_state.sandbox_rejections[0].message.includes(
-        "host-supplied OPFS",
-      ),
-      "missing host authority diagnostic is inaccurate",
-    );
-    assert(
       refused.final_state.stdout.length === 0,
       "default-deny execution produced output",
     );

@@ -2524,7 +2524,17 @@ impl Checker {
         hole_vars: &mut Vec<TypeVar>,
         context: TypeResolutionContext,
     ) -> Ty {
-        let mut ty = self.resolve_type_expr_inner(te, hole_vars, context);
+        let retained = (self.current_module_idx == 0 && !self.registering_embedded_source)
+            .then(|| {
+                self.session_type_seed
+                    .as_ref()?
+                    .annotations
+                    .get(&(te.1.start, te.1.end))
+            })
+            .flatten()
+            .map(crate::ResolvedTy::to_ty);
+        let mut ty =
+            retained.unwrap_or_else(|| self.resolve_type_expr_inner(te, hole_vars, context));
         if let Ty::Named { head, args } = &mut ty {
             if *head == crate::KnownDecl::ActorError.head() {
                 args.resize_with(args.len().max(2), Ty::never_type);

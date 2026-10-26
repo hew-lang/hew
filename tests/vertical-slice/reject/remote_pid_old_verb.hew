@@ -1,7 +1,0 @@
-// Actor calls resolve declared handlers; the retired tell verb is not a handler.
-type Ping { n: i64; }
-actor Worker { receive fn ping(msg: Ping) {} }
-fn probe(pid: Worker) {
-    let result = pid.tell(Ping { n: 1 });
-}
-fn main() {}

@@ -639,6 +639,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
                     self.ctx.i64_type().into(),
                     self.ctx.i64_type().into(),
                     ptr.into(),
+                    ptr.into(),
                 ],
                 false,
             ),
@@ -686,6 +687,10 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
                     backoff_maximum.into(),
                     pool_count.into(),
                     waker.into(),
+                    self.llvm
+                        .get_global("HewLiveCodeOwner")
+                        .map_or_else(|| ptr.const_null(), |owner| owner.as_pointer_value())
+                        .into(),
                 ],
                 "supervisor.operation",
             )

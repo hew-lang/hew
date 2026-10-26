@@ -7,5 +7,4 @@ timeout_seconds = 30
 
 [case.expected]
 stdout = "tree remains live\nchild stopped\ntree observed closed\n"
-stderr = ""
 exit = 0

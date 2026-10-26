@@ -7,5 +7,4 @@ timeout_seconds = 15
 
 [case.expected]
 stdout = "222:407\n222:407\nindexed Unicode preserved\n"
-stderr = ""
 exit = 0

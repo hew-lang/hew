@@ -79,7 +79,8 @@ fn granted_target_for_node(
     let location = location_for_test_node(owner, actor_id);
     let handler = crate::xnode_serial::lookup_request(dispatch, message)
         .unwrap()
-        .identity;
+        .identity
+        .clone();
     // SAFETY: both TestNodes own their running managers through this export.
     let manager = unsafe { &*(*owner.as_ptr()).conn_mgr };
     // SAFETY: the recipient TestNode remains live throughout this export.
@@ -95,7 +96,7 @@ fn granted_target_for_node(
             claim.peer_session(),
             1,
             location,
-            vec![handler.into()],
+            vec![handler.to_string()],
         )
         .unwrap();
     GrantedTestTarget {
@@ -261,6 +262,8 @@ fn spawn_bounded_test_actor(
             None,
             ptr::null_mut(),
             construction,
+            0,
+            ptr::null(),
         )
     };
     // SAFETY: test state is initialized and construction has no suspended borrower.
@@ -278,9 +281,11 @@ fn spawn_bounded_test_actor(
         crate::coro_state::hew_coro_state_free(construction);
     }
     assert!(fault.is_null(), "test actor spawn faulted");
-    crate::lifetime::local_handles::resolve_current_actor(token)
+    let actor = crate::lifetime::local_handles::resolve_current_actor(token)
         .and_then(crate::lifetime::live_actors::get_actor_ptr_by_id)
-        .unwrap_or(ptr::null_mut())
+        .unwrap_or(ptr::null_mut());
+    crate::lifetime::local_handles::hew_actor_handle_release(token);
+    actor
 }
 
 /// One `u32` request the test codec encodes.
@@ -303,6 +308,7 @@ fn inbound_test_codec(
             test_u32_deserialize,
             Some(test_u32_drop),
             std::mem::size_of::<u32>(),
+            core::ptr::null(),
         );
         crate::xnode_serial::hew_xnode_register_reply_codec(
             key,
@@ -312,6 +318,7 @@ fn inbound_test_codec(
             test_u32_deserialize,
             Some(test_u32_drop),
             reply_size,
+            core::ptr::null(),
         );
     }
     key
@@ -380,6 +387,7 @@ fn register_test_u32_codec(
             test_u32_deserialize,
             Some(test_u32_drop),
             std::mem::size_of::<u32>(),
+            core::ptr::null(),
         );
         crate::xnode_serial::hew_xnode_register_reply_codec(
             dispatch,
@@ -389,6 +397,7 @@ fn register_test_u32_codec(
             test_u32_deserialize,
             Some(test_u32_drop),
             std::mem::size_of::<u32>(),
+            core::ptr::null(),
         );
     }
 }

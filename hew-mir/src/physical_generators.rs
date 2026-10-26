@@ -18,6 +18,7 @@ impl FunctionLowerer<'_> {
         let (yielded, returned) = hew_sir::generator_parts(&self.storage[dest.0 as usize].ty)
             .ok_or_else(|| PhysicalError::new("generator construction has no output contract"))?;
         Ok(PhysicalOp::GeneratorMake {
+            callable_slot_bytes: hew_sir::managed_callable_carrier().bytes,
             closure,
             callable: self.value(callable.value)?,
             dest,
@@ -112,10 +113,16 @@ pub(super) fn verify_make(
         dest,
         yielded,
         returned,
+        callable_slot_bytes,
     } = operation
     else {
         unreachable!()
     };
+    if *callable_slot_bytes != hew_sir::managed_callable_carrier().bytes {
+        return Err(PhysicalError::new(
+            "generator callable slot disagrees with canonical managed storage",
+        ));
+    }
     let producer = module
         .closures
         .get(closure.0 as usize)

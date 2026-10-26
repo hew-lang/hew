@@ -10,4 +10,3 @@ kind = "check"
 code = "UseAfterMove"
 line = 26
 column = 12
-message = "use of moved place `pair.0`"

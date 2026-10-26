@@ -10,4 +10,3 @@ kind = "reject"
 code = "InvalidOperation"
 line = 4
 column = 1
-message = "process entry must return `()`, an integer, or `Result<(), E>`; found `string`"

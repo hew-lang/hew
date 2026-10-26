@@ -229,47 +229,6 @@ impl Checker {
         Some(instantiate_stdlib_method_sig(sig, impl_params, type_args))
     }
 
-    /// Validate the exceptional element types that cannot use `Vec`'s
-    /// borrow-only index path.
-    ///
-    /// Ordinary `#[resource]` / `#[linear]` elements are deliberately admitted:
-    /// MIR lowers `values[i]` through the owned-layout getter as an interior
-    /// borrow and its escape/consume/rebind checks keep that borrow inside the
-    /// collection's release authority. A pipe half, however, is an opaque
-    /// endpoint with no readable borrowed-value surface, so it remains
-    /// rejected regardless of its payload type.
-    pub(in crate::check) fn validate_vec_index_borrow_surface(
-        &mut self,
-        ty: &Ty,
-        span: &Span,
-    ) -> bool {
-        let resolved = self.subst.resolve(ty).materialize_literal_defaults();
-        if let Ty::Named {
-            head: crate::TypeHead::Builtin(builtin),
-            ..
-        } = resolved
-        {
-            if builtin.is_pipe_half() {
-                self.report_error(
-                    TypeErrorKind::InvalidOperation,
-                    span,
-                    format!(
-                        "cannot index `Vec<{}>` by value: a pipe half is non-cloneable and \
-                         has no copy operation; use `pop`, `remove`, or consuming iteration \
-                         to move the endpoint out",
-                        resolved.user_facing()
-                    ),
-                );
-                return false;
-            }
-        }
-        true
-    }
-
-    #[expect(
-        clippy::too_many_lines,
-        reason = "builtin stream typing and checker-owned rewrite metadata stay together"
-    )]
     pub(in crate::check) fn check_stream_method(
         &mut self,
         type_args: &[Ty],
@@ -306,24 +265,11 @@ impl Checker {
             );
             return Ty::Error;
         };
-        let resolved_inner = self.subst.resolve(&inner);
         match method {
             // `recv` parks until an item, EOF or a fault is ready; `try_recv`
             // never parks. Both ride the layout-witness entries for every
-            // describable element type. `collect` drains a `Stream<string>`.
-            "recv" | "try_recv" | "close" | "collect" => {
-                if method == "collect" && resolved_inner != Ty::String {
-                    self.report_error(
-                        TypeErrorKind::InvalidOperation,
-                        span,
-                        format!(
-                            "`Stream<{}>.collect` is not supported: `collect` drains a \
-                             `Stream<string>`",
-                            inner.user_facing()
-                        ),
-                    );
-                    return Ty::Error;
-                }
+            // describable element type. Collection is an ordinary source method.
+            "recv" | "try_recv" | "close" => {
                 let Some(c_symbol) = self.require_builtin_runtime_symbol(
                     span,
                     BuiltinNamedType::Stream.canonical_name(),
@@ -338,28 +284,14 @@ impl Checker {
                 self.record_runtime_method_call_rewrite(span, c_symbol);
                 sig.return_type
             }
-            // The lazy adaptors: each consumes its source stream and returns a
-            // fresh one. `lines` frames a `Stream<bytes>` into text, one line
-            // per item; `chunks` re-frames bytes by size; `take` bounds any
-            // stream.
-            "lines" | "chunks" | "take" => {
+            // Take consumes and bounds any typed stream. Content framing is
+            // implemented by ordinary source methods in std.stream.
+            "take" => {
                 if let Some(arg) = args.first() {
                     let (expr, sp) = arg.expr();
                     if let Some(param_ty) = sig.params.first() {
                         self.check_against(expr, sp, &param_ty.ty);
                     }
-                }
-                if method != "take" && resolved_inner != Ty::Bytes {
-                    self.report_error(
-                        TypeErrorKind::InvalidOperation,
-                        span,
-                        format!(
-                            "`Stream<{}>.{method}` is not supported: `{method}` frames a \
-                             `Stream<bytes>`",
-                            inner.user_facing()
-                        ),
-                    );
-                    return Ty::Error;
                 }
                 let Some(c_symbol) = self.require_builtin_runtime_symbol(
                     span,

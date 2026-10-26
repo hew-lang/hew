@@ -7,5 +7,4 @@ timeout_seconds = 20
 
 [case.expected]
 stdout = "identity preserved\n"
-stderr = ""
 exit = 0

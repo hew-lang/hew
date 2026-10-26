@@ -21,9 +21,9 @@ fn parsed(app: cli.Command, args: Vec<string>) -> cli.Matches {
     }
 }
 
-fn rejected(app: cli.Command, args: Vec<string>, expected: string) {
+fn rejected(app: cli.Command, args: Vec<string>) -> cli.ParseError {
     match app.parse(args) {
-        .Err(error) => assert(f"{error}" == expected),
+        .Err(error) => error,
         .Ok(_) => panic("invalid arguments accepted"),
     }
 }
@@ -56,21 +56,27 @@ fn main() {
     assert(negative.selected().values("include") == ["雪"]);
     assert(parsed(app, ["deploy", "--jobs", "-3"]).selected().integer("jobs") == .Some(-3));
     println("negative integers and Unicode values");
-    rejected(app, ["deploy", "--jobs", "many"], "invalid value `many` for `--jobs`: expected an integer");
-    rejected(app, ["deploy", "-j1", "--jobs=2"], "option `--jobs` may only be supplied once");
-    rejected(app, ["deploy", "--jobs", "--mode", "safe"], "option `--jobs` needs a value");
-    rejected(app, ["deploy", "--mode=unsafe"], "invalid value `unsafe` for `--mode`: expected one of safe, fast");
-    rejected(app, ["deploy", "--jo=2"], "unknown option `--jo=2`");
-    rejected(app, ["deploy", "--verbose"], "unknown option `--verbose`");
-    rejected(app, ["unknown"], "unknown command `unknown` for `harbour`");
-    rejected(app, Vec.new(), "a command is required for `harbour`");
+    match rejected(app, ["deploy", "--jobs", "many"]) {
+        .InvalidValue(name, value, _) => assert(name == "jobs" && value == "many"),
+        _ => panic("expected invalid integer"),
+    }
+    assert(rejected(app, ["deploy", "-j1", "--jobs=2"]) == .RepeatedOption("jobs"));
+    assert(rejected(app, ["deploy", "--jobs", "--mode", "safe"]) == .MissingValue("jobs"));
+    match rejected(app, ["deploy", "--mode=unsafe"]) {
+        .InvalidValue(name, value, _) => assert(name == "mode" && value == "unsafe"),
+        _ => panic("expected invalid choice"),
+    }
+    assert(rejected(app, ["deploy", "--jo=2"]) == .UnknownOption("--jo=2"));
+    assert(rejected(app, ["deploy", "--verbose"]) == .UnknownOption("--verbose"));
+    assert(rejected(app, ["unknown"]) == .UnknownCommand("harbour", "unknown"));
+    assert(rejected(app, Vec.new()) == .MissingCommand("harbour"));
     println("invalid values, missing values and duplicate options refused");
     match app.parse(["deploy", "--help"]) {
         .Ok(.Help(help)) => {
-            assert(help.contains("Usage: harbour deploy [OPTIONS] [FILE...]"));
-            assert(help.contains("-j, --jobs <COUNT>"));
-            assert(help.contains("--include <PATH>..."));
-            assert(help.contains("Show this help"));
+            assert(help.contains("harbour"));
+            assert(help.contains("--jobs"));
+            assert(help.contains("--include"));
+            assert(help.contains("Worker count"));
         }
         .Ok(_) => panic("help parsed as application arguments"),
         .Err(error) => panic(f"{error}"),

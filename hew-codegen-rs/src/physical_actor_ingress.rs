@@ -8,7 +8,7 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
     pub(in super::super) fn emit_actor_ingress_adapters(&self) -> CodegenResult<()> {
         let mut emitted = std::collections::HashSet::new();
         for function in &self.module.functions {
-            for operation in function.blocks.iter().flat_map(|block| &block.ops) {
+            for operation in function.blocks.iter().flat_map(|block| block.operations()) {
                 if let PhysicalOp::Const {
                     value: PhysicalConst::ActorIngressAdapter(adapter),
                     ..
@@ -166,6 +166,8 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
         arguments.push(discarded.into());
         parameters.push(ptr.into());
         arguments.push(sender_stamp(self.ctx, &self.llvm, &builder, None)?.into());
+        parameters.push(ptr.into());
+        arguments.push(message_layout(&self.llvm, adapter.actor, adapter.message)?.into());
         let submit =
             get_or_declare_external(&self.llvm, symbol, i32_ty.fn_type(&parameters, false))?;
         let status = call_value(&builder, submit, &arguments, "ingress.status")?.into_int_value();

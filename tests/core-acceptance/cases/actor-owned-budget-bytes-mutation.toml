@@ -1,0 +1,13 @@
+[[case]]
+id = "actor-owned-budget-bytes-mutation"
+intent = "Bytes growth and slice detach reserve actual capacity before mutation."
+source = "cases/actor-owned-budget-bytes-mutation.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 30
+
+[case.env]
+HEW_WORKERS = "2"
+
+[case.expected]
+stdout = "32\n1\nbytes limit\n"
+exit = 1

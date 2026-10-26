@@ -110,7 +110,7 @@ impl Checker {
         let display_trait = self
             .lang_items
             .get(crate::LangItem::Display.key())?
-            .trait_id;
+            .trait_id?;
         let module = self
             .defs
             .module(display_trait)
@@ -332,11 +332,14 @@ impl Checker {
     /// Each source `impl Error` no `Display` impl of its type overlaps, by
     /// its declaration, with the nominal it renders.
     fn impls_needing_display(&self) -> Option<HashMap<crate::DefId, (crate::NominalId, Ty)>> {
-        let error_trait = self.lang_items.get(crate::LangItem::Error.key())?.trait_id;
+        let error_trait = self
+            .lang_items
+            .get(crate::LangItem::Error.key())?
+            .trait_id?;
         let display_trait = self
             .lang_items
             .get(crate::LangItem::Display.key())?
-            .trait_id;
+            .trait_id?;
         let rows = |owner| {
             self.source_impl_declarations
                 .iter()

@@ -418,6 +418,22 @@ fn dump_op(out: &mut String, op: &crate::SemOp) {
 )]
 fn dump_term(out: &mut String, module: &SemModule, term: &SemTerminator) {
     match term {
+        SemTerminator::Materialize {
+            operation,
+            normal,
+            failure,
+        } => {
+            writeln!(
+                out,
+                "    materialize normal bb{}{} failure bb{}{}",
+                normal.target.0,
+                edge_args(normal),
+                failure.target.0,
+                edge_args(failure)
+            )
+            .expect("write to String");
+            dump_op(out, operation);
+        }
         SemTerminator::EnterDefer { defer, park, body } => {
             writeln!(
                 out,

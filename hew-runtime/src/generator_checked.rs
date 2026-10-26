@@ -65,6 +65,8 @@ impl WakeRelay {
 #[derive(Debug)]
 pub struct HewCheckedGenerator {
     callable: Option<HewCallableValue>,
+    invocation_slot_bytes: u64,
+    value_owner: Option<crate::owned_value_budget::ValueOwner>,
     yielded: *const HewValueLayout,
     returned: *const HewValueLayout,
     allocation: Layout,
@@ -77,6 +79,7 @@ pub struct HewCheckedGenerator {
     producer_fault: *mut HewFault,
     closed: bool,
     release: Option<Box<ReleaseDriver>>,
+    _code: [crate::code_owner::CodeRoot; 4],
 }
 
 impl HewCheckedGenerator {
@@ -94,7 +97,10 @@ impl HewCheckedGenerator {
                         HewReleaseCursor::values([(self.output, *layout)])
                     })
                 };
-                self.release = Some(ReleaseDriver::new(cursor));
+                self.release = Some(ReleaseDriver::with_value_owner(
+                    cursor,
+                    self.value_owner.clone(),
+                ));
             }
             let driver = self.release.as_mut().expect("generator release owner");
             if !driver.poll(parent) {
@@ -103,6 +109,12 @@ impl HewCheckedGenerator {
             self.fault = crate::fault::hew_fault_combine(self.fault, driver.take_fault());
             self.release = None;
             if lazy {
+                if let (Some(owner), Some(callable)) = (&self.value_owner, &self.callable) {
+                    owner.release_backing(
+                        ptr::from_ref(callable).cast(),
+                        self.invocation_slot_bytes,
+                    );
+                }
                 self.callable = None;
             }
             true
@@ -121,6 +133,8 @@ pub unsafe extern "C" fn hew_checked_generator_new(
     callable: *mut HewCallableValue,
     yielded: *const HewValueLayout,
     returned: *const HewValueLayout,
+    invocation_slot_bytes: u64,
+    provider_layout: *const HewValueLayout,
 ) -> *mut HewCheckedGenerator {
     if callable.is_null() || yielded.is_null() || returned.is_null() {
         std::process::abort();
@@ -147,8 +161,25 @@ pub unsafe extern "C" fn hew_checked_generator_new(
             },
         )
     };
+    // SAFETY: the transferred callable and borrowed layouts are live at entry.
+    // Independent roots cover producer suspension after its carrier is consumed.
+    let code = unsafe {
+        [
+            crate::code_owner::CodeRoot::acquire((*(*callable.descriptor).environment).code_owner),
+            crate::code_owner::CodeRoot::acquire(yield_layout.code_owner),
+            crate::code_owner::CodeRoot::acquire(return_layout.code_owner),
+            crate::code_owner::CodeRoot::acquire(
+                provider_layout
+                    .as_ref()
+                    .map_or(ptr::null(), |layout| layout.code_owner),
+            ),
+        ]
+    };
     Box::into_raw(Box::new(HewCheckedGenerator {
+        _code: code,
         callable: Some(callable),
+        invocation_slot_bytes,
+        value_owner: crate::owned_value_budget::current_owner(),
         yielded,
         returned,
         allocation,
@@ -162,6 +193,86 @@ pub unsafe extern "C" fn hew_checked_generator_new(
         closed: false,
         release: None,
     }))
+}
+
+/// Visit the lazy callable and the generator's selected live output payload.
+///
+/// # Safety
+/// The slot contains a live affine generator outside a concurrent poll or take.
+/// Its typed descriptors and synchronous visitor remain valid throughout.
+#[no_mangle]
+pub unsafe extern "C" fn hew_managed_visit_generator(
+    slot: *const c_void,
+    visitor: *const hew_cabi::managed::HewManagedStorageVisitor,
+) -> i32 {
+    use crate::owned_value_budget::visit::{hew_managed_visit_callable, slot_bytes, storage};
+    use hew_cabi::managed::{visit_value, DESCEND, SKIP_DESCENDANTS};
+    // SAFETY: the generator's affine owner excludes mutation during this walk.
+    unsafe {
+        let pointer = slot.cast::<*mut HewCheckedGenerator>().read();
+        let Some(generator) = pointer.as_mut() else {
+            return 0;
+        };
+        match storage(visitor, pointer.cast(), 0) {
+            SKIP_DESCENDANTS => return 0,
+            DESCEND => {}
+            failure => return failure,
+        }
+        let yielded = match slot_bytes(&*generator.yielded) {
+            Ok(width) => width,
+            Err(failure) => return failure,
+        };
+        let returned = match slot_bytes(&*generator.returned) {
+            Ok(width) => width,
+            Err(failure) => return failure,
+        };
+        match storage(visitor, generator.output, yielded.max(returned)) {
+            DESCEND => {
+                if let Some(layout) = generator.initialized {
+                    let status = visit_value(&*layout, generator.output, visitor);
+                    if status != 0 {
+                        return status;
+                    }
+                }
+            }
+            SKIP_DESCENDANTS => {}
+            failure => return failure,
+        }
+        if let Some(callable) = generator.callable.as_ref() {
+            match storage(
+                visitor,
+                ptr::from_ref(callable).cast(),
+                generator.invocation_slot_bytes,
+            ) {
+                DESCEND => {
+                    let status =
+                        hew_managed_visit_callable(ptr::from_ref(callable).cast(), visitor);
+                    if status != 0 {
+                        return status;
+                    }
+                }
+                SKIP_DESCENDANTS => {}
+                failure => return failure,
+            }
+        }
+        if let Some(driver) = &mut generator.release {
+            let status = crate::release_walker::hew_managed_visit_release_driver(
+                ptr::from_mut(&mut **driver).cast(),
+                visitor,
+            );
+            if status != 0 {
+                return status;
+            }
+        }
+        let status = crate::owned_value_budget::frame::hew_managed_visit_invocation(
+            generator.state,
+            visitor,
+        );
+        if status == 0 && (*visitor).kind == hew_cabi::managed::HewManagedWalkKind::CommitTransfer {
+            generator.value_owner = crate::owned_value_budget::transfer::destination_owner(visitor);
+        }
+        status
+    }
 }
 
 /// Advance one ready producer or cancel and drain it during source cleanup.
@@ -210,6 +321,17 @@ pub unsafe extern "C" fn hew_checked_generator_poll(
         // SAFETY: relay and parent token stay live while state retains them.
         generator.state =
             unsafe { hew_coro_state_new(&raw const descriptor, hew_coro_state_token(parent)) };
+        // SAFETY: this lazy producer exclusively initializes its invocation owner.
+        unsafe {
+            crate::coro_state::rebind_value_owner(
+                generator.state,
+                generator.value_owner.clone(),
+                generator
+                    .value_owner
+                    .as_ref()
+                    .and_then(crate::owned_value_budget::ValueOwner::execution_binding),
+            );
+        };
     }
     // The generator executes in its current consumer's actor turn, including
     // after ownership moves to another actor between yields.
@@ -245,6 +367,10 @@ pub unsafe extern "C" fn hew_checked_generator_poll(
         let mut context = HewExecutionContext {
             // SAFETY: child state retains its cancellation token.
             cancel_token: unsafe { hew_coro_state_token(generator.state) },
+            // The retained owner changes only after transfer commits. Explicit
+            // None must suppress fallback to the consumer's actor on a refused
+            // transfer, while scheduling and tracing still follow that consumer.
+            value_owner: &raw const generator.value_owner,
             prev_context: previous,
             ..HewExecutionContext::default()
         };
@@ -261,6 +387,12 @@ pub unsafe extern "C" fn hew_checked_generator_poll(
             context.partition_policy = parent_context.partition_policy;
         }
         let _previous = set_current_context(&raw mut context);
+        if let (Some(owner), Some(callable)) = (&generator.value_owner, &generator.callable) {
+            owner.release_backing(
+                ptr::from_ref(callable).cast(),
+                generator.invocation_slot_bytes,
+            );
+        }
         if let Some(callable) = generator.callable.take() {
             // SAFETY: the compiler's once adapter owns environment cleanup on
             // every terminal path; output/state remain live until frame release.
@@ -401,6 +533,16 @@ pub unsafe extern "C" fn hew_checked_generator_free(generator: *mut HewCheckedGe
     unsafe {
         hew_fault_drop(generator.fault);
         hew_coro_state_free(generator.state);
+        if let Some(owner) = &generator.value_owner {
+            let width = crate::owned_value_budget::visit::slot_bytes(&*generator.yielded)
+                .and_then(|yielded| {
+                    crate::owned_value_budget::visit::slot_bytes(&*generator.returned)
+                        .map(|returned| yielded.max(returned))
+                })
+                .unwrap_or_else(|_| std::process::abort());
+            owner.release_backing(generator.output, width);
+            owner.release_backing(ptr::from_ref(&*generator).cast(), 0);
+        }
         dealloc(generator.output.cast(), generator.allocation);
     }
 }

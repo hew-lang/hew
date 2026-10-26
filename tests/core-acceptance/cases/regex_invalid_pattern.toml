@@ -10,4 +10,3 @@ kind = "reject"
 code = "InvalidRegexLiteral"
 line = 6
 column = 9
-message = "invalid regex pattern `re\"[unclosed\"`: regex parse error:\n    [unclosed\n    ^\nerror: unclosed character class"

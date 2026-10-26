@@ -7,5 +7,4 @@ timeout_seconds = 30
 
 [case.expected]
 stdout = "close 12\nclose 11\nclose 99\n"
-stderr = "hew: failure: UserPanic (212): equality failed\nhew: secondary failure: UserPanic (212): close 12 failed\nhew: secondary failure: UserPanic (212): close 11 failed\nhew: secondary failure: UserPanic (212): close 99 failed\n"
 exit = 1

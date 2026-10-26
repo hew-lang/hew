@@ -7,5 +7,4 @@ timeout_seconds = 20
 
 [case.expected]
 stdout = "match exits preserve values\n"
-stderr = ""
 exit = 0

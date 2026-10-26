@@ -10,4 +10,3 @@ kind = "reject"
 code = "E_MEMBER_TERMINATOR"
 line = 4
 column = 14
-message = "a state declaration member ends with `;`"

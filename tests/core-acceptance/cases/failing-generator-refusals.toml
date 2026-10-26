@@ -10,4 +10,3 @@ kind = "check"
 code = "Mismatch"
 line = 13
 column = 28
-message = "expected `string`, found `Result<string, string>`"

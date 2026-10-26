@@ -1,0 +1,13 @@
+[[case]]
+id = "actor-owned-budget-vector-operations"
+intent = "Checked vector detach, mutation, slice, append and escaping nested copies preserve original values on refusal."
+source = "cases/actor-owned-budget-vector-operations.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 30
+
+[case.env]
+HEW_WORKERS = "2"
+
+[case.expected]
+stdout = "3\ndetach limit\n2\nslice limit\n8\nappend limit\n1\ncopy limit\n"
+exit = 1

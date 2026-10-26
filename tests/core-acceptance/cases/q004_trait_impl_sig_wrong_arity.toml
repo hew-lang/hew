@@ -10,4 +10,3 @@ kind = "reject"
 code = "TraitImplSignatureMismatch"
 line = 23
 column = 8
-message = "impl method `Holder.unwrap` has 1 parameter(s) but trait `Container` declares 0 (after substituting `Self` and projecting associated types)"

@@ -10,4 +10,3 @@ kind = "reject"
 code = "ResourceMissingClose"
 line = 5
 column = 1
-message = "E_HIR: `#[resource]` type must declare `fn close(consume self) { ... }` in a sibling inherent-impl block (`impl T { fn close(consume self) { ... } }`); the implicit drop contract dispatches to this method on every scope-exit path"

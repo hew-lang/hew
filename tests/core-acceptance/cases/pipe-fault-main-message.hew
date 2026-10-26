@@ -1,6 +1,6 @@
 // A pipe whose producer crashed while holding the sink faults the next read
 // after the queued items drain. The consumer here is `main`, so the trap is
-// the process failure, and it names the faulted pipe rather than a bare code.
+// the process failure rather than a clean end of input.
 import std.stream;
 
 actor Producer {

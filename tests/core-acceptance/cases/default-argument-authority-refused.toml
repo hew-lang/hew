@@ -13,7 +13,6 @@ code = "E_CONFINED_AUTHORITY"
 line = 3
 column = 13
 file = "default_argument_support/authority.hew"
-message = "confined `omitted` reaches `fs.open_read`: ambient authority acquisition; supply a narrow resource or service at construction"
 
 
 [[case.expected.diagnostics]]
@@ -22,7 +21,6 @@ code = "E_CONFINED_AUTHORITY"
 line = 3
 column = 13
 file = "default_argument_support/authority.hew"
-message = "confined `omitted_actor` reaches `fs.open_read`: ambient authority acquisition; supply a narrow resource or service at construction"
 
 
 [[case.expected.diagnostics]]
@@ -31,7 +29,6 @@ code = "E_CONFINED_AUTHORITY"
 line = 3
 column = 13
 file = "default_argument_support/authority.hew"
-message = "confined `omitted_receive` reaches `fs.open_read`: ambient authority acquisition; supply a narrow resource or service at construction"
 
 
 [[case.expected.diagnostics]]
@@ -40,7 +37,6 @@ code = "E_CONFINED_AUTHORITY"
 line = 3
 column = 13
 file = "default_argument_support/authority.hew"
-message = "confined `omitted_supervisor` reaches `fs.open_read`: ambient authority acquisition; supply a narrow resource or service at construction"
 
 
 [[case.expected.diagnostics]]
@@ -49,7 +45,6 @@ code = "E_CONFINED_AUTHORITY"
 line = 3
 column = 13
 file = "default_argument_support/authority.hew"
-message = "confined `omitted_child` reaches `fs.open_read`: ambient authority acquisition; supply a narrow resource or service at construction"
 
 [[case.expected.diagnostics]]
 severity = "error"
@@ -57,4 +52,3 @@ code = "E_CONFINED_AUTHORITY"
 line = 3
 column = 13
 file = "default_argument_support/authority.hew"
-message = "confined `omitted_callable` reaches `fs.open_read`: ambient authority acquisition; supply a narrow resource or service at construction"

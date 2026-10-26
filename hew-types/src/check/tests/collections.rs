@@ -16,6 +16,18 @@ fn check_source_with_stdlib(source: &str) -> TypeCheckOutput {
 }
 
 #[test]
+fn vec_index_admits_pipe_endpoints_as_interior_borrows() {
+    let output = check_source_with_stdlib(include_str!(
+        "../../../../tests/core-acceptance/cases/vector-pipe-borrowed-index.hew"
+    ));
+    assert!(
+        output.errors.is_empty(),
+        "indexed pipe operations must retain their vector owners: {:#?}",
+        output.errors
+    );
+}
+
+#[test]
 fn vec_fold_records_the_seed_first_pipeline_rewrite() {
     let source = "fn main() { let numbers: Vec<i64> = [1, 2, 3]; let sum = numbers.fold(0, |a, x| a + x); println(sum); }";
     let output = check_source_with_stdlib(source);

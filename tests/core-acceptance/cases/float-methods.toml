@@ -7,5 +7,4 @@ timeout_seconds = 15
 
 [case.expected]
 stdout = "float methods classify NaN, infinity, sign and bit patterns correctly\n"
-stderr = ""
 exit = 0

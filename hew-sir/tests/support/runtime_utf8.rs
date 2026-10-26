@@ -91,7 +91,10 @@ pub(super) fn decode_module() -> SemModule {
                         target: BlockId(1),
                         args: vec![Operand { value: ValueId(1) }],
                     },
-                    unwind: CallUnwind::NotApplicable,
+                    unwind: CallUnwind::Cleanup(Edge {
+                        target: BlockId(2),
+                        args: Vec::new(),
+                    }),
                 },
             },
             SemBlock {
@@ -112,12 +115,23 @@ pub(super) fn decode_module() -> SemModule {
                 }],
                 terminator: SemTerminator::Return { value: None },
             },
+            SemBlock {
+                terminator_provenance: Provenance::Synthesized,
+                id: BlockId(2),
+                args: Vec::new(),
+                ops: Vec::new(),
+                terminator: SemTerminator::ResumeUnwind { handback: None },
+            },
         ],
         places: Vec::new(),
         bindings: Vec::new(),
     };
     let mut type_facts = BTreeMap::new();
     for (ty, row) in [
+        (
+            ResolvedTy::Unit,
+            facts(ValueClass::BitCopy, CloneKind::Bits),
+        ),
         (
             ResolvedTy::Bytes,
             facts(ValueClass::CowValue, CloneKind::Retain),

@@ -11,4 +11,3 @@ severity = "error"
 code = "InvalidOperation"
 line = 3
 column = 54
-message = "trait impls inherit default arguments from the trait declaration; remove this default"

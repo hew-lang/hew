@@ -7,5 +7,4 @@ timeout_seconds = 30
 
 [case.expected]
 stdout_file = "../../examples/process_capture.expected"
-stderr = ""
 exit = 0

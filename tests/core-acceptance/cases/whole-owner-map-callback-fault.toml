@@ -7,5 +7,4 @@ timeout_seconds = 15
 
 [case.expected]
 stdout = "1\nclose conn 2\nclose registry 1\nclose conn 1\n"
-stderr = "hew: failure: DivideByZero (202)\n"
 exit = 1

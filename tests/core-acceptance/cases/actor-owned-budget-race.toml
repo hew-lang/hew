@@ -1,0 +1,14 @@
+[[case]]
+id = "actor-owned-budget-race"
+intent = "Task Race reserves pending member carrier capacity before execution and releases it at terminal group drain."
+source = "cases/actor-owned-budget-race.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 30
+
+[case.env]
+# Keep every member carrier pending until the actor completes race admission.
+HEW_WORKERS = "1"
+
+[case.expected]
+stdout = "7\nrace limit\n"
+exit = 1

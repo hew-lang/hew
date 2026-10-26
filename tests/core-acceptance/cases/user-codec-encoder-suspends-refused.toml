@@ -10,4 +10,3 @@ kind = "reject"
 code = "InvalidOperation"
 line = 33
 column = 19
-message = "closure suspends via `encode(...)`; `fn(T) -> bytes` never suspends, write `fn[suspends]`"

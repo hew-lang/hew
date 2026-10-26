@@ -10,4 +10,3 @@ kind = "reject"
 code = "Other"
 line = 9
 column = 13
-message = "E_OPERATOR_REMOVED: the `<-` send operator has been removed; use `handle(msg)` call syntax instead (HEW-SPEC-2026 §4.x)"

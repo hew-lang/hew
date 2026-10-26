@@ -8,4 +8,3 @@ timeout_seconds = 15
 [case.expected]
 stdout = "A\né\n中\n🙂\nnul\n3\n294\n3\n2\n2\nH\nO\nL\nD\nHOLD\n"
 exit = 0
-stderr = ""

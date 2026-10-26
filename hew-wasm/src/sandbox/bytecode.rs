@@ -263,6 +263,8 @@ pub enum BoundaryDecision {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema, TS)]
 pub enum TrapName {
+    #[serde(rename = "heap_exceeded")]
+    HeapExceeded,
     #[serde(rename = "integer_overflow")]
     IntegerOverflow,
     #[serde(rename = "divide_by_zero")]
@@ -297,6 +299,8 @@ pub struct Edge {
 pub struct ValueDef {
     pub value: u32,
     pub own: Own,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub managed_type: Option<u32>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema, TS)]
@@ -524,12 +528,7 @@ pub enum OpKind {
     #[serde(rename = "array.make")]
     ArrayMake { dst: u32, elements: Vec<u32> },
     #[serde(rename = "array.repeat")]
-    ArrayRepeat {
-        dst: u32,
-        value: u32,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        count: Option<u32>,
-    },
+    ArrayRepeat { dst: u32, value: u32 },
     #[serde(rename = "variant.make")]
     VariantMake {
         dst: u32,
@@ -664,6 +663,7 @@ pub enum OpKind {
         dst: u32,
         scope: u32,
         members: Vec<u32>,
+        member_slot_bytes: String,
     },
     #[serde(rename = "task.spawn")]
     TaskSpawn { dst: u32, scope: u32, callable: u32 },
@@ -716,6 +716,12 @@ pub enum TimestampBinaryOp {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema, TS)]
 #[serde(tag = "op")]
 pub enum TermKind {
+    #[serde(rename = "materialize")]
+    Materialize {
+        operation: Box<OpV1>,
+        normal: Edge,
+        failure: Edge,
+    },
     #[serde(rename = "return")]
     Return { value: Option<BoundaryOperand> },
     #[serde(rename = "goto")]
@@ -1031,6 +1037,9 @@ pub enum ActorOperation {
 pub struct OpV1 {
     #[serde(flatten)]
     pub kind: OpKind,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[ts(optional, as = "Option<_>")]
+    pub definitions: Vec<ValueDef>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub own: Option<Own>,
     #[serde(default, skip_serializing_if = "Option::is_none")]

@@ -10,4 +10,3 @@ kind = "check"
 code = "UseAfterMove"
 line = 35
 column = 30
-message = "use of `holder` after its field `holder.sock` was moved out"

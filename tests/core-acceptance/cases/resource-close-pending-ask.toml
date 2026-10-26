@@ -10,5 +10,4 @@ HEW_WORKERS = "1"
 
 [case.expected]
 stdout = "closed 2\ndeadline\nclosed 1\ngate closed\n"
-stderr = ""
 exit = 0

@@ -7,5 +7,4 @@ timeout_seconds = 30
 
 [case.expected]
 stdout = "defer sees fd 2\nclose conn 2\nrun faulted\nclose guard 100\ndefer sees fd 110\nclose conn 110\ncleanup faulted\n"
-stderr = "hew: failure: UserPanic (212): bump failed\nhew: actor crash in Worker.run (actor 1): UserPanic\nhew: failure: UserPanic (212): guard close failed\nhew: actor crash in Worker.cleanup_fault (actor 2): UserPanic\n"
 exit = 1

@@ -1017,6 +1017,30 @@ impl Checker {
                                     (builtin, method.name.to_string()),
                                     (impl_params, sig.clone()),
                                 );
+                                if method.name.name.as_str() == "expect"
+                                    && id.trait_bound.is_none()
+                                    && (compiler_owned
+                                        || matches!(import_spec, StdlibBarePublication::Prelude))
+                                {
+                                    let item = match builtin {
+                                        BuiltinType::Option => crate::LangItem::OptionExpect,
+                                        BuiltinType::Result => crate::LangItem::ResultExpect,
+                                        _ => unreachable!("canonical optional receiver"),
+                                    };
+                                    if let Some(method_id) =
+                                        self.impl_method_declaration_id(type_name, method, None)
+                                    {
+                                        self.lang_items.insert(
+                                            item.key(),
+                                            crate::LangItemBinding {
+                                                trait_name: type_name.clone(),
+                                                trait_id: None,
+                                                method_name: Some(method.name.to_string()),
+                                                method_id: Some(method_id),
+                                            },
+                                        );
+                                    }
+                                }
                             }
                         }
                         // Also register on qualified type name

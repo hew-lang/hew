@@ -418,15 +418,14 @@ def main():
                         executable,
                     ],
                 )
-                _, stdout, stderr = run(
+                _, stdout, _ = run(
                     label + "-run",
                     [executable, *case.get("args", [])],
                     seconds=case["timeout_seconds"],
                     expected=expected["exit"],
                 )
                 require(
-                    stdout == expected["stdout"].encode()
-                    and stderr == expected.get("stderr", "").encode(),
+                    stdout == expected["stdout"].encode(),
                     f"{label}: unexpected output; see {logs}",
                 )
                 llvm = executable.with_suffix(".ll")

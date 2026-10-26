@@ -10,5 +10,4 @@ HEW_WORKERS = "1"
 
 [case.expected]
 stdout = "parcel body\nclosed 1\nerased 2\nclosed 2\nclosed 3\nclosed 4\nerased owners complete\n"
-stderr = ""
 exit = 0

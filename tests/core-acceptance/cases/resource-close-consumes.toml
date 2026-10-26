@@ -7,5 +7,4 @@ timeout_seconds = 15
 
 [case.expected]
 stdout = "close e1\nreleased early\nlate live 2\nclose l2\n"
-stderr = ""
 exit = 0

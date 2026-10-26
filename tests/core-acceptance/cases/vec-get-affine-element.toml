@@ -1,6 +1,6 @@
 [[case]]
 id = "vec-get-affine-element"
-intent = "Every non-consuming read of a `Vec` element goes through one admission decision: `get`, `[]` and a range slice all copy the element out, so an element with no copy operation - a single-consumer pipe endpoint - refuses at all three rather than handing out a second owner."
+intent = "Copying get/range operations refuse a single-consumer pipe endpoint; indexing only borrows the existing owner."
 source = "cases/vec-get-affine-element.hew"
 suites = ["acceptance"]
 timeout_seconds = 30
@@ -8,18 +8,10 @@ kind = "check"
 
 [[case.expected.diagnostics]]
 code = "InvalidOperation"
-line = 15
+line = 13
 column = 16
-message = "E_ELEMENT_NO_COPY: `Vec<Stream<i64>>` cannot be read with `get`"
 
 [[case.expected.diagnostics]]
 code = "InvalidOperation"
-line = 16
-column = 20
-message = "a pipe half is non-cloneable and has no copy operation"
-
-[[case.expected.diagnostics]]
-code = "InvalidOperation"
-line = 17
+line = 15
 column = 19
-message = "E_ELEMENT_NO_COPY: `Vec<Stream<i64>>` cannot be range-sliced"

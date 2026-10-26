@@ -10,4 +10,3 @@ kind = "reject"
 code = "InvalidOperation"
 line = 20
 column = 24
-message = "a select arm source never writes `await` - the `select` is what waits; delete `await`"

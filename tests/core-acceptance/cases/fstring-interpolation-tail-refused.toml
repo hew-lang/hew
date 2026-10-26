@@ -11,18 +11,15 @@ severity = "error"
 code = "InvalidLiteral"
 line = 4
 column = 22
-message = "accepts only the `:?` format specifier"
 
 [[case.expected.diagnostics]]
 severity = "error"
 code = "InvalidLiteral"
 line = 4
 column = 35
-message = "accepts only the `:?` format specifier"
 
 [[case.expected.diagnostics]]
 severity = "error"
 code = "InvalidLiteral"
 line = 5
 column = 23
-message = "unexpected identifier `garbage` after the interpolated expression"

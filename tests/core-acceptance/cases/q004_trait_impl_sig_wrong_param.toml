@@ -10,4 +10,3 @@ kind = "reject"
 code = "TraitImplSignatureMismatch"
 line = 23
 column = 8
-message = "impl method `Bag.at` parameter `key` has type `string` but trait `Indexer` requires `i32`"

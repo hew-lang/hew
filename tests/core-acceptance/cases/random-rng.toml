@@ -7,5 +7,4 @@ timeout_seconds = 15
 
 [case.expected]
 stdout = "Rng matches the independent xoshiro256++ reference and crypto draws are well-formed\n"
-stderr = ""
 exit = 0

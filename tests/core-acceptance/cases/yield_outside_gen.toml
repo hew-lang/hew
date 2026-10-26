@@ -10,4 +10,3 @@ kind = "reject"
 code = "YieldOutsideGenerator"
 line = 4
 column = 5
-message = "`yield` outside of generator function"

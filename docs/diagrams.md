@@ -201,7 +201,7 @@ block-beta
         string["string.rs"]
         vec["vec.rs"]
         hashmap["hashmap.rs"]
-        arena["arena.rs<br/>Per-actor heap"]
+        arena["arena.rs<br/>Scratch storage"]
     end
 
     L5 --> L4

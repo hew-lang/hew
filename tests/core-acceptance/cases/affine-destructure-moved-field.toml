@@ -11,4 +11,3 @@ code = "UseAfterMove"
 severity = "error"
 line = 23
 column = 13
-message = "use of moved place `booking.ticket`"

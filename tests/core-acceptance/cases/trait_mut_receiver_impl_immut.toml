@@ -10,4 +10,3 @@ kind = "reject"
 code = "TraitImplSignatureMismatch"
 line = 11
 column = 8
-message = "impl method `Box.bump` declares `self` (by-value receiver) but trait `MutOnly` requires `var self` (mutable receiver)"

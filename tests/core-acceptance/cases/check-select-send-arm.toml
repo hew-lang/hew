@@ -11,4 +11,3 @@ severity = "error"
 code = "InvalidOperation"
 line = 7
 column = 21
-message = "a select arm source is a task, an actor call, or a stream receive"

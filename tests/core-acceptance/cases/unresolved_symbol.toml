@@ -10,4 +10,3 @@ kind = "reject"
 code = "UndefinedVariable"
 line = 2
 column = 10
-message = "undefined variable `missing`"

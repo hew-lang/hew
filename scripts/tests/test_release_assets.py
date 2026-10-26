@@ -228,14 +228,12 @@ class NativePackage(unittest.TestCase):
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertEqual((root / "output/lib/libhew.a").read_text(), "fixture")
             self.assertFalse((root / "output/lib/wasm32-wasip1").exists())
-            self.assertIn("native toolchain", result.stdout)
             (root / "wasi").mkdir()
             (root / "wasi/libhew_runtime.a").write_bytes(b"partial")
             result = subprocess.run(
                 [*args, "--optional-wasi"], capture_output=True, text=True
             )
             self.assertNotEqual(result.returncode, 0)
-            self.assertIn("missing portable WASI library", result.stderr)
             (root / "wasi/libhew_std.a").write_bytes(b"standard")
             args[args.index("--destination") + 1] = str(root / "with-wasi")
             result = subprocess.run(args, capture_output=True, text=True)

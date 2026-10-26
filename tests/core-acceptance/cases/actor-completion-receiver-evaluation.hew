@@ -1,0 +1,30 @@
+actor Calculator {
+    let base: i64;
+
+    receive fn compute(value: i64) -> i64 {
+        base + value
+    }
+}
+
+type Holder {
+    target: Calculator;
+}
+
+fn main() {
+    let first = spawn Calculator { base: 1 };
+    let second = spawn Calculator { base: 100 };
+    var target = first;
+    println(target.compute(7).expect("stable receiver"));
+    println(target.compute({
+        target = second;
+        7
+    }).expect("receiver snapshot"));
+    println(target.compute(7).expect("replaced receiver"));
+    let holder = Holder { target: first };
+    println(holder.target.compute(7).expect("projected receiver"));
+    println(policy(first, on_full: .Reject).compute(7).expect("policy receiver"));
+    stop(first);
+    stop(second);
+    stopped(first);
+    stopped(second);
+}

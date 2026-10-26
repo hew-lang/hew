@@ -542,6 +542,59 @@ fn lower_source(source: &str) -> SemModule {
 }
 
 #[test]
+fn completion_receivers_borrow_stable_places_and_snapshot_effectful_arguments() {
+    for (argument, expected) in [
+        ("7", OwnKind::Guaranteed),
+        ("{ target = second; 7 }", OwnKind::Owned),
+    ] {
+        let semantic = lower_source(&format!(
+            "actor Counter {{ let base: i64; receive fn add(n: i64) -> i64 {{ base + n }} }}
+             fn main() {{
+                 let first = spawn Counter {{ base: 1 }};
+                 let second = spawn Counter {{ base: 100 }};
+                 var target = first;
+                 let result = target.add({argument});
+             }}"
+        ));
+        assert!(hew_sir::verify_module(&semantic).is_empty());
+        let (function, target) = semantic
+            .functions
+            .iter()
+            .find_map(|function| {
+                function.blocks.iter().find_map(|block| {
+                    if let hew_sir::SemTerminator::Suspend {
+                        kind: hew_sir::SuspendKind::Ask { .. },
+                        inputs,
+                        ..
+                    } = &block.terminator
+                    {
+                        Some((function, inputs[0].operand.value))
+                    } else {
+                        None
+                    }
+                })
+            })
+            .expect("completion call");
+        let owner = function
+            .blocks
+            .iter()
+            .flat_map(|block| &block.ops)
+            .flat_map(|operation| &operation.results)
+            .map(|value| (value.id, value.own))
+            .chain(
+                function
+                    .blocks
+                    .iter()
+                    .flat_map(|block| &block.args)
+                    .map(|value| (value.value, value.own)),
+            )
+            .find(|(value, _)| *value == target)
+            .expect("target definition");
+        assert_eq!(owner.1, expected, "argument: {argument}");
+    }
+}
+
+#[test]
 fn frame_roots_follow_live_owners_at_loop_and_child_suspension() {
     for pause in [
         "for i in 0..2 { assert(held.len() > i); }",

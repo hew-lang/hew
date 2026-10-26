@@ -702,6 +702,7 @@ impl Builder<'_, '_> {
     fn prepare_actor_request(
         &mut self,
         expression: &HirExpr,
+        mut loans: Option<&mut Vec<ValueId>>,
     ) -> Result<ActorRequestPreparation, SirLoweringError> {
         let HirExprKind::ActorAsk {
             receiver,
@@ -760,7 +761,14 @@ impl Builder<'_, '_> {
             .map(|param| param.ty.clone())
             .collect::<Vec<_>>();
         let mut inputs = Vec::new();
-        let (target, _) = self.delivery_target(receiver)?;
+        // Ordinary completion keeps a receiver loan until it settles. A select
+        // stores its addressed target beyond preparation, so it takes a snapshot.
+        let (target, _) = if let Some(loans) = loans.as_deref_mut() {
+            let stable_tail = args.iter().all(Self::stable_argument_read);
+            self.borrow_delivery_target(receiver, loans, stable_tail)?
+        } else {
+            self.delivery_target(receiver)?
+        };
         if !self.is_open() {
             return Ok(ActorRequestPreparation::Diverged(target));
         }
@@ -772,7 +780,13 @@ impl Builder<'_, '_> {
             operand: Operand { value: target },
             decision: crate::BoundaryDecision::Borrow,
         });
-        let values = match self.lower_actor_payload(args, &parameters, evaluation_order)? {
+        let loan_depth = self.argument_receiver_loans.len();
+        if let Some(loans) = loans.as_deref() {
+            self.argument_receiver_loans.extend_from_slice(loans);
+        }
+        let payload = self.lower_actor_payload(args, &parameters, evaluation_order);
+        self.argument_receiver_loans.truncate(loan_depth);
+        let values = match payload? {
             std::ops::ControlFlow::Continue(values) => values,
             std::ops::ControlFlow::Break(value) => {
                 return Ok(ActorRequestPreparation::Diverged(value));
@@ -805,7 +819,8 @@ impl Builder<'_, '_> {
         expression: &HirExpr,
     ) -> Result<ValueId, SirLoweringError> {
         let retained = self.owned_live.clone();
-        let value = match self.prepare_actor_request(expression)? {
+        let mut loans = Vec::new();
+        let value = match self.prepare_actor_request(expression, Some(&mut loans))? {
             ActorRequestPreparation::Diverged(value) => Ok(value),
             ActorRequestPreparation::Ready {
                 protocol,
@@ -818,6 +833,7 @@ impl Builder<'_, '_> {
                 policy,
                 false,
                 inputs,
+                &loans,
             ),
         }?;
         self.destroy_actor_temporaries(retained, Some(value))?;
@@ -851,7 +867,7 @@ impl Builder<'_, '_> {
         }
         let ActorRequestPreparation::Ready {
             protocol, inputs, ..
-        } = self.prepare_actor_request(expression)?
+        } = self.prepare_actor_request(expression, None)?
         else {
             return Ok(None);
         };
@@ -888,6 +904,7 @@ impl Builder<'_, '_> {
         policy: hew_types::actor_delivery::SendPolicy,
         sealed: bool,
         inputs: Vec<crate::BoundaryOperand>,
+        loans: &[ValueId],
     ) -> Result<ValueId, SirLoweringError> {
         let output = self.ty(&expression.ty);
         self.service.require_type_facts(&output)?;
@@ -929,10 +946,12 @@ impl Builder<'_, '_> {
         for cleanup in [cancel, unwind] {
             self.restore_control_state(&saved);
             self.current = cleanup;
+            self.end_call_loans(loans)?;
             self.finish_fault_exit()?;
         }
         self.restore_control_state(&saved);
         self.current = resumed;
+        self.end_call_loans(loans)?;
         if own == OwnKind::Owned {
             self.owned_live.insert(value, output);
         }
@@ -1697,6 +1716,39 @@ impl Builder<'_, '_> {
         Ok((target, target_ty))
     }
 
+    fn borrow_delivery_target(
+        &mut self,
+        receiver: &HirExpr,
+        loans: &mut Vec<ValueId>,
+        stable_tail: bool,
+    ) -> Result<(ValueId, ResolvedTy), SirLoweringError> {
+        let ty = self.ty(&receiver.ty);
+        let value = self
+            .lower_call_read(receiver, loans, stable_tail, true)?
+            .value;
+        if hew_types::actor_delivery::sender_parts(&ty.to_ty()).is_none()
+            && hew_types::actor_delivery::policy_view_parts(&ty.to_ty()).is_none()
+        {
+            return Ok((value, ty));
+        }
+        let ResolvedTy::Named { args, .. } = &ty else {
+            unreachable!()
+        };
+        let target_ty = args[0].clone();
+        let shape = self.service.require_aggregate_shape(&ty)?;
+        let target = self.emit_typed(
+            crate::Provenance::Site(receiver.site),
+            &target_ty,
+            crate::SemOpKind::AggregateProjectBorrow {
+                shape,
+                aggregate: Operand { value },
+                field: 0,
+            },
+        )?;
+        loans.push(target);
+        Ok((target, target_ty))
+    }
+
     pub(super) fn lower_actor_message(
         &mut self,
         expression: &HirExpr,
@@ -2020,7 +2072,7 @@ impl Builder<'_, '_> {
                         decision: crate::BoundaryDecision::Move,
                     },
                 ];
-                self.finish_actor_ask(expression, actor, message, *policy, true, inputs)
+                self.finish_actor_ask(expression, actor, message, *policy, true, inputs, &[])
             }
             ActorDeliveryCall::TimerView { after, overdue, .. } => {
                 let (target, _) = self.delivery_target(receiver)?;

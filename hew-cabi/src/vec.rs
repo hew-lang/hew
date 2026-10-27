@@ -50,15 +50,18 @@ pub enum ElemKind {
 #[repr(C)]
 #[derive(Debug)]
 pub struct HewVec {
-    /// Pointer to the backing buffer. Runtime allocations store an atomic
-    /// pointer-sized reference count in the word immediately before this
-    /// address. The data preserves the element descriptor's alignment.
+    /// Pointer to the first live element. The allocation begins `front`
+    /// elements before this address, with an atomic pointer-sized reference
+    /// count immediately before that allocation start. Both addresses preserve
+    /// the element descriptor's alignment.
     /// Plain elements without clone or release callbacks may share a buffer;
     /// mutation must make it unique first. Each vector owns a separate header.
     pub data: *mut u8,
     /// Number of elements currently stored.
     pub len: usize,
-    /// Allocated capacity (in elements).
+    /// Consumed prefix of the allocation, in elements. `data` starts after it.
+    pub front: usize,
+    /// Allocated capacity, including the consumed prefix, in elements.
     pub cap: usize,
     /// Size of each element in bytes.
     pub elem_size: usize,
@@ -105,24 +108,26 @@ pub type HewVecEqThunk = unsafe extern "C" fn(a: *const c_void, b: *const c_void
 const _: () = {
     assert!(core::mem::offset_of!(HewVec, data) == 0);
     assert!(core::mem::offset_of!(HewVec, len) == 8);
-    assert!(core::mem::offset_of!(HewVec, cap) == 16);
-    assert!(core::mem::offset_of!(HewVec, elem_size) == 24);
-    assert!(core::mem::offset_of!(HewVec, elem_kind) == 32);
-    assert!(core::mem::offset_of!(HewVec, layout) == 40);
-    assert!(core::mem::offset_of!(HewVec, layout_storage) == 48);
-    assert!(core::mem::size_of::<HewVec>() == 112);
+    assert!(core::mem::offset_of!(HewVec, front) == 16);
+    assert!(core::mem::offset_of!(HewVec, cap) == 24);
+    assert!(core::mem::offset_of!(HewVec, elem_size) == 32);
+    assert!(core::mem::offset_of!(HewVec, elem_kind) == 40);
+    assert!(core::mem::offset_of!(HewVec, layout) == 48);
+    assert!(core::mem::offset_of!(HewVec, layout_storage) == 56);
+    assert!(core::mem::size_of::<HewVec>() == 120);
 };
 
 #[cfg(target_pointer_width = "32")]
 const _: () = {
     assert!(core::mem::offset_of!(HewVec, data) == 0);
     assert!(core::mem::offset_of!(HewVec, len) == 4);
-    assert!(core::mem::offset_of!(HewVec, cap) == 8);
-    assert!(core::mem::offset_of!(HewVec, elem_size) == 12);
-    assert!(core::mem::offset_of!(HewVec, elem_kind) == 16);
-    assert!(core::mem::offset_of!(HewVec, layout) == 20);
-    assert!(core::mem::offset_of!(HewVec, layout_storage) == 24);
-    assert!(core::mem::size_of::<HewVec>() == 56);
+    assert!(core::mem::offset_of!(HewVec, front) == 8);
+    assert!(core::mem::offset_of!(HewVec, cap) == 12);
+    assert!(core::mem::offset_of!(HewVec, elem_size) == 16);
+    assert!(core::mem::offset_of!(HewVec, elem_kind) == 20);
+    assert!(core::mem::offset_of!(HewVec, layout) == 24);
+    assert!(core::mem::offset_of!(HewVec, layout_storage) == 28);
+    assert!(core::mem::size_of::<HewVec>() == 60);
 };
 
 // ---------------------------------------------------------------------------

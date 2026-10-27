@@ -12,6 +12,9 @@ pub(super) fn vector_header_type<'ctx>(
         &[
             ctx.ptr_type(AddressSpace::default()).into(),
             ctx.ptr_sized_int_type(target, None).into(),
+            ctx.ptr_sized_int_type(target, None).into(),
+            ctx.ptr_sized_int_type(target, None).into(),
+            ctx.ptr_sized_int_type(target, None).into(),
         ],
         false,
     )
@@ -34,13 +37,48 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
             )
             .llvm_ctx("load vector buffer before mutation")?
             .into_pointer_value();
-        // SAFETY: the runtime buffer ABI places its atomic reference count one target
-        // word before data. Bounds checking has proved a nonempty live buffer.
+        let header = vector_header_type(self.ctx, &target);
+        let front_slot = self
+            .builder
+            .build_struct_gep(header, vector, 2, "vector.front.slot")
+            .llvm_ctx("address consumed vector prefix")?;
+        let width_slot = self
+            .builder
+            .build_struct_gep(header, vector, 4, "vector.width.slot")
+            .llvm_ctx("address vector element width")?;
+        let front = self
+            .builder
+            .build_load(word, front_slot, "vector.front")
+            .llvm_ctx("load consumed vector prefix")?
+            .into_int_value();
+        let width = self
+            .builder
+            .build_load(word, width_slot, "vector.width")
+            .llvm_ctx("load vector element width")?
+            .into_int_value();
+        let prefix = self
+            .builder
+            .build_int_mul(front, width, "vector.prefix.bytes")
+            .llvm_ctx("size consumed vector prefix")?;
+        let offset = self
+            .builder
+            .build_int_add(
+                prefix,
+                word.const_int(u64::from(word.get_bit_width() / 8), false),
+                "vector.owner.offset",
+            )
+            .llvm_ctx("include vector reference count")?;
+        let negative = self
+            .builder
+            .build_int_neg(offset, "vector.owner.backwards")
+            .llvm_ctx("locate vector allocation owner")?;
+        // SAFETY: the reference count precedes the allocation's original data,
+        // while the live data pointer follows the consumed prefix.
         let owner = unsafe {
             self.builder.build_in_bounds_gep(
-                word,
+                self.ctx.i8_type(),
                 data,
-                &[word.const_all_ones()],
+                &[negative],
                 "vector.buffer.owner",
             )
         }
@@ -861,7 +899,31 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                     if matches!(operation, PhysicalVectorOp::TakeFirst { .. }) {
                         self.emit_vector_index_guard(vector, index, failure()?, false)?;
                     }
+                    // Taking the front changes only this vector's header.
+                    // Shared buffers contain callback-free plain elements;
+                    // their bytes need detaching only for a middle removal.
+                    let ready = self.ctx.append_basic_block(self.value, "vector.take.ready");
+                    let detach = self
+                        .ctx
+                        .append_basic_block(self.value, "vector.take.detach");
+                    let front = self
+                        .builder
+                        .build_int_compare(
+                            IntPredicate::EQ,
+                            index,
+                            i64_ty.const_zero(),
+                            "vector.take.front",
+                        )
+                        .llvm_ctx("test header-only vector removal")?;
+                    self.builder
+                        .build_conditional_branch(front, ready, detach)
+                        .llvm_ctx("select vector removal storage")?;
+                    self.builder.position_at_end(detach);
                     self.make_vector_unique(vector, failure()?)?;
+                    self.builder
+                        .build_unconditional_branch(ready)
+                        .llvm_ctx("continue vector removal")?;
+                    self.builder.position_at_end(ready);
                     let function = get_or_declare_external(
                         self.llvm,
                         "hew_vec_remove_at_owned",

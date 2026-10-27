@@ -35,6 +35,8 @@ export interface VmVector {
   items: VmValue[];
   storage?: VectorStorage;
   offset?: number;
+  /** Normal Vec live length; absent for materialized vectors and byte views. */
+  length?: number;
   closed?: boolean;
   prepareMutation?: (
     capacity: number,
@@ -232,6 +234,28 @@ export function cloneValue(value: VmValue): VmValue {
   }
 }
 
+/** The live range is header metadata; the backing keeps its full capacity. */
+export function vectorLength(value: VmVector): number {
+  return value.length ?? value.items.length;
+}
+
+export function vectorElement(
+  value: VmVector,
+  index: number,
+): VmValue | undefined {
+  if (index < 0 || index >= vectorLength(value)) return undefined;
+  return value.items[
+    (value.length === undefined ? 0 : (value.offset ?? 0)) + index
+  ];
+}
+
+/** Materialize a view only for operations that already traverse its elements. */
+export function vectorItems(value: VmVector): VmValue[] {
+  return value.length === undefined
+    ? value.items
+    : value.items.slice(value.offset ?? 0, (value.offset ?? 0) + value.length);
+}
+
 export function vectorStorage(value: VmVector): VectorStorage {
   if (value.closed) throw new Error("cannot read a released vector");
   return (value.storage ??= {
@@ -263,11 +287,11 @@ function cloneVector(value: VmVector): VmVector {
   const storage = vectorStorage(value);
   // Native Vec clones discard an empty receiver's spare capacity. Bytes
   // clones retain their allocation even when the visible length is zero.
-  if (storage.bytes || (storage.shareOnCopy && value.items.length !== 0)) {
+  if (storage.bytes || (storage.shareOnCopy && vectorLength(value) !== 0)) {
     storage.owners++;
     return { ...value, storage, closed: false };
   }
-  const items = value.items.map(cloneValue);
+  const items = vectorItems(value).map(cloneValue);
   return {
     kind: "vector",
     elementType: value.elementType,
@@ -297,13 +321,13 @@ export function sliceByteVector(
 /** Establish uniqueness before any mutation, preserving native capacity rules. */
 export function mutableVector(
   value: VmVector,
-  needed = value.items.length,
+  needed = vectorLength(value),
   appended?: readonly VmValue[],
 ): VmVector {
   let storage = vectorStorage(value);
   let capacity = storage.capacity;
   const detached = storage.owners !== 1;
-  if (detached && storage.bytes) capacity = Math.max(value.items.length, 16);
+  if (detached && storage.bytes) capacity = Math.max(vectorLength(value), 16);
   if (needed > capacity) {
     if (storage.bytes)
       capacity = Math.max(Math.min(capacity * 2, 0xffffffff), needed, 16);
@@ -320,12 +344,21 @@ export function mutableVector(
   if (detached || capacity !== storage.capacity || appended?.length)
     value.prepareMutation?.(capacity, detached, appended);
   if (detached) {
-    const items = value.items.map(cloneValue);
+    const items = vectorItems(value).map(cloneValue);
     storage.owners--;
     storage = { ...storage, items, capacity, owners: 1 };
     value.storage = storage;
     value.items = items;
     value.offset = 0;
+    value.length = undefined;
+  } else if (!storage.bytes && value.length !== undefined) {
+    // A sole remaining view can reclaim its consumed prefix without
+    // changing the language allocation's identity or retained capacity.
+    if ((value.offset ?? 0) === 0) value.items.length = value.length;
+    else value.items = vectorItems(value);
+    storage.items = value.items;
+    value.offset = 0;
+    value.length = undefined;
   }
   if (capacity !== storage.capacity) {
     storage.capacity = capacity;
@@ -336,12 +369,41 @@ export function mutableVector(
   return value;
 }
 
-/** Consume one handle; only the last backing owner releases its elements. */
+/** Move a normal Vec end in constant time, retaining its allocation identity. */
+export function takeVectorEnd(value: VmVector, back: boolean): VmValue {
+  const storage = vectorStorage(value);
+  const length = vectorLength(value);
+  if (length === 0) throw new Error("cannot take an empty vector end");
+  if (storage.bytes) {
+    mutableVector(value);
+    return (back ? value.items.pop() : value.items.shift())!;
+  }
+  const start = value.offset ?? 0;
+  const index = start + (back ? length - 1 : 0);
+  const item = value.items[index]!;
+  // Managed/affine storage is unique. Clear its moved slot immediately so
+  // the backing cannot retain payload references after ownership transfers.
+  // Shared callback-free plain bytes remain readable by other headers.
+  if (storage.owners === 1) value.items[index] = UNIT;
+  else if (!storage.shareOnCopy)
+    throw new Error("managed vector unexpectedly shares its backing");
+  value.offset = start + (back ? 0 : 1);
+  value.length = length - 1;
+  return item;
+}
+
+/** Consume one handle; only its remaining live elements need destruction. */
 export function releaseVector(value: VmVector): VmValue[] {
   if (value.closed) return [];
   const storage = vectorStorage(value);
+  const items =
+    --storage.owners === 0
+      ? storage.bytes
+        ? storage.items
+        : vectorItems(value)
+      : [];
   value.closed = true;
-  return --storage.owners === 0 ? storage.items : [];
+  return items;
 }
 
 export function clearByteVector(value: VmVector): VmVector {
@@ -501,7 +563,7 @@ export function renderStdout(value: VmValue): string {
         payload: value.payload.map((field) => toJsonValue(field)),
       });
     case "vector":
-      return canonicalJson(value.items.map((item) => toJsonValue(item)));
+      return canonicalJson(vectorItems(value).map((item) => toJsonValue(item)));
     case "rc":
       return "Rc";
     case "weak":
@@ -560,7 +622,7 @@ export function toJsonValue(value: VmValue): JsonValue {
         payload: value.payload.map(toJsonValue),
       };
     case "vector":
-      return value.items.map(toJsonValue);
+      return vectorItems(value).map(toJsonValue);
     case "rc":
       return "Rc";
     case "weak":

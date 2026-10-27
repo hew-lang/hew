@@ -1,4 +1,4 @@
-import { renderStdout, type VmValue } from "../values.js";
+import { vectorItems, renderStdout, type VmValue } from "../values.js";
 
 import type { StructuralRecipe } from "./package.js";
 export type { StructuralRecipe } from "./package.js";
@@ -68,7 +68,9 @@ export class StructuralRenderer {
           this.sequence(
             "[",
             "]",
-            value.items.map((value) => [{ value, recipe: recipe.members[0]! }]),
+            vectorItems(value).map((value) => [
+              { value, recipe: recipe.members[0]! },
+            ]),
           );
           break;
         }

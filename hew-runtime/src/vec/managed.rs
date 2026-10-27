@@ -2,9 +2,9 @@
 //! implementation remains the authority for allocation and element semantics.
 
 use super::{
-    buffer_owner, capacity_for, hew_vec_append, hew_vec_get_clone, hew_vec_make_unique,
-    hew_vec_set_owned_move_release, hew_vec_set_owned_release, owned_descriptor, HewValueLayout,
-    HewVec,
+    buffer_owner, buffer_start, capacity_for, hew_vec_append, hew_vec_get_clone,
+    hew_vec_make_unique, hew_vec_set_owned_move_release, hew_vec_set_owned_release,
+    owned_descriptor, HewValueLayout, HewVec,
 };
 use crate::coro_state::HewCoroState;
 use crate::owned_value_budget::{
@@ -36,7 +36,7 @@ unsafe fn prepare_backing(
             None
         } else {
             Some(ManagedStorage {
-                identity: (*vector).data as usize,
+                identity: buffer_start(vector) as usize,
                 bytes: width
                     .checked_mul((*vector).cap as u64)
                     .ok_or(HEAP_EXCEEDED)?,
@@ -84,13 +84,13 @@ pub unsafe extern "C" fn hew_vec_make_unique_managed(
             hew_vec_make_unique(vector);
             return 0;
         };
-        let backing = match prepare_backing(&owner, vector, (*vector).cap) {
+        let backing = match prepare_backing(&owner, vector, (*vector).len) {
             Ok(backing) => backing,
             Err(status) => return status,
         };
         hew_vec_make_unique(vector);
         if let Some(backing) = backing {
-            backing.commit((*vector).data as usize);
+            backing.commit(buffer_start(vector) as usize);
         }
         0
     }
@@ -114,7 +114,7 @@ pub unsafe extern "C" fn hew_vec_set_managed(
         let owner = invocation_owner(invocation);
         let layout = *owned_descriptor(vector);
         let backing = match &owner {
-            Some(owner) => match prepare_backing(owner, vector, (*vector).cap) {
+            Some(owner) => match prepare_backing(owner, vector, (*vector).len) {
                 Ok(backing) => backing,
                 Err(status) => return status,
             },
@@ -133,7 +133,7 @@ pub unsafe extern "C" fn hew_vec_set_managed(
             hew_vec_set_owned_release(vector, index, data)
         };
         if let Some(backing) = backing {
-            backing.commit((*vector).data as usize);
+            backing.commit(buffer_start(vector) as usize);
         }
         if let Some(element) = element {
             if element
@@ -189,7 +189,7 @@ pub unsafe extern "C" fn hew_vec_append_managed(
         let first = (*destination).len;
         hew_vec_append(destination, source);
         if let Some(backing) = backing {
-            backing.commit((*destination).data as usize);
+            backing.commit(buffer_start(destination) as usize);
         }
         for (index, permit) in elements.into_iter().enumerate() {
             if permit

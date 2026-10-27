@@ -6,11 +6,29 @@ actor Buffer {
     var values: Vec<i64>;
 
     receive fn fill_four() -> i64 {
-        for i in 0..4 { values.push(i); }
+        for i in 0..4 {
+            values.push(i);
+        }
         values.len()
     }
 
-    receive fn retained() -> i64 { values.len() }
+    receive fn retained() -> i64 {
+        values.len()
+    }
+
+    // Removing the front retains the original backing charge across calls.
+    // Refilling the consumed slot may relocate storage but must not charge it
+    // twice or forget it when the actor state is visited again.
+    receive fn take_front() -> i64 {
+        assert(values.remove(0) == 0);
+        values.set(1, 20);
+        values[0]
+    }
+
+    receive fn refill() -> i64 {
+        values.push(4);
+        values.len()
+    }
 
     receive fn grow_fifth() -> i64 {
         values.push(4);
@@ -24,6 +42,8 @@ fn main() -> i64 {
         .Ok(n) => println(n),
         .Err(_) => return 1,
     }
+    assert(buffer.take_front().expect("front removal") == 1);
+    assert(buffer.refill().expect("reuse retained capacity") == 4);
     match buffer.retained() {
         .Ok(n) => println(n),
         .Err(_) => return 2,

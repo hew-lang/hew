@@ -1,4 +1,4 @@
-import { UNIT, type VmValue } from "../values.js";
+import { vectorItems, UNIT, type VmValue } from "../values.js";
 
 /** Authority comes only from the embedding host, never from a path or cwd. */
 export interface DirectoryRoots {
@@ -331,7 +331,7 @@ export class BrowserDirectories {
         const data = args[1];
         if (data?.kind !== "vector")
           throw new Error("file write requires bytes");
-        const bytes = Uint8Array.from(data.items, (value) => {
+        const bytes = Uint8Array.from(vectorItems(data), (value) => {
           if (value.kind !== "i64")
             throw new Error("file write requires byte elements");
           return Number(value.value);

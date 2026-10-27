@@ -2,6 +2,9 @@ import type { RuntimeContinuation } from "./shims.js";
 import {
   UNIT,
   mutableVector,
+  vectorItems,
+  vectorLength,
+  vectorElement,
   cloneValue,
   compareUtf8,
   type VmValue,
@@ -156,14 +159,15 @@ export function* selectedValue(
   if (plan.ty === "bytes") {
     if (left.kind !== "vector")
       throw new Error("bytes capability has no bytes");
-    const bytes = left.items.map((value) => Number(bits(value, "u8")));
+    const bytes = vectorItems(left).map((value) => Number(bits(value, "u8")));
     if (hash) return integer(bytesHash(bytes));
     if (equality)
       return boolean(
         right?.kind === "vector" &&
-          bytes.length === right.items.length &&
+          bytes.length === vectorLength(right) &&
           bytes.every(
-            (value, i) => BigInt(value) === bits(right.items[i]!, "u8"),
+            (value, i) =>
+              BigInt(value) === bits(vectorElement(right, i)!, "u8"),
           ),
       );
     throw new Error("bytes ordering is outside the checked capability domain");
@@ -198,7 +202,7 @@ export function* selectedValue(
     others = right.payload;
     selections = plan.variants?.[left.tag] ?? [];
   } else if (left.kind === "vector") {
-    fields = left.items;
+    fields = vectorItems(left);
     if (hash) {
       const elementSelection = components[0];
       if (!elementSelection)
@@ -208,9 +212,12 @@ export function* selectedValue(
       selections = fields.map(() => elementSelection);
       vectorHashLength = fields.length;
     } else {
-      if (right?.kind !== "vector" || left.items.length !== right.items.length)
+      if (
+        right?.kind !== "vector" ||
+        vectorLength(left) !== vectorLength(right)
+      )
         return boolean(false);
-      others = right.items;
+      others = vectorItems(right);
       selections = fields.map(() => components[0]!);
     }
   } else {
@@ -413,10 +420,10 @@ export function* collectionOperation(
       if (index?.kind !== "i64")
         throw new Error("vector mutation has no index");
       const at = Number(index.value);
-      if (at < 0 || at >= receiver.items.length)
+      if (at < 0 || at >= vectorLength(receiver))
         throw new ShimFault(
           "vector_bounds",
-          `vector index ${at} out of bounds for length ${receiver.items.length}`,
+          `vector index ${at} out of bounds for length ${vectorLength(receiver)}`,
         );
       mutableVector(receiver);
       const old = receiver.items[at]!;
@@ -424,7 +431,7 @@ export function* collectionOperation(
       yield { kind: "release", value: old, retainedType: elementType };
       return receiver;
     }
-    for (const item of receiver.items) {
+    for (const item of vectorItems(receiver)) {
       const equal = yield* selectedValue(pkg, callbacks[0]!, [item, args[1]!]);
       if (equal.kind !== "bool")
         throw new Error("Eq returned a non-boolean value");

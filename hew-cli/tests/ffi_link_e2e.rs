@@ -980,6 +980,56 @@ fn main() {
     );
 }
 
+/// A native package rebuilt against hew-cabi reads the same live vector
+/// header that the linked runtime mutates, including after front removal.
+#[test]
+fn ffi_link_hew_cabi_vector_live_range() {
+    require_codegen();
+    let dir = tempdir();
+    let Some(lib) = build_cabi_wrapper_staticlib(
+        dir.path(),
+        "cabivec",
+        r#"use hew_cabi::vec::*;
+
+extern "C" {
+    fn hew_vec_remove_at_i64(value: *mut HewVec, index: i64) -> i64;
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn cabivec_probe() -> i64 {
+    let values = hew_vec_new_i64();
+    for item in [10, 20, 30, 40] { hew_vec_push_i64(values, item); }
+    assert_eq!(hew_vec_remove_at_i64(values, 0), 10);
+    assert_eq!((*values).len, 3);
+    assert_eq!((*values).elem_size, std::mem::size_of::<i64>());
+    assert_eq!((*values).data.cast::<i64>().read(), 20);
+    let saved = hew_vec_clone(values);
+    hew_vec_push_i64(values, 50);
+    assert_eq!((*values).len, 4);
+    assert_eq!((*saved).data.cast::<i64>().read(), 20);
+    let result = hew_vec_pop_i64(values) + hew_vec_remove_at_i64(saved, 0);
+    hew_vec_free(values);
+    hew_vec_free(saved);
+    result
+}
+"#,
+    ) else {
+        return;
+    };
+    let prog = write_program(
+        dir.path(),
+        "cabivec_prog",
+        r#"extern "C" { fn cabivec_probe() -> i64; }
+fn main() { assert(unsafe { cabivec_probe() } == 70); }
+"#,
+    );
+    let binary = hew_testutil::compiled_binary_path(dir.path(), "cabivec_out");
+    let link = hew_build(Some(&lib), &prog, &binary, dir.path());
+    assert!(link.status.success(), "{}", describe_output(&link));
+    let run = run_bounded_command(Command::new(&binary), "run cabivec_out");
+    assert!(run.status.success(), "{}", describe_output(&run));
+}
+
 /// A mis-shaped module that re-defines a runtime-owned `#[no_mangle]` symbol
 /// (`hew_stream_last_error`) must FAIL the link with the actionable fail-closed
 /// diagnostic — not silently produce a broken binary.

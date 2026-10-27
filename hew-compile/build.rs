@@ -6,6 +6,7 @@ fn main() {
     // Cargo-provided build-script variables cannot be rerun inputs. Make
     // exports the checkout identity so shared targets refresh their watches.
     println!("cargo:rerun-if-env-changed=HEW_BUILD_SOURCE_ROOT");
+    println!("cargo:rerun-if-env-changed=HEW_BUILD_GIT_DIRTY");
     let manifest_dir = std::env::var_os("CARGO_MANIFEST_DIR")
         .map(PathBuf::from)
         .expect("Cargo supplies the package directory");
@@ -102,19 +103,8 @@ fn git_watch_paths(repo_dir: &Path) -> Vec<PathBuf> {
             .map(|path| repo_dir.join(path))
     };
     let mut paths = Vec::new();
-    // Dirty identity depends on staged changes and tracked working-tree files,
-    // including non-Rust inputs outside Cargo's normal dependency graph.
-    if let Some(index) = git_path("index").filter(|path| path.exists()) {
-        paths.push(index);
-    }
-    if let Ok(files) = git_stdout(repo_dir, &["ls-files", "-z"]) {
-        paths.extend(
-            files
-                .split('\0')
-                .filter(|file| !file.is_empty())
-                .map(|file| repo_dir.join(file)),
-        );
-    }
+    // Make supplies working-tree changes through HEW_BUILD_GIT_DIRTY. These
+    // paths track commits and release tags independently of that dirty state.
     if let Some(head) = git_path("HEAD").filter(|path| path.exists()) {
         paths.push(head);
     }

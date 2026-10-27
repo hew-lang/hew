@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import shutil
 from pathlib import Path
@@ -45,8 +46,11 @@ class SharedTargetVersion(unittest.TestCase):
             )
             (crate / "marker").write_text("first\n")
             (first / "notes").write_text("unchanged\n")
+            (first / "build-source-identity.mk").write_bytes(
+                (ROOT / "scripts/build-source-identity.mk").read_bytes()
+            )
             (first / "Makefile").write_text(
-                'export HEW_BUILD_SOURCE_ROOT := $(CURDIR)\nprobe:\n\tcargo run --quiet --offline --manifest-path hew-cli/Cargo.toml --target-dir "$(PROBE_TARGET)"\n'
+                'include build-source-identity.mk\nprobe:\n\tcargo run --quiet --offline $(PROBE_CARGO_FLAGS) --manifest-path hew-cli/Cargo.toml --target-dir "$(PROBE_TARGET)"\n'
             )
 
             def run(directory: Path, *arguments: str) -> str:
@@ -100,7 +104,7 @@ class SharedTargetVersion(unittest.TestCase):
                     ns=(stat.st_atime_ns, stat.st_mtime_ns),
                 )
 
-            def probe(directory: Path, expected: str) -> None:
+            def probe(directory: Path, expected: str, *, reused: bool = False) -> None:
                 observed = run(
                     directory,
                     "make",
@@ -108,7 +112,21 @@ class SharedTargetVersion(unittest.TestCase):
                     "-s",
                     "probe",
                     f"PROBE_TARGET={base / 'shared target'}",
+                    *(["PROBE_CARGO_FLAGS=--message-format=json"] if reused else []),
                 )
+                if reused:
+                    lines = observed.splitlines()
+                    artifacts = [
+                        message
+                        for line in lines[:-1]
+                        if (message := json.loads(line))["reason"]
+                        == "compiler-artifact"
+                    ]
+                    self.assertTrue(artifacts, observed)
+                    self.assertTrue(
+                        all(artifact["fresh"] for artifact in artifacts), observed
+                    )
+                    observed = lines[-1]
                 self.assertEqual(observed, expected)
                 print(f"PASS {directory.name}: {observed}", flush=True)
 
@@ -135,9 +153,14 @@ class SharedTargetVersion(unittest.TestCase):
             probe(second, f"0.6.1-dev.1+{second_sha}|second")
             (second / "notes").write_text("tracked non-Rust edit\n")
             probe(second, f"0.6.1-dev.1+{second_sha}.dirty|second")
+            (second / "notes").unlink()
+            probe(second, f"0.6.1-dev.1+{second_sha}.dirty|second")
+            probe(second, f"0.6.1-dev.1+{second_sha}.dirty|second", reused=True)
+            (second / "notes").write_text("unchanged\n")
+            probe(second, f"0.6.1-dev.1+{second_sha}|second")
+            probe(second, f"0.6.1-dev.1+{second_sha}|second", reused=True)
             probe(first, "0.6.1|first")
 
-            (second / "notes").write_text("unchanged\n")
             git(second, "tag", "--no-sign", "toolchain-preview")
             git(second, "tag", "--no-sign", "v05-int-tip")
 
@@ -209,8 +232,11 @@ class SharedTargetVersion(unittest.TestCase):
                 'include!(concat!(env!("OUT_DIR"), "/std_sources.rs"));\n'
                 'fn main() { for (path, text) in STD_SOURCES { println!("{path}|{}", text.trim()); } }\n'
             )
+            (first / "build-source-identity.mk").write_bytes(
+                (ROOT / "scripts/build-source-identity.mk").read_bytes()
+            )
             (first / "Makefile").write_text(
-                "export HEW_BUILD_SOURCE_ROOT := $(CURDIR)\nprobe:\n"
+                "include build-source-identity.mk\nprobe:\n"
                 '\tcargo run --quiet --offline --manifest-path hew-wasm/Cargo.toml --target-dir "$(PROBE_TARGET)"\n'
             )
             (first / "std/first.hew").write_text("first source\n")

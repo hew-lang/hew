@@ -137,12 +137,6 @@ published Hew release; nothing here pushes into them.
   on its own build and deployment pipeline. Browser package updates do not
   require a new server image to be published by the compiler release workflow.
 
-## v0.6.0-rc3 native candidate scope
-
-`v0.6.0-rc3` qualified native compiler distributions after the SIR/MIR
-cutover under a scoped test ratchet and named exclusions; it shipped on
-2026-09-17 (`d1557a957`), and later candidates follow the platform policy below.
-
 ## Platform policy
 
 Linux x86_64 and aarch64 are the primary platforms. macOS on Apple silicon is

@@ -1,6 +1,6 @@
-//! Per-actor-pair QUIC mesh transport for the Hew node mesh.
+//! QUIC mesh transport for the Hew node mesh.
 //!
-//! Actor-pair stream multiplexing uses Quinn's native per-stream scheduling.
+//! Quinn provides independently scheduled streams on each connection.
 //!
 //! # Architecture
 //!
@@ -9,26 +9,19 @@
 //!     └─ Mesh (one per node)
 //!         ├─ Mesh::connect(peer_addr)
 //!         │   └─ PeerConn (one per remote peer)
-//!         │       ├─ open_stream(LaneKind)  → Quinn open_bi() per actor-pair
+//!         │       ├─ open_stream(LaneKind)  → Quinn open_bi()
 //!         │       ├─ accept_stream()         → Quinn accept_bi()
 //!         │       ├─ send_datagram(bytes)    → Quinn unreliable datagram
 //!         │       └─ register_datagram_handler(fn) → spawned recv loop
 //!         └─ Mesh::accept() → PeerConn
 //! ```
 //!
-//! # HOL-blocker mitigation
+//! # Streams
 //!
-//! `quic_mesh` opens a fresh Quinn bidirectional stream for each `(peer,
-//! lane_kind)` actor-pair. Streams are cached in a bounded LRU-like structure
-//! per [`PeerConn`]. Each stream is independently flow-controlled by Quinn, so
-//! a slow consumer on one stream cannot stall siblings.
-//!
-//! A3 will build the production stream-multiplex scheduler on top of this
-//! skeleton. Native-M3 A5 added per-peer connection-cache LRU eviction
-//! (`QuicMeshTransport::store_conn`) and bounded the inbound accept queue to
-//! `MAX_CONNS` via `sync_channel`; the per-stream cache (`PeerConn`) still uses
-//! the bounded `VecDeque` approximation and will be swapped to a proper LRU
-//! crate once the stream-mux concurrency model stabilises.
+//! `PeerConn` can open independently flow-controlled Quinn streams. Opened
+//! stream handles are returned to the caller; the per-stream cache is not
+//! populated and its capacity does not currently limit open streams. The
+//! transport adapter maintains a separate bounded peer-connection cache.
 //!
 //! # mTLS peer authentication
 //!
@@ -43,18 +36,11 @@
 //! the installed authority before publishing a peer session. Standalone
 //! [`MeshTls`] users retain their explicit SPKI allowlist.
 //!
-//! # Wire framing
-//!
-//! Payloads are passed as raw `&[u8]` / [`bytes::Bytes`] so W4 can plug a
-//! CBOR codec (ciborium) without changing call signatures. The skeleton makes
-//! no framing assumptions; length-prefix or chunk shape is W1's decision.
-//!
 //! # Transport selector
 //!
-//! This module exposes a [`crate::transport`] vtable adapter selected by
-//! `HEW_TRANSPORT=quic-mesh`. The adapter uses a single control stream for the
-//! existing byte-stream connection-manager contract; W4/A5 move actor payloads
-//! onto typed per-actor-pair lanes once the CBOR envelope cut-over lands.
+//! The [`crate::transport`] adapter is selected by `HEW_TRANSPORT=quic-mesh`.
+//! It uses a control stream for the byte-stream connection-manager contract.
+//! Payload encoding is handled by the caller.
 //!
 
 use std::collections::{HashSet, VecDeque};
@@ -86,27 +72,21 @@ static ADDRESS_RESOLVER_SLOT: OnceLock<Arc<Semaphore>> = OnceLock::new();
 
 /// Identifies the lane kind for a per-actor-pair stream.
 ///
-/// A thin `u32` wrapper; W1 defines the encoding and value space. A4/W4 map
-/// Hew actor-pair identifiers onto lane kinds. The skeleton treats all values
-/// as opaque so no commit is required if the encoding changes.
+/// An opaque `u32` value carried in the stream lane header.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct LaneKind(pub u32);
 
 /// Identifies an open bidirectional stream on a [`PeerConn`].
 ///
 /// Issued by [`PeerConn::open_stream`] and [`PeerConn::accept_stream`].
-/// Opaque to callers; A3/A5 will use Quinn's internal stream ID once the
-/// stream-mux layer stabilises.
+/// Opaque to callers and assigned locally by `PeerConn`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct StreamId(pub u64);
 
-/// A cached open bidirectional stream.
-///
-/// Fields are populated by A5's stream-mux layer. The skeleton declares the
-/// struct so the cache type is well-founded; A5 will add accessor methods.
+/// Reserved stream-cache entry. Opened streams are currently caller-owned.
 #[allow(
     dead_code,
-    reason = "skeleton struct: fields consumed by A5 stream-mux layer"
+    reason = "reserved stream-cache entry is not populated yet"
 )]
 struct StreamHandle {
     id: StreamId,
@@ -778,7 +758,6 @@ pub(crate) struct QuicMeshTransport {
     /// least-recently-used slot for eviction so new inbound/outbound
     /// connections can always be admitted instead of being silently dropped.
     ///
-    /// Native-M3 A5: bounded peer-connection cache with LRU eviction.
     slot_lru: std::sync::Mutex<SlotLru>,
     incoming_rx: std::sync::Mutex<Option<std::sync::mpsc::Receiver<QuicMeshConn>>>,
     /// Optional TLS override injected by tests or trusted callers before
@@ -786,7 +765,7 @@ pub(crate) struct QuicMeshTransport {
     /// value instead of generating a fresh self-signed certificate that
     /// allow-lists only the local node's SPKI. This is the bridge by which
     /// two in-process nodes can mutually pin each other's SPKIs for
-    /// cross-node integration tests until the A3 Noise→X.509 bridge lands.
+    /// cross-node integration tests.
     tls_override: std::sync::Mutex<Option<MeshTls>>,
     /// Cached per-transport TLS identity. Populated lazily on first
     /// [`Self::ensure_identity`] call so callers can fetch the local SPKI via
@@ -1634,9 +1613,7 @@ pub unsafe extern "C" fn hew_transport_quic_mesh_free(transport: *mut HewTranspo
 /// consume in place of the default self-signed-only allowlist.
 ///
 /// This is the bridge by which two in-process nodes (e.g. in integration
-/// tests) can mutually pin each other's SPKIs before the A3 Noise → X.509
-/// allowlist bridge lands. Once A3 lands, callers should populate the
-/// global allowlist instead.
+/// tests) can mutually pin each other's SPKIs.
 ///
 /// Returns `0` on success, `-1` if the transport pointer is null or is not
 /// a `quic_mesh` transport.
@@ -1881,10 +1858,7 @@ impl QuicMesh {
     /// an ephemeral port). `tls` supplies the node's certificate and the set
     /// of allowed peer SPKIs.
     ///
-    /// The current Tokio runtime is used (caller must be inside a Tokio
-    /// context). A4 will supply an `Arc<Runtime>` in `MeshConfig` when it
-    /// wires the vtable selector; for now `tokio::runtime::Handle::current()`
-    /// is sufficient for the skeleton.
+    /// The caller must be inside a Tokio runtime context.
     ///
     /// # Errors
     ///
@@ -2103,15 +2077,10 @@ impl Mesh {
 // PeerConn — per-peer connection
 // ---------------------------------------------------------------------------
 
-/// Configurable cap on the number of cached open streams per [`PeerConn`].
+/// Capacity reserved for a future per-peer stream cache.
 ///
-/// When the cache is full and a new stream is needed, the oldest entry is
-/// evicted (LRU approximation via `VecDeque`). A5 replaces this with a proper
-/// `lru::LruCache` once the concurrency model stabilises.
-///
-/// NATIVE-TODO(A5): replace bounded `VecDeque` with `lru::LruCache<(ActorId, LaneKind), StreamHandle>`.
-/// Current behaviour: cap=16, evict-oldest. A5 adds actor-pair keying and
-/// configurable cap per Q150/A159.
+/// Open streams are currently returned to callers and are not inserted into
+/// the cache, so this value does not enforce an open-stream limit.
 #[derive(Debug, Clone, Copy)]
 pub struct StreamCap(pub usize);
 
@@ -2123,18 +2092,12 @@ impl Default for StreamCap {
 
 /// Handle to an established QUIC connection to a single remote peer.
 ///
-/// Maintains a bounded cache of open streams (one per actor-pair / lane kind)
-/// to avoid the overhead of stream setup for frequent short messages. Each
-/// cached stream is independently flow-controlled by Quinn — a slow consumer
-/// on stream A does NOT stall stream B.
+/// Opened stream handles belong to the caller; this type does not reuse them.
 pub struct PeerConn {
     conn: quinn::Connection,
-    /// Bounded stream cache (`VecDeque`-backed LRU approximation).
-    /// Protected by a tokio `Mutex` so concurrent `open_stream` calls don't race.
-    ///
-    /// Key: (`StreamId`, `LaneKind`). Eviction: front of deque (oldest).
+    /// Reserved for stream tracking; `open_stream` does not populate it.
     stream_cache: Mutex<VecDeque<StreamHandle>>,
-    /// Maximum number of cached streams.
+    /// Reserved cache capacity.
     cap: usize,
     /// Next stream ID (monotonically increasing; not the Quinn stream ID).
     next_stream_id: std::sync::atomic::AtomicU64,
@@ -2182,8 +2145,8 @@ impl PeerConn {
     /// or receives on sibling streams (no HOL blocking at the application
     /// level).
     ///
-    /// The stream is added to the bounded cache. If the cache is full, the
-    /// oldest stream is evicted (half-closed and dropped).
+    /// The caller owns the stream handles. They are not cached or limited by
+    /// `StreamCap`.
     ///
     /// Returns a `(StreamId, SendStream, RecvStream)` tuple. Callers hold the
     /// `SendStream`/`RecvStream` for the duration of the actor exchange; the
@@ -2211,7 +2174,7 @@ impl PeerConn {
                 .fetch_add(1, std::sync::atomic::Ordering::Relaxed),
         );
 
-        // Cache the stream (evict oldest if at cap).
+        // No handles are inserted; this only removes an existing cache entry.
         {
             let mut cache = self.stream_cache.lock().await;
             if cache.len() >= self.cap {
@@ -2219,16 +2182,7 @@ impl PeerConn {
                 // dropped here; Quinn half-closes the stream as a result.
                 cache.pop_front();
             }
-            // We don't push the stream into the cache here — callers own the
-            // SendStream/RecvStream. The cache stores an entry to track the
-            // slot so A5 can look up streams by (ActorId, LaneKind).
-            // For the skeleton, we push a record with placeholder send/recv
-            // and note that A5 will restructure this.
-            //
-            // NATIVE-TODO(A5): restructure cache to separate metadata
-            // (StreamId, LaneKind) from the stream handles, which should live
-            // in a per-actor-pair slot. The current skeleton gives callers
-            // direct ownership of the handles.
+            // Callers own the handles; no cache entry is inserted yet.
             let _ = (id, lane_kind); // recorded via return value
         }
 
@@ -2238,14 +2192,8 @@ impl PeerConn {
     /// Accept an inbound bidirectional stream from the peer.
     ///
     /// Returns `(StreamId, LaneKind, SendStream, RecvStream)`. The
-    /// `LaneKind` is read from the first 4 bytes of the stream (big-endian
-    /// u32). This convention is provisional and will be formalised by W1's
-    /// CDDL schema.
-    ///
-    /// Coordination note for W1: the lane-kind wire encoding is currently a
-    /// 4-byte big-endian u32 prefix written by the initiator. If W1's control
-    /// frame schema uses a different encoding (e.g. CBOR map), update this
-    /// read and the corresponding write in `open_stream_with_lane_header`.
+    /// `LaneKind` is read from the first four bytes of the stream as a
+    /// big-endian `u32`, matching `open_stream_with_lane_header`.
     ///
     /// # Errors
     ///
@@ -2280,8 +2228,6 @@ impl PeerConn {
     ///
     /// This is the counterpart to [`accept_stream`]: the acceptor reads the
     /// 4-byte big-endian `lane_kind` before handing back the recv handle.
-    ///
-    /// Coordination note for W1: same framing convention as `accept_stream`.
     ///
     /// # Errors
     ///
@@ -2349,11 +2295,7 @@ impl PeerConn {
     /// task. Only one handler may be registered per [`PeerConn`]; a second
     /// call replaces the first (the previous task is aborted).
     ///
-    /// This is the datagram callback surface per A161. C2 (SWIM gossip) will
-    /// register the cluster's gossip handler against this surface.
-    ///
-    /// The handler receives raw [`Bytes`]; W4 plugs CBOR decoding inside the
-    /// handler without changing this registration signature.
+    /// The handler receives raw [`Bytes`]; decoding belongs to the caller.
     pub async fn register_datagram_handler<F>(&self, handler: F)
     where
         F: Fn(Bytes) + Send + Sync + 'static,

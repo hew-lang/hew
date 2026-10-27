@@ -691,19 +691,10 @@ pub enum Expr {
         field_labels: Vec<FieldLabel>,
     },
 
-    /// Generator block expression: `gen { yield ...; }`.
+    /// Lazy generator block expression: `gen { yield ...; }`.
     ///
-    /// The block body is lazy — it does not run until `Iterator::next` is
-    /// called on the produced generator value.  Each `yield expr;` statement
-    /// emits one `Some(expr)` from `next`.  When the body falls off the end
-    /// the generator transitions to `Ended`; a subsequent `next` call traps.
-    ///
-    /// HIR/MIR/codegen lowering is not yet implemented.  The type checker
-    /// infers `Generator<Yield, Return>` from yield-expression sites and the
-    /// body's tail expression; an actor-receive boundary emits
-    /// `E_GENBLOCK_IN_ACTOR_RECEIVE` early.  HIR lowering remains fail-closed
-    /// on `GenBlock` (no coroutine state-machine variant yet), surfacing a real
-    /// diagnostic instead of silently fabricating a value.
+    /// The checker infers its yield and return types; lowering carries the
+    /// body and its captures into the generator representation.
     GenBlock {
         body: Block,
     },

@@ -1,8 +1,8 @@
 //! Hew runtime: actor struct definition and state constants.
 //!
 //! Defines the [`HewActor`] struct layout for C ABI compatibility and the
-//! actor state machine constants. The full actor API (spawn, send, activate)
-//! will be implemented in a future iteration.
+//! actor state machine constants. Actor operations are implemented in this
+//! module and its submodules.
 #![allow(
     unsafe_op_in_unsafe_fn,
     reason = "FFI entry-point module; SAFETY documented at fn signature."

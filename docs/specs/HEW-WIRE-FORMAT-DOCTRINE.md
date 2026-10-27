@@ -7,7 +7,7 @@
 > needs. This document fixes which format is canonical at which layer, what
 > is implemented today, and what is honestly still a stub.
 
-This doctrine governs five orthogonal questions:
+This doctrine governs four orthogonal questions:
 
 1. What format does the Hew runtime use for **inter-process** (actor-to-actor,
    cross-node) messaging?
@@ -16,8 +16,6 @@ This doctrine governs five orthogonal questions:
 3. What is Hew's posture toward **consumer interop** tooling (OpenAPI,
    `proto-gen`, schema-first generators)?
 4. What patterns are explicitly **anti-doctrine** — known footguns to avoid?
-5. What **stubs and migration commitments** exist today, and when do they
-   become obsolete?
 
 Each section names what is real, cites the source-of-truth files, and marks
 unimplemented surfaces with `WHEN-obsolete` + `WHAT-real-solution-looks-like`
@@ -380,8 +378,7 @@ etc.).
 Decoders must reject unknown `version` values. Best-effort parsing of
 an unrecognised version silently couples the receiver to whatever
 the next sender happens to send and defeats the schema-validation posture
-the CBOR substrate buys. The version-rejection enforcement landed in
-`bb8826e7` precisely to close this hole.
+the CBOR substrate provides.
 
 ### A6. Do not introduce new `unwrap_or_default` / silent-`None` paths in encoders
 
@@ -391,56 +388,8 @@ failure. The existing `EnvelopeFrame::encode` surface is the template.
 
 ---
 
-## 5. Stubs and migration commitments
-
-### S1. `std.encoding.wire` — legacy HBF helpers
-
-**State: DELETED.** The `encode_header`, `decode_header`, and
-`validate_header` helpers in `std/encoding/wire/wire.hew` were removed.
-The CBOR envelope substrate (`hew-runtime/src/envelope.rs`, commit
-`04bfb422`) was the replacement; the migration is complete. JSON, YAML and
-TOML now expose format-specific owning values with automatic cleanup and
-checked accessors. The former shared resource-shaped `CanonicalValueMethods`
-trait has been removed. MessagePack converts between its bytes and JSON text.
-
-### S2. Cap'n Proto stub crate
-
-**State today.** Not yet present in the workspace. The decision to defer
-Cap'n Proto in favour of CBOR + CDDL is recorded in §1.
-
-> **WHEN-obsolete:** when a future effort lands a placeholder
-> `hew-codegen-capnproto` (or equivalently named) stub crate that
-> compiles to a build-time error stating "Cap'n Proto codegen is not
-> implemented; use the CBOR envelope substrate for inter-process
-> messaging." The stub's purpose is to make the deliberate non-choice
-> legible in the workspace, not to deliver Cap'n Proto support.
->
-> **WHAT-real-solution-looks-like:** the stub crate exists with a
-> `// JUSTIFIED: documented non-choice per HEW-WIRE-FORMAT-DOCTRINE §5`
-> marker, a one-line `unimplemented!()` in its public surface, and a
-> CI gate that fails if anything in the workspace builds against it.
-> If a future effort decides to actually implement Cap'n Proto codegen,
-> deleting that gate is the explicit signal that the doctrine is
-> being revised.
-
-### S3. Consumer-interop tooling
-
-Already covered in §3 with `WHEN-obsolete` / `WHAT-real-solution-looks-like`
-markers. Restated here so the migration-and-stubs section is a single
-checklist.
-
-### S4. Module renames / deprecations
-
-No stdlib `std.encoding.*` modules are scheduled for rename or
-deprecation in v0.5. The list in §2 is the v0.5 surface. S1 is closed
-(HBF helpers deleted); no other module has an active obsolescence trigger.
-
----
-
 ## Cross-references
 
-- Runtime substrate provenance: commits `63a486d6`, `bb8826e7`, `04bfb422`
-  on `v05-integration`; HBF helpers deleted when the CBOR-native wire format replaced HBF.
 - CDDL frame schema: [`hew-runtime/schemas/envelope.cddl`](../../hew-runtime/schemas/envelope.cddl).
 - CDDL body schema: [`hew-runtime/schemas/wire-body.cddl`](../../hew-runtime/schemas/wire-body.cddl).
 - Runtime envelope types: [`hew-runtime/src/envelope.rs`](../../hew-runtime/src/envelope.rs).

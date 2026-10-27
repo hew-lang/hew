@@ -82,22 +82,10 @@ impl Checker {
         self.errors.extend(new_errors);
     }
 
-    /// Decide whether a user-defined `Ty::Named` record type is admissible for
-    /// `clone`. Returns one of the following outcomes:
-    ///
-    /// - `Admissible`: the record can be cloned end-to-end via the synthesised
-    ///   `__hew_record_clone_inplace_<R>` thunk.
-    /// - `OpaqueField { opaque_name }`: the record (or a transitively reachable
-    ///   field) contains an opaque handle — fail closed with a named diagnostic.
-    /// - `GenericRecord`: the record has un-substituted generic type parameters
-    ///   — not yet supported; fail closed with an NYI diagnostic.
-    /// - `EnumClone { enum_name }`: the receiver is a user enum — clone via the
-    ///   enum twin `__hew_enum_clone_inplace_<E>` (tag-dispatched payload clone).
-    /// - `NotARecord`: not a clone-eligible named type (actor, machine, etc.) —
-    ///   fall through to `UndefinedMethod`.
-    ///
-    /// LESSONS: `checker-authority` (sole authority for clone admissibility),
-    /// `unclonable-leaf-fails-closed-transitively`, `admit-only-what-you-lower`.
+    /// Classify whether a named receiver can be cloned, including structural
+    /// checks for affine resources, opaque members and missing clone capability.
+    /// Generic parameters with a `Clone` bound defer the concrete path until
+    /// instantiation.
     pub(in crate::check) fn record_clone_admissibility(
         &self,
         head: crate::TypeHead,

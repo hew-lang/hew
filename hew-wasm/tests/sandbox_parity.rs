@@ -26,10 +26,6 @@ const PARITY_CASES: &[ParityCase] = &[
         source_rel: "tests/core-acceptance/cases/actor-same-type-completion-chain.hew",
     },
     ParityCase {
-        test_name: "actor_same_type_completion_ring",
-        source_rel: "tests/core-acceptance/cases/actor-same-type-completion-ring.hew",
-    },
-    ParityCase {
         test_name: "indexed_field_write_in_place",
         source_rel: "tests/core-acceptance/cases/indexed-field-write-in-place.hew",
     },
@@ -1088,6 +1084,36 @@ fn playground_sources_match_native() {
 
 #[cfg(unix)]
 #[test]
+fn actor_completion_ring_reports_failure_without_deadlocking() {
+    set_test_hewpath();
+    ensure_native_toolchain();
+    ensure_parity_runner_built();
+    let case = ParityCase {
+        test_name: "actor_same_type_completion_ring",
+        source_rel: "tests/core-acceptance/cases/actor-same-type-completion-ring.hew",
+    };
+    let (native, sandbox) =
+        case_outputs_with_inputs(&case, "", hew_compile::SourceSet::in_memory());
+    // Either handler can close the cycle. Its peer may observe the trap or
+    // the actor's subsequent death; the caller must still finish with a fault.
+    for output in [&native, &sandbox] {
+        assert_eq!(output.status.code(), Some(1), "{}", describe_output(output));
+        assert_eq!(
+            output.stdout,
+            b"trapped\ndone\n",
+            "{}",
+            describe_output(output)
+        );
+        assert!(
+            String::from_utf8_lossy(&output.stderr).contains("UserPanic (212)"),
+            "{}",
+            describe_output(output)
+        );
+    }
+}
+
+#[cfg(unix)]
+#[test]
 fn authored_error_sources_match_native() {
     set_test_hewpath();
     ensure_native_toolchain();
@@ -1800,6 +1826,19 @@ fn package_coherence_native_and_vm() {
 
 #[cfg(unix)]
 fn assert_case_with_inputs(case: &ParityCase, stdin: &str, inputs: hew_compile::SourceSet) {
+    let (native, sandbox) = case_outputs_with_inputs(case, stdin, inputs);
+    assert_exit_code_parity(case, &native, &sandbox);
+    assert_stdout_parity(case, &native, &sandbox);
+    assert_stderr_parity(case, &native, &sandbox);
+    assert_exact_stdout(case, &native);
+}
+
+#[cfg(unix)]
+fn case_outputs_with_inputs(
+    case: &ParityCase,
+    stdin: &str,
+    inputs: hew_compile::SourceSet,
+) -> (Output, Output) {
     let repo_root = repo_root();
     let source_path = repo_root.join(case.source_rel);
     let environment = fixture_environment(&source_path);
@@ -1835,10 +1874,7 @@ fn assert_case_with_inputs(case: &ParityCase, stdin: &str, inputs: hew_compile::
     std::fs::write(&stdin_path, stdin)
         .unwrap_or_else(|err| panic!("failed to write stdin for {}: {err}", case.test_name));
     let sandbox = run_sandbox(&bytecode_path, &stdin_path, &environment);
-    assert_exit_code_parity(case, &native, &sandbox);
-    assert_stdout_parity(case, &native, &sandbox);
-    assert_stderr_parity(case, &native, &sandbox);
-    assert_exact_stdout(case, &native);
+    (native, sandbox)
 }
 
 #[cfg(unix)]

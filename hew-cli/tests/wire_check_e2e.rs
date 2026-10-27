@@ -69,6 +69,14 @@ fn wire_check_ignores_unencoded_fields() {
     assert_wire_check_ok(current, baseline);
 }
 
+#[test]
+fn wire_check_compares_resolved_aliases() {
+    assert_wire_check_ok(
+        "type Counter = i64; #[wire] type Message { value: Counter @1; }",
+        "#[wire] type Message { value: i64 @1; }",
+    );
+}
+
 // ── (1) Struct field-number reuse / duplicate tags ──────────────────────────
 
 /// Duplicate @N within the same wire type in current schema is an error.
@@ -83,7 +91,7 @@ fn wire_check_rejects_duplicate_field_tag_in_current() {
     assert!(!output.status.success());
     let stderr = String::from_utf8_lossy(&output.stderr);
     // Parser catches duplicate @N in #[wire] struct before schema comparison.
-    assert!(stderr.contains("@1"), "{stderr}",);
+    assert!(stderr.contains("@1"), "{stderr}");
 }
 
 /// Duplicate @N in the baseline schema is also an error.
@@ -98,7 +106,7 @@ fn wire_check_rejects_duplicate_field_tag_in_baseline() {
     assert!(!output.status.success());
     let stderr = String::from_utf8_lossy(&output.stderr);
     // Parser catches duplicate @N in #[wire] struct before schema comparison.
-    assert!(stderr.contains("@1"), "{stderr}",);
+    assert!(stderr.contains("@1"), "{stderr}");
 }
 
 /// Reusing a field number for a *different* field name across schema versions
@@ -112,7 +120,7 @@ fn wire_check_rejects_field_tag_reassigned_to_different_name() {
 
     assert_incompatible(&output);
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("Msg"), "{stderr}",);
+    assert!(stderr.contains("Msg"), "{stderr}");
 }
 
 // ── (2) Field type / repeatedness changes ────────────────────────────────────
@@ -127,7 +135,7 @@ fn wire_check_rejects_field_type_change() {
 
     assert_incompatible(&output);
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("Msg.count @1"), "{stderr}",);
+    assert!(stderr.contains("Msg.count @1"), "{stderr}");
 }
 
 /// Changing a scalar field to a collection is a breaking change.
@@ -140,7 +148,7 @@ fn wire_check_rejects_scalar_to_collection_change() {
 
     assert_incompatible(&output);
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("Msg.tags @1"), "{stderr}",);
+    assert!(stderr.contains("Msg.tags @1"), "{stderr}");
 }
 
 // ── (3) Presence changes ────────────────────────────────────────────────────
@@ -156,7 +164,7 @@ fn wire_check_rejects_optional_to_required() {
 
     assert_incompatible(&output);
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("Msg.name @1"), "{stderr}",);
+    assert!(stderr.contains("Msg.name @1"), "{stderr}");
 }
 
 #[test]
@@ -168,7 +176,7 @@ fn wire_check_rejects_required_to_optional() {
 
     assert_incompatible(&output);
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("Msg.name @1"), "{stderr}",);
+    assert!(stderr.contains("Msg.name @1"), "{stderr}");
 }
 
 // ── (4) New required field warning and `since` suppression ──────────────────
@@ -188,7 +196,7 @@ fn wire_check_warns_new_required_field_without_since() {
         String::from_utf8_lossy(&output.stderr),
     );
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("Msg.extra @2"), "{stderr}",);
+    assert!(stderr.contains("Msg.extra @2"), "{stderr}");
 }
 
 /// A new required field marked `since N` where N > baseline version suppresses
@@ -224,7 +232,7 @@ fn wire_check_warns_deprecated_field() {
         String::from_utf8_lossy(&output.stderr),
     );
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("Msg.legacy @2"), "{stderr}",);
+    assert!(stderr.contains("Msg.legacy @2"), "{stderr}");
 }
 
 // ── (6) Removed required field rejection ─────────────────────────────────────
@@ -239,7 +247,7 @@ fn wire_check_rejects_removed_required_field() {
 
     assert_incompatible(&output);
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("Msg.count @2"), "{stderr}",);
+    assert!(stderr.contains("Msg.count @2"), "{stderr}");
 }
 
 /// Dropping an *optional* field from a wire struct is safe; no error or warning.
@@ -250,7 +258,7 @@ fn wire_check_allows_removed_optional_field() {
         "#[wire]\ntype Msg {\n    id: string @1;\n    tag: Option<string> @2 optional;\n}\n",
     );
     assert!(
-        !stderr.contains("removed"),
+        !stderr.lines().any(|line| line.starts_with("warning:")),
         "removing an optional field should produce no diagnostic:\n{stderr}",
     );
 }
@@ -272,7 +280,7 @@ fn wire_check_warns_version_advance() {
         String::from_utf8_lossy(&output.stderr),
     );
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("warning:"), "{stderr}",);
+    assert!(stderr.contains("warning:"), "{stderr}");
 }
 
 // ── (8) Invalid `min_version` rejection ──────────────────────────────────────
@@ -288,7 +296,7 @@ fn wire_check_rejects_min_version_higher_than_baseline() {
 
     assert_incompatible(&output);
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("Config"), "{stderr}",);
+    assert!(stderr.contains("Config"), "{stderr}");
 }
 
 // ── (9) Declaration kind changes and duplicate declarations ───────────────────
@@ -303,7 +311,7 @@ fn wire_check_rejects_struct_to_enum_kind_change() {
 
     assert_incompatible(&output);
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("Msg"), "{stderr}",);
+    assert!(stderr.contains("Msg"), "{stderr}");
 }
 
 /// Duplicate wire declarations in the current schema are an error.
@@ -331,7 +339,7 @@ fn wire_check_rejects_removed_wire_struct_with_required_fields() {
 
     assert_incompatible(&output);
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("Request.id @1"), "{stderr}",);
+    assert!(stderr.contains("Request.id @1"), "{stderr}");
 }
 
 /// Removing a wire enum is always a breaking change.
@@ -344,7 +352,7 @@ fn wire_check_rejects_removed_wire_enum() {
 
     assert_incompatible(&output);
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("Status"), "{stderr}",);
+    assert!(stderr.contains("Status"), "{stderr}");
 }
 
 // ── (11) Enum variant addition / removal and payload changes ──────────────────
@@ -360,7 +368,7 @@ fn wire_check_rejects_wire_enum_variant_addition() {
 
     assert_incompatible(&output);
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("Status.Pending"), "{stderr}",);
+    assert!(stderr.contains("Status.Pending"), "{stderr}");
 }
 
 /// Removing a variant from a wire enum is a breaking change.
@@ -373,7 +381,7 @@ fn wire_check_rejects_wire_enum_variant_removal() {
 
     assert_incompatible(&output);
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("Status.Inactive"), "{stderr}",);
+    assert!(stderr.contains("Status.Inactive"), "{stderr}");
 }
 
 /// Changing a unit variant to a tuple variant (payload shape change) is breaking.
@@ -386,7 +394,7 @@ fn wire_check_rejects_wire_enum_variant_payload_shape_change() {
 
     assert_incompatible(&output);
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("Cmd.Start"), "{stderr}",);
+    assert!(stderr.contains("Cmd.Start"), "{stderr}");
 }
 
 /// Changing the type of a tuple variant payload item is a breaking change.
@@ -399,7 +407,7 @@ fn wire_check_rejects_wire_enum_tuple_payload_type_change() {
 
     assert_incompatible(&output);
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("Cmd.Data"), "{stderr}",);
+    assert!(stderr.contains("Cmd.Data"), "{stderr}");
 }
 
 /// Changing a field type inside a struct variant is a breaking change.
@@ -412,7 +420,7 @@ fn wire_check_rejects_wire_enum_struct_variant_field_type_change() {
 
     assert_incompatible(&output);
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("Cmd.Data"), "{stderr}",);
+    assert!(stderr.contains("Cmd.Data"), "{stderr}");
 }
 
 // ── (12) New wire type: required / deprecated field warnings ──────────────────
@@ -432,7 +440,7 @@ fn wire_check_warns_new_wire_struct_with_required_fields() {
         String::from_utf8_lossy(&output.stderr),
     );
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("NewMessage.id @1"), "{stderr}",);
+    assert!(stderr.contains("NewMessage.id @1"), "{stderr}");
 }
 
 /// When a brand-new wire struct has a deprecated field, a warning is emitted.
@@ -449,7 +457,7 @@ fn wire_check_warns_new_wire_struct_with_deprecated_field() {
         String::from_utf8_lossy(&output.stderr),
     );
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("NewMessage.legacy @2"), "{stderr}",);
+    assert!(stderr.contains("NewMessage.legacy @2"), "{stderr}");
 }
 
 // ── Baseline existing tests (kept in place) ───────────────────────────────────
@@ -473,7 +481,7 @@ fn wire_check_rejects_a_variant_tag_reassigned_to_another_name() {
 
     assert_incompatible(&output);
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("Command"), "{stderr}",);
+    assert!(stderr.contains("Command"), "{stderr}");
 }
 
 #[test]
@@ -485,7 +493,7 @@ fn wire_check_rejects_wire_enum_payload_changes() {
 
     assert_incompatible(&output);
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("Command.Data"), "{stderr}",);
+    assert!(stderr.contains("Command.Data"), "{stderr}");
 }
 
 #[test]
@@ -497,7 +505,7 @@ fn wire_check_rejects_wire_enum_struct_variant_field_renames() {
 
     assert_incompatible(&output);
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("Command.Data"), "{stderr}",);
+    assert!(stderr.contains("Command.Data"), "{stderr}");
 }
 
 #[test]

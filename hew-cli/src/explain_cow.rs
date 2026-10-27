@@ -17,45 +17,7 @@ pub fn print(module: &SemModule, path: &str, source: &str) {
             types.insert(parameter.value, parameter.ty.clone());
         }
         for block in &function.blocks {
-            if let SemTerminator::WireCodec { codec, plan, .. } = &block.terminator {
-                if let Some(offset) = module.debug.site_offset(&block.terminator_provenance) {
-                    let direction = if codec.is_serialize() {
-                        "encode"
-                    } else {
-                        "decode"
-                    };
-                    entries.insert((
-                        offset,
-                        format!(
-                            "codec - {direction} {:?} {}: borrow input ({} planned types)",
-                            codec.format,
-                            plan.root.user_facing(),
-                            plan.plans.len(),
-                        ),
-                    ));
-                    for planned in plan.plans.values() {
-                        let table = match &planned.kind {
-                            hew_sir::SemWireKind::Record {
-                                table: Some(table), ..
-                            }
-                            | hew_sir::SemWireKind::Enum { table, .. } => table,
-                            _ => continue,
-                        };
-                        for member in &table.members {
-                            entries.insert((
-                                offset,
-                                format!(
-                                    "codec plan - {}: key {:?}, tag {}, flags {}",
-                                    planned.ty.user_facing(),
-                                    member.key,
-                                    member.tag,
-                                    member.flags,
-                                ),
-                            ));
-                        }
-                    }
-                }
-            }
+            codec_entries(module, block, &mut entries);
             for argument in &block.args {
                 types.insert(argument.value, argument.ty.clone());
             }
@@ -123,6 +85,54 @@ pub fn print(module: &SemModule, path: &str, source: &str) {
         let line = prefix.bytes().filter(|byte| *byte == b'\n').count() + 1;
         let column = prefix.rsplit('\n').next().unwrap_or("").chars().count() + 1;
         println!("{path}:{line}:{column}: {description}");
+    }
+}
+
+fn codec_entries(
+    module: &SemModule,
+    block: &hew_sir::SemBlock,
+    entries: &mut BTreeSet<(u32, String)>,
+) {
+    let SemTerminator::WireCodec { codec, plan, .. } = &block.terminator else {
+        return;
+    };
+    let Some(offset) = module.debug.site_offset(&block.terminator_provenance) else {
+        return;
+    };
+    let direction = if codec.is_serialize() {
+        "encode"
+    } else {
+        "decode"
+    };
+    entries.insert((
+        offset,
+        format!(
+            "codec - {direction} {:?} {}: borrow input ({} planned types)",
+            codec.format,
+            plan.root.user_facing(),
+            plan.plans.len(),
+        ),
+    ));
+    for planned in plan.plans.values() {
+        let (hew_sir::SemWireKind::Record {
+            table: Some(table), ..
+        }
+        | hew_sir::SemWireKind::Enum { table, .. }) = &planned.kind
+        else {
+            continue;
+        };
+        for member in &table.members {
+            entries.insert((
+                offset,
+                format!(
+                    "codec plan - {}: key {:?}, tag {}, flags {}",
+                    planned.ty.user_facing(),
+                    member.key,
+                    member.tag,
+                    member.flags,
+                ),
+            ));
+        }
     }
 }
 

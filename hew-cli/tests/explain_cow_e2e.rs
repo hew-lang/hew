@@ -5,6 +5,50 @@ mod support;
 use std::path::Path;
 use support::{hew_binary, strip_ansi};
 
+#[test]
+fn explain_cow_composes_codec_borrows_and_actor_sends() {
+    let dir = support::tempdir();
+    let file = dir.path().join("codec_send.hew");
+    std::fs::write(
+        &file,
+        r#"
+import std.encoding.json;
+#[wire] type Packet { #[serial(key = "id")] value: i64 @1; }
+actor Printer { receive fn show(text: string) { println(text); } }
+fn main() {
+    let printer = spawn Printer;
+    let encoded = json.encode(Packet { value: 42 });
+    printer.show(encoded).expect("print");
+}
+"#,
+    )
+    .unwrap();
+    let output = std::process::Command::new(hew_binary())
+        .args(["check", "--explain-cow", file.to_str().unwrap()])
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{output:?}");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.lines().any(|line| line.contains("codec -")
+            && line.contains("Packet")
+            && line.contains("Json")),
+        "{stdout}"
+    );
+    assert!(
+        stdout
+            .lines()
+            .any(|line| line.contains("codec plan -") && line.contains("\"id\"")),
+        "{stdout}"
+    );
+    assert!(
+        stdout
+            .lines()
+            .any(|line| line.contains("send -") && line.contains("string")),
+        "{stdout}"
+    );
+}
+
 fn fixture_path() -> std::path::PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("tests")

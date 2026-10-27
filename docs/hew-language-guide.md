@@ -4867,6 +4867,18 @@ nested options are refused at the codec or remote-actor boundary. Renaming
 `hew wire check` compares generic parameter positions and expanded declarations
 from `#[wire] machine` using the same compatibility rules.
 
+Both schema files pass through the ordinary frontend. Compatibility uses the
+checked member types and effective encoded keys, including `#[serial(key =
+"name")]`, case conversion and skipped fields. A source field can be renamed
+while preserving its explicit encoded key and numeric tag; changing that key
+changes the text schema.
+
+Use `hew check --explain-cow program.hew` to inspect ownership at actor sends
+and typed codec calls. Codec entries show the demanded format and direction,
+borrowed input and checked member keys and tags. The compiler emits codec walks
+for the formats, types and directions the program uses. JSON encoding writes
+directly into its output buffer; decoding uses the ordinary strict reader.
+
 A field
 marked `optional` must have type `Option<T>`; the marker admits only a value
 that can represent absence. Presence and value shape are separate contracts:

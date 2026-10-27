@@ -154,7 +154,10 @@ Automatic numbers are convenient for a new schema. Reordering automatically
 numbered members can change their identities and break compatibility; use
 explicit numbers when evolving a published record or enum. Reordering
 explicitly numbered members preserves their numeric identities. Text formats
-also use member names, so renaming remains a compatibility change.
+also use effective encoded keys, so changing a key is a compatibility change.
+An explicit `#[serial(key = "name")]` can preserve the text key across a source
+field rename. The checked serial layout owns these keys, tags and omission
+rules; codec emission and compatibility checks consume that same layout.
 
 Generic wire declarations are schema families. Renaming a type parameter
 preserves its position; rebinding a member to another parameter changes its

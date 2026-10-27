@@ -290,7 +290,7 @@ pub unsafe extern "C" fn hew_ser_finish_string(s: *mut c_void) -> *mut HewString
     string_from_str(&text)
 }
 
-// Dedicated JSON entries avoid linking the multi-format writer into JSON-only programs.
+// Dedicated entries keep generated JSON walks independent of the multi-format writer.
 unsafe fn json_sink<'a>(sink: *mut c_void) -> &'a mut hew_codec::JsonSink<'static> {
     // SAFETY: the generated JSON walk owns this live handle exclusively.
     unsafe { &mut *sink.cast::<hew_codec::JsonSink<'static>>() }

@@ -262,46 +262,7 @@ fn schema_from_declaration(
             }
         }
         WireSchemaKind::Enum => {
-            let checked_variants = facts.data_variants(&ty)?;
-            if checked_variants.len() != layout.members.len() {
-                return Err("wire variant types disagree with their checked layout".into());
-            }
-            for (variant, member) in checked_variants.iter().zip(&layout.members) {
-                let payload = if variant.named {
-                    if variant.fields.len() != member.fields.len() {
-                        return Err("wire variant fields disagree with their checked layout".into());
-                    }
-                    WirePayload::Struct(
-                        variant
-                            .fields
-                            .iter()
-                            .zip(&member.fields)
-                            .map(|((_, ty), field)| {
-                                (
-                                    field.key.clone(),
-                                    SchemaType::new(ty, parameters, facts.defs()),
-                                )
-                            })
-                            .collect(),
-                    )
-                } else if member.flags & hew_codec::Member::PAYLOAD != 0 {
-                    WirePayload::Tuple(
-                        variant
-                            .fields
-                            .iter()
-                            .map(|(_, ty)| SchemaType::new(ty, parameters, facts.defs()))
-                            .collect(),
-                    )
-                } else {
-                    WirePayload::Unit
-                };
-                variants.push(WireVariant {
-                    name: member.key.clone(),
-                    tag: u32::try_from(member.tag)
-                        .map_err(|_| "wire variant tag exceeds its declaration range")?,
-                    payload,
-                });
-            }
+            variants = schema_variants(&ty, layout, parameters, facts)?;
         }
     }
     Ok(VersionedWireSchema {
@@ -320,6 +281,56 @@ fn schema_from_declaration(
             .filter_map(|meta| meta.since.map(|since| (meta.field_number, since)))
             .collect(),
     })
+}
+
+fn schema_variants(
+    ty: &ResolvedTy,
+    layout: &hew_types::data_shape::SerialLayout,
+    parameters: &[ParamHead],
+    facts: &TypeFactService,
+) -> Result<Vec<WireVariant>, String> {
+    let mut variants = Vec::new();
+    let checked_variants = facts.data_variants(ty)?;
+    if checked_variants.len() != layout.members.len() {
+        return Err("wire variant types disagree with their checked layout".into());
+    }
+    for (variant, member) in checked_variants.iter().zip(&layout.members) {
+        let payload = if variant.named {
+            if variant.fields.len() != member.fields.len() {
+                return Err("wire variant fields disagree with their checked layout".into());
+            }
+            WirePayload::Struct(
+                variant
+                    .fields
+                    .iter()
+                    .zip(&member.fields)
+                    .map(|((_, ty), field)| {
+                        (
+                            field.key.clone(),
+                            SchemaType::new(ty, parameters, facts.defs()),
+                        )
+                    })
+                    .collect(),
+            )
+        } else if member.flags & hew_codec::Member::PAYLOAD != 0 {
+            WirePayload::Tuple(
+                variant
+                    .fields
+                    .iter()
+                    .map(|(_, ty)| SchemaType::new(ty, parameters, facts.defs()))
+                    .collect(),
+            )
+        } else {
+            WirePayload::Unit
+        };
+        variants.push(WireVariant {
+            name: member.key.clone(),
+            tag: u32::try_from(member.tag)
+                .map_err(|_| "wire variant tag exceeds its declaration range")?,
+            payload,
+        });
+    }
+    Ok(variants)
 }
 
 fn compare_wire_schemas(

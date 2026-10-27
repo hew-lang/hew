@@ -3291,11 +3291,13 @@ Ownership is obtained through `into_iter()` or an explicit `clone` under
 `T: Clone`. `into_iter()` acquires an owned vector using ordinary value
 semantics: a copyable vector stays usable when needed again, while a vector
 of affine elements moves. The iterator owns its remaining elements, including
-cleanup on early termination. `VecIter` moves each yielded item
-from its ordered option buffer without a per-step clone; its O(n)
-construction uses O(n) additional space, and either end of an unshared
-cursor advances in O(1). A copied cursor follows the ordinary `Vec`
-copy-on-write rules, so detaching its buffer can take O(n) time.
+cleanup on early termination. `VecIter` takes ownership of the vector's live
+range in O(1) time without an additional element buffer. Either end advances
+in O(1) time and moves the yielded item without cloning it. Copying a source
+or cursor follows ordinary value semantics: callback-free plain elements can
+share immutable storage, while copying managed elements can take O(n) time.
+Taking an end element changes only the cursor's header; writing shared storage
+detaches it as needed.
 Untaken elements are released in their original index order. A `Clone` bound
 also permits copying element reads (§2.1.1).
 

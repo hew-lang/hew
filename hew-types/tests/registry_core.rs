@@ -51,7 +51,5 @@ mod supervisor_check;
 mod timestamp;
 #[path = "registry_core/user_generic_type_decl_checker_test.rs"]
 mod user_generic_type_decl_checker_test;
-#[path = "registry_core/veciter_intoiterator_surface.rs"]
-mod veciter_intoiterator_surface;
 #[path = "registry_core/width_conversion.rs"]
 mod width_conversion;

@@ -391,19 +391,20 @@ causality or destinations from timestamp proximity. Producer overwrite and
 sampling counters describe source-side loss. Consumer storage or transport
 loss must be tracked separately by the consumer.
 
-For the terminal UI, build or install the sibling binary and attach it to the
-running profiler:
+For the terminal UI, attach to the running profiler:
 
 ```sh
-hew-observe --list
-hew-observe --pid 12345
-hew-observe --addr 127.0.0.1:6067
+hew observe --list
+hew observe --pid 12345
+hew observe --pid 12345 --pid 23456
+hew observe --addr 127.0.0.1:6067
 ```
 
-`hew observe ...` delegates to a `hew-observe` binary in the same directory as
-`hew` or on `PATH`. If that sibling binary is not built or installed, the
-delegation fails; run `hew-observe` directly or build/install it alongside
-`hew`.
+Repeat `--pid` (or use comma-separated PIDs) to watch several processes in one
+observer. Use `[` and `]` to switch the active process in the per-process views;
+the messages and timeline views include events from all selected processes.
+
+`hew observe` is included in the `hew` CLI.
 
 ## Choosing an observation surface
 
@@ -417,6 +418,6 @@ delegation fails; run `hew-observe` directly or build/install it alongside
   the application that defines each metric.
 - `observe.barrier` waits for attribution visibility. It does not flush or
   publish custom metrics.
-- `hew observe` delegates to the separately installed `hew-observe` binary.
+- `hew observe` provides the terminal observer in the `hew` CLI.
 - The TUI targets interactive terminals. Use the HTTP endpoints for scripts,
   CI, and other non-TTY clients.

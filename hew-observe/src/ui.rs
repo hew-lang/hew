@@ -79,12 +79,17 @@ fn draw_header(f: &mut Frame, app: &App, area: Rect) {
     f.render_widget(tabs, chunks[0]);
 
     // Connection indicator
+    let kind = if app.is_multi_process() {
+        "processes"
+    } else {
+        "nodes"
+    };
     let (status_text, status_colour) = match app.connection_status {
         ConnectionStatus::Connected => {
             if app.is_multi_node() {
                 (
                     format!(
-                        "● Connected {}/{} nodes",
+                        "● Connected {}/{} {kind}",
                         app.connected_node_count(),
                         app.configured_node_count()
                     ),
@@ -97,7 +102,7 @@ fn draw_header(f: &mut Frame, app: &App, area: Rect) {
         ConnectionStatus::Disconnected => {
             if app.is_multi_node() {
                 (
-                    format!("● Disconnected 0/{} nodes", app.configured_node_count()),
+                    format!("● Disconnected 0/{} {kind}", app.configured_node_count()),
                     theme::CONN_DISCONNECTED,
                 )
             } else {
@@ -110,7 +115,7 @@ fn draw_header(f: &mut Frame, app: &App, area: Rect) {
             } else if app.is_multi_node() {
                 (
                     format!(
-                        "● Connecting {}/{} nodes",
+                        "● Connecting {}/{} {kind}",
                         app.connected_node_count(),
                         app.configured_node_count()
                     ),
@@ -1577,8 +1582,13 @@ fn status_bar_text(app: &App) -> String {
     }
     let mode = if app.demo_mode { "DEMO" } else { "LIVE" };
     if app.is_multi_node() {
+        let kind = if app.is_multi_process() {
+            "process"
+        } else {
+            "node"
+        };
         format!(
-            " [{mode}] {} │ showing: {} │ {}/{} connected │ []: node │ Tab: switch │ ?: help │ r: refresh │ q: quit",
+            " [{mode}] {} │ showing: {} │ {}/{} connected │ []: {kind} │ Tab: switch │ ?: help │ r: refresh │ q: quit",
             app.configured_target_label(),
             app.active_node_label(),
             app.connected_node_count(),
@@ -1643,7 +1653,7 @@ fn draw_help_popup(f: &mut Frame) {
         ]),
         Line::from(vec![
             Span::styled("  [ ]            ", theme::key_style()),
-            Span::raw("Prev/next active node (multi-node)"),
+            Span::raw("Prev/next active process or node"),
         ]),
         Line::from(vec![
             Span::styled("  ↑/↓            ", theme::key_style()),
@@ -1899,6 +1909,19 @@ mod tests {
 
         assert!(text.contains("showing: alpha:6060"), "{text}");
         assert!(text.contains("[]: node"), "{text}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn multi_process_status_bar_identifies_processes() {
+        let app = App::new_unix_multi(&[
+            ("/tmp/hew-101.sock".into(), "worker (PID 101)".to_owned()),
+            ("/tmp/hew-202.sock".into(), "worker (PID 202)".to_owned()),
+        ]);
+
+        let text = status_bar_text(&app);
+        assert!(text.contains("showing: worker (PID 101)"), "{text}");
+        assert!(text.contains("[]: process"), "{text}");
     }
 
     /// Waiting-mode status bar must mention scanning cadence and escape hatch

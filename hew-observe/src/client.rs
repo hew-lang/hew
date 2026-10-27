@@ -733,6 +733,20 @@ impl ClusterClient {
         Ok(Self { nodes })
     }
 
+    /// Create a cluster client from unix domain sockets.
+    #[cfg(unix)]
+    pub fn from_unix_nodes(targets: &[(PathBuf, String)]) -> Self {
+        let nodes = targets
+            .iter()
+            .map(|(socket_path, label)| NodeClient {
+                client: ProfilerClient::new_unix(socket_path),
+                addr: label.clone(),
+                node_id: None,
+            })
+            .collect();
+        Self { nodes }
+    }
+
     /// Create a cluster client from a single unix domain socket.
     #[cfg(unix)]
     pub fn from_unix(socket_path: &Path, label: &str) -> Self {

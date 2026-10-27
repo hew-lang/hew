@@ -36,9 +36,9 @@ pub struct Options {
     #[arg(long)]
     addr: Option<String>,
 
-    /// Connect to a specific process by PID (via unix socket discovery).
-    #[arg(long)]
-    pid: Option<u32>,
+    /// Connect to processes by PID (via unix socket discovery; repeatable).
+    #[arg(long, value_delimiter = ',')]
+    pid: Vec<u32>,
 
     /// List discovered profiler processes and exit.
     #[arg(long)]
@@ -155,7 +155,7 @@ fn connect(cli: &Options) -> Result<App, ConnectError> {
     // Non-unix fallback: no discovery available, use TCP default.
     #[cfg(not(unix))]
     {
-        let _ = cli.pid; // suppress unused warning
+        let _ = &cli.pid; // suppress unused warning
         eprintln!(
             "note: automatic discovery is not available on this platform — \
              use --addr host:port to specify the profiler address (falling back to localhost:6060)"
@@ -172,12 +172,33 @@ fn connect_with<FindByPid, ScanProfilers>(
     now_secs: u64,
 ) -> Result<App, ConnectError>
 where
-    FindByPid: FnOnce(u32) -> Option<discovery::DiscoveredProfiler>,
+    FindByPid: FnMut(u32) -> Option<discovery::DiscoveredProfiler>,
     ScanProfilers: FnOnce() -> Vec<discovery::DiscoveredProfiler>,
 {
-    if let Some(pid) = cli.pid {
-        let profiler = find_by_pid(pid).ok_or(ConnectError::NoProfilerForPid(pid))?;
-        return Ok(App::new_unix(&profiler.socket_path, &profiler.program));
+    if !cli.pid.is_empty() {
+        let mut find_by_pid = find_by_pid;
+        let mut profilers = Vec::new();
+        for &pid in &cli.pid {
+            if profilers
+                .iter()
+                .any(|profiler: &discovery::DiscoveredProfiler| profiler.pid == pid)
+            {
+                continue;
+            }
+            profilers.push(find_by_pid(pid).ok_or(ConnectError::NoProfilerForPid(pid))?);
+        }
+        if profilers.len() == 1 {
+            let profiler = &profilers[0];
+            return Ok(App::new_unix(&profiler.socket_path, &profiler.program));
+        }
+        let targets = profilers
+            .into_iter()
+            .map(|profiler| {
+                let label = format!("{} (PID {})", profiler.program, profiler.pid);
+                (profiler.socket_path, label)
+            })
+            .collect::<Vec<_>>();
+        return Ok(App::new_unix_multi(&targets));
     }
 
     let profilers = scan_profilers();
@@ -409,11 +430,26 @@ fn handle_tab_keys(app: &mut App, key: KeyCode) -> bool {
 mod tests {
     use super::*;
 
+    #[test]
+    fn pid_option_accepts_repeated_and_comma_separated_values() {
+        use clap::Parser as _;
+
+        #[derive(clap::Parser)]
+        struct Cli {
+            #[command(flatten)]
+            observe: Options,
+        }
+
+        let cli = Cli::try_parse_from(["hew-observe", "--pid", "101", "--pid", "202,303"])
+            .expect("parse repeated PIDs");
+        assert_eq!(cli.observe.pid, vec![101, 202, 303]);
+    }
+
     #[cfg(unix)]
-    fn cli(pid: Option<u32>) -> Options {
+    fn cli(pid: &[u32]) -> Options {
         Options {
             addr: None,
-            pid,
+            pid: pid.to_vec(),
             list: false,
             node: Vec::new(),
             refresh_ms: 1_000,
@@ -434,13 +470,8 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn invalid_pid_returns_error() {
-        let error = connect_with(
-            &cli(Some(42)),
-            |_| None,
-            || panic!("unexpected scan"),
-            1_000,
-        )
-        .expect_err("invalid --pid should fail");
+        let error = connect_with(&cli(&[42]), |_| None, || panic!("unexpected scan"), 1_000)
+            .expect_err("invalid --pid should fail");
 
         assert_eq!(error, ConnectError::NoProfilerForPid(42));
         let msg = error.to_string();
@@ -453,9 +484,45 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
+    fn multiple_pids_connect_in_requested_order_and_deduplicate() {
+        let mut looked_up = Vec::new();
+        let app = connect_with(
+            &cli(&[202, 101, 202]),
+            |pid| {
+                looked_up.push(pid);
+                Some(profiler(pid, "worker", 900))
+            },
+            || panic!("unexpected scan"),
+            1_000,
+        )
+        .expect("multiple PIDs should connect");
+
+        assert_eq!(looked_up, vec![202, 101]);
+        assert!(app.is_multi_node());
+        assert_eq!(app.configured_node_count(), 2);
+        assert_eq!(app.active_node_label(), "worker (PID 202)");
+        assert_eq!(app.configured_target_label(), "worker (PID 202) +1 more");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn missing_pid_in_selection_reports_that_pid() {
+        let error = connect_with(
+            &cli(&[101, 202]),
+            |pid| (pid == 101).then(|| profiler(pid, "worker", 900)),
+            || panic!("unexpected scan"),
+            1_000,
+        )
+        .expect_err("a missing PID should fail the selection");
+
+        assert_eq!(error, ConnectError::NoProfilerForPid(202));
+    }
+
+    #[cfg(unix)]
+    #[test]
     fn ambiguous_profilers_return_error() {
         let error = connect_with(
-            &cli(None),
+            &cli(&[]),
             |_| panic!("unexpected pid lookup"),
             || vec![profiler(101, "alpha", 900), profiler(202, "beta", 980)],
             1_000,
@@ -495,7 +562,7 @@ mod tests {
     fn no_profilers_returns_waiting_app() {
         // Zero discovered profilers → observer starts in waiting mode.
         let app = connect_with(
-            &cli(None),
+            &cli(&[]),
             |_| panic!("unexpected pid lookup"),
             Vec::new,
             1_000,
@@ -512,7 +579,7 @@ mod tests {
     #[test]
     fn single_profiler_auto_connects() {
         let app = connect_with(
-            &cli(None),
+            &cli(&[]),
             |_| panic!("unexpected pid lookup"),
             || vec![profiler(55, "myapp", 900)],
             1_000,
@@ -529,7 +596,7 @@ mod tests {
     fn explicit_addr_deduplicates_multi_node_targets() {
         let app = connect(&Options {
             addr: Some("alpha:6060".to_owned()),
-            pid: None,
+            pid: Vec::new(),
             list: false,
             node: vec![
                 "beta:6061".to_owned(),

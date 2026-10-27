@@ -4,7 +4,7 @@ use std::cmp::Reverse;
 use std::collections::{BTreeMap, VecDeque};
 use std::ops::Deref;
 #[cfg(unix)]
-use std::path::Path;
+use std::path::{Path, PathBuf};
 #[cfg(unix)]
 use std::time::Duration;
 use std::time::Instant;
@@ -214,6 +214,7 @@ pub struct App {
     pub demo_mode: bool,
     pub base_url: String,
     active_node_label: String,
+    multi_process: bool,
 
     /// When true, periodically re-scan the discovery directory and
     /// reconnect if the current profiler is gone or a new one appears.
@@ -255,6 +256,18 @@ impl App {
     pub fn new_unix(socket_path: &Path, label: &str) -> Self {
         let cluster = ClusterClient::from_unix(socket_path, label);
         Self::build(Some(cluster), label.to_owned(), false, false)
+    }
+
+    /// Connect to several profilers over unix domain sockets.
+    #[cfg(unix)]
+    pub fn new_unix_multi(targets: &[(PathBuf, String)]) -> Self {
+        let cluster = ClusterClient::from_unix_nodes(targets);
+        let label = targets
+            .first()
+            .map_or_else(String::new, |(_, label)| label.clone());
+        let mut app = Self::build(Some(cluster), label, false, false);
+        app.multi_process = true;
+        app
     }
 
     /// Connect via auto-discovery (re-scans periodically).
@@ -328,6 +341,7 @@ impl App {
             demo_mode: demo,
             active_node_label: base_url.clone(),
             base_url,
+            multi_process: false,
             auto_discover,
             last_discovery_scan: Instant::now(),
             prev_messages_sent: 0,
@@ -339,6 +353,10 @@ impl App {
         self.cluster
             .as_ref()
             .is_some_and(|cluster| cluster.nodes.len() > 1)
+    }
+
+    pub fn is_multi_process(&self) -> bool {
+        self.multi_process
     }
 
     /// Returns `true` when the app was started with no initial connection and

@@ -118,6 +118,38 @@ fn show_stack_hints_flag_emits_perf_001_on_known_allocations() {
     );
 }
 
+/// Imported module offsets must not be rendered against the entrypoint source.
+#[test]
+fn show_stack_hints_omits_imported_module_bindings() {
+    let source = "import std.os;\n\nfn main() {\n    let arguments = os.args();\n    assert(!arguments.is_empty());\n}\n";
+    let (_fixture, path) = write_fixture(source);
+
+    let output = Command::new(hew_binary())
+        .args([
+            "check",
+            "--show-stack-hints",
+            "--explain-cow",
+            path.to_str().unwrap(),
+        ])
+        .output()
+        .expect("hew binary must run");
+    let stderr = strip_ansi(&String::from_utf8_lossy(&output.stderr));
+    assert!(output.status.success(), "check failed:\n{stderr}");
+
+    let hints: Vec<_> = stderr
+        .lines()
+        .filter(|line| line.contains("HEW-PERF-001"))
+        .collect();
+    assert_eq!(hints.len(), 1, "unexpected stack hints:\n{stderr}");
+    assert!(
+        hints[0].contains(&format!(
+            "{}:4:5: info[HEW-PERF-001]: binding `arguments` (Vec)",
+            path.display()
+        )),
+        "root binding has incorrect location:\n{stderr}",
+    );
+}
+
 /// `hew check --show-stack-hints` on a type-erroring program must still render
 /// source-span diagnostics (with `^^^` underlines and `file:line:col` attribution)
 /// rather than silently swallowing them and emitting only the bare failure

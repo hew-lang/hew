@@ -438,7 +438,10 @@ fn render_presentation(
 pub fn print_stack_hints(source: &str, filename: &str, hints: &[hew_types::check::StackHint]) {
     let filename = display_filename(filename);
     let palette = diagnostic_palette();
-    for hint in hints {
+    // `source` and `filename` describe only the selected root module. Imported
+    // hints have offsets relative to their own files, so rendering them here
+    // would falsely attribute them to the root (and may point beyond its EOF).
+    for hint in hints.iter().filter(|hint| hint.span_key.module_idx == 0) {
         let (line, col) = offset_to_line_col(source, hint.span_key.start);
         let class_label = stack_hint_alloc_class_label(&hint.alloc_class);
         let name = if hint.binding_name.is_empty() {

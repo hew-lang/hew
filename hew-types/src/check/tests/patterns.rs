@@ -2062,3 +2062,25 @@ fn machine_transition_block_body_publishes_tail_type_not_error_placeholder() {
 
 // ── C1 UAF guard: E_SUPERVISOR_PERMANENT_OWNED_HEAP ──────────────────────────
 // Negative tests — the diagnostic MUST fire.
+
+#[test]
+fn machine_evaluator_diagnostics_keep_distinct_source_errors() {
+    let source = concat!(
+        "machine Counter {\n",
+        "    events { Tick; }\n",
+        "    state Idle;\n",
+        "    state Busy { n: i64; m: i64; }\n",
+        "    on Tick: Idle => .Busy { n: true, m: false }\n",
+        "    on Tick: Busy => .Idle;\n",
+        "}\n",
+        "fn main() {}\n",
+    );
+    let output = check_source(source);
+    let mismatches: Vec<_> = output
+        .errors
+        .iter()
+        .filter(|error| matches!(error.kind, TypeErrorKind::Mismatch { .. }))
+        .collect();
+    assert_eq!(mismatches.len(), 2, "{:#?}", output.errors);
+    assert_ne!(mismatches[0].span, mismatches[1].span);
+}

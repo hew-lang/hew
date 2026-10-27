@@ -9,9 +9,8 @@ it?" without reading the commit log.
 Hew uses **SemVer-ish** versioning: `vMAJOR.MINOR.PATCH`, with optional
 pre-release suffix `-alpha.N`, `-beta.N`, `-rc.N`, or `-pre`.
 
-While Hew is pre-1.0, MAJOR stays at `0`. The 0.6 series develops edition
-2026 through feature and maintenance releases, including intentional surface
-changes with migration notes. The [specification](../specs/HEW-SPEC-2026.md)
+While Hew is pre-1.0, MAJOR stays at `0`. The 0.x series develops edition 2026 through feature and maintenance
+releases, including intentional surface changes with migration notes. The [specification](../specs/HEW-SPEC-2026.md)
 owns the language's version and edition contract.
 
 ## What each axis signals
@@ -84,7 +83,6 @@ SemVer says anything goes pre-1.0. We're stricter than that:
 ## Release cadence
 
 Target: **roughly one MINOR every 4–6 weeks**, slip when scope demands.
-Historical cadence supports this — see "History" below.
 
 We are **scope-driven, not date-driven**. The 4–6 week figure is for
 planning, not a deadline. Ship when:

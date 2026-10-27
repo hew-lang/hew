@@ -65,10 +65,6 @@ const FIXTURES: &[(&str, &str)] = &[
 /// Fixtures that are expected to produce error-severity diagnostics when
 /// analyzed as a single source file.  These are excluded from zero-error loop
 /// assertions; each has a dedicated test documenting the known gap.
-///
-/// W4.023 Stage 0 alignment: classification for each fixture is noted inline.
-/// See the LSP fixture classification matrix in `hew-lsp/src/server/mod.rs`
-/// (the "W4.023 Stage 0" comment block) for the authoritative table.
 const ANALYSIS_ERROR_FIXTURES: &[&str] = &[
     // accepted (intentional type error): `obj[key]` on a type that does not
     // implement Indexable — type error by design, exercising error-recovery in
@@ -87,17 +83,8 @@ const ANALYSIS_ERROR_FIXTURES: &[&str] = &[
     // the four declared events per state.  The fixture exercises state entry/exit
     // hooks, not exhaustive coverage.
     "v05_machine_states",
-    // pending-upstream-substrate W3.006: `type Pair(i32, i32)` — tuple-record
-    // syntax is not yet supported by the parser.  The corresponding LSP test is
-    // kept ignored pending W3.006 tuple substrate landing.
     "v05_record_tuple_literal",
-    // pending-upstream-substrate (unassigned): `select { StreamNext ... }` arms
-    // use unimplemented syntax; the parser cannot handle them.  The corresponding
-    // LSP test is kept ignored pending a dedicated select-arm-kinds lane.
     "v05_select_arms",
-    // pending-upstream-substrate (unassigned): `spawn |msg: i32| { ... }` —
-    // lambda actor spawn syntax is not yet supported.  The corresponding LSP test
-    // is kept ignored pending a dedicated lambda-spawn lane.
     "v05_spawn_lambda_actor",
 ];
 

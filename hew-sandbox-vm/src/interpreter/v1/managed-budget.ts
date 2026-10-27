@@ -1,4 +1,10 @@
-import { vectorStorage, type VmValue } from "../values.js";
+import {
+  vectorElement,
+  vectorItems,
+  vectorLength,
+  vectorStorage,
+  type VmValue,
+} from "../values.js";
 import type { ManagedType } from "./package.js";
 import { cloneEncoding } from "./encoding-storage.js";
 
@@ -170,11 +176,15 @@ export class ManagedLayouts {
         if (value.kind !== "vector")
           throw new Error("managed copy has no sequence");
         const storage = vectorStorage(value);
-        if (row.share_on_copy && value.items.length) return value;
-        const items = value.items.map((item) => this.copy(item, row.element));
+        if (row.share_on_copy && vectorLength(value)) return value;
+        const items = vectorItems(value).map((item) =>
+          this.copy(item, row.element),
+        );
         return {
           ...value,
           items,
+          offset: 0,
+          length: undefined,
           storage: { ...storage, items, capacity: items.length, owners: 1 },
         };
       }
@@ -337,8 +347,13 @@ export class ManagedLayouts {
             throw new Error("managed sequence has no backing");
           const storage = value.storage ?? vectorStorage(value);
           if (storage.capacity)
-            allocation(storage, this.width(row.element, storage.capacity), () =>
-              storage.items.forEach((item) => visit(item, row.element)),
+            allocation(
+              storage,
+              this.width(row.element, storage.capacity),
+              () => {
+                for (let index = 0; index < vectorLength(value); index++)
+                  visit(vectorElement(value, index)!, row.element);
+              },
             );
           return;
         }

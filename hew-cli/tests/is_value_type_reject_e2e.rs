@@ -3,7 +3,7 @@
 //! `is` is handle identity, admitted only for actor references
 //! (`is_identity_capable`, HEW-SPEC-2026 §3.4.3's pid handle row). A
 //! `type Point { ... }` declaration is a copy-on-write value under the v0.5
-//! value model (`docs/v05/ownership.md`); an `enum` is a tagged value, a
+//! value model (`docs/language/ownership.hew`); an `enum` is a tagged value, a
 //! machine is a tagged state, and `Vec`/`HashMap`/`HashSet`/`bytes` are
 //! copy-on-write values with structural `==` (§3.4.3's value row, D340).
 //! None of them has an identity to compare. The checker owns that answer:

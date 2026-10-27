@@ -6,17 +6,6 @@ understand language and runtime tradeoffs, and choose useful follow-up
 investigations.
 It is not a language ranking or a performance promise.
 
-The [25 October cloud-informed follow-up](results/2026-10-25-cloud-informed.md)
-measures Vec cleanup and loop lowering, worker allocation accounting and profiler
-shutdown, including the fresh-growth regression and local replay evidence.
-
-The [18 October lifecycle follow-up](results/2026-10-18-lifecycle.md)
-attributes task and actor allocations and readiness notifications, with a
-before/after comparison of the resulting runtime changes.
-
-The [16 October 2026 Linux report](results/2026-10-16-linux-x86_64.md)
-includes the first measured shapes, distributions and follow-up questions.
-
 ## Run
 
 The runner currently requires a POSIX host; this suite has been executed on
@@ -41,6 +30,15 @@ Or use a previously built compiler without rebuilding it:
 ```sh
 make bench-calibration HEW_BIN=/path/to/hew
 ```
+
+`vector-iteration.hew` is a standalone allocation/instruction probe for owned
+scalar, retained-source scalar, managed-record and affine-resource cursors.
+Build it with the compiler/runtime pair under comparison, then run
+`vector-iteration scalar full 1024` (or `shared`, `managed`, `affine`; `early`,
+`mixed`). `early` constructs and drops the cursor; `mixed` takes one element
+from each end. Expected checksums are respectively `n*(n-1)/2`, `0` and `n-1`.
+Sizes must be at least two. Use the existing `primitives` vector build/scan
+workloads as controls; this probe makes no wall-time claim.
 
 Results, individual samples and build logs go under this directory's ignored
 `out/`. To retain another run, select a different output directory:

@@ -35,36 +35,6 @@ fn lower_source(source: &str) -> hew_sir::SemModule {
 }
 
 #[test]
-fn explicit_next_uses_the_common_vector_and_aggregate_contracts() {
-    let module = lower_source(
-        r"
-        fn main() -> i64 {
-            let values = [1, 2, 3];
-            var cursor = values.iter();
-            match cursor.next() {
-                .Some(value) => value,
-                .None => 0,
-            }
-        }
-    ",
-    );
-    let cursor = hew_types::ResolvedTy::named_builtin(
-        hew_types::BuiltinType::VecIter,
-        vec![hew_types::ResolvedTy::I64],
-    );
-    let shape = module.aggregate_shape_for_type(&cursor).unwrap();
-    assert_eq!(
-        module.defs.path(shape.instance.nominal.declaration()),
-        "std.builtins.VecIter"
-    );
-    assert_eq!(hew_sir::managed_slot(&module, &cursor).unwrap().bytes, 24);
-    assert!(
-        matches!(hew_sir::managed_storage_shape(&module, &cursor).unwrap(),
-        hew_sir::ManagedStorageShape::Aggregate { fields } if fields.len() == 3)
-    );
-}
-
-#[test]
 fn vector_empty_checks_compose_with_iteration_and_mutation() {
     lower_source(
         r#"type Values {

@@ -103,9 +103,15 @@ fn vector_descriptor_matches_the_runtime_c_abi() {
     let target = TargetData::create(&physical.data_layout);
     let ctx = Context::create();
     let header = collections::vector_header_type(&ctx, &target);
-    for (index, expected) in [offset_of!(HewVec, data), offset_of!(HewVec, len)]
-        .into_iter()
-        .enumerate()
+    for (index, expected) in [
+        offset_of!(HewVec, data),
+        offset_of!(HewVec, len),
+        offset_of!(HewVec, front),
+        offset_of!(HewVec, cap),
+        offset_of!(HewVec, elem_size),
+    ]
+    .into_iter()
+    .enumerate()
     {
         assert_eq!(
             target.offset_of_element(&header, u32::try_from(index).unwrap()),

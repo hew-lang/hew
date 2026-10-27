@@ -4235,14 +4235,17 @@ fn main() {
 }
 ```
 
-`std.iter` builds lazy adapters (`map`, `filter`, `take`, `skip`) over any `Iterator`; terminal helpers (`fold`, `count`, `collect`, `any`, `all`, `sum`, `product`) drive an adapter chain to completion. Drive a `Vec<T>` through the lazy surface via `v.iter()` (clones elements out, `v` stays live) or `v.into_iter()` (accepts ownership, copying an ordinary `v` if it is reused).
+`std.iter` builds lazy adapters (`map`, `filter`, `take`, `skip`) over any `Iterator`; terminal helpers (`fold`, `count`, `collect`, `any`, `all`, `sum`, `product`) drive an adapter chain to completion. Drive a `Vec<T>` through the lazy surface via `v.iter()` (takes an independent snapshot, keeping `v` live) or `v.into_iter()` (accepts ownership, copying an ordinary `v` if it is reused).
 
 `v.iter()` creates an independent snapshot, while `v.into_iter()` owns the
 supplied vector. `VecIter` keeps untaken elements in order and releases that
-remainder in order on early drop. Its ordered option buffer costs O(n)
-additional space and construction time; either end of an unshared cursor
-advances in O(1) time. Detaching a copied cursor follows the ordinary `Vec`
-copy-on-write rules and can take O(n) time.
+remainder in order on early drop. Constructing a cursor from an owned vector
+takes O(1) time without rebuilding its elements, and either end advances in
+O(1) time without cloning the yielded element. Source and cursor copies follow
+ordinary value semantics: plain elements can share immutable storage, while
+copying managed elements can take O(n) time. Taking an end element from shared
+plain storage changes only the cursor's header; subsequent writes detach the
+storage as needed.
 
 Every adapter also carries the same method surface, so a chain reads fluently
 end to end instead of nesting free-function calls after the first `.filter`

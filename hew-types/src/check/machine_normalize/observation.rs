@@ -470,54 +470,6 @@ impl Builder {
             trailing_expr: Some(Box::new(call)),
         }
     }
-
-    pub(super) fn unobserved_step(&mut self) -> Block {
-        let event = self.ident("event");
-        let limit = self.ident("limit");
-        let requested = self.expr(Expr::Array(Vec::new()));
-        let call = self.method_call(
-            "self",
-            "step_observed_with_limit",
-            vec![event, limit, requested],
-        );
-        let mut arms = Vec::new();
-        for (name, payload) in [("Ok", "_$machine_observed"), ("Err", "_$machine_error")] {
-            let binding = (Pattern::Identifier(Ident::new(payload)), self.span());
-            let pattern = (
-                Pattern::ContextVariant(super::ContextVariantPattern {
-                    name: Ident::new(name),
-                    payload: Some(super::NominalPatternPayload::Tuple(vec![binding])),
-                }),
-                self.span(),
-            );
-            let value = if name == "Ok" {
-                self.field(payload, "report")
-            } else {
-                self.ident(payload)
-            };
-            let function = self.variant(Ident::new(name), Vec::new(), Vec::new());
-            let body = self.expr(Expr::Call {
-                function: Box::new(function),
-                args: vec![CallArg::Positional(value)],
-                type_args: None,
-                is_tail_call: false,
-            });
-            arms.push(MatchArm {
-                append_separator: None,
-                pattern,
-                guard: None,
-                body,
-            });
-        }
-        let result = self.expr(Expr::Match {
-            scrutinee: Box::new(call),
-            arms,
-        });
-        Block {
-            stmts: Vec::new(),
-            trailing_expr: Some(Box::new(result)),
-        }
-    }
 }
 
 fn restore_parameter(

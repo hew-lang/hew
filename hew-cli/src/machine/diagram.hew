@@ -1,0 +1,273 @@
+//! Machine graph presentation. The host projects authored declarations and
+//! formatted source labels; this component owns Mermaid and DOT syntax.
+import std.encoding.json;
+
+type Node {
+    id: string;
+    name: string;
+    kind: string;
+    parent: i64;
+    children: Vec<i64>;
+    fields: Vec<string>;
+    entry: Option<string>;
+    exit: Option<string>;
+    parallel: bool;
+    is_final: bool;
+    initial: i64;
+    initial_value: Option<string>;
+}
+
+type Edge {
+    from: string;
+    to: string;
+    label: string;
+}
+
+type Auxiliary {
+    id: string;
+    label: string;
+    computed: bool;
+}
+
+type Chart {
+    format: string;
+    name: string;
+    parameters: Vec<string>;
+    has_default: bool;
+    emits: Vec<string>;
+    roots: Vec<i64>;
+    nodes: Vec<Node>;
+    edges: Vec<Edge>;
+    auxiliary: Vec<Auxiliary>;
+}
+
+type Frame {
+    index: i64;
+    depth: i64;
+    close: bool;
+    separator: bool;
+}
+
+fn mermaid_text(text: string) -> string {
+    text.replace("&", "&amp;").replace("\"", "&quot;").replace("<", "&lt;").replace(">", "&gt;").replace("%", "&#37;").replace("|", "&#124;").replace("\n", "<br/>").replace("\r", "")
+}
+
+fn dot_text(text: string) -> string {
+    text.replace("\\", "\\\\").replace("\"", "\\\"").replace("\n", "\\n").replace("\r", "")
+}
+
+fn line(depth: i64, text: string) -> string {
+    "    ".repeat(depth) + text + "\n"
+}
+
+fn annotations(node: Node) -> Vec<string> {
+    var lines: Vec<string> = [];
+    if node.is_final {
+        lines.push("final");
+    }
+    if !node.fields.is_empty() {
+        lines.push("fields: " + node.fields.join(", "));
+    }
+    if let .Some(text) = node.entry {
+        lines.push("entry " + text);
+    }
+    if let .Some(text) = node.exit {
+        lines.push("exit " + text);
+    }
+    lines
+}
+
+fn legend(chart: Chart) -> string {
+    var lines: Vec<string> = [];
+    if chart.has_default {
+        lines.push("unhandled events stay in current state");
+    }
+    if !chart.emits.is_empty() {
+        lines.push("Emits: " + chart.emits.join(", "));
+    }
+    lines.join("\n")
+}
+
+fn node_index(chart: Chart, id: string) -> i64 {
+    for index in 0..chart.nodes.len() {
+        if chart.nodes[index].id == id {
+            return index;
+        }
+    }
+    -1
+}
+
+fn cluster_attribute(chart: Chart, key: string, id: string) -> string {
+    let index = node_index(chart, id);
+    if index >= 0 && chart.nodes[index].kind != "state" {
+        return f"{key}=cluster_{id}";
+    }
+    ""
+}
+
+fn flow_cluster_attribute(chart: Chart, key: string, id: string, other: string) -> string {
+    let index = node_index(chart, id);
+    if index >= 0 {
+        var current = node_index(chart, other);
+        while current >= 0 {
+            if index == current {
+                return "";
+            }
+            current = chart.nodes[current].parent;
+        }
+    }
+    cluster_attribute(chart, key, id)
+}
+
+// An explicit traversal stack keeps deep authored nesting off the call stack.
+// Each line is accumulated once and joined once at the presentation boundary.
+fn nodes(chart: Chart, mermaid: bool) -> Vec<string> {
+    var output: Vec<string> = [];
+    var stack: Vec<Frame> = [];
+    var root = chart.roots.len();
+    while root > 0 {
+        root -= 1;
+        stack.push(Frame { index: chart.roots[root], depth: 1, close: false, separator: false });
+    }
+    while !stack.is_empty() {
+        let frame = stack.pop();
+        let depth = frame.depth;
+        if frame.close {
+            output.push(line(depth, "}"));
+            continue;
+        }
+        if frame.separator {
+            output.push(line(depth, "--"));
+        }
+        let node = chart.nodes[frame.index];
+        let name = if node.kind == "region" { "region " + node.name } else { node.name };
+        let id = node.id;
+        if mermaid {
+            let label = mermaid_text(name);
+            if node.kind == "state" {
+                output.push(line(depth, f"state \"{label}\" as {id}"));
+                continue;
+            }
+            output.push(line(depth, f"state \"{label}\" as {id}" + " {"));
+            if node.initial >= 0 {
+                let initial = chart.nodes[node.initial].id;
+                let suffix = match node.initial_value {
+                    .Some(value) => " : " + mermaid_text(value),
+                    .None => "",
+                };
+                output.push(line(depth + 1, f"[*] --> {initial}{suffix}"));
+            }
+        } else {
+            var labels: Vec<string> = [name];
+            if node.parallel {
+                labels.push("parallel");
+            }
+            labels.append(annotations(node));
+            let label = dot_text(labels.join("\n"));
+            if node.kind == "state" {
+                output.push(line(depth, f"{id} [label=\"{label}\"];"));
+                if node.is_final {
+                    output.push(line(depth, f"{id} [peripheries=2];"));
+                }
+                continue;
+            }
+            output.push(line(depth, f"subgraph cluster_{id}" + " {"));
+            let style = if node.kind == "region" { "dashed" } else { "rounded" };
+            output.push(line(depth + 1, f"label=\"{label}\"; style=\"{style}\";"));
+            output.push(line(depth + 1, f"{id} [label=\"\", shape=point, width=0.01, style=invis];"));
+            if node.initial >= 0 {
+                let initial = chart.nodes[node.initial].id;
+                let value = dot_text(match node.initial_value {
+                    .Some(value) => value,
+                    .None => "",
+                });
+                let head = cluster_attribute(chart, "lhead", initial);
+                output.push(line(depth + 1, f"initial_{id} [shape=point, width=0.1];"));
+                output.push(line(depth + 1, f"initial_{id} -> {initial} [label=\"{value}\" {head}];"));
+            }
+        }
+        stack.push(Frame { index: frame.index, depth: depth, close: true, separator: false });
+        var child = node.children.len();
+        while child > 0 {
+            child -= 1;
+            stack.push(Frame { index: node.children[child], depth: depth + 1, close: false, separator: mermaid && node.parallel && child > 0 });
+        }
+    }
+    output
+}
+
+pub fn render(input: string) -> string {
+    let chart = json.decode<Chart>(input).expect("valid machine presentation");
+    let mermaid = chart.format == "mermaid";
+    var output: Vec<string> = [];
+    if mermaid {
+        let title = if chart.parameters.is_empty() {
+            chart.name
+        } else {
+            chart.name + "<" + chart.parameters.join(", ") + ">"
+        };
+        output.push(line(0, "---"));
+        output.push(line(0, "title: " + json.encode(title)));
+        output.push(line(0, "---"));
+        output.push(line(0, "stateDiagram-v2"));
+    } else {
+        let name = dot_text(chart.name);
+        output.push(line(0, f"digraph \"{name}\"" + " {"));
+        output.push(line(1, "rankdir=LR; compound=true; node [shape=box, style=rounded];"));
+        output.push(line(1, f"label=\"{name}\"; labelloc=t;"));
+    }
+    output.append(nodes(chart, mermaid));
+    for node in chart.auxiliary {
+        let id = node.id;
+        if mermaid {
+            let label = mermaid_text(node.label);
+            output.push(line(1, f"state \"{label}\" as {id}"));
+            if node.computed {
+                output.push(line(1, f"state {id} <<choice>>"));
+            }
+        } else {
+            let label = dot_text(node.label);
+            let shape = if node.computed { "diamond" } else { "note" };
+            output.push(line(1, f"{id} [label=\"{label}\", shape={shape}];"));
+        }
+    }
+    let rules = legend(chart);
+    if rules != "" {
+        if mermaid {
+            output.push(line(1, "state \"Machine rules\" as machine_rules"));
+            output.push(line(1, "note right of machine_rules"));
+            output.push(line(2, mermaid_text(rules)));
+            output.push(line(1, "end note"));
+        } else {
+            let label = dot_text(rules);
+            output.push(line(1, f"machine_rules [shape=note, label=\"{label}\"];"));
+        }
+    }
+    for edge in chart.edges {
+        let from = edge.from;
+        let to = edge.to;
+        if mermaid {
+            let label = mermaid_text(edge.label);
+            output.push(line(1, f"{from} --> {to} : {label}"));
+        } else {
+            let label = dot_text(edge.label);
+            let tail = flow_cluster_attribute(chart, "ltail", from, to);
+            let head = flow_cluster_attribute(chart, "lhead", to, from);
+            output.push(line(1, f"{from} -> {to} [label=\"{label}\" {tail} {head}];"));
+        }
+    }
+    if mermaid {
+        for node in chart.nodes {
+            let notes = annotations(node);
+            if !notes.is_empty() {
+                let id = node.id;
+                output.push(line(1, f"note right of {id}"));
+                output.push(line(2, mermaid_text(notes.join("\n"))));
+                output.push(line(1, "end note"));
+            }
+        }
+    } else {
+        output.push(line(0, "}"));
+    }
+    output.join("")
+}

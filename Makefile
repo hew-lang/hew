@@ -164,7 +164,7 @@ MAKEFILE_ROOT := $(patsubst %/,%,$(dir $(abspath $(firstword $(MAKEFILE_LIST))))
 
 # Cargo does not track its own CARGO_MANIFEST_DIR as a build-script rerun
 # input. Keep shared targets tied to the checkout selected by this invocation.
-export HEW_BUILD_SOURCE_ROOT := $(CURDIR)
+include $(MAKEFILE_ROOT)/scripts/build-source-identity.mk
 
 # Cargo profile directory names.
 #

@@ -1,4 +1,4 @@
-import { UNIT, stringValue, type VmValue } from "../values.js";
+import { vectorItems, UNIT, stringValue, type VmValue } from "../values.js";
 import { runtimeTag, type PackageV1, type TermV1 } from "./package.js";
 import { collectionOperation, type ValueProgram } from "./value-operations.js";
 
@@ -27,7 +27,7 @@ function array(value: Bridge): Bridge[] {
 }
 function fields(value: VmValue): VmValue[] {
   if (value.kind === "record") return value.fields;
-  if (value.kind === "vector") return value.items;
+  if (value.kind === "vector") return vectorItems(value);
   throw new Error(`codec aggregate received ${value.kind}`);
 }
 function toBridge(

@@ -1,10 +1,10 @@
 [[case]]
 id = "bytes-clone-original"
-intent = "Prefix clone on bytes is visible in the prelude and produces an independently owned value."
-source = "../../repros/ladder/bytes_clone.hew"
+intent = "Prefix clone on bytes is visible in the prelude and leaves the original available."
+source = "sources/bytes_clone.hew"
 suites = ["acceptance", "safety"]
 timeout_seconds = 30
 
 [case.expected]
-stdout = "3\n"
+stdout = "3 3\n"
 exit = 0

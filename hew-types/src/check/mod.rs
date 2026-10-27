@@ -4396,6 +4396,8 @@ impl Checker {
         }
         if let Some(normalized) = &normalized_program {
             normalized.merge_head_binding_diagnostics(&mut output.errors, &mut output.warnings);
+            normalized.merge_evaluator_diagnostics(&mut output.errors);
+            normalized.merge_evaluator_diagnostics(&mut output.warnings);
             for diagnostic in output.errors.iter_mut().chain(output.warnings.iter_mut()) {
                 // Generated extents can map to a whole authored declaration,
                 // rather than an exact editable token. Keep their prose but do

@@ -1665,11 +1665,8 @@ pub unsafe fn register_actor_monitor(
 /// - Valid live `ref_id`: removes the entry from both `ref_to_monitor` and the
 ///   target's `monitors` list, then returns.
 ///
-/// This invariant will be relied upon by the upcoming `MonitorRef::close()` and
-/// `MonitorRef`'s `Drop` implementation (landing in M.1): calling
-/// `hew_actor_demonitor` twice with the same `ref_id` (explicit `close()`
-/// followed by scope-exit drop) will always be safe.  The second call finds no
-/// entry and returns silently — no double-free, no crash.
+/// Repeated removal of the same registration is safe: the second call
+/// finds no entry and returns silently.
 ///
 /// When a target actor is freed, `remove_all_monitors_for_actor` sweeps its
 /// `ref_to_monitor` entries first. A subsequent `hew_actor_demonitor` call for

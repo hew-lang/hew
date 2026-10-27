@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  UNIT,
   byteVectorValue,
   clearByteVector,
   cloneValue,
@@ -8,11 +9,155 @@ import {
   releaseVector,
   sliceByteVector,
   stringValue,
+  takeVectorEnd,
+  vectorElement,
+  vectorItems,
+  vectorLength,
   vectorStorage,
 } from "../dist/interpreter/values.js";
 
 const int = (value) => ({ kind: "i64", value: BigInt(value) });
 const vector = (items) => ({ kind: "vector", elementType: "", items });
+
+// Charge element work, including manually written copies. Re-wrap any new
+// header view between operations so replacing an array cannot hide later work.
+function elementWork(budget) {
+  const counts = { reads: 0, writes: 0 };
+  const watched = new WeakSet();
+  const charge = (kind, property) => {
+    if (typeof property !== "string" || !/^(0|[1-9][0-9]*)$/.test(property))
+      return;
+    counts[kind]++;
+    assert(
+      counts.reads + counts.writes <= budget,
+      "vector element work exceeded its linear budget",
+    );
+  };
+  const watch = (items) => {
+    if (watched.has(items)) return items;
+    const proxy = new Proxy(items, {
+      get(target, property, receiver) {
+        charge("reads", property);
+        return Reflect.get(target, property, receiver);
+      },
+      set(target, property, value, receiver) {
+        charge("writes", property);
+        return Reflect.set(target, property, value, receiver);
+      },
+    });
+    watched.add(proxy);
+    return proxy;
+  };
+  return { counts, watch };
+}
+
+test("mixed-end drains use linear element work for unique and shared storage", (t) => {
+  for (const size of [1024, 2048]) {
+    for (const shared of [false, true]) {
+      const work = elementWork(4 * size);
+      const source = vector(
+        work.watch(Array.from({ length: size }, (_, index) => int(index))),
+      );
+      const storage = vectorStorage(source);
+      storage.shareOnCopy = true;
+      const cursor = shared ? cloneValue(source) : source;
+      let front = 0;
+      let back = size;
+      while (front < back) {
+        cursor.items = work.watch(cursor.items);
+        assert.equal(takeVectorEnd(cursor, false).value, BigInt(front++));
+        cursor.items = work.watch(cursor.items);
+        assert.equal(takeVectorEnd(cursor, true).value, BigInt(--back));
+        assert.equal(vectorLength(cursor), back - front);
+      }
+      t.diagnostic(
+        `drain size=${size} shared=${shared} reads=${work.counts.reads} writes=${work.counts.writes}`,
+      );
+      assert.equal(vectorStorage(cursor), storage);
+      if (shared)
+        assert.equal(vectorElement(source, size - 1).value, BigInt(size - 1));
+      else assert(storage.items.every((item) => item === UNIT));
+      releaseVector(cursor);
+      if (shared) releaseVector(source);
+    }
+  }
+});
+
+test("managed end moves clear references and release only the ordered remainder", () => {
+  const items = ["front", "one", "two", "back"].map(stringValue);
+  const value = vector(items);
+  const storage = vectorStorage(value);
+  const front = takeVectorEnd(value, false);
+  const back = takeVectorEnd(value, true);
+  assert.equal(storage.items[0], UNIT);
+  assert.equal(storage.items[3], UNIT);
+  assert.deepEqual(
+    vectorItems(value).map((item) => item.value),
+    ["one", "two"],
+  );
+  const copied = cloneValue(value);
+  assert.equal(vectorStorage(copied).capacity, 2);
+  const remainder = releaseVector(value);
+  assert.deepEqual(
+    remainder.map((item) => item.value),
+    ["one", "two"],
+  );
+  remainder.forEach((item) => item.release());
+  assert.equal(front.value, "front");
+  assert.equal(back.value, "back");
+  front.release();
+  back.release();
+  releaseVector(copied).forEach((item) => item.release());
+});
+
+test("back removal and refill use linear element work while retaining storage", (t) => {
+  for (const size of [1024, 2048]) {
+    const steps = size * 2;
+    const work = elementWork(4 * steps);
+    const value = vector(
+      work.watch(Array.from({ length: size }, (_, index) => int(index))),
+    );
+    const storage = vectorStorage(value);
+    for (let step = 0; step < steps; step++) {
+      value.items = work.watch(value.items);
+      const item = takeVectorEnd(value, true);
+      mutableVector(value, vectorLength(value) + 1).items.push(item);
+    }
+    t.diagnostic(
+      `refill size=${size} steps=${steps} reads=${work.counts.reads} writes=${work.counts.writes}`,
+    );
+    assert.equal(vectorStorage(value), storage);
+    assert.equal(vectorElement(value, size - 1).value, BigInt(size - 1));
+    assert.equal(vectorLength(value), size);
+    releaseVector(value);
+  }
+});
+
+test("shared plain end removal retains backing until a write detaches", () => {
+  const source = vector([int(1), int(2), int(3), int(4)]);
+  const backing = vectorStorage(source);
+  backing.shareOnCopy = true;
+  const cursor = cloneValue(source);
+  assert.equal(takeVectorEnd(cursor, false).value, 1n);
+  assert.equal(takeVectorEnd(cursor, true).value, 4n);
+  assert.equal(vectorStorage(cursor), backing);
+  assert.deepEqual(
+    source.items.map((item) => item.value),
+    [1n, 2n, 3n, 4n],
+  );
+  mutableVector(cursor).items[0] = int(9);
+  assert.notEqual(vectorStorage(cursor), backing);
+  assert.deepEqual(
+    cursor.items.map((item) => item.value),
+    [9n, 3n],
+  );
+  assert.deepEqual(
+    source.items.map((item) => item.value),
+    [1n, 2n, 3n, 4n],
+  );
+  releaseVector(source);
+  releaseVector(cursor);
+});
 
 test("plain vectors retain capacity until a copy detaches for mutation", () => {
   const first = vector([int(1), int(2), int(3)]);

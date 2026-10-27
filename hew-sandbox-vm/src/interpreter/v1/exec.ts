@@ -31,6 +31,9 @@ import {
   releaseVector,
   byteVectorValue,
   vectorStorage,
+  vectorItems,
+  vectorLength,
+  vectorElement,
   stringValue,
   toJsonValue,
   type VmValue,
@@ -953,10 +956,10 @@ class ExecutorV1 {
               (row.kind === "vector" ||
                 row.kind === "array" ||
                 row.kind === "slice")
-                ? value.items.map((item) =>
+                ? vectorItems(value).map((item) =>
                     this.managed.copy(item, row.element),
                   )
-                : value.items;
+                : vectorItems(value);
             if (appended?.length) {
               if (
                 row.kind !== "vector" &&
@@ -976,6 +979,8 @@ class ExecutorV1 {
               {
                 ...value,
                 items,
+                offset: 0,
+                length: undefined,
                 storage: { ...storage, capacity, items, owners: 1 },
               },
               detached,
@@ -3268,12 +3273,12 @@ class ExecutorV1 {
     if (operation === "Len") {
       this.completeShim(act, term, {
         kind: "i64",
-        value: BigInt(view.items.length),
+        value: BigInt(vectorLength(view)),
       });
       return;
     }
     if (index?.kind !== "i64") throw new Error("pool operation has no index");
-    const value = view.items[Number(index.value)];
+    const value = vectorElement(view, Number(index.value));
     if (operation === "Get") {
       this.completeShim(
         act,
@@ -7664,7 +7669,7 @@ function toComparable(value: VmValue): unknown {
     case "enum":
       return [value.tag, value.payload.map(toComparable)];
     case "vector":
-      return value.items.map(toComparable);
+      return vectorItems(value).map(toComparable);
     case "rc":
       return "Rc";
     case "weak":
@@ -7988,8 +7993,10 @@ function equals(lhs: VmValue, rhs: VmValue): boolean {
   }
   if (lhs.kind === "vector" && rhs.kind === "vector") {
     return (
-      lhs.items.length === rhs.items.length &&
-      lhs.items.every((item, at) => equals(item, rhs.items[at]!))
+      vectorLength(lhs) === vectorLength(rhs) &&
+      vectorItems(lhs).every((item, at) =>
+        equals(item, vectorElement(rhs, at)!),
+      )
     );
   }
   return canonical(lhs) === canonical(rhs);

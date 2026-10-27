@@ -13,7 +13,7 @@
 //!   `type Foo { ... }` record declarations, `enum` declarations (`indirect`
 //!   included), machines, `dyn Trait` objects, and closures.
 //!   Records, `bytes`, and the collections are copy-on-write values under the
-//!   v0.5 value model (`docs/v05/ownership.md` — structural `==`, no pointer
+//!   value model (`docs/language/ownership.hew` — structural `==`, no pointer
 //!   identity, HEW-SPEC-2026 §3.4.3's value row); enums and machines are
 //!   tagged values, and `indirect` is a layout annotation (HEW-SPEC-2026
 //!   §3.7.4) whose heap box `is` must not expose (#3134). The checker is the

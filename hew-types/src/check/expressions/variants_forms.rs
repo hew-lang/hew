@@ -1268,7 +1268,7 @@ else needs `impl Display for {rendered}`)"
                 //
                 // * `type Foo { ... }` records (`TypeDefKind::Struct`) are
                 //   copy-on-write values with structural `==` and no pointer
-                //   identity (`docs/v05/ownership.md`), settled by #3108.
+                //   identity (`docs/language/ownership.hew`), settled by #3108.
                 // * `enum` declarations are tagged values. An `indirect` enum
                 //   does carry a heap box, but `indirect` is a layout
                 //   annotation (HEW-SPEC-2026 §3.7.4) — admitting it to `is`

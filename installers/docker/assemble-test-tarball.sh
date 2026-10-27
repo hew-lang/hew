@@ -20,7 +20,7 @@ if [ ! -x "${REPO_DIR}/build/bin/hew" ] || [ ! -f "${REPO_DIR}/build/lib/libhew.
 fi
 
 rm -rf "${STAGING}"
-mkdir -p "${STAGING}/bin" "${STAGING}/lib" "${STAGING}/std"
+mkdir -p "${STAGING}/bin" "${STAGING}/lib" "${STAGING}/std" "${STAGING}/include"
 
 # Binaries (codegen is embedded in the hew binary)
 install -m755 "${REPO_DIR}/build/bin/hew" "${STAGING}/bin/hew"
@@ -28,6 +28,8 @@ install -m755 "${REPO_DIR}/build/bin/hew" "${STAGING}/bin/hew"
 # Complete release library layout, including WASI and native target subtrees.
 cp -LR "${REPO_DIR}/build/lib/." "${STAGING}/lib/"
 echo "    libhew.a: $(du -h "${STAGING}/lib/libhew.a" | cut -f1)"
+
+cp "${REPO_DIR}/hew-cabi/include/hew.h" "${REPO_DIR}/hew-cabi/include/hew_host.h" "${STAGING}/include/"
 
 # Standard library sources (all .hew files, including subdirectories)
 cp -r "${REPO_DIR}/std/." "${STAGING}/std/"

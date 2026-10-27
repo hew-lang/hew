@@ -67,8 +67,54 @@ fn shared_handles() {
     assert(Rc.new([8, 9]).is_unique());
 }
 
+// State8 + retained scalar backing32 + reply8 fits exactly. End removal
+// must not detach the backing shared with the caller.
+#[max_heap(48)]
+actor SharedEnds {
+    var values: Vec<i64>;
+    receive fn take() -> i64 {
+        values.remove(0) + values.pop()
+    }
+}
+
+// A consumed prefix must survive copying, mutation, growth and slicing.
+fn prefix_storage() {
+    var values = [0, 1, 2, 3];
+    assert(values.remove(0) == 0);
+    let snapshot = values;
+    values.set(0, 11);
+    for item in 4..20 {
+        values.push(item);
+    }
+    assert(snapshot == [1, 2, 3]);
+    assert(values[0..4] == [11, 2, 3, 4]);
+    values.clear();
+    values.push(99);
+    assert(values == [99]);
+    var words = ["zero", "one", "two", "three"];
+    assert(words.remove(0) == "zero");
+    let saved = words;
+    words.append(["four", "five"]);
+    assert(words[1..4] == ["two", "three", "four"]);
+    assert(saved == ["one", "two", "three"]);
+    var cursor = [0, 1, 2, 3, 4].into_iter();
+    assert(cursor.next().expect("prefix") == 0);
+    var copied = cursor;
+    assert(cursor.next().expect("front after copy") == 1);
+    assert(copied.next_back().expect("back after copy") == 4);
+    assert(copied.next().expect("copied front") == 1);
+    assert(cursor.next_back().expect("original back") == 4);
+}
+
 fn main() -> i64 {
     shared_handles();
+    prefix_storage();
+    let retained = [0, 1, 2, 3];
+    let ends = spawn SharedEnds { values: retained };
+    assert(ends.take().expect("shared ends within budget") == 3);
+    stop(ends);
+    stopped(ends);
+    assert(retained == [0, 1, 2, 3]);
     var swapped = ["left", "middle", "right"];
     let original = swapped;
     swapped.swap(0, 2);

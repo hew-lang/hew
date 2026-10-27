@@ -170,7 +170,7 @@ pub(crate) unsafe fn visit_vector_range(
         let identity = if fresh {
             core::ptr::null()
         } else {
-            value.data.cast_const().cast()
+            crate::vec::buffer_start(pointer).cast_const().cast()
         };
         if backing {
             match storage(visitor, identity, bytes) {
@@ -428,6 +428,7 @@ mod tests {
     fn plain_vector_visits_shared_capacity_and_detached_growth() {
         use crate::vec::{
             hew_vec_clone, hew_vec_free_owned, hew_vec_new_with_elem_layout, hew_vec_push_owned,
+            hew_vec_remove_at_owned,
         };
         let mut walk = Walk::default();
         let sink = visitor(&mut walk, HewManagedWalkKind::Retain);
@@ -439,6 +440,12 @@ mod tests {
             for i in 0..4_i64 {
                 hew_vec_push_owned(value, (&raw const i).cast());
             }
+            let mut removed = -1_i64;
+            assert_eq!(
+                hew_vec_remove_at_owned(value, 0, (&raw mut removed).cast()),
+                1
+            );
+            assert_eq!(removed, 0);
             let alias = hew_vec_clone(value);
             assert_eq!(
                 hew_managed_visit_vector((&raw const value).cast(), &raw const sink),
@@ -450,6 +457,8 @@ mod tests {
             );
             assert_eq!(walk.retained.values().sum::<u64>(), 32);
             let item = 4_i64;
+            hew_vec_push_owned(alias, (&raw const item).cast());
+            let item = 5_i64;
             hew_vec_push_owned(alias, (&raw const item).cast());
             assert_eq!(
                 hew_managed_visit_vector((&raw const alias).cast(), &raw const sink),

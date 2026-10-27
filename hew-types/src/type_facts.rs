@@ -1,7 +1,7 @@
-//! Capability facts on the class table (`docs/internal/ir-ladder.md` §6.3).
+//! Capability facts on the class table.
 //!
 //! The checker decides once per substituted type and publishes
-//! `TypeCheckOutput.type_facts`, keyed by [`TypeInstanceKey`] (§6.2). SIR rules
+//! `TypeCheckOutput.type_facts`, keyed by [`TypeInstanceKey`] (the structural key). SIR rules
 //! 5 and 6, `TargetLayout`, glue emission and collection descriptors all read
 //! this table; nothing downstream re-asks.
 
@@ -13,7 +13,7 @@ use crate::traits::{MarkerTrait, TraitRegistry};
 use crate::value_class::{ClassContext, ClassError, DeclaredType, ValueClass};
 use crate::BuiltinType;
 
-/// What a `copy_value` of this type costs, per §1.1's `clone` column.
+/// What a `copy_value` of this type costs, per the class table's `clone` column.
 ///
 /// Class alone does not decide copy legality: `Rc<T>` and `Generator` are both
 /// `AffineResource`, yet `Rc` has a retain path and a generator has none.
@@ -35,7 +35,7 @@ pub enum CloneKind {
 
 /// The `Send` verdict for one type instance.
 ///
-/// **The wrong reading is made unrepresentable** (§6.3): this is not a `bool`,
+/// **The wrong reading is made unrepresentable** (the type-fact contract): this is not a `bool`,
 /// and every `Closure`-keyed row carries [`Self::DeferredToClosureFacts`], so a
 /// consumer asking `type_facts[closure_key].send` for a yes/no gets a value it
 /// cannot use without going to `closure_facts`. Two closures with identical
@@ -56,11 +56,11 @@ pub enum SendFact {
 
 /// The key of every per-type fact table.
 ///
-/// **Structural, not nominal** (§6.2). The nominal spelling
+/// **Structural, not nominal** (the structural key). The nominal spelling
 /// `{ template: NominalId, type_args }` is withdrawn: `nominal_instance()`
 /// represents source record instances, so `Tuple`, `Array`,
 /// `Slice`, `Function`, `Closure`, `Pointer`, `Borrow`, `TraitObject` and
-/// `Task` would have no key at all while §1.1 classes every one of them.
+/// `Task` would have no key at all while the class table classifies every one of them.
 ///
 /// The key is a *type*, never a name: [`crate::mangle::mangle_resolved_ty`]
 /// renders a symbol from it and is never a lookup key.
@@ -1948,11 +1948,11 @@ impl TypeFacts {
     /// Build the facts for one substituted type.
     ///
     /// `send`, `hash`, `eq` and ordering are decided by their own checker authorities and
-    /// handed in; `class` and `clone` come from the §1.1 table.
+    /// handed in; `class` and `clone` come from the class table.
     ///
     /// # Errors
     ///
-    /// Returns [`ClassError`] when §1.1 refuses the type. There is no default
+    /// Returns [`ClassError`] when the class table refuses the type. There is no default
     /// row: a type with no class gets no entry, and a consumer fails closed on
     /// the absence.
     pub fn of_type(
@@ -1968,15 +1968,15 @@ impl TypeFacts {
             ty if ty.generator_parts().is_some() => SendFact::DeferredToGeneratorFacts,
             ResolvedTy::Closure { .. } => SendFact::DeferredToClosureFacts,
             // MARKED SHORTCUT - a trait object's send fact is `false` here.
-            // WHY: §6.3 makes it "the bound list contains `Send`", and that is
-            // sound *only* because §1.1's `CoerceToDynTrait` wall refuses a
+            // WHY: the type-fact contract makes it "the bound list contains `Send`", and that is
+            // sound *only* because the class table's `CoerceToDynTrait` wall refuses a
             // coercion into a `+ Send` object whose concrete is not `Send`. The
             // wall does not exist yet, so the bound list would let a
             // `dyn ... + Send` over an `Rc`-holding concrete be shared between
             // actors and race a non-atomic count.
             // WHEN: the coercion wall lands with the closure send facts.
             // WHAT: this constructor takes the caller's decided fact, which is
-            // then the bound list §6.3 names.
+            // then the bound list the type-fact contract names.
             ResolvedTy::TraitObject { .. } => SendFact::Known(false),
             _ => send,
         };
@@ -2266,7 +2266,7 @@ fn main() {}"#,
         }
     }
 
-    /// Declarations the §1.1 Aggregate rule needs for the cases below.
+    /// Declarations the aggregate rule needs for the cases below.
     fn declarations() -> BTreeMap<crate::NominalId, DeclaredType> {
         let mut decls = BTreeMap::new();
         decls.insert(
@@ -2387,7 +2387,7 @@ fn main() {}"#,
         let decls = declarations();
         let context = ClassContext::new(&decls);
         crate::value_class::classify_ty(ty, &context)
-            .unwrap_or_else(|error| panic!("§1.1 refused `{ty:?}`: {error}"))
+            .unwrap_or_else(|error| panic!("the class table refused `{ty:?}`: {error}"))
     }
 
     #[test]
@@ -2485,7 +2485,7 @@ fn main() {}"#,
         );
     }
 
-    /// §1.1's own test sentence: every `ResolvedTy` arm, asserting
+    /// Every `ResolvedTy` arm, asserting
     /// `(class, clone)`.
     #[test]
     #[expect(
@@ -2627,13 +2627,13 @@ fn main() {}"#,
         );
     }
 
-    /// §1.1's own test sentence: **every `BuiltinType` variant**, in a `match`
+    /// Every `BuiltinType` variant**, in a `match`
     /// with no wildcard arm, so a new variant is a compile error rather than a
     /// silent `Unknown`.
     #[test]
     #[expect(
         clippy::match_same_arms,
-        reason = "distinct §1.1 rows that agree for these arguments must stay distinct arms"
+        reason = "distinct class table rows that agree for these arguments must stay distinct arms"
     )]
     fn every_builtin_type_variant_has_the_ladder_class_and_clone() {
         let decls = declarations();
@@ -2722,9 +2722,7 @@ fn main() {}"#,
         }
     }
 
-    /// §1.1's marker correction, stated as the property it buys: `marker()`
-    /// and the class table agree by construction, so no consumer can read one
-    /// and get the other's answer.
+    /// Builtin markers and the class table agree on copyable values.
     #[test]
     fn builtin_marker_and_the_class_table_agree() {
         use crate::builtin_type::BuiltinTypeMarker;
@@ -2809,7 +2807,7 @@ fn main() {}"#,
         }
     }
 
-    /// The four cases the §10 exit gate names by hand.
+    /// Four representative ownership classes.
     #[test]
     fn exit_gate_aggregate_cases_join_through_their_elements() {
         assert_eq!(
@@ -2862,7 +2860,7 @@ fn main() {}"#,
         );
     }
 
-    /// §6.2's own test sentence: every one of these has no `NominalId`, so a
+    /// Each of these types has no `NominalId`, so a
     /// nominal key could not express them; the structural key hits for all
     /// five.
     #[test]
@@ -2894,7 +2892,7 @@ fn main() {}"#,
             );
             let facts =
                 TypeFacts::of_type(ty, &context, SendFact::Known(true), false, false, false)
-                    .expect("§1.1 classes every one of these");
+                    .expect("the class table classifies every one of these");
             table.insert(TypeInstanceKey(ty.clone()), facts);
         }
 
@@ -2906,7 +2904,7 @@ fn main() {}"#,
         }
     }
 
-    /// §6.3: `send` is unrepresentable as a plain `bool` for a `Closure` key.
+    /// the type-fact contract: `send` is unrepresentable as a plain `bool` for a `Closure` key.
     #[test]
     fn a_closure_row_defers_its_send_fact() {
         let decls = declarations();
@@ -2991,8 +2989,8 @@ fn main() {}"#,
         assert_eq!(CloneKind::None, authored_clone_none.clone);
     }
 
-    /// A trait object's send fact is not the bound list yet: §6.3 makes that
-    /// reading sound only through §1.1's `CoerceToDynTrait` wall, which has not
+    /// A trait object's send fact is not the bound list yet: the type-fact contract makes that
+    /// reading sound only through the class table's `CoerceToDynTrait` wall, which has not
     /// landed, so the row publishes the fail-closed verdict rather than one a
     /// consumer could act on unsoundly.
     #[test]
@@ -3097,7 +3095,7 @@ fn main() {}"#,
         decls
     }
 
-    /// §1.1's indirect-enum row: the recursive occurrence is an owning edge,
+    /// the class table's indirect-enum row: the recursive occurrence is an owning edge,
     /// so the declaration keeps its payload class and clones field-wise. The
     /// payload here is a scalar, and the answer is still `CowValue` because the
     /// recursion is only legal behind a heap box.
@@ -3111,10 +3109,8 @@ fn main() {}"#,
         );
     }
 
-    /// The negative control for the row above, stated as the class the
-    /// bottom-element cut used to publish: §1.2 gives `BitCopy` no owner, §1.3
-    /// lets `copy_value` duplicate it at `clone == Bits`, and §2.1 bit-copies
-    /// it across an actor heap, so a heap-boxed payload must never carry it.
+    /// A heap-boxed payload must not be `BitCopy`: that class has no owner
+    /// and permits bitwise copies, including across an actor heap.
     #[test]
     fn a_self_recursive_declaration_is_never_bit_copyable() {
         let decls = recursive_declarations();
@@ -3332,7 +3328,7 @@ fn main() {}"#,
     }
 
     /// A classed recursive type publishes a row like any other aggregate: the
-    /// missing-key contract is for types §1.1 refuses, and a legal `indirect`
+    /// missing-key contract is for types the class table refuses, and a legal `indirect`
     /// enum is not one of them.
     #[test]
     fn a_classed_recursive_type_publishes_its_row() {
@@ -3453,14 +3449,14 @@ fn main() {}"#,
         );
     }
 
-    /// What §1.2 owes for a class, as this module's tests read it.
+    /// What the ownership-kind mapping owes for a class, as this module's tests read it.
     #[derive(Debug, PartialEq, Eq)]
     enum OwnershipObligation {
         None,
         Owned,
     }
 
-    /// §1.2's kind table, restated locally so the assertion above is about the
+    /// the ownership-kind mapping, restated locally so the assertion above is about the
     /// obligation and not about a spelling.
     fn obligation_of(class: ValueClass) -> OwnershipObligation {
         match class {

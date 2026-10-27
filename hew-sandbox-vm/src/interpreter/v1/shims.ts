@@ -14,6 +14,10 @@ import {
   byteVectorValue,
   clearByteVector,
   mutableVector,
+  vectorItems,
+  vectorLength,
+  vectorElement,
+  takeVectorEnd,
   sliceByteVector,
   cloneValue,
   compareUtf8,
@@ -671,14 +675,16 @@ const UNIT_FAMILIES = {
   // native lossy decoding does.
   BytesDecodeUtf8Lossy: (_host, args) => str(decodeUtf8(arg(args, 0))),
   BytesNew: () => byteVectorValue([]),
-  BytesIsEmpty: (_host, args) => bool(vec(args, 0).items.length === 0),
-  BytesLen: (_host, args) => int(BigInt(vec(args, 0).items.length)),
+  BytesIsEmpty: (_host, args) => bool(vectorLength(vec(args, 0)) === 0),
+  BytesLen: (_host, args) => int(BigInt(vectorLength(vec(args, 0)))),
   BytesContains: (_host, args) => {
     const byte = integer(args, 1);
-    return bool(vec(args, 0).items.some((item) => integer([item], 0) === byte));
+    return bool(
+      vectorItems(vec(args, 0)).some((item) => integer([item], 0) === byte),
+    );
   },
   BytesIndex: (_host, args) => {
-    const items = vec(args, 0).items;
+    const items = vectorItems(vec(args, 0));
     const at = index(args, 1);
     if (at < 0 || at >= items.length) {
       throw new ShimFault(
@@ -690,41 +696,41 @@ const UNIT_FAMILIES = {
   },
   // Nonempty views retain the exact original allocation and payload capacity.
   BytesSlice: (_host, args) => {
-    const items = vec(args, 0).items;
+    const items = vectorItems(vec(args, 0));
     const start = index(args, 1);
     const end = index(args, 2);
     checkSliceBounds(start, end, items.length);
     return sliceByteVector(vec(args, 0), start, end);
   },
   BytesSliceFrom: (_host, args) => {
-    const items = vec(args, 0).items;
+    const items = vectorItems(vec(args, 0));
     const start = index(args, 1);
     checkSliceBounds(start, items.length, items.length);
     return sliceByteVector(vec(args, 0), start, items.length);
   },
   BytesConcat: (_host, args) =>
-    byteVector([...vec(args, 0).items, ...vec(args, 1).items]),
+    byteVector([...vectorItems(vec(args, 0)), ...vectorItems(vec(args, 1))]),
   BytesStartsWith: (_host, args) =>
-    bool(runAt(vec(args, 0).items, vec(args, 1).items, 0)),
+    bool(runAt(vectorItems(vec(args, 0)), vectorItems(vec(args, 1)), 0)),
   BytesEndsWith: (_host, args) => {
-    const items = vec(args, 0).items;
-    const run = vec(args, 1).items;
+    const items = vectorItems(vec(args, 0));
+    const run = vectorItems(vec(args, 1));
     return bool(runAt(items, run, items.length - run.length));
   },
   // A mutating call receives its receiver by `move` and returns it.
   BytesPush: (_host, args) => {
     const target = vec(args, 0);
-    mutableVector(target, target.items.length + 1);
+    mutableVector(target, vectorLength(target) + 1);
     target.items.push(cloneValue(arg(args, 1)));
     return target;
   },
   BytesSet: (_host, args) => {
     const target = vec(args, 0);
     const at = index(args, 1);
-    if (at < 0 || at >= target.items.length) {
+    if (at < 0 || at >= vectorLength(target)) {
       throw new ShimFault(
         "vector_bounds",
-        `bytes index ${at} out of bounds for length ${target.items.length}`,
+        `bytes index ${at} out of bounds for length ${vectorLength(target)}`,
       );
     }
     mutableVector(target);
@@ -741,7 +747,7 @@ const UNIT_FAMILIES = {
         "BytesGet names no result shape to build its Option against",
       );
     }
-    const items = vec(args, 0).items;
+    const items = vectorItems(vec(args, 0));
     const at = index(args, 1);
     return at >= 0 && at < items.length
       ? host.enumValue(shape, "OptionSome", [cloneValue(items[at]!)])
@@ -751,8 +757,8 @@ const UNIT_FAMILIES = {
   // append, paired with the removed byte for a pop.
   BytesAppend: (_host, args) => {
     const target = vec(args, 0);
-    const added = vec(args, 1).items.map(cloneValue);
-    mutableVector(target, target.items.length + added.length);
+    const added = vectorItems(vec(args, 1)).map(cloneValue);
+    mutableVector(target, vectorLength(target) + added.length);
     target.items.push(...added);
     return target;
   },
@@ -763,7 +769,7 @@ const UNIT_FAMILIES = {
       );
     }
     const target = vec(args, 0);
-    if (target.items.length) mutableVector(target);
+    if (vectorLength(target)) mutableVector(target);
     const last = target.items.pop();
     return {
       kind: "record",
@@ -959,9 +965,9 @@ const VECTOR_SHIMS = {
     const right = index(args, 2);
     if (
       left < 0 ||
-      left >= target.items.length ||
+      left >= vectorLength(target) ||
       right < 0 ||
-      right >= target.items.length
+      right >= vectorLength(target)
     ) {
       throw new ShimFault("vector_bounds", "vector swap index out of bounds");
     }
@@ -974,14 +980,13 @@ const VECTOR_SHIMS = {
   },
   Pop: (_host, args) => {
     const target = vec(args, 0);
-    if (target.items.length === 0) {
+    if (vectorLength(target) === 0) {
       throw new ShimFault("vector_bounds", "pop from empty vector");
     }
-    mutableVector(target);
     return {
       kind: "record",
       typeId: "",
-      fields: [target, target.items.pop()!],
+      fields: [target, takeVectorEnd(target, true)],
     };
   },
   New: () => ({ kind: "vector", elementType: "", items: [] }),
@@ -990,15 +995,15 @@ const VECTOR_SHIMS = {
   // ownership decision SIR proved, so it moves in as it arrives.
   Push: (_host, args) => {
     const target = vec(args, 0);
-    mutableVector(target, target.items.length + 1);
+    mutableVector(target, vectorLength(target) + 1);
     target.items.push(arg(args, 1));
     return target;
   },
   Append: (_host, args) => {
     const target = vec(args, 0);
-    const added = [...vec(args, 1).items];
+    const added = [...vectorItems(vec(args, 1))];
     if (added.length) {
-      mutableVector(target, target.items.length + added.length, added);
+      mutableVector(target, vectorLength(target) + added.length, added);
       target.items.push(...added.map(cloneValue));
     }
     return target;
@@ -1006,14 +1011,16 @@ const VECTOR_SHIMS = {
   Remove: (_host, args) => {
     const target = vec(args, 0);
     const at = index(args, 1);
-    if (at < 0 || at >= target.items.length) {
+    if (at < 0 || at >= vectorLength(target)) {
       throw new ShimFault(
         "vector_bounds",
-        `vector index ${at} out of bounds for length ${target.items.length}`,
+        `vector index ${at} out of bounds for length ${vectorLength(target)}`,
       );
     }
-    mutableVector(target);
-    const [item] = target.items.splice(at, 1);
+    const item =
+      at === 0
+        ? takeVectorEnd(target, false)
+        : mutableVector(target).items.splice(at, 1)[0]!;
     return { kind: "record", typeId: "", fields: [target, item!] };
   },
   Get: (host, args, shape) => {
@@ -1022,17 +1029,16 @@ const VECTOR_SHIMS = {
         "Vector::Get names no result shape to build its Option against",
       );
     }
-    const items = vec(args, 0).items;
-    const at = index(args, 1);
-    return at >= 0 && at < items.length
-      ? host.enumValue(shape, "OptionSome", [cloneValue(items[at]!)])
+    const item = vectorElement(vec(args, 0), index(args, 1));
+    return item
+      ? host.enumValue(shape, "OptionSome", [cloneValue(item)])
       : host.enumValue(shape, "OptionNone", []);
   },
   Index: (_host, args) => cloneValue(sequenceElement(args)),
   IndexBorrow: (_host, args) => sequenceElement(args),
-  Len: (_host, args) => int(BigInt(vec(args, 0).items.length)),
+  Len: (_host, args) => int(BigInt(vectorLength(vec(args, 0)))),
   Join: (_host, args) => {
-    const items = vec(args, 0).items;
+    const items = vectorItems(vec(args, 0));
     return str(
       items
         .map((_, at) => indexed(items, at).value)
@@ -1040,14 +1046,14 @@ const VECTOR_SHIMS = {
     );
   },
   Slice: (_host, args) => {
-    const items = vec(args, 0).items;
+    const items = vectorItems(vec(args, 0));
     const start = index(args, 1);
     const end = index(args, 2);
     checkSliceBounds(start, end, items.length);
     return vectorSlice(items.slice(start, end));
   },
   SliceFrom: (_host, args) => {
-    const items = vec(args, 0).items;
+    const items = vectorItems(vec(args, 0));
     const start = index(args, 1);
     checkSliceBounds(start, items.length, items.length);
     return vectorSlice(items.slice(start));
@@ -1066,15 +1072,16 @@ function vectorSlice(items: readonly VmValue[]): VmValue {
 }
 
 function sequenceElement(args: VmValue[]): VmValue {
-  const items = vec(args, 0).items;
+  const target = vec(args, 0);
   const at = index(args, 1);
-  if (at < 0 || at >= items.length) {
+  const item = vectorElement(target, at);
+  if (!item) {
     throw new ShimFault(
       "vector_bounds",
-      `vector index ${at} out of bounds for length ${items.length}`,
+      `vector index ${at} out of bounds for length ${vectorLength(target)}`,
     );
   }
-  return items[at]!;
+  return item;
 }
 
 function byteVector(items: readonly VmValue[]): VmValue {
@@ -1576,7 +1583,7 @@ export function decodeUtf8Checked(
 ): { value: string } | { validUpTo: number; errorLen: number | null } {
   if (value.kind !== "vector") throw new TypeError("UTF-8 input must be bytes");
   const bytes = Uint8Array.from(
-    value.items.map((item) => Number(integer([item], 0))),
+    vectorItems(value).map((item) => Number(integer([item], 0))),
   );
   let at = 0;
   while (at < bytes.length) {
@@ -1627,7 +1634,9 @@ function decodeUtf8(value: VmValue): string {
   }
   return new TextDecoder().decode(
     Uint8Array.from(
-      value.items.map((item) => (item.kind === "i64" ? Number(item.value) : 0)),
+      vectorItems(value).map((item) =>
+        item.kind === "i64" ? Number(item.value) : 0,
+      ),
     ),
   );
 }

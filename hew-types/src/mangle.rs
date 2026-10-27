@@ -1,4 +1,4 @@
-//! Symbol rendering for a resolved type (`docs/internal/ir-ladder.md` §5.1).
+//! Symbol rendering for a resolved type.
 //!
 //! This renders a *symbol* from a [`TypeInstanceKey`](crate::type_facts::TypeInstanceKey)
 //! and is never itself a lookup key: the fact tables compare their keys

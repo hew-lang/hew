@@ -9,10 +9,24 @@ actor Detach {
         values.remove(0)
     }
 }
+
 #[max_heap(71)]
 actor SmallDetach {
     var values: Vec<i64>;
-    receive fn edit() { values.set(0, 9); }
+    receive fn edit() {
+        values.set(0, 9);
+    }
+}
+
+// Taking either end only changes the independently owned Vec header. A
+// retained scalar source therefore needs no second backing allocation:
+// state8 + shared32 + reply8 =48 canonical managed bytes.
+#[max_heap(48)]
+actor Ends {
+    var values: Vec<i64>;
+    receive fn take() -> i64 {
+        values.remove(0) + values.pop()
+    }
 }
 
 // A nonempty slice uses the ordinary vector minimum capacity4:
@@ -20,12 +34,19 @@ actor SmallDetach {
 #[max_heap(72)]
 actor Slice {
     var values: Vec<i64>;
-    receive fn read() -> i64 { let copy = values[0..2]; copy.len() }
+    receive fn read() -> i64 {
+        let copy = values[0..2];
+        copy.len()
+    }
 }
+
 #[max_heap(71)]
 actor SmallSlice {
     var values: Vec<i64>;
-    receive fn read() { let copy = values[0..2]; assert(copy.len() == 2); }
+    receive fn read() {
+        let copy = values[0..2];
+        assert(copy.len() == 2);
+    }
 }
 
 // The source vectors have distinct immutable backing. Append reserves the
@@ -34,13 +55,19 @@ actor SmallSlice {
 actor Append {
     var first: Vec<i64>;
     var second: Vec<i64>;
-    receive fn join() -> i64 { first.append(second); first.len() }
+    receive fn join() -> i64 {
+        first.append(second);
+        first.len()
+    }
 }
+
 #[max_heap(143)]
 actor SmallAppend {
     var first: Vec<i64>;
     var second: Vec<i64>;
-    receive fn join() { first.append(second); }
+    receive fn join() {
+        first.append(second);
+    }
 }
 
 // Owned Vec<string> copies allocate exactly len slots and retain the strings.
@@ -56,9 +83,13 @@ actor Copy {
         let copied = outer.get(0);
         outer.clear();
         assert(inner.len() == 1);
-        match copied { .Some(value) => value.len(), .None => -1 }
+        match copied {
+            .Some(value) => value.len(),
+            .None => -1,
+        }
     }
 }
+
 #[max_heap(83)]
 actor SmallCopy {
     receive fn read() -> i64 {
@@ -69,40 +100,63 @@ actor SmallCopy {
         let copied = outer.get(0);
         outer.clear();
         assert(inner.len() == 1);
-        match copied { .Some(value) => value.len(), .None => -1 }
+        match copied {
+            .Some(value) => value.len(),
+            .None => -1,
+        }
     }
 }
 
 fn main() -> i64 {
     var values: Vec<i64> = Vec.new();
     var second: Vec<i64> = Vec.new();
-    for i in 0..4 { values.push(i); second.push(i + 4); }
+    for i in 0..4 {
+        values.push(i);
+        second.push(i + 4);
+    }
+    let ends = spawn Ends { values: values };
+    assert(ends.take().expect("shared end removal") == 3);
+    stop(ends);
+    stopped(ends);
     let edit = spawn Detach { values: values };
     println(edit.edit().expect("edit"));
-    stop(edit); stopped(edit);
+    stop(edit);
+    stopped(edit);
     let small_edit = spawn SmallDetach { values: values };
-    match small_edit.edit() { .Err(.Trapped) => println("detach limit"), _ => return 2 }
+    match small_edit.edit() {
+        .Err(.Trapped) => println("detach limit"),
+        _ => return 2,
+    }
     stopped(small_edit);
-
     let slice = spawn Slice { values: values };
     println(slice.read().expect("slice"));
-    stop(slice); stopped(slice);
+    stop(slice);
+    stopped(slice);
     let small_slice = spawn SmallSlice { values: values };
-    match small_slice.read() { .Err(.Trapped) => println("slice limit"), _ => return 3 }
+    match small_slice.read() {
+        .Err(.Trapped) => println("slice limit"),
+        _ => return 3,
+    }
     stopped(small_slice);
-
     let append = spawn Append { first: values, second: second };
     println(append.join().expect("append"));
-    stop(append); stopped(append);
+    stop(append);
+    stopped(append);
     let small_append = spawn SmallAppend { first: values, second: second };
-    match small_append.join() { .Err(.Trapped) => println("append limit"), _ => return 4 }
+    match small_append.join() {
+        .Err(.Trapped) => println("append limit"),
+        _ => return 4,
+    }
     stopped(small_append);
-
     let copy = spawn Copy;
     println(copy.read().expect("copy"));
-    stop(copy); stopped(copy);
+    stop(copy);
+    stopped(copy);
     let small_copy = spawn SmallCopy;
-    match small_copy.read() { .Err(.Trapped) => println("copy limit"), _ => return 5 }
+    match small_copy.read() {
+        .Err(.Trapped) => println("copy limit"),
+        _ => return 5,
+    }
     stopped(small_copy);
     assert(values[0] == 0 && values.len() == 4 && second.len() == 4);
     0

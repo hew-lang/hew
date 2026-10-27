@@ -622,56 +622,25 @@ impl<T> Vec<T> {
 // ---------------------------------------------------------------------------
 // VecIter — concrete IntoIterator impl for Vec<T>
 // ---------------------------------------------------------------------------
-/// An owned double-ended cursor backed by ordered option slots.
-///
-/// Construction moves the elements into an ordered `Vec<Option<T>>` and adds
-/// one empty scratch slot. Each step exchanges its selected slot with the
-/// scratch slot, pops the owned option, and restores the empty scratch slot.
-/// Untaken elements remain in logical order, so early drop releases them in
-/// that order. Exhaustion leaves a live cursor that drops at scope exit.
-///
-/// Construction takes O(n) time and an additional O(n) buffer, including one
-/// option tag per element. An unshared cursor's end steps take O(1) time
-/// without cloning elements. Detaching a copied cursor follows ordinary Vec
-/// copy-on-write rules and can take O(n) time. Value-copy rules preserve
-/// independent source and cursor copies when their elements support cloning;
-/// clone-free elements remain owned.
+/// An owned double-ended cursor over the vector's remaining live elements.
+/// Construction transfers the vector without rebuilding its elements. Each
+/// unshared end step takes O(1) time and moves one element without cloning.
+/// Untaken elements retain their order and are released by ordinary Vec cleanup.
+/// Source and cursor copies follow the element type's ordinary value-copy rules.
 pub type VecIter<T> {
-    slots: Vec<Option<T>>;
-    front: i64;
-    back: i64;
-}
-
-impl<T> VecIter<T> {
-    fn take_at(var self, index: i64) -> Option<T> {
-        self.slots.swap(index, self.slots.len() - 1);
-        let item = self.slots.pop();
-        self.slots.push(.None);
-        item
-    }
+    values: Vec<T>;
 }
 
 impl<T> Iterator for VecIter<T> {
     type Item = T;
     fn next(var self) -> Option<T> {
-        if self.front >= self.back {
-            .None
-        } else {
-            let item = self.take_at(self.front);
-            self.front += 1;
-            item
-        }
+        if self.values.is_empty() { .None } else { .Some(self.values.remove(0)) }
     }
 }
 
 impl<T> DoubleEndedIterator for VecIter<T> {
     fn next_back(var self) -> Option<T> {
-        if self.front >= self.back {
-            .None
-        } else {
-            self.back -= 1;
-            self.take_at(self.back)
-        }
+        if self.values.is_empty() { .None } else { .Some(self.values.pop()) }
     }
 }
 
@@ -679,17 +648,7 @@ impl<T> IntoIterator for Vec<T> {
     type Item = T;
     type IntoIter = VecIter<T>;
     fn into_iter(consume self) -> VecIter<T> {
-        var source = self;
-        let back = source.len();
-        var slots: Vec<Option<T>> = [];
-        while !source.is_empty() {
-            slots.push(.Some(source.pop()));
-        }
-        for index in 0 .. (back / 2) {
-            slots.swap(index, back - index - 1);
-        }
-        slots.push(.None);
-        VecIter { slots: slots, front: 0, back: back }
+        VecIter { values: self }
     }
 }
 

@@ -60,16 +60,12 @@
 
 ;; Keywords
 ;; Keywords — sourced from hew-lexer ALL_KEYWORDS (single source of truth).
-;; v0.6: the keyword diet retired async, budget, catch, cooperate, default,
-;;       emit, foreign, join, from, pool, super and try; default, emit and
-;;       pool live on as contextual identifiers. struct and wire are
-;;       attribute-only (#[wire] type/enum); race stays reserved.
 (defconst hew-keywords
   '("if" "else" "is" "match" "loop" "for" "in" "while"
     "break" "continue" "return"
     "let" "var" "const" "mut" "fn" "macro" "gen" "type" "indirect" "enum"
     "trait" "impl" "import" "pub" "where"
-    "actor" "fork" "receive" "init" "spawn" "move" "await" "await_restart" "this"
+    "actor" "fork" "receive" "init" "spawn" "move" "await"
     "supervisor" "child" "restart" "strategy"
     "reserved" "optional" "deprecated"
     "machine" "state" "event" "on" "when" "entry" "exit"

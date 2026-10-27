@@ -529,7 +529,7 @@ pub struct TypeCheckOutput {
     pub associated_type_schemas: super::AssociatedTypeSchemas,
     pub resolved_annotation_types: HashMap<SpanKey, ResolvedTy>,
     /// The one authority for a substituted type's ownership and capability
-    /// facts (`docs/internal/ir-ladder.md` §6.3), keyed structurally by §6.2's
+    /// facts, keyed structurally by
     /// [`TypeInstanceKey`].
     ///
     /// SIR rules 5 and 6, `TargetLayout`, glue emission and collection
@@ -961,27 +961,8 @@ pub struct TypeCheckOutput {
     /// for f-string `Display` dispatch instead of hard-coding `"Display"` /
     /// `"fmt"` symbols. See [`crate::LangItemRegistry`].
     pub lang_items: crate::LangItemRegistry,
-    /// Checker-authored unified-dispatch table keyed by method-call span.
-    ///
-    /// This is the substrate introduced by W4.001 Stage A. It will, in
-    /// subsequent stages, become the single source of truth for
-    /// "how does this method call lower" — replacing the parallel
-    /// authorities currently split across `method_call_rewrites`,
-    /// `admissibility.rs` per-K allowlists, and `methods.rs` runtime
-    /// symbol-family selection.
-    ///
-    /// **Stage A invariant (DI-003 fail-closed-by-absence):** no
-    /// production reader of this field exists yet. The map is empty for
-    /// every Hew program checked in Stage A. Stage B populates it from
-    /// the unified resolver (dual-emit alongside `method_call_rewrites`);
-    /// Stage C makes HIR lowering consult it as the dispatch authority
-    /// for HashMap/HashSet; Stage D extends to Vec/Option/Result. A
-    /// missing entry — once a Stage B/C/D consumer is wired — is a
-    /// bug-class invariant violation, never a silent "no rewrite
-    /// needed" fallthrough.
-    ///
-    /// See [`crate::check::dispatch`] module docs for the full Stage A
-    /// substrate ownership rationale and downstream consumer ordering.
+    /// Checker-authored method dispatch, keyed by call span. HIR and checker
+    /// analyses consume resolved targets and their lifecycle facts.
     pub resolved_calls: HashMap<SpanKey, crate::check::dispatch::ResolvedCall>,
     /// Checker-authoritative imported type identities for HIR lowering.
     ///
@@ -3433,10 +3414,6 @@ pub struct Checker {
     /// Text keys, tags and flags of every data record and enum.
     pub(super) serial_layouts: HashMap<crate::NominalId, crate::data_shape::SerialLayout>,
     /// Checker-side accumulator for [`TypeCheckOutput::resolved_calls`].
-    ///
-    /// **Stage A:** never populated by production code paths. Reserved
-    /// for Stage B's unified resolver. See `dispatch.rs` module docs and
-    /// `TypeCheckOutput::resolved_calls`.
     pub(super) resolved_calls: HashMap<SpanKey, crate::check::dispatch::ResolvedCall>,
     pub(super) width_cast_lowerings: HashMap<SpanKey, WidthCastLowering>,
     pub(super) try_width_cast_lowerings: HashMap<SpanKey, TryWidthCastLowering>,

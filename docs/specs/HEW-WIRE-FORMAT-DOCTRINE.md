@@ -5,7 +5,7 @@
 > codegen/ABI reviewers, docs reviewers, integration authors.
 > **Stance:** different layers of the system have different wire-format
 > needs. This document fixes which format is canonical at which layer, what
-> is implemented today, and what is honestly still a stub.
+> is implemented today and where the boundaries lie.
 
 This doctrine governs four orthogonal questions:
 
@@ -17,9 +17,7 @@ This doctrine governs four orthogonal questions:
    `proto-gen`, schema-first generators)?
 4. What patterns are explicitly **anti-doctrine** — known footguns to avoid?
 
-Each section names what is real, cites the source-of-truth files, and marks
-unimplemented surfaces with `WHEN-obsolete` + `WHAT-real-solution-looks-like`
-markers per the project's `Shims, Stubs, and Seams` rule.
+Each section identifies the current format and its source of truth.
 
 ---
 
@@ -278,7 +276,7 @@ tagged-schema layer are described in
 | `std.encoding.base64` | **Real.** | `std/encoding/base64/`. |
 | `std.encoding.hex` | **Real.** | `std/encoding/hex/`. |
 | `std.encoding.compress` | **Real.** gzip/deflate/zlib. | `std/encoding/compress/`. |
-| `std.encoding.wire` | **Substrate.** Holds the shared `DecodeError` and the `#[wire]` tagged-schema layer. The legacy HBF byte-layout helpers (`encode_header` / framing) were removed when the CBOR-native wire format replaced HBF. | `std/encoding/wire/` — see §5 for history. |
+| `std.encoding.wire` | **Substrate.** Holds the shared `DecodeError` and the `#[wire]` tagged-schema layer. The legacy HBF byte-layout helpers (`encode_header` / framing) were removed when the CBOR-native wire format replaced HBF. | `std/encoding/wire/`. |
 
 Each module's README states its own scope. The doctrine here is about
 **which one to reach for**, not how each one is implemented.

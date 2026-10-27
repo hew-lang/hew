@@ -10850,6 +10850,21 @@
         "native",
         "wasm32-wasip1"
       ],
+      "classification": "non-declarable",
+      "extent": "no-in-signature-extent",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
+        "native": "fn hew_json_de_new( *const c_void) -> *mut c_void",
+        "wasm32-wasip1": "fn hew_json_de_new( *const c_void) -> *mut c_void"
+      },
+      "symbol": "hew_json_de_new"
+    },
+    {
+      "availability": [
+        "native",
+        "wasm32-wasip1"
+      ],
       "classification": "stable-stdlib",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
@@ -11189,6 +11204,306 @@
         "wasm32-wasip1": "fn hew_json_parse_checked( *const HewString, *const HewValueLayout, *mut i32, ) -> *mut HewJsonValue"
       },
       "symbol": "hew_json_parse_checked"
+    },
+    {
+      "availability": [
+        "native",
+        "wasm32-wasip1"
+      ],
+      "classification": "non-declarable",
+      "extent": "no-in-signature-extent",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
+        "native": "fn hew_json_ser_bool( *mut c_void, i8)",
+        "wasm32-wasip1": "fn hew_json_ser_bool( *mut c_void, i8)"
+      },
+      "symbol": "hew_json_ser_bool"
+    },
+    {
+      "availability": [
+        "native",
+        "wasm32-wasip1"
+      ],
+      "classification": "non-declarable",
+      "extent": "no-in-signature-extent",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
+        "native": "fn hew_json_ser_bytes( *mut c_void, *const BytesTriple)",
+        "wasm32-wasip1": "fn hew_json_ser_bytes( *mut c_void, *const BytesTriple)"
+      },
+      "symbol": "hew_json_ser_bytes"
+    },
+    {
+      "availability": [
+        "native",
+        "wasm32-wasip1"
+      ],
+      "classification": "non-declarable",
+      "extent": "no-in-signature-extent",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
+        "native": "fn hew_json_ser_char( *mut c_void, u32)",
+        "wasm32-wasip1": "fn hew_json_ser_char( *mut c_void, u32)"
+      },
+      "symbol": "hew_json_ser_char"
+    },
+    {
+      "availability": [
+        "native",
+        "wasm32-wasip1"
+      ],
+      "classification": "non-declarable",
+      "extent": "no-in-signature-extent",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
+        "native": "fn hew_json_ser_f64( *mut c_void, f64)",
+        "wasm32-wasip1": "fn hew_json_ser_f64( *mut c_void, f64)"
+      },
+      "symbol": "hew_json_ser_f64"
+    },
+    {
+      "availability": [
+        "native",
+        "wasm32-wasip1"
+      ],
+      "classification": "non-declarable",
+      "extent": "no-in-signature-extent",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
+        "native": "fn hew_json_ser_field( *mut c_void, u32)",
+        "wasm32-wasip1": "fn hew_json_ser_field( *mut c_void, u32)"
+      },
+      "symbol": "hew_json_ser_field"
+    },
+    {
+      "availability": [
+        "native",
+        "wasm32-wasip1"
+      ],
+      "classification": "non-declarable",
+      "extent": "no-in-signature-extent",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
+        "native": "fn hew_json_ser_finish_string( *mut c_void) -> *mut HewString",
+        "wasm32-wasip1": "fn hew_json_ser_finish_string( *mut c_void) -> *mut HewString"
+      },
+      "symbol": "hew_json_ser_finish_string"
+    },
+    {
+      "availability": [
+        "native",
+        "wasm32-wasip1"
+      ],
+      "classification": "non-declarable",
+      "extent": "no-in-signature-extent",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
+        "native": "fn hew_json_ser_i64( *mut c_void, i64)",
+        "wasm32-wasip1": "fn hew_json_ser_i64( *mut c_void, i64)"
+      },
+      "symbol": "hew_json_ser_i64"
+    },
+    {
+      "availability": [
+        "native",
+        "wasm32-wasip1"
+      ],
+      "classification": "non-declarable",
+      "extent": "length-or-count",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
+        "native": "fn hew_json_ser_map_begin( *mut c_void, i64, i8)",
+        "wasm32-wasip1": "fn hew_json_ser_map_begin( *mut c_void, i64, i8)"
+      },
+      "symbol": "hew_json_ser_map_begin"
+    },
+    {
+      "availability": [
+        "native",
+        "wasm32-wasip1"
+      ],
+      "classification": "non-declarable",
+      "extent": "no-in-signature-extent",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
+        "native": "fn hew_json_ser_map_end( *mut c_void)",
+        "wasm32-wasip1": "fn hew_json_ser_map_end( *mut c_void)"
+      },
+      "symbol": "hew_json_ser_map_end"
+    },
+    {
+      "availability": [
+        "native",
+        "wasm32-wasip1"
+      ],
+      "classification": "non-declarable",
+      "extent": "no-in-signature-extent",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
+        "native": "fn hew_json_ser_new() -> *mut c_void",
+        "wasm32-wasip1": "fn hew_json_ser_new() -> *mut c_void"
+      },
+      "symbol": "hew_json_ser_new"
+    },
+    {
+      "availability": [
+        "native",
+        "wasm32-wasip1"
+      ],
+      "classification": "non-declarable",
+      "extent": "no-in-signature-extent",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
+        "native": "fn hew_json_ser_null( *mut c_void)",
+        "wasm32-wasip1": "fn hew_json_ser_null( *mut c_void)"
+      },
+      "symbol": "hew_json_ser_null"
+    },
+    {
+      "availability": [
+        "native",
+        "wasm32-wasip1"
+      ],
+      "classification": "non-declarable",
+      "extent": "no-in-signature-extent",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
+        "native": "fn hew_json_ser_record_begin( *mut c_void, *const Table<'static>)",
+        "wasm32-wasip1": "fn hew_json_ser_record_begin( *mut c_void, *const Table<'static>)"
+      },
+      "symbol": "hew_json_ser_record_begin"
+    },
+    {
+      "availability": [
+        "native",
+        "wasm32-wasip1"
+      ],
+      "classification": "non-declarable",
+      "extent": "no-in-signature-extent",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
+        "native": "fn hew_json_ser_record_end( *mut c_void)",
+        "wasm32-wasip1": "fn hew_json_ser_record_end( *mut c_void)"
+      },
+      "symbol": "hew_json_ser_record_end"
+    },
+    {
+      "availability": [
+        "native",
+        "wasm32-wasip1"
+      ],
+      "classification": "non-declarable",
+      "extent": "length-or-count",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
+        "native": "fn hew_json_ser_seq_begin( *mut c_void, i64)",
+        "wasm32-wasip1": "fn hew_json_ser_seq_begin( *mut c_void, i64)"
+      },
+      "symbol": "hew_json_ser_seq_begin"
+    },
+    {
+      "availability": [
+        "native",
+        "wasm32-wasip1"
+      ],
+      "classification": "non-declarable",
+      "extent": "no-in-signature-extent",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
+        "native": "fn hew_json_ser_seq_end( *mut c_void)",
+        "wasm32-wasip1": "fn hew_json_ser_seq_end( *mut c_void)"
+      },
+      "symbol": "hew_json_ser_seq_end"
+    },
+    {
+      "availability": [
+        "native",
+        "wasm32-wasip1"
+      ],
+      "classification": "non-declarable",
+      "extent": "length-or-count",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
+        "native": "fn hew_json_ser_set_begin( *mut c_void, i64)",
+        "wasm32-wasip1": "fn hew_json_ser_set_begin( *mut c_void, i64)"
+      },
+      "symbol": "hew_json_ser_set_begin"
+    },
+    {
+      "availability": [
+        "native",
+        "wasm32-wasip1"
+      ],
+      "classification": "non-declarable",
+      "extent": "no-in-signature-extent",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
+        "native": "fn hew_json_ser_str( *mut c_void, *const HewString)",
+        "wasm32-wasip1": "fn hew_json_ser_str( *mut c_void, *const HewString)"
+      },
+      "symbol": "hew_json_ser_str"
+    },
+    {
+      "availability": [
+        "native",
+        "wasm32-wasip1"
+      ],
+      "classification": "non-declarable",
+      "extent": "no-in-signature-extent",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
+        "native": "fn hew_json_ser_u64( *mut c_void, u64)",
+        "wasm32-wasip1": "fn hew_json_ser_u64( *mut c_void, u64)"
+      },
+      "symbol": "hew_json_ser_u64"
+    },
+    {
+      "availability": [
+        "native",
+        "wasm32-wasip1"
+      ],
+      "classification": "non-declarable",
+      "extent": "no-in-signature-extent",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
+        "native": "fn hew_json_ser_variant( *mut c_void, *const Table<'static>, u32, )",
+        "wasm32-wasip1": "fn hew_json_ser_variant( *mut c_void, *const Table<'static>, u32, )"
+      },
+      "symbol": "hew_json_ser_variant"
+    },
+    {
+      "availability": [
+        "native",
+        "wasm32-wasip1"
+      ],
+      "classification": "non-declarable",
+      "extent": "no-in-signature-extent",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
+        "native": "fn hew_json_ser_variant_end( *mut c_void)",
+        "wasm32-wasip1": "fn hew_json_ser_variant_end( *mut c_void)"
+      },
+      "symbol": "hew_json_ser_variant_end"
     },
     {
       "availability": [

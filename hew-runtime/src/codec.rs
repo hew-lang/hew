@@ -290,6 +290,180 @@ pub unsafe extern "C" fn hew_ser_finish_string(s: *mut c_void) -> *mut HewString
     string_from_str(&text)
 }
 
+// Dedicated entries keep generated JSON walks independent of the multi-format writer.
+unsafe fn json_sink<'a>(sink: *mut c_void) -> &'a mut hew_codec::JsonSink<'static> {
+    // SAFETY: the generated JSON walk owns this live handle exclusively.
+    unsafe { &mut *sink.cast::<hew_codec::JsonSink<'static>>() }
+}
+
+#[no_mangle]
+pub extern "C" fn hew_json_ser_new() -> *mut c_void {
+    Box::into_raw(Box::new(hew_codec::JsonSink::new())).cast()
+}
+
+/// # Safety
+/// `s` is a live sink.
+#[no_mangle]
+pub unsafe extern "C" fn hew_json_ser_null(s: *mut c_void) {
+    // SAFETY: per contract.
+    unsafe { json_sink(s) }.null();
+}
+
+/// # Safety
+/// `s` is a live sink.
+#[no_mangle]
+pub unsafe extern "C" fn hew_json_ser_bool(s: *mut c_void, value: i8) {
+    // SAFETY: per contract.
+    unsafe { json_sink(s) }.bool(value != 0);
+}
+
+/// # Safety
+/// `s` is a live sink.
+#[no_mangle]
+pub unsafe extern "C" fn hew_json_ser_i64(s: *mut c_void, value: i64) {
+    // SAFETY: per contract.
+    unsafe { json_sink(s) }.i64(value);
+}
+
+/// # Safety
+/// `s` is a live sink.
+#[no_mangle]
+pub unsafe extern "C" fn hew_json_ser_u64(s: *mut c_void, value: u64) {
+    // SAFETY: per contract.
+    unsafe { json_sink(s) }.u64(value);
+}
+
+/// # Safety
+/// `s` is a live sink.
+#[no_mangle]
+pub unsafe extern "C" fn hew_json_ser_f64(s: *mut c_void, value: f64) {
+    // SAFETY: per contract.
+    unsafe { json_sink(s) }.f64(value);
+}
+
+/// A `char` is a string of one scalar.
+///
+/// # Safety
+/// `s` is a live sink; `value` is a Unicode scalar value.
+#[no_mangle]
+pub unsafe extern "C" fn hew_json_ser_char(s: *mut c_void, value: u32) {
+    let ch = char::from_u32(value).expect("hew codec: a char is a Unicode scalar");
+    // SAFETY: per contract.
+    unsafe { json_sink(s) }.str(ch.encode_utf8(&mut [0; 4]));
+}
+
+/// # Safety
+/// `s` is a live sink; `value` is a borrowed managed string.
+#[no_mangle]
+pub unsafe extern "C" fn hew_json_ser_str(s: *mut c_void, value: *const HewString) {
+    // SAFETY: per contract.
+    unsafe { json_sink(s).str(string_as_str(value)) };
+}
+
+/// # Safety
+/// `s` is a live sink; `value` is a live managed byte carrier.
+#[no_mangle]
+pub unsafe extern "C" fn hew_json_ser_bytes(s: *mut c_void, value: *const BytesTriple) {
+    // SAFETY: per contract.
+    unsafe { json_sink(s).bytes(bytes_of(value)) };
+}
+
+/// # Safety
+/// `s` is a live sink.
+#[no_mangle]
+pub unsafe extern "C" fn hew_json_ser_seq_begin(s: *mut c_void, len: i64) {
+    // SAFETY: per contract.
+    unsafe { json_sink(s) }.seq_begin(usize::try_from(len).unwrap_or(0));
+}
+
+/// # Safety
+/// `s` is a live sink.
+#[no_mangle]
+pub unsafe extern "C" fn hew_json_ser_set_begin(s: *mut c_void, len: i64) {
+    // SAFETY: per contract.
+    unsafe { json_sink(s) }.set_begin(usize::try_from(len).unwrap_or(0));
+}
+
+/// # Safety
+/// `s` is a live sink with an open sequence or set.
+#[no_mangle]
+pub unsafe extern "C" fn hew_json_ser_seq_end(s: *mut c_void) {
+    // SAFETY: per contract.
+    unsafe { json_sink(s) }.seq_end();
+}
+
+/// # Safety
+/// `s` is a live sink.
+#[no_mangle]
+pub unsafe extern "C" fn hew_json_ser_map_begin(s: *mut c_void, len: i64, string_keys: i8) {
+    // SAFETY: per contract.
+    unsafe { json_sink(s) }.map_begin(usize::try_from(len).unwrap_or(0), string_keys != 0);
+}
+
+/// # Safety
+/// `s` is a live sink with an open map.
+#[no_mangle]
+pub unsafe extern "C" fn hew_json_ser_map_end(s: *mut c_void) {
+    // SAFETY: per contract.
+    unsafe { json_sink(s) }.map_end();
+}
+
+/// # Safety
+/// `s` is a live sink; `t` is a static table.
+#[no_mangle]
+pub unsafe extern "C" fn hew_json_ser_record_begin(s: *mut c_void, t: *const Table<'static>) {
+    // SAFETY: per contract.
+    unsafe { json_sink(s).record_begin(table(t)) };
+}
+
+/// # Safety
+/// `s` is a live sink with an open record.
+#[no_mangle]
+pub unsafe extern "C" fn hew_json_ser_field(s: *mut c_void, index: u32) {
+    // SAFETY: per contract.
+    unsafe { json_sink(s) }.field(index as usize);
+}
+
+/// # Safety
+/// `s` is a live sink with an open record.
+#[no_mangle]
+pub unsafe extern "C" fn hew_json_ser_record_end(s: *mut c_void) {
+    // SAFETY: per contract.
+    unsafe { json_sink(s) }.record_end();
+}
+
+/// # Safety
+/// `s` is a live sink; `t` is a static table.
+#[no_mangle]
+pub unsafe extern "C" fn hew_json_ser_variant(
+    s: *mut c_void,
+    t: *const Table<'static>,
+    index: u32,
+) {
+    // SAFETY: per contract.
+    unsafe { json_sink(s).variant(table(t), index as usize) };
+}
+
+/// # Safety
+/// `s` is a live sink with an open variant.
+#[no_mangle]
+pub unsafe extern "C" fn hew_json_ser_variant_end(s: *mut c_void) {
+    // SAFETY: per contract.
+    unsafe { json_sink(s) }.variant_end();
+}
+
+/// Consume the complete JSON document and return its managed text.
+///
+/// # Safety
+/// `s` is a live JSON sink transferred here, holding one complete value.
+#[no_mangle]
+pub unsafe extern "C" fn hew_json_ser_finish_string(s: *mut c_void) -> *mut HewString {
+    // SAFETY: the generated JSON walk transfers its sole handle here.
+    let document = unsafe { Box::from_raw(s.cast::<hew_codec::JsonSink<'static>>()) }.finish();
+    let text = core::str::from_utf8(&document).expect("JSON writes UTF-8");
+    string_from_str(text)
+}
+
 // ── Decode ──────────────────────────────────────────────────────────────────
 
 /// A decode handle: the source while it is healthy, the first error after.
@@ -352,7 +526,22 @@ pub unsafe extern "C" fn hew_de_new(format_code: i32, input: *const c_void) -> *
 }
 
 fn reader_for(format: Format, bytes: &[u8]) -> *mut c_void {
-    let reader = match Source::new(format, bytes) {
+    reader_result(Source::new(format, bytes))
+}
+
+/// Parse a complete JSON document through the existing strict reader.
+///
+/// # Safety
+/// `input` points at a slot holding a borrowed managed string.
+#[no_mangle]
+pub unsafe extern "C" fn hew_json_de_new(input: *const c_void) -> *mut c_void {
+    // SAFETY: the generated JSON decode walk supplies a borrowed string slot.
+    let text = unsafe { string_as_str(*input.cast::<*const HewString>()) };
+    reader_result(Source::json(text.as_bytes()))
+}
+
+fn reader_result(source: Result<Source<'static>, DecodeError>) -> *mut c_void {
+    let reader = match source {
         Ok(source) => Reader {
             source: Some(source),
             error: None,

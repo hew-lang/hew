@@ -13,7 +13,8 @@
 #   - Checks release identity, dependency policy, notices and installer
 #     ordering (a superset of release.yml's validate job)
 #   - Builds ALL release artifacts (hew-cli with linked tools, hew-lib)
-#   - Runs full Rust workspace tests (matching ci.yml scope)
+#   - Runs portable syntax tests on Linux x86_64 and target-sensitive tests on
+#     every native platform, including formatter filesystem and line endings
 #   - Requires native acceptance, C-ABI tests and sanitizer execution
 #   - Smoke-tests the compile+run pipeline with a trivial .hew program
 #
@@ -461,7 +462,9 @@ jobs:
         # (child helper exits 101); they pass natively on arm64 Linux
         # (container repro) and on every other platform. Runner-environment
         # classification — excluded here, tracked for investigation.
-        run: make test-strict
+        # Linux x86_64 owns the portable syntax suite. Keep filesystem and
+        # line-ending formatter tests on this target too.
+        run: make -k test-strict hew-fmt-fidelity NEXTEST_WORKSPACE_EXCLUDE="hew-lexer hew-parser"
 
       - name: Run C-ABI crate tests
         if: ${{ !cancelled() && steps.workspace-tests.outcome != 'skipped' }}
@@ -571,7 +574,9 @@ jobs:
         # their memory coverage is the Linux ASan job; exclude them here.
         env:
           NEXTEST_WORKSPACE_FILTER: "not binary(~oracle)"
-        run: make test-strict
+        # Linux x86_64 owns the portable syntax suite. The formatter tests
+        # still exercise filesystem and line endings on macOS.
+        run: make -k test-strict hew-fmt-fidelity NEXTEST_WORKSPACE_EXCLUDE="hew-lexer hew-parser"
 
       - name: Run C-ABI crate tests
         if: ${{ !cancelled() && steps.workspace-tests.outcome != 'skipped' }}
@@ -671,7 +676,9 @@ jobs:
       - name: Run Rust workspace tests
         id: workspace-tests
         shell: bash
-        run: make SHELL=bash test-strict
+        # Linux x86_64 owns the portable syntax suite. Keep filesystem and
+        # CRLF formatter coverage on Windows.
+        run: make -k SHELL=bash test-strict hew-fmt-fidelity NEXTEST_WORKSPACE_EXCLUDE="hew-lexer hew-parser"
 
       # Snapshot before later test targets can rebuild the failing workspace's binaries.
       - name: Collect failed Windows workspace binaries

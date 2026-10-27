@@ -1,7 +1,7 @@
 //! Format-neutral serialization for Hew data.
 //!
-//! The compiler emits one encode walk and one decode walk per concrete data
-//! type. An encode walk drives a [`Sink`] with structural events; a decode
+//! The compiler emits demanded encode and decode walks per concrete data type
+//! and format. An encode walk drives a [`Sink`] with structural events; a decode
 //! walk pulls the same structure from a [`Source`]. The five formats differ
 //! only in how the sink spells those events and how the source parses them:
 //!
@@ -17,9 +17,8 @@
 //! [`MAX_DEPTH`], and reports failures as a [`DecodeError`] with the path of
 //! the failing value.
 //!
-//! Both halves go through an in-memory [`Value`] tree: the sink builds one
-//! and writes it at [`Sink::finish`]; the source parses one and hands it out
-//! pull by pull.
+//! JSON encoding writes events directly into its output buffer. Other encoders
+//! build a [`Value`] tree; decoders parse one and hand it out pull by pull.
 
 #![expect(
     clippy::missing_panics_doc,
@@ -29,6 +28,7 @@
 mod error;
 mod formats;
 mod json;
+mod json_sink;
 pub mod managed_tree;
 pub mod property;
 mod sink;
@@ -39,6 +39,7 @@ mod value;
 pub mod yaml_value;
 
 pub use error::DecodeError;
+pub use json_sink::JsonSink;
 pub use sink::Sink;
 pub use source::Source;
 pub use table::{Member, Table};

@@ -368,6 +368,7 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
                 &self.module.actor_recipes,
                 &self.value_callbacks,
                 decode,
+                hew_types::CodecFormat::Cbor,
             )?;
             if decode {
                 if callback.get_type().get_return_type() != Some(self.ctx.i32_type().into()) {

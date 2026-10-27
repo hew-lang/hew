@@ -746,7 +746,12 @@ hew_suite_tail() {
 is_separately_gated_or_reject_fixture() {
     local path="$1"
     local base
-    base="$(basename "$path")"
+    base="${path##*/}"
+    if [[ "${HEW_CORPUS_SKIP_STDLIB:-0}" == 1 && "$path" == std/* ]]; then
+        # The composed CI gate runs stdlib-user-build-clean independently,
+        # including a stricter source check of every stdlib module.
+        return 0
+    fi
     case "$path" in
     *"/reject/"*)
         return 0
@@ -815,14 +820,18 @@ HEW_CORPUS_DIAGNOSTIC_DRIFT=""
 HEW_CORPUS_DIAGNOSTIC_DRIFT_COUNT=0
 
 run_hew_corpus() {
-    local swept=() excluded=0 total f
+    local swept=() excluded=0 total f index worker pid jobs
     local check_log status expected_code actual_codes
-    local check_args=()
+    local pids=() check_args=() worker_failed=0
 
     require_hew_bin
     require_expected_failures_file
     read_expected_failures
     HEW_CORPUS_DIAGNOSTIC_DRIFT=""
+    if [[ "${HEW_CORPUS_SKIP_STDLIB:-0}" == 1 ]]; then
+        # Match the source-check context of stdlib-user-build-clean.
+        export HEW_STD="$REPO_ROOT/std"
+    fi
 
     # Enumerate the corpus first so the floor can reject an empty or shrunken
     # sweep before spending minutes type-checking it.
@@ -840,20 +849,54 @@ run_hew_corpus() {
     # trivially satisfied.
     corpus_nonempty_assert "hew-corpus-check-files" "$total" || exit 1
 
-    for f in "${swept[@]}"; do
-        RATCHET_INVENTORY_STR="${RATCHET_INVENTORY_STR}${f}"$'\n'
-        status=0
-        check_args=()
-        if [[ "$f" == tests/pkg-import/* ]]; then
-            # These fixtures import the in-tree packages used by their owning
-            # execution gate; keep the corpus check in that same context.
-            check_args=(--pkg-path "$REPO_ROOT/tests/pkg-import/pkgs")
-        elif [[ "$f" == tests/host/copy_component.hew ]]; then
-            # Match the package context used by tests/host/run.py.
-            check_args=(--pkg-path "$REPO_ROOT/tests/core-acceptance/fixtures/construction-capabilities")
+    # Each check is independent. Keep output and exit status per input so the
+    # existing ratchet still classifies every result in inventory order.
+    jobs="${HEW_CORPUS_JOBS:-4}"
+    if [[ ! "$jobs" =~ ^[1-9][0-9]*$ ]]; then
+        echo "error: HEW_CORPUS_JOBS must be a positive integer" >&2
+        exit 1
+    fi
+    ((jobs > total)) && jobs="$total"
+    HEW_CORPUS_RESULTS_DIR="$(mktemp -d "${TMPDIR:-/tmp}/hew-corpus-results.XXXXXX")"
+    trap 'rm -rf -- "$HEW_CORPUS_RESULTS_DIR"' EXIT
+    for ((worker = 0; worker < jobs; worker++)); do
+        (
+            for ((index = worker; index < total; index += jobs)); do
+                f="${swept[index]}"
+                check_args=()
+                if [[ "$f" == tests/pkg-import/* ]]; then
+                    check_args=(--pkg-path "$REPO_ROOT/tests/pkg-import/pkgs")
+                elif [[ "$f" == tests/host/copy_component.hew ]]; then
+                    check_args=(--pkg-path "$REPO_ROOT/tests/core-acceptance/fixtures/construction-capabilities")
+                fi
+                status=0
+                "$HEW_BIN" check "${check_args[@]}" "$REPO_ROOT/$f" \
+                    >"$HEW_CORPUS_RESULTS_DIR/$index.log" 2>&1 || status=$?
+                printf '%s\n' "$status" >"$HEW_CORPUS_RESULTS_DIR/$index.status"
+            done
+        ) &
+        pids+=("$!")
+    done
+    for pid in "${pids[@]}"; do
+        if ! wait "$pid"; then
+            worker_failed=1
         fi
-        check_log="$("$HEW_BIN" check "${check_args[@]}" "$REPO_ROOT/$f" 2>&1)" || status=$?
+    done
+    if ((worker_failed)); then
+        echo "error: corpus check worker failed" >&2
+        exit 1
+    fi
+
+    for ((index = 0; index < total; index++)); do
+        f="${swept[index]}"
+        RATCHET_INVENTORY_STR="${RATCHET_INVENTORY_STR}${f}"$'\n'
+        read -r status <"$HEW_CORPUS_RESULTS_DIR/$index.status"
+        if [[ ! "$status" =~ ^[0-9]+$ ]]; then
+            echo "error: invalid corpus check status for $f: $status" >&2
+            exit 1
+        fi
         if ((status != 0)); then
+            check_log="$(<"$HEW_CORPUS_RESULTS_DIR/$index.log")"
             ACTUAL_STR="${ACTUAL_STR}${f}"$'\n'
             if record_expected_refusal_status "$f" "$status" "$check_log" &&
                 line_set_contains "$EXPECTED_STR" "$f"; then

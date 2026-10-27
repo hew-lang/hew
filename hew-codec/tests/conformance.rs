@@ -420,6 +420,35 @@ fn json_spells_each_shape_as_designed() {
 }
 
 #[test]
+fn json_canonical_containers_compose_with_nested_buffer_growth() {
+    // The outer map's key and value ranges must survive both inner sorting
+    // and growth of the shared document buffer. Escaped keys sort by their
+    // encoded spelling, and a set of records retains each record's field order.
+    let shape = Shape::Map(&Shape::Str, &Shape::Set(&PAIR_I64));
+    let entries = vec![
+        (
+            s("z"),
+            D::Seq(vec![
+                D::Rec(vec![D::I(20), D::I(3)]),
+                D::Rec(vec![D::I(1), D::I(4)]),
+            ]),
+        ),
+        (s("\n"), D::Seq(vec![])),
+        (
+            s(&"é".repeat(1024)),
+            D::Seq(vec![D::Rec(vec![D::I(-7), D::I(9)])]),
+        ),
+    ];
+    let written = json(shape, &D::Map(entries.clone()));
+    let mut reversed = entries;
+    reversed.reverse();
+    assert_eq!(written, json(shape, &D::Map(reversed)));
+    assert!(written.starts_with(r#"{"\n":[],"z":[{"left":1,"right":4},{"left":20,"right":3}],"#));
+    let decoded = from_json(shape, &written).unwrap();
+    assert_eq!(written, json(shape, &decoded));
+}
+
+#[test]
 fn json_numbers_are_exact_and_non_finite_floats_are_strings() {
     let values = D::Seq(vec![
         D::F(f64::NAN),

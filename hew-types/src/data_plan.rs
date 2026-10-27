@@ -403,6 +403,26 @@ pub struct DataTable {
     pub members: Vec<DataMember>,
 }
 
+impl DataTable {
+    /// Derive the emitted member schedule from the checked serial layout.
+    /// Text preserves declaration order; tagged binary records use tag order.
+    #[must_use]
+    pub fn encode_members(&self, format: crate::CodecFormat) -> Vec<usize> {
+        let mut members = self
+            .members
+            .iter()
+            .enumerate()
+            .filter_map(|(index, member)| {
+                (member.flags & hew_codec::Member::SKIP == 0).then_some(index)
+            })
+            .collect::<Vec<_>>();
+        if self.tagged && !format.is_text() {
+            members.sort_by_key(|index| self.members[*index].tag);
+        }
+        members
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DataMember {
     pub key: String,

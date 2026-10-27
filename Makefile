@@ -252,7 +252,8 @@ TEST_RUN_ENV := HEW_TEST_NO_BUILD=1
 # nextest invocation through `test-strict`, but require an all-pass exit.
 NEXTEST_WORKSPACE_FILTER ?=
 NEXTEST_PARTITION ?=
-NEXTEST_WORKSPACE_SELECTION_ARGS := --workspace --exclude hew-cabi --profile ci
+NEXTEST_WORKSPACE_EXCLUDE ?=
+NEXTEST_WORKSPACE_SELECTION_ARGS := --workspace --exclude hew-cabi $(foreach package,$(NEXTEST_WORKSPACE_EXCLUDE),--exclude $(package)) --profile ci
 NEXTEST_WORKSPACE_ARGS := $(NEXTEST_WORKSPACE_SELECTION_ARGS) --no-fail-fast
 NEXTEST_FULL_INVENTORY := $(CARGO_TARGET_ROOT)/nextest-full-inventory.json
 NEXTEST_SELECTED_INVENTORY := $(CARGO_TARGET_ROOT)/nextest-selected-inventory.json
@@ -579,17 +580,18 @@ libhew-debug: shared-host-debug
 # native archive is available for the requested architecture. Build the
 # non-LTO release-lib archive once and use it for both assembled/installed
 # toolchains and cross-target tests. This avoids maintaining a test-only debug
-# copy of the same large staticlib in every worktree.
+# copy of the same large staticlib in every worktree. Build only the archive:
+# the unused cdylib would require a configured target linker.
 libhew-cross-release-lib:
 ifeq ($(shell uname -s),Darwin)
 	@for triple in $(CROSS_NATIVE_LIB_TRIPLES); do \
-		cargo build -p hew-lib --profile release-lib --target "$$triple" || exit $$?; \
+		cargo rustc -p hew-lib --lib --crate-type staticlib --profile release-lib --target "$$triple" || exit $$?; \
 	done
 else ifeq ($(shell uname -s),Linux)
 	@if [ -z "$(LINUX_CROSS_AVAILABLE)" ]; then \
 		echo "Skipping $(LINUX_CROSS_LIB_TRIPLE) libhew.a: install its cross sysroot at $(LINUX_CROSS_SYSROOT) to include it"; \
 	else \
-		cargo build -p hew-lib --profile release-lib --target "$(LINUX_CROSS_AVAILABLE)"; \
+		cargo rustc -p hew-lib --lib --crate-type staticlib --profile release-lib --target "$(LINUX_CROSS_AVAILABLE)"; \
 	fi
 else
 	@:

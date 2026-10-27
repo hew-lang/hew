@@ -488,7 +488,7 @@ pub struct CheckArgs {
     /// Input .hew file, or a package directory. Omit it to check the package
     /// enclosing the current directory.
     pub input: Option<PathBuf>,
-    /// Explain payload ownership at actor mailbox boundaries in the input file.
+    /// Explain ownership at actor mailbox and typed codec boundaries.
     ///
     /// Reads the verified ownership operations and copy recipes used by the
     /// compiler: bit copies, retains, structural copies and ownership transfers.

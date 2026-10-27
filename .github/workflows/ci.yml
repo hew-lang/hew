@@ -478,7 +478,7 @@ jobs:
       - name: Run core acceptance partition
         run: make -o hew-native core-acceptance CORE_ACCEPTANCE_ARGS="--partition ${{ matrix.shard }}/3"
       - name: Run documentation examples
-        if: ${{ !cancelled() && steps.native_bundle.outcome == 'success' && matrix.shard == 0 }}
+        if: ${{ !cancelled() && steps.native_bundle.outcome == 'success' && matrix.shard == 2 }}
         run: make -o hew-native test-doc-examples
       - name: Run package integration
         if: ${{ !cancelled() && steps.native_bundle.outcome == 'success' && matrix.shard == 0 }}
@@ -603,6 +603,9 @@ jobs:
         env:
           HEW_WASM_MODULE: file://${{ github.workspace }}/hew-wasm/pkg/hew_wasm.js
           BROWSER_PACKAGE_RESULT: ${{ steps.browser_compiler.outcome }}
+          # Acceptance shard 1 checks every stdlib source more strictly, and
+          # its result is required by the same Linux aggregate as this job.
+          HEW_CORPUS_SKIP_STDLIB: "1"
         run: |
           if [[ "$BROWSER_PACKAGE_RESULT" != success ]]; then
             echo "::error::Sandbox parity requires the tested browser compiler artifact."

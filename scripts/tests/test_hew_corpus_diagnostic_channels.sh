@@ -30,6 +30,14 @@ set -euo pipefail
 
 [[ "$1" == "check" ]] || exit 64
 case "${HEW_CORPUS_TEST_MODE:?}" in
+mixed)
+    case "${*: -1}" in
+    */first.hew) exit 0 ;;
+    */second.hew) echo "error[E_TEST_USER]: user diagnostic" >&2; exit 1 ;;
+    */third.hew) echo "raw process failure" >&2; exit 3 ;;
+    *) exit 64 ;;
+    esac
+    ;;
 user)
     echo "error[E_TEST_USER]: user diagnostic" >&2
     exit 1
@@ -100,5 +108,30 @@ assert_status 1 "non-diagnostic exit 4 is rejected"
 
 run_case signal
 assert_status 1 "signal is rejected"
+
+TEST_PATH=$'tests/first.hew\ntests/second.hew\ntests/third.hew'
+printf '%s\n' 'tests/second.hew' 'tests/third.hew' >"${EXPECTED}"
+HEW_CORPUS_JOBS=1 run_case mixed
+assert_status 1 "serial sweep rejects the non-diagnostic failure"
+SERIAL_OUTPUT="${OUTPUT}"
+HEW_CORPUS_JOBS=4 run_case mixed
+assert_status 1 "parallel sweep rejects the non-diagnostic failure"
+if [[ "${OUTPUT}" != "${SERIAL_OUTPUT}" || "${OUTPUT}" != *"Files checked:          3"* ]]; then
+    echo "FAIL: parallel sweep must preserve all serial verdicts and diagnostics" >&2
+    printf '%s\n' "${OUTPUT}" >&2
+    exit 1
+fi
+HEW_CORPUS_JOBS=0 run_case user
+assert_status 1 "invalid worker count is rejected"
+[[ "${OUTPUT}" == *"HEW_CORPUS_JOBS must be a positive integer"* ]]
+
+TEST_PATH=$'std/first.hew\ntests/first.hew'
+: >"${EXPECTED}"
+HEW_CORPUS_SKIP_STDLIB=0 run_case mixed
+assert_status 0 "standalone sweep checks stdlib sources"
+[[ "${OUTPUT}" == *"Files checked:          2"* ]]
+HEW_CORPUS_SKIP_STDLIB=1 run_case mixed
+assert_status 0 "composed sweep can leave stdlib to its owning gate"
+[[ "${OUTPUT}" == *"Files checked:          1"* ]]
 
 echo "PASS: structured diagnostic channels are accepted without accepting process failures"

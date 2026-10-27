@@ -83,7 +83,11 @@ authoritative for complete Hew artifacts and verification gates; use its
 targets instead of reconstructing package/profile combinations by hand.
 `xtask` is intentionally limited to automation that consumes Hew's Rust APIs
 directly and does not define a competing build graph. See the
-[Makefile](Makefile) header for available targets.
+[Makefile](Makefile) header for available targets. `scripts/` contains helpers
+for build, test and release workflows; `tools/` holds the pinned structural-lint
+configuration and downstream syntax synchronization utilities. Prefer a
+Makefile target for a public workflow and keep its implementation in a helper
+only when it needs more than a simple command.
 
 ## Testing
 

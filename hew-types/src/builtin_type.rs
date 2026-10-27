@@ -371,15 +371,7 @@ impl BuiltinType {
             | Self::ActorFn
             | Self::CancellationToken
             | Self::MonitorRef
-            // ir-ladder §1.1 gives a pid the BitCopy row, and the class table
-            // records that verdict. These three markers cannot follow yet:
-            // `marker()` is the legacy lowering's input and the legacy route is
-            // the parity oracle, so flipping `ActorHandle` routes a
-            // `Vec<ActorHandle<_>>` element off its pointer ABI and moves an
-            // elaborated-MIR baseline, and `HewActor`/`BoxedActor` carry
-            // `close_method() = Some("close")` while
-            // `hew-hir/src/builtin_type_classes.rs` asserts a BitCopy builtin
-            // registers none. They flip at P5 with the legacy carrier (§9).
+            // The runtime marker differs from the value-class decision for actor handles.
             | Self::ActorHandle => BuiltinTypeMarker::Resource,
             Self::SupervisorPool
             | Self::NodeId
@@ -388,7 +380,7 @@ impl BuiltinType {
             | Self::DownTarget
             | Self::DownReason
             | Self::DownNotification
-            // §1.1's scalar and std-enum rows: each is a scalar or an enum
+            // the class table's scalar and std-enum rows: each is a scalar or an enum
             // whose variants are unit or carry `BitCopy` payloads, so the
             // marker and the class table agree by construction rather than by
             // a recorded exception.

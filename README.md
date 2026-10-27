@@ -19,10 +19,9 @@ curl -fsSL https://hew.sh/install | bash
 
 Pre-built binaries for Linux (x86_64, ARM64), macOS (ARM64), FreeBSD 15.1 or newer (x86_64), and Windows (x86_64) — plus `.deb`, `.rpm`, and Arch packages — are published on the [Releases](https://github.com/hew-lang/hew/releases) page. See the [Getting Started Guide](https://hew.sh/docs/getting-started/) for installation options, editor setup, and troubleshooting.
 
-The current release is [Hew v0.6.1](https://github.com/hew-lang/hew/releases/tag/v0.6.1).
-Read its [upgrade notes](docs/releases/v0.6.1.md) and
-[versioned language specification](https://github.com/hew-lang/hew/blob/v0.6.1/docs/specs/HEW-SPEC-2026.md).
-Changes on `main` after that release are [unreleased](docs/releases/UNRELEASED.md).
+See the [release notes](https://github.com/hew-lang/hew/releases) for the
+SDK you install and its matching language specification. Changes on `main`
+after the latest release are [unreleased](docs/releases/UNRELEASED.md).
 
 ## Quick Start
 
@@ -295,7 +294,7 @@ source.hew → Lexer → Parser → Type Checker → HIR → MIR → LLVM IR/obj
 ### Distribution
 
 - **editors/** — Editor support (Emacs, Nano, Sublime)
-- **installers/** — Package installers (Homebrew, Debian, RPM, Arch, Alpine, Nix, Docker) plus install-time shell completion generation
+- **installers/** — Installation scripts, Linux packaging templates and Docker release image
 - **examples/** — Example programs and benchmarks
 - **scripts/** — Development scripts
 - **docs/** — Language specification and API references

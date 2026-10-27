@@ -4,9 +4,6 @@ How a Hew release is prepared, tagged and shipped. A pushed `v*` tag is the
 normal trigger: `.github/workflows/release.yml` builds each artefact once and
 publishes the qualified set, pausing for external-channel environment approvals.
 
-For outstanding compiler/client and package qualification, see the
-[release and ecosystem readiness handoff](release-readiness.md).
-
 ## What happens on a `v*` tag
 
 ```
@@ -139,12 +136,6 @@ published Hew release; nothing here pushes into them.
 - **playground**: the server consumes the published packages and release assets
   on its own build and deployment pipeline. Browser package updates do not
   require a new server image to be published by the compiler release workflow.
-
-## v0.6.0-rc3 native candidate scope
-
-`v0.6.0-rc3` qualified native compiler distributions after the SIR/MIR
-cutover under a scoped test ratchet and named exclusions; it shipped on
-2026-09-17 (`d1557a957`), and later candidates follow the platform policy below.
 
 ## Platform policy
 

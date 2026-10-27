@@ -6,12 +6,8 @@
 #        irm https://hew.sh/install.ps1 | iex          (Windows PowerShell)
 #        sh install.sh [--version <ver>] [--stable] [--prefix <dir>] [--dry-run] [--help]
 #
-# Version policy: until v0.6.0 ships as a final release, the default install
-# picks the newest published release *including release candidates*, so
-# `curl | sh` tracks the pre-release ladder during the v0.6.0 stabilization
-# window. Pass --stable to install the newest tagged final release instead
-# (the policy the `hew@stable` Homebrew formula also uses). Once a final
-# v0.6.0 ships, the two policies agree until the next pre-release window.
+# By default install the newest release, including release candidates.
+# Pass --stable to select the newest final release.
 set -eu
 
 GITHUB_ORG="hew-lang"

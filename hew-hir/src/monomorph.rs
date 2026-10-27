@@ -251,9 +251,7 @@ pub fn shorten_named_arg_qualifiers(ty: ResolvedTy) -> ResolvedTy {
     }
 }
 
-/// The mangler moved to `hew_types::mangle` beside the class authority
-/// (ir-ladder §5.1) so `hew-mir` does not depend on `hew-hir` for a name.
-/// The nine call sites in this crate and downstream keep this spelling.
+/// Share the type mangler without making `hew-mir` depend on `hew-hir`.
 pub use hew_types::mangle::mangle_resolved_ty;
 
 #[cfg(test)]

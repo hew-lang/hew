@@ -21,7 +21,6 @@
 #   docker    Container image     (requires Docker)
 #   shell     Syntax-check install.sh
 #   ps1       Syntax-check install.ps1 (requires pwsh)
-#   nix       Syntax-check nix/default.nix (requires nix-instantiate)
 #
 # OUTPUT
 #   dist/hew-v{VERSION}-linux-{ARCH}.tar.gz
@@ -29,7 +28,7 @@
 #   dist/hew-{VERSION}-1.{RPM_ARCH}.rpm
 #   dist/hew-bin-{VERSION}-1-{ARCH}.pkg.tar.zst
 #   dist/hew-{VERSION}.apk
-#   Docker image tagged r.hew.sh/hew:{VERSION} and r.hew.sh/hew:latest
+#   Local Docker image tagged hew:local-{VERSION}
 
 set -euo pipefail
 
@@ -583,38 +582,19 @@ build_docker() {
     _docker_rm "${ctx}"
     mkdir -p "${ctx}"
 
-    cp "${TARBALL_PATH}" "${ctx}/hew.tar.gz"
-
-    # Generate a Dockerfile that uses the local tarball instead of downloading
-    cat >"${ctx}/Dockerfile" <<'DOCKERFILE'
-# syntax=docker/dockerfile:1
-FROM alpine:3.21 AS fetch
-COPY hew.tar.gz /tmp/hew.tar.gz
-WORKDIR /tmp/hew-install
-RUN tar -xzf /tmp/hew.tar.gz && mv hew-v*-linux-* hew
-
-FROM alpine:3.21
-# gcompat: glibc compatibility shim for glibc-linked Rust binaries.
-# Hew ships a Rust frontend plus the hew-codegen-rs LLVM backend.
-RUN apk add --no-cache \
-      gcompat \
-      ca-certificates
-COPY --from=fetch /tmp/hew-install/hew/bin/hew           /usr/local/bin/hew
-COPY --from=fetch /tmp/hew-install/hew/lib               /usr/local/lib/hew/
-COPY --from=fetch /tmp/hew-install/hew/std               /usr/local/share/hew/std/
-COPY --from=fetch /tmp/hew-install/hew/include           /usr/local/include/
-WORKDIR /work
-ENTRYPOINT ["/usr/local/bin/hew"]
-CMD ["--help"]
-DOCKERFILE
-
-    local tag_version="r.hew.sh/hew:${VERSION}"
-    local tag_latest="r.hew.sh/hew:latest"
-
-    info "docker" "${tag_version}"
-    if docker build -t "${tag_version}" -t "${tag_latest}" "${ctx}" 2>&1; then
+    if ! tar -xzf "${TARBALL_PATH}" -C "${ctx}" --strip-components=1; then
         _docker_rm "${ctx}"
-        _record_ok "docker" "${tag_version}, ${tag_latest}"
+        _record_fail "docker" "could not extract ${TARBALL_PATH}"
+        return 0
+    fi
+
+    local tag="hew:local-${VERSION}"
+    info "docker" "${tag}"
+    if docker buildx build -f "${SCRIPT_DIR}/docker/Dockerfile.release" \
+        --target runtime --build-context "tarball=${ctx}" \
+        --build-arg "VERSION=${VERSION}" --load -t "${tag}" "${REPO_DIR}"; then
+        _docker_rm "${ctx}"
+        _record_ok "docker" "${tag}"
     else
         _docker_rm "${ctx}"
         _record_fail "docker" "docker build failed"
@@ -655,24 +635,6 @@ check_ps1() {
     fi
 }
 
-check_nix() {
-    _should_build "nix" || {
-        _record_skip "nix" "not selected"
-        return 0
-    }
-    _has_cmd nix-instantiate || {
-        _record_skip "nix" "nix-instantiate not available"
-        return 0
-    }
-
-    step "Syntax-checking nix/default.nix"
-    if nix-instantiate --parse "${SCRIPT_DIR}/nix/default.nix" >/dev/null 2>&1; then
-        _record_ok "nix" "default.nix syntax OK"
-    else
-        _record_fail "nix" "default.nix has syntax errors"
-    fi
-}
-
 # ── Summary ───────────────────────────────────────────────────────────────────
 print_summary() {
     local ok=0 skip=0 fail=0
@@ -709,7 +671,6 @@ main() {
     build_docker
     check_shell
     check_ps1
-    check_nix
 
     print_summary
 }

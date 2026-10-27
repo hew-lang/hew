@@ -8,8 +8,7 @@ Installation options for [Hew](https://hew.sh).
 curl -fsSL https://hew.sh/install | sh
 ```
 
-Until v0.6.0 ships as a final release, this installs the newest published
-release _including release candidates_. Pass `--stable` to install the
+This installs the newest published release, including release candidates. Pass `--stable` to install the
 newest final release instead:
 
 ```sh
@@ -38,9 +37,7 @@ build and link checks; an ARM64 SDK archive is not currently shipped.
 irm https://hew.sh/install.ps1 | iex
 ```
 
-Until v0.6.0 ships as a final release, this installs the newest published
-release _including release candidates_ — matching `install.sh`'s policy
-(#3214). Pass `-Stable` to install the newest final release instead:
+This installs the newest published release, including release candidates. Pass `-Stable` to install the newest final release instead:
 
 ```powershell
 & ([scriptblock]::Create((irm https://hew.sh/install.ps1))) -Stable
@@ -66,62 +63,48 @@ installed without installing it). `.\install.ps1 -Help` lists all of them.
 | Debian / Ubuntu          | `.deb` packages on the [releases page](https://github.com/hew-lang/hew/releases)                    |
 | Fedora / RHEL / openSUSE | See `rpm/hew.spec`                                                                                  |
 | Alpine Linux             | See `alpine/APKBUILD`                                                                               |
-| Nix / NixOS              | See `nix/default.nix`                                                                               |
-| Docker                   | `docker run --rm -v $(pwd):/work r.hew.sh/hew build /work/main.hew`                                 |
+| Docker                   | `docker run --rm -v $(pwd):/work ghcr.io/hew-lang/hew build /work/main.hew`                         |
 
 ## Docker Usage
 
 ```sh
 # Compile a Hew program to a native binary
-docker run --rm -v $(pwd):/work r.hew.sh/hew build /work/main.hew -o /work/out
+docker run --rm -v $(pwd):/work ghcr.io/hew-lang/hew build /work/main.hew -o /work/out
 
 # Run a Hew program directly
-docker run --rm -v $(pwd):/work r.hew.sh/hew run /work/main.hew
+docker run --rm -v $(pwd):/work ghcr.io/hew-lang/hew run /work/main.hew
 
 # Interactive shell with hew available
-docker run --rm -it --entrypoint sh -v $(pwd):/work r.hew.sh/hew
+docker run --rm -it --entrypoint sh -v $(pwd):/work ghcr.io/hew-lang/hew
 ```
+
+To build a local image from a Linux release archive in `dist/`:
+
+```sh
+installers/build-packages.sh --version <version> --arch <arch> --skip-build --only docker
+```
+
+The image is tagged `hew:local-<version>` and uses the release Dockerfile.
 
 ## Files in This Directory
 
-| File / Directory    | Description                                                                                     |
-| ------------------- | ----------------------------------------------------------------------------------------------- |
-| `install.sh`        | Unix shell installer — POSIX `/bin/sh`, Linux / macOS / FreeBSD (`curl \| sh` or `fetch \| sh`) |
-| `install.ps1`       | Windows PowerShell installer                                                                    |
-| `arch/PKGBUILD`     | Arch Linux AUR binary package                                                                   |
-| `debian/`           | Debian/Ubuntu `.deb` packaging                                                                  |
-| `rpm/hew.spec`      | Fedora/RHEL/openSUSE RPM spec                                                                   |
-| `nix/default.nix`   | Nix derivation (binary fetch)                                                                   |
-| `alpine/APKBUILD`   | Alpine Linux apk package                                                                        |
-| `docker/Dockerfile` | Alpine-based container image                                                                    |
+| File / Directory            | Description                                                                                     |
+| --------------------------- | ----------------------------------------------------------------------------------------------- |
+| `install.sh`                | Unix shell installer — POSIX `/bin/sh`, Linux / macOS / FreeBSD (`curl \| sh` or `fetch \| sh`) |
+| `install.ps1`               | Windows PowerShell installer                                                                    |
+| `arch/PKGBUILD`             | Arch Linux AUR binary package                                                                   |
+| `debian/`                   | Debian/Ubuntu `.deb` packaging                                                                  |
+| `rpm/hew.spec`              | Fedora/RHEL/openSUSE RPM spec                                                                   |
+| `alpine/APKBUILD`           | Alpine Linux apk package template                                                               |
+| `docker/Dockerfile.release` | Docker release image and clean-room test                                                        |
 
 The Homebrew formula lives in the `homebrew-hew` tap repo, not here — the
 release workflow's `homebrew` job triggers that repo's own
 `update-formula.yml`, which updates `Formula/hew.rb` and
 `Formula/hew@stable.rb`.
 
-## Updating Checksums at Release Time
+## Package templates
 
-Package files contain `__SHA256_*__` or `SKIP` placeholder checksums.
-After cutting a release, update them:
-
-```sh
-VERSION=0.1.0
-for target in linux-x86_64 linux-aarch64 darwin-aarch64; do
-  curl -fsSL -O \
-    "https://github.com/hew-lang/hew/releases/download/v${VERSION}/hew-v${VERSION}-${target}.tar.gz"
-done
-
-sha256sum hew-v${VERSION}-*.tar.gz
-```
-
-Files to update with the resulting hashes:
-
-| File              | Placeholder                                  |
-| ----------------- | -------------------------------------------- |
-| `nix/default.nix` | `__SHA256_{DARWIN,LINUX}_{X86_64,AARCH64}__` |
-| `arch/PKGBUILD`   | `SKIP` → actual sums                         |
-| `alpine/APKBUILD` | run `abuild checksum`                        |
-
-(The Homebrew formula's checksums are updated automatically by the release
-workflow's `homebrew` job — see above.)
+`build-packages.sh` fills template versions and builds from local SDK archives.
+It computes Alpine checksums during packaging. The Arch and Alpine files are
+templates, not standalone packages.

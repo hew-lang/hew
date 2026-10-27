@@ -1,13 +1,9 @@
-//! Criterion benchmark for the HashMap layout-kernel (Stage C0a substrate).
+//! Criterion benchmark for the HashMap layout kernel.
 //!
-//! Establishes a measurable baseline immediately after Stage C0a (commit
-//! `83189329`) so subsequent Stage C/D changes have regression signal. The
-//! bench exercises the public layout-aware C ABI exactly as a real codegen
-//! consumer would (no internal helpers): `hew_hashmap_new_with_layout`,
-//! `hew_hashmap_insert_layout`, `hew_hashmap_remove_layout`,
-//! `hew_hashmap_free_layout`, with real `extern "C"` drop/hash/eq thunks.
+//! Exercises the public layout-aware C ABI with real `extern "C"`
+//! drop, hash and equality thunks.
 //!
-//! Five groups, covering all three drop-hook sites the C0a substrate added
+//! Five groups, covering all three drop-hook sites
 //! (insert-overwrite, remove, free):
 //!   1. `insert_string_kv`           — K=string V=string, N ∈ {1, 10, 100, 1k, 10k}.
 //!                                     Insert-only path; free at end exercises the
@@ -27,8 +23,7 @@
 //!                                     every key — each remove fires both the K
 //!                                     and V drop hooks at the per-slot remove site.
 //!
-//! Baseline numbers recorded in `HASHMAP_LAYOUT_BASELINE.md` adjacent.
-//! Future Stage C/D commits compare their `cargo bench` output to that file.
+//! Run with `cargo bench -p hew-runtime --bench hashmap_layout_kernel`.
 
 #![allow(
     clippy::cast_possible_truncation,

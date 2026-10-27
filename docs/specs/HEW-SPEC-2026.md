@@ -31,31 +31,15 @@ Hew tracks **two version axes** that move independently:
   accumulated breaking changes are worth a migration, expected every two
   to three years.
 
-A compiler binary will advertise its supported editions once this
-surface ships (planned, tracked for post-rc1):
-
-```
-$ hew --supported-editions
-2026
-```
-
-Edition 2026 remains under development during the 0.6 and 0.7 series. Compatible
-additions identify their first supported compiler version. Intentional
-incompatible changes may also ship in 0.6.x while the language converges on
-its agreed design; release notes must identify the affected versions and give
-exact migration instructions, and in-tree consumers migrate with the change.
+Edition 2026 remains under development. Compatible additions identify their
+first supported compiler version. Release notes for intentional incompatible
+changes identify affected versions and provide migration instructions;
+in-tree consumers migrate with the change.
 Each surface change updates this specification. An older compiler need not
 support features introduced by a newer compiler in the same edition.
 
-Hew does not adopt per-file edition pragmas. The edition stamp is
-package-level. Migration tooling (`hew migrate --edition <year>`) is
-planned as the supported path between editions once a second edition
-exists (tracked for post-rc1) — it is not yet implemented. Cross-edition
-dependencies are a future-edition feature.
-
-Surfaces that have been designed but are not normative in edition 2026
-live in `HEW-FUTURE.md` with explicit version targets. See the non-normative
-Changelog at the end of this document for historical context.
+The edition stamp is package-level; Hew does not use per-file edition pragmas.
+Cross-edition dependencies are not supported.
 
 ---
 
@@ -428,10 +412,6 @@ language contracts:
   scope's exit like every fork. Whether Hew needs a true fire-and-forget send
   is an open question: it would make resources, cleanup and control flow less
   deterministic, and nothing in this specification promises it.
-- Native `select` realizes task, timer, actor-call, ordinary callable and stream receive
-  sources. A line, chunk or take adapter over a socket stream, and a file
-  stream over a pipe, device or terminal, are not select sources yet
-  (§6.4.5).
 - Native supervision supports declared children and pools of them, with a checked
   runtime `count:` expression. Parts of the shutdown-deadline contract remain
   incomplete (§5).
@@ -1127,7 +1107,7 @@ to use `type`.
 
 - **Value types** (copy): integers, floats, bool, char, small fixed aggregates.
 - **Owned heap types**: `string`, `bytes`, `Vec<T>`, `HashMap<K,V>`, user-defined types.
-- **Shared immutable types**: `Frozen` values are the conceptual shared-immutable category. Internal reference-count selection belongs to the compiler and runtime and preserves value semantics and actor isolation (HEW-FUTURE §2.3).
+- **Shared immutable types**: `Frozen` values are the conceptual shared-immutable category. Internal reference-count selection belongs to the compiler and runtime and preserves value semantics and actor isolation.
 - **Actor references**: an actor handle is sendable.
 - **Pipe halves**: `Stream<T>` (readable) and `Sink<T>` (writable) — move-only handles, `Send` when `T` is (§6.4).
 
@@ -3462,7 +3442,7 @@ impl Sequence for RangeIter {
 }
 ```
 
-Traits with associated types do not participate in structural trait satisfaction checks (the "E1 guard"). A type can only satisfy a trait with associated types through an explicit `impl` block that provides the required `type Item = ...` declaration. Equality bindings (`where T: Iterator<Item = i64>`) and projection bounds (`where T.Item: Display`) are supported. Multi-associated-type traits remain deferred. See HEW-FUTURE.md §2.2.
+Traits with associated types do not participate in structural trait satisfaction checks (the "E1 guard"). A type can only satisfy a trait with associated types through an explicit `impl` block that provides each required associated type. Equality bindings (`where T: Iterator<Item = i64>`) and projection bounds (`where T.Item: Display`) are supported.
 
 #### 3.8.5 Send/Frozen Specialization for Actors
 
@@ -4356,8 +4336,7 @@ defined in those source modules rather than by a separate metadata system.
 Hew does **not** expose a user-visible `core`/`alloc`/`std` tier split in
 source. The standard library is organised by module path. Edition 2026 makes
 normative guarantees about a deliberately narrow core; broader modules exist
-in `std/` and compile, but their surface is informative until promoted into a
-future edition (see HEW-FUTURE.md §3).
+in `std/` and compile, but their surface is informative.
 
 Normative in edition 2026:
 
@@ -4374,8 +4353,8 @@ Normative in edition 2026:
   request/response level.
 - Utilities: `std.math`.
 
-See HEW-FUTURE.md §3 for modules that exist in `std/` today but are not yet
-normative — `std.net.dns`, `std.net.tls`, `std.net.quic`,
+Modules in `std/` that are not normative include `std.net.dns`,
+`std.net.tls`, `std.net.quic`,
 `std.net.websocket`, `std.encoding.xml`/`yaml`/`toml`/`csv`,
 `std.text.regex`, `std.process`, `std.encoding.compress`.
 
@@ -6398,8 +6377,7 @@ performed before the producer finishes or observes cancellation remain in the
 actor. An ordinary `gen { ... }` created inside the turn still owns independent
 captured snapshots.
 
-> See HEW-FUTURE.md §1.6 for the remaining deferred generator forms
-> (`Lazy<T>`, `#[prefetch(N)]`). There is no `async gen fn` form: a generator
+> There is no `async gen fn` form: a generator
 > whose body suspends carries no marker, because suspension is inferred from
 > the body rather than declared on the signature (§12).
 
@@ -8083,12 +8061,9 @@ this state machine.
 
 ## 10. Debugging, profiling, and observability
 
-> See HEW-FUTURE.md §4.1 for the tooling specification (`hew debug`,
-> `HEW_PPROF`, `hew-observe`, LSP). Tooling tracks separately from the
-> language edition; the implementations exist today, but their
-> behavioural contracts are owned by `docs/observe.md`,
-> `docs/troubleshooting.md`, and `docs/dev/lsp-editor-setup.md` rather
-> than this document.
+> Tooling contracts are described in [observability](../observe.md),
+> [troubleshooting](../troubleshooting.md) and the
+> [LSP editor setup guide](../dev/lsp-editor-setup.md).
 
 ---
 
@@ -8822,14 +8797,12 @@ inside `std/`. A program that names one outside the standard library gets
 `E_UNKNOWN_ATTRIBUTE` in the same way an invented name does:
 `#[lang_item(...)]`, `#[intrinsic(...)]`, `#[runtime_capability(...)]`.
 
-**Attributes removed in this edition:**
+**Unsupported attributes:**
 
-- `#[noncancellable]` no longer parses. Cancellation in edition 2026 is
-  scope-structural (§4.5), and the cancellation-token vocabulary it reserved
-  a place for is refused rather than deferred (HEW-FUTURE §1.2), so the
-  attribute has no surface to be held for.
-- `#[on(upgrade)]` is no longer a hook kind. Hot code upgrade is refused
-  permanently, so the hook list stops holding a place for it (§9.1.2).
+- `#[noncancellable]` is not supported. Cancellation is scope-structural
+  (§4.5); there is no user-visible cancellation token.
+- `#[on(upgrade)]` is not supported; Hew does not provide hot code upgrade
+  (§9.1.2).
 
 ### 12.7 Calls and named arguments
 
@@ -9067,86 +9040,8 @@ analyses them normally and reports their provenance and stale stamps; it runs
 generation only for an explicit editor command. Browser and VM compilation
 accept supplied generated source without executing generators.
 
-## 13. Self-Hosting Roadmap
-
-> See HEW-FUTURE.md §6.1 for the self-hosting roadmap — targeted for
-> v1.0+. Bootstrap chain, minimum viable subset, kernel-language
-> concept, and WASM-as-portable-bootstrap belong to the post-
-> stability project.
-
----
-
-## 14. "Researched outcomes" (what to build first to make Hew real)
-
-1. **Actor + type safety baseline**: proven feasible and performant (Pony demonstrates the capability-typed actor approach can be implemented efficiently). ([tutorial.ponylang.io][1])
-2. **Supervision semantics**: OTP restart categories are well-defined and battle-tested; encode them as primitives. ([Erlang.org][6])
-3. **Cooperative cancellation**: structured concurrency with cooperative cancellation is a stable design pattern with clear semantics. ([docs.swift.org][3])
-4. **Wire evolution invariants**: Protobuf’s “never reuse tags; reserve deleted tags” rules prevent real-world breaking changes and should be enforced by Hew tooling. ([protobuf.dev][5])
-
----
-
-## 15. Historical minimum viable Hew plan
-
-This early plan is retained as history, not current implementation sequencing.
-The compiler architecture and source contracts above take precedence.
-
-- **Phase A (compiler front-end)**: lexer/parser → AST → typecheck (Send/Frozen rules)
-- **Phase B (runtime)**: scheduler, actor mailboxes, bounded channels, timers, TCP
-- **Phase C (supervision)**: supervisor tree runtime + syntax lowering
-- **Phase D (wire tooling)**: schema compiler + compatibility checker + encoder/decoder
-- **Phase E (native codegen)**: LLVM backend + LTO + predictable allocation model
-
----
-
-The original plan called for an IR specification before implementation. The
-current compiler stages and their responsibilities are described in §8.1.
-
 [1]: https://tutorial.ponylang.io/index.html "Pony Tutorial"
 [2]: https://www.erlang.org/docs/17/design_principles/sup_princ "Supervisor Behaviour - Restart Strategy"
 [3]: https://docs.swift.org/swift-book/documentation/the-swift-programming-language/concurrency/ "Concurrency - Documentation | Swift.org"
 [4]: https://protobuf.dev/programming-guides/proto3/ "Language Guide (proto 3) | Protocol Buffers Documentation"
 [5]: https://protobuf.dev/best-practices/dos-donts/ "Proto Best Practices"
-[6]: https://www.erlang.org/doc/apps/stdlib/supervisor.html "supervisor — stdlib v7.2"
-
----
-
-## Changelog
-
-> **Historical, non-normative.** These entries preserve earlier edition
-> checkpoints, including designs and implementation limits later superseded.
-> They are not migration recipes or current feature-status claims. Use the
-> reconciled spec body for current contracts and labelled implementation gaps.
-
-### Edition 2026 (this document)
-
-- **Edition stamp.** Spec file renamed `HEW-SPEC-2026.md`; package descriptor
-  declares `edition = "2026"`. Compiler version (`hew 0.5.x`) and edition
-  track independently. See §1.3.
-- **Resource markers.** `#[resource]` and `#[linear]` attribute annotations
-  replace the v0.4.0 explicit-teardown carve-out (§3.7.8). `#[resource]` types
-  declare a `close` method in a sibling `impl` block (unit return, plain
-  receiver); the compiler synthesises an implicit drop that calls it.
-  `#[linear]` types must be consumed via a declared consuming method and have
-  no implicit drop.
-- **Sealed `select{}`.** `select{}` widens from actor-receive-only to a
-  four-form sealed construct over actor request-reply, pipe receive
-  (`pat from rx.recv()`), forked task and timer (`after`) (§4.11). Not
-  user-extensible in this edition.
-- **`scope{}` / `fork` split.** The `scope |s| { s.launch / s.spawn / s.cancel }`
-  surface is removed entirely. `scope { }` is the structured-concurrency
-  block (the scope boundary). `fork expr` is the only child-start form,
-  and it is only legal inside a `scope { }` body. `scope` and `fork` are
-  not synonyms. Historical note retained at §4.9.
-- **Stdlib narrowing.** The edition 2026 normative stdlib is deliberately
-  narrow (§3.10.1). Surfaces that exist in `std/` today but are not
-  normative — `dns`, `tls`, `quic`, `websocket`, `xml`/`yaml`/`toml`/`csv`,
-  `regex`, `process`, `compress` — move to HEW-FUTURE.md §3.
-- **IR ladder.** §8 (compilation model) is rewritten around the new IR
-  ladder: AST → typed HIR → ownership SIR → checked physical MIR → LLVM
-  IR via inkwell. The v0.4 Rust-frontend / C++ backend / MessagePack-AST
-  pipeline is no longer the design.
-- **Further implementation.** HEW-FUTURE.md records pending language,
-  library and tooling work and its version targets. Accepted additions can
-  amend edition 2026 during the 0.6 series; an edition boundary is not a
-  prerequisite. Cross-node actor communication is normative — see §11 and
-  HEW-DIST-SPEC.md.

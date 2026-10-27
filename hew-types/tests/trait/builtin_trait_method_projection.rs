@@ -344,7 +344,7 @@ fn concrete_self_impl_projects_for_matching_receiver() {
 /// Coherence (builtin): two impls of the same trait for the same builtin
 /// constructor — a blanket `impl<T> Acc for Vec<T>` AND a concrete
 /// `impl Acc for Vec<i64>` — must be rejected. Hew has no specialization or
-/// overlapping impls (mission Q66.b; HEW-FUTURE §single-crate coherence), so a
+/// overlapping impls, so a
 /// trait may be implemented at most once per type constructor. Without this
 /// rejection the dispatch side tables (self-args proof vs method signature)
 /// could be populated from different impls and drift, re-opening the

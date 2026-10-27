@@ -359,9 +359,7 @@ pub struct BytesLiteralId(pub u32);
 /// Which language-visible trap a `Trap` terminator transfers control to.
 ///
 /// Closed and matched with no wildcard arm anywhere, so a kind added by a later
-/// phase is a compile error rather than a silently-handled case. These four are
-/// the kinds the P1 rows of `sir-domain-matrix.md` produce; the bounds and
-/// panic traps arrive with the `Index`/`Slice` rows they come from.
+/// phase is a compile error rather than a silently-handled case.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum TrapKind {
     HeapExceeded,

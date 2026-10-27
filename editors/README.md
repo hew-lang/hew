@@ -10,10 +10,9 @@ The Hew language server is linked into `hew`. LSP clients launch `hew` with
 `lsp` as the first argument. See the [LSP editor setup guide](../docs/dev/lsp-editor-setup.md)
 for discovery and configuration details.
 
-The [Hew v0.6.1 SDK](https://github.com/hew-lang/hew/releases/tag/v0.6.1)
-includes both binaries and the matching standard library. Use that installation
-for released-language diagnostics; syntax highlighting alone does not check
-whether a compiler supports a construct.
+Install a [released Hew SDK](https://github.com/hew-lang/hew/releases) for
+language diagnostics; syntax highlighting alone does not check whether a
+compiler supports a construct.
 
 From a source checkout:
 

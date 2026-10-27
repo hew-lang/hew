@@ -58,7 +58,7 @@ admission rules.
 | Message admission | [`mailbox_native`](../../hew-runtime/src/mailbox_native.rs) retains the unaccepted request until admission transfers it. Cancellation and refusal release the owners still held by the operation. |
 | Reply observation | [`reply_channel_native`](../../hew-runtime/src/reply_channel_native.rs) separates completion readiness from taking the reply. An abandoned observer does not transfer cleanup to its former caller. |
 | Terminal observation | [`actor_native_close`](../../hew-runtime/src/actor_native_close.rs) publishes completion after terminal state cleanup. `closed` observes; `close` also requests termination. |
-| Supervisor teardown | [`supervisor`](../../hew-runtime/src/supervisor.rs) owns child teardown and retained config destruction. Completion must follow that cleanup. |
+| Supervisor teardown | [`supervisor`](../../hew-runtime/src/supervisor/mod.rs) owns child teardown and retained config destruction. Completion must follow that cleanup. |
 | Parked I/O | [`async_io` contracts](../../hew-types/src/runtime_call/async_io.rs) describe buffer loans and resume operations. Cancellation must make borrowed buffers quiescent before their owners are released. |
 
 A runtime export, a checker declaration or an inventory row is not an

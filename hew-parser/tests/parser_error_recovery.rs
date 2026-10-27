@@ -391,10 +391,8 @@ fn main() -> i64 {
     assert!(rest.is_some());
 }
 
-// `ask` is not lexer-recognised in edition 2026 — it is reserved for a future
-// syntactic marker (HEW-FUTURE) but carries no keyword status today. `ask foo()`
-// is therefore treated as two adjacent expressions: the identifier `ask` followed
-// by the call `foo()`, and the parser reports an unexpected token after `ask`.
+// `ask` is an identifier, so `ask foo()` has two adjacent expressions and
+// the parser reports an unexpected token after `ask`.
 #[test]
 fn ask_prefix_call_form_rejects() {
     let source = r"fn f() { let x = ask foo(); }";

@@ -3,7 +3,7 @@
 //
 // `values()` copies every value out of the map, so a value whose class carries
 // no copy operation has nothing to hand back. An unmarked `#[opaque]` id is a
-// bare pass-through value that copies by bits (ir-ladder.md §1.1), so the value
+// bare pass-through value that copies by bits, so the value
 // that genuinely refuses is std's convention: a `#[resource]` wrapper that owns
 // the close. `clone()` on the same map is refused one step earlier, by the
 // clone-capability rule that names the resource member.

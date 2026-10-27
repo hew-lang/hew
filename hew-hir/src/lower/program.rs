@@ -21,6 +21,19 @@ pub fn lower_program(
         .map_or(program, |normalized| &normalized.program);
     let mut ctx = LowerCtx::new(type_check_output, target_arch);
     let entry_exit_plan = type_check_output.entry_exit_plan.clone();
+    // Borrow the checker's declaration uses once for all private-helper walks.
+    // Source order lets each item query only its own file and span.
+    let mut declaration_uses: Vec<_> = type_check_output
+        .resolutions
+        .iter()
+        .filter_map(|(site, resolution)| match resolution {
+            Resolution::Def(declaration) | Resolution::Member(declaration) => {
+                Some((site, declaration))
+            }
+            _ => None,
+        })
+        .collect();
+    declaration_uses.sort_unstable_by_key(|(site, _)| (site.module_idx, site.start));
     // Every index a module owns — one per source file, so a directory module's
     // peers all carry their assembled module's name.
     let span_indices = program
@@ -344,6 +357,7 @@ pub fn lower_program(
                     module,
                     &span_indices,
                     &type_check_output.test_entry_plans,
+                    &declaration_uses,
                 );
                 for (item_idx, (item, item_span)) in module.items.iter().enumerate() {
                     ctx.current_item_ordinal = item_idx;
@@ -1835,6 +1849,7 @@ pub fn lower_program(
                     module,
                     &span_indices,
                     &type_check_output.test_entry_plans,
+                    &declaration_uses,
                 );
                 let same_module_actor_rewrites: HashMap<String, String> = module
                     .items
@@ -2214,6 +2229,7 @@ pub fn lower_program(
             &mut ctx,
             builtins,
             builtin_item_index,
+            &declaration_uses,
         );
         let saved_some = ctx
             .machine_ctor_registry

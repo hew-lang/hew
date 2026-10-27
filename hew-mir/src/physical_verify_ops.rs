@@ -781,9 +781,9 @@ fn debug_availability(
                 .keys()
                 .copied()
                 .filter(|id| {
-                    states.iter().all(|state| {
-                        initialized(function, state, *id, block, "debug local").is_ok()
-                    })
+                    states
+                        .iter()
+                        .all(|state| initialization_status(function, state, *id).is_ok())
                 })
                 .collect();
             (block, available)
@@ -824,6 +824,36 @@ fn reverse_postorder(
         .collect()
 }
 
+/// A failed state query carries no diagnostic allocation until a verifier
+/// consumer needs to report it. Debug availability only needs the decision.
+#[derive(Clone, Copy, Debug)]
+pub(super) enum InitializationFailure {
+    Unknown(StorageId),
+    InactiveLocal(StorageId),
+    Uninitialized(StorageId),
+    MaybeInitialized(StorageId),
+}
+
+impl InitializationFailure {
+    pub(super) fn diagnostic(self, block: BlockId, context: &str) -> PhysicalError {
+        PhysicalError::new(match self {
+            Self::Unknown(id) => format!("unknown physical storage {}", id.0),
+            Self::InactiveLocal(id) => format!(
+                "physical bb{} {context} accesses inactive local storage {}",
+                block.0, id.0
+            ),
+            Self::Uninitialized(id) => format!(
+                "physical bb{} {context} reads uninitialized storage {}",
+                block.0, id.0
+            ),
+            Self::MaybeInitialized(id) => format!(
+                "physical bb{} {context} reads storage {} that is not initialized on every path",
+                block.0, id.0
+            ),
+        })
+    }
+}
+
 pub(crate) fn initialized(
     function: &PhysicalFunction,
     state: &FlowState,
@@ -831,37 +861,58 @@ pub(crate) fn initialized(
     block: BlockId,
     context: &str,
 ) -> Result<(), PhysicalError> {
+    initialization_status(function, state, id).map_err(|failure| failure.diagnostic(block, context))
+}
+
+fn initialization_status(
+    function: &PhysicalFunction,
+    state: &FlowState,
+    id: StorageId,
+) -> Result<(), InitializationFailure> {
     if let Some(entry) = function.place_storage.get(&id) {
-        partial::require_root(function, state, id, block, context)?;
+        root_initialization_status(function, state, id)?;
         for leaf in &entry.leaves {
-            initialized_slot(state, leaf.storage, block, context)?;
+            slot_initialization_status(state, leaf.storage)?;
         }
         Ok(())
     } else {
-        initialized_slot(state, id, block, context)
+        slot_initialization_status(state, id)
     }
 }
 
-pub(crate) fn initialized_slot(
+pub(super) fn root_initialization_status(
+    function: &PhysicalFunction,
     state: &FlowState,
     id: StorageId,
-    block: BlockId,
-    context: &str,
-) -> Result<(), PhysicalError> {
-    let slot = state
-        .slots
-        .get(id.0 as usize)
-        .ok_or_else(|| PhysicalError::new(format!("unknown physical storage {}", id.0)))?;
-    match slot {
-        InitState::Initialized => Ok(()),
-        InitState::Uninitialized => Err(PhysicalError::new(format!(
-            "physical bb{} {context} reads uninitialized storage {}",
-            block.0, id.0
-        ))),
-        InitState::MaybeInitialized => Err(PhysicalError::new(format!(
-            "physical bb{} {context} reads storage {} that is not initialized on every path",
-            block.0, id.0
-        ))),
+) -> Result<(), InitializationFailure> {
+    let root = function
+        .place_storage
+        .get(&id)
+        .map_or(id, |entry| entry.root);
+    let declaration = super::verify_structural::lookup_storage(function, root)
+        .ok_or(InitializationFailure::Unknown(root))?;
+    match declaration.origin {
+        StorageOrigin::Session { .. } => Ok(()),
+        StorageOrigin::Local(_) => {
+            if state.active[root.0 as usize] == InitState::Initialized {
+                Ok(())
+            } else {
+                Err(InitializationFailure::InactiveLocal(root))
+            }
+        }
+        _ => slot_initialization_status(state, root),
+    }
+}
+
+fn slot_initialization_status(
+    state: &FlowState,
+    id: StorageId,
+) -> Result<(), InitializationFailure> {
+    match state.slots.get(id.0 as usize) {
+        Some(InitState::Initialized) => Ok(()),
+        Some(InitState::Uninitialized) => Err(InitializationFailure::Uninitialized(id)),
+        Some(InitState::MaybeInitialized) => Err(InitializationFailure::MaybeInitialized(id)),
+        None => Err(InitializationFailure::Unknown(id)),
     }
 }
 

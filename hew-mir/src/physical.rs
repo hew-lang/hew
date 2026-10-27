@@ -135,9 +135,9 @@ mod verify_ops;
 use verify_ops::require_no_live_borrows;
 use verify_ops::{
     apply_edge, call_successors, call_successors_with_handback, consume_if_owned, define,
-    initialized, initialized_slot, integer_bit_range, integer_width_bits, mask_to_width,
-    runtime_receiver_release, verify_initialization, verify_operation_storage, BorrowDependents,
-    FaultState, FlowState, InitState,
+    initialized, integer_bit_range, integer_width_bits, mask_to_width, runtime_receiver_release,
+    verify_initialization, verify_operation_storage, BorrowDependents, FaultState, FlowState,
+    InitState,
 };
 
 #[path = "physical_verify_terminator.rs"]

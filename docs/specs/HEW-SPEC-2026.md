@@ -412,10 +412,6 @@ language contracts:
   scope's exit like every fork. Whether Hew needs a true fire-and-forget send
   is an open question: it would make resources, cleanup and control flow less
   deterministic, and nothing in this specification promises it.
-- Native `select` realizes task, timer, actor-call, ordinary callable and stream receive
-  sources. A line, chunk or take adapter over a socket stream, and a file
-  stream over a pipe, device or terminal, are not select sources yet
-  (§6.4.5).
 - Native supervision supports declared children and pools of them, with a checked
   runtime `count:` expression. Parts of the shutdown-deadline contract remain
   incomplete (§5).
@@ -3444,7 +3440,7 @@ impl Sequence for RangeIter {
 }
 ```
 
-Traits with associated types do not participate in structural trait satisfaction checks (the "E1 guard"). A type can only satisfy a trait with associated types through an explicit `impl` block that provides the required `type Item = ...` declaration. Equality bindings (`where T: Iterator<Item = i64>`) and projection bounds (`where T.Item: Display`) are supported. Multi-associated-type traits are not supported.
+Traits with associated types do not participate in structural trait satisfaction checks (the "E1 guard"). A type can only satisfy a trait with associated types through an explicit `impl` block that provides each required associated type. Equality bindings (`where T: Iterator<Item = i64>`) and projection bounds (`where T.Item: Display`) are supported.
 
 #### 3.8.5 Send/Frozen Specialization for Actors
 

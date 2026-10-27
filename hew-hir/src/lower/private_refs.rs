@@ -11,6 +11,7 @@ pub(super) fn collect_imported_private_fn_closure(
     module: &hew_parser::module::Module,
     indices: &hew_parser::module::FileSpanIndices,
     test_entries: &[hew_types::TestEntryPlan],
+    declaration_uses: &[(&SpanKey, &hew_types::DefId)],
 ) -> HashSet<usize> {
     let mut private = HashMap::new();
     let mut roots = Vec::new();
@@ -41,7 +42,7 @@ pub(super) fn collect_imported_private_fn_closure(
             _ => roots.push((index, span)),
         }
     }
-    close_private_fn_uses(ctx, &private, roots, reachable)
+    close_private_fn_uses(ctx, &private, roots, reachable, declaration_uses)
 }
 
 /// Embedded source helpers share imported functions' exact declaration-use
@@ -50,6 +51,7 @@ pub(super) fn collect_builtin_private_fn_closure(
     ctx: &mut LowerCtx,
     program: &Program,
     builtin_item_index: impl Fn(usize) -> u32,
+    declaration_uses: &[(&SpanKey, &hew_types::DefId)],
 ) -> HashSet<usize> {
     let mut private = HashMap::new();
     let mut roots = Vec::new();
@@ -72,7 +74,7 @@ pub(super) fn collect_builtin_private_fn_closure(
     }
     ctx.current_module_idx = saved_index;
     ctx.current_item_ordinal = saved_ordinal;
-    close_private_fn_uses(ctx, &private, roots, HashSet::new())
+    close_private_fn_uses(ctx, &private, roots, HashSet::new(), declaration_uses)
 }
 
 fn close_private_fn_uses<'a>(
@@ -80,6 +82,7 @@ fn close_private_fn_uses<'a>(
     private: &HashMap<hew_types::DefId, (usize, u32, &'a Span)>,
     mut roots: Vec<(u32, &'a Span)>,
     mut reachable: HashSet<usize>,
+    declaration_uses: &[(&SpanKey, &hew_types::DefId)],
 ) -> HashSet<usize> {
     // Omitted arguments are checked calls even though their provider does not
     // occur as an identifier in source. Seed the same declaration-use closure
@@ -108,14 +111,15 @@ fn close_private_fn_uses<'a>(
         }
     }
     while let Some((index, span)) = roots.pop() {
-        for (site, resolution) in &ctx.resolutions {
-            if site.module_idx != index || site.start < span.start || site.end > span.end {
+        let start = declaration_uses
+            .partition_point(|(site, _)| (site.module_idx, site.start) < (index, span.start));
+        for (site, declaration) in declaration_uses[start..]
+            .iter()
+            .take_while(|(site, _)| site.module_idx == index && site.start <= span.end)
+        {
+            if site.end > span.end {
                 continue;
             }
-            let (Resolution::Def(declaration) | Resolution::Member(declaration)) = resolution
-            else {
-                continue;
-            };
             if let Some((ordinal, index, span)) = private.get(declaration) {
                 if reachable.insert(*ordinal) {
                     roots.push((*index, *span));

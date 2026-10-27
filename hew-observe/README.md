@@ -100,7 +100,15 @@ hew observe --list
 
 # If multiple profilers are running, pick one explicitly (Unix only)
 hew observe --pid 12345
+
+# Observe several processes in one pane (Unix only)
+hew observe --pid 12345 --pid 23456
 ```
+
+Repeat `--pid` (or use `--pid 12345,23456`) to monitor several processes.
+The status bar shows the connected process count. Press `[` and `]` to switch
+the active process for the overview, actors, supervisors, and crashes; message
+and timeline events are collected from all selected processes.
 
 You can also run an already-compiled binary directly without `hew run`:
 
@@ -149,11 +157,13 @@ HEW_PPROF=auto ./myapp
 
 **"Multiple profilers running" error?**
 
-Use `hew observe --list` to see all active profilers, then pick one:
+Use `hew observe --list` to see all active profilers, then select the processes
+to watch:
 
 ```sh
 hew observe --list        # shows PID, program name, uptime, socket path
 hew observe --pid 12345   # attach to that specific PID
+hew observe --pid 12345 --pid 23456   # attach to both processes
 ```
 
 **"No profiler found for PID …" error?**

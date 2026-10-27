@@ -15,7 +15,7 @@ use crate::Format;
 /// breaks this grammar is a compiler defect; the sink panics rather than
 /// write a malformed document.
 #[derive(Debug)]
-pub struct Sink<'t> {
+struct TreeSink<'t> {
     format: Format,
     stack: Vec<Frame<'t>>,
     root: Option<Value>,
@@ -44,9 +44,10 @@ enum Frame<'t> {
     },
 }
 
-impl<'t> Sink<'t> {
+impl<'t> TreeSink<'t> {
     #[must_use]
     pub fn new(format: Format) -> Self {
+        assert_ne!(format, Format::Json, "JSON uses its direct writer");
         Self {
             format,
             stack: Vec::new(),
@@ -112,24 +113,8 @@ impl<'t> Sink<'t> {
         self.emit(Value::Int(value.into()));
     }
 
-    /// JSON has no non-finite numbers: they are written as the strings
-    /// `"NaN"`, `"Infinity"` and `"-Infinity"`.
     pub fn f64(&mut self, value: f64) {
-        let value = if self.format == Format::Json && !value.is_finite() {
-            Value::Str(
-                if value.is_nan() {
-                    "NaN"
-                } else if value > 0.0 {
-                    "Infinity"
-                } else {
-                    "-Infinity"
-                }
-                .to_owned(),
-            )
-        } else {
-            Value::Float(value)
-        };
-        self.emit(value);
+        self.emit(Value::Float(value));
     }
 
     pub fn str(&mut self, value: &str) {
@@ -287,13 +272,170 @@ impl<'t> Sink<'t> {
         });
     }
 
+    /// The written document. Text formats produce UTF-8.
+    #[must_use]
+    pub fn finish(self) -> Vec<u8> {
+        assert!(
+            self.stack.is_empty(),
+            "hew-codec: `finish` with an open container"
+        );
+        let root = self.root.expect("hew-codec: `finish` before any value");
+        write(self.format, &root)
+    }
+}
+
+/// Receives a typed event walk in its selected format. JSON writes directly;
+/// the other formats retain their existing document representation.
+#[derive(Debug)]
+pub struct Sink<'t>(Writer<'t>);
+
+#[derive(Debug)]
+enum Writer<'t> {
+    Json(crate::JsonSink<'t>),
+    Tree(TreeSink<'t>),
+}
+
+impl<'t> Sink<'t> {
+    #[must_use]
+    pub fn new(format: Format) -> Self {
+        Self(if format == Format::Json {
+            Writer::Json(crate::JsonSink::new())
+        } else {
+            Writer::Tree(TreeSink::new(format))
+        })
+    }
+    pub fn null(&mut self) {
+        match &mut self.0 {
+            Writer::Json(s) => s.null(),
+            Writer::Tree(s) => s.null(),
+        }
+    }
+    pub fn bool(&mut self, value: bool) {
+        match &mut self.0 {
+            Writer::Json(s) => s.bool(value),
+            Writer::Tree(s) => s.bool(value),
+        }
+    }
+    pub fn i64(&mut self, value: i64) {
+        match &mut self.0 {
+            Writer::Json(s) => s.i64(value),
+            Writer::Tree(s) => s.i64(value),
+        }
+    }
+    pub fn u64(&mut self, value: u64) {
+        match &mut self.0 {
+            Writer::Json(s) => s.u64(value),
+            Writer::Tree(s) => s.u64(value),
+        }
+    }
+    /// JSON has no non-finite numbers: they are written as the strings
+    /// `"NaN"`, `"Infinity"` and `"-Infinity"`.
+    pub fn f64(&mut self, value: f64) {
+        match &mut self.0 {
+            Writer::Json(s) => s.f64(value),
+            Writer::Tree(s) => s.f64(value),
+        }
+    }
+    pub fn str(&mut self, value: &str) {
+        match &mut self.0 {
+            Writer::Json(s) => s.str(value),
+            Writer::Tree(s) => s.str(value),
+        }
+    }
+    /// Text formats write bytes as padded base64 (RFC 4648).
+    pub fn bytes(&mut self, value: &[u8]) {
+        match &mut self.0 {
+            Writer::Json(s) => s.bytes(value),
+            Writer::Tree(s) => s.bytes(value),
+        }
+    }
+    /// A sequence of `len` values (tuple, array, `Vec`).
+    pub fn seq_begin(&mut self, len: usize) {
+        match &mut self.0 {
+            Writer::Json(s) => s.seq_begin(len),
+            Writer::Tree(s) => s.seq_begin(len),
+        }
+    }
+    /// A set: a sequence written in canonical order.
+    pub fn set_begin(&mut self, len: usize) {
+        match &mut self.0 {
+            Writer::Json(s) => s.set_begin(len),
+            Writer::Tree(s) => s.set_begin(len),
+        }
+    }
+    pub fn seq_end(&mut self) {
+        match &mut self.0 {
+            Writer::Json(s) => s.seq_end(),
+            Writer::Tree(s) => s.seq_end(),
+        }
+    }
+    /// A map of `len` entries, each a key value then a value. Text formats
+    /// write a map with `string` keys as an object and any other map as a
+    /// sequence of `[key, value]` pairs.
+    pub fn map_begin(&mut self, len: usize, string_keys: bool) {
+        match &mut self.0 {
+            Writer::Json(s) => s.map_begin(len, string_keys),
+            Writer::Tree(s) => s.map_begin(len, string_keys),
+        }
+    }
+    pub fn map_end(&mut self) {
+        match &mut self.0 {
+            Writer::Json(s) => s.map_end(),
+            Writer::Tree(s) => s.map_end(),
+        }
+    }
+    pub fn record_begin(&mut self, table: Table<'t>) {
+        match &mut self.0 {
+            Writer::Json(s) => s.record_begin(table),
+            Writer::Tree(s) => s.record_begin(table),
+        }
+    }
+    /// The next value is field `index` of the open record.
+    pub fn field(&mut self, index: usize) {
+        match &mut self.0 {
+            Writer::Json(s) => s.field(index),
+            Writer::Tree(s) => s.field(index),
+        }
+    }
+    /// Fields are written in the order the walk emitted them (declaration
+    /// order), except a tagged record in a binary format, which is written in
+    /// ascending tag order. A `null` is omitted for an `OMIT_NULL` field, and
+    /// always in TOML, which has no null.
+    pub fn record_end(&mut self) {
+        match &mut self.0 {
+            Writer::Json(s) => s.record_end(),
+            Writer::Tree(s) => s.record_end(),
+        }
+    }
+    /// Variant `index` of `table`. A `PAYLOAD` variant is followed by exactly
+    /// one payload value (a sequence for several, a record for named fields).
+    pub fn variant(&mut self, table: Table<'t>, index: usize) {
+        match &mut self.0 {
+            Writer::Json(s) => s.variant(table, index),
+            Writer::Tree(s) => s.variant(table, index),
+        }
+    }
+    /// A unit variant is its key alone; a payload variant is a map of one
+    /// entry from its key to the payload.
+    pub fn variant_end(&mut self) {
+        match &mut self.0 {
+            Writer::Json(s) => s.variant_end(),
+            Writer::Tree(s) => s.variant_end(),
+        }
+    }
+    fn integer(&mut self, value: i128) {
+        match &mut self.0 {
+            Writer::Json(s) => s.i128(value),
+            Writer::Tree(s) => s.emit(Value::Int(value)),
+        }
+    }
     /// Replay a dynamic value (`json.Value` and its peers) as events, so it
     /// follows the same format rules as typed data.
     pub fn value(&mut self, value: &Value) {
         match value {
             Value::Null => self.null(),
             Value::Bool(v) => self.bool(*v),
-            Value::Int(v) => self.emit(Value::Int(*v)),
+            Value::Int(v) => self.integer(*v),
             Value::Float(v) => self.f64(*v),
             Value::Str(v) => self.str(v),
             Value::Bytes(v) => self.bytes(v),
@@ -319,11 +461,9 @@ impl<'t> Sink<'t> {
     /// The written document. Text formats produce UTF-8.
     #[must_use]
     pub fn finish(self) -> Vec<u8> {
-        assert!(
-            self.stack.is_empty(),
-            "hew-codec: `finish` with an open container"
-        );
-        let root = self.root.expect("hew-codec: `finish` before any value");
-        write(self.format, &root)
+        match self.0 {
+            Writer::Json(s) => s.finish(),
+            Writer::Tree(s) => s.finish(),
+        }
     }
 }

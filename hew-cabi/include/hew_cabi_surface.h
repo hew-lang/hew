@@ -16,10 +16,10 @@ struct hew_cabi_manifest_row {
   enum hew_cabi_manifest_ownership ownership;
 };
 
-#define HEW_CABI_MANIFEST_FUNCTION_COUNT 1745u
+#define HEW_CABI_MANIFEST_FUNCTION_COUNT 1766u
 #define HEW_CABI_MANIFEST_STATIC_COUNT 24u
 
-static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1745] = {
+static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1766] = {
     {"hew_actor_abort_construction",
      "{\"native\": \"fn hew_actor_abort_construction( HewLocalPidId, *mut "
      "HewCoroState, )\", \"wasm32-wasip1\": \"fn hew_actor_abort_construction( "
@@ -4267,6 +4267,12 @@ static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1745] = {
      "*mut i32, ) -> *mut HewJsonValue\"}",
      "native,wasm32-wasip1", "non-declarable", "not-applicable",
      "no-in-signature-extent", HEW_CABI_OWNERSHIP_UNMEASURED},
+    {"hew_json_de_new",
+     "{\"native\": \"fn hew_json_de_new( *const c_void) -> *mut c_void\", "
+     "\"wasm32-wasip1\": \"fn hew_json_de_new( *const c_void) -> *mut "
+     "c_void\"}",
+     "native,wasm32-wasip1", "non-declarable", "not-applicable",
+     "no-in-signature-extent", HEW_CABI_OWNERSHIP_UNMEASURED},
     {"hew_json_eq",
      "{\"native\": \"fn hew_json_eq( *const HewJsonValue, *const HewJsonValue) "
      "-> i32\", \"wasm32-wasip1\": \"fn hew_json_eq( *const HewJsonValue, "
@@ -4413,6 +4419,111 @@ static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1745] = {
      "HewValueLayout, *mut i32, ) -> *mut HewJsonValue\", \"wasm32-wasip1\": "
      "\"fn hew_json_parse_checked( *const HewString, *const HewValueLayout, "
      "*mut i32, ) -> *mut HewJsonValue\"}",
+     "native,wasm32-wasip1", "non-declarable", "not-applicable",
+     "no-in-signature-extent", HEW_CABI_OWNERSHIP_UNMEASURED},
+    {"hew_json_ser_bool",
+     "{\"native\": \"fn hew_json_ser_bool( *mut c_void, i8)\", "
+     "\"wasm32-wasip1\": \"fn hew_json_ser_bool( *mut c_void, i8)\"}",
+     "native,wasm32-wasip1", "non-declarable", "not-applicable",
+     "no-in-signature-extent", HEW_CABI_OWNERSHIP_UNMEASURED},
+    {"hew_json_ser_bytes",
+     "{\"native\": \"fn hew_json_ser_bytes( *mut c_void, *const "
+     "BytesTriple)\", \"wasm32-wasip1\": \"fn hew_json_ser_bytes( *mut c_void, "
+     "*const BytesTriple)\"}",
+     "native,wasm32-wasip1", "non-declarable", "not-applicable",
+     "no-in-signature-extent", HEW_CABI_OWNERSHIP_UNMEASURED},
+    {"hew_json_ser_char",
+     "{\"native\": \"fn hew_json_ser_char( *mut c_void, u32)\", "
+     "\"wasm32-wasip1\": \"fn hew_json_ser_char( *mut c_void, u32)\"}",
+     "native,wasm32-wasip1", "non-declarable", "not-applicable",
+     "no-in-signature-extent", HEW_CABI_OWNERSHIP_UNMEASURED},
+    {"hew_json_ser_f64",
+     "{\"native\": \"fn hew_json_ser_f64( *mut c_void, f64)\", "
+     "\"wasm32-wasip1\": \"fn hew_json_ser_f64( *mut c_void, f64)\"}",
+     "native,wasm32-wasip1", "non-declarable", "not-applicable",
+     "no-in-signature-extent", HEW_CABI_OWNERSHIP_UNMEASURED},
+    {"hew_json_ser_field",
+     "{\"native\": \"fn hew_json_ser_field( *mut c_void, u32)\", "
+     "\"wasm32-wasip1\": \"fn hew_json_ser_field( *mut c_void, u32)\"}",
+     "native,wasm32-wasip1", "non-declarable", "not-applicable",
+     "no-in-signature-extent", HEW_CABI_OWNERSHIP_UNMEASURED},
+    {"hew_json_ser_finish_string",
+     "{\"native\": \"fn hew_json_ser_finish_string( *mut c_void) -> *mut "
+     "HewString\", \"wasm32-wasip1\": \"fn hew_json_ser_finish_string( *mut "
+     "c_void) -> *mut HewString\"}",
+     "native,wasm32-wasip1", "non-declarable", "not-applicable",
+     "no-in-signature-extent", HEW_CABI_OWNERSHIP_UNMEASURED},
+    {"hew_json_ser_i64",
+     "{\"native\": \"fn hew_json_ser_i64( *mut c_void, i64)\", "
+     "\"wasm32-wasip1\": \"fn hew_json_ser_i64( *mut c_void, i64)\"}",
+     "native,wasm32-wasip1", "non-declarable", "not-applicable",
+     "no-in-signature-extent", HEW_CABI_OWNERSHIP_UNMEASURED},
+    {"hew_json_ser_map_begin",
+     "{\"native\": \"fn hew_json_ser_map_begin( *mut c_void, i64, i8)\", "
+     "\"wasm32-wasip1\": \"fn hew_json_ser_map_begin( *mut c_void, i64, i8)\"}",
+     "native,wasm32-wasip1", "non-declarable", "not-applicable",
+     "length-or-count", HEW_CABI_OWNERSHIP_UNMEASURED},
+    {"hew_json_ser_map_end",
+     "{\"native\": \"fn hew_json_ser_map_end( *mut c_void)\", "
+     "\"wasm32-wasip1\": \"fn hew_json_ser_map_end( *mut c_void)\"}",
+     "native,wasm32-wasip1", "non-declarable", "not-applicable",
+     "no-in-signature-extent", HEW_CABI_OWNERSHIP_UNMEASURED},
+    {"hew_json_ser_new",
+     "{\"native\": \"fn hew_json_ser_new() -> *mut c_void\", "
+     "\"wasm32-wasip1\": \"fn hew_json_ser_new() -> *mut c_void\"}",
+     "native,wasm32-wasip1", "non-declarable", "not-applicable",
+     "no-in-signature-extent", HEW_CABI_OWNERSHIP_UNMEASURED},
+    {"hew_json_ser_null",
+     "{\"native\": \"fn hew_json_ser_null( *mut c_void)\", \"wasm32-wasip1\": "
+     "\"fn hew_json_ser_null( *mut c_void)\"}",
+     "native,wasm32-wasip1", "non-declarable", "not-applicable",
+     "no-in-signature-extent", HEW_CABI_OWNERSHIP_UNMEASURED},
+    {"hew_json_ser_record_begin",
+     "{\"native\": \"fn hew_json_ser_record_begin( *mut c_void, *const "
+     "Table<'static>)\", \"wasm32-wasip1\": \"fn hew_json_ser_record_begin( "
+     "*mut c_void, *const Table<'static>)\"}",
+     "native,wasm32-wasip1", "non-declarable", "not-applicable",
+     "no-in-signature-extent", HEW_CABI_OWNERSHIP_UNMEASURED},
+    {"hew_json_ser_record_end",
+     "{\"native\": \"fn hew_json_ser_record_end( *mut c_void)\", "
+     "\"wasm32-wasip1\": \"fn hew_json_ser_record_end( *mut c_void)\"}",
+     "native,wasm32-wasip1", "non-declarable", "not-applicable",
+     "no-in-signature-extent", HEW_CABI_OWNERSHIP_UNMEASURED},
+    {"hew_json_ser_seq_begin",
+     "{\"native\": \"fn hew_json_ser_seq_begin( *mut c_void, i64)\", "
+     "\"wasm32-wasip1\": \"fn hew_json_ser_seq_begin( *mut c_void, i64)\"}",
+     "native,wasm32-wasip1", "non-declarable", "not-applicable",
+     "length-or-count", HEW_CABI_OWNERSHIP_UNMEASURED},
+    {"hew_json_ser_seq_end",
+     "{\"native\": \"fn hew_json_ser_seq_end( *mut c_void)\", "
+     "\"wasm32-wasip1\": \"fn hew_json_ser_seq_end( *mut c_void)\"}",
+     "native,wasm32-wasip1", "non-declarable", "not-applicable",
+     "no-in-signature-extent", HEW_CABI_OWNERSHIP_UNMEASURED},
+    {"hew_json_ser_set_begin",
+     "{\"native\": \"fn hew_json_ser_set_begin( *mut c_void, i64)\", "
+     "\"wasm32-wasip1\": \"fn hew_json_ser_set_begin( *mut c_void, i64)\"}",
+     "native,wasm32-wasip1", "non-declarable", "not-applicable",
+     "length-or-count", HEW_CABI_OWNERSHIP_UNMEASURED},
+    {"hew_json_ser_str",
+     "{\"native\": \"fn hew_json_ser_str( *mut c_void, *const HewString)\", "
+     "\"wasm32-wasip1\": \"fn hew_json_ser_str( *mut c_void, *const "
+     "HewString)\"}",
+     "native,wasm32-wasip1", "non-declarable", "not-applicable",
+     "no-in-signature-extent", HEW_CABI_OWNERSHIP_UNMEASURED},
+    {"hew_json_ser_u64",
+     "{\"native\": \"fn hew_json_ser_u64( *mut c_void, u64)\", "
+     "\"wasm32-wasip1\": \"fn hew_json_ser_u64( *mut c_void, u64)\"}",
+     "native,wasm32-wasip1", "non-declarable", "not-applicable",
+     "no-in-signature-extent", HEW_CABI_OWNERSHIP_UNMEASURED},
+    {"hew_json_ser_variant",
+     "{\"native\": \"fn hew_json_ser_variant( *mut c_void, *const "
+     "Table<'static>, u32, )\", \"wasm32-wasip1\": \"fn hew_json_ser_variant( "
+     "*mut c_void, *const Table<'static>, u32, )\"}",
+     "native,wasm32-wasip1", "non-declarable", "not-applicable",
+     "no-in-signature-extent", HEW_CABI_OWNERSHIP_UNMEASURED},
+    {"hew_json_ser_variant_end",
+     "{\"native\": \"fn hew_json_ser_variant_end( *mut c_void)\", "
+     "\"wasm32-wasip1\": \"fn hew_json_ser_variant_end( *mut c_void)\"}",
      "native,wasm32-wasip1", "non-declarable", "not-applicable",
      "no-in-signature-extent", HEW_CABI_OWNERSHIP_UNMEASURED},
     {"hew_json_string_free",

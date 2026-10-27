@@ -87,6 +87,14 @@ impl<'t> Source<'t> {
         Ok(Self::from_value(format, parse(format, input)?))
     }
 
+    /// Parse a complete JSON document without retaining other format parsers.
+    ///
+    /// # Errors
+    /// Returns the same structured syntax errors as [`Self::new`].
+    pub fn json(input: &[u8]) -> Result<Self, DecodeError> {
+        Ok(Self::from_value(Format::Json, crate::json::parse(input)?))
+    }
+
     /// Decode an already-parsed document (a dynamic value) as `format` would.
     #[must_use]
     pub fn from_value(format: Format, value: Value) -> Self {

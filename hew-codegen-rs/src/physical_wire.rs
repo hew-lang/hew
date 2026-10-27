@@ -1,15 +1,16 @@
-//! Native codec walks: one encode and one decode callback per planned type,
-//! driving the format-neutral `hew_ser_*` / `hew_de_*` event ABI over static
-//! `hew_codec::Table` globals.
+//! Native codec walks emitted on demand per format, type and direction.
+//! JSON encoding drives its direct event writer; other formats and decoding
+//! share the structural event ABI over static `hew_codec::Table` globals.
 
 use super::collection_callbacks::CollectionCallbacks;
 use super::*;
 use hew_mir::physical::{SemWireKind, SemWirePayload, SemWirePlan, SemWirePlans, SemWireTable};
-use hew_types::Codec;
+use hew_types::{Codec, CodecFormat};
 
-fn wire_symbol(ty: &ResolvedTy, decode: bool, property_input: bool) -> String {
+fn wire_symbol(ty: &ResolvedTy, decode: bool, property_input: bool, format: CodecFormat) -> String {
     format!(
-        "__hew_wire_{}_{}_{}",
+        "__hew_wire_{}_{}_{}_{}",
+        format.code(),
         if property_input {
             "property"
         } else {
@@ -207,8 +208,9 @@ pub(super) fn emit_callback<'ctx>(
     recipes: &BTreeMap<ResolvedTy, PhysicalValueRecipe>,
     callbacks: &key::CallbackTable<'ctx>,
     decode: bool,
+    format: CodecFormat,
 ) -> CodegenResult<FunctionValue<'ctx>> {
-    let name = wire_symbol(ty, decode, plans.property_input);
+    let name = wire_symbol(ty, decode, plans.property_input, format);
     if let Some(function) = llvm.get_function(&name) {
         return Ok(function);
     }
@@ -282,6 +284,7 @@ pub(super) fn emit_callback<'ctx>(
         let mut emitter = DecodeEmitter {
             values,
             plans,
+            format,
             recipes,
             callbacks,
             frame,
@@ -306,6 +309,7 @@ pub(super) fn emit_callback<'ctx>(
         EncodeEmitter {
             values,
             plans,
+            format,
             recipes,
             callbacks,
             cursor,
@@ -337,6 +341,7 @@ fn index(value: usize) -> CodegenResult<u32> {
 struct EncodeEmitter<'a, 'ctx> {
     values: ValueEmitter<'a, 'ctx>,
     plans: &'a SemWirePlans,
+    format: CodecFormat,
     recipes: &'a BTreeMap<ResolvedTy, PhysicalValueRecipe>,
     callbacks: &'a key::CallbackTable<'ctx>,
     cursor: PointerValue<'ctx>,
@@ -347,6 +352,13 @@ impl<'ctx> EncodeEmitter<'_, 'ctx> {
         let args = std::iter::once(self.cursor.into())
             .chain(args.iter().copied())
             .collect::<Vec<_>>();
+        let json_name;
+        let name = if self.format == CodecFormat::Json {
+            json_name = name.replacen("hew_ser_", "hew_json_ser_", 1);
+            json_name.as_str()
+        } else {
+            name
+        };
         runtime(&self.values, name, None, &args).map(|_| ())
     }
     fn len(&self, len: usize) -> BasicValueEnum<'ctx> {
@@ -379,6 +391,7 @@ impl<'ctx> EncodeEmitter<'_, 'ctx> {
             self.recipes,
             self.callbacks,
             false,
+            self.format,
         )?;
         self.values
             .builder
@@ -440,10 +453,8 @@ impl<'ctx> EncodeEmitter<'_, 'ctx> {
         slots: &[(PointerValue<'ctx>, &ResolvedTy)],
     ) -> CodegenResult<()> {
         self.void("hew_ser_record_begin", &[table])?;
-        for (position, ((slot, ty), member)) in slots.iter().zip(&members.members).enumerate() {
-            if member.flags & hew_codec::Member::SKIP != 0 {
-                continue;
-            }
+        for position in members.encode_members(self.format) {
+            let (slot, ty) = slots[position];
             self.void(
                 "hew_ser_field",
                 &[self
@@ -453,7 +464,7 @@ impl<'ctx> EncodeEmitter<'_, 'ctx> {
                     .const_int(u64::from(index(position)?), false)
                     .into()],
             )?;
-            self.child(ty, *slot)?;
+            self.child(ty, slot)?;
         }
         self.void("hew_ser_record_end", &[])
     }
@@ -883,6 +894,7 @@ struct DecodeOwner<'ctx> {
 struct DecodeEmitter<'a, 'ctx> {
     values: ValueEmitter<'a, 'ctx>,
     plans: &'a SemWirePlans,
+    format: CodecFormat,
     recipes: &'a BTreeMap<ResolvedTy, PhysicalValueRecipe>,
     callbacks: &'a key::CallbackTable<'ctx>,
     frame: Option<coro::Frame<'ctx>>,
@@ -1164,6 +1176,7 @@ impl<'ctx> DecodeEmitter<'_, 'ctx> {
             self.recipes,
             self.callbacks,
             true,
+            self.format,
         )?;
         let arguments = [self.cursor.into(), temporary.slot.into(), self.fault.into()];
         let status = if decode_is_resumable(self.values.module, self.plans, ty, self.recipes) {
@@ -1826,6 +1839,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             recipes,
             self.value_callbacks,
             !codec.is_serialize(),
+            codec.format,
         )?;
         let format = self
             .ctx
@@ -1833,7 +1847,11 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             .const_int(codec.format.code(), false)
             .into();
         if codec.is_serialize() {
-            let sink = runtime_value(&values, "hew_ser_new", pointer.into(), &[format])?;
+            let sink = if codec.format == CodecFormat::Json {
+                runtime_value(&values, "hew_json_ser_new", pointer.into(), &[])?
+            } else {
+                runtime_value(&values, "hew_ser_new", pointer.into(), &[format])?
+            };
             self.builder
                 .build_call(
                     callback,
@@ -1849,8 +1867,16 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
                     &[sink, self.slots[result.0 as usize].into()],
                 )?;
             } else {
-                let text =
-                    runtime_value(&values, "hew_ser_finish_string", pointer.into(), &[sink])?;
+                let text = runtime_value(
+                    &values,
+                    if codec.format == CodecFormat::Json {
+                        "hew_json_ser_finish_string"
+                    } else {
+                        "hew_ser_finish_string"
+                    },
+                    pointer.into(),
+                    &[sink],
+                )?;
                 self.store(result, text)?;
             }
             return self.emit_result_edge(Some(result), normal);
@@ -1880,6 +1906,13 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
                 "hew_test_property_reader",
                 pointer.into(),
                 &[index],
+            )?
+        } else if codec.format == CodecFormat::Json {
+            runtime_value(
+                &values,
+                "hew_json_de_new",
+                pointer.into(),
+                &[self.slots[input.0 as usize].into()],
             )?
         } else {
             runtime_value(
@@ -1983,6 +2016,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             recipes,
             self.value_callbacks,
             true,
+            codec.format,
         )?;
         let error_layout =
             self.module.target.layout(&cases.error_ty).ok_or_else(|| {

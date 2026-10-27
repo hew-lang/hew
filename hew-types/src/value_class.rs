@@ -218,13 +218,13 @@ impl<'a> ClassContext<'a> {
 pub enum ClassError {
     /// A callable claims independent duplication over an owning resource field.
     CallableCloneConflict,
-    /// the class table `TypeParam` row: the instance service substitutes first, so an
+    /// The class table `TypeParam` row: the instance service substitutes first, so an
     /// abstract parameter never reaches SIR.
     TypeParam { param: crate::ParamHead },
     /// The declaration carrying the marker and the member types is not in the
     /// [`ClassContext`].
     UnknownDeclaration { name: String },
-    /// the class table: `Iterator`, `ActorState` and `MachineState` are compiler-internal
+    /// The class table: `Iterator`, `ActorState` and `MachineState` are compiler-internal
     /// names, never the type of a value.
     NotAValueType { builtin: BuiltinType },
     /// The declaration's own members reach it at a *different* instantiation
@@ -885,9 +885,8 @@ fn classify_declaration(
     // aggregate join then keeps the declaration's payload class: a `BitCopy`
     // payload gives `(CowValue, FieldWise)`, a payload holding an
     // `AffineResource` gives `AffineResource`. It is never `BitCopy`, which is
-    // what a bottom-element cut published and which the ownership-kind mapping maps to no ownership
-    // obligation, the ownership operations let `copy_value` duplicate and ownership checking bit-copies across
-    // an actor heap.
+    // what a bottom-element cut published. `BitCopy` carries no ownership
+    // obligation and permits bitwise copies, including across an actor heap.
     //
     // Whether the cycle has a finite fixpoint at all is a property of the
     // declaration's own pre-substitution members, not of the walk stack: a body

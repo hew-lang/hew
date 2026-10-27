@@ -66,7 +66,7 @@ fn row_matching(
     *facts
 }
 
-/// the class table: integers, floats, `Bool`, `Char`, `Unit`, `Never` and `Duration` are
+/// The class table: integers, floats, `Bool`, `Char`, `Unit`, `Never` and `Duration` are
 /// `BitCopy`/`Bits`, so none of them carries an ownership obligation.
 #[test]
 fn scalar_bindings_are_bitcopy() {
@@ -88,7 +88,7 @@ fn scalar_bindings_are_bitcopy() {
     }
 }
 
-/// the class table: `String` is `CowValue`/`Retain`, so the ownership-kind mapping gives every string value an
+/// The class table: `String` is `CowValue`/`Retain`, so the ownership-kind mapping gives every string value an
 /// `Owned` obligation - one consuming use per path.
 #[test]
 fn string_bindings_are_cow_values_with_a_retain_path() {
@@ -102,13 +102,13 @@ fn string_bindings_are_cow_values_with_a_retain_path() {
         ),
         (facts.class, facts.clone, facts.send)
     );
-    // the ownership-kind mapping maps this class to `Owned`: one consuming use per path. The
+    // The ownership-kind mapping maps this class to `Owned`: one consuming use per path. The
     // mapping itself is asserted in `hew-sir`, which owns `OwnKind`.
     assert_ne!(ValueClass::BitCopy, facts.class);
     assert_ne!(ValueClass::View, facts.class);
 }
 
-/// the class table: `Bytes` shares the `String` row - a bytes mutator forks inside the
+/// The class table: `Bytes` shares the `String` row - a bytes mutator forks inside the
 /// runtime, so the value itself is a retained heap carrier.
 #[test]
 fn bytes_bindings_are_cow_values_with_a_retain_path() {
@@ -161,7 +161,7 @@ fn tuples_follow_the_aggregate_rule_rather_than_either_old_predicate() {
     );
 }
 
-/// the class table `#[resource]` row. The program is accepted; what this pins is
+/// The class table `#[resource]` row. The program is accepted; what this pins is
 /// `clone == None`, which is what makes rule 6b reject a `copy_value`.
 #[test]
 fn a_resource_declaration_has_no_clone_path() {
@@ -180,7 +180,7 @@ fn a_resource_declaration_has_no_clone_path() {
     assert_ne!(CloneKind::FieldWise, facts.clone);
 }
 
-/// the class table `Rc`/`Weak` row plus the type-fact contract's send fact: an `Rc` has a retain path and is
+/// The class table `Rc`/`Weak` row plus the type-fact contract's send fact: an `Rc` has a retain path and is
 /// single-owner, and its non-atomic count is why it is not `Send`.
 #[test]
 fn an_rc_is_an_affine_resource_that_retains_and_does_not_send() {
@@ -222,7 +222,7 @@ fn an_actor_value_retains_its_descriptor() {
     assert_ne!(ValueClass::BitCopy, facts.class);
 }
 
-/// the class table `TypeParam` row: an abstract parameter never reaches SIR, so it is an
+/// The class table `TypeParam` row: an abstract parameter never reaches SIR, so it is an
 /// error rather than a class. Its instantiation is an ordinary `BitCopy`.
 #[test]
 fn an_abstract_type_parameter_has_no_class() {
@@ -260,7 +260,7 @@ fn the_published_table_carries_a_row_for_every_component_type() {
     }
 }
 
-/// the class table's indirect-enum row, on a real program: the recursive occurrence is an
+/// The class table's indirect-enum row, on a real program: the recursive occurrence is an
 /// owning edge, so the declaration keeps its payload class and clones
 /// field-wise. The payload here is a scalar and the class is still `CowValue`,
 /// because the recursion is legal only behind a heap box.
@@ -278,10 +278,8 @@ fn an_indirect_enum_publishes_its_payload_class_over_an_owning_edge() {
     );
 }
 
-/// The negative control for the row above, stated as the class a
-/// bottom-element cut published: the ownership-kind mapping gives `BitCopy` no owner, the ownership operations let
-/// `copy_value` duplicate it at `clone == Bits`, and ownership checking bit-copies it across
-/// an actor heap, so a heap-boxed payload must never carry it.
+/// A heap-boxed payload must not be `BitCopy`: that class has no owner
+/// and permits bitwise copies, including across an actor heap.
 #[test]
 fn an_indirect_enum_is_never_published_bit_copyable() {
     let output = facts_of("class_indirect_enum_owning_edge.hew");
@@ -338,7 +336,7 @@ fn named_at(ty: &ResolvedTy, name: &str, args: impl Fn(&[ResolvedTy]) -> bool) -
     )
 }
 
-/// the class table: a declaration nested inside its own type argument is not recursion.
+/// The class table: a declaration nested inside its own type argument is not recursion.
 /// `Wrapper<T> { value: T }` never mentions `Wrapper` in its members, so no
 /// argument a caller supplies can make it refuse - `Wrapper<Wrapper<i64>>` is
 /// the aggregate over one `Wrapper<i64>` field, which is the aggregate over
@@ -421,7 +419,7 @@ fn rows_named(output: &TypeCheckOutput, name: &str) -> Vec<TypeFacts> {
         .collect()
 }
 
-/// the class table: a fieldless `#[opaque]` declaration with no ownership marker is an
+/// The class table: a fieldless `#[opaque]` declaration with no ownership marker is an
 /// FFI pass-through id whose lifecycle is owned elsewhere - std's convention
 /// is a `#[resource]` wrapper around it that owns the close (`Deque` around
 /// `DequeHandle`, `Response` around `ResponseHandle`, ...). The id itself
@@ -480,7 +478,7 @@ fn a_user_declaration_shadowing_a_builtin_name_keeps_its_own_class() {
     );
 }
 
-/// the class table: the two fieldless `#[opaque]` stdlib channel handles carry a close
+/// The class table: the two fieldless `#[opaque]` stdlib channel handles carry a close
 /// method, so both are `AffineResource` with no clone. Their verdict comes from
 /// the builtin row, which the declaration lookup must leave reachable for a
 /// name it holds no user declaration of.
@@ -500,7 +498,7 @@ fn the_pipe_handles_are_affine_resources_with_no_clone() {
     }
 }
 
-/// the class table's indirect-enum row on a generic declaration: `Nest<T>` mentions itself
+/// The class table's indirect-enum row on a generic declaration: `Nest<T>` mentions itself
 /// at its own instantiation, so the recursive occurrence is an owning edge and
 /// `Nest<i64>` keeps its payload class behind the heap box - `CowValue` with a
 /// `FieldWise` clone, never `BitCopy`, which the ownership-kind mapping would give no owner.

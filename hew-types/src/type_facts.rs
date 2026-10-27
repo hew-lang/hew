@@ -2722,9 +2722,7 @@ fn main() {}"#,
         }
     }
 
-    /// the class table's marker correction, stated as the property it buys: `marker()`
-    /// and the class table agree by construction, so no consumer can read one
-    /// and get the other's answer.
+    /// Builtin markers and the class table agree on copyable values.
     #[test]
     fn builtin_marker_and_the_class_table_agree() {
         use crate::builtin_type::BuiltinTypeMarker;
@@ -2862,7 +2860,7 @@ fn main() {}"#,
         );
     }
 
-    /// the structural key's own test sentence: every one of these has no `NominalId`, so a
+    /// Each of these types has no `NominalId`, so a
     /// nominal key could not express them; the structural key hits for all
     /// five.
     #[test]
@@ -3111,10 +3109,8 @@ fn main() {}"#,
         );
     }
 
-    /// The negative control for the row above, stated as the class the
-    /// bottom-element cut used to publish: the ownership-kind mapping gives `BitCopy` no owner, the ownership operations
-    /// lets `copy_value` duplicate it at `clone == Bits`, and ownership checking bit-copies
-    /// it across an actor heap, so a heap-boxed payload must never carry it.
+    /// A heap-boxed payload must not be `BitCopy`: that class has no owner
+    /// and permits bitwise copies, including across an actor heap.
     #[test]
     fn a_self_recursive_declaration_is_never_bit_copyable() {
         let decls = recursive_declarations();

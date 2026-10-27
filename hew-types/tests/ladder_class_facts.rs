@@ -17,7 +17,9 @@ use hew_types::{
 };
 
 fn fixture(name: &str) -> PathBuf {
-    repo_root().join("hew-types/tests/fixtures/value-class").join(name)
+    repo_root()
+        .join("hew-types/tests/fixtures/value-class")
+        .join(name)
 }
 
 fn facts_of(name: &str) -> TypeCheckOutput {

@@ -1,28 +1,6 @@
-//! W4.001 Stage A substrate test: `ImplRegistry` lookup + bound satisfaction.
-//!
-//! This is the "substrate-tests-the-substrate" test for the new dispatch
-//! authority (`hew-types/src/check/dispatch.rs`). It seeds an
-//! [`ImplRegistry`] with representative impls (`HashMap`, `HashSet`, `Vec`) and
-//! exercises [`resolve_method_call`] over the call shapes Stage B's
-//! resolver will encounter — covering:
-//!
-//! 1. **Happy-path lookup**: receiver matches a registered impl, all
-//!    where-bounds satisfied, target method present → returns the
-//!    expected [`ResolvedCall`] with the right `impl_id`, target ABI,
-//!    and concrete `type_args`.
-//! 2. **Bound-satisfaction failure**: receiver matches structurally
-//!    but a where-bound (e.g. `K: Hash`) is rejected by the
-//!    caller-supplied predicate → returns
-//!    [`LookupError::BoundsNotSatisfied`] naming the offending bound
-//!    and a witness pattern. Bounds are **evaluated**, not bypassed.
-//! 3. **Structural miss**: no impl matches the receiver shape →
-//!    [`LookupError::NoImpl`].
-//! 4. **Unknown method**: impl matches and bounds satisfied, method
-//!    name absent → [`LookupError::UnknownMethod`].
-//!
-//! This test does NOT touch `TypeCheckOutput`. Stage A's invariant is
-//! that no production reader of `resolved_calls` exists; the field is
-//! exercised here purely against the dispatch substrate.
+//! Tests registry lookup and bound satisfaction for resolved method calls.
+//! The cases cover successful resolution, unsatisfied bounds, missing impls,
+//! and missing methods.
 
 use hew_types::check::collection_dispatch_registry_for_tests;
 use hew_types::check::dispatch::{
@@ -49,15 +27,11 @@ fn var(name: &str) -> TyPattern {
     TyPattern::Var(name.to_string())
 }
 
-/// Mirrors the canonical `K: Hash + Eq` admission policy that Stage C will
-/// fold into the resolver's authoritative predicate. Kept inside the test
-/// (not on `ImplDef`) per Q281=A.
+/// Test predicate for the primitive `K: Hash + Eq` cases below.
 fn hash_eq_satisfied(trait_name: MarkerTrait, pat: &TyPattern) -> bool {
     let pat = match pat {
         TyPattern::Primitive(name) => name.as_str(),
-        // For App / Tuple / Var we conservatively reject every marker —
-        // Stage A's audit covers the primitives; Stage B will deepen this
-        // to recurse into composite shapes via `TraitRegistry`.
+        // This test predicate covers primitive cases only.
         _ => return false,
     };
     match (trait_name, pat) {

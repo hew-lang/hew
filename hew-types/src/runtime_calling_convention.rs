@@ -18,11 +18,6 @@
 //! When this enum changes (variant added or semantics altered) it is a
 //! language-substrate change requiring a dialect-authority refresh.
 //!
-//! W3.001 Stage 2 introduces this substrate. The mapping is consumed
-//! at Stage 3, when `#[extern_symbol]` template expansion at each
-//! reachable monomorphization picks the canonical token for the
-//! resolved element-type `Ty`.
-//!
 //! ## Fail-closed default for `Ty::Named`
 //!
 //! [`RuntimeCallingConvention::for_ty`] is **context-free** — it has
@@ -36,18 +31,6 @@
 //! handle-ness by calling
 //! [`RuntimeCallingConvention::for_ty_with_layout`] with the
 //! resolved `TypeDef` table.
-//!
-//! This honours the substrate-first / checker-output-boundary
-//! invariants in `docs/internal/engineering-invariants.md` (especially
-//! fail-closed boundaries,
-//! `checker-output-boundary`): the API itself cannot misclassify a
-//! value record as a heap handle. Same family of finding as W4.011
-//! ("substrate API must fail closed; downstream callers shouldn't
-//! have to remember to override"). The earlier shape of `for_ty`
-//! that classified every [`Ty::Named`] as [`Pointer`] left Stage 3
-//! to remember to consult [`TypeDef::is_indirect`] for
-//! re-discrimination; this revision moves that obligation into the
-//! type signature.
 
 use crate::ty::Ty;
 
@@ -58,10 +41,6 @@ use crate::ty::Ty;
 /// out-of-band layout metadata accompanies the value. Variants are
 /// **not** named after stdlib symbol suffixes; see the module-level
 /// comment for the substrate/contract framing.
-///
-/// `W3.003` Stage 2 scope: `bool` has a dedicated one-byte runtime
-/// convention; `char` rides the existing 32-bit scalar convention.
-/// Layout-descriptor entry points remain future work for records/tuples.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum RuntimeCallingConvention {
     /// Pass-by-value in an 8-bit signed integer register class.
@@ -78,14 +57,7 @@ pub enum RuntimeCallingConvention {
 
     /// Pass-by-value in a single 32-bit general-purpose register.
     ///
-    /// Covers (at the language level): `i8`, `i16`, `i32`, `u8`,
-    /// `u16`, `u32`, and `char`. `char` reuses the `i32` Vec runtime
-    /// path; no `_char` symbol suffix exists.
-    ///
-    /// W3.001 stdlib coverage: `i32` only (via the `i32` canonical
-    /// token). Other 32-bit primitives are valid at the
-    /// calling-convention layer but have no Vec monomorphization in
-    /// the W3.001 stdlib slice.
+    /// Covers `i32`, `u32`, and `char`.
     Scalar32,
 
     /// Pass-by-value as Hew's canonical one-byte bool representation.
@@ -98,21 +70,14 @@ pub enum RuntimeCallingConvention {
 
     /// Pass-by-value in a single 64-bit general-purpose register.
     ///
-    /// Covers: `i64`, `u64`. `isize` and `usize` collapse here on
-    /// the native target (64-bit) and to [`Self::Scalar32`] on
-    /// `wasm32` — W3.001 is conservative and routes both to
-    /// [`Self::LayoutDescriptor`] until W3.017 settles the
-    /// cross-target matrix.
+    /// Covers `i64` and `u64`. `isize` and `usize` use the layout
+    /// descriptor convention in the context-free mapping.
     Scalar64,
 
     /// Pass-by-value in a single 32-bit floating-point register.
     Float32,
 
-    /// Pass-by-value in a single XMM / floating-point register.
-    ///
-    /// Covers: `f32` (widened to `f64` by the codegen — documented
-    /// here, not in the stdlib — the widening is a
-    /// calling-convention fact), and `f64`.
+    /// Pass-by-value in a 64-bit floating-point register (`f64`).
     Float64,
 
     /// Pass-by-value as a `(*const u8, usize)` slice descriptor pair
@@ -121,41 +86,16 @@ pub enum RuntimeCallingConvention {
     /// Covers: [`Ty::String`].
     StringSlice,
 
-    /// Pass-by-value as a single tagged-pointer word.
+    /// Pass-by-value as a pointer word.
     ///
-    /// Covers: raw pointers ([`Ty::Pointer`]) plus every
-    /// [`Ty::Named`] that is a **proven** heap-handle nominal
-    /// — that is, a name whose resolved
-    /// [`TypeDef::is_indirect`](crate::check::TypeDef) is
-    /// `true` (`Vec`, `HashMap`, `HashSet`, `ActorHandle`, opaque
-    /// handles like `net.Listener`, and any user `type T {}` whose
-    /// `is_indirect` is `true`).
-    ///
-    /// **Reachable only via [`RuntimeCallingConvention::for_ty_with_layout`]**:
-    /// the context-free [`RuntimeCallingConvention::for_ty`] cannot
-    /// see [`TypeDef::is_indirect`] and therefore routes every
-    /// [`Ty::Named`] to [`Self::LayoutDescriptor`] (see module
-    /// header). [`Ty::Pointer`] is the one shape the context-free
-    /// path can prove without a lookup; it routes here directly.
-    ///
-    /// Excludes: records / tuples / enums whose layout is not
-    /// pointer-shaped — those route to [`Self::LayoutDescriptor`].
+    /// Covers raw pointers, borrows, callable values, and named types proven
+    /// to be indirect by [`Self::for_ty_with_layout`].
     Pointer,
 
-    /// Pass-by-pointer with an out-of-band `*const HewTypeLayout`
-    /// descriptor (Hew's generic-runtime-ABI pattern).
+    /// Pass-by-pointer with an out-of-band `*const HewTypeLayout` descriptor.
     ///
-    /// Covers (future-state, A249): records, tuples, enums,
-    /// fixed arrays, slices, function/closure types,
-    /// trait objects, the never type, the unit type, type-parameter
-    /// nominals, deferred associated-type projections, and the
-    /// error-recovery sentinel.
-    ///
-    /// **W3.001 fail-closed**: no runtime entry points exist yet
-    /// for this convention. Stage 3 emits a precise
-    /// `UnsupportedRuntimeCallingConvention` diagnostic naming the
-    /// missing `_layout`-suffixed symbol. W3.003 wires the runtime
-    /// side.
+    /// This class includes aggregate and unresolved named types. Runtime
+    /// entry points must support the specific operation and layout.
     LayoutDescriptor,
 }
 
@@ -163,15 +103,7 @@ impl RuntimeCallingConvention {
     /// The stable token used as the `{T}` substitution payload in
     /// `#[extern_symbol]` templates.
     ///
-    /// These tokens are **public stable surface** — stdlib `.hew`
-    /// source depends on them. Adding or changing a token requires
-    /// a dialect-authority refresh (see
-    /// `.tmp/orchestration/hew-dialect-authority-*.md` §4.0).
-    ///
-    /// The W3.001 token set is the per-variant canonical spelling
-    /// (per the no-aliases rule A250 and the lifecycle symmetry principle in
-    /// `no-type-aliases-one-canonical-name`): exactly one canonical
-    /// string per variant; no synonyms.
+    /// Standard-library templates rely on these canonical spellings.
     #[must_use]
     pub const fn canonical_token(self) -> &'static str {
         match self {
@@ -193,28 +125,9 @@ impl RuntimeCallingConvention {
     /// The language's **context-free** calling-convention mapping
     /// for an arbitrary [`Ty`].
     ///
-    /// This function **is** the contract — not a magic table about
-    /// Vec, but the language's lowering rule for every [`Ty`] that
-    /// can be classified without consulting the checker's `TypeDef`
-    /// table. Changes require a dialect-authority refresh.
-    ///
-    /// ## Fail-closed default for [`Ty::Named`]
-    ///
-    /// Because `for_ty` has no access to `TypeDef.is_indirect`, it
-    /// cannot distinguish a heap-handle nominal (`Vec`) from a
-    /// value-product nominal (`type Connection { id: i32 }`).
-    /// Misclassifying a value record as [`Self::Pointer`] would
-    /// silently lower a 4-byte struct as a pointer-shaped word and
-    /// corrupt the C-ABI. To honour the substrate-first /
-    /// boundary-fail-closed invariants, every [`Ty::Named`] routes
-    /// here to [`Self::LayoutDescriptor`] — Stage 3 then fails
-    /// closed with a precise `UnsupportedRuntimeCallingConvention`
-    /// diagnostic until the caller positively proves handle-ness
-    /// via [`Self::for_ty_with_layout`].
-    ///
-    /// Callers that already hold a resolved `TypeDef` table (the
-    /// checker, dialect-authority validators) **must** prefer
-    /// [`Self::for_ty_with_layout`].
+    /// Named types use [`Self::LayoutDescriptor`] because this function has
+    /// no declaration context. Callers with type definitions should use
+    /// [`Self::for_ty_with_layout`] to identify indirect named types.
     ///
     /// ## Totality
     ///
@@ -303,11 +216,6 @@ impl RuntimeCallingConvention {
     ///   in `type_defs` at all (fail-closed: an unresolved nominal
     ///   cannot be silently treated as a pointer).
     ///
-    /// The substrate-vs-discrimination invariant (and the W4.011 family
-    /// of findings) lives
-    /// here: the only path that returns [`Self::Pointer`] for a
-    /// [`Ty::Named`] is the one that consulted
-    /// [`TypeDef::is_indirect`].
     #[must_use]
     pub fn for_ty_with_layout(ty: &Ty, types: crate::check::TypeDefView<'_>) -> Self {
         match ty {
@@ -319,14 +227,7 @@ impl RuntimeCallingConvention {
                         Self::LayoutDescriptor
                     }
                 } else {
-                    // Fail-closed: unresolved nominal cannot be
-                    // proven pointer-shaped. Stage 3 surfaces the
-                    // missing `_layout` symbol via
-                    // `UnsupportedRuntimeCallingConvention`, which
-                    // is the correct diagnostic for both
-                    // "value record needs layout descriptor" and
-                    // "name is not registered" (both shapes mean
-                    // the call cannot be lowered today).
+                    // An unresolved nominal cannot be proven pointer-shaped.
                     Self::LayoutDescriptor
                 }
             }

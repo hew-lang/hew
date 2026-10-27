@@ -529,7 +529,7 @@ pub struct TypeCheckOutput {
     pub associated_type_schemas: super::AssociatedTypeSchemas,
     pub resolved_annotation_types: HashMap<SpanKey, ResolvedTy>,
     /// The one authority for a substituted type's ownership and capability
-    /// facts (`docs/internal/ir-ladder.md` §6.3), keyed structurally by §6.2's
+    /// facts, keyed structurally by
     /// [`TypeInstanceKey`].
     ///
     /// SIR rules 5 and 6, `TargetLayout`, glue emission and collection

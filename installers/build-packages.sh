@@ -21,7 +21,6 @@
 #   docker    Container image     (requires Docker)
 #   shell     Syntax-check install.sh
 #   ps1       Syntax-check install.ps1 (requires pwsh)
-#   nix       Syntax-check nix/default.nix (requires nix-instantiate)
 #
 # OUTPUT
 #   dist/hew-v{VERSION}-linux-{ARCH}.tar.gz
@@ -655,23 +654,7 @@ check_ps1() {
     fi
 }
 
-check_nix() {
-    _should_build "nix" || {
-        _record_skip "nix" "not selected"
-        return 0
-    }
-    _has_cmd nix-instantiate || {
-        _record_skip "nix" "nix-instantiate not available"
-        return 0
-    }
 
-    step "Syntax-checking nix/default.nix"
-    if nix-instantiate --parse "${SCRIPT_DIR}/nix/default.nix" >/dev/null 2>&1; then
-        _record_ok "nix" "default.nix syntax OK"
-    else
-        _record_fail "nix" "default.nix has syntax errors"
-    fi
-}
 
 # ── Summary ───────────────────────────────────────────────────────────────────
 print_summary() {
@@ -709,7 +692,6 @@ main() {
     build_docker
     check_shell
     check_ps1
-    check_nix
 
     print_summary
 }

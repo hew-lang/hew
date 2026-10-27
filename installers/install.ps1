@@ -49,13 +49,8 @@
     .\install.ps1 -Prefix C:\tools\hew
 #>
 
-# Version policy: until v0.6.0 ships as a final release, the default install
-# picks the newest published release *including release candidates*, so
-# `irm | iex` tracks the pre-release ladder during the v0.6.0 stabilization
-# window. Pass -Stable to install the newest tagged final release instead —
-# matches install.sh's --stable (#3214) and the `hew@stable` Homebrew
-# formula. Once a final v0.6.0 ships, the two policies agree until the next
-# pre-release window.
+# By default install the newest release, including release candidates.
+# Pass -Stable to select the newest final release.
 
 param(
     [string]$Version,

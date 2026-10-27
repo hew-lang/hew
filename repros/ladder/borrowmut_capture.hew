@@ -1,9 +1,0 @@
-fn main() {
-    var n: i64 = 0;
-    var bump = || {
-        n = n + 1;
-    };
-    bump();
-    bump();
-    println(f"{n}");
-}

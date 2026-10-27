@@ -9083,68 +9083,9 @@ accept supplied generated source without executing generators.
 
 ---
 
-## 15. Historical minimum viable Hew plan
-
-This early plan is retained as history, not current implementation sequencing.
-The compiler architecture and source contracts above take precedence.
-
-- **Phase A (compiler front-end)**: lexer/parser → AST → typecheck (Send/Frozen rules)
-- **Phase B (runtime)**: scheduler, actor mailboxes, bounded channels, timers, TCP
-- **Phase C (supervision)**: supervisor tree runtime + syntax lowering
-- **Phase D (wire tooling)**: schema compiler + compatibility checker + encoder/decoder
-- **Phase E (native codegen)**: LLVM backend + LTO + predictable allocation model
-
----
-
-The original plan called for an IR specification before implementation. The
-current compiler stages and their responsibilities are described in §8.1.
-
 [1]: https://tutorial.ponylang.io/index.html "Pony Tutorial"
 [2]: https://www.erlang.org/docs/17/design_principles/sup_princ "Supervisor Behaviour - Restart Strategy"
 [3]: https://docs.swift.org/swift-book/documentation/the-swift-programming-language/concurrency/ "Concurrency - Documentation | Swift.org"
 [4]: https://protobuf.dev/programming-guides/proto3/ "Language Guide (proto 3) | Protocol Buffers Documentation"
 [5]: https://protobuf.dev/best-practices/dos-donts/ "Proto Best Practices"
 [6]: https://www.erlang.org/doc/apps/stdlib/supervisor.html "supervisor — stdlib v7.2"
-
----
-
-## Changelog
-
-> **Historical, non-normative.** These entries preserve earlier edition
-> checkpoints, including designs and implementation limits later superseded.
-> They are not migration recipes or current feature-status claims. Use the
-> reconciled spec body for current contracts and labelled implementation gaps.
-
-### Edition 2026 (this document)
-
-- **Edition stamp.** Spec file renamed `HEW-SPEC-2026.md`; package descriptor
-  declares `edition = "2026"`. Compiler version (`hew 0.5.x`) and edition
-  track independently. See §1.3.
-- **Resource markers.** `#[resource]` and `#[linear]` attribute annotations
-  replace the v0.4.0 explicit-teardown carve-out (§3.7.8). `#[resource]` types
-  declare a `close` method in a sibling `impl` block (unit return, plain
-  receiver); the compiler synthesises an implicit drop that calls it.
-  `#[linear]` types must be consumed via a declared consuming method and have
-  no implicit drop.
-- **Sealed `select{}`.** `select{}` widens from actor-receive-only to a
-  four-form sealed construct over actor request-reply, pipe receive
-  (`pat from rx.recv()`), forked task and timer (`after`) (§4.11). Not
-  user-extensible in this edition.
-- **`scope{}` / `fork` split.** The `scope |s| { s.launch / s.spawn / s.cancel }`
-  surface is removed entirely. `scope { }` is the structured-concurrency
-  block (the scope boundary). `fork expr` is the only child-start form,
-  and it is only legal inside a `scope { }` body. `scope` and `fork` are
-  not synonyms. Historical note retained at §4.9.
-- **Stdlib narrowing.** The edition 2026 normative stdlib is deliberately
-  narrow (§3.10.1). Surfaces that exist in `std/` today but are not
-  normative — `dns`, `tls`, `quic`, `websocket`, `xml`/`yaml`/`toml`/`csv`,
-  `regex`, `process`, `compress` — move to HEW-FUTURE.md §3.
-- **IR ladder.** §8 (compilation model) is rewritten around the new IR
-  ladder: AST → typed HIR → ownership SIR → checked physical MIR → LLVM
-  IR via inkwell. The v0.4 Rust-frontend / C++ backend / MessagePack-AST
-  pipeline is no longer the design.
-- **Further implementation.** HEW-FUTURE.md records pending language,
-  library and tooling work and its version targets. Accepted additions can
-  amend edition 2026 during the 0.6 series; an edition boundary is not a
-  prerequisite. Cross-node actor communication is normative — see §11 and
-  HEW-DIST-SPEC.md.

@@ -1,9 +1,9 @@
-//! The one value-class authority (`docs/internal/ir-ladder.md` §1.1).
+//! The value-class authority.
 //!
-//! A type's *class* decides its SIR ownership kind (§1.2) and its destructor
-//! shape (§5.2); its *clone kind* decides whether a `copy_value` exists and
+//! A type's *class* decides its SIR ownership kind and destructor shape;
+//! its *clone kind* decides whether a `copy_value` exists and
 //! what it costs. Both are computed here, from the resolved type plus the
-//! declaration facts §1.1 needs beyond the type itself, and from nowhere else.
+//! declaration facts the class table needs beyond the type itself, and from nowhere else.
 //!
 //! The rule is **total** over [`ResolvedTy`]: there is no `Unknown`, no default
 //! class and no "assume `BitCopy`". A type this module cannot class is an
@@ -15,7 +15,7 @@ use crate::builtin_type::BuiltinType;
 use crate::resolved_ty::{substitute_type_params as substitute, ResolvedTy};
 use crate::type_facts::CloneKind;
 
-/// Ownership class of a value, per `ir-ladder.md` §1.1.
+/// Ownership class of a value.
 ///
 /// The variant order is the join order of the Aggregate rule: a later variant
 /// wins over an earlier one, with `BitCopy` and `View` tied at the bottom and
@@ -37,7 +37,7 @@ pub enum ValueClass {
 }
 
 impl ValueClass {
-    /// Join order of the §1.1 Aggregate rule: any field `Linear` → `Linear`;
+    /// Join order of the aggregate rule: any field `Linear` → `Linear`;
     /// else any field `AffineResource` → `AffineResource`; else any field
     /// `CowValue` or `PersistentShare` → `CowValue`; else `BitCopy`.
     const fn join_rank(self) -> u8 {
@@ -49,11 +49,11 @@ impl ValueClass {
         }
     }
 
-    /// Join two member classes under the §1.1 Aggregate rule.
+    /// Join two member classes under the aggregate rule.
     ///
     /// A `View` or `PersistentShare` member collapses to the rank's canonical
     /// spelling because an aggregate holding one is not itself a view or a
-    /// share: the §1.1 rule names `BitCopy` and `CowValue` as the two joined
+    /// share: the class table names `BitCopy` and `CowValue` as the two joined
     /// outcomes below `AffineResource`.
     #[must_use]
     pub fn join(self, other: Self) -> Self {
@@ -79,7 +79,7 @@ pub enum DeclarationMarker {
     Linear,
 }
 
-/// One type declaration's facts, as §1.1 needs them.
+/// One type declaration's facts, as the class table needs them.
 ///
 /// `members` are the record's field types or the enum's variant payload types,
 /// in declaration order, before substitution. They may mention the declaration's
@@ -94,14 +94,14 @@ pub struct DeclaredType {
     /// value and the Aggregate rule cannot see through it.
     ///
     /// This is the declaration's own fact. `ResolvedTy::Named.is_opaque` is the
-    /// same fact spelled on a type, and only some producers stamp it, so §1.1
+    /// same fact spelled on a type, and only some producers stamp it, so the class table
     /// reads whichever of the two says yes.
     pub is_opaque: bool,
     pub type_params: Vec<crate::ParamHead>,
     pub members: Vec<ResolvedTy>,
 }
 
-/// Where the §1.1 Aggregate rule gets a declaration's marker and members.
+/// Where the aggregate rule gets a declaration's marker and members.
 ///
 /// A borrowed lookup rather than an owned map so the checker can answer from
 /// its own registry and `type_defs` without copying them, and a unit test can
@@ -162,7 +162,7 @@ impl ClassDeclarations for NoDeclarations {
 
 static NO_DECLARATIONS: NoDeclarations = NoDeclarations;
 
-/// The declaration facts §1.1 needs beyond the type itself: the
+/// The declaration facts the class table needs beyond the type itself: the
 /// `#[resource]`/`#[linear]` marker and, for the Aggregate rule, the field and
 /// variant types.
 ///
@@ -173,7 +173,7 @@ static NO_DECLARATIONS: NoDeclarations = NoDeclarations;
 /// Declaration and recursive-instance lookup use nominal identity. Display
 /// spelling cannot change the ownership facts selected for a type.
 ///
-/// Deliberately not `Copy`: every §1.1 entry point takes it by reference, so
+/// Deliberately not `Copy`: every class table entry point takes it by reference, so
 /// the class rule reads one context rather than silently duplicating it.
 #[derive(Clone, Copy)]
 pub struct ClassContext<'a> {
@@ -218,13 +218,13 @@ impl<'a> ClassContext<'a> {
 pub enum ClassError {
     /// A callable claims independent duplication over an owning resource field.
     CallableCloneConflict,
-    /// §1.1 `TypeParam` row: the instance service substitutes first, so an
+    /// the class table `TypeParam` row: the instance service substitutes first, so an
     /// abstract parameter never reaches SIR.
     TypeParam { param: crate::ParamHead },
     /// The declaration carrying the marker and the member types is not in the
     /// [`ClassContext`].
     UnknownDeclaration { name: String },
-    /// §1.1: `Iterator`, `ActorState` and `MachineState` are compiler-internal
+    /// the class table: `Iterator`, `ActorState` and `MachineState` are compiler-internal
     /// names, never the type of a value.
     NotAValueType { builtin: BuiltinType },
     /// The declaration's own members reach it at a *different* instantiation
@@ -263,7 +263,7 @@ impl std::fmt::Display for ClassError {
 }
 
 impl ValueClass {
-    /// The §1.1 class of a resolved type, total over `ResolvedTy` given the
+    /// The class of a resolved type, total over `ResolvedTy` given the
     /// declarations.
     ///
     /// # Errors
@@ -276,7 +276,7 @@ impl ValueClass {
     }
 }
 
-/// The §1.1 class **and** clone kind of a resolved type.
+/// The class **and** clone kind of a resolved type.
 ///
 /// Both columns come from one walk: the Aggregate rule joins classes and
 /// clone kinds together, and computing them separately would walk the type
@@ -522,7 +522,7 @@ fn collect_mentions(
             }
         }
         // `Slice`, `Pointer`, `Borrow`, `Function`, `TraitObject` and `Task`
-        // all have flat rows in §1.1: their payloads are never classified, so a
+        // all have flat rows in the class table: their payloads are never classified, so a
         // mention inside one is not an edge the member walk can take.
         _ => {}
     }
@@ -531,7 +531,7 @@ fn collect_mentions(
 /// Does `name`'s declaration reach itself through its own members at an
 /// instantiation other than its own parameters?
 ///
-/// This is §1.1's polymorphic-recursion question, and it is asked of the
+/// This is the class table's polymorphic-recursion question, and it is asked of the
 /// declaration's **pre-substitution** members. `L<T>` whose body mentions
 /// `L<T>` reaches finitely many instantiations from any starting argument and
 /// takes the owning edge, and so does `Tree<T>` whose body mentions a constant
@@ -589,7 +589,7 @@ fn is_polymorphically_recursive(id: crate::NominalId, decls: &ClassContext<'_>) 
     false
 }
 
-/// Class and clone of a heap collection over its element facts (§1.1
+/// Class and clone of a heap collection over its element facts (the class table
 /// `Vec`/`HashMap`/`HashSet` and fixed-array rows).
 ///
 /// The collection is never `BitCopy`: its buffer is heap, so the class floor
@@ -611,7 +611,7 @@ fn collection_facts(elements: &[(ValueClass, CloneKind)]) -> (ValueClass, CloneK
     (class, clone)
 }
 
-/// Class and clone of an ordinary aggregate over its member facts (§1.1
+/// Class and clone of an ordinary aggregate over its member facts (the class table
 /// Aggregate rule): records, enums, tuples, `Option`/`Result`.
 fn aggregate_facts(members: &[(ValueClass, CloneKind)]) -> (ValueClass, CloneKind) {
     let class = members
@@ -655,7 +655,7 @@ fn classify(ty: &ResolvedTy, decls: &ClassContext<'_>, walk: &mut Walk) -> Class
 
 #[expect(
     clippy::too_many_lines,
-    reason = "the §1.1 table is one closed match with a row per ResolvedTy arm and BuiltinType variant"
+    reason = "the class table is one closed match with a row per ResolvedTy arm and BuiltinType variant"
 )]
 fn classify_uncached(
     ty: &ResolvedTy,
@@ -763,8 +763,7 @@ fn classify_uncached(
             | BuiltinType::DownTarget
             | BuiltinType::DownReason
             | BuiltinType::DownNotification
-            // §1.1 decision: marker becomes BitCopy at P1 so `marker()` and
-            // this table agree by construction.
+            // These builtins are bit-copy values.
             | BuiltinType::Instant
             | BuiltinType::Timestamp
             | BuiltinType::Unit
@@ -777,7 +776,7 @@ fn classify_uncached(
             | BuiltinType::NodeError
             | BuiltinType::LookupError
             | BuiltinType::LinkError
-            // §1.1 decision, overrides `marker() = Resource`: a pid never owns
+            // the class table decision, overrides `marker() = Resource`: a pid never owns
             // the actor, so its drop frees nothing.
             | BuiltinType::ActorHandle
             // A lambda actor's handle is a pid under another spelling, and
@@ -879,15 +878,15 @@ fn classify_declaration(
         .ok_or_else(|| ClassError::UnknownDeclaration {
             name: name.to_string(),
         })?;
-    // §1.1's indirect-enum row: a recursive occurrence is an **owning edge**,
+    // the class table's indirect-enum row: a recursive occurrence is an **owning edge**,
     // not a base case. The recursion is legal only because the payload sits
     // behind a heap box, so the occurrence contributes the same heap floor a
     // collection's buffer does — `CowValue` with a `FieldWise` clone. The
     // aggregate join then keeps the declaration's payload class: a `BitCopy`
     // payload gives `(CowValue, FieldWise)`, a payload holding an
     // `AffineResource` gives `AffineResource`. It is never `BitCopy`, which is
-    // what a bottom-element cut published and which §1.2 maps to no ownership
-    // obligation, §1.3 lets `copy_value` duplicate and §2.1 bit-copies across
+    // what a bottom-element cut published and which the ownership-kind mapping maps to no ownership
+    // obligation, the ownership operations let `copy_value` duplicate and ownership checking bit-copies across
     // an actor heap.
     //
     // Whether the cycle has a finite fixpoint at all is a property of the
@@ -904,10 +903,10 @@ fn classify_declaration(
     // than the box's own retain path.
     // WHY: `DeclaredType` carries the members, not the box, so the walk has no
     // term for the allocation itself and borrows `collection_facts`' floor.
-    // The floor is sound for §1.2 (the class is `Owned` either way) and only
+    // The floor is sound for the ownership-kind mapping (the class is `Owned` either way) and only
     // approximates the clone column for a box whose payload is shareable.
     // WHEN: `DeclaredType` carries `is_indirect` (`HirTypeDecl.is_indirect`)
-    // and the box's own class row lands (P2, §5.3).
+    // and the box's own class row is available.
     // WHAT: the recursive occurrence reads the box's row instead of the
     // collection floor.
     if walk.is_polymorphic(id, decls) {

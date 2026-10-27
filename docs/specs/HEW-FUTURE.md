@@ -1,9 +1,9 @@
 # Hew Future Surface
 
-This document collects language surfaces that have been **designed and
-described in prose** but are **not part of the current normative
-specification** (`HEW-SPEC-2026.md`). Each surface carries an explicit
-version target.
+This document records proposed and rejected language surfaces alongside
+implementation notes. The normative language contract is
+[`HEW-SPEC-2026.md`](HEW-SPEC-2026.md); version targets here are historical
+planning estimates, not release commitments.
 
 Status legend:
 
@@ -19,8 +19,8 @@ Status legend:
 - **[REJECTED]** — formally considered and not adopted.
 
 This document records adoption and implementation status. Accepted surfaces
-can move into the normative edition-2026 specification during the 0.6 series;
-see the promotion policy below.
+can move into the normative edition-2026 specification; see the promotion
+policy below.
 
 ---
 
@@ -299,44 +299,9 @@ surface.
 
 ---
 
-## 5. Declarative macros (adopted design)
-
-**[Target: v0.6 series; implementation in progress]**
-
-Built-in `name!(...)` invocations are implemented. User-defined declarative
-macros follow the adopted design below and are not yet in the delivered compiler.
-
-- `macro name { (pattern) => expr { .. }; (pattern) => items { .. }; }`
-  at module level; `pub macro` exports. Invocation is `name!(..)` in
-  expression or item position, qualified by the dotted module path. Macros
-  have their own namespace.
-- Patterns match parsed syntax through fragments `ident`, `expr`, `ty`,
-  `pat`, `block` and `literal`, literal tokens, and repetition `$( .. ),*`,
-  `$( .. ),+`, `$( .. )?` without nesting. No token fragment. The follow-set
-  rule for `expr`, `ty` and `pat` fragments is checked at definition.
-- Rules are tried in order; the first complete match wins, and a type error
-  in the expansion never falls back to another rule.
-- Hygiene: identifiers carry a syntax context; template-introduced bindings
-  get fresh identities from the resolver; template references resolve in the
-  defining module; captured syntax keeps the caller's context. Expansion
-  does not evaluate arguments. Template-written `return`, `break`,
-  `continue` and `?` cannot escape the template.
-- Expansion precedes every semantic check; generated code gets ordinary
-  type, suspension, ownership and actor-isolation checks. Limits: depth 64,
-  1 M generated nodes per outermost invocation. No file, network, type
-  inspection or compile-time execution.
-- Tooling: `hew tool expand`, LSP show-expansion and generated-symbol
-  navigation, formatter treats macro bodies as token trees, grammar sync for
-  `macro`, `!(` and `$`.
-- Not planned: procedural macros, derive and reflection. `Eq` and `Hash`
-  have compiler-provided structural support for eligible types. Derived
-  aggregate `Ord`/`PartialOrd` lowering is implemented lexicographically.
-  No derive attribute exists (D438). Idea only: a structural
-  inspect rendering for debugging output, distinct from `Display`.
-
 ## 6. Long-horizon
 
-### 5.1 Self-hosting roadmap
+### 6.1 Self-hosting roadmap
 
 **[Target: v1.0+]**
 
@@ -356,9 +321,8 @@ A surface moves out of this document when:
 3. The maintainers agree it is part of the normative language, not a
    library or tooling addition.
 
-Accepted language and standard-library additions can amend edition 2026 and
-ship in the 0.6.x line. Packages declare their minimum compiler version through
-`hew` in `hew.toml`. The young 0.6 line can also adopt an explicitly approved
-breaking change with migration guidance. An edition boundary is not a
+Accepted language and standard-library additions can amend edition 2026.
+Packages declare their minimum compiler version through `hew` in `hew.toml`.
+Approved breaking changes need migration guidance. An edition boundary is not a
 prerequisite for these accepted changes; stabilized editions must preserve their
 published contracts.

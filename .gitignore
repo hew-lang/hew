@@ -36,8 +36,6 @@ __pycache__/
 hew-parser/fuzz/corpus/
 hew-parser/fuzz/artifacts/
 node_modules/
-node_modules
-target
 /.bin
 /.cache
 .claude/
@@ -47,9 +45,6 @@ target
 CLAUDE.md
 .claude.local.md
 .github/copilot-instructions.md
-
-# Local-only engineering journal (long-form chronology belongs here,
-# not in a committed repo document). See .claude/CLAUDE.md.
 
 # Internal planning docs (kept locally, not in public repo)
 docs/tasks.md
@@ -61,8 +56,6 @@ coverage-out/
 *.profdata
 *.backup
 rust_out
-actor_fib
-examples/actor_fib
 .env.pre-release
 
 # LSP integration test artifacts (machine-local, not source)
@@ -78,23 +71,9 @@ tests/hew/hew_test_emit_*/
 **/.hew/test-runs/
 **/.hew/generate/
 
-# Root-level compiled scratch outputs. `hew build` at the repo root drops a
-# bare executable plus its `.o`/`.ll` next to it; these are never source and
-# must not land in history. Root-anchored so legitimate `.o`/`.ll` elsewhere
-# (and any tracked executable) are unaffected.
+# Root-level compiler output.
 /*.o
 /*.ll
-/dist_node
-/let_else_tuple_payload
-/owned_nested_tuple_record
-/sort_prog
-/stdlib_io_scanner_file_oracle
-/wire_json_vec_option_roundtrip
-
-# Retired local C++/MLIR codegen checkout and clangd residue. The active v0.5
-# compiler substrate is `hew-codegen-rs`; keep any machine-local `hew-codegen/`
-# directory untracked without deleting it.
-/hew-codegen/
 
 # Node identity keys and session journals a distributed-node example mints on
 # first run (Node.start(NodeConfig { key: "...", ... })); never source.
@@ -105,3 +84,6 @@ examples/**/*.key.hew-state
 .env.*
 /AGENTS.md
 scripts/.hew-suite-expected-failures.generated.txt
+
+# Local benchmark output
+/examples/benchmarks/results.csv

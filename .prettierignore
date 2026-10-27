@@ -8,14 +8,11 @@
 # the real change in review.
 # WHEN: remove a path from this list once that file has been formatted
 # deliberately in its own docs-only commit and its block quotes checked.
-docs/design/lint-pass.md
 docs/dev/lsp-editor-setup.md
 docs/diagrams.md
 docs/hew-language-guide.md
-docs/internal/ir-ladder.md
 docs/internal/runtime-export-classification.md
 docs/internal/runtime-ownership-table.md
-docs/internal/sir-domain-matrix.md
 docs/internal/versioning.md
 docs/migrations/v0.4.0.md
 docs/observe.md
@@ -27,14 +24,12 @@ docs/releases/v0.5.3.md
 docs/releases/v0.6.0-rc2.md
 docs/sandbox-vm-divergences.md
 docs/specs/failure-philosophy.md
-docs/specs/handle-safety-and-resource-lifetime.md
 docs/specs/HEW-DIST-SPEC.md
 docs/specs/HEW-FUTURE.md
 docs/specs/HEW-SPEC-2026.md
 docs/specs/HEW-WIRE-FORMAT-DOCTRINE.md
 docs/specs/MACHINE-SPEC.md
 docs/wasm-capability-matrix.md
-# Root-level engineering logs, hand-wrapped (same rationale as above).
 
 # Generated artefacts with their own writer. `scripts/generate-cabi-surface.py
 # --write` owns this file's shape; prettier collapsing its arrays turns any

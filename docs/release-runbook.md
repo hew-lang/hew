@@ -4,9 +4,6 @@ How a Hew release is prepared, tagged and shipped. A pushed `v*` tag is the
 normal trigger: `.github/workflows/release.yml` builds each artefact once and
 publishes the qualified set, pausing for external-channel environment approvals.
 
-For outstanding compiler/client and package qualification, see the
-[release and ecosystem readiness handoff](release-readiness.md).
-
 ## What happens on a `v*` tag
 
 ```

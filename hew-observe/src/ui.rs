@@ -79,14 +79,14 @@ fn draw_header(f: &mut Frame, app: &App, area: Rect) {
     f.render_widget(tabs, chunks[0]);
 
     // Connection indicator
+    let kind = if app.is_multi_process() {
+        "processes"
+    } else {
+        "nodes"
+    };
     let (status_text, status_colour) = match app.connection_status {
         ConnectionStatus::Connected => {
             if app.is_multi_node() {
-                let kind = if app.is_multi_process() {
-                    "processes"
-                } else {
-                    "nodes"
-                };
                 (
                     format!(
                         "● Connected {}/{} {kind}",
@@ -101,11 +101,6 @@ fn draw_header(f: &mut Frame, app: &App, area: Rect) {
         }
         ConnectionStatus::Disconnected => {
             if app.is_multi_node() {
-                let kind = if app.is_multi_process() {
-                    "processes"
-                } else {
-                    "nodes"
-                };
                 (
                     format!("● Disconnected 0/{} {kind}", app.configured_node_count()),
                     theme::CONN_DISCONNECTED,
@@ -118,11 +113,6 @@ fn draw_header(f: &mut Frame, app: &App, area: Rect) {
             if app.is_waiting() {
                 ("◌ Waiting for profiler…".to_owned(), theme::CONN_CONNECTING)
             } else if app.is_multi_node() {
-                let kind = if app.is_multi_process() {
-                    "processes"
-                } else {
-                    "nodes"
-                };
                 (
                     format!(
                         "● Connecting {}/{} {kind}",

@@ -294,7 +294,7 @@ source.hew → Lexer → Parser → Type Checker → HIR → MIR → LLVM IR/obj
 ### Distribution
 
 - **editors/** — Editor support (Emacs, Nano, Sublime)
-- **installers/** — Package installers (Homebrew, Debian, RPM, Arch, Alpine, Nix, Docker) plus install-time shell completion generation
+- **installers/** — Installation scripts, Linux packaging templates and Docker release image
 - **examples/** — Example programs and benchmarks
 - **scripts/** — Development scripts
 - **docs/** — Language specification and API references

@@ -63,20 +63,28 @@ installed without installing it). `.\install.ps1 -Help` lists all of them.
 | Debian / Ubuntu          | `.deb` packages on the [releases page](https://github.com/hew-lang/hew/releases)                    |
 | Fedora / RHEL / openSUSE | See `rpm/hew.spec`                                                                                  |
 | Alpine Linux             | See `alpine/APKBUILD`                                                                               |
-| Docker                   | `docker run --rm -v $(pwd):/work r.hew.sh/hew build /work/main.hew`                                 |
+| Docker                   | `docker run --rm -v $(pwd):/work ghcr.io/hew-lang/hew build /work/main.hew`                                 |
 
 ## Docker Usage
 
 ```sh
 # Compile a Hew program to a native binary
-docker run --rm -v $(pwd):/work r.hew.sh/hew build /work/main.hew -o /work/out
+docker run --rm -v $(pwd):/work ghcr.io/hew-lang/hew build /work/main.hew -o /work/out
 
 # Run a Hew program directly
-docker run --rm -v $(pwd):/work r.hew.sh/hew run /work/main.hew
+docker run --rm -v $(pwd):/work ghcr.io/hew-lang/hew run /work/main.hew
 
 # Interactive shell with hew available
-docker run --rm -it --entrypoint sh -v $(pwd):/work r.hew.sh/hew
+docker run --rm -it --entrypoint sh -v $(pwd):/work ghcr.io/hew-lang/hew
 ```
+
+To build a local image from a Linux release archive in `dist/`:
+
+```sh
+installers/build-packages.sh --version <version> --arch <arch> --skip-build --only docker
+```
+
+The image is tagged `hew:local-<version>` and uses the release Dockerfile.
 
 ## Files in This Directory
 
@@ -87,7 +95,8 @@ docker run --rm -it --entrypoint sh -v $(pwd):/work r.hew.sh/hew
 | `arch/PKGBUILD`     | Arch Linux AUR binary package                                                                   |
 | `debian/`           | Debian/Ubuntu `.deb` packaging                                                                  |
 | `rpm/hew.spec`      | Fedora/RHEL/openSUSE RPM spec                                                                   |
-| `alpine/APKBUILD`   | Alpine Linux apk package                                                                        |
+| `alpine/APKBUILD`   | Alpine Linux apk package template                                                               |
+| `docker/Dockerfile.release` | Docker release image and clean-room test                                               |
 
 The Homebrew formula lives in the `homebrew-hew` tap repo, not here — the
 release workflow's `homebrew` job triggers that repo's own

@@ -786,11 +786,18 @@ pub(crate) fn storage(
     function: &PhysicalFunction,
     id: StorageId,
 ) -> Result<&PhysicalStorage, PhysicalError> {
+    lookup_storage(function, id)
+        .ok_or_else(|| PhysicalError::new(format!("unknown physical storage {}", id.0)))
+}
+
+pub(super) fn lookup_storage(
+    function: &PhysicalFunction,
+    id: StorageId,
+) -> Option<&PhysicalStorage> {
     function
         .storage
         .get(id.0 as usize)
         .filter(|candidate| candidate.id == id)
-        .ok_or_else(|| PhysicalError::new(format!("unknown physical storage {}", id.0)))
 }
 
 pub(crate) fn require_same_storage_type(

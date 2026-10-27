@@ -1,9 +1,9 @@
 //! Target storage for SIR's canonical aggregate leaf partitions.
 
 use super::{
-    aggregate_glue, initialized_slot, storage, verify_destroy_action, BlockId, DestroyAction,
-    FlowState, FunctionLowerer, InitState, OwnKind, PhysicalAggregateId, PhysicalEdge,
-    PhysicalError, PhysicalFunction, PhysicalModule, StorageId, StorageOrigin,
+    aggregate_glue, storage, verify_destroy_action, BlockId, DestroyAction, FlowState,
+    FunctionLowerer, InitState, OwnKind, PhysicalAggregateId, PhysicalEdge, PhysicalError,
+    PhysicalFunction, PhysicalModule, StorageId, StorageOrigin,
 };
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -497,27 +497,8 @@ pub(super) fn require_root(
     block: BlockId,
     context: &str,
 ) -> Result<(), PhysicalError> {
-    let root = function
-        .place_storage
-        .get(&id)
-        .map_or(id, |entry| entry.root);
-    if matches!(
-        storage(function, root)?.origin,
-        StorageOrigin::Session { .. }
-    ) {
-        return Ok(());
-    }
-    if matches!(storage(function, root)?.origin, StorageOrigin::Local(_)) {
-        if state.active[root.0 as usize] != InitState::Initialized {
-            return Err(PhysicalError::new(format!(
-                "physical bb{} {context} accesses inactive local storage {}",
-                block.0, root.0
-            )));
-        }
-        Ok(())
-    } else {
-        initialized_slot(state, root, block, context)
-    }
+    super::verify_ops::root_initialization_status(function, state, id)
+        .map_err(|failure| failure.diagnostic(block, context))
 }
 
 pub(super) fn verify_cleanup_site(

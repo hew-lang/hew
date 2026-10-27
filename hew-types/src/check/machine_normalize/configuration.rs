@@ -228,9 +228,16 @@ impl Builder {
         &mut self,
         machine: &MachineDecl,
         hierarchy: &Hierarchy,
+        observed: bool,
     ) -> Result<Block, TypeError> {
         let mut shell = self.step_body_shell(machine);
-        shell.stmts.extend(self.observation_prelude(machine));
+        if !observed {
+            let event = self.ident("event");
+            shell.stmts.push(self.let_value(EVENT, None, event));
+        }
+        if observed {
+            shell.stmts.extend(self.observation_prelude(machine));
+        }
         let limit = self.ident("limit");
         let zero = self.integer(0);
         let invalid = self.binary(hew_parser::ast::BinaryOp::LessEqual, limit, zero);
@@ -253,6 +260,7 @@ impl Builder {
                 hierarchy,
                 MachineTrigger::Event(event.name),
                 Some(event),
+                observed,
             )?;
             let body = self.block(vec![set_input], pass);
             arms.push(MatchArm {
@@ -275,7 +283,7 @@ impl Builder {
                 .iter()
                 .any(|rule| rule.trigger == trigger)
             {
-                let pass = self.configuration_pass(machine, hierarchy, trigger, None)?;
+                let pass = self.configuration_pass(machine, hierarchy, trigger, None, observed)?;
                 let again = self.stmt(Stmt::Continue { label: None });
                 reactions.push(self.if_do(pass, vec![again]));
             }
@@ -296,8 +304,12 @@ impl Builder {
         let candidate = self.ident(WORK);
         self.finish_step(machine, &mut shell, candidate);
         let report = *shell.trailing_expr.take().expect("step report");
-        let observed = self.observed_report(report);
-        shell.trailing_expr = Some(Box::new(self.result("Ok", observed)));
+        let report = if observed {
+            self.observed_report(report)
+        } else {
+            report
+        };
+        shell.trailing_expr = Some(Box::new(self.result("Ok", report)));
         Ok(shell)
     }
 
@@ -371,6 +383,7 @@ impl Builder {
         hierarchy: &Hierarchy,
         trigger: MachineTrigger,
         event: Option<&MachineEvent>,
+        observed: bool,
     ) -> Result<Spanned<Expr>, TypeError> {
         let mut stmts = Vec::new();
         let ordered = hierarchy.candidate_order(machine, trigger);
@@ -443,7 +456,9 @@ impl Builder {
         stmts.push(self.if_do(selected, vec![refuse, charge]));
         self.configuration_hooks(machine, hierarchy, event, &ordered, false, &mut stmts)?;
         self.capture_history(machine, hierarchy, &ordered, &mut stmts)?;
-        self.capture_departures(machine, hierarchy, &ordered, &mut stmts)?;
+        if observed {
+            self.capture_departures(machine, hierarchy, &ordered, &mut stmts)?;
+        }
         let mut bodies = ordered.clone();
         bodies.sort_by_key(|index| machine.transitions[*index].span.start);
         for index in bodies {

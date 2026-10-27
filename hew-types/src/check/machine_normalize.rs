@@ -1042,7 +1042,7 @@ impl Builder {
                 *default = self.expr(default.0.clone());
             }
         }
-        step.body = self.unobserved_step();
+        step.body = self.configuration_step(machine, &hierarchy, false)?;
         self.refresh_signature(step);
         let state_name = &mut implementation.methods[1];
         state_name.origin = DeclarationOrigin::MachineCompanion;
@@ -1074,7 +1074,7 @@ impl Builder {
         observed.origin = DeclarationOrigin::MachineStep;
         observed.visibility = machine.visibility;
         observed.params[1].name = Ident::new(configuration::EVENT);
-        observed.body = self.configuration_step(machine, &hierarchy)?;
+        observed.body = self.configuration_step(machine, &hierarchy, true)?;
         self.refresh_signature(observed);
         let implementation_span = impl_start..self.next_span;
         let contract_start = self.next_span;
@@ -2069,9 +2069,7 @@ impl Builder {
             }
             Pattern::RecordShorthand { fields, rest } => {
                 for field in fields {
-                    if let Some(pattern) = &mut field.pattern {
-                        self.refresh_pattern(pattern);
-                    }
+                    self.refresh_pattern_field(field);
                 }
                 if let Some(rest) = rest {
                     *rest = self.span();
@@ -2092,9 +2090,7 @@ impl Builder {
                 }
                 NominalPatternPayload::Record { fields, rest } => {
                     for field in fields {
-                        if let Some(pattern) = &mut field.pattern {
-                            self.refresh_pattern(pattern);
-                        }
+                        self.refresh_pattern_field(field);
                     }
                     if let Some(rest) = rest {
                         *rest = self.span();
@@ -2104,6 +2100,17 @@ impl Builder {
             _ => {}
         }
     }
+    fn refresh_pattern_field(&mut self, field: &mut hew_parser::ast::PatternField) {
+        // A shorthand label is also a binding occurrence. Each generated
+        // evaluator needs its own checker identity for that occurrence.
+        let origin = std::mem::replace(&mut self.origin, field.name_span.clone());
+        field.name_span = self.span();
+        self.origin = origin;
+        if let Some(pattern) = &mut field.pattern {
+            self.refresh_pattern(pattern);
+        }
+    }
+
     fn rewrite_block(
         &mut self,
         block: &Block,

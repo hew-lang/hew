@@ -179,6 +179,16 @@ fn main() {
     let observed = complete.step_observed_with_limit(.Start, 3, [.Active]).expect("complete stabilization");
     assert(complete.state_name() == "Outside");
     assert(observed.report.rules == [0, 2, 3]);
+    var plain: Complete = .Outside;
+    let plain_report = plain.step(.Start, limit: 3).expect("plain complete stabilization");
+    assert(plain == complete);
+    assert(plain_report.outputs == observed.report.outputs);
+    assert(plain_report.rules == observed.report.rules);
+    assert(plain_report.disposition == observed.report.disposition);
+    assert(plain_report.input == observed.report.input);
+    var limited: Complete = .Outside;
+    assert(limited.step(.Start, limit: 1) == .Err(.LimitExceeded));
+    assert(limited == .Outside);
     assert(observed.departures.len() == 1 && observed.departures[0].target == .Active);
     check_complete_saved(observed.departures[0].subtree, "FRESH:ready:exit");
     let initial: Complete = .Outside;

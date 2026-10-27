@@ -49,6 +49,8 @@ pub struct NormalizedProgram {
     /// name, shared by the guard and body copies of every rule and arm it is
     /// flattened and inlined into) and its name.
     pub head_bindings: HashMap<Span, (usize, Ident)>,
+    /// Generated body ranges for the plain and observed evaluator of each machine.
+    evaluator_pairs: Vec<(Span, Span)>,
     /// The expansion context the implied Display impls name `Display` in.
     pub implied_context: Option<hew_parser::ast::SyntaxContext>,
 }
@@ -90,6 +92,9 @@ impl NormalizedProgram {
             transitions: machines.map(|m| m.transitions.clone()).unwrap_or_default(),
             head_bindings: machines
                 .map(|m| m.head_bindings.clone())
+                .unwrap_or_default(),
+            evaluator_pairs: machines
+                .map(|m| m.evaluator_pairs.clone())
                 .unwrap_or_default(),
             implied_context: Some(displays.context),
         }
@@ -139,6 +144,42 @@ impl NormalizedProgram {
         };
         errors.retain_mut(&mut keep);
         warnings.retain_mut(&mut keep);
+    }
+
+    /// Merge only matching diagnostics produced by the two copies of the same
+    /// evaluator. Matching is one-to-one so repeated authored errors remain
+    /// repeated, and diagnostics unique to either generated body are retained.
+    pub(super) fn merge_evaluator_diagnostics(&self, diagnostics: &mut Vec<TypeError>) {
+        let mut remove = vec![false; diagnostics.len()];
+        for (plain, observed) in &self.evaluator_pairs {
+            for diagnostic in diagnostics.iter() {
+                if !plain.contains(&diagnostic.span.start) {
+                    continue;
+                }
+                let Some(source) = self.source_span(&diagnostic.span) else {
+                    continue;
+                };
+                if let Some((other_index, _)) = diagnostics.iter().enumerate().find(|(i, other)| {
+                    !remove[*i]
+                        && observed.contains(&other.span.start)
+                        && self.source_span(&other.span) == Some(source)
+                        && diagnostic.kind == other.kind
+                        && diagnostic.message == other.message
+                        && diagnostic.severity == other.severity
+                        && diagnostic.source_module == other.source_module
+                        && diagnostic.suggestions == other.suggestions
+                        && diagnostic.notes == other.notes
+                }) {
+                    remove[other_index] = true;
+                }
+            }
+        }
+        let mut index = 0;
+        diagnostics.retain(|_| {
+            let keep = !remove[index];
+            index += 1;
+            keep
+        });
     }
 
     /// The source span a diagnostic at `span` in a generated node reports at.
@@ -221,6 +262,7 @@ pub fn normalize(program: &Program) -> Result<Option<Arc<NormalizedProgram>>, Ve
         transitions: HashMap::new(),
         hierarchies: HashMap::new(),
         head_bindings: HashMap::new(),
+        evaluator_pairs: Vec::new(),
         head_binding_ids: HashMap::new(),
         expansion: 0,
         configuration_types: HashMap::new(),
@@ -297,6 +339,7 @@ pub fn normalize(program: &Program) -> Result<Option<Arc<NormalizedProgram>>, Ve
         }),
         transitions: builder.transitions,
         head_bindings: builder.head_bindings,
+        evaluator_pairs: builder.evaluator_pairs,
         implied_context: None,
     })))
 }
@@ -458,6 +501,7 @@ struct Builder {
     hierarchies: HashMap<ExpansionKey, Hierarchy>,
     /// See [`NormalizedProgram::head_bindings`].
     head_bindings: HashMap<Span, (usize, Ident)>,
+    evaluator_pairs: Vec<(Span, Span)>,
     /// One identity per authored head name: the expansion it belongs to and
     /// its span in the head. A wildcard-source rule is several rules after
     /// flattening, all carrying the same head.
@@ -1042,7 +1086,9 @@ impl Builder {
                 *default = self.expr(default.0.clone());
             }
         }
+        let plain_start = self.next_span;
         step.body = self.configuration_step(machine, &hierarchy, false)?;
+        let plain_body = plain_start..self.next_span;
         self.refresh_signature(step);
         let state_name = &mut implementation.methods[1];
         state_name.origin = DeclarationOrigin::MachineCompanion;
@@ -1074,7 +1120,10 @@ impl Builder {
         observed.origin = DeclarationOrigin::MachineStep;
         observed.visibility = machine.visibility;
         observed.params[1].name = Ident::new(configuration::EVENT);
+        let observed_start = self.next_span;
         observed.body = self.configuration_step(machine, &hierarchy, true)?;
+        self.evaluator_pairs
+            .push((plain_body, observed_start..self.next_span));
         self.refresh_signature(observed);
         let implementation_span = impl_start..self.next_span;
         let contract_start = self.next_span;

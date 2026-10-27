@@ -9,18 +9,29 @@ use hew_types::ResolvedTy;
 
 fn main() {
     let build = std::thread::Builder::new()
-        .name("hew-diagnostic-renderer".into())
+        .name("hew-presentation-renderers".into())
         .stack_size(hew_compile::COMPILER_STACK_SIZE)
-        .spawn(build_renderer)
-        .expect("start diagnostic renderer compiler");
+        .spawn(|| {
+            build_renderer(
+                "diagnostic_renderer",
+                "src/diagnostic_renderer.hew",
+                "diagnostic_render_text",
+            );
+            build_renderer(
+                "machine_renderer",
+                "src/machine/diagram.hew",
+                "machine_render_text",
+            );
+        })
+        .expect("start presentation renderer compiler");
     if let Err(error) = build.join() {
         std::panic::resume_unwind(error);
     }
 }
 
-fn build_renderer() {
+fn build_renderer(module_name: &str, source_path: &str, export_name: &str) {
     let package = PathBuf::from(std::env::var_os("CARGO_MANIFEST_DIR").unwrap());
-    let source = package.join("src/diagnostic_renderer.hew");
+    let source = package.join(source_path);
     let root = package.parent().unwrap();
     let out = PathBuf::from(std::env::var_os("OUT_DIR").unwrap());
     let triple = std::env::var("TARGET").unwrap();
@@ -33,7 +44,7 @@ fn build_renderer() {
         ..Default::default()
     };
     let state = hew_compile::run_file_frontend_to_typecheck(source.to_str().unwrap(), &frontend)
-        .unwrap_or_else(|error| panic!("diagnostic renderer frontend: {}", error.message));
+        .unwrap_or_else(|error| panic!("presentation renderer frontend: {}", error.message));
     for input in frontend.documents.inputs() {
         // Absent optional package files are not renderer dependencies. Cargo
         // would rebuild on every invocation if asked to watch a missing file.
@@ -56,10 +67,10 @@ fn build_renderer() {
     let session = hew_compile::Session::from_frontend_options(target, &frontend);
     let (semantic, declarations) = session
         .lower_host_program(&state.program, checked, &["render"])
-        .expect("lower diagnostic renderer");
+        .expect("lower presentation renderer");
     let inventory = hew_mir::physical::physical_type_inventory(&semantic.semantics().module);
     let target = hew_codegen_rs::physical::physical_target_for_inventory(&triple, &inventory)
-        .expect("diagnostic renderer target layout");
+        .expect("presentation renderer target layout");
     let physical = semantic.lower_physical(target).expect("physical renderer");
     let callable = physical
         .module()
@@ -75,14 +86,14 @@ fn build_renderer() {
                 && param.passing == SemParamPassing::Borrow
                 && param.carrier == ParamCarrier::Direct)
             && callable.return_ty == ResolvedTy::String,
-        "diagnostic renderer must export a borrowed string -> string function"
+        "presentation renderer must export a borrowed string -> string function"
     );
-    let selections = [(callable.id, "diagnostic_render_text")];
+    let selections = [(callable.id, export_name)];
     let export = HostExport::new(&physical, &selections).expect("typed renderer export");
     let artefacts = emit_host_object(
         &export,
         &PhysicalEmitOptions {
-            module_name: "diagnostic_renderer",
+            module_name,
             out_dir: &out,
             target_triple: Some(&triple),
             opt_level: hew_codegen_rs::OptLevel::O2,
@@ -94,9 +105,9 @@ fn build_renderer() {
             build_info: None,
         },
     )
-    .expect("emit diagnostic renderer");
-    std::fs::write(out.join("diagnostic_renderer.h"), export.header()).unwrap();
+    .expect("emit presentation renderer");
+    std::fs::write(out.join(format!("{module_name}.h")), export.header()).unwrap();
     cc::Build::new()
         .object(artefacts.native_obj_path.expect("native renderer object"))
-        .compile("diagnostic_renderer");
+        .compile(module_name);
 }

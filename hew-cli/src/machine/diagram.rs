@@ -9,6 +9,8 @@ use hew_parser::ast::{
 };
 use serde_json::{json, Value};
 
+use hew_cabi::host_error::{HewError, HewText};
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Kind {
     State,
@@ -59,26 +61,6 @@ fn line(out: &mut String, depth: usize, text: impl AsRef<str>) {
     out.push_str(&"    ".repeat(depth));
     out.push_str(text.as_ref());
     out.push('\n');
-}
-
-/// Both renderers receive the same formatted source. Escape only at the output
-/// boundary so source quotes, comments and control punctuation stay data.
-fn mermaid_text(text: &str) -> String {
-    text.replace('&', "&amp;")
-        .replace('"', "&quot;")
-        .replace('<', "&lt;")
-        .replace('>', "&gt;")
-        .replace('%', "&#37;")
-        .replace('|', "&#124;")
-        .replace('\n', "<br/>")
-        .replace('\r', "")
-}
-
-fn dot_text(text: &str) -> String {
-    text.replace('\\', "\\\\")
-        .replace('"', "\\\"")
-        .replace('\n', "\\n")
-        .replace('\r', "")
 }
 
 impl<'a> Chart<'a> {
@@ -296,43 +278,6 @@ impl<'a> Chart<'a> {
         names
     }
 
-    fn annotations(&self, index: usize) -> Vec<String> {
-        let node = &self.nodes[index];
-        let mut lines = Vec::new();
-        if node.is_final {
-            lines.push("final".into());
-        }
-        if !node.fields.is_empty() {
-            lines.push(format!("fields: {}", node.fields.join(", ")));
-        }
-        if let Some(entry) = &node.entry {
-            lines.push(format!("entry {entry}"));
-        }
-        if let Some(exit) = &node.exit {
-            lines.push(format!("exit {exit}"));
-        }
-        lines
-    }
-
-    fn legend(&self) -> Vec<String> {
-        let mut lines = Vec::new();
-        if self.machine.has_default {
-            lines.push("unhandled events stay in current state".into());
-        }
-        if !self.machine.emits.is_empty() {
-            lines.push(format!(
-                "Emits: {}",
-                self.machine
-                    .emits
-                    .iter()
-                    .map(|event| event.name.to_string())
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            ));
-        }
-        lines
-    }
-
     fn label(rule: &MachineTransition) -> String {
         let mut label = rule.trigger.to_string();
         if !rule.event_bindings.is_empty() {
@@ -368,254 +313,43 @@ impl<'a> Chart<'a> {
         label
     }
 
-    pub(super) fn mermaid(&self) -> String {
-        let mut out = String::new();
-        let parameters = self
-            .machine
-            .type_params
-            .iter()
-            .map(|parameter| parameter.name.to_string())
-            .chain(
-                self.machine
-                    .const_params
-                    .iter()
-                    .map(|parameter| parameter.name.to_string()),
-            )
-            .collect::<Vec<_>>();
-        let title = if parameters.is_empty() {
-            self.name.to_string()
-        } else {
-            format!("{}<{}>", self.name, parameters.join(", "))
-        };
-        line(&mut out, 0, "---");
-        line(&mut out, 0, format!("title: {}", json!(title)));
-        line(&mut out, 0, "---");
-        line(&mut out, 0, "stateDiagram-v2");
-        for child in self.children(None) {
-            self.mermaid_node(&mut out, child, 1);
-        }
-        for node in &self.auxiliary {
-            line(
-                &mut out,
-                1,
-                format!("state \"{}\" as {}", mermaid_text(&node.label), node.id),
-            );
-            if node.computed {
-                line(&mut out, 1, format!("state {} <<choice>>", node.id));
-            }
-        }
-        let legend = self.legend();
-        if !legend.is_empty() {
-            line(&mut out, 1, "state \"Machine rules\" as machine_rules");
-            line(&mut out, 1, "note right of machine_rules");
-            line(&mut out, 2, mermaid_text(&legend.join("\n")));
-            line(&mut out, 1, "end note");
-        }
-        for edge in &self.edges {
-            line(
-                &mut out,
-                1,
-                format!(
-                    "{} --> {} : {}",
-                    edge.from,
-                    edge.to,
-                    mermaid_text(&Self::label(edge.rule))
-                ),
-            );
-        }
-        for (index, node) in self.nodes.iter().enumerate() {
-            let annotations = self.annotations(index);
-            if !annotations.is_empty() {
-                line(&mut out, 1, format!("note right of {}", node.id));
-                line(&mut out, 2, mermaid_text(&annotations.join("\n")));
-                line(&mut out, 1, "end note");
-            }
-        }
-        out
+    // This private view shares declaration identities with the public projection.
+    // Source expressions are already formatted; graph syntax belongs to Hew.
+    fn render(&self, format: &str) -> String {
+        let input = json!({
+            "format": format,
+            "name": self.name,
+            "parameters": self.machine.type_params.iter().map(|p| p.name.to_string())
+                .chain(self.machine.const_params.iter().map(|p| p.name.to_string())).collect::<Vec<_>>(),
+            "has_default": self.machine.has_default,
+            "emits": self.machine.emits.iter().map(|event| event.name.to_string()).collect::<Vec<_>>(),
+            "roots": self.children(None),
+            "nodes": self.nodes.iter().enumerate().map(|(index, node)| json!({
+                "id": node.id, "name": node.name,
+                "kind": match node.kind { Kind::State => "state", Kind::Compound => "compound", Kind::Region => "region" },
+                "parent": node.parent.map_or(-1, |index| i64::try_from(index).expect("node index")),
+                "children": self.children(Some(index)),
+                "fields": node.fields, "entry": node.entry, "exit": node.exit,
+                "parallel": node.parallel, "is_final": node.is_final,
+                "initial": node.initial.as_ref().map_or(-1, |(index, _)| i64::try_from(*index).expect("initial index")),
+                "initial_value": node.initial.as_ref().and_then(|(_, value)| value.as_deref()),
+            })).collect::<Vec<_>>(),
+            "edges": self.edges.iter().map(|edge| json!({
+                "from": edge.from, "to": edge.to, "label": Self::label(edge.rule),
+            })).collect::<Vec<_>>(),
+            "auxiliary": self.auxiliary.iter().map(|node| json!({
+                "id": node.id, "label": node.label, "computed": node.computed,
+            })).collect::<Vec<_>>(),
+        });
+        render_text(&input.to_string())
     }
 
-    fn mermaid_node(&self, out: &mut String, index: usize, depth: usize) {
-        let node = &self.nodes[index];
-        let label = if node.kind == Kind::Region {
-            format!("region {}", node.name)
-        } else {
-            node.name.clone()
-        };
-        if node.kind == Kind::State {
-            line(
-                out,
-                depth,
-                format!("state \"{}\" as {}", mermaid_text(&label), node.id),
-            );
-            return;
-        }
-        line(
-            out,
-            depth,
-            format!("state \"{}\" as {} {{", mermaid_text(&label), node.id),
-        );
-        if let Some((initial, value)) = &node.initial {
-            let label = value
-                .as_ref()
-                .map_or(String::new(), |value| format!(" : {}", mermaid_text(value)));
-            line(
-                out,
-                depth + 1,
-                format!("[*] --> {}{label}", self.nodes[*initial].id),
-            );
-        }
-        for (ordinal, child) in self.children(Some(index)).into_iter().enumerate() {
-            if node.parallel && ordinal > 0 {
-                line(out, depth + 1, "--");
-            }
-            self.mermaid_node(out, child, depth + 1);
-        }
-        line(out, depth, "}");
+    pub(super) fn mermaid(&self) -> String {
+        self.render("mermaid")
     }
 
     pub(super) fn dot(&self) -> String {
-        let mut out = String::new();
-        line(
-            &mut out,
-            0,
-            format!("digraph \"{}\" {{", dot_text(self.name)),
-        );
-        line(
-            &mut out,
-            1,
-            "rankdir=LR; compound=true; node [shape=box, style=rounded];",
-        );
-        line(
-            &mut out,
-            1,
-            format!("label=\"{}\"; labelloc=t;", dot_text(self.name)),
-        );
-        for child in self.children(None) {
-            self.dot_node(&mut out, child, 1);
-        }
-        for node in &self.auxiliary {
-            line(
-                &mut out,
-                1,
-                format!(
-                    "{} [label=\"{}\", shape={}];",
-                    node.id,
-                    dot_text(&node.label),
-                    if node.computed { "diamond" } else { "note" }
-                ),
-            );
-        }
-        let legend = self.legend();
-        if !legend.is_empty() {
-            line(
-                &mut out,
-                1,
-                format!(
-                    "machine_rules [shape=note, label=\"{}\"];",
-                    dot_text(&legend.join("\n"))
-                ),
-            );
-        }
-        for edge in &self.edges {
-            line(
-                &mut out,
-                1,
-                format!(
-                    "{} -> {} [label=\"{}\" {} {}];",
-                    edge.from,
-                    edge.to,
-                    dot_text(&Self::label(edge.rule)),
-                    self.flow_cluster_attribute("ltail", &edge.from, &edge.to),
-                    self.flow_cluster_attribute("lhead", &edge.to, &edge.from)
-                ),
-            );
-        }
-        line(&mut out, 0, "}");
-        out
-    }
-
-    fn cluster_attribute(&self, key: &str, id: &str) -> String {
-        self.nodes
-            .iter()
-            .find(|node| node.id == id && node.kind != Kind::State)
-            .map_or(String::new(), |node| format!("{key}=cluster_{}", node.id))
-    }
-
-    fn flow_cluster_attribute(&self, key: &str, id: &str, other: &str) -> String {
-        if let Some(index) = self.nodes.iter().position(|node| node.id == id) {
-            let mut current = self.nodes.iter().position(|node| node.id == other);
-            while let Some(other) = current {
-                if index == other {
-                    return String::new();
-                }
-                current = self.nodes[other].parent;
-            }
-        }
-        self.cluster_attribute(key, id)
-    }
-
-    fn dot_node(&self, out: &mut String, index: usize, depth: usize) {
-        let node = &self.nodes[index];
-        let mut annotations = vec![if node.kind == Kind::Region {
-            format!("region {}", node.name)
-        } else {
-            node.name.clone()
-        }];
-        if node.parallel {
-            annotations.push("parallel".into());
-        }
-        annotations.extend(self.annotations(index));
-        let label = dot_text(&annotations.join("\n"));
-        if node.kind == Kind::State {
-            line(out, depth, format!("{} [label=\"{label}\"];", node.id));
-            if node.is_final {
-                line(out, depth, format!("{} [peripheries=2];", node.id));
-            }
-            return;
-        }
-        line(out, depth, format!("subgraph cluster_{} {{", node.id));
-        line(
-            out,
-            depth + 1,
-            format!(
-                "label=\"{label}\"; style=\"{}\";",
-                if node.kind == Kind::Region {
-                    "dashed"
-                } else {
-                    "rounded"
-                }
-            ),
-        );
-        line(
-            out,
-            depth + 1,
-            format!(
-                "{} [label=\"\", shape=point, width=0.01, style=invis];",
-                node.id
-            ),
-        );
-        if let Some((initial, value)) = &node.initial {
-            line(
-                out,
-                depth + 1,
-                format!("initial_{} [shape=point, width=0.1];", node.id),
-            );
-            line(
-                out,
-                depth + 1,
-                format!(
-                    "initial_{} -> {} [label=\"{}\" {}];",
-                    node.id,
-                    self.nodes[*initial].id,
-                    dot_text(value.as_deref().unwrap_or("")),
-                    self.cluster_attribute("lhead", &self.nodes[*initial].id)
-                ),
-            );
-        }
-        for child in self.children(Some(index)) {
-            self.dot_node(out, child, depth + 1);
-        }
-        line(out, depth, "}");
+        self.render("dot")
     }
 
     pub(super) fn json(&self) -> Value {
@@ -724,6 +458,25 @@ impl<'a> Chart<'a> {
     }
 }
 
+// The checked export and its C declaration are generated together in build.rs.
+// This synchronous string -> string signature requires no scheduler handle.
+#[allow(
+    improper_ctypes,
+    reason = "HewError is an opaque C owner; its Rust contents never cross the boundary"
+)]
+unsafe extern "C" {
+    fn machine_render_text(
+        input: *const HewText,
+        output: *mut *mut HewText,
+        error: *mut *mut HewError,
+    ) -> i32;
+}
+
+fn render_text(input: &str) -> String {
+    // SAFETY: build.rs checks this generated export's borrowed-string contract.
+    unsafe { crate::host_text::call(input, machine_render_text) }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -772,11 +525,11 @@ machine Delivery {
     fn source_logic_is_escaped_at_each_render_boundary() {
         let parsed = hew_parser::parse(
             r#"
-machine Quoted {
+machine Quoted<T, const N: usize> {
     events { Send { text: string; } }
     state Idle { entry { let text = "a\"b<|%"; } }
     state Done;
-    on Send: Idle => Done when event.text == "a\"b<|%" { Done }
+    on Send { text }: Idle => Done when text == "a\"b<|%" { Done }
     default { state }
 }
 "#,
@@ -794,6 +547,8 @@ machine Quoted {
             .unwrap()
             .contains("let text"));
         let mermaid = chart.mermaid();
+        assert!(mermaid.contains("title: \"Quoted<T, N>\""), "{mermaid}");
+        assert!(mermaid.contains("Send { text }"), "{mermaid}");
         assert!(mermaid.contains("&lt;&#124;&#37;"), "{mermaid}");
         assert!(mermaid.contains("&quot;"), "{mermaid}");
         let dot = chart.dot();

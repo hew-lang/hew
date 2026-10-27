@@ -29,6 +29,24 @@ fn ordinary_machine_diagram_retains_typed_outputs_and_dynamic_targets() {
     assert_eq!(diagram["outputs"][0]["fields"][0], "text");
     assert_eq!(diagram["transitions"][0]["to"], "_");
     assert_eq!(diagram["transitions"][0]["external"], true);
+    for (format, marker) in [("mermaid", "<<choice>>"), ("dot", "shape=diamond")] {
+        let output = Command::new(hew_binary())
+            .args(["machine", "diagram"])
+            .arg(dir.path().join("gate.hew"))
+            .args(["--format", format])
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let text = String::from_utf8(output.stdout).unwrap();
+        assert!(text.contains(marker), "{text}");
+        assert!(text.contains("[external]"), "{text}");
+        assert!(text.contains("entry"), "{text}");
+        assert!(text.contains("Emits: Trace"), "{text}");
+    }
 }
 
 fn machine_fixture() -> &'static str {
@@ -66,6 +84,34 @@ fn machine_diagram_preserves_parallel_regions_history_and_source_logic() {
     assert_eq!(rules.len(), 4);
     assert_eq!(rules[0]["history"], true);
     assert!(rules[1]["action"].as_str().unwrap().contains("advanced"));
+    for format in ["mermaid", "dot"] {
+        let output = Command::new(hew_binary())
+            .args(["machine", "diagram"])
+            .arg(&input)
+            .args(["--machine", "Pair", "--format", format])
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let text = String::from_utf8(output.stdout).unwrap();
+        assert!(
+            text.contains("region left") && text.contains("region right"),
+            "{text}"
+        );
+        assert!(text.contains("[history]"), "{text}");
+        assert!(text.contains("to_upper()"), "{text}");
+        if format == "mermaid" {
+            assert!(text.lines().any(|line| line.trim() == "--"), "{text}");
+            assert!(text.contains("[*] -->"), "{text}");
+        } else {
+            assert!(text.contains("style=\"dashed\""), "{text}");
+            assert!(text.contains("lhead=cluster_"), "{text}");
+            assert!(text.contains("ltail=cluster_"), "{text}");
+        }
+    }
 
     let output = Command::new(hew_binary())
         .args(["machine", "diagram"])

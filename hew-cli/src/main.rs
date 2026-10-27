@@ -38,6 +38,7 @@ mod fixes;
 mod generate;
 mod help;
 mod host;
+mod host_text;
 mod link;
 mod live;
 mod machine;

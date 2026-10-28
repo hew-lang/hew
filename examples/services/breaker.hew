@@ -1,0 +1,80 @@
+//! A supervised backend and an explicit circuit-breaker policy.
+
+pub enum RequestError {
+    CircuitOpen;
+    BackendUnavailable;
+}
+
+machine BreakerState {
+    events {
+        Success;
+        Failure { limit: i64; }
+        Probe;
+    }
+
+    state Closed { failures: i64; }
+    state Open;
+    state HalfOpen;
+
+    on Success: Closed => Closed reenter { failures: 0 }
+    on Failure: Closed => Open when state.failures + 1 >= event.limit;
+    on Failure: Closed => Closed reenter when state.failures + 1 < event.limit { failures: state.failures + 1 }
+    on Probe: Open => HalfOpen;
+    on Success: HalfOpen => Closed { failures: 0 }
+    on Failure: HalfOpen => Open;
+
+    default { state }
+}
+
+pub actor Backend {
+    var healthy: bool = true;
+
+    receive fn call(id: i64) -> Option<i64> {
+        if healthy { .Some(id * 10) } else { .None }
+    }
+
+    receive fn set_healthy(value: bool) {
+        healthy = value;
+    }
+}
+
+pub supervisor BackendService {
+    child backend: Backend;
+}
+
+pub actor CircuitBreaker {
+    let backend: Backend;
+    let failure_limit: i64 = 3;
+    var status: BreakerState = .Closed { failures: 0 };
+    var accepted: i64 = 0;
+
+    receive fn request(id: i64) -> Result<i64, RequestError> {
+        if let .Open = status {
+            return .Err(.CircuitOpen);
+        }
+        let result: Result<i64, RequestError> = match backend.call(id) {
+            .Ok(.Some(value)) => .Ok(value),
+            .Ok(.None) => .Err(.BackendUnavailable),
+            .Err(_) => .Err(.BackendUnavailable),
+        };
+        if result.is_ok() {
+            status.step(.Success).expect("finite breaker transition");
+            accepted += 1;
+        } else {
+            status.step(.Failure { limit: failure_limit }).expect("finite breaker transition");
+        }
+        result
+    }
+
+    receive fn probe() {
+        status.step(.Probe).expect("finite breaker transition");
+    }
+
+    receive fn state_name() -> string {
+        status.state_name()
+    }
+
+    receive fn accepted_count() -> i64 {
+        accepted
+    }
+}

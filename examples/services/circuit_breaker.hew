@@ -1,161 +1,37 @@
-// Circuit Breaker — resilient service calls with actor state
-//
-// The circuit breaker pattern prevents cascading failures by wrapping
-// unreliable service calls. After N consecutive failures the breaker
-// "trips open" and rejects requests immediately, giving the downstream
-// service time to recover. After a cooldown period it allows a single
-// probe request through; if that succeeds the breaker closes again.
-//
-// In Go you'd reach for sony/gobreaker or write ~200 lines of mutex-
-// guarded state. In Rust you'd need Arc<Mutex<State>> or an async
-// channel wrapper. In Hew the actor IS the state machine — no locks,
-// no shared memory, no data races by construction.
-//
-// States:  Closed (normal) → Open (rejecting) → HalfOpen (probing)
+//! Circuit breaker: typed failures, machine transitions and a supervised backend.
+import breaker;
 
-// Simulated backend service.
-// Returns request_id * 10 on success, -1 on failure.
-// Failure is triggered by setting the actor to "degraded" mode.
-actor Backend {
-    var healthy: i64; // 1 = healthy, 0 = degraded
-    receive fn call(request_id: i64) -> i64 {
-        if healthy == 0 { -1 } else { request_id * 10 }
-    }
-    receive fn set_healthy(val: i64) {
-        healthy = val;
-        if val == 1 {
-            println("[backend] restored to healthy");
-        } else {
-            println("[backend] degraded — returning errors");
-        }
-    }
-}
-
-// Circuit breaker wrapping a Backend actor.
-//
-// State encoding:
-//   0 = Closed   (normal operation)
-//   1 = Open     (rejecting all calls)
-//   2 = HalfOpen (allowing one probe)
-actor CircuitBreaker {
-    let backend: Backend;
-    var state: i64; // 0=Closed, 1=Open, 2=HalfOpen
-    var failure_count: i64;
-    let max_failures: i64; // trip threshold
-    init() {
-        println(f"[breaker] init: max_failures={max_failures}");
-    }
-
-    // Attempt a request through the breaker.
-    //   Returns  >= 0  on success (the backend result)
-    //   Returns -1     if the breaker is open (fast-fail)
-    //   Returns -2     if the backend call failed
-    receive fn request(id: i64) -> i64 {
-        if state == 1 {
-            // Open — reject immediately
-            println(f"[breaker] OPEN — rejecting request {id}");
-            -1
-        } else {
-            let result = match backend.call(id) {
-                .Ok(value) => value,
-                .Err(_) => -1,
-            };
-            if result < 0 {
-                // Backend returned an error — count as failure
-                failure_count = failure_count + 1;
-                if failure_count >= max_failures {
-                    state = 1;
-                    println(f"[breaker] request {id} FAILED — TRIPPED OPEN (count={failure_count})");
-                } else {
-                    println(f"[breaker] request {id} FAILED (count={failure_count})");
-                }
-                -2
-            } else {
-                // Success — reset failure count, close breaker if probing
-                failure_count = 0;
-                if state == 2 {
-                    state = 0;
-                    println(f"[breaker] request {id} OK → {result} (HalfOpen → Closed)");
-                } else {
-                    println(f"[breaker] request {id} OK → {result}");
-                }
-                result
-            }
-        }
-    }
-
-    // Transition Open → HalfOpen (called after cooldown).
-    receive fn probe() {
-        if state == 1 {
-            state = 2;
-            println("[breaker] Open → HalfOpen (allowing probe)");
-        }
-    }
-    receive fn get_state() -> i64 {
-        state
+fn report(id: i64, result: Result<i64, breaker.RequestError>) {
+    match result {
+        .Ok(value) => println(f"request {id}: {value}"),
+        .Err(.CircuitOpen) => println(f"request {id}: circuit open"),
+        .Err(.BackendUnavailable) => println(f"request {id}: backend unavailable"),
     }
 }
 
 fn main() {
-    println("=== Circuit Breaker Pattern ===");
-    println("");
-    let backend = spawn Backend { healthy: 1 };
-    let breaker = spawn CircuitBreaker { backend: backend, state: 0, failure_count: 0, max_failures: 3 };
-    // ── Normal operation: requests succeed ──
-    println("--- Normal operation ---");
-    let _ = breaker.request(1);
-    let _ = breaker.request(2);
-    let _ = breaker.request(3);
-    // ── Backend degrades ──
-    println("");
-    println("--- Backend goes down ---");
-    let _ = backend.set_healthy(0);
-    sleep(20ms);
-
-    // Three failures trip the breaker (max_failures=3)
-    let _ = breaker.request(4);
-    let _ = breaker.request(5);
-    let _ = breaker.request(6);
-    // Breaker is now open — requests rejected immediately
-    println("");
-    println("--- Breaker is open (fast-fail) ---");
-    let rejected = match breaker.request(7) {
-        .Ok(value) => value,
-        .Err(_) => -3,
-    };
-    println(f"Result while open: {rejected}");
-    let rejected2 = match breaker.request(8) {
-        .Ok(value) => value,
-        .Err(_) => -3,
-    };
-    println(f"Result while open: {rejected2}");
-
-    // ── Backend recovers ──
-    println("");
-    println("--- Backend recovers ---");
-    let _ = backend.set_healthy(1);
-    sleep(20ms);
-
-    // Trigger half-open probe, then send a request
-    let _ = breaker.probe();
-    sleep(20ms);
-    let probe_result = match breaker.request(9) {
-        .Ok(value) => value,
-        .Err(_) => -3,
-    };
-    println(f"Probe request result: {probe_result}");
-
-    // Breaker should be closed again — normal operation resumes
-    println("");
-    println("--- Back to normal ---");
-    let _ = breaker.request(10);
-    let _ = breaker.request(11);
-    let final_state = match breaker.get_state() {
-        .Ok(value) => value,
-        .Err(_) => -1,
-    };
-    println(f"Final breaker state: {final_state} (0=Closed)");
-    println("");
-    println("Circuit breaker complete.");
-    println("The actor IS the state machine — no mutexes, no shared state.");
+    let service = spawn breaker.BackendService;
+    let circuit = spawn breaker.CircuitBreaker { backend: service.backend };
+    for id in 1..3 {
+        report(id, circuit.request(id).expect("breaker available"));
+    }
+    // Completion calls establish the ordering; no timing sleeps are needed.
+    service.backend.set_healthy(false).expect("backend available");
+    for id in 3..6 {
+        report(id, circuit.request(id).expect("breaker available"));
+    }
+    assert(circuit.state_name().expect("state") == "Open");
+    report(6, circuit.request(6).expect("breaker available"));
+    service.backend.set_healthy(true).expect("backend available");
+    report(7, circuit.request(7).expect("breaker available"));
+    circuit.probe().expect("probe");
+    assert(circuit.state_name().expect("state") == "HalfOpen");
+    report(8, circuit.request(8).expect("breaker available"));
+    report(9, circuit.request(9).expect("breaker available"));
+    assert(circuit.accepted_count().expect("accepted count") == 4);
+    println(f"final state: {circuit.state_name().expect("state")}");
+    stop(circuit);
+    stopped(circuit);
+    stop(service);
+    stopped(service);
 }

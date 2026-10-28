@@ -102,6 +102,43 @@ compiler-generated scaffolding retains its own diagnostic context.
 Use `--show-wrapper` to inspect each checked submission's generated source on
 stderr before execution.
 
+### Work on a retained service
+
+The circuit-breaker example separates reusable service declarations from its
+entry point. Start the prompt at that project with the matching SDK runtime:
+
+```sh
+hew tool live --runtime /path/to/hew-live-sdk/lib/hew/libhew.so --project examples/services
+```
+
+Then import the service and retain its supervised backend and breaker:
+
+```hew
+import breaker;
+let service = spawn breaker.BackendService;
+let circuit = spawn breaker.CircuitBreaker { backend: service.backend };
+fn issue(circuit: breaker.CircuitBreaker, id: i64) -> i64 {
+    circuit.request(id).expect("breaker").expect("backend")
+}
+issue(circuit, 1)
+```
+
+The result is `10`. Replace the helper and call it again:
+
+```hew
+fn issue(circuit: breaker.CircuitBreaker, id: i64) -> i64 {
+    circuit.request(id).expect("breaker").expect("backend") + 1
+}
+issue(circuit, 2)
+circuit.accepted_count().expect("count")
+```
+
+The results are `21` and `2`: fresh helper calls use the new declaration while
+the actor retains its state. A rejected edit leaves the preceding declaration
+available. Actors and retained closures keep their defining code alive; staged
+component replacement below supplies quiescence and migration when replacing
+the service itself. Finish with `:clear` to release retained owners and code.
+
 ### Process standard-input lines
 
 ```sh

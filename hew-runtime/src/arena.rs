@@ -32,7 +32,7 @@
 //!
 //! Every `alloc` call rounds the current cursor up to the requested alignment using the
 //! standard power-of-two mask: `(cursor + align - 1) & !(align - 1)`.
-//! **`align` must be a power of two** — a `debug_assert!` guards this in debug builds.
+//! Requests with zero size, invalid alignment, or unrepresentable extents fail closed.
 #![allow(
     unsafe_op_in_unsafe_fn,
     reason = "FFI entry-point module; SAFETY documented at fn signature."
@@ -80,6 +80,13 @@ struct ArenaChunk {
 impl ArenaChunk {
     /// Create a new chunk with the specified size.
     fn new(size: usize) -> Option<Self> {
+        if size == 0 || size > isize::MAX as usize {
+            return None;
+        }
+        #[cfg(test)]
+        if tests::FAIL_NEXT_MAPPING.with(|fail| fail.replace(false)) {
+            return None;
+        }
         #[cfg(all(unix, not(miri), not(target_family = "wasm")))]
         let base = {
             // SAFETY: mmap with valid flags and no file descriptor
@@ -203,71 +210,49 @@ impl ActorArena {
 
     /// Allocate memory with the specified size and alignment.
     ///
-    /// `align` must be a power of two (asserted in debug builds).
-    /// Returns a null pointer if allocation fails (OOM), if `size` is zero,
-    /// or if a non-zero cap has been set and this allocation would exceed it.
+    /// Alignment must be a power of two no greater than 4096. Invalid requests,
+    /// unrepresentable extents, OOM, and cap exhaustion return null without
+    /// changing the cursor or charging the per-dispatch cap.
     pub fn alloc(&mut self, size: usize, align: usize) -> *mut u8 {
-        debug_assert!(
-            align.is_power_of_two(),
-            "align must be a power of two, got {align}"
-        );
-
-        if size == 0 {
+        use crate::arena_layout::{budget, fit, valid_request};
+        if !valid_request(size, align) {
             return ptr::null_mut();
         }
-
-        // Cap enforcement (0 = unbounded).
-        if self.cap > 0 {
-            match self.used.checked_add(size) {
-                Some(new_used) if new_used <= self.cap => {
-                    self.used = new_used;
-                }
-                _ => {
-                    return ptr::null_mut();
-                }
-            }
-        }
-
-        while self.current_chunk < self.chunks.len() {
-            let aligned_cursor = (self.cursor + align - 1) & !(align - 1);
-            let end_offset = aligned_cursor + size;
-            let chunk = &self.chunks[self.current_chunk];
-            if end_offset <= chunk.size {
-                self.cursor = end_offset;
-                // SAFETY: aligned_cursor is within chunk bounds
-                return unsafe { chunk.base.add(aligned_cursor) };
-            }
-            self.current_chunk += 1;
-            self.cursor = 0;
-        }
-
-        // Need a new chunk
-        let next_chunk_size = if self.chunks.is_empty() {
-            self.initial_chunk_size
-        } else {
-            let last_size = self.chunks[self.chunks.len() - 1].size;
-            std::cmp::min(last_size * 2, self.max_chunk_size)
+        let Some(new_used) = budget(self.used, self.cap, size) else {
+            return ptr::null_mut();
         };
 
-        // Ensure chunk is large enough for this allocation
-        let chunk_size = std::cmp::max(next_chunk_size, size + align);
+        // Search using local cursors: a failed mapping must not abandon usable
+        // retained chunks or consume quota for an allocation that never happened.
+        let mut index = self.current_chunk;
+        let mut cursor = self.cursor;
+        while index < self.chunks.len() {
+            let chunk = &self.chunks[index];
+            if let Some(extent) = fit(cursor, size, align, chunk.size) {
+                self.current_chunk = index;
+                self.cursor = extent.end;
+                self.used = new_used;
+                // SAFETY: fit proves a nonempty extent within the mapped chunk.
+                return unsafe { chunk.base.add(extent.start) };
+            }
+            index += 1;
+            cursor = 0;
+        }
 
+        let next_chunk_size = self.chunks.last().map_or(self.initial_chunk_size, |last| {
+            last.size.saturating_mul(2).min(self.max_chunk_size)
+        });
+        // Page-aligned chunk bases need no leading alignment padding.
+        let chunk_size = next_chunk_size.max(size);
         let Some(new_chunk) = ArenaChunk::new(chunk_size) else {
             return ptr::null_mut();
         };
-
+        let base = new_chunk.base;
         self.chunks.push(new_chunk);
         self.current_chunk = self.chunks.len() - 1;
-
-        // Allocate from the new chunk starting at offset 0.
-        // The OS guarantees page-aligned base pointers (mmap / VirtualAlloc return
-        // memory aligned to at least the system page size, typically 4096 bytes).
-        // For any power-of-two alignment ≤ page size, rounding 0 up is still 0.
-        let aligned_cursor = 0_usize;
-        self.cursor = aligned_cursor + size;
-
-        // SAFETY: aligned_cursor is within new chunk bounds
-        unsafe { self.chunks[self.current_chunk].base.add(aligned_cursor) }
+        self.cursor = size;
+        self.used = new_used;
+        base
     }
 
     /// Reset the arena for reuse after a completed dispatch cycle.
@@ -511,6 +496,60 @@ pub unsafe extern "C" fn hew_arena_set_current(arena: *mut ActorArena) {
 mod tests {
     use super::*;
     use crate::execution_context::{HewExecutionContext, TestExecutionContext};
+
+    thread_local! {
+        pub(super) static FAIL_NEXT_MAPPING: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    }
+
+    #[test]
+    fn mapping_failure_preserves_quota_and_retained_space() {
+        let mut arena = ActorArena::new_with_sizes(64, 256).unwrap();
+        arena.cap = 128;
+        let first = arena.alloc(8, 8);
+        assert!(!first.is_null());
+        // SAFETY: first is an eight-byte allocation retained by this arena.
+        unsafe { first.write(0xa5) };
+        FAIL_NEXT_MAPPING.with(|fail| fail.set(true));
+        assert!(arena.alloc(80, 8).is_null());
+        assert_eq!(arena.used, 8);
+        assert_eq!(arena.cursor, 8);
+        assert_eq!(arena.current_chunk, 0);
+        assert_eq!(arena.chunks.len(), 1);
+        // SAFETY: the failed allocation must preserve the original allocation.
+        assert_eq!(unsafe { first.read() }, 0xa5);
+        // SAFETY: first + 8 lies within the retained chunk's free range.
+        assert_eq!(arena.alloc(8, 8), unsafe { first.add(8) });
+        assert_eq!(arena.used, 16);
+    }
+
+    #[test]
+    fn unrepresentable_allocation_preserves_live_data_and_quota() {
+        let mut arena = ActorArena::new_with_sizes(64, 256).unwrap();
+        arena.cap = usize::MAX;
+        let first = arena.alloc(8, 8);
+        assert!(!first.is_null());
+        // SAFETY: first is a live, nonempty allocation owned by arena.
+        unsafe { first.write(0xa5) };
+        for size in [usize::MAX, usize::MAX - 7, isize::MAX as usize + 1] {
+            assert!(arena.alloc(size, 8).is_null());
+            assert_eq!(arena.used, 8);
+            assert_eq!(arena.cursor, 8);
+            // SAFETY: no reset or destruction has invalidated first.
+            assert_eq!(unsafe { first.read() }, 0xa5);
+        }
+        // SAFETY: a one-past pointer to the original eight-byte allocation.
+        assert_eq!(arena.alloc(8, 8), unsafe { first.add(8) });
+    }
+
+    #[test]
+    fn unsupported_alignment_fails_without_consuming_space() {
+        let mut arena = ActorArena::new_with_sizes(64, 256).unwrap();
+        for align in [0, 3, 8192, usize::MAX] {
+            assert!(arena.alloc(8, align).is_null());
+            assert_eq!(arena.cursor, 0);
+        }
+        assert!(!arena.alloc(8, 4096).is_null());
+    }
 
     #[test]
     fn arena_alloc_basic() {

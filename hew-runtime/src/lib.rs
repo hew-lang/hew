@@ -671,6 +671,7 @@ pub mod actor_group;
 pub mod actor_native;
 pub mod actor_observe;
 pub mod arena;
+mod arena_layout;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod duplex;
 pub mod execution_context;

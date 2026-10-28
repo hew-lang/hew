@@ -14,14 +14,14 @@
     clippy::cast_ptr_alignment,
     reason = "buffer allocation preserves the element type's alignment"
 )]
-// ABI boundary uses i64 (Hew's `int`) for sizes/indices; internal code needs usize.
+// ABI indices are checked before narrowing to the target word size.
 #![expect(
     clippy::cast_sign_loss,
-    reason = "i64 index/size from codegen is always non-negative at the ABI boundary"
+    reason = "remaining signed casts are sizes or diagnostics after bounds rejection"
 )]
 #![expect(
     clippy::cast_possible_truncation,
-    reason = "i64→usize: values originate from usize-range lengths; safe on both 32-bit and 64-bit"
+    reason = "element indices use checked conversion; remaining casts are sizes or diagnostics"
 )]
 
 // Re-export types from hew-cabi so `crate::vec::HewVec` etc. continue to work.
@@ -37,6 +37,11 @@ use core::ptr;
 use hew_cabi::string::HewString;
 use std::alloc::{alloc, dealloc, realloc, Layout};
 use std::sync::atomic::{fence, AtomicUsize, Ordering};
+
+mod bounds;
+#[cfg(test)]
+mod index_width_tests;
+use bounds::{checked_index, checked_range};
 
 mod managed;
 pub use managed::*;
@@ -332,6 +337,15 @@ unsafe fn abort_oob(operation: &str, index: usize, len: usize) -> ! {
         write_stderr(b")\n");
         runtime_bounds_trap(HEW_TRAP_INDEX_OUT_OF_BOUNDS);
     }
+}
+
+/// Validate the complete ABI index before any target-width element arithmetic.
+#[inline]
+unsafe fn require_index(index: i64, len: usize, operation: &str) -> usize {
+    checked_index(index, len).unwrap_or_else(|| unsafe {
+        // SAFETY: this path terminates; the narrowing affects diagnostics only.
+        abort_oob(operation, index as usize, len)
+    })
 }
 
 /// C-ABI abort for out-of-bounds access, called by inline codegen bounds checks.
@@ -969,10 +983,7 @@ macro_rules! vec_get_primitive {
         pub unsafe extern "C-unwind" fn $name(v: *mut HewVec, index: i64) -> $ty {
             // SAFETY: caller guarantees `v` is valid.
             unsafe {
-                let index = index as usize;
-                if index >= (*v).len {
-                    abort_oob("Vec.get()", index, (*v).len);
-                }
+                let index = require_index(index, (*v).len, "Vec.get()");
                 (*v).data.cast::<$ty>().add(index).read()
             }
         }
@@ -1000,10 +1011,7 @@ vec_get_primitive!(hew_vec_get_i64, i64);
 pub unsafe extern "C-unwind" fn hew_vec_get_str(v: *mut HewVec, index: i64) -> *const HewString {
     // SAFETY: caller guarantees `v` is valid.
     unsafe {
-        let index = index as usize;
-        if index >= (*v).len {
-            abort_oob("Vec.get()", index, (*v).len);
-        }
+        let index = require_index(index, (*v).len, "Vec.get()");
         let raw = (*v).data.cast::<*const HewString>().add(index).read();
         // Retain one owner for the caller (VWT copy); handles null/static.
         retain_string_element(raw)
@@ -1050,10 +1058,7 @@ pub unsafe extern "C-unwind" fn hew_vec_get_ptr(v: *mut HewVec, index: i64) -> *
         if (*v).elem_size != expected {
             abort_ptr_stride_mismatch((*v).elem_size);
         }
-        let index = index as usize;
-        if index >= (*v).len {
-            abort_oob("Vec.get()", index, (*v).len);
-        }
+        let index = require_index(index, (*v).len, "Vec.get()");
         (*v).data.cast::<*mut c_void>().add(index).read()
     }
 }
@@ -1085,19 +1090,10 @@ pub unsafe extern "C-unwind" fn hew_vec_get_ptr(v: *mut HewVec, index: i64) -> *
 ///
 /// `v` must be a valid `HewVec` pointer.
 unsafe fn check_slice_bounds(v: *mut HewVec, start: i64, end: i64) -> (usize, usize) {
-    // SAFETY: caller guarantees `v` is valid.
+    // SAFETY: caller guarantees a live header; rejection performs no element access.
     unsafe {
-        let len = (*v).len;
-        // Negative endpoints would wrap to a very large usize, which the
-        // `> len` check below catches. Match the `_get_*` family which
-        // does the same `index as usize` cast and relies on the
-        // `>= len` check to catch negatives.
-        let start_u = start as usize;
-        let end_u = end as usize;
-        if start > end || end_u > len || start_u > len {
-            abort_oob("Vec slice", start_u, len);
-        }
-        (start_u, end_u)
+        checked_range(start, end, (*v).len)
+            .unwrap_or_else(|| abort_oob("Vec slice", start as usize, (*v).len))
     }
 }
 
@@ -1425,10 +1421,7 @@ pub unsafe extern "C-unwind" fn hew_vec_slice_range_owned(
 pub unsafe extern "C-unwind" fn hew_vec_set_i32(v: *mut HewVec, index: i64, val: i32) {
     // SAFETY: caller guarantees `v` is valid.
     unsafe {
-        let index = index as usize;
-        if index >= (*v).len {
-            abort_oob("Vec.set()", index, (*v).len);
-        }
+        let index = require_index(index, (*v).len, "Vec.set()");
         hew_vec_make_unique(v);
         (*v).data.cast::<i32>().add(index).write(val);
     }
@@ -1443,10 +1436,7 @@ pub unsafe extern "C-unwind" fn hew_vec_set_i32(v: *mut HewVec, index: i64, val:
 pub unsafe extern "C-unwind" fn hew_vec_set_bool(v: *mut HewVec, index: i64, val: bool) {
     // SAFETY: caller guarantees `v` is valid.
     unsafe {
-        let index = index as usize;
-        if index >= (*v).len {
-            abort_oob("Vec.set()", index, (*v).len);
-        }
+        let index = require_index(index, (*v).len, "Vec.set()");
         hew_vec_make_unique(v);
         (*v).data.cast::<bool>().add(index).write(val);
     }
@@ -1463,10 +1453,7 @@ macro_rules! vec_set_primitive {
         pub unsafe extern "C-unwind" fn $name(v: *mut HewVec, index: i64, val: $ty) {
             // SAFETY: caller guarantees `v` is valid.
             unsafe {
-                let index = index as usize;
-                if index >= (*v).len {
-                    abort_oob("Vec.set()", index, (*v).len);
-                }
+                let index = require_index(index, (*v).len, "Vec.set()");
                 hew_vec_make_unique(v);
                 (*v).data.cast::<$ty>().add(index).write(val);
             }
@@ -1488,10 +1475,7 @@ vec_set_primitive!(hew_vec_set_u16, u16);
 pub unsafe extern "C-unwind" fn hew_vec_set_i64(v: *mut HewVec, index: i64, val: i64) {
     // SAFETY: caller guarantees `v` is valid.
     unsafe {
-        let index = index as usize;
-        if index >= (*v).len {
-            abort_oob("Vec.set()", index, (*v).len);
-        }
+        let index = require_index(index, (*v).len, "Vec.set()");
         hew_vec_make_unique(v);
         (*v).data.cast::<i64>().add(index).write(val);
     }
@@ -1509,10 +1493,7 @@ pub unsafe extern "C-unwind" fn hew_vec_set_i64(v: *mut HewVec, index: i64, val:
 pub unsafe extern "C-unwind" fn hew_vec_set_str(v: *mut HewVec, index: i64, val: *const HewString) {
     // SAFETY: caller guarantees `v` and `val` are valid.
     unsafe {
-        let index = index as usize;
-        if index >= (*v).len {
-            abort_oob("Vec.set()", index, (*v).len);
-        }
+        let index = require_index(index, (*v).len, "Vec.set()");
         hew_vec_make_unique(v);
         let slot = (*v).data.cast::<*mut HewString>().add(index);
         let old = slot.read();
@@ -1534,10 +1515,7 @@ pub unsafe extern "C-unwind" fn hew_vec_set_str(v: *mut HewVec, index: i64, val:
 pub unsafe extern "C-unwind" fn hew_vec_set_f64(v: *mut HewVec, index: i64, val: f64) {
     // SAFETY: caller guarantees `v` is valid.
     unsafe {
-        let index = index as usize;
-        if index >= (*v).len {
-            abort_oob("Vec.set()", index, (*v).len);
-        }
+        let index = require_index(index, (*v).len, "Vec.set()");
         hew_vec_make_unique(v);
         (*v).data.cast::<f64>().add(index).write(val);
     }
@@ -2273,10 +2251,7 @@ pub unsafe extern "C-unwind" fn hew_vec_remove_at_layout(
     unsafe {
         validate_bitcopy_layout_operation(v, layout);
         let len = (*v).len;
-        let idx = index as usize;
-        if idx >= len {
-            abort_oob("Vec.remove()", idx, len);
-        }
+        let idx = require_index(index, len, "Vec.remove()");
         let elem_size = (*layout).size;
         // Guard against zero-stride pointer arithmetic (layout validation
         // already enforces size > 0 via `validate_type_layout`, but an
@@ -2346,10 +2321,7 @@ macro_rules! vec_remove_at_primitive {
             // SAFETY: caller guarantees `v` is a valid HewVec for `$ty`.
             unsafe {
                 let len = (*v).len;
-                let idx = index as usize;
-                if idx >= len {
-                    abort_oob("Vec.remove()", idx, len);
-                }
+                let idx = require_index(index, len, "Vec.remove()");
                 if idx != 0 {
             hew_vec_make_unique(v);
         }
@@ -2387,10 +2359,7 @@ pub unsafe extern "C-unwind" fn hew_vec_remove_at_str(
     // SAFETY: caller guarantees `v` is valid.
     unsafe {
         let len = (*v).len;
-        let idx = index as usize;
-        if idx >= len {
-            abort_oob("Vec.remove()", idx, len);
-        }
+        let idx = require_index(index, len, "Vec.remove()");
         if idx != 0 {
             hew_vec_make_unique(v);
         }
@@ -2425,10 +2394,7 @@ pub unsafe extern "C-unwind" fn hew_vec_remove_at_ptr(v: *mut HewVec, index: i64
             abort_layout_aware_operation();
         }
         let len = (*v).len;
-        let idx = index as usize;
-        if idx >= len {
-            abort_oob("Vec.remove()", idx, len);
-        }
+        let idx = require_index(index, len, "Vec.remove()");
         if idx != 0 {
             hew_vec_make_unique(v);
         }
@@ -2462,10 +2428,7 @@ pub unsafe extern "C-unwind" fn hew_vec_remove_at_owned(
         // same way and `elem_size` answers for all of them.
         let elem_size = (*v).elem_size;
         let len = (*v).len;
-        let idx = index as usize;
-        if idx >= len {
-            abort_oob("Vec.remove()", idx, len);
-        }
+        let idx = require_index(index, len, "Vec.remove()");
         // Move the removed element OUT into `out` before the shift. No drop —
         // possession transfers to the caller.
         if idx != 0 {
@@ -2488,10 +2451,7 @@ pub unsafe extern "C-unwind" fn hew_vec_set_ptr(v: *mut HewVec, index: i64, val:
     cabi_guard!(v.is_null());
     // SAFETY: caller guarantees `v` is valid.
     unsafe {
-        let index = index as usize;
-        if index >= (*v).len {
-            abort_oob("Vec.set()", index, (*v).len);
-        }
+        let index = require_index(index, (*v).len, "Vec.set()");
         hew_vec_make_unique(v);
         if !(*v).layout.is_null() {
             if let Some(drop_fn) = (*(*v).layout).drop_fn {
@@ -2540,15 +2500,9 @@ pub unsafe extern "C-unwind" fn hew_vec_swap(v: *mut HewVec, i: i64, j: i64) {
     cabi_guard!(v.is_null());
     // SAFETY: caller guarantees `v` is valid.
     unsafe {
-        let i = i as usize;
-        let j = j as usize;
         let len = (*v).len;
-        if i >= len {
-            abort_oob("Vec.swap()", i, len);
-        }
-        if j >= len {
-            abort_oob("Vec.swap()", j, len);
-        }
+        let i = require_index(i, len, "Vec.swap()");
+        let j = require_index(j, len, "Vec.swap()");
         if i == j {
             return;
         }
@@ -2587,11 +2541,10 @@ pub unsafe extern "C" fn hew_vec_truncate_release(
     cabi_guard!(v.is_null(), ptr::null_mut());
     // SAFETY: no callback runs while slots move out and the live range changes.
     unsafe {
-        let new_len = new_len as usize;
         let old_len = (*v).len;
-        if new_len >= old_len {
+        let Some(new_len) = checked_index(new_len, old_len) else {
             return ptr::null_mut();
-        }
+        };
         let mut cursors = Vec::new();
         if let Some(layout) = (*v).layout.as_ref() {
             if layout.drop_fn.is_some() || layout.release_start.is_some() {
@@ -2714,10 +2667,7 @@ pub unsafe extern "C-unwind" fn hew_vec_get_generic(
     // SAFETY: caller guarantees `v` is valid.
     unsafe {
         abort_if_layout_aware(v);
-        let index = index as usize;
-        if index >= (*v).len {
-            abort_oob("Vec.get()", index, (*v).len);
-        }
+        let index = require_index(index, (*v).len, "Vec.get()");
         (*v).data.add(index * (*v).elem_size).cast()
     }
 }
@@ -2739,10 +2689,7 @@ pub unsafe extern "C-unwind" fn hew_vec_get_layout(
     // SAFETY: guards reject null pointers; helper validates BitCopy layout semantics.
     unsafe {
         validate_bitcopy_layout_operation(v, layout);
-        let index = index as usize;
-        if index >= (*v).len {
-            abort_oob("Vec.get()", index, (*v).len);
-        }
+        let index = require_index(index, (*v).len, "Vec.get()");
         (*v).data.add(index * (*layout).size).cast()
     }
 }
@@ -2763,10 +2710,7 @@ pub unsafe extern "C-unwind" fn hew_vec_set_generic(
     // SAFETY: caller guarantees `v` and `data` are valid.
     unsafe {
         abort_if_layout_aware(v);
-        let index = index as usize;
-        if index >= (*v).len {
-            abort_oob("Vec.set()", index, (*v).len);
-        }
+        let index = require_index(index, (*v).len, "Vec.set()");
         let elem_size = (*v).elem_size;
         let data = ensure_cap_with_source(v, (*v).len, data);
         let dst = (*v).data.add(index * elem_size);
@@ -2792,10 +2736,7 @@ pub unsafe extern "C-unwind" fn hew_vec_set_layout(
     // SAFETY: guards reject null pointers; helper validates BitCopy layout semantics.
     unsafe {
         validate_bitcopy_layout_operation(v, layout);
-        let index = index as usize;
-        if index >= (*v).len {
-            abort_oob("Vec.set()", index, (*v).len);
-        }
+        let index = require_index(index, (*v).len, "Vec.set()");
         let elem_size = (*layout).size;
         let data = ensure_cap_with_source(v, (*v).len, data);
         let dst = (*v).data.add(index * elem_size);
@@ -3098,10 +3039,7 @@ pub unsafe extern "C-unwind" fn hew_vec_get_owned(
     // SAFETY: guards reject null pointers; descriptor presence is validated.
     unsafe {
         let layout = owned_descriptor(v);
-        let index = index as usize;
-        if index >= (*v).len {
-            abort_oob("Vec.get()", index, (*v).len);
-        }
+        let index = require_index(index, (*v).len, "Vec.get()");
         (*v).data.add(index * layout.size).cast()
     }
 }
@@ -3139,10 +3077,9 @@ pub unsafe extern "C" fn hew_vec_get_clone(
     cabi_guard!(v.is_null() || out.is_null(), false);
     // SAFETY: guards reject null pointers.
     unsafe {
-        if index < 0 || index as usize >= (*v).len {
+        let Some(idx) = checked_index(index, (*v).len) else {
             return false;
-        }
-        let idx = index as usize;
+        };
         match (*v).elem_kind {
             ElemKind::String => {
                 let raw = (*v).data.cast::<*const HewString>().add(idx).read();
@@ -3208,11 +3145,11 @@ pub unsafe extern "C" fn hew_vec_borrow_owned(
     cabi_guard!(v.is_null() || out.is_null(), false);
     // SAFETY: null pointers were rejected above.
     unsafe {
-        if index < 0 || index as usize >= (*v).len {
+        let Some(index) = checked_index(index, (*v).len) else {
             return false;
-        }
+        };
         let elem_size = (*v).elem_size;
-        let src = (*v).data.add(index as usize * elem_size);
+        let src = (*v).data.add(index * elem_size);
         core::ptr::copy_nonoverlapping(src, out.cast::<u8>(), elem_size);
         true
     }
@@ -3238,12 +3175,12 @@ pub unsafe extern "C" fn hew_vec_take_owned(
     // SAFETY: null pointers were rejected and owned_descriptor validates the
     // descriptor-backed representation.
     unsafe {
-        if index < 0 || index as usize >= (*v).len {
+        let Some(index) = checked_index(index, (*v).len) else {
             return false;
-        }
+        };
         let layout = owned_descriptor(v);
         hew_vec_make_unique(v);
-        let src = (*v).data.add(index as usize * layout.size);
+        let src = (*v).data.add(index * layout.size);
         core::ptr::copy_nonoverlapping(src, out.cast::<u8>(), layout.size);
         core::ptr::write_bytes(src, 0, layout.size);
         true
@@ -3308,10 +3245,7 @@ unsafe fn set_owned_release(
     // SAFETY: the caller supplies initialized, correctly laid out slots.
     unsafe {
         let layout = *owned_descriptor(v);
-        let index = index as usize;
-        if index >= (*v).len {
-            abort_oob("Vec.set()", index, (*v).len);
-        }
+        let index = require_index(index, (*v).len, "Vec.set()");
         let data = ensure_cap_with_source(v, (*v).len, data);
         let slot = (*v).data.add(index * layout.size);
         if layout.ownership_kind == HewTypeOwnershipKind::Plain

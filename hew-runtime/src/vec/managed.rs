@@ -2,9 +2,9 @@
 //! implementation remains the authority for allocation and element semantics.
 
 use super::{
-    buffer_owner, buffer_start, capacity_for, hew_vec_append, hew_vec_get_clone,
-    hew_vec_make_unique, hew_vec_set_owned_move_release, hew_vec_set_owned_release,
-    owned_descriptor, HewValueLayout, HewVec,
+    abort_oob, bounds::checked_index, buffer_owner, buffer_start, capacity_for, hew_vec_append,
+    hew_vec_get_clone, hew_vec_make_unique, hew_vec_set_owned_move_release,
+    hew_vec_set_owned_release, owned_descriptor, HewValueLayout, HewVec,
 };
 use crate::coro_state::HewCoroState;
 use crate::owned_value_budget::{
@@ -111,6 +111,9 @@ pub unsafe extern "C" fn hew_vec_set_managed(
     // SAFETY: the caller retains the original inputs until success.
     unsafe {
         cleanup.write(ptr::null_mut());
+        let Some(element_index) = checked_index(index, (*vector).len) else {
+            abort_oob("Vec.set()", index as usize, (*vector).len);
+        };
         let owner = invocation_owner(invocation);
         let layout = *owned_descriptor(vector);
         let backing = match &owner {
@@ -139,7 +142,7 @@ pub unsafe extern "C" fn hew_vec_set_managed(
             if element
                 .commit(
                     &layout,
-                    (*vector).data.add(index as usize * layout.size).cast(),
+                    (*vector).data.add(element_index * layout.size).cast(),
                 )
                 .is_err()
             {
@@ -223,14 +226,14 @@ pub unsafe extern "C" fn hew_vec_get_clone_managed(
     // SAFETY: no output is initialized until source bounds and quota succeed.
     unsafe {
         status.write(0);
-        if index < 0 || index as usize >= (*vector).len {
+        let Some(index_in_vec) = checked_index(index, (*vector).len) else {
             return false;
-        }
+        };
         let Some(owner) = invocation_owner(invocation) else {
             return hew_vec_get_clone(vector, index, output);
         };
         let layout = owned_descriptor(vector);
-        let source = (*vector).data.add(index as usize * layout.size).cast();
+        let source = (*vector).data.add(index_in_vec * layout.size).cast();
         let permit = match owner.reserve_clone(layout, source) {
             Ok(permit) => permit,
             Err(failure) => {

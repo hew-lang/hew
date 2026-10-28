@@ -127,7 +127,7 @@ stop(circuit); stopped(circuit); stop(service); stopped(service);
     assert!(output.status.success(), "{stderr}");
     assert_eq!(
         String::from_utf8(output.stdout).unwrap(),
-        "10\n21\n31\n3\ntrue\n51\n4\n"
+        "10\n21\n31\n3\ntrue\n51\n4\n",
+        "{stderr}"
     );
-    assert!(stderr.contains("ReturnTypeMismatch"), "{stderr}");
 }

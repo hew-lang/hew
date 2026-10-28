@@ -5,6 +5,15 @@ pub enum RequestError {
     BackendUnavailable;
 }
 
+impl Display for RequestError {
+    fn fmt(self) -> string {
+        match self {
+            .CircuitOpen => "circuit open",
+            .BackendUnavailable => "backend unavailable",
+        }
+    }
+}
+
 machine BreakerState {
     events {
         Success;

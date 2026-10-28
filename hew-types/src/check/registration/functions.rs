@@ -184,7 +184,7 @@ impl Checker {
         // Skip the root module — its items are already in program.items and
         // will be processed below with current_module = None (bare names).
         if let Some(ref mg) = program.module_graph {
-            let span_indices = mg.file_span_indices();
+            let span_indices = std::sync::Arc::clone(&self.file_span_indices);
             for mod_id in &mg.topo_order {
                 if *mod_id == mg.root {
                     continue;

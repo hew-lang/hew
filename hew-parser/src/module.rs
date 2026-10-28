@@ -273,9 +273,10 @@ impl FileSpanIndices {
             .or_else(|| self.module_base(id))
     }
 
-    /// The index for a canonical source path. First writer wins, matching the
-    /// module walk: a file reachable both on its own and as a directory
-    /// module's peer keeps the identity of whichever module was checked first.
+    /// The index for a canonical source path. Non-root first writer wins: a
+    /// file reached on its own and as a directory peer keeps the identity of
+    /// whichever module was checked first. Otherwise root paths use index zero.
+    /// Per-item alias identities remain available through `item_index`.
     #[must_use]
     pub fn path_index(&self, path: &Path) -> Option<u32> {
         self.by_path.get(path).copied()
@@ -365,6 +366,13 @@ impl ModuleGraph {
                 })
                 .collect();
             indices.item_index.insert(module_id.clone(), item_indices);
+        }
+        // A source-less bootstrap has no root paths. Preserve non-root alias
+        // precedence when a hand-built graph also attributes that path to root.
+        if let Some(root) = self.modules.get(&self.root) {
+            for path in &root.source_paths {
+                indices.by_path.entry(path.clone()).or_insert(0);
+            }
         }
         indices
     }
@@ -694,6 +702,50 @@ mod tests {
             err.import_spans.contains(&(30..40)),
             "b→a import span 30..40 must appear in import_spans: {:?}",
             err.import_spans
+        );
+    }
+
+    #[test]
+    fn file_indices_preserve_root_and_alias_source_contexts() {
+        let root = ModulePath::new(["root"]);
+        let alias = ModulePath::new(["alias"]);
+        let peer = ModulePath::new(["peer"]);
+        let mut graph = ModuleGraph::new(root.clone());
+        let items = crate::parse("pub fn value() -> i64 { 7 }").program.items;
+        for (name, path) in [
+            ("root", "root.hew"),
+            ("alias", "shared.hew"),
+            ("peer", "shared.hew"),
+        ] {
+            let mut source = module(name, &[]);
+            source.items = items.clone();
+            source.source_paths.push(PathBuf::from(path));
+            graph.add_module(source).unwrap();
+        }
+        graph.topo_order = vec![alias.clone(), peer.clone(), root.clone()];
+        let indices = graph.file_span_indices();
+        assert_eq!(indices.path_index(Path::new("root.hew")), Some(0));
+        assert_eq!(
+            indices.path_index(Path::new("shared.hew")),
+            indices.item_index(&alias, 0)
+        );
+        assert_ne!(indices.item_index(&alias, 0), indices.item_index(&peer, 0));
+
+        graph.modules.get_mut(&root).unwrap().source_paths.clear();
+        let bootstrap = graph.file_span_indices();
+        assert_eq!(bootstrap.path_index(Path::new("root.hew")), None);
+        assert_eq!(bootstrap.item_index(&peer, 0), indices.item_index(&peer, 0));
+        graph
+            .modules
+            .get_mut(&root)
+            .unwrap()
+            .source_paths
+            .push(PathBuf::from("shared.hew"));
+        assert_eq!(
+            graph
+                .file_span_indices()
+                .path_index(Path::new("shared.hew")),
+            indices.path_index(Path::new("shared.hew"))
         );
     }
 

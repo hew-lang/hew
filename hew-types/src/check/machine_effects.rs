@@ -537,7 +537,7 @@ fn collect_bodies<'a>(
             .collect(),
     );
     if let Some(graph) = &program.module_graph {
-        let indices = graph.file_span_indices();
+        let indices = &output.file_span_indices;
         for id in &graph.topo_order {
             if *id == graph.root {
                 continue;

@@ -29,9 +29,12 @@ pub fn source_identities(parsed: &ParseResult) -> TypeCheckOutput {
 ///
 /// Every analysis query reads the open buffer at index 0. A document that is
 /// one file of a directory module is checked under its span index from
-/// `ModuleGraph::file_span_indices`, so its facts move to 0 here and whatever
-/// held 0 takes its index. Callers pass `file_span_indices().path_index(doc)`.
+/// the checker's published file-span index, so its facts move to 0 here and
+/// whatever held 0 takes its index.
 pub fn focus_file(output: &mut TypeCheckOutput, file: u32) {
+    if file == 0 {
+        return;
+    }
     let swap = |key: &mut SpanKey| {
         if key.module_idx == file {
             key.module_idx = 0;

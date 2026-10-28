@@ -262,11 +262,9 @@ fn checked_frontend(source: &Source, mut state: hew_compile::DocumentFrontendSta
     );
     let resolved = state.typecheck_result.is_some();
     let mut output = state.typecheck_result.take().and_then(|result| result.tco);
-    let index = state
-        .program
-        .module_graph
+    let index = output
         .as_ref()
-        .and_then(|graph| graph.file_span_indices().path_index(&source.path));
+        .and_then(|output| output.file_span_indices.path_index(&source.path));
     if let (Some(output), Some(index)) = (output.as_mut(), index) {
         hew_analysis::identity::focus_file(output, index);
     }

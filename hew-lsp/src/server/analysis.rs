@@ -322,11 +322,11 @@ pub(super) fn analyze_document_with_batch(
             .extend(diagnostics);
     }
 
-    let document_file = state.program.module_graph.as_ref().and_then(|graph| {
+    let document_file = type_output.as_ref().and_then(|output| {
         let path = root_path
             .canonicalize()
             .unwrap_or_else(|_| root_path.clone());
-        graph.file_span_indices().path_index(&path)
+        output.file_span_indices.path_index(&path)
     });
     if let (Some(tco), Some(file)) = (type_output.as_mut(), document_file) {
         hew_analysis::identity::focus_file(tco, file);

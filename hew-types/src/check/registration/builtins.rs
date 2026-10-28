@@ -347,8 +347,7 @@ impl Checker {
         let builtin_index = self
             .defs
             .module_source(builtins_module)
-            .and_then(|source| self.source_file_span_indices.get(source))
-            .copied()
+            .and_then(|source| self.file_span_indices.path_index(source))
             .unwrap_or(u32::MAX);
         let saved_index = std::mem::replace(&mut self.current_module_idx, builtin_index);
         if self.defs.module_source(builtins_module).is_none() {

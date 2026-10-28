@@ -120,7 +120,7 @@ impl Checker {
         // the import path's full `register_type_decl` for pub types, and
         // are not needed for internal non-pub types).
         if let Some(ref mg) = program.module_graph {
-            let span_indices = mg.file_span_indices();
+            let span_indices = std::sync::Arc::clone(&self.file_span_indices);
             for mod_id in &mg.topo_order {
                 if *mod_id == mg.root {
                     continue;

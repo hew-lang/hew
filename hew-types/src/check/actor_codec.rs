@@ -6,7 +6,7 @@ use super::Checker;
 use crate::{ResolvedTy, Ty};
 
 impl Checker {
-    pub(super) fn select_wire_actor_codecs(&mut self, program: &hew_parser::ast::Program) {
+    pub(super) fn select_wire_actor_codecs(&mut self) {
         fn collect(ty: &Ty, actors: &mut Vec<Ty>) {
             if matches!(
                 ty,
@@ -32,10 +32,7 @@ impl Checker {
         // Export<A> result. Attribute each instance to its first source site,
         // independently of the expression table's hash iteration order.
         instances.sort_by_key(|(_, site)| (site.module_idx, site.start, site.end));
-        let indices = program
-            .module_graph
-            .as_ref()
-            .map(hew_parser::module::ModuleGraph::file_span_indices);
+        let indices = std::sync::Arc::clone(&self.file_span_indices);
         let mut seen = std::collections::HashSet::new();
         for (instance, site) in instances {
             if !seen.insert(instance.clone()) {
@@ -44,7 +41,7 @@ impl Checker {
             if instance.has_inference_var() || instance.has_type_parameters() {
                 continue;
             }
-            self.select_wire_actor_instance(&instance, &site, indices.as_ref());
+            self.select_wire_actor_instance(&instance, &site, &indices);
         }
     }
 
@@ -52,7 +49,7 @@ impl Checker {
         &mut self,
         instance: &Ty,
         site: &crate::SpanKey,
-        indices: Option<&hew_parser::module::FileSpanIndices>,
+        indices: &hew_parser::module::FileSpanIndices,
     ) {
         let Ty::Named {
             head: crate::TypeHead::Actor(head),
@@ -65,9 +62,7 @@ impl Checker {
                     site.start..site.end,
                     "a supplied service names a concrete actor interface",
                 );
-                error.source_module = indices
-                    .and_then(|indices| indices.module_name(site.module_idx))
-                    .map(str::to_owned);
+                error.source_module = indices.module_name(site.module_idx).map(str::to_owned);
                 self.errors.push(error);
             }
             return;
@@ -109,9 +104,7 @@ impl Checker {
                         site.start..site.end,
                         message,
                     );
-                    error.source_module = indices
-                        .and_then(|indices| indices.module_name(site.module_idx))
-                        .map(str::to_owned);
+                    error.source_module = indices.module_name(site.module_idx).map(str::to_owned);
                     self.errors.push(error);
                 }
             }

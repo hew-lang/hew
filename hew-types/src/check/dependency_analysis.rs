@@ -218,6 +218,9 @@ impl DependencyAnalysisCache {
         // mint. Move the fork-owned prefix through that handoff, rather than
         // cloning it a second time only to discard the first copy.
         fork.seed_defs = Some(std::mem::take(&mut fork.defs));
+        // The root-only registration projection must not replace the final
+        // augmented graph's file identities retained by dependency body facts.
+        fork.admit_file_span_indices(program);
         let root = root_registration_program(program);
         fork.mint_module_identities(&root);
         fork.mint_source_declaration_identities(&root);
@@ -228,9 +231,6 @@ impl DependencyAnalysisCache {
                 .insert(owner.clone(), module.source_paths.clone());
             if let Some(sources) = graph.item_sources.get(&owner) {
                 fork.module_item_sources.insert(owner, sources.clone());
-            }
-            for source in &module.source_paths {
-                fork.source_file_span_indices.insert(source.clone(), 0);
             }
         }
         fork.collect_types(&root);

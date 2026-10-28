@@ -146,7 +146,7 @@ impl Checker {
         module_graph: &hew_parser::module::ModuleGraph,
     ) {
         let saved_importer_file_idx = self.current_module_idx;
-        let span_indices = module_graph.file_span_indices();
+        let span_indices = std::sync::Arc::clone(&self.file_span_indices);
         for (item_idx, (item, _)) in module.items.iter().enumerate() {
             // These bindings are written before the ordinary import pass, but
             // they still belong to the importing SOURCE FILE. A directory
@@ -397,7 +397,7 @@ impl Checker {
         self.suppress_undefined_type_report = true;
 
         if let Some(ref mg) = program.module_graph {
-            let span_indices = mg.file_span_indices();
+            let span_indices = std::sync::Arc::clone(&self.file_span_indices);
             for mod_id in &mg.topo_order {
                 if *mod_id == mg.root {
                     continue;
@@ -1321,8 +1321,7 @@ impl Checker {
                     self.current_module_idx = self
                         .current_item_source
                         .as_ref()
-                        .and_then(|source| self.source_file_span_indices.get(source))
-                        .copied()
+                        .and_then(|source| self.file_span_indices.path_index(source))
                         .unwrap_or(importer_file);
                     self.register_type_decl(td);
                     self.current_module = importer_module;
@@ -1356,8 +1355,7 @@ impl Checker {
                     self.current_module_idx = self
                         .current_item_source
                         .as_ref()
-                        .and_then(|source| self.source_file_span_indices.get(source))
-                        .copied()
+                        .and_then(|source| self.file_span_indices.path_index(source))
                         .unwrap_or(importer_file);
                     self.register_machine_decl(md, span);
                     self.current_module = importer_module;
@@ -1463,8 +1461,7 @@ impl Checker {
                         self.current_module_idx = self
                             .current_item_source
                             .as_ref()
-                            .and_then(|source| self.source_file_span_indices.get(source))
-                            .copied()
+                            .and_then(|source| self.file_span_indices.path_index(source))
                             .unwrap_or(importer_file);
                         // The impl's `Self` type arguments (e.g. `[E]` for
                         // `impl<E> Index for Vec<E>`), resolved so a later

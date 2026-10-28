@@ -1245,8 +1245,8 @@ impl Checker {
 
     /// How `for value in vec` binds each element (D432).
     ///
-    /// An element with a semantic clone is copied out per iteration, which is
-    /// what every cursor form does today. An element without one — a
+    /// An element with a semantic clone is copied out per iteration.
+    /// An element without one — a
     /// `#[resource]` or `#[linear]` type, an opaque handle, a channel half, a
     /// generator — is bound as a loan of the slot the vector still owns: the
     /// body may read it and call its borrowing methods, and the owning removal
@@ -1278,12 +1278,9 @@ impl Checker {
 
     /// Whether every type-parameter occurrence in `ty` carries a `Clone` bound.
     ///
-    /// [`Self::element_clone_blocker`] deliberately admits an unbounded
-    /// parameter and defers it to MIR's per-monomorphisation clone check; that
-    /// is right for admitting call sites and wrong for choosing a copy mode,
-    /// because the template's loop shape is fixed before its instantiations are
-    /// known. A parameter with no `Clone` bound therefore reads as clone-free
-    /// and iterates by borrow at every monomorphisation.
+    /// A template's loop shape is fixed before its instantiations are known.
+    /// A parameter without a `Clone` bound therefore iterates by borrow at
+    /// every instantiation; copy-requiring APIs report the missing bound.
     fn clone_proven_element(&self, ty: &Ty) -> bool {
         match ty {
             Ty::Named { head, args } => {
@@ -1332,26 +1329,34 @@ impl Checker {
         false
     }
 
-    /// Checker boundary for `xs.get(i)` over `Vec<T>`.
+    /// Validate `xs.get(i)` over `Vec<T>` and select its element read mode.
     ///
     /// `get` reads a copy of the element out of the vector; the vector keeps
     /// its own. A concrete element with no copy operation therefore has no
     /// `get`, exactly as it has no `xs[i]` and no range slice: reading one out
     /// would hand the caller a second owner of a single-owner value. An
-    /// unbounded type parameter is not concrete and keeps the borrowed read
-    /// every instantiation of a generic body shares (spec §3.8.1).
-    pub(super) fn validate_vec_get_element_clone_type(&mut self, ty: &Ty, span: &Span) -> bool {
+    /// abstract parameter must establish this promise with a `Clone` bound
+    /// (spec §3.8.1).
+    pub(super) fn vec_get_element_mode(
+        &mut self,
+        ty: &Ty,
+        span: &Span,
+    ) -> Option<VecIterationMode> {
         let resolved = self.subst.resolve(ty).materialize_literal_defaults();
         if matches!(resolved, Ty::Error) {
-            return false;
+            return None;
         }
         let Some(blocker) = self.element_clone_blocker(&resolved) else {
-            return true;
+            return Some(if self.clone_proven_element(&resolved) {
+                VecIterationMode::Clone
+            } else {
+                VecIterationMode::Borrow
+            });
         };
         if let Some(param) = blocker.unbounded_param() {
             let param = param.to_string();
             self.report_unbounded_param_copy(&param, "Vec.get(i)", span);
-            return false;
+            return None;
         }
         let blocker = blocker.concrete_text();
         self.report_error(
@@ -1365,7 +1370,7 @@ impl Checker {
                 resolved.user_facing()
             ),
         );
-        false
+        None
     }
 
     /// Checker boundary for map value and set element copying operations.

@@ -17,6 +17,16 @@ unsafe extern "C" {
         output: *mut *mut HewText,
         error: *mut *mut HewError,
     ) -> i32;
+    fn ownership_render_text(
+        input: *const HewText,
+        output: *mut *mut HewText,
+        error: *mut *mut HewError,
+    ) -> i32;
+}
+
+pub(crate) fn render_ownership(input: &str) -> String {
+    // SAFETY: build.rs checks this generated export's borrowed-string contract.
+    unsafe { crate::host_text::call(input, ownership_render_text) }
 }
 
 #[derive(Serialize)]
@@ -71,6 +81,39 @@ pub(super) fn render(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ownership_locations_share_a_forward_unicode_scan() {
+        let entry = |offset| {
+            serde_json::json!({
+                "offset": offset,
+                "detail": {"Send": {
+                    "index": 1,
+                    "ty": "string",
+                    "action": "move",
+                    "preparation": "retain"
+                }}
+            })
+        };
+        let input = serde_json::json!({
+            "filename": "<snapshot>",
+            "source": "é 🦫;\r\nnext\n",
+            "entries": [entry(0), entry(7), entry(7), entry(10), entry(15)]
+        });
+        let rendered = render_ownership(&input.to_string());
+        let positions = rendered
+            .lines()
+            .map(|line| {
+                let mut fields = line.splitn(4, ':');
+                assert_eq!(fields.next(), Some("<snapshot>"));
+                (
+                    fields.next().unwrap().parse::<u32>().unwrap(),
+                    fields.next().unwrap().parse::<u32>().unwrap(),
+                )
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(positions, [(1, 1), (1, 4), (1, 4), (2, 1), (3, 1)]);
+    }
 
     #[test]
     fn unicode_crlf_notes_and_help_keep_the_source_presentation() {

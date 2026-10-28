@@ -739,7 +739,7 @@ pub struct HirSupervisorChild {
     pub site: SiteId,
     /// Byte span of the child declaration (`child`/`pool` keyword through the
     /// clause's terminator), registered against `site` by
-    /// `hew_hir::verify::collect_site_spans` so CLI rendering can resolve it.
+    /// `hew_hir::HirAnalysis::site_sources` so CLI rendering can resolve it.
     pub span: Span,
 }
 

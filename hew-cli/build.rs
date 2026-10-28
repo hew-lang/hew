@@ -15,12 +15,15 @@ fn main() {
             build_renderer(
                 "diagnostic_renderer",
                 "src/diagnostic_renderer.hew",
-                "diagnostic_render_text",
+                &[
+                    ("render", "diagnostic_render_text"),
+                    ("render_ownership", "ownership_render_text"),
+                ],
             );
             build_renderer(
                 "machine_renderer",
                 "src/machine/diagram.hew",
-                "machine_render_text",
+                &[("render", "machine_render_text")],
             );
         })
         .expect("start presentation renderer compiler");
@@ -29,7 +32,7 @@ fn main() {
     }
 }
 
-fn build_renderer(module_name: &str, source_path: &str, export_name: &str) {
+fn build_renderer(module_name: &str, source_path: &str, exports: &[(&str, &str)]) {
     let package = PathBuf::from(std::env::var_os("CARGO_MANIFEST_DIR").unwrap());
     let source = package.join(source_path);
     let root = package.parent().unwrap();
@@ -65,30 +68,37 @@ fn build_renderer(module_name: &str, source_path: &str, export_name: &str) {
         ..hew_compile::SessionTarget::native()
     };
     let session = hew_compile::Session::from_frontend_options(target, &frontend);
+    let names: Vec<_> = exports.iter().map(|(name, _)| *name).collect();
     let (semantic, declarations) = session
-        .lower_host_program(&state.program, checked, &["render"])
+        .lower_host_program(&state.program, checked, &names)
         .expect("lower presentation renderer");
-    let inventory = hew_mir::physical::physical_type_inventory(&semantic.semantics().module);
-    let target = hew_codegen_rs::physical::physical_target_for_inventory(&triple, &inventory)
+    let plan = semantic.physical_plan();
+    let target = hew_codegen_rs::physical::physical_target_for_inventory(&triple, plan.inventory())
         .expect("presentation renderer target layout");
-    let physical = semantic.lower_physical(target).expect("physical renderer");
-    let callable = physical
-        .module()
-        .callables
+    let physical = plan.lower(target).expect("physical renderer");
+    let selections: Vec<_> = declarations
         .iter()
-        .find(|callable| callable.declaration == declarations[0])
-        .expect("selected renderer declaration");
-    // The Rust adapter borrows one opaque text owner and receives one text
-    // owner. Verify the selected callable's contract before linking its ABI.
-    assert!(
-        matches!(callable.params.as_slice(), [param]
-            if param.ty == ResolvedTy::String
-                && param.passing == SemParamPassing::Borrow
-                && param.carrier == ParamCarrier::Direct)
-            && callable.return_ty == ResolvedTy::String,
-        "presentation renderer must export a borrowed string -> string function"
-    );
-    let selections = [(callable.id, export_name)];
+        .zip(exports)
+        .map(|(declaration, (_, export_name))| {
+            let callable = physical
+                .module()
+                .callables
+                .iter()
+                .find(|callable| callable.declaration == *declaration)
+                .expect("selected renderer declaration");
+            // The Rust adapter borrows one opaque text owner and receives one
+            // text owner. Check the selected contract before linking its ABI.
+            assert!(
+                matches!(callable.params.as_slice(), [param]
+                    if param.ty == ResolvedTy::String
+                        && param.passing == SemParamPassing::Borrow
+                        && param.carrier == ParamCarrier::Direct)
+                    && callable.return_ty == ResolvedTy::String,
+                "presentation renderer must export a borrowed string -> string function"
+            );
+            (callable.id, *export_name)
+        })
+        .collect();
     let export = HostExport::new(&physical, &selections).expect("typed renderer export");
     let artefacts = emit_host_object(
         &export,

@@ -25,10 +25,10 @@ impl super::SessionOutput {
         source: &str,
         filename: &str,
     ) -> SourceCoverageMap {
-        self.sir.module.instrument_coverage();
+        let plan = self.sir.instrument_coverage();
         let sources = super::build_module_source_map(program, &super::SourceSet::new());
         let mut counters = Vec::new();
-        for counter in self.sir.module.coverage.values() {
+        for counter in plan.values() {
             let mut files = std::collections::BTreeMap::<String, BTreeSet<u32>>::new();
             for (module, offset) in &counter.sites {
                 let (text, file) = match module {

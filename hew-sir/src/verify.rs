@@ -1,3 +1,4 @@
+use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
 use crate::ownership::TypeFactTable;
@@ -475,7 +476,7 @@ fn verify_variant_shapes(module: &SemModule, diagnostics: &mut Vec<SirDiagnostic
 
 /// Per-function place analysis retained by successful semantic verification.
 /// Its plan and cleanup dispositions come from the same checked body.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct CheckedFunction {
     places: crate::PlacePlan,
     lifetimes: crate::PlaceLifetimes,
@@ -498,7 +499,55 @@ impl CheckedFunction {
 #[derive(Debug)]
 pub struct CheckedModule<'a> {
     module: &'a SemModule,
+    functions: Cow<'a, BTreeMap<CallableId, CheckedFunction>>,
+}
+
+/// Immutable semantic output retaining the place and lifetime certificates
+/// produced by its final verification.
+#[derive(Debug)]
+pub struct VerifiedModule {
+    lowered: crate::LoweredModule,
     functions: BTreeMap<CallableId, CheckedFunction>,
+}
+
+impl VerifiedModule {
+    /// Verify a lowered module and retain the resulting ownership facts.
+    ///
+    /// # Errors
+    /// Returns all semantic diagnostics for the input module.
+    pub fn new(lowered: crate::LoweredModule) -> Result<Self, Vec<SirDiagnostic>> {
+        let functions = check_module(&lowered.module)?.functions.into_owned();
+        Ok(Self { lowered, functions })
+    }
+
+    #[must_use]
+    pub fn lowered(&self) -> &crate::LoweredModule {
+        &self.lowered
+    }
+
+    /// Borrow the checked body and its original certificates together.
+    #[must_use]
+    pub fn checked(&self) -> CheckedModule<'_> {
+        CheckedModule {
+            module: &self.lowered.module,
+            functions: Cow::Borrowed(&self.functions),
+        }
+    }
+
+    /// Relinquish verification before changing semantic operations or control flow.
+    #[must_use]
+    pub fn into_lowered(self) -> crate::LoweredModule {
+        self.lowered
+    }
+
+    /// Add coverage metadata without changing bodies, places or their lifetimes.
+    ///
+    /// # Panics
+    /// Panics if a module contains more than `u32::MAX` coverage counters.
+    pub fn instrument_coverage(&mut self) -> &crate::CoveragePlan {
+        self.lowered.module.instrument_coverage();
+        &self.lowered.module.coverage
+    }
 }
 
 impl<'a> CheckedModule<'a> {
@@ -775,7 +824,10 @@ pub fn check_module(module: &SemModule) -> Result<CheckedModule<'_>, Vec<SirDiag
         diagnostics.extend(crate::generator_send::verify(module, &functions));
     }
     if diagnostics.is_empty() {
-        Ok(CheckedModule { module, functions })
+        Ok(CheckedModule {
+            module,
+            functions: Cow::Owned(functions),
+        })
     } else {
         Err(diagnostics)
     }

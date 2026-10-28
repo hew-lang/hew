@@ -1,4 +1,4 @@
-use hew_hir::{collect_scope_extents, collect_site_spans, HirModule};
+use hew_hir::{analyze_hir, HirModule};
 use hew_types::{module_registry::ModuleRegistry, Checker};
 
 use crate::support::checker_pipeline::{parse_source, program_with_imported_module};
@@ -35,7 +35,8 @@ fn machine_failure_sites_and_scopes_name_authored_source() {
     let module = lower(&parse_source(MACHINE).program);
     let division = "10 / state.divisor";
     let start = MACHINE.find(division).expect("division source");
-    let sites = collect_site_spans(&module);
+    let analysis = analyze_hir(&module);
+    let sites = analysis.site_sources();
     assert!(
         sites.values().any(|source| {
             source.source_module.is_none()
@@ -50,7 +51,7 @@ fn machine_failure_sites_and_scopes_name_authored_source() {
         .values()
         .filter(|site| site.source_module.is_none())
         .all(|source| source.span.end <= MACHINE.len()));
-    let scopes = collect_scope_extents(&module);
+    let scopes = analysis.scope_extents();
     assert!(!scopes.is_empty());
     assert!(scopes
         .values()
@@ -71,14 +72,17 @@ fn machine_source_attribution_is_independent_of_unrelated_module_formatting() {
     let origins = |padding: &str| {
         let imported = format!("{padding}pub fn unrelated() -> i64 {{ 7 }}");
         let module = lower(&program_with_imported_module(&imported, &root));
-        let mut sites: Vec<_> = collect_site_spans(&module)
-            .into_values()
+        let analysis = analyze_hir(&module);
+        let mut sites: Vec<_> = analysis
+            .site_sources()
+            .values()
             .filter(|source| source.source_module.is_none())
             .map(|source| (source.span.start, source.span.end))
             .collect();
         sites.sort_unstable();
-        let mut scopes: Vec<_> = collect_scope_extents(&module)
-            .into_values()
+        let mut scopes: Vec<_> = analysis
+            .scope_extents()
+            .values()
             .filter(|scope| scope.source_module.is_none())
             .map(|scope| (scope.span.start, scope.span.end))
             .collect();
@@ -92,7 +96,8 @@ fn machine_source_attribution_is_independent_of_unrelated_module_formatting() {
 fn imported_machine_source_attribution_keeps_its_module() {
     let root = "fn main() {}";
     let module = lower(&program_with_imported_module(IMPORTED_MACHINE, root));
-    let sites = collect_site_spans(&module);
+    let analysis = analyze_hir(&module);
+    let sites = analysis.site_sources();
     let imported: Vec<_> = sites
         .values()
         .filter(|source| source.source_module.as_deref() == Some("m"))
@@ -112,7 +117,7 @@ fn imported_machine_source_attribution_keeps_its_module() {
         .values()
         .filter(|source| source.source_module.is_none())
         .all(|source| source.span.end <= root.len()));
-    let scopes = collect_scope_extents(&module);
+    let scopes = analysis.scope_extents();
     assert!(scopes
         .values()
         .any(|scope| scope.source_module.as_deref() == Some("m")));
@@ -151,7 +156,8 @@ fn default_provider_calls_keep_the_callers_authored_source() {
     let generated = &defaults[0].span;
     let output = hew_hir::lower_program_host_target(&program, &facts, &hew_hir::ResolutionCtx);
     assert!(output.diagnostics.is_empty(), "{:?}", output.diagnostics);
-    let sites = collect_site_spans(&output.module);
+    let analysis = analyze_hir(&output.module);
+    let sites = analysis.site_sources();
     let site = output
         .module
         .checked_sites

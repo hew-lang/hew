@@ -54,26 +54,13 @@ impl Session {
         mut next_slot: u32,
     ) -> Result<LiveSubmission, SessionError> {
         let input_slots: Vec<_> = inputs.iter().map(|(slot, _)| *slot).collect();
-        let program = checked
-            .normalized_program
-            .as_ref()
-            .map_or(program, |value| &value.program);
-        let mut lowered = hew_hir::lower_program(
-            program,
-            checked,
-            &hew_hir::ResolutionCtx,
-            self.target.hir_arch,
-        );
-        if !lowered.diagnostics.is_empty() {
-            return Err(SessionError::Hir(lowered.diagnostics));
-        }
-        if lowered.module.entry_exit_plan.is_some() {
+        let mut module = self.lower_hir_program(program, checked)?;
+        if module.entry_exit_plan.is_some() {
             return Err(SessionError::Selection(
                 "a live submission cannot declare a process entry".into(),
             ));
         }
-        let function = lowered
-            .module
+        let function = module
             .items
             .iter()
             .find_map(|item| match item {
@@ -130,11 +117,11 @@ impl Session {
                 });
             }
         }
-        lowered.module.session_entry = Some(HirSessionEntry {
+        module.session_entry = Some(HirSessionEntry {
             declaration: entry,
             bindings: bindings.clone(),
         });
-        let output = self.lower_hir_module(&lowered.module, checked, &[entry])?;
+        let output = self.lower_hir_module(&module, checked, &[entry])?;
         Ok(LiveSubmission {
             output,
             bindings,

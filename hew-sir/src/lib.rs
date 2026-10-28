@@ -52,8 +52,9 @@ pub use debug::{SemDebugFacts, SemDebugScope};
 pub use dump::{dump_lowering, dump_sir};
 pub use lifetime::{CleanupMode, LeafContents, PlaceLifetimes};
 pub use lower::{
-    lower_module, lower_module_with_demand, lower_module_with_roots, LoweredModule,
-    SirLoweringDemand, SirLoweringStatus, SirRootSelectionError, SirSourceStatus,
+    lower_analyzed_module_with_roots, lower_module, lower_module_with_demand,
+    lower_module_with_roots, LoweredModule, SirLoweringDemand, SirLoweringStatus,
+    SirRootSelectionError, SirSourceStatus,
 };
 pub use lower_error::{SirLoweringError, SirOwnershipError};
 pub use managed_storage::{
@@ -96,6 +97,7 @@ pub use supervisor::{
 pub use verify::{
     check_module, place_lifetimes, verify_function, verify_function_in_module, verify_module,
     CfgDiscardSafetyReason, CheckedFunction, CheckedModule, SirDiagnostic, SirDiagnosticKind,
+    VerifiedModule,
 };
 
 pub use hew_hir::HirSelectionOrder as TaskSelectionOrder;

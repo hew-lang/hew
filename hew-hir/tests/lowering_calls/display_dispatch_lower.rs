@@ -175,7 +175,8 @@ fn fstring_preserves_every_authored_interpolant_as_a_subsumed_source() {
         output.diagnostics
     );
 
-    let parents = hew_hir::verify::collect_site_parents(&output.module);
+    let analysis = hew_hir::analyze_hir(&output.module);
+    let parents = analysis.site_parents();
     let mut authored = Vec::new();
     let mut subsuming_sites = Vec::new();
     for item in &output.module.items {

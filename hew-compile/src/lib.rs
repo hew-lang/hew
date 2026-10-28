@@ -541,10 +541,21 @@ impl Session {
         program: &hew_parser::ast::Program,
         tco: &hew_types::TypeCheckOutput,
     ) -> Result<SessionOutput, SessionError> {
-        let program = tco
-            .normalized_program
-            .as_ref()
-            .map_or(program, |normalized| &normalized.program);
+        let module = self.lower_hir_program(program, tco)?;
+        let mut roots = Self::source_roots(program, tco)?;
+        roots.extend(tco.test_entry_plans.iter().map(|plan| plan.entry));
+        self.lower_hir_module(&module, tco, &roots)
+    }
+
+    /// Lower checked declarations and generated test entries without entering SIR.
+    ///
+    /// # Errors
+    /// Returns HIR lowering or test-entry installation diagnostics.
+    pub fn lower_hir_program(
+        &self,
+        program: &hew_parser::ast::Program,
+        tco: &hew_types::TypeCheckOutput,
+    ) -> Result<hew_hir::HirModule, SessionError> {
         let mut lowered =
             hew_hir::lower_program(program, tco, &hew_hir::ResolutionCtx, self.target.hir_arch);
         if !lowered.diagnostics.is_empty() {
@@ -561,9 +572,7 @@ impl Session {
                 span: None,
             })?;
         }
-        let mut roots = Self::source_roots(program, tco)?;
-        roots.extend(tco.test_entry_plans.iter().map(|plan| plan.entry));
-        self.lower_hir_module(&lowered.module, tco, &roots)
+        Ok(lowered.module)
     }
 
     /// Select concrete declarations exported by this checked source module.
@@ -581,6 +590,10 @@ impl Session {
         program: &hew_parser::ast::Program,
         tco: &hew_types::TypeCheckOutput,
     ) -> Result<Vec<hew_types::DefId>, SessionError> {
+        let program = tco
+            .normalized_program
+            .as_ref()
+            .map_or(program, |normalized| &normalized.program);
         // A file import's public declarations remain imports, with their own
         // source identities, rather than authored root exports.
         let root_items = program
@@ -633,56 +646,55 @@ impl Session {
     /// # Errors
     ///
     /// Returns the first failing semantic boundary with its diagnostics.
-    #[expect(
-        clippy::too_many_lines,
-        reason = "one semantic session owns verification, completion and selected roots"
-    )]
     pub fn lower_hir_module(
         &self,
         module: &hew_hir::HirModule,
         tco: &hew_types::TypeCheckOutput,
         roots: &[hew_types::DefId],
     ) -> Result<SessionOutput, SessionError> {
-        let diagnostics = hew_hir::verify_hir(module);
-        if !diagnostics.is_empty() {
-            return Err(SessionError::Hir(diagnostics));
+        self.lower_analyzed_hir(hew_hir::analyze_hir(module), tco, roots)
+    }
+
+    /// Reuse structural and source facts for an unchanged HIR module.
+    ///
+    /// # Errors
+    /// Returns HIR diagnostics or a failure of semantic lowering or verification.
+    pub fn lower_analyzed_hir(
+        &self,
+        analysis: hew_hir::HirAnalysis<'_>,
+        tco: &hew_types::TypeCheckOutput,
+        roots: &[hew_types::DefId],
+    ) -> Result<SessionOutput, SessionError> {
+        let module = analysis.module();
+        if !analysis.diagnostics().is_empty() {
+            return Err(SessionError::Hir(analysis.diagnostics().to_vec()));
         }
-        let mut sir = hew_sir::lower_module_with_roots(module, tco, roots).map_err(|errors| {
-            let Some(error) = errors.into_iter().next() else {
-                return SessionError::Lowering {
-                    callable: None,
-                    error: hew_sir::SirLoweringError::Internal(
-                        "root selection failed without reporting a cause".into(),
-                    ),
-                    span: None,
+        let sir =
+            hew_sir::lower_analyzed_module_with_roots(analysis, tco, roots).map_err(|errors| {
+                let Some(error) = errors.into_iter().next() else {
+                    return SessionError::Lowering {
+                        callable: None,
+                        error: hew_sir::SirLoweringError::Internal(
+                            "root selection failed without reporting a cause".into(),
+                        ),
+                        span: None,
+                    };
                 };
-            };
-            SessionError::Lowering {
-                callable: None,
-                error: error.reason.with_context(&format!(
-                    "SIR root `{}`",
-                    module.defs.path(error.declaration)
-                )),
-                span: None,
-            }
-        })?;
-        let diagnostics = hew_sir::verify_module(&sir.module);
-        if !diagnostics.is_empty() {
-            if diagnostics.iter().all(|diagnostic| {
-                matches!(
-                    diagnostic.kind,
-                    hew_sir::SirDiagnosticKind::UnconsumedLinear { .. }
-                        | hew_sir::SirDiagnosticKind::InvalidGeneratorSend { .. }
-                )
-            }) {
-                return Err(SessionError::Ownership(diagnostics));
-            }
-            return Err(SessionError::Semantic(diagnostics));
-        }
-        require_complete_semantics(&sir, module.entry_exit_plan.is_some())?;
-        if sir.module.test_entries.len() != module.test_entry_plans.len()
-            || sir
-                .module
+                SessionError::Lowering {
+                    callable: None,
+                    error: error.reason.with_context(&format!(
+                        "SIR root `{}`",
+                        module.defs.path(error.declaration)
+                    )),
+                    span: None,
+                }
+            })?;
+        let mut sir =
+            hew_sir::VerifiedModule::new(sir).map_err(SessionError::from_semantic_diagnostics)?;
+        let semantic = &sir.lowered().module;
+        require_complete_semantics(sir.lowered(), module.entry_exit_plan.is_some())?;
+        if semantic.test_entries.len() != module.test_entry_plans.len()
+            || semantic
                 .test_entries
                 .iter()
                 .zip(&module.test_entry_plans)
@@ -696,12 +708,11 @@ impl Session {
                 span: None,
             });
         }
-        let body_index = sir.module.function_index();
+        let body_index = semantic.function_index();
         let mut compiled_roots = roots
             .iter()
             .map(|declaration| {
-                let callable = sir
-                    .module
+                let callable = semantic
                     .callable_for_declaration(declaration)
                     .ok_or_else(|| SessionError::Lowering {
                         callable: None,
@@ -711,38 +722,26 @@ impl Session {
                         span: None,
                     })?
                     .id;
-                require_semantic_body(&sir.module, &body_index, callable)?;
+                require_semantic_body(semantic, &body_index, callable)?;
                 Ok(callable)
             })
             .collect::<Result<Vec<_>, SessionError>>()?;
-        if let Some(entry) = sir.module.entry_callable {
+        if let Some(entry) = semantic.entry_callable {
             compiled_roots.push(entry);
         }
-        for entry in &sir.module.test_entries {
-            require_semantic_body(&sir.module, &body_index, entry.callable)?;
+        for entry in &semantic.test_entries {
+            require_semantic_body(semantic, &body_index, entry.callable)?;
             compiled_roots.push(entry.callable);
         }
         compiled_roots.sort_unstable();
         compiled_roots.dedup();
         if self.checks == CheckSet::Build {
-            hew_sir::canonicalize_module_constant_cfg(&mut sir.module)
+            let mut lowered = sir.into_lowered();
+            hew_sir::canonicalize_module_constant_cfg(&mut lowered.module)
                 .map_err(SessionError::Semantic)?;
-            hew_sir::transfer_module_dead_local_reads(&mut sir.module);
-            // The passes rewrite in place without verifying; this is the one
-            // verification of their result.
-            let diagnostics = hew_sir::verify_module(&sir.module);
-            if !diagnostics.is_empty() {
-                if diagnostics.iter().all(|diagnostic| {
-                    matches!(
-                        diagnostic.kind,
-                        hew_sir::SirDiagnosticKind::UnconsumedLinear { .. }
-                            | hew_sir::SirDiagnosticKind::InvalidGeneratorSend { .. }
-                    )
-                }) {
-                    return Err(SessionError::Ownership(diagnostics));
-                }
-                return Err(SessionError::Semantic(diagnostics));
-            }
+            hew_sir::transfer_module_dead_local_reads(&mut lowered.module);
+            sir = hew_sir::VerifiedModule::new(lowered)
+                .map_err(SessionError::from_semantic_diagnostics)?;
         }
         Ok(SessionOutput {
             sir,
@@ -754,7 +753,7 @@ impl Session {
 /// Verified semantic compilation result, independent of the execution host.
 #[derive(Debug)]
 pub struct SessionOutput {
-    sir: hew_sir::LoweredModule,
+    sir: hew_sir::VerifiedModule,
     compiled_roots: Vec<hew_sir::CallableId>,
 }
 
@@ -768,13 +767,19 @@ impl SessionOutput {
     /// Inspect the verified semantic result without invalidating it.
     #[must_use]
     pub fn semantics(&self) -> &hew_sir::LoweredModule {
-        &self.sir
+        self.sir.lowered()
     }
 
     /// Consume the session result and relinquish its verification guarantee.
     #[must_use]
     pub fn into_semantics(self) -> hew_sir::LoweredModule {
-        self.sir
+        self.sir.into_lowered()
+    }
+
+    /// Prepare one physical type inventory tied to this checked semantic input.
+    #[must_use]
+    pub fn physical_plan(&self) -> hew_mir::physical::PhysicalPlan<'_> {
+        hew_mir::physical::PhysicalPlan::new(self.sir.checked())
     }
 
     /// Realize verified semantics using the backend's measured target layouts.
@@ -786,7 +791,7 @@ impl SessionOutput {
         &self,
         target: hew_mir::PhysicalTarget,
     ) -> Result<hew_mir::VerifiedPhysicalModule, hew_mir::PhysicalError> {
-        hew_mir::lower_physical_module(&self.sir.module, target)
+        self.physical_plan().lower(target)
     }
 }
 
@@ -806,6 +811,22 @@ pub enum SessionError {
         /// of its own (a missing entry, an unresolved root).
         span: Option<Range<usize>>,
     },
+}
+
+impl SessionError {
+    fn from_semantic_diagnostics(diagnostics: Vec<hew_sir::SirDiagnostic>) -> Self {
+        if diagnostics.iter().all(|diagnostic| {
+            matches!(
+                diagnostic.kind,
+                hew_sir::SirDiagnosticKind::UnconsumedLinear { .. }
+                    | hew_sir::SirDiagnosticKind::InvalidGeneratorSend { .. }
+            )
+        }) {
+            Self::Ownership(diagnostics)
+        } else {
+            Self::Semantic(diagnostics)
+        }
+    }
 }
 
 impl std::fmt::Display for SessionError {
@@ -5517,7 +5538,7 @@ mod tests {
                 let output = session
                     .lower_hir_module(&hir.module, tco, &[])
                     .expect("diamond fixture must verify");
-                hew_sir::dump_lowering(&output.sir)
+                hew_sir::dump_lowering(output.semantics())
             })
             .collect();
         assert!(

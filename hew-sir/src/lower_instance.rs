@@ -1892,7 +1892,7 @@ impl<'a> InstanceService<'a> {
         clippy::too_many_lines,
         reason = "construct the semantic module from one completed instance table"
     )]
-    pub(super) fn into_module(mut self) -> SemModule {
+    pub(super) fn into_module(mut self, debug: crate::SemDebugFacts) -> SemModule {
         self.project_callable_targets();
         let Self {
             module,
@@ -1915,7 +1915,6 @@ impl<'a> InstanceService<'a> {
             structural_display,
             ..
         } = self;
-        let debug = crate::SemDebugFacts::project(module);
         let regex_patterns: Vec<String> = module
             .regex_literals
             .iter()

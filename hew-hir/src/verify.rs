@@ -11,9 +11,58 @@ use hew_types::{BuiltinType, RcIntrinsicOp, ResolvedTy};
 
 #[must_use]
 pub fn verify_hir(module: &HirModule) -> Vec<HirDiagnostic> {
-    let mut verifier = Verifier::default();
-    verifier.module(module);
-    verifier.diagnostics
+    analyze_hir(module).diagnostics
+}
+
+/// Structural diagnostics and source facts from one immutable HIR traversal.
+///
+/// The borrowed module keeps these facts tied to the representation that
+/// produced them. A host that changes HIR must analyze the changed module.
+#[derive(Debug)]
+pub struct HirAnalysis<'a> {
+    module: &'a HirModule,
+    diagnostics: Vec<HirDiagnostic>,
+    source_facts: HirSourceFacts,
+    site_parents: HashMap<SiteId, Option<SiteId>>,
+}
+
+impl<'a> HirAnalysis<'a> {
+    #[must_use]
+    pub fn module(&self) -> &'a HirModule {
+        self.module
+    }
+
+    #[must_use]
+    pub fn diagnostics(&self) -> &[HirDiagnostic] {
+        &self.diagnostics
+    }
+
+    #[must_use]
+    pub fn site_sources(&self) -> &HashMap<SiteId, HirSiteSource> {
+        &self.source_facts.sites
+    }
+
+    #[must_use]
+    pub fn scope_extents(&self) -> &HashMap<ScopeId, HirScopeExtent> {
+        &self.source_facts.scopes
+    }
+
+    #[must_use]
+    pub fn site_parents(&self) -> &HashMap<SiteId, Option<SiteId>> {
+        &self.site_parents
+    }
+
+    #[must_use]
+    pub fn into_source_facts(self) -> HirSourceFacts {
+        self.source_facts
+    }
+}
+
+/// Authored source locations projected from HIR's canonical origin map.
+#[derive(Debug)]
+pub struct HirSourceFacts {
+    pub sites: HashMap<SiteId, HirSiteSource>,
+    pub scopes: HashMap<ScopeId, HirScopeExtent>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -30,8 +79,9 @@ pub struct HirScopeExtent {
     pub source_module: Option<String>,
 }
 
+/// Analyze structural contracts and collect source attribution together.
 #[must_use]
-pub fn collect_site_spans(module: &HirModule) -> HashMap<SiteId, HirSiteSource> {
+pub fn analyze_hir(module: &HirModule) -> HirAnalysis<'_> {
     let mut verifier = Verifier::default();
     verifier.module(module);
     for source in verifier.site_spans.values_mut() {
@@ -39,21 +89,6 @@ pub fn collect_site_spans(module: &HirModule) -> HashMap<SiteId, HirSiteSource> 
             source.span = origin.clone();
         }
     }
-    verifier.site_spans
-}
-
-/// Parent relation for every HIR expression occurrence.  Checker facts name
-/// logical AST spans; HIR may clone those spans during desugaring, so consumers
-/// pair a dependency only with the candidate inside the current occurrence's
-/// structural subtree.
-/// Lexical extent and parent of every HIR block scope, for debug metadata.
-///
-/// A `DILexicalBlock` tree needs each scope's source extent and its enclosing
-/// scope; both are properties of the `HirBlock` this walk already visits.
-#[must_use]
-pub fn collect_scope_extents(module: &HirModule) -> HashMap<ScopeId, HirScopeExtent> {
-    let mut verifier = Verifier::default();
-    verifier.module(module);
     for (scope, extent) in &mut verifier.scope_extents {
         let Some(parts) = verifier.scope_parts.get(scope) else {
             continue;
@@ -74,14 +109,15 @@ pub fn collect_scope_extents(module: &HirModule) -> HashMap<ScopeId, HirScopeExt
             });
         }
     }
-    verifier.scope_extents
-}
-
-#[must_use]
-pub fn collect_site_parents(module: &HirModule) -> HashMap<SiteId, Option<SiteId>> {
-    let mut verifier = Verifier::default();
-    verifier.module(module);
-    verifier.site_parents
+    HirAnalysis {
+        module,
+        diagnostics: verifier.diagnostics,
+        source_facts: HirSourceFacts {
+            sites: verifier.site_spans,
+            scopes: verifier.scope_extents,
+        },
+        site_parents: verifier.site_parents,
+    }
 }
 
 #[derive(Debug, Default)]
@@ -219,7 +255,7 @@ impl Verifier {
                     // init-arg/pool-count expression's real site. Without
                     // this, MIR diagnostics that carry a supervisor child's
                     // site (a missing required field, an unknown field name)
-                    // key into `collect_site_spans` with an ID the table
+                    // key into the analysis source map with an ID the table
                     // never claims — silently rendering with no location, or
                     // worse, numerically colliding with an unrelated site
                     // that IS registered and rendering a wrong caret.

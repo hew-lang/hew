@@ -9,7 +9,7 @@ one-way submission uses a `mailbox` view.
 
 | Example                                              | Pattern           | Key Features                                                 |
 | ---------------------------------------------------- | ----------------- | ------------------------------------------------------------ |
-| [`circuit_breaker.hew`](circuit_breaker.hew)         | Circuit Breaker   | Actor as state machine, failure tracking, state transitions  |
+| [`circuit_breaker.hew`](circuit_breaker.hew)         | Circuit Breaker   | Typed failures, machine transitions, supervised backend      |
 | [`rate_limiter.hew`](rate_limiter.hew)               | Token Bucket      | Ask/reply, shared limiter actor, periodic refill timer       |
 | [`worker_pool.hew`](worker_pool.hew)                 | Scatter/Gather    | Supervision, `fork` fan-out, crash recovery                  |
 | [`pub_sub.hew`](pub_sub.hew)                         | Publish/Subscribe | Topic routing, actor-to-actor completion calls               |
@@ -35,6 +35,12 @@ hew build examples/services/circuit_breaker.hew -o circuit_breaker
 ```
 
 ## Why Actors?
+
+The circuit-breaker entry imports its reusable service from
+[`breaker.hew`](breaker.hew). Backend failures and an open circuit are distinct
+typed outcomes. Ordinary completion calls establish ordering; the example needs
+no timing sleeps. The explicit probe models the decision to attempt recovery;
+an application can schedule that decision using its own cooldown policy.
 
 Actors serialize access to their state through handlers. This keeps ordinary
 service state local and lets callers express coordination through messages.

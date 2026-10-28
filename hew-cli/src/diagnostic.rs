@@ -10,6 +10,7 @@ use std::ops::Range;
 
 #[path = "diagnostic_renderer.rs"]
 mod renderer;
+pub(crate) use renderer::render_ownership;
 
 // ---------------------------------------------------------------------------
 // Thread-local diagnostic capture

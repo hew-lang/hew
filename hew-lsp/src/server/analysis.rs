@@ -2,9 +2,9 @@ use std::collections::{HashMap, HashSet, VecDeque};
 
 use dashmap::DashMap;
 use hew_analysis::util::compute_line_offsets;
-use hew_hir::{
-    lower_program_host_target, verify_hir, HirDiagnostic, HirDiagnosticKind, ResolutionCtx,
-};
+#[cfg(test)]
+use hew_hir::verify_hir;
+use hew_hir::{lower_program_host_target, HirDiagnostic, HirDiagnosticKind, ResolutionCtx};
 use hew_parser::ParseDiagnosticKind;
 use hew_types::error::{Severity, TypeErrorKind};
 use hew_types::{LintId, TypeCheckOutput};
@@ -268,7 +268,10 @@ pub(super) fn analyze_document_with_batch(
     // checker accepted: a module already rejected upstream is not worth
     // lowering, and the upstream errors are the actionable signal.
     if let Some(tco) = type_output.as_ref().filter(|tco| tco.errors.is_empty()) {
-        let (hir_diagnostics, hir_module) = collect_hir_diagnostics(&state.program, tco);
+        let lower_output = lower_program_host_target(&state.program, tco, &ResolutionCtx);
+        let analysis = hew_hir::analyze_hir(&lower_output.module);
+        let hir_diagnostics =
+            dedup_hir_diagnostics(lower_output.diagnostics, analysis.diagnostics().to_vec());
         merge_diagnostics(
             &mut diagnostics_by_uri,
             &build_hir_lsp_diagnostics(
@@ -287,7 +290,7 @@ pub(super) fn analyze_document_with_batch(
                     source,
                     &line_offsets,
                     &state.program,
-                    &hir_module,
+                    analysis,
                     tco,
                 ),
             );
@@ -737,19 +740,6 @@ fn build_frontend_diagnostics_by_uri(
     diagnostics_by_uri
 }
 
-/// Lower to HIR once and return both the HIR diagnostics and the lowered
-/// module, so a later consumer can reuse the same lowering instead of
-/// repeating it.
-fn collect_hir_diagnostics(
-    program: &hew_parser::ast::Program,
-    type_output: &TypeCheckOutput,
-) -> (Vec<HirDiagnostic>, hew_hir::HirModule) {
-    let lower_output = lower_program_host_target(program, type_output, &ResolutionCtx);
-    let diagnostics =
-        dedup_hir_diagnostics(lower_output.diagnostics, verify_hir(&lower_output.module));
-    (diagnostics, lower_output.module)
-}
-
 /// Render shared semantic-boundary errors for an editor document.
 /// Target-independent ownership checks use the same resolved roots as native
 /// compilation; source-lint presentation remains separate.
@@ -758,7 +748,7 @@ fn build_semantic_lsp_diagnostics(
     root_source: &str,
     root_line_offsets: &[usize],
     program: &hew_parser::ast::Program,
-    hir_module: &hew_hir::HirModule,
+    analysis: hew_hir::HirAnalysis<'_>,
     tco: &TypeCheckOutput,
 ) -> DiagnosticMap {
     let mut diagnostics_by_uri = DiagnosticMap::new();
@@ -770,7 +760,7 @@ fn build_semantic_lsp_diagnostics(
         hew_compile::DiagnosticPolicy::default(),
     );
     let result = hew_compile::Session::source_roots(program, tco)
-        .and_then(|roots| session.lower_hir_module(hir_module, tco, &roots));
+        .and_then(|roots| session.lower_analyzed_hir(analysis, tco, &roots));
     if let Err(error) = result {
         insert_diagnostic(
             &mut diagnostics_by_uri,
@@ -2293,7 +2283,11 @@ pub(super) mod tests {
         let mut checker =
             hew_types::Checker::new(hew_types::module_registry::ModuleRegistry::new(vec![]));
         let tco = checker.check_program(&parse_result.program);
-        let (hir_diagnostics, module) = collect_hir_diagnostics(&parse_result.program, &tco);
+        let lower_output = lower_program_host_target(&parse_result.program, &tco, &ResolutionCtx);
+        let module = lower_output.module;
+        let analysis = hew_hir::analyze_hir(&module);
+        let hir_diagnostics =
+            dedup_hir_diagnostics(lower_output.diagnostics, analysis.diagnostics().to_vec());
         assert!(hir_diagnostics.is_empty(), "fixture must lower cleanly");
 
         let build = hew_compile::Session::new(
@@ -2306,7 +2300,7 @@ pub(super) mod tests {
             SEMANTIC_AGREEMENT_SOURCE,
             &compute_line_offsets(SEMANTIC_AGREEMENT_SOURCE),
             &parse_result.program,
-            &module,
+            analysis,
             &tco,
         );
         let lsp_codes = lsp

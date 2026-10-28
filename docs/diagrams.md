@@ -32,6 +32,9 @@ flowchart TD
 
 **Inspection commands:**
 
+- `hew tool compile --dump-ast <file.hew>` — inspect the import-expanded AST before type checking
+- `hew tool compile --dump-defs <file.hew>` — inspect checker declaration identities without HIR or SIR lowering
+- `hew tool compile --dump-hir <file.hew>` — inspect typed HIR, declaration paths, checked sites and recorded source origins
 - `hew tool compile --dump-sir <file.hew>` — inspect the ownership IR
 - `hew tool compile --dump-mir physical <file.hew>` — inspect physical MIR without LLVM emission
 - `hew tool compile --emit-dir <dir> <file.hew>` — write LLVM/object/WASM artefacts for the Rust codegen path
@@ -40,7 +43,15 @@ flowchart TD
 
 `hew tool compile` does not accept `--emit-mlir` or `--emit-obj`; it accepts
 `--emit-dir` (directory for emitted `.ll`/`.o`/`.wasm` artefacts) and
-`--emit-llvm` (retain the pre-optimization textual LLVM IR).
+`--emit-llvm` (retain the textual LLVM IR after the selected pass pipeline).
+
+Choose one `--dump-*` stage per command. Each dump stops at that stage and
+creates no LLVM or object artefacts. HIR site and scope ranges are byte offsets;
+checked file indices come from the module graph. Generated sites can share a
+recorded source origin or have no checked-site identity. `module=None` means
+that the HIR source facts record no module qualifier; it does not invent a
+source file for generated code. With `--format json`, stdout remains the
+diagnostic array and the textual dump goes to stderr.
 
 ---
 

@@ -618,7 +618,7 @@ fn collect_semantic_diagnostics(
     source: &str,
     documents: &hew_compile::SourceSet,
     program: &hew_parser::ast::Program,
-    hir_module: &hew_hir::HirModule,
+    analysis: hew_hir::HirAnalysis<'_>,
     tco: &hew_types::TypeCheckOutput,
 ) -> Vec<WasmDiagnostic> {
     let session = hew_compile::Session::new(
@@ -626,7 +626,7 @@ fn collect_semantic_diagnostics(
         hew_compile::DiagnosticPolicy::default(),
     );
     let result = hew_compile::Session::source_roots(program, tco)
-        .and_then(|roots| session.lower_hir_module(hir_module, tco, &roots));
+        .and_then(|roots| session.lower_analyzed_hir(analysis, tco, &roots));
     match result {
         Ok(_) => Vec::new(),
         Err(hew_compile::SessionError::Ownership(diagnostics)) => {
@@ -707,13 +707,13 @@ fn parse_and_type_check_with_inputs(
                 // directly. Dedup by (kind, span) so each problem is reported once.
                 // Mirrors the native `hew check` path in hew-cli/src/main.rs.
                 let mut diags = lower_output.diagnostics;
-                let verifier_diags = hew_hir::verify_hir(&lower_output.module);
-                for diag in verifier_diags {
+                let analysis = hew_hir::analyze_hir(&lower_output.module);
+                for diag in analysis.diagnostics() {
                     let already_present = diags
                         .iter()
                         .any(|d| d.kind == diag.kind && d.span == diag.span);
                     if !already_present {
-                        diags.push(diag);
+                        diags.push(diag.clone());
                     }
                 }
                 // MIR-stage lints run only when HIR lowering is clean: a module the
@@ -725,7 +725,7 @@ fn parse_and_type_check_with_inputs(
                         source,
                         &options.documents,
                         &parse_result.program,
-                        &lower_output.module,
+                        analysis,
                         &tco,
                     ));
                 }

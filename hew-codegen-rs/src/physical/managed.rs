@@ -186,14 +186,10 @@ pub(super) fn value_layout_symbol(
     module: &PhysicalModule,
     ty: &ResolvedTy,
 ) -> CodegenResult<String> {
-    let index = module
-        .managed_types
-        .keys()
-        .position(|candidate| candidate == ty)
-        .ok_or_else(|| {
-            CodegenError::FailClosed(format!("managed value has no owning type row: {ty:?}"))
-        })?;
-    Ok(format!("__hew_budget_value_{index}"))
+    let row = module.managed_types.get(ty).ok_or_else(|| {
+        CodegenError::FailClosed(format!("managed value has no owning type row: {ty:?}"))
+    })?;
+    Ok(format!("__hew_budget_value_{}", row.id.0))
 }
 
 impl<'ctx> FunctionEmitter<'_, 'ctx> {
@@ -373,11 +369,11 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
         Ok(descriptor.as_pointer_value())
     }
 
-    fn managed_index(&self, ty: &ResolvedTy) -> CodegenResult<usize> {
+    fn managed_index(&self, ty: &ResolvedTy) -> CodegenResult<u32> {
         self.module
             .managed_types
-            .keys()
-            .position(|candidate| candidate == ty)
+            .get(ty)
+            .map(|row| row.id.0)
             .ok_or_else(|| {
                 CodegenError::FailClosed(format!("managed type has no owning descriptor: {ty:?}"))
             })
@@ -451,7 +447,8 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
         present.set_initializer(&self.ctx.i8_type().const_int(1, false));
         // All declarations precede bodies: recursive values reference the same
         // typed rows rather than reconstructing their descendants in codegen.
-        for (index, row) in self.module.managed_types.values().enumerate() {
+        for row in self.module.managed_types.values() {
+            let index = row.id.0;
             let leaf = !row.shape.has_managed_children();
             let visit = if leaf {
                 pointer.const_null()
@@ -619,7 +616,8 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
                 .build_return(Some(&self.ctx.i32_type().const_zero()))
                 .llvm_ctx("finish managed visit")?;
         }
-        for (index, row) in self.module.managed_types.values().enumerate() {
+        for row in self.module.managed_types.values() {
+            let index = row.id.0;
             self.emit_value_descriptor(&format!("__hew_budget_value_{index}"), &row.recipe)?;
         }
         Ok(())

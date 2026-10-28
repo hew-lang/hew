@@ -1,4 +1,4 @@
-//! Human diagnostic presentation. The host supplies source snapshots and
+//! Human diagnostic and ownership presentation. The host supplies source snapshots and
 //! presentation options; this component performs no I/O or terminal detection.
 import std.encoding.json;
 import std.encoding.utf8;
@@ -29,6 +29,30 @@ type Diagnostic {
     palette: Palette;
 }
 
+type Position {
+    offset: i64;
+    line: i64;
+    column: i64;
+    start: i64;
+}
+
+enum OwnershipDetail {
+    Codec { direction: string; format: string; ty: string; planned_types: i64; }
+    CodecPlan { ty: string; key: string; tag: u64; flags: u32; }
+    Send { index: i64; ty: string; action: string; preparation: string; }
+}
+
+type OwnershipEntry {
+    offset: i64;
+    detail: OwnershipDetail;
+}
+
+type OwnershipPresentation {
+    filename: string;
+    source: string;
+    entries: Vec<OwnershipEntry>;
+}
+
 fn boundary(data: bytes, offset: i64) -> bool {
     offset == data.len() || (data[offset] as i64 & 192) != 128
 }
@@ -43,33 +67,35 @@ fn scalars(data: bytes, start: i64, end: i64) -> i64 {
     count
 }
 
-fn locate(data: bytes, offset: i64) -> (i64, i64, i64) {
-    var line = 1;
-    var column = 1;
-    var start = 0;
-    for index in 0..math.min(offset, data.len()) {
+fn locate(data: bytes, offset: i64, from: Position) -> Position {
+    var position = from;
+    for index in position.offset..math.min(offset, data.len()) {
         let byte = data[index];
         if byte == 10 {
-            line += 1;
-            column = 1;
-            start = index + 1;
+            position.line += 1;
+            position.column = 1;
+            position.start = index + 1;
         } else if byte == 13 && index + 1 < data.len() && data[index + 1] == 10 {
             continue;
         } else if (byte as i64 & 192) != 128 {
-            column += 1;
+            position.column += 1;
         }
     }
-    (line, column, start)
+    position.offset = math.min(offset, data.len());
+    position
 }
 
 fn render_label(label: Label, level: string, colour: string, palette: Palette) -> string {
     let data = label.source.to_bytes();
-    let (line, column, start) = locate(data, label.start);
+    let position = locate(data, label.start, Position { offset: 0, line: 1, column: 1, start: 0 });
+    let line = position.line;
+    let column = position.column;
+    let start = position.start;
     let header = f"{palette.bold}{label.filename}:{line}:{column}:{palette.reset} {colour}{level}{palette.reset}{palette.bold}: {label.message}{palette.reset}\n";
     let number = f"{line}";
     let padding = " ".repeat(number.len());
-    // Rust's source-line contract omits the trailing empty line. EOF still
-    // receives a line marker and one caret, without an extra source space.
+    // EOF receives a line marker and one caret, without an extra empty line
+    // or source space.
     if start == data.len() {
         return f"{header} {palette.blue}{number} |{palette.reset}\n {padding} {palette.blue}|{palette.reset} {palette.red}^{palette.reset}\n";
     }
@@ -106,6 +132,28 @@ pub fn render(input: string) -> string {
     }
     for suggestion in diagnostic.suggestions {
         output += f"  {palette.cyan}= help{palette.reset}: {suggestion}\n";
+    }
+    output
+}
+
+/// Ownership decisions are selected by SIR. Entries arrive in source order,
+/// so their locations share one forward scan of the source snapshot.
+pub fn render_ownership(input: string) -> string {
+    let report = json.decode<OwnershipPresentation>(input).expect("valid ownership presentation");
+    let data = report.source.to_bytes();
+    var position = Position { offset: 0, line: 1, column: 1, start: 0 };
+    var output = "";
+    for entry in report.entries {
+        position = locate(data, entry.offset, position);
+        let description = match entry.detail {
+            .Codec { direction, format, ty, planned_types } => f"codec - {direction} {format} {ty}: borrow input ({planned_types} planned types)",
+            .CodecPlan { ty, key, tag, flags } => f"codec plan - {ty}: key {json.encode(key)}, tag {tag}, flags {flags}",
+            .Send { index, ty, action, preparation } => {
+                let suffix = if preparation.is_empty() { "" } else { f" ({preparation})" };
+                f"send - payload {index} {ty}: {action}{suffix}"
+            }
+        };
+        output += f"{report.filename}:{position.line}:{position.column}: {description}\n";
     }
     output
 }

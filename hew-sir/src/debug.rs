@@ -6,7 +6,7 @@
 
 use std::collections::BTreeMap;
 
-use hew_hir::{HirModule, SiteId};
+use hew_hir::{HirAnalysis, SiteId};
 
 /// One lexical block of the root compilation unit.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -36,8 +36,11 @@ pub struct SemDebugFacts {
 impl SemDebugFacts {
     /// Project the root unit's scope tree and site offsets out of HIR.
     #[must_use]
-    pub fn project(module: &HirModule) -> Self {
-        let extents = hew_hir::collect_scope_extents(module);
+    pub fn project(analysis: HirAnalysis<'_>) -> Self {
+        let hew_hir::HirSourceFacts {
+            sites: sources,
+            scopes: extents,
+        } = analysis.into_source_facts();
         let mut scopes: Vec<SemDebugScope> = extents
             .iter()
             .filter(|(_, extent)| extent.source_module.is_none())
@@ -57,8 +60,7 @@ impl SemDebugFacts {
             })
             .collect();
         scopes.sort_unstable_by_key(|scope| scope.id);
-        let coverage_sites: BTreeMap<_, _> =
-            hew_hir::collect_site_spans(module).into_iter().collect();
+        let coverage_sites: BTreeMap<_, _> = sources.into_iter().collect();
         let sites = coverage_sites
             .iter()
             .filter(|(_, source)| source.source_module.is_none())

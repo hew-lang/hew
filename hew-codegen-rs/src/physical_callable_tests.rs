@@ -406,11 +406,15 @@ fn failed_nested_callable_clone_rolls_back_completed_fields_and_preserves_output
     physical.managed_types.insert(
         nested.clone(),
         hew_mir::physical::PhysicalManagedType {
+            id: hew_mir::physical::PhysicalManagedId(0),
             slot_bytes: nested_recipe.managed_slot_bytes,
             shape: hew_sir::ManagedStorageShape::Callable { captures: None },
             recipe: nested_recipe,
         },
     );
+    for (index, row) in physical.managed_types.values_mut().enumerate() {
+        row.id = hew_mir::physical::PhysicalManagedId(u32::try_from(index).unwrap() * 3 + 7);
+    }
     let env = &mut physical.environment_glue[0];
     env.fields[1] = PhysicalValueRecipe {
         ty: nested.clone(),

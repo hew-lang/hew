@@ -19,9 +19,38 @@ use super::{
     TypeInstanceKey, ValueId, VerifiedPhysicalModule,
 };
 
-/// Lower verified ownership SIR into the sole target-realized MIR.
+/// An immutable semantic input and its exact demanded physical types.
+/// Target layout resolution and MIR realization consume the same inventory.
+#[derive(Debug)]
+pub struct PhysicalPlan<'a> {
+    checked: hew_sir::CheckedModule<'a>,
+    inventory: PhysicalTypeInventory,
+}
+
+impl<'a> PhysicalPlan<'a> {
+    #[must_use]
+    pub fn new(checked: hew_sir::CheckedModule<'a>) -> Self {
+        let inventory = physical_type_inventory(checked.module());
+        Self { checked, inventory }
+    }
+
+    #[must_use]
+    pub fn inventory(&self) -> &PhysicalTypeInventory {
+        &self.inventory
+    }
+
+    /// Realize this plan with target layouts measured for its inventory.
+    ///
+    /// # Errors
+    /// Returns a layout, ownership-realization or physical verification diagnostic.
+    pub fn lower(self, target: PhysicalTarget) -> Result<VerifiedPhysicalModule, PhysicalError> {
+        lower_physical_with_inventory(&self.checked, &self.inventory, target)
+    }
+}
+
+/// Lower raw ownership SIR into the sole target-realized MIR.
 ///
-/// This boundary re-runs SIR verification, resolves every type layout and
+/// This boundary verifies raw SIR, resolves every type layout and
 /// explicit ownership action, then verifies the resulting storage/CFG model.
 /// Code generation accepts only the returned immutable wrapper.
 ///
@@ -30,10 +59,6 @@ use super::{
 /// Returns [`PhysicalError`] when SIR verification fails, a concrete target
 /// layout is absent, an ownership action has no admitted physical realization,
 /// or the resulting storage/CFG model violates the physical verifier.
-#[expect(
-    clippy::too_many_lines,
-    reason = "materializes the complete checked module and its callable ABI"
-)]
 pub fn lower_physical_module(
     module: &SemModule,
     target: PhysicalTarget,
@@ -44,6 +69,19 @@ pub fn lower_physical_module(
             diagnostics[0].kind
         ))
     })?;
+    PhysicalPlan::new(checked).lower(target)
+}
+
+#[expect(
+    clippy::too_many_lines,
+    reason = "materializes the complete checked module and its callable ABI"
+)]
+fn lower_physical_with_inventory(
+    checked: &hew_sir::CheckedModule<'_>,
+    inventory: &PhysicalTypeInventory,
+    target: PhysicalTarget,
+) -> Result<VerifiedPhysicalModule, PhysicalError> {
+    let module = checked.module();
 
     let PhysicalGlue {
         resources,
@@ -55,9 +93,9 @@ pub fn lower_physical_module(
         set_glue,
         shared_glue,
         ids,
-    } = build_glue(module)?;
+    } = build_glue(module, inventory)?;
 
-    let resumable = suspend::semantic_callables(&checked);
+    let resumable = suspend::semantic_callables(checked);
     let resumable_methods: BTreeSet<_> = module
         .vtables
         .iter()
@@ -265,67 +303,72 @@ pub fn lower_physical_module(
         })
         .collect::<Result<Vec<_>, PhysicalError>>()?;
 
-    let mut physical = PhysicalModule {
-        coverage: module.coverage.clone(),
-        releases: ReleaseEffects::default(),
-        actor_recipes: actor_value_recipes(module, &ids)?,
-        managed_types: super::physical_type_inventory(module)
-            .types()
-            .map(|ty| {
-                let slot = hew_sir::managed_slot(module, ty).map_err(|error| {
-                    PhysicalError::new(format!("managed payload width for {ty:?}: {error:?}"))
-                })?;
-                let shape = hew_sir::managed_storage_shape(module, ty).map_err(|error| {
-                    PhysicalError::new(format!("managed storage shape for {ty:?}: {error:?}"))
-                })?;
-                Ok((
-                    ty.clone(),
-                    super::PhysicalManagedType {
-                        slot_bytes: slot.bytes,
-                        shape,
-                        recipe: physical_value_recipe(module, &ids, ty)?,
-                    },
-                ))
-            })
-            .collect::<Result<_, PhysicalError>>()?,
-        actors: module.actors.clone(),
-        supervisors: module.supervisors.clone(),
-        resources,
-        value_capabilities: capability::build(module, &ids)?,
-        callable_specializations: module.callable_specializations.clone(),
-        closures: module
-            .closures
-            .iter()
-            .map(|closure| PhysicalClosure {
-                generator_yield: closure.generator_yield().cloned(),
-                id: closure.id,
-                entries: closure.entries.clone(),
-                ty: closure.ty.clone(),
-            })
-            .collect(),
-        vtables,
-        offloads,
-        environment_glue,
-        target,
-        aggregate_glue,
-        variant_glue,
-        vector_glue,
-        map_glue,
-        set_glue,
-        shared_glue,
-        structural_glue,
-        type_facts: module.type_facts.clone(),
-        callables,
-        functions,
-        entry_callable: module.entry_callable,
-        entry_exit_plan: module.entry_exit_plan.clone(),
-        test_entries: module.test_entries.clone(),
-        string_literals: module.string_literals.clone(),
-        bytes_literals: module.bytes_literals.clone(),
-        regex_patterns: module.regex_patterns.clone(),
-        defs: std::sync::Arc::clone(&module.defs),
-        debug,
-    };
+    let mut physical =
+        PhysicalModule {
+            coverage: module.coverage.clone(),
+            releases: ReleaseEffects::default(),
+            actor_recipes: actor_value_recipes(module, &ids)?,
+            managed_types: inventory
+                .types()
+                .enumerate()
+                .map(|(index, ty)| {
+                    let slot = hew_sir::managed_slot(module, ty).map_err(|error| {
+                        PhysicalError::new(format!("managed payload width for {ty:?}: {error:?}"))
+                    })?;
+                    let shape = hew_sir::managed_storage_shape(module, ty).map_err(|error| {
+                        PhysicalError::new(format!("managed storage shape for {ty:?}: {error:?}"))
+                    })?;
+                    Ok((
+                        ty.clone(),
+                        super::PhysicalManagedType {
+                            id: super::PhysicalManagedId(u32::try_from(index).map_err(|_| {
+                                PhysicalError::new("too many physical managed types")
+                            })?),
+                            slot_bytes: slot.bytes,
+                            shape,
+                            recipe: physical_value_recipe(module, &ids, ty)?,
+                        },
+                    ))
+                })
+                .collect::<Result<_, PhysicalError>>()?,
+            actors: module.actors.clone(),
+            supervisors: module.supervisors.clone(),
+            resources,
+            value_capabilities: capability::build(module, &ids)?,
+            callable_specializations: module.callable_specializations.clone(),
+            closures: module
+                .closures
+                .iter()
+                .map(|closure| PhysicalClosure {
+                    generator_yield: closure.generator_yield().cloned(),
+                    id: closure.id,
+                    entries: closure.entries.clone(),
+                    ty: closure.ty.clone(),
+                })
+                .collect(),
+            vtables,
+            offloads,
+            environment_glue,
+            target,
+            aggregate_glue,
+            variant_glue,
+            vector_glue,
+            map_glue,
+            set_glue,
+            shared_glue,
+            structural_glue,
+            type_facts: module.type_facts.clone(),
+            callables,
+            functions,
+            entry_callable: module.entry_callable,
+            entry_exit_plan: module.entry_exit_plan.clone(),
+            test_entries: module.test_entries.clone(),
+            string_literals: module.string_literals.clone(),
+            bytes_literals: module.bytes_literals.clone(),
+            regex_patterns: module.regex_patterns.clone(),
+            defs: std::sync::Arc::clone(&module.defs),
+            debug,
+        };
     let callback_resumption = physical
         .value_capabilities
         .keys()
@@ -386,8 +429,10 @@ pub(crate) struct PhysicalGlue {
     clippy::too_many_lines,
     reason = "value recipes are resolved together so recursive actions share one identity index"
 )]
-pub(crate) fn build_glue(module: &SemModule) -> Result<PhysicalGlue, PhysicalError> {
-    let inventory = physical_type_inventory(module);
+pub(crate) fn build_glue(
+    module: &SemModule,
+    inventory: &PhysicalTypeInventory,
+) -> Result<PhysicalGlue, PhysicalError> {
     let aggregates = inventory
         .aggregates()
         .map(|aggregate| {

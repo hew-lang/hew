@@ -300,21 +300,33 @@ impl SourceSet {
         }
     }
 
-    /// Diagnostic text from an already observed input; never opens the filesystem.
-    fn admitted_text(&self, path: &Path) -> Option<Arc<str>> {
+    fn admitted_content(&self, path: &Path) -> Option<SourceContent> {
         let admitted = self
             .admitted
             .as_ref()?
             .lock()
             .expect("source admission table poisoned");
-        match admitted
+        admitted
             .get(path)
-            .or_else(|| admitted.get(&self.input_identity(path)))?
-        {
-            SourceContent::Text(source) | SourceContent::Prepared { source, .. } => {
-                Some(Arc::clone(source))
+            .or_else(|| admitted.get(&self.input_identity(path)))
+            .cloned()
+    }
+
+    /// UTF-8 text from an already observed input; never reads new content.
+    fn admitted_text(&self, path: &Path) -> Option<Arc<str>> {
+        match self.admitted_content(path)? {
+            SourceContent::Text(source) | SourceContent::Prepared { source, .. } => Some(source),
+            SourceContent::Bytes(bytes) => std::str::from_utf8(&bytes).ok().map(Arc::from),
+        }
+    }
+
+    /// Display an observed asset even when its bytes are not valid source text.
+    fn admitted_diagnostic_text(&self, path: &Path) -> Option<Arc<str>> {
+        match self.admitted_content(path)? {
+            SourceContent::Text(source) | SourceContent::Prepared { source, .. } => Some(source),
+            SourceContent::Bytes(bytes) => {
+                Some(Arc::from(String::from_utf8_lossy(&bytes).as_ref()))
             }
-            SourceContent::Bytes(bytes) => std::str::from_utf8(bytes).ok().map(Arc::from),
         }
     }
 
@@ -1632,7 +1644,7 @@ impl SourceSnapshot {
     fn source(&self, origin: &str) -> Option<(Arc<str>, String)> {
         self.modules.get(origin).cloned().or_else(|| {
             self.documents
-                .admitted_text(Path::new(origin))
+                .admitted_diagnostic_text(Path::new(origin))
                 .map(|source| (source, display_path(Path::new(origin))))
         })
     }
@@ -2845,7 +2857,7 @@ fn run_directory_module_frontend(
         Err(error) => {
             return state.stop(FrontendFailure::message_only(format!(
                 "Error: cannot read {input}: {error}"
-            )))
+            )));
         }
     };
     state.parse_result = Some(hew_parser::parse(&source));
@@ -3948,9 +3960,12 @@ fn resolve_file_imports_internal(
                         .map(|(path, _, _)| path.display().to_string())
                         .collect::<Vec<_>>()
                         .join("` and `");
-                    return Err(FrontendFailure::coded_message("E_IMPORT_AMBIGUOUS", format!(
-                        "Error: import `{source_module}` is ambiguous: both `{paths}` exist.\n  Rename or remove one to resolve the ambiguity."
-                    )));
+                    return Err(FrontendFailure::coded_message(
+                        "E_IMPORT_AMBIGUOUS",
+                        format!(
+                            "Error: import `{source_module}` is ambiguous: both `{paths}` exist.\n  Rename or remove one to resolve the ambiguity."
+                        ),
+                    ));
                 }
 
                 if let Some((canonical, form, origin)) = resolved.into_iter().next() {
@@ -4711,7 +4726,7 @@ pub fn run_program_frontend(
                 typecheck_result: None,
                 stopped: None,
             }
-            .stop(failure)
+            .stop(failure);
         }
     };
     let state = DocumentFrontendState {
@@ -4933,7 +4948,7 @@ fn load_optional_toml_from<T: DeserializeOwned>(
                 std::io::ErrorKind::NotFound | std::io::ErrorKind::Unsupported
             ) =>
         {
-            return Ok(None)
+            return Ok(None);
         }
         Err(err) => {
             return Err(FrontendFailure::message_only(format!(
@@ -5723,8 +5738,11 @@ mod tests {
     #[test]
     fn memory_floor_calls_are_rejected_at_the_source_boundary() {
         let dir = tempfile::tempdir().unwrap();
-        let input = write_source(dir.path(), "main.hew",
-            "import std.mem; fn main() { let pointer = mem.alloc(8, 8); mem.dealloc(pointer, 8, 8); }");
+        let input = write_source(
+            dir.path(),
+            "main.hew",
+            "import std.mem; fn main() { let pointer = mem.alloc(8, 8); mem.dealloc(pointer, 8, 8); }",
+        );
         let failure = check_file(&input, &FrontendOptions::default())
             .expect_err("raw memory primitives are not a source-language API");
         assert!(failure.diagnostics.iter().any(|diagnostic| matches!(
@@ -6181,7 +6199,10 @@ mod tests {
             &[
                 ("wire.hew", "pub fn w() -> i64 { 7 }\n"),
                 ("helpers.hew", "pub fn h() -> i64 { 1 }\n"),
-                ("greeting/greeting.hew", "pub fn hello() -> string { \"hi\" }\n"),
+                (
+                    "greeting/greeting.hew",
+                    "pub fn hello() -> string { \"hi\" }\n",
+                ),
                 ("lib.hew", "pub fn l() -> i64 { 2 }\n"),
             ],
             "import std.fs;\nimport \"lib.hew\";\nimport meshcore.broker.wire;\nimport helpers;\nimport greeting;\nfn main() {}\n",
@@ -6612,7 +6633,11 @@ mod tests {
     #[test]
     fn source_roots_keep_authored_exports_beside_file_imports() {
         let dir = tempfile::tempdir().expect("create source-root fixture");
-        write_source(dir.path(), "helper.hew", "fn hidden() -> string { \"owned\".to_upper() } pub fn imported() -> string { hidden() }");
+        write_source(
+            dir.path(),
+            "helper.hew",
+            "fn hidden() -> string { \"owned\".to_upper() } pub fn imported() -> string { hidden() }",
+        );
         let input = write_source(
             dir.path(),
             "main.hew",
@@ -9630,6 +9655,27 @@ mod source_analysis_batch_tests {
             std::io::ErrorKind::InvalidData
         );
         assert!(binary.admitted_text(&path).is_none());
+        let snapshot = SourceSnapshot {
+            root_source: "fn main() {}".into(),
+            root_filename: "main.hew".into(),
+            modules: HashMap::new(),
+            documents: binary,
+        };
+        let diagnostic = type_diagnostic_to_frontend(
+            hew_types::TypeError::new(
+                hew_types::error::TypeErrorKind::InvalidOperation,
+                0..1,
+                "invalid embedded data",
+            )
+            .with_source_input(&path),
+            &snapshot,
+        );
+        assert_eq!(
+            diagnostic.filename.as_deref(),
+            Some(display_path(&path).as_str())
+        );
+        assert_eq!(diagnostic.source.as_deref(), Some("\u{fffd}\0"));
+        assert_eq!(snapshot.documents.read_bytes(&path).unwrap(), [0xff, 0x00]);
     }
 
     fn identity(output: &hew_types::TypeCheckOutput, id: hew_types::DefId) -> String {
@@ -10292,13 +10338,25 @@ fn main() {
         let options = test_options();
         let mut batch = SourceAnalysisBatch::new(options.clone());
         for (name, source) in [
-            ("first.hew", "import greeting; fn first() -> i32 { greeting.greet() }"),
-            ("second.hew", "import greeting.{ greet as invoke_greeting }; fn second() -> i32 { let local: fn[suspends]() -> i32 = || invoke_greeting(); local() }"),
+            (
+                "first.hew",
+                "import greeting; fn first() -> i32 { greeting.greet() }",
+            ),
+            (
+                "second.hew",
+                "import greeting.{ greet as invoke_greeting }; fn second() -> i32 { let local: fn[suspends]() -> i32 = || invoke_greeting(); local() }",
+            ),
         ] {
             let label = dir.path().join(name);
             let state = assert_equivalent(source, label.to_str().unwrap(), &options, &mut batch);
             assert!(state.stopped.is_none(), "{:?}", state.diagnostics);
-            let output = state.typecheck_result.as_ref().unwrap().tco.as_ref().unwrap();
+            let output = state
+                .typecheck_result
+                .as_ref()
+                .unwrap()
+                .tco
+                .as_ref()
+                .unwrap();
             assert!(!output.closure_escape_facts.is_empty());
             assert!(!output.suspension_effects.calls.is_empty());
         }

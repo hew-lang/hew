@@ -1224,25 +1224,6 @@ impl Checker {
         }
     }
 
-    /// Instantiate generic binders with fresh variables while normalizing, then
-    /// restore their names. An unrelated alias with a binder's spelling must
-    /// never capture a generic parameter in a published declaration template.
-    pub(super) fn normalize_for_type_params(&self, ty: &Ty, params: &[crate::ParamHead]) -> Ty {
-        if params.is_empty() {
-            return self.normalize_for_use(ty);
-        }
-        let binders: Vec<_> = params.iter().map(|name| (name, TypeVar::fresh())).collect();
-        let substitutions = binders
-            .iter()
-            .map(|(name, var)| (*(*name), Ty::Var(*var)))
-            .collect();
-        let protected = ty.substitute_type_params_parallel(&substitutions);
-        let resolved = self.normalize_for_use(&protected);
-        binders.into_iter().fold(resolved, |ty, (name, var)| {
-            ty.substitute(var, &Ty::param(*name))
-        })
-    }
-
     /// Finish a source signature in the declaration's lexical module, where
     /// import aliases in its annotations were introduced.
     pub(super) fn resolve_source_fn_sig(
@@ -1273,31 +1254,23 @@ impl Checker {
                 .params
                 .iter()
                 .map(|parameter| {
-                    parameter.map(|ty| {
-                        self.bind_associated_schema_type(
-                            &self.normalize_for_type_params(ty, &sig.type_params),
-                        )
-                    })
+                    parameter
+                        .map(|ty| self.bind_associated_schema_type(&self.normalize_for_use(ty)))
                 })
                 .collect(),
-            return_type: self.bind_associated_schema_type(
-                &self.normalize_for_type_params(&sig.return_type, &sig.type_params),
-            ),
+            return_type: self
+                .bind_associated_schema_type(&self.normalize_for_use(&sig.return_type)),
             ..sig.clone()
         }
     }
 
-    fn resolve_variant_def(&self, variant: &VariantDef, params: &[crate::ParamHead]) -> VariantDef {
+    fn resolve_variant_def(&self, variant: &VariantDef) -> VariantDef {
         match variant {
             VariantDef::Unit => VariantDef::Unit,
             VariantDef::Tuple(fields) => VariantDef::Tuple(
                 fields
                     .iter()
-                    .map(|field| {
-                        self.bind_associated_schema_type(
-                            &self.normalize_for_type_params(field, params),
-                        )
-                    })
+                    .map(|field| self.bind_associated_schema_type(&self.normalize_for_use(field)))
                     .collect(),
             ),
             VariantDef::Struct(fields) => VariantDef::Struct(
@@ -1306,9 +1279,7 @@ impl Checker {
                     .map(|(name, ty)| {
                         (
                             name.clone(),
-                            self.bind_associated_schema_type(
-                                &self.normalize_for_type_params(ty, params),
-                            ),
+                            self.bind_associated_schema_type(&self.normalize_for_use(ty)),
                         )
                     })
                     .collect(),
@@ -1324,21 +1295,14 @@ impl Checker {
                 .map(|(name, ty)| {
                     (
                         name.clone(),
-                        self.bind_associated_schema_type(
-                            &self.normalize_for_type_params(ty, &type_def.type_params),
-                        ),
+                        self.bind_associated_schema_type(&self.normalize_for_use(ty)),
                     )
                 })
                 .collect(),
             variants: type_def
                 .variants
                 .iter()
-                .map(|(name, variant)| {
-                    (
-                        name.clone(),
-                        self.resolve_variant_def(variant, &type_def.type_params),
-                    )
-                })
+                .map(|(name, variant)| (name.clone(), self.resolve_variant_def(variant)))
                 .collect(),
             methods: type_def
                 .methods

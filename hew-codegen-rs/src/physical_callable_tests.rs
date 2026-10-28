@@ -413,7 +413,7 @@ fn failed_nested_callable_clone_rolls_back_completed_fields_and_preserves_output
         },
     );
     for (index, row) in physical.managed_types.values_mut().enumerate() {
-        row.id = hew_mir::physical::PhysicalManagedId(u32::try_from(index).unwrap());
+        row.id = hew_mir::physical::PhysicalManagedId(u32::try_from(index).unwrap() * 3 + 7);
     }
     let env = &mut physical.environment_glue[0];
     env.fields[1] = PhysicalValueRecipe {

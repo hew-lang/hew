@@ -870,6 +870,10 @@ impl crate::value_class::ClassDeclarations for TypeFactContext {
         crate::value_class::ClassDeclarations::builtin_declaration(&self.declarations, builtin)
     }
 
+    fn parameter_source(&self, parameter: crate::ParamHead) -> crate::ParamHead {
+        self.associated_types.parameter_source(parameter)
+    }
+
     fn instantiate_members(
         &self,
         declaration: &DeclaredType,

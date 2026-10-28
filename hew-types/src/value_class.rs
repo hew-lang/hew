@@ -121,6 +121,12 @@ pub trait ClassDeclarations {
     /// The exact source declaration implementing a compiler-owned aggregate.
     fn builtin_declaration(&self, builtin: BuiltinType) -> Option<crate::NominalId>;
 
+    /// The source binder on which an implicit associated-type binder depends.
+    /// Ordinary parameters are their own source.
+    fn parameter_source(&self, parameter: crate::ParamHead) -> crate::ParamHead {
+        parameter
+    }
+
     /// Instantiate declaration members using the checked associated-type schema.
     ///
     /// # Errors
@@ -378,8 +384,17 @@ impl Walk {
                 let mut used = self.used_parameters[id].clone();
                 for member in &declaration.members {
                     visit_class_inputs(member, decls, Some(&self.used_parameters), &mut |input| {
-                        for (index, parameter) in declaration.type_params.iter().enumerate() {
-                            used[index] |= is_own_parameter(input, &[*parameter]);
+                        if let Some(parameter) = type_parameter(input) {
+                            let source = if declaration.type_params.contains(&parameter) {
+                                parameter
+                            } else {
+                                decls.declarations.parameter_source(parameter)
+                            };
+                            if let Some(index) =
+                                declaration.type_params.iter().position(|p| *p == source)
+                            {
+                                used[index] = true;
+                            }
                         }
                     });
                 }
@@ -451,8 +466,12 @@ impl Walk {
 /// An argument that mentions none of them is a constant: substituting the
 /// declaration's parameters cannot change it, so an edge carrying it reaches
 /// one fixed instantiation however many times the cycle turns.
-fn mentions_type_param(ty: &ResolvedTy, params: &[crate::ParamHead]) -> bool {
-    if is_own_parameter(ty, params) {
+fn mentions_type_param(
+    ty: &ResolvedTy,
+    params: &[crate::ParamHead],
+    decls: &ClassContext<'_>,
+) -> bool {
+    if is_own_parameter(ty, params, decls) {
         return true;
     }
     match ty {
@@ -465,16 +484,18 @@ fn mentions_type_param(ty: &ResolvedTy, params: &[crate::ParamHead]) -> bool {
                 .copied()
                 .filter(|parameter| !parameters.iter().any(|bound| bound.parameter == *parameter))
                 .collect();
-            mentions_type_param(callable, &free)
+            mentions_type_param(callable, &free, decls)
         }
         ResolvedTy::Tuple(elements) => elements
             .iter()
-            .any(|element| mentions_type_param(element, params)),
+            .any(|element| mentions_type_param(element, params, decls)),
         ResolvedTy::Array(element, _) | ResolvedTy::Slice(element) => {
-            mentions_type_param(element, params)
+            mentions_type_param(element, params, decls)
         }
-        ResolvedTy::Task(inner) => mentions_type_param(inner, params),
-        ResolvedTy::Named { args, .. } => args.iter().any(|arg| mentions_type_param(arg, params)),
+        ResolvedTy::Task(inner) => mentions_type_param(inner, params, decls),
+        ResolvedTy::Named { args, .. } => args
+            .iter()
+            .any(|arg| mentions_type_param(arg, params, decls)),
         ResolvedTy::Closure {
             params: p,
             ret,
@@ -482,14 +503,16 @@ fn mentions_type_param(ty: &ResolvedTy, params: &[crate::ParamHead]) -> bool {
             ..
         } => {
             p.iter()
-                .any(|parameter| mentions_type_param(&parameter.ty, params))
-                || mentions_type_param(ret, params)
-                || captures.iter().any(|t| mentions_type_param(t, params))
+                .any(|parameter| mentions_type_param(&parameter.ty, params, decls))
+                || mentions_type_param(ret, params, decls)
+                || captures
+                    .iter()
+                    .any(|t| mentions_type_param(t, params, decls))
         }
         ResolvedTy::Function { params: p, ret, .. } => {
             p.iter()
-                .any(|parameter| mentions_type_param(&parameter.ty, params))
-                || mentions_type_param(ret, params)
+                .any(|parameter| mentions_type_param(&parameter.ty, params, decls))
+                || mentions_type_param(ret, params, decls)
         }
         _ => false,
     }
@@ -500,18 +523,29 @@ fn mentions_type_param(ty: &ResolvedTy, params: &[crate::ParamHead]) -> bool {
 /// A parameter reaches here spelled either as an abstract `TypeParam` or, when
 /// the declaration was resolved without a type-parameter scope, as a
 /// zero-argument user `Named`. [`substitute`] reads both spellings and so does
-/// this.
-fn is_own_parameter(arg: &ResolvedTy, params: &[crate::ParamHead]) -> bool {
-    let name = match arg {
-        ResolvedTy::TypeParam { name } => name,
+/// this. Checked associated binders retain their dependence on the source
+/// parameter through the declaration's schema metadata.
+fn type_parameter(arg: &ResolvedTy) -> Option<crate::ParamHead> {
+    match arg {
+        ResolvedTy::TypeParam { name } => Some(*name),
         ResolvedTy::Named {
             head: crate::TypeHead::Param(param),
             args,
             ..
-        } if args.is_empty() => param,
-        _ => return false,
-    };
-    params.iter().any(|param| param == name)
+        } if args.is_empty() => Some(*param),
+        _ => None,
+    }
+}
+
+fn is_own_parameter(
+    arg: &ResolvedTy,
+    params: &[crate::ParamHead],
+    decls: &ClassContext<'_>,
+) -> bool {
+    type_parameter(arg).is_some_and(|parameter| {
+        params.contains(&parameter)
+            || params.contains(&decls.declarations.parameter_source(parameter))
+    })
 }
 
 /// Nominal declarations reached by the member walk. Other builtins have their
@@ -571,9 +605,9 @@ fn visit_class_inputs(
 }
 
 /// Solve argument growth over a finite graph of declaration parameter positions.
-/// A bare parameter flows unchanged; a constructor around it adds growth. An
-/// SCC containing a growing edge has unbounded instantiations. Constants cut
-/// the flow, while permutations and projections have finite orbits.
+/// Refuse constructor-bearing parameter cycles. Constants cut the flow, while
+/// selecting or permuting bare parameters has a finite orbit. Associated
+/// binders retain dependence on their checked source parameter.
 fn instantiation_growth(
     root: crate::NominalId,
     decls: &ClassContext<'_>,
@@ -614,10 +648,12 @@ fn instantiation_growth(
             for (index, arg) in args.iter().take(target.type_params.len()).enumerate() {
                 let to = (*mentioned, index);
                 for (position, parameter) in declaration.type_params.iter().enumerate() {
-                    if mentions_type_param(arg, &[*parameter]) {
+                    if mentions_type_param(arg, &[*parameter], decls) {
                         let from = (id, position);
                         edges.entry(from).or_default().insert(to);
-                        if !is_own_parameter(arg, &[*parameter]) {
+                        // A schema parameter preserves dependence on its base.
+                        // A constructor around that dependency adds growth.
+                        if type_parameter(arg).is_none() {
                             growing.insert((from, to));
                         }
                     }

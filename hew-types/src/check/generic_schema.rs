@@ -9,6 +9,15 @@ pub struct AssociatedTypeSchemas {
 }
 
 impl AssociatedTypeSchemas {
+    /// Follow declaration-owned projection binders back to their source type
+    /// parameter, retaining dependence through chained associated projections.
+    pub(crate) fn parameter_source(&self, mut parameter: crate::ParamHead) -> crate::ParamHead {
+        while let Some((base, _, _)) = self.projection_of(parameter) {
+            parameter = base;
+        }
+        parameter
+    }
+
     pub(crate) fn instantiate_resolved_member(
         &self,
         member: &super::ResolvedTy,

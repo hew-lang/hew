@@ -378,6 +378,12 @@ impl crate::value_class::ClassDeclarations for CheckerClassDeclarations<'_> {
             })
             .collect()
     }
+
+    fn parameter_source(&self, parameter: crate::ParamHead) -> crate::ParamHead {
+        self.checker
+            .associated_schema_parameters
+            .parameter_source(parameter)
+    }
 }
 
 /// Restore a member type's opacity from its declaration authority, including

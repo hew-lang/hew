@@ -1065,15 +1065,17 @@ pub(super) mod tests {
 
     #[test]
     fn frontend_diagnostics_keep_distinct_text_snapshots_for_one_uri() {
-        let uri = Url::parse("file:///shared.hew").unwrap();
+        let path = std::env::temp_dir().join("hew-lsp-diagnostic-shared.hew");
+        let uri = Url::from_checked_file_path(&path).unwrap();
+        let filename = path.to_string_lossy().into_owned();
         let root_source = "fn main() {}";
         let first = "😀x\n";
         let second = "line\n😀x\n";
         let diagnostics = vec![
             hew_compile::FrontendDiagnostic {
                 source: Some(first.to_string()),
-                filename: Some("/shared.hew".to_string()),
-                note_sources: vec![Some((second.to_string(), "/shared.hew".to_string()))],
+                filename: Some(filename.clone()),
+                note_sources: vec![Some((second.to_string(), filename.clone()))],
                 kind: hew_compile::FrontendDiagnosticKind::Type(
                     hew_types::TypeError::new(TypeErrorKind::ReturnTypeMismatch, 4..5, "first")
                         .with_note(9..10, "other snapshot"),
@@ -1081,7 +1083,7 @@ pub(super) mod tests {
             },
             hew_compile::FrontendDiagnostic {
                 source: Some(second.to_string()),
-                filename: Some("/shared.hew".to_string()),
+                filename: Some(filename.clone()),
                 note_sources: Vec::new(),
                 kind: hew_compile::FrontendDiagnosticKind::Type(hew_types::TypeError::new(
                     TypeErrorKind::ReturnTypeMismatch,

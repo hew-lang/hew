@@ -2,7 +2,7 @@
 
 use super::*;
 
-impl LowerCtx {
+impl LowerCtx<'_> {
     pub(super) fn lower_block(&mut self, block: &Block, expected_ty: &ResolvedTy) -> HirBlock {
         self.push_scope();
         let scope = self.ids.scope();
@@ -917,7 +917,7 @@ impl LowerCtx {
         if family.is_none() && op.is_none() {
             return None;
         }
-        let value_ty = self.resolved_expr_types.get(&key)?.clone();
+        let value_ty = self.checked_resolved_type(&key)?.into_owned();
         let mut receiver = self.lower_expr(object, IntentKind::Read);
         let index = self.lower_expr(index, IntentKind::Read);
         let replacement = self.lower_expr(value, IntentKind::Read);

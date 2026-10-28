@@ -2,7 +2,7 @@
 
 use super::*;
 
-impl LowerCtx {
+impl LowerCtx<'_> {
     /// Lower a format module's `encode(value)` or `decode<T>(document)` to a
     /// [`HirExprKind::WireCodec`] node. The operand is borrowed: the codec
     /// walks it without taking ownership. An encode produces the format's

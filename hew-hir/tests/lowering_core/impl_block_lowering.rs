@@ -557,3 +557,14 @@ fn mixed_ffi_and_real_body_inherent_impl_on_builtin_nominal_stays_fail_closed() 
         output.diagnostics,
     );
 }
+
+#[test]
+fn trait_defaults_preserve_independent_concrete_and_generic_receivers() {
+    let output = lower(include_str!(
+        "../../../tests/vertical-slice/accept/trait_default_scoped_receiver.hew"
+    ));
+    assert_no_top_level_item_unsupported(&output);
+    assert!(hew_hir::analyze_hir(&output.module)
+        .diagnostics()
+        .is_empty());
+}

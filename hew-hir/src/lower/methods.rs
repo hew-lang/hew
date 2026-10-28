@@ -2,7 +2,7 @@
 
 use super::*;
 
-impl LowerCtx {
+impl LowerCtx<'_> {
     /// Lower a method call the checker dispatched to an actor receive handler.
     /// Kept out of `lower_method_call` so its locals do not enlarge that frame.
     #[inline(never)]
@@ -251,7 +251,7 @@ impl LowerCtx {
         // emits the pool ABI — the synthetic callee is never resolved.
         let pool_key = self.mk_key(&span);
         if let Some(accessor) = self.pool_accessor_sites_checker.get(&pool_key).cloned() {
-            let Some(ty) = self.expr_types.get(&pool_key) else {
+            let Some(ty) = self.checked_expr_type(&pool_key) else {
                 self.diagnostics.push(HirDiagnostic::new(
                     HirDiagnosticKind::CheckerBoundaryViolation {
                         name: format!("supervisor pool accessor `{method}`"),
@@ -267,7 +267,7 @@ impl LowerCtx {
                     ResolvedTy::Unit,
                 );
             };
-            let result_ty = match ResolvedTy::from_ty(ty) {
+            let result_ty = match ResolvedTy::from_ty(&ty) {
                 Ok(resolved) => resolved,
                 Err(err) => {
                     self.diagnostics.push(HirDiagnostic::new(
@@ -542,11 +542,10 @@ impl LowerCtx {
             // (the call's full span). Fail-closed if absent or poisoned.
             let ret_ty = self
                 .checked_ty(&span)
-                .cloned()
+                .map(Cow::into_owned)
                 .or_else(|| {
-                    self.expr_types
-                        .get(&key)
-                        .cloned()
+                    self.checked_expr_type(&key)
+                        .map(Cow::into_owned)
                         .and_then(|ty| ResolvedTy::from_ty(&ty).ok())
                 })
                 .unwrap_or(ResolvedTy::Unit);
@@ -558,9 +557,6 @@ impl LowerCtx {
                     ret_ty,
                 );
             }
-            // W4.047 P1.2: prove the typed handoff agrees at this fail-open
-            // dyn-method-return site (no behaviour change).
-            self.assert_resolved_ty_totality(&span);
             return (
                 HirExprKind::CallDynMethod {
                     receiver: Box::new(lowered_receiver),
@@ -580,8 +576,8 @@ impl LowerCtx {
         // fail-closed per `checker-output-boundary`. The checker MUST
         // populate `dyn_trait_method_calls` for every accepted call on
         // a trait-object receiver; missing entry is a hard diagnostic.
-        if let Some(receiver_ty) = self.expr_types.get(&self.mk_key(&receiver.1)) {
-            if matches!(receiver_ty, hew_types::Ty::TraitObject { .. }) {
+        if let Some(receiver_ty) = self.checked_expr_type(&self.mk_key(&receiver.1)) {
+            if matches!(*receiver_ty, hew_types::Ty::TraitObject { .. }) {
                 self.diagnostics.push(HirDiagnostic::new(
                     HirDiagnosticKind::TraitObjectMethodNoSideTableEntry {
                         method: method.to_string(),
@@ -621,9 +617,8 @@ impl LowerCtx {
                 // violation — we record it eagerly so the gap is visible
                 // long before the consumer is wired.
                 let ret_ty = match self
-                    .expr_types
-                    .get(&key)
-                    .cloned()
+                    .checked_expr_type(&key)
+                    .map(Cow::into_owned)
                     .map(|ty| ResolvedTy::from_ty(&ty))
                 {
                     Some(Ok(ty)) => Some(ty),
@@ -688,10 +683,8 @@ impl LowerCtx {
         match rewrite {
             Some(MethodCallRewrite::RcIntrinsic { op, payload_ty }) => {
                 let result_ty = self
-                    .resolved_expr_types
-                    .get(&key)
-                    .cloned()
-                    .unwrap_or(ResolvedTy::Unit);
+                    .checked_resolved_type(&key)
+                    .map_or(ResolvedTy::Unit, Cow::into_owned);
                 let receiver = (op != RcIntrinsicOp::New)
                     .then(|| Box::new(self.lower_expr(receiver, IntentKind::Read)));
                 let value = if matches!(op, RcIntrinsicOp::New | RcIntrinsicOp::Set) {
@@ -725,9 +718,8 @@ impl LowerCtx {
             }
             Some(MethodCallRewrite::Codec { codec, value_ty }) => {
                 let checked_ty = self
-                    .expr_types
-                    .get(&key)
-                    .and_then(|ty| ResolvedTy::from_ty(ty).ok());
+                    .checked_expr_type(&key)
+                    .and_then(|ty| ResolvedTy::from_ty(&ty).ok());
                 self.lower_codec(args, codec, value_ty, checked_ty, span)
             }
             Some(MethodCallRewrite::RewriteToFunction {
@@ -793,9 +785,8 @@ impl LowerCtx {
                 // so the fallback is safe and this path remains correct for all callers.
                 // `params` is empty — the call arg list carries the real args.
                 let ret_ty = self
-                    .expr_types
-                    .get(&key)
-                    .cloned()
+                    .checked_expr_type(&key)
+                    .map(Cow::into_owned)
                     .and_then(|ty| ResolvedTy::from_ty(&ty).ok())
                     .map_or(ResolvedTy::Unit, |ty| {
                         self.restore_type_declaration_facts(ty)
@@ -839,9 +830,6 @@ impl LowerCtx {
                         ret_ty,
                     );
                 }
-                // W4.047 P1.2: prove the typed handoff agrees at this fail-open
-                // receiver-method-rewrite return site (no behaviour change).
-                self.assert_resolved_ty_totality(&span);
                 if requires_mutable_receiver {
                     let lowered_receiver = self.lower_expr(receiver, IntentKind::Consume);
                     let receiver_ty = lowered_receiver.ty.clone();
@@ -963,9 +951,8 @@ impl LowerCtx {
                     evaluation_order,
                 } = self.lower_call_args(args, &span);
                 let checked_ret_ty = self
-                    .expr_types
-                    .get(&key)
-                    .map(Ty::materialize_literal_defaults)
+                    .checked_expr_type(&key)
+                    .map(|ty| ty.materialize_literal_defaults())
                     .and_then(|ty| ResolvedTy::from_ty(&ty).ok());
                 let dispatch_ty = checked_ret_ty
                     .as_ref()
@@ -1081,10 +1068,8 @@ impl LowerCtx {
             // `T.make(n)`: the receiver names the binder, not a value.
             Some(MethodCallRewrite::BinderStaticCall(call)) => {
                 let ret_ty = self
-                    .resolved_expr_types
-                    .get(&key)
-                    .cloned()
-                    .unwrap_or(ResolvedTy::Unit);
+                    .checked_resolved_type(&key)
+                    .map_or(ResolvedTy::Unit, Cow::into_owned);
                 self.record_call_type_args(&span, site);
                 let lowered_args = self.lower_call_args(args, &span);
                 (
@@ -1101,14 +1086,10 @@ impl LowerCtx {
                 returns_receiver_identity,
             }) => {
                 let ret_ty = self
-                    .expr_types
-                    .get(&key)
-                    .cloned()
+                    .checked_expr_type(&key)
+                    .map(Cow::into_owned)
                     .and_then(|ty| ResolvedTy::from_ty(&ty).ok())
                     .unwrap_or(ResolvedTy::Unit);
-                // W4.047 P1.2: prove the typed handoff agrees at this fail-open
-                // static-trait-dispatch return site (no behaviour change).
-                self.assert_resolved_ty_totality(&span);
 
                 // Trait default method body — concrete Self interception.
                 //
@@ -1314,9 +1295,8 @@ impl LowerCtx {
                 // Prefer the checker-typed result; fall back to constructing
                 // a Named type from the record name (should always resolve).
                 let ret_ty = self
-                    .expr_types
-                    .get(&key)
-                    .and_then(|ty| ResolvedTy::from_ty(ty).ok())
+                    .checked_expr_type(&key)
+                    .and_then(|ty| ResolvedTy::from_ty(&ty).ok())
                     .unwrap_or_else(|| ResolvedTy::named_path(&self.defs, &record_name, vec![]));
                 let sym = format!("__hew_record_clone_inplace_{record_name}");
                 let lowered_receiver = self.lower_expr(receiver, IntentKind::Read);

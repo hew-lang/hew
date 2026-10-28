@@ -2,7 +2,7 @@
 
 use super::*;
 
-impl LowerCtx {
+impl LowerCtx<'_> {
     pub(super) fn pattern_name(&mut self, pattern: &Spanned<Pattern>) -> Option<String> {
         if let Pattern::Identifier(name) = &pattern.0 {
             Some(name.to_string())
@@ -292,7 +292,7 @@ impl LowerCtx {
         name: &str,
     ) -> Option<ResolvedTy> {
         let checker_key = self.mk_key(span);
-        let Some(checker_ty) = self.expr_types.get(&checker_key).cloned() else {
+        let Some(checker_ty) = self.checked_expr_type(&checker_key).map(Cow::into_owned) else {
             self.diagnostics.push(HirDiagnostic::new(
                 HirDiagnosticKind::CheckerBoundaryViolation {
                     name: name.to_string(),

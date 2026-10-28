@@ -2,7 +2,7 @@
 
 use super::*;
 
-impl LowerCtx {
+impl LowerCtx<'_> {
     /// Consume complete checker-authored physical payload initialization.
     pub(super) fn lower_planned_variant_constructor(
         &mut self,
@@ -192,7 +192,8 @@ impl LowerCtx {
         // with a diagnostic if expr_types has no entry — absence is a real
         // signal (checker should always populate this site).
         let checker_key = self.mk_key(span);
-        let result_ty = if let Some(ty) = self.expr_types.get(&checker_key).cloned() {
+        let result_ty = if let Some(ty) = self.checked_expr_type(&checker_key).map(Cow::into_owned)
+        {
             match ResolvedTy::from_ty(&ty) {
                 Ok(resolved) => self.restore_type_declaration_facts(resolved),
                 Err(err) => {

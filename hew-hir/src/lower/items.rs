@@ -3,7 +3,7 @@
 use super::*;
 use hew_parser::ast::Ident;
 
-impl LowerCtx {
+impl LowerCtx<'_> {
     pub(super) fn lower_fn(
         &mut self,
         func: &FnDecl,

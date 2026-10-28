@@ -4,7 +4,7 @@ use hew_parser::ast::{Expr, Span, Spanned};
 use hew_types::check::RaceOperandKind;
 use hew_types::ResolvedTy;
 
-impl LowerCtx {
+impl LowerCtx<'_> {
     pub(super) fn lower_race(
         &mut self,
         branches: &[Spanned<Expr>],

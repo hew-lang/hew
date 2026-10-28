@@ -2,7 +2,7 @@
 
 use super::*;
 
-impl LowerCtx {
+impl LowerCtx<'_> {
     /// Preserve the checked call result separately from the raw actor reply ABI.
     /// The addressed description a submission consumes, read out of the
     /// checked `Result<Delivery, ActorError<Never, M>>` the call site carries.
@@ -33,10 +33,9 @@ impl LowerCtx {
         handler: hew_types::DefId,
     ) -> Option<ResolvedTy> {
         let result = self
-            .expr_types
-            .get(&self.mk_key(span))
+            .checked_expr_type(&self.mk_key(span))
             .ok_or_else(|| "missing checker expression type".to_string())
-            .and_then(|ty| ResolvedTy::from_ty(ty).map_err(|err| err.to_string()));
+            .and_then(|ty| ResolvedTy::from_ty(&ty).map_err(|err| err.to_string()));
         let result_ty = match result {
             Ok(
                 ty @ ResolvedTy::Named {

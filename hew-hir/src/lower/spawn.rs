@@ -3,7 +3,7 @@
 use super::*;
 use hew_parser::ast::Ident;
 
-impl LowerCtx {
+impl LowerCtx<'_> {
     pub(super) fn lower_spawn(
         &mut self,
         target: &Spanned<Expr>,
@@ -45,7 +45,10 @@ impl LowerCtx {
             .iter()
             .map(|(name, expr)| (name.to_string(), self.lower_expr(expr, IntentKind::Read)))
             .collect::<Vec<_>>();
-        let ty = if let Some(ty) = self.expr_types.get(&self.mk_key(&span)).cloned() {
+        let ty = if let Some(ty) = self
+            .checked_expr_type(&self.mk_key(&span))
+            .map(Cow::into_owned)
+        {
             match ResolvedTy::from_ty(&ty) {
                 Ok(resolved) => resolved,
                 Err(err) => {

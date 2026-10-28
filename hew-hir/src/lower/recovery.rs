@@ -19,7 +19,7 @@ pub(super) enum ResultVariant {
     Err,
 }
 
-impl LowerCtx {
+impl LowerCtx<'_> {
     pub(super) fn missing_recovery_fact(
         &mut self,
         span: &std::ops::Range<usize>,

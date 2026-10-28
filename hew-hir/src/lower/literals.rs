@@ -2,7 +2,7 @@
 
 use super::*;
 
-impl LowerCtx {
+impl LowerCtx<'_> {
     pub(super) fn lower_literal(lit: &Literal) -> (HirExprKind, ResolvedTy) {
         match lit {
             Literal::Integer { value, .. } => (
@@ -51,13 +51,12 @@ impl LowerCtx {
         let default_ty = ResolvedTy::I64;
         let ty = {
             let checker_key = self.mk_key(span);
-            if let Some(checker_ty) = self.expr_types.get(&checker_key) {
-                ResolvedTy::from_ty(checker_ty).unwrap_or(default_ty)
+            if let Some(checker_ty) = self.checked_expr_type(&checker_key) {
+                ResolvedTy::from_ty(&checker_ty).unwrap_or(default_ty)
             } else {
                 default_ty
             }
         };
-        self.assert_resolved_ty_totality(span);
         (HirExprKind::Literal(HirLiteral::Integer(negated)), ty)
     }
 
@@ -142,7 +141,7 @@ impl LowerCtx {
 
     pub(super) fn checker_expr_ty(&mut self, span: &Span, label: &str) -> Option<ResolvedTy> {
         let key = self.mk_key(span);
-        let Some(ty) = self.expr_types.get(&key).cloned() else {
+        let Some(ty) = self.checked_expr_type(&key).map(Cow::into_owned) else {
             self.diagnostics.push(HirDiagnostic::new(
                 HirDiagnosticKind::CheckerBoundaryViolation {
                     name: label.to_string(),
@@ -176,7 +175,7 @@ impl LowerCtx {
         result_ty: &ResolvedTy,
     ) -> Option<ResolvedTy> {
         let key = self.mk_key(&operand.1);
-        match self.expr_types.get(&key).cloned() {
+        match self.checked_expr_type(&key).map(Cow::into_owned) {
             Some(ty) => match ResolvedTy::from_ty(&ty) {
                 Ok(resolved) => {
                     // The operand span may have been recorded as `IntLiteral`

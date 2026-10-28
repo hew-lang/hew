@@ -1,0 +1,10 @@
+[[case]]
+id = "trait_default_scoped_receiver"
+intent = "Trait defaults retain independent concrete and generic receiver types alongside callable specialization."
+source = "../vertical-slice/accept/trait_default_scoped_receiver.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.expected]
+stdout_file = "../vertical-slice/accept/trait_default_scoped_receiver.expected"
+exit = 0

@@ -2,7 +2,7 @@
 
 use super::*;
 
-impl LowerCtx {
+impl LowerCtx<'_> {
     /// Lower a call's ordinary (non-receiver) arguments, choosing each
     /// argument's move-vs-borrow intent through `arg_move_intent`. A by-value
     /// user-`#[resource]` argument is lowered `Consume` (an ownership move into
@@ -132,9 +132,8 @@ impl LowerCtx {
     /// Absent or unconvertible entries answer `false` — the conservative
     /// no-ownership-transfer default.
     pub(super) fn checked_span_is_pipe_handle(&self, span: &Span) -> bool {
-        self.expr_types
-            .get(&self.mk_key(span))
-            .and_then(|ty| ResolvedTy::from_ty(ty).ok())
+        self.checked_expr_type(&self.mk_key(span))
+            .and_then(|ty| ResolvedTy::from_ty(&ty).ok())
             .is_some_and(|resolved| {
                 matches!(
                     resolved,
@@ -175,9 +174,8 @@ impl LowerCtx {
     /// through here so no argument position is left unowned.
     pub(super) fn actor_message_arg_intent(&self, span: &Span) -> IntentKind {
         let transfers = self
-            .expr_types
-            .get(&self.mk_key(span))
-            .and_then(|ty| ResolvedTy::from_ty(ty).ok())
+            .checked_expr_type(&self.mk_key(span))
+            .and_then(|ty| ResolvedTy::from_ty(&ty).ok())
             .is_some_and(|resolved| self.resolved_ty_transfers_ownership_to_mailbox(&resolved));
         if transfers {
             IntentKind::Consume
@@ -420,14 +418,12 @@ impl LowerCtx {
         self.record_free_fn_call_type_args(&symbol, selected_declaration, span, site);
         let key = self.mk_key(span);
         let ret_ty = self
-            .expr_types
-            .get(&key)
-            .cloned()
+            .checked_expr_type(&key)
+            .map(Cow::into_owned)
             .and_then(|ty| ResolvedTy::from_ty(&ty).ok())
             .map_or(ResolvedTy::Unit, |ty| {
                 self.restore_type_declaration_facts(ty)
             });
-        self.assert_resolved_ty_totality(span);
         let resolved_ref = match &target {
             // The checker has already selected this closed executable family.
             // Do not require a synthetic fn-registry spelling (or recover one
@@ -687,7 +683,8 @@ impl LowerCtx {
         // for checker-registered builtins that have no AST `fn` item and
         // therefore no `fn_registry` hit. (LESSONS: checker-authority P0)
         let checker_key = self.mk_key(span);
-        let result_ty = if let Some(ty) = self.expr_types.get(&checker_key).cloned() {
+        let result_ty = if let Some(ty) = self.checked_expr_type(&checker_key).map(Cow::into_owned)
+        {
             match ResolvedTy::from_ty(&ty) {
                 Ok(resolved) => self.restore_type_declaration_facts(resolved),
                 Err(err) => {
@@ -1002,9 +999,8 @@ impl LowerCtx {
                 self.method_call_rewrites.get(&rewrite_key).cloned()
             {
                 let checked_ty = self
-                    .expr_types
-                    .get(&rewrite_key)
-                    .and_then(|ty| ResolvedTy::from_ty(ty).ok());
+                    .checked_expr_type(&rewrite_key)
+                    .and_then(|ty| ResolvedTy::from_ty(&ty).ok());
                 let (kind, ty) = self.lower_codec(args, codec, value_ty, checked_ty, span.clone());
                 return Err(Box::new(HirExpr {
                     node: self.ids.node(),
@@ -1020,15 +1016,14 @@ impl LowerCtx {
                 payload_ty,
             }) = self.method_call_rewrites.get(&rewrite_key).cloned()
             {
-                let result_ty = self
-                    .resolved_expr_types
-                    .get(&rewrite_key)
-                    .cloned()
-                    .unwrap_or_else(|| ResolvedTy::Named {
+                let result_ty = self.checked_resolved_type(&rewrite_key).map_or_else(
+                    || ResolvedTy::Named {
                         args: vec![payload_ty.clone()],
                         head: hew_types::TypeHead::Builtin(BuiltinType::Rc),
                         is_opaque: false,
-                    });
+                    },
+                    Cow::into_owned,
+                );
                 let value = args
                     .first()
                     .map(|arg| Box::new(self.lower_expr(arg.expr(), IntentKind::Consume)));

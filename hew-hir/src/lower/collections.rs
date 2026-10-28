@@ -3,7 +3,7 @@
 use super::*;
 use hew_parser::ast::Ident;
 
-impl LowerCtx {
+impl LowerCtx<'_> {
     pub(super) fn lower_tuple_literal(
         &mut self,
         elems: &[Spanned<Expr>],
@@ -55,7 +55,7 @@ impl LowerCtx {
 
     pub(super) fn array_literal_ty(&mut self, span: &Span) -> Option<(ResolvedTy, ResolvedTy)> {
         let key = self.mk_key(span);
-        let Some(ty) = self.expr_types.get(&key).cloned() else {
+        let Some(ty) = self.checked_expr_type(&key).map(Cow::into_owned) else {
             self.diagnostics.push(HirDiagnostic::new(
                 HirDiagnosticKind::CheckerBoundaryViolation {
                     name: "array literal".to_string(),
@@ -107,10 +107,8 @@ impl LowerCtx {
 
     pub(super) fn checker_expr_ty_if_present(&mut self, span: &Span) -> Option<ResolvedTy> {
         let key = self.mk_key(span);
-        self.expr_types
-            .get(&key)
-            .cloned()
-            .and_then(|ty| ResolvedTy::from_ty(&ty).ok())
+        self.checked_resolved_type(&key)
+            .map(Cow::into_owned)
             .map(|ty| self.restore_type_declaration_facts(ty))
     }
 
@@ -126,7 +124,7 @@ impl LowerCtx {
         span: &Span,
     ) -> Option<(ResolvedTy, ResolvedTy, ResolvedTy)> {
         let key = self.mk_key(span);
-        let Some(ty) = self.expr_types.get(&key).cloned() else {
+        let Some(ty) = self.checked_expr_type(&key).map(Cow::into_owned) else {
             self.diagnostics.push(HirDiagnostic::new(
                 HirDiagnosticKind::CheckerBoundaryViolation {
                     name: "map literal".to_string(),
@@ -665,9 +663,8 @@ impl LowerCtx {
         let source_is_place = Self::for_in_iterable_is_place(&operand.0);
 
         let source_ty = self
-            .expr_types
-            .get(&self.mk_key(&operand_span))
-            .and_then(|ty| ResolvedTy::from_ty(ty).ok())
+            .checked_expr_type(&self.mk_key(&operand_span))
+            .and_then(|ty| ResolvedTy::from_ty(&ty).ok())
             .unwrap_or_else(|| vec_ty.clone());
 
         let source_ref: Option<(String, BindingId)> = if source_is_place {

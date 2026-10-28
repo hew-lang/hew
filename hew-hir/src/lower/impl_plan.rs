@@ -42,7 +42,7 @@ pub(super) fn impl_method_symbol_collisions(
         .collect()
 }
 
-impl LowerCtx {
+impl LowerCtx<'_> {
     /// Preserve existing symbols for unique methods. When two checker
     /// declarations would share one symbol, add a reversible encoding of the
     /// declaration path to the owner portion of each symbol.

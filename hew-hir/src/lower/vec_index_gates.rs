@@ -23,8 +23,9 @@ use super::*;
 // on every target.
 
 pub(super) fn check_vec_index_element_type_gates(ctx: &mut LowerCtx, program: &Program) {
-    // Field-split borrow: `expr_types` is read-only; `diagnostics` is appended.
-    let expr_types = &ctx.expr_types;
+    // This whole-program gate runs before trait-default body specialization.
+    // It borrows the original checker facts while diagnostics are appended.
+    let expr_types = ctx.expr_types;
     let diagnostics = &mut ctx.diagnostics;
     for (item, _span) in &program.items {
         scan_item_for_vec_index_gate(item, expr_types, diagnostics);

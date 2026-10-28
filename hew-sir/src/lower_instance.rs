@@ -1726,27 +1726,32 @@ impl<'a> InstanceService<'a> {
         declaration: DefId,
         type_args: Vec<ResolvedTy>,
     ) -> Result<CallableId, SirLoweringError> {
-        let template = self
-            .table
-            .templates
-            .get(&declaration)
-            .cloned()
-            .ok_or_else(|| {
-                SirLoweringError::from(format!(
-                    "generic direct callee `{}` has no SIR template admission record",
-                    self.module.defs.path(declaration)
-                ))
-            })?;
-        if type_args.len() != template.function.type_params.len() {
+        let template = self.table.templates.get(&declaration).ok_or_else(|| {
+            SirLoweringError::from(format!(
+                "generic direct callee `{}` has no SIR template admission record",
+                self.module.defs.path(declaration)
+            ))
+        })?;
+        let key = SirInstanceKey {
+            template: template.id.clone(),
+            type_args,
+        };
+        // An admitted instance retains its type facts and shapes for this
+        // immutable HIR module, including while its body is queued or lowering.
+        if let Some(existing) = self.by_instance.get(&key).copied() {
+            return Ok(existing);
+        }
+        let template = template.clone();
+        if key.type_args.len() != template.function.type_params.len() {
             return Err(format!(
                 "generic direct callee `{}` expects {} type argument(s), HIR supplied {}",
                 self.module.defs.path(declaration),
                 template.function.type_params.len(),
-                type_args.len()
+                key.type_args.len()
             )
             .into());
         }
-        for (index, argument) in type_args.iter().enumerate() {
+        for (index, argument) in key.type_args.iter().enumerate() {
             if !is_supported_instance_type_arg(self.module, &self.checked_facts, argument) {
                 return Err(format!(
                     "generic direct callee `{}` type argument {index} is `{}`; SIR generic instances require a concrete semantic value contract",
@@ -1755,19 +1760,12 @@ impl<'a> InstanceService<'a> {
                 ).into());
             }
         }
-        for argument in &type_args {
+        for argument in &key.type_args {
             if !matches!(argument, ResolvedTy::Unit | ResolvedTy::Never) {
                 self.require_type_facts(argument)?;
             }
         }
-        let key = SirInstanceKey {
-            template: template.id,
-            type_args,
-        };
         self.used_templates.insert(key.template.clone());
-        if let Some(existing) = self.by_instance.get(&key).copied() {
-            return Ok(existing);
-        }
         if self.by_instance.len() >= SIR_GENERIC_INSTANCE_CAP {
             return Err(SirLoweringError::Limit(format!(
                 "SIR generic instance cap ({SIR_GENERIC_INSTANCE_CAP}) exceeded while specializing `{}`; refuse unbounded semantic specialization",

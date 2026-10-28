@@ -1120,10 +1120,12 @@ fn require_type_shapes(
         }
         if let ResolvedTy::Array(element, _) = &ty {
             pending.push((**element).clone());
+            continue;
         } else if let Some(payload) = hew_types::runtime_call::shared_handle_payload(&ty) {
             // The allocation's payload is an ordinary nested value; the walk's
             // own admission decides it.
             pending.push(payload.clone());
+            continue;
         } else if let Some((builtin, arguments)) = collection_type_arguments(&ty) {
             for argument in arguments {
                 if !is_supported_call_value(module, facts, argument) {
@@ -1143,6 +1145,7 @@ fn require_type_shapes(
             // Publish facts/shapes; the shared dependency verifier owns
             // recursive collection copy admissibility.
             pending.extend(arguments.iter().cloned());
+            continue;
         } else if is_concrete_variant_type(module, &ty) {
             let id =
                 require_variant_shape(module, facts, variant_shapes, variant_shapes_by_type, &ty)?;
@@ -1153,6 +1156,7 @@ fn require_type_shapes(
                     .flat_map(|variant| &variant.fields)
                     .map(|field| field.ty.clone()),
             );
+            continue;
         } else if is_concrete_aggregate_type(module, facts, &ty) {
             if let AggregateShapeRef::Record(id) = require_aggregate_shape(
                 module,
@@ -1167,6 +1171,9 @@ fn require_type_shapes(
                         .iter()
                         .map(|field| field.ty.clone()),
                 );
+                // Stored fields define the shape closure. Generic arguments
+                // may be phantom and do not independently require storage.
+                continue;
             }
         }
         // A pool view's parameters name the role its accessors mint,

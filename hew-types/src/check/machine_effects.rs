@@ -50,6 +50,10 @@ struct MachineShape {
 }
 
 /// `resource_closes` names each `#[resource]` type's inherent `close`.
+#[expect(
+    clippy::too_many_lines,
+    reason = "one purity pass constructs helper summaries and reports their machine proofs"
+)]
 pub(super) fn validate(
     output: &TypeCheckOutput,
     resource_closes: &HashMap<crate::NominalId, DefId>,
@@ -78,6 +82,9 @@ pub(super) fn validate(
                 )
             })
             .collect();
+    }
+    if machines.is_empty() {
+        return Vec::new();
     }
     let mut facts =
         TypeFactService::new(output.type_fact_context.clone(), output.type_facts.clone());
@@ -328,13 +335,18 @@ fn collect_released_resources(
     }
     match ty {
         ResolvedTy::Named { head, args, .. } => {
-            for arg in args {
-                collect_released_resources(arg, output, found, seen);
-            }
-            let Some(declaration) = head
+            let declaration = head
                 .declaration(&output.defs)
-                .and_then(|id| output.type_fact_context.declarations().get(&id))
-            else {
+                .and_then(|id| output.type_fact_context.declarations().get(&id));
+            // Native-backed carriers own their typed payloads. A source
+            // declaration instead owns its stored members; a generic argument
+            // alone does not introduce a value or a release obligation.
+            if head.builtin().is_some() || declaration.is_none() {
+                for arg in args {
+                    collect_released_resources(arg, output, found, seen);
+                }
+            }
+            let Some(declaration) = declaration else {
                 return;
             };
             if declaration.builtin.is_none() && declaration.marker == DeclarationMarker::Resource {

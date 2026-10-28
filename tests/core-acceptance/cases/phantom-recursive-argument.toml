@@ -1,0 +1,10 @@
+[[case]]
+id = "phantom-recursive-argument"
+intent = "A recursive type inside an unused generic argument remains finite through enum specialization, collection copies and cleanup."
+source = "cases/phantom-recursive-argument.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "LEAF\n42\n"
+exit = 0

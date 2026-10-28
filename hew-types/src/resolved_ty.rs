@@ -112,20 +112,9 @@ pub enum ResolvedTy {
         head: crate::TypeHead,
         /// Generic type arguments
         args: Vec<ResolvedTy>,
-        /// `#[opaque]`-handle discriminator. `true` means this `Named` resolved
-        /// to a type declared `#[opaque]` (a pointer-width runtime handle such
-        /// as `json.Value`) during HIR name resolution; `false`
-        /// means it is an ordinary user record/enum/actor or builtin.
-        ///
-        /// This is the type-identity carrier that lets the actor-state
-        /// clone/drop classifier (`hew-mir::state_clone`) distinguish a real
-        /// opaque handle from a user record/enum that merely shares its short
-        /// name. Name-based resolution is fundamentally ambiguous on such a
-        /// collision (`json.Value` and a user `type Value` both arrive at the
-        /// classifier as `Named { name: "Value" }`); consumers that must
-        /// fail-closed on opaque handles dispatch on THIS field, never on the
-        /// `name` string. Stamped by `hew-hir::lower::lower_type` from the
-        /// pre-collected opaque-type-decl set.
+        /// Materialized declaration opacity for ABI/layout consumers. Producers
+        /// derive it from the checked nominal declaration; it is not a separate
+        /// instance mode or an alternative to the declaration's ownership facts.
         is_opaque: bool,
     },
     /// Function type: `fn(T1, T2) -> R`.
@@ -1209,9 +1198,8 @@ impl ResolvedTy {
         }
     }
 
-    /// Construct a `Named` for a `#[opaque]` runtime-handle type (e.g.
-    /// `json.Value`). Sets `is_opaque: true` so the actor-state
-    /// clone/drop classifier recognises the handle by type identity.
+    /// Construct a `Named` for a checked `#[opaque]` runtime-handle declaration
+    /// (for example, `PeerSession`), carrying its ABI/layout annotation.
     #[must_use]
     pub fn named_opaque(nominal: crate::NominalHead, args: Vec<ResolvedTy>) -> Self {
         ResolvedTy::Named {

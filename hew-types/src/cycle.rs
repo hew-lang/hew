@@ -763,23 +763,23 @@ fn collect_actor_reference_edges(
 /// Tarjan's strongly connected components algorithm.
 ///
 /// Returns SCCs in reverse topological order (leaf SCCs first).
-fn tarjan_scc(
-    nodes: &[NominalId],
-    adj: &HashMap<NominalId, HashSet<NominalId>>,
-) -> Vec<Vec<NominalId>> {
-    struct State {
+pub(crate) fn tarjan_scc<K: Copy + Eq + std::hash::Hash>(
+    nodes: &[K],
+    adj: &HashMap<K, HashSet<K>>,
+) -> Vec<Vec<K>> {
+    struct State<K> {
         index_counter: usize,
-        stack: Vec<NominalId>,
-        on_stack: HashSet<NominalId>,
-        index: HashMap<NominalId, usize>,
-        lowlink: HashMap<NominalId, usize>,
-        result: Vec<Vec<NominalId>>,
+        stack: Vec<K>,
+        on_stack: HashSet<K>,
+        index: HashMap<K, usize>,
+        lowlink: HashMap<K, usize>,
+        result: Vec<Vec<K>>,
     }
 
-    fn strongconnect(
-        v: NominalId,
-        adj: &HashMap<NominalId, HashSet<NominalId>>,
-        state: &mut State,
+    fn strongconnect<K: Copy + Eq + std::hash::Hash>(
+        v: K,
+        adj: &HashMap<K, HashSet<K>>,
+        state: &mut State<K>,
     ) {
         state.index.insert(v, state.index_counter);
         state.lowlink.insert(v, state.index_counter);

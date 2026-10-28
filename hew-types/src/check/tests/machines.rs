@@ -194,6 +194,26 @@ fn machine_rejects_direct_and_transitive_effects() {
 }
 
 #[test]
+fn machine_helper_phantom_arguments_do_not_run_resource_cleanup() {
+    let output = checked_machine(
+        "let value = marker(); assert(value == 42);",
+        r"
+        #[resource]
+        type Noisy { value: i64; }
+        impl Noisy {
+            fn close(consume self) { println(self.value); }
+        }
+        type Marker<T> { value: i64; }
+        fn marker() -> i64 {
+            let tag: Marker<Noisy> = Marker { value: 42 };
+            tag.value
+        }
+        ",
+    );
+    assert!(output.errors.is_empty(), "{:?}", output.errors);
+}
+
+#[test]
 fn machine_requires_guard_fallback_and_target_payload() {
     for source in [
         "machine Gate {\n    events {\n        Open;\n    }\n    state Closed;\n    state Opened;\n    on Open: Closed => Opened when true;\n    on Open: Opened => Opened;\n}\n\nfn main() {}\n",

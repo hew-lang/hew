@@ -2004,12 +2004,14 @@ fn check_profile(
                             .cloned()
                             .unwrap_or_else(IndirectCallCandidates::unknown);
                         implicit_releases.extend(output.owned_release_targets(
+                            facts,
                             &ty,
                             &HashMap::new(),
                             &candidates,
                         ));
                     } else if let Some(calls) = iteration_calls(output, &ty) {
                         implicit_releases.extend(output.owned_release_targets(
+                            facts,
                             &calls.iterator,
                             &HashMap::new(),
                             &IndirectCallCandidates::unknown(),
@@ -2187,7 +2189,13 @@ fn check_profile(
                     .releases
                     .iter()
                     .filter(|effect| effect.owner == caller)
-                    .flat_map(|effect| output.release_targets(effect, &substitutions))
+                    .flat_map(|effect| {
+                        output.release_targets(
+                            value_facts.as_ref().expect("confined type facts"),
+                            effect,
+                            &substitutions,
+                        )
+                    })
                     .map(|target| (target, caller_env.clone()))
                     .collect();
                 releases.extend(
@@ -2246,6 +2254,9 @@ fn check_profile(
                                             releases.extend(
                                                 output
                                                     .owned_release_targets(
+                                                        value_facts
+                                                            .as_ref()
+                                                            .expect("confined type facts"),
                                                         &coercion.concrete_type,
                                                         &captures.types.iter().cloned().collect(),
                                                         &value,
@@ -2281,6 +2292,9 @@ fn check_profile(
                                                         })
                                                         .flat_map(|effect| {
                                                             output.release_targets(
+                                                                value_facts
+                                                                    .as_ref()
+                                                                    .expect("confined type facts"),
                                                                 effect,
                                                                 &captures
                                                                     .types

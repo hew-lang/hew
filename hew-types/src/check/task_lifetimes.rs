@@ -903,7 +903,8 @@ impl Checker {
                 let Some(declaration) = crate::value_class::ClassDeclarations::declared_type(
                     &self.class_declarations(),
                     nominal,
-                ) else {
+                )
+                .map(std::borrow::Cow::into_owned) else {
                     return (true, Vec::new());
                 };
                 if declaration.type_params.len() != args.len()

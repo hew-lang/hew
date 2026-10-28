@@ -253,6 +253,8 @@ pub struct Scopes {
     prelude: HashMap<Symbol, Binding>,
     members: HashMap<(DefId, Symbol), Resolution>,
     source_type_params: Vec<GenericScope>,
+    /// Candidate rows in publication order, keyed by file and hygienic name.
+    source_type_param_regions: HashMap<(ModuleId, Ident), Vec<usize>>,
     contexts: SyntaxContexts,
     resolutions: HashMap<SpanKey, Resolution>,
     /// The field each shorthand initializer label (`Point { x }`) names, by
@@ -548,7 +550,7 @@ impl Scopes {
         if parameters.is_empty() {
             return;
         }
-        self.source_type_params.push(GenericScope {
+        self.push_generic_scope(GenericScope {
             owner: declaration,
             file,
             span,
@@ -558,7 +560,7 @@ impl Scopes {
 
     /// Publish the implicit receiver binder of a trait in its source region.
     pub fn declare_receiver_parameter(&mut self, file: ModuleId, owner: DefId, span: Span) {
-        self.source_type_params.push(GenericScope {
+        self.push_generic_scope(GenericScope {
             owner,
             file,
             span,
@@ -567,6 +569,17 @@ impl Scopes {
                 TypeParamId::new(owner, usize::from(u16::MAX)),
             )]),
         });
+    }
+
+    fn push_generic_scope(&mut self, scope: GenericScope) {
+        let index = self.source_type_params.len();
+        for name in scope.parameters.keys() {
+            self.source_type_param_regions
+                .entry((scope.file, *name))
+                .or_default()
+                .push(index);
+        }
+        self.source_type_params.push(scope);
     }
 
     /// Parameters bound by this exact declaration, in declaration order.
@@ -618,11 +631,11 @@ impl Scopes {
         if span.is_empty() {
             return None;
         }
-        self.source_type_params
+        self.source_type_param_regions
+            .get(&(file, name))?
             .iter()
-            .filter(|scope| {
-                scope.file == file && scope.span.start <= span.start && span.end <= scope.span.end
-            })
+            .map(|index| &self.source_type_params[*index])
+            .filter(|scope| scope.span.start <= span.start && span.end <= scope.span.end)
             .filter_map(|scope| {
                 Some((
                     scope.span.end - scope.span.start,
@@ -1263,6 +1276,64 @@ mod tests {
             Ok(Resolution::Nominal(NominalId::from_minted_declaration(
                 nominal
             )))
+        );
+    }
+
+    #[test]
+    fn lexical_type_parameters_preserve_nesting_files_and_hygiene() {
+        let mut defs = DefTable::new();
+        let mut scopes = Scopes::new();
+        let outer_file = defs.mint_module("outer", &[]);
+        let other_file = defs.mint_module("other", &[]);
+        let owners: Vec<_> = [
+            ("outer", outer_file),
+            ("inner", outer_file),
+            ("other", other_file),
+            ("generated", outer_file),
+        ]
+        .into_iter()
+        .enumerate()
+        .map(|(index, (name, file))| {
+            declare(
+                &mut defs,
+                &mut scopes,
+                file,
+                index..index + 1,
+                DeclarationKind::Function,
+                name,
+                name,
+            )
+        })
+        .collect();
+        let name = Ident::new("T");
+        let generated = Ident {
+            ctx: scopes.contexts_mut().mint(SyntaxContext::ROOT, outer_file),
+            ..name
+        };
+        scopes.declare_type_parameters(outer_file, owners[0], 0..100, [name]);
+        scopes.declare_type_parameters(outer_file, owners[1], 20..40, [name]);
+        scopes.declare_type_parameters(other_file, owners[2], 20..40, [name]);
+        scopes.declare_type_parameters(outer_file, owners[3], 20..40, [generated]);
+
+        for (file, span, spelling, owner) in [
+            (outer_file, 10..11, name, owners[0]),
+            (outer_file, 25..26, name, owners[1]),
+            (other_file, 25..26, name, owners[2]),
+            (outer_file, 25..26, generated, owners[3]),
+            (outer_file, 35..45, name, owners[0]),
+        ] {
+            assert_eq!(
+                scopes.source_type_parameter(file, &span, spelling),
+                Some(TypeParamId::new(owner, 0))
+            );
+        }
+        assert_eq!(
+            scopes.source_type_parameter(other_file, &(45..46), name),
+            None
+        );
+        assert_eq!(
+            scopes.source_type_parameter(outer_file, &(25..25), name),
+            None
         );
     }
 }

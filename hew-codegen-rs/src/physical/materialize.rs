@@ -106,9 +106,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
     ) -> CodegenResult<()> {
         let pointer = self.ctx.ptr_type(AddressSpace::default());
         let i64_ty = self.ctx.i64_type();
-        let size_ty = self
-            .ctx
-            .ptr_sized_int_type(&TargetData::create(&self.module.target.data_layout), None);
+        let size_ty = self.ctx.ptr_sized_int_type(self.target_data, None);
         let state = self
             .frame
             .as_ref()

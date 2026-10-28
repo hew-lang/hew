@@ -1569,7 +1569,7 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
             IntMethodWidth::I32 | IntMethodWidth::U32 => receiver_bits == 32,
             IntMethodWidth::I64 | IntMethodWidth::U64 => receiver_bits == 64,
             IntMethodWidth::Isize | IntMethodWidth::Usize => {
-                let target = TargetData::create(&self.module.target.data_layout);
+                let target = self.target_data;
                 receiver_bits == target.get_pointer_byte_size(None) * 8
             }
         };

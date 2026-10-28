@@ -32,8 +32,8 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
             .handler(&self.module.actors)
             .map_err(CodegenError::FailClosed)?;
         let ptr = self.ctx.ptr_type(AddressSpace::default());
-        let target = TargetData::create(&self.module.target.data_layout);
-        let size_ty = self.ctx.ptr_sized_int_type(&target, None);
+        let target = self.target_data;
+        let size_ty = self.ctx.ptr_sized_int_type(target, None);
         let i32_ty = self.ctx.i32_type();
         let function = self.llvm.add_function(
             &ingress_symbol(adapter),
@@ -210,6 +210,7 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
                 })?;
             ValueEmitter {
                 module: self.module,
+                target_data: self.target_data,
                 ctx: self.ctx,
                 llvm: &self.llvm,
                 builder: &builder,

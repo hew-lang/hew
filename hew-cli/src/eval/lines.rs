@@ -46,7 +46,12 @@ fn compile(
             &label,
             Some(&view),
             errors,
-            &crate::diagnostic::build_module_source_map(&state.program),
+            state
+                .typecheck_result
+                .as_ref()
+                .expect("checked frontend")
+                .sources
+                .modules(),
         );
         if errors
             .iter()

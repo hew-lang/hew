@@ -371,7 +371,7 @@ pub(crate) fn from_type_error(
     source: &str,
     filename: &str,
     error: &hew_types::TypeError,
-    note_sources: &[Option<(String, String)>],
+    note_sources: &[Option<(std::sync::Arc<str>, String)>],
 ) -> JsonDiagnostic {
     let severity = match error.severity {
         hew_types::error::Severity::Warning => SEVERITY_WARNING,
@@ -387,7 +387,7 @@ pub(crate) fn from_type_error(
                 .get(index)
                 .and_then(Option::as_ref)
                 .map_or((source, filename), |(source, filename)| {
-                    (source.as_str(), filename.as_str())
+                    (source.as_ref(), filename.as_str())
                 });
             JsonNote {
                 message: message.clone(),

@@ -182,9 +182,6 @@ impl LiveFrontend {
             .checked_add(1)
             .ok_or(Error::State("live input IDs exhausted"))?;
         let mut next = self.state.clone();
-        // Source snapshots persist; input observations belong to this candidate.
-        next.options.documents.reads = Arc::default();
-        next.options.documents.dependency_roots = Arc::default();
         let body = if kind == InputKind::Declarations {
             self.prepare_declarations(id, input, &mut next)?;
             ""
@@ -253,7 +250,9 @@ impl LiveFrontend {
                 &inputs,
                 next.next_slot,
             )
-            .map_err(|error| diagnostics::lowering(error, &front.program, &source, &path, &next))?;
+            .map_err(|error| {
+                diagnostics::lowering(error, &front.typecheck_result.sources, &next)
+            })?;
         next.definitions = checked.defs.clone();
         next.next_slot = live.next_slot;
         next.bindings = live

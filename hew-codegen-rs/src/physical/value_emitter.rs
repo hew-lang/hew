@@ -325,6 +325,7 @@ impl<'a, 'ctx> ValueEmitter<'a, 'ctx> {
         builder.position_at_end(body_block);
         let emitter = ValueEmitter {
             module: self.module,
+            target_data: self.target_data,
             ctx: self.ctx,
             llvm: self.llvm,
             builder: &builder,
@@ -517,6 +518,7 @@ impl<'a, 'ctx> ValueEmitter<'a, 'ctx> {
             builder.position_at_end(self.ctx.append_basic_block(thunk, "entry"));
             let values = ValueEmitter {
                 module: self.module,
+                target_data: self.target_data,
                 ctx: self.ctx,
                 llvm: self.llvm,
                 builder: &builder,

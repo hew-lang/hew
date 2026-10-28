@@ -615,8 +615,7 @@ struct AnalyzedSource {
 /// Root selection matches native compilation; bytecode execution is a separate
 /// consumer and does not replace semantic verification.
 fn collect_semantic_diagnostics(
-    source: &str,
-    documents: &hew_compile::SourceSet,
+    sources: &hew_compile::SourceSnapshot,
     program: &hew_parser::ast::Program,
     analysis: hew_hir::HirAnalysis<'_>,
     tco: &hew_types::TypeCheckOutput,
@@ -630,16 +629,10 @@ fn collect_semantic_diagnostics(
     match result {
         Ok(_) => Vec::new(),
         Err(hew_compile::SessionError::Ownership(diagnostics)) => {
-            hew_compile::ownership_diagnostics_to_frontend(
-                program,
-                source,
-                "playground.hew",
-                diagnostics,
-                documents,
-            )
-            .into_iter()
-            .map(frontend_diagnostic_to_wasm)
-            .collect()
+            hew_compile::ownership_diagnostics_to_frontend(diagnostics, sources)
+                .into_iter()
+                .map(frontend_diagnostic_to_wasm)
+                .collect()
         }
         Err(error) => vec![WasmDiagnostic {
             source_hash: None,
@@ -683,60 +676,61 @@ fn parse_and_type_check_with_inputs(
         .into_iter()
         .map(frontend_diagnostic_to_wasm)
         .collect();
-    let (type_output, hir_diagnostics, semantic_diagnostics) =
-        if let Some(tco) = state.typecheck_result.and_then(|result| result.tco) {
-            // Run HIR lowering after type-checking so that checker-boundary
-            // violations (e.g. closure captures without materialized metadata)
-            // are caught and reported rather than silently accepted.
-            //
-            // WHY X86_64: the browser checker is analysis-only and must NOT apply
-            // wasm32 target restrictions (actors and machines run fine in the
-            // sandbox VM, which has its own coroutine scheduler). Using X86_64
-            // lets actors/machines pass HIR lowering while still catching
-            // CheckerBoundaryViolation diagnostics that arise regardless of target.
-            let mut semantic_diagnostics = driver_diagnostics;
-            let hir_diagnostics = if tco.errors.is_empty() {
-                let lower_output = hew_hir::lower_program(
+    let (type_output, hir_diagnostics, semantic_diagnostics) = if let Some((tco, sources)) = state
+        .typecheck_result
+        .and_then(|result| result.tco.map(|tco| (tco, result.sources)))
+    {
+        // Run HIR lowering after type-checking so that checker-boundary
+        // violations (e.g. closure captures without materialized metadata)
+        // are caught and reported rather than silently accepted.
+        //
+        // WHY X86_64: the browser checker is analysis-only and must NOT apply
+        // wasm32 target restrictions (actors and machines run fine in the
+        // sandbox VM, which has its own coroutine scheduler). Using X86_64
+        // lets actors/machines pass HIR lowering while still catching
+        // CheckerBoundaryViolation diagnostics that arise regardless of target.
+        let mut semantic_diagnostics = driver_diagnostics;
+        let hir_diagnostics = if tco.errors.is_empty() {
+            let lower_output = hew_hir::lower_program(
+                &parse_result.program,
+                &tco,
+                &hew_hir::ResolutionCtx,
+                hew_hir::TargetArch::X86_64,
+            );
+            // Run the HIR verifier to catch Unsupported placeholders and other
+            // structural invariant violations that lower_program may not diagnose
+            // directly. Dedup by (kind, span) so each problem is reported once.
+            // Mirrors the native `hew check` path in hew-cli/src/main.rs.
+            let mut diags = lower_output.diagnostics;
+            let analysis = hew_hir::analyze_hir(&lower_output.module);
+            for diag in analysis.diagnostics() {
+                let already_present = diags
+                    .iter()
+                    .any(|d| d.kind == diag.kind && d.span == diag.span);
+                if !already_present {
+                    diags.push(diag.clone());
+                }
+            }
+            // MIR-stage lints run only when HIR lowering is clean: a module the
+            // HIR stage already rejected is not worth lowering further, and
+            // skipping it also keeps the added browser cost off every buffer
+            // that is mid-edit and already erroring.
+            if diags.is_empty() {
+                semantic_diagnostics.extend(collect_semantic_diagnostics(
+                    &sources,
                     &parse_result.program,
+                    analysis,
                     &tco,
-                    &hew_hir::ResolutionCtx,
-                    hew_hir::TargetArch::X86_64,
-                );
-                // Run the HIR verifier to catch Unsupported placeholders and other
-                // structural invariant violations that lower_program may not diagnose
-                // directly. Dedup by (kind, span) so each problem is reported once.
-                // Mirrors the native `hew check` path in hew-cli/src/main.rs.
-                let mut diags = lower_output.diagnostics;
-                let analysis = hew_hir::analyze_hir(&lower_output.module);
-                for diag in analysis.diagnostics() {
-                    let already_present = diags
-                        .iter()
-                        .any(|d| d.kind == diag.kind && d.span == diag.span);
-                    if !already_present {
-                        diags.push(diag.clone());
-                    }
-                }
-                // MIR-stage lints run only when HIR lowering is clean: a module the
-                // HIR stage already rejected is not worth lowering further, and
-                // skipping it also keeps the added browser cost off every buffer
-                // that is mid-edit and already erroring.
-                if diags.is_empty() {
-                    semantic_diagnostics.extend(collect_semantic_diagnostics(
-                        source,
-                        &options.documents,
-                        &parse_result.program,
-                        analysis,
-                        &tco,
-                    ));
-                }
-                diags
-            } else {
-                Vec::new()
-            };
-            (Some(tco), hir_diagnostics, semantic_diagnostics)
+                ));
+            }
+            diags
         } else {
-            (None, Vec::new(), driver_diagnostics)
+            Vec::new()
         };
+        (Some(tco), hir_diagnostics, semantic_diagnostics)
+    } else {
+        (None, Vec::new(), driver_diagnostics)
+    };
 
     AnalyzedSource {
         parse_result,

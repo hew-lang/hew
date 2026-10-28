@@ -1437,7 +1437,7 @@ fn site_for_call(
     root_label: &str,
     documents: &SourceSet,
     span: &SpanKey,
-) -> Option<(SourceSite, String, String)> {
+) -> Option<(SourceSite, std::sync::Arc<str>, String)> {
     let path = (span.module_idx != 0)
         .then(|| source_path(program, output, span.module_idx))
         .flatten();
@@ -1447,7 +1447,7 @@ fn site_for_call(
             path.display().to_string(),
         )
     } else {
-        (root_source.to_string(), root_label.to_string())
+        (root_source.into(), root_label.to_string())
     };
     source.get(span.start..span.end)?;
     let mut display_start = span.start;
@@ -1706,7 +1706,7 @@ fn body_site(
     source: &str,
     label: &str,
     options: &FrontendOptions,
-) -> Option<(SourceSite, String, String)> {
+) -> Option<(SourceSite, std::sync::Arc<str>, String)> {
     let site = output.defs.site(root)?;
     let (mut site, source, filename) = site_for_call(
         program,
@@ -1724,11 +1724,11 @@ fn confinement_diagnostic(
     output: &TypeCheckOutput,
     root: DefId,
     site: SourceSite,
-    source: &str,
+    source: &std::sync::Arc<str>,
     filename: &str,
     reason: &str,
 ) -> FrontendDiagnostic {
-    FrontendDiagnostic::coded_message_at("E_CONFINED_AUTHORITY", format!("confined `{}` reaches `{}`: {reason}; supply a narrow resource or service at construction", output.defs.name(root), site.spelling), site.span, source, filename)
+    FrontendDiagnostic::coded_message_at("E_CONFINED_AUTHORITY", format!("confined `{}` reaches `{}`: {reason}; supply a narrow resource or service at construction", output.defs.name(root), site.spelling), site.span, source.clone(), filename)
 }
 
 /// Check each selected root independently using checker-owned call edges.
@@ -1790,14 +1790,14 @@ fn check_profile(
             }
             let source = source_path
                 .and_then(|path| read_source(&options.documents, path).ok())
-                .unwrap_or_else(|| root_source.to_owned());
+                .unwrap_or_else(|| root_source.into());
             let filename = source_path
                 .map_or_else(|| root_label.to_owned(), |path| path.display().to_string());
             diagnostics.push(FrontendDiagnostic::coded_message_at(
                 "E_GENERATE_EXTERN",
                 format!("generator declares user extern `{}`; host access must use the admitted standard library", output.defs.name(id)),
                 site.span(),
-                &source,
+                source.clone(),
                 &filename,
             ));
         }
@@ -1828,7 +1828,7 @@ fn check_profile(
     }) {
         let mut queue = VecDeque::from([(
             CallableNode::Declaration(root),
-            None::<(SourceSite, String, String)>,
+            None::<(SourceSite, std::sync::Arc<str>, String)>,
             Vec::<Ty>::new(),
             if confined {
                 definition_env(output, root)
@@ -2495,7 +2495,7 @@ fn check_profile(
                             },
                             message,
                             site.span,
-                            &source,
+                            source.clone(),
                             &filename,
                         );
                         if let crate::FrontendDiagnosticKind::Message(detail) = &mut diagnostic.kind
@@ -2537,7 +2537,7 @@ fn check_profile(
                                         site.spelling
                                     ),
                                     site.span,
-                                    &source,
+                                    source.clone(),
                                     &filename,
                                 );
                                 if let crate::FrontendDiagnosticKind::Message(detail) =

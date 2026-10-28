@@ -502,7 +502,12 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
         frame.bind_operation(
             self.ctx,
             &self.builder,
-            managed::operation_layout(self.ctx, self.llvm, "hew_managed_visit_task_wait")?,
+            managed::operation_layout(
+                self.ctx,
+                self.target_data,
+                self.llvm,
+                "hew_managed_visit_task_wait",
+            )?,
             wait,
         )?;
         self.clear_owned(*task)?;
@@ -664,7 +669,12 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
         frame.bind_operation(
             self.ctx,
             &self.builder,
-            managed::operation_layout(self.ctx, self.llvm, "hew_managed_visit_scope_wait")?,
+            managed::operation_layout(
+                self.ctx,
+                self.target_data,
+                self.llvm,
+                "hew_managed_visit_scope_wait",
+            )?,
             wait,
         )?;
         if mode == hew_mir::physical::TaskScopeJoinMode::CancelLosers {

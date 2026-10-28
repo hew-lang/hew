@@ -19,7 +19,7 @@ use tower_lsp_server::ls_types::{
 use super::uri::{same_source_file, source_file_key, FileUriExt};
 #[cfg(test)]
 use super::UriParse;
-use super::{DiagnosticMap, DiagnosticSource, DocumentState};
+use super::{DiagnosticMap, DocumentState};
 
 // ── In-memory module resolution ──────────────────────────────────────
 
@@ -54,49 +54,6 @@ pub(super) fn source_for_path(
     }
     // Fall back to on-disk content.
     std::fs::read_to_string(path).ok()
-}
-
-pub(super) fn build_module_source_map(
-    program: &hew_parser::ast::Program,
-    documents: &DashMap<Url, DocumentState>,
-    sources: Option<&hew_compile::SourceSet>,
-) -> HashMap<String, DiagnosticSource> {
-    let Some(ref module_graph) = program.module_graph else {
-        return HashMap::new();
-    };
-
-    let mut module_sources = HashMap::new();
-    for module_id in &module_graph.topo_order {
-        if *module_id == module_graph.root {
-            continue;
-        }
-        let Some(module) = module_graph.modules.get(module_id) else {
-            continue;
-        };
-        let Some(source_path) = module.source_paths.first() else {
-            continue;
-        };
-        let Some(uri) = Url::from_checked_file_path(source_path) else {
-            continue;
-        };
-        let Some(source) = sources
-            .and_then(|sources| sources.get(source_path))
-            .map(str::to_owned)
-            .or_else(|| source_for_path(source_path, documents))
-        else {
-            continue;
-        };
-        module_sources.insert(
-            module_id.dotted(),
-            DiagnosticSource {
-                uri: open_document_uri(&uri, documents),
-                line_offsets: compute_line_offsets(&source),
-                source,
-            },
-        );
-    }
-
-    module_sources
 }
 
 pub(super) fn merge_diagnostics(into: &mut DiagnosticMap, from: &DiagnosticMap) {
@@ -218,15 +175,16 @@ pub(super) fn analyze_document(
     analyze_document_with_batch(uri, source, documents, extra_pkg_paths, None)
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "one document pass retains checked source provenance through diagnostic publication"
+)]
 pub(super) fn analyze_document_with_batch(
     uri: &Url,
     source: &str,
     documents: &DashMap<Url, DocumentState>,
     extra_pkg_paths: &[std::path::PathBuf],
-    batch: Option<(
-        &mut hew_compile::SourceAnalysisBatch,
-        &hew_compile::SourceSet,
-    )>,
+    batch: Option<&mut hew_compile::SourceAnalysisBatch>,
 ) -> DocumentState {
     let line_offsets = compute_line_offsets(source);
     // An untitled buffer has no file to anchor module resolution, so it is
@@ -239,8 +197,7 @@ pub(super) fn analyze_document_with_batch(
     );
 
     let label = root_path.display().to_string();
-    let source_snapshot = batch.as_ref().map(|(_, sources)| *sources);
-    let mut state = if let Some((batch, _)) = batch {
+    let mut state = if let Some(batch) = batch {
         batch.run_source_frontend(source, &label)
     } else {
         let options = frontend_options(&root_path, source, documents, extra_pkg_paths);
@@ -263,29 +220,34 @@ pub(super) fn analyze_document_with_batch(
         .or_default()
         .extend(super::generation::diagnostics(&root_path));
 
-    let mut type_output = state.typecheck_result.take().and_then(|result| result.tco);
+    let (mut type_output, admitted_sources) = state
+        .typecheck_result
+        .take()
+        .map_or((None, None), |result| (result.tco, Some(result.sources)));
     // HIR and semantic diagnostics below read the checker's own indices; only
     // the stored copy that position queries use is re-keyed afterwards.
-    let module_sources = build_module_source_map(&state.program, documents, source_snapshot);
     // HIR lowering and ownership-SIR verification run only on a program the
     // checker accepted: a module already rejected upstream is not worth
     // lowering, and the upstream errors are the actionable signal.
     if let Some(tco) = type_output.as_ref().filter(|tco| tco.errors.is_empty()) {
+        let admitted_sources = admitted_sources.as_ref().expect("checked source context");
         let lower_output = lower_program_host_target(&state.program, tco, &ResolutionCtx);
         let analysis = hew_hir::analyze_hir(&lower_output.module);
         let hir_diagnostics =
             dedup_hir_diagnostics(lower_output.diagnostics, analysis.diagnostics().to_vec());
+        let frontend_findings =
+            hew_compile::hir_diagnostics_to_frontend(hir_diagnostics, admitted_sources);
         merge_diagnostics(
             &mut diagnostics_by_uri,
-            &build_hir_lsp_diagnostics(
+            &build_frontend_diagnostics_by_uri(
                 uri,
                 source,
                 &line_offsets,
-                &module_sources,
-                &hir_diagnostics,
+                &frontend_findings,
+                None,
             ),
         );
-        if hir_diagnostics.is_empty() {
+        if frontend_findings.is_empty() {
             merge_diagnostics(
                 &mut diagnostics_by_uri,
                 &build_semantic_lsp_diagnostics(
@@ -295,6 +257,7 @@ pub(super) fn analyze_document_with_batch(
                     &state.program,
                     analysis,
                     tco,
+                    admitted_sources,
                 ),
             );
         }
@@ -404,7 +367,7 @@ pub(super) fn refresh_open_importers(
     let mut batch = (!rejected).then(|| {
         hew_compile::SourceAnalysisBatch::new(hew_compile::FrontendOptions {
             pkg_path: extra_pkg_paths.first().cloned(),
-            documents: sources.clone(),
+            documents: sources,
             ..hew_compile::FrontendOptions::default()
         })
     });
@@ -452,7 +415,7 @@ pub(super) fn refresh_open_importers(
                 &importer_source,
                 documents,
                 extra_pkg_paths,
-                batch.as_mut().map(|batch| (batch, &sources)),
+                batch.as_mut(),
             );
             documents.insert(importer_uri.clone(), document);
             // Enqueue this importer so its own importers are refreshed too.
@@ -559,11 +522,14 @@ impl<'a> DiagnosticSources<'a> {
             uri = self.root_uri.clone();
         }
         let source = text.unwrap_or(self.root.source);
-        let snapshot = if source == self.root.source {
+        let snapshot = if std::ptr::eq(source, self.root.source) || source == self.root.source {
             Rc::clone(&self.root)
         } else {
             let snapshots = self.files.entry(uri.clone()).or_default();
-            if let Some(snapshot) = snapshots.iter().find(|snapshot| snapshot.source == source) {
+            if let Some(snapshot) = snapshots
+                .iter()
+                .find(|snapshot| std::ptr::eq(snapshot.source, source) || snapshot.source == source)
+            {
                 Rc::clone(snapshot)
             } else {
                 let snapshot = Rc::new(DiagnosticSnapshot {
@@ -581,7 +547,7 @@ impl<'a> DiagnosticSources<'a> {
 
 fn type_related_information<'a>(
     diagnostic: &hew_types::TypeError,
-    note_sources: &'a [Option<(String, String)>],
+    note_sources: &'a [Option<(std::sync::Arc<str>, String)>],
     target: &DiagnosticTarget<'a>,
     sources: &mut DiagnosticSources<'a>,
 ) -> Option<Vec<DiagnosticRelatedInformation>> {
@@ -637,7 +603,7 @@ fn parse_lsp_diagnostic(
 
 fn type_lsp_diagnostic<'a>(
     error: &hew_types::TypeError,
-    note_sources: &'a [Option<(String, String)>],
+    note_sources: &'a [Option<(std::sync::Arc<str>, String)>],
     target: &DiagnosticTarget<'a>,
     sources: &mut DiagnosticSources<'a>,
 ) -> Diagnostic {
@@ -736,7 +702,9 @@ fn build_frontend_diagnostics_by_uri(
             FrontendDiagnosticKind::Message(message) => {
                 message_lsp_diagnostic(message, &target, &mut sources)
             }
-            FrontendDiagnosticKind::Hir(_) => continue,
+            FrontendDiagnosticKind::Hir(error) => {
+                hir_lsp_diagnostic(error, &target, diagnostic.source.is_none())
+            }
         };
 
         insert_diagnostic(&mut diagnostics_by_uri, target.uri, lsp_diagnostic);
@@ -771,6 +739,7 @@ fn build_semantic_lsp_diagnostics(
     program: &hew_parser::ast::Program,
     analysis: hew_hir::HirAnalysis<'_>,
     tco: &TypeCheckOutput,
+    admitted_sources: &hew_compile::SourceSnapshot,
 ) -> DiagnosticMap {
     let mut diagnostics_by_uri = DiagnosticMap::new();
 
@@ -783,6 +752,17 @@ fn build_semantic_lsp_diagnostics(
     let result = hew_compile::Session::source_roots(program, tco)
         .and_then(|roots| session.lower_analyzed_hir(analysis, tco, &roots));
     if let Err(error) = result {
+        if let hew_compile::SessionError::Ownership(findings) = error {
+            let findings =
+                hew_compile::ownership_diagnostics_to_frontend(findings, admitted_sources);
+            return build_frontend_diagnostics_by_uri(
+                root_uri,
+                root_source,
+                root_line_offsets,
+                &findings,
+                None,
+            );
+        }
         insert_diagnostic(
             &mut diagnostics_by_uri,
             root_uri.clone(),
@@ -815,82 +795,48 @@ fn dedup_hir_diagnostics(
     lower_diagnostics
 }
 
-fn build_hir_lsp_diagnostics(
-    root_uri: &Url,
-    root_source: &str,
-    root_line_offsets: &[usize],
-    module_sources: &HashMap<String, DiagnosticSource>,
-    hir_diagnostics: &[HirDiagnostic],
-) -> DiagnosticMap {
-    let mut diagnostics_by_uri = DiagnosticMap::new();
-
-    for diagnostic in hir_diagnostics {
-        let unavailable_source = diagnostic
-            .source_module
-            .as_ref()
-            .filter(|module_name| !module_sources.contains_key(*module_name));
-        let target = diagnostic
-            .source_module
-            .as_ref()
-            .and_then(|module_name| module_sources.get(module_name));
-        let (target_uri, target_source, target_line_offsets) = if let Some(target) = target {
-            (
-                target.uri.clone(),
-                target.source.as_str(),
-                target.line_offsets.as_slice(),
-            )
-        } else {
-            (root_uri.clone(), root_source, root_line_offsets)
-        };
-        let base_message = hir_diagnostic_message(&diagnostic.kind, &diagnostic.note);
-        let message = if let Some(module_name) = unavailable_source {
-            format!("[module '{module_name}' source unavailable] {base_message}")
-        } else {
-            base_message
-        };
-        let range = if unavailable_source.is_some() {
-            zero_range()
-        } else {
-            super::span_to_range(target_source, target_line_offsets, &diagnostic.span)
-        };
-        let related_information = if diagnostic.secondary_spans.is_empty() {
-            None
-        } else {
-            Some(
-                diagnostic
-                    .secondary_spans
-                    .iter()
-                    .map(|(span, label)| DiagnosticRelatedInformation {
-                        location: Location {
-                            uri: target_uri.clone(),
-                            range: if unavailable_source.is_some() {
-                                zero_range()
-                            } else {
-                                super::span_to_range(target_source, target_line_offsets, span)
-                            },
-                        },
-                        message: label.clone(),
-                    })
-                    .collect(),
-            )
-        };
-        insert_diagnostic(
-            &mut diagnostics_by_uri,
-            target_uri,
-            Diagnostic {
-                range,
-                severity: Some(DiagnosticSeverity::ERROR),
-                code: Some(NumberOrString::String(diagnostic.kind.kind_string())),
-                source: Some("hew-hir".to_string()),
-                message,
-                related_information,
-                data: Some(hir_diagnostic_data(&diagnostic.kind)),
-                ..Default::default()
-            },
-        );
+fn hir_lsp_diagnostic(
+    diagnostic: &HirDiagnostic,
+    target: &DiagnosticTarget<'_>,
+    unavailable: bool,
+) -> Diagnostic {
+    let unavailable_source = diagnostic.source_module.as_ref().filter(|_| unavailable);
+    let base_message = hir_diagnostic_message(&diagnostic.kind, &diagnostic.note);
+    let message = unavailable_source.map_or(base_message.clone(), |module| {
+        format!("[module '{module}' source unavailable] {base_message}")
+    });
+    let range = if unavailable_source.is_some() {
+        zero_range()
+    } else {
+        target.range(&diagnostic.span)
+    };
+    let related_information = (!diagnostic.secondary_spans.is_empty()).then(|| {
+        diagnostic
+            .secondary_spans
+            .iter()
+            .map(|(span, label)| DiagnosticRelatedInformation {
+                location: Location {
+                    uri: target.uri.clone(),
+                    range: if unavailable_source.is_some() {
+                        zero_range()
+                    } else {
+                        target.range(span)
+                    },
+                },
+                message: label.clone(),
+            })
+            .collect()
+    });
+    Diagnostic {
+        range,
+        severity: Some(DiagnosticSeverity::ERROR),
+        code: Some(NumberOrString::String(diagnostic.kind.kind_string())),
+        source: Some("hew-hir".to_string()),
+        message,
+        related_information,
+        data: Some(hir_diagnostic_data(&diagnostic.kind)),
+        ..Default::default()
     }
-
-    diagnostics_by_uri
 }
 
 fn hir_diagnostic_message(kind: &HirDiagnosticKind, note: &str) -> String {
@@ -974,6 +920,44 @@ fn unnecessary_diagnostic_tags(kind: &TypeErrorKind) -> Option<Vec<DiagnosticTag
 
 #[cfg(test)]
 pub(super) mod tests {
+    struct DiagnosticSource {
+        uri: Url,
+        source: String,
+    }
+
+    fn build_hir_lsp_diagnostics(
+        root_uri: &Url,
+        root_source: &str,
+        root_lines: &[usize],
+        modules: &HashMap<String, DiagnosticSource>,
+        findings: &[HirDiagnostic],
+    ) -> DiagnosticMap {
+        let findings: Vec<_> = findings
+            .iter()
+            .map(|finding| {
+                let (source, filename) = match finding.source_module.as_ref() {
+                    None => (Some(root_source.into()), None),
+                    Some(module) => modules.get(module).map_or((None, None), |entry| {
+                        (
+                            Some(entry.source.as_str().into()),
+                            entry
+                                .uri
+                                .to_checked_file_path()
+                                .map(|path| path.display().to_string()),
+                        )
+                    }),
+                };
+                hew_compile::FrontendDiagnostic {
+                    source,
+                    filename,
+                    note_sources: Vec::new(),
+                    kind: hew_compile::FrontendDiagnosticKind::Hir(finding.clone()),
+                }
+            })
+            .collect();
+        build_frontend_diagnostics_by_uri(root_uri, root_source, root_lines, &findings, None)
+    }
+
     use hew_hir::{HirItem, HirModule, HirNodeId};
     use hew_parser::ast::Span;
     use tower_lsp_server::ls_types::{Position, Range};
@@ -1073,16 +1057,16 @@ pub(super) mod tests {
         let second = "line\n😀x\n";
         let diagnostics = vec![
             hew_compile::FrontendDiagnostic {
-                source: Some(first.to_string()),
+                source: Some(first.into()),
                 filename: Some(filename.clone()),
-                note_sources: vec![Some((second.to_string(), filename.clone()))],
+                note_sources: vec![Some((second.into(), filename.clone()))],
                 kind: hew_compile::FrontendDiagnosticKind::Type(
                     hew_types::TypeError::new(TypeErrorKind::ReturnTypeMismatch, 4..5, "first")
                         .with_note(9..10, "other snapshot"),
                 ),
             },
             hew_compile::FrontendDiagnostic {
-                source: Some(second.to_string()),
+                source: Some(second.into()),
                 filename: Some(filename.clone()),
                 note_sources: Vec::new(),
                 kind: hew_compile::FrontendDiagnosticKind::Type(hew_types::TypeError::new(
@@ -1172,7 +1156,6 @@ pub(super) mod tests {
             DiagnosticSource {
                 uri: helper_uri.clone(),
                 source: helper_source.to_string(),
-                line_offsets: compute_line_offsets(helper_source),
             },
         )]);
 
@@ -2361,10 +2344,15 @@ pub(super) mod tests {
     fn lsp_and_build_session_report_the_same_semantic_diagnostics() {
         let uri = Url::parse("file:///session_agreement.hew").unwrap();
         let parse_result = hew_parser::parse(SEMANTIC_AGREEMENT_SOURCE);
-        let mut checker =
-            hew_types::Checker::new(hew_types::module_registry::ModuleRegistry::new(vec![]));
-        let tco = checker.check_program(&parse_result.program);
-        let lower_output = lower_program_host_target(&parse_result.program, &tco, &ResolutionCtx);
+        let checked = hew_compile::typecheck_program(
+            &parse_result.program,
+            SEMANTIC_AGREEMENT_SOURCE,
+            "/session_agreement.hew",
+            &hew_compile::FrontendOptions::default(),
+        )
+        .unwrap();
+        let tco = checked.tco.as_ref().unwrap();
+        let lower_output = lower_program_host_target(&parse_result.program, tco, &ResolutionCtx);
         let module = lower_output.module;
         let analysis = hew_hir::analyze_hir(&module);
         let hir_diagnostics =
@@ -2375,14 +2363,15 @@ pub(super) mod tests {
             hew_compile::SessionTarget::native(),
             hew_compile::DiagnosticPolicy::default(),
         )
-        .lower_hir_module(&module, &tco, &[]);
+        .lower_hir_module(&module, tco, &[]);
         let lsp = build_semantic_lsp_diagnostics(
             &uri,
             SEMANTIC_AGREEMENT_SOURCE,
             &compute_line_offsets(SEMANTIC_AGREEMENT_SOURCE),
             &parse_result.program,
             analysis,
-            &tco,
+            tco,
+            &checked.sources,
         );
         let lsp_codes = lsp
             .get(&uri)

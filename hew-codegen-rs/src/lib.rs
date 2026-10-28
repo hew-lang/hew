@@ -10,6 +10,6 @@ pub use llvm::{
     entry_body_symbol_for_triple, native_emission_triple, CodegenError, EmitArtefacts, OptLevel,
 };
 pub use physical::{
-    emit_physical_object, physical_target_for_triple, validate_physical_codegen,
+    emit_physical_object, physical_target_for_triple, validate_physical_codegen, DebugSource,
     PhysicalEmitOptions,
 };

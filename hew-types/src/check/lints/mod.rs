@@ -257,8 +257,8 @@ impl Default for LintLevels {
 /// path token, to that source (the same key [`LintCtx::source_module`] carries).
 #[derive(Debug, Clone, Default)]
 pub struct LintSources {
-    root: Option<String>,
-    modules: HashMap<String, String>,
+    root: Option<std::sync::Arc<str>>,
+    modules: HashMap<String, std::sync::Arc<str>>,
 }
 
 impl LintSources {
@@ -269,15 +269,15 @@ impl LintSources {
     }
 
     /// Install the root (entry) source — the file passed to `hew check`/`build`.
-    pub fn set_root(&mut self, source: String) {
-        self.root = Some(source);
+    pub fn set_root(&mut self, source: impl Into<std::sync::Arc<str>>) {
+        self.root = Some(source.into());
     }
 
     /// Install a non-root source, keyed by its dotted module name (e.g.
     /// `"std.net.http"`) or assembled peer-file path, matching the
     /// `source_module` tag the lint sweep stamps onto its diagnostics.
-    pub fn set_module(&mut self, module: String, source: String) {
-        self.modules.insert(module, source);
+    pub fn set_module(&mut self, module: String, source: impl Into<std::sync::Arc<str>>) {
+        self.modules.insert(module, source.into());
     }
 
     /// The source text owning `module`'s spans: the root source when
@@ -285,7 +285,7 @@ impl LintSources {
     pub(super) fn source_for(&self, module: Option<&str>) -> Option<&str> {
         match module {
             None => self.root.as_deref(),
-            Some(name) => self.modules.get(name).map(String::as_str),
+            Some(name) => self.modules.get(name).map(AsRef::as_ref),
         }
     }
 }

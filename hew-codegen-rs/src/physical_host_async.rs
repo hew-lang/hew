@@ -51,7 +51,7 @@ impl<'ctx> CallStorage<'ctx> {
             ],
             false,
         );
-        let target = TargetData::create(&emitter.module.target.data_layout);
+        let target = emitter.target_data;
         Ok(Self {
             layout,
             arguments,

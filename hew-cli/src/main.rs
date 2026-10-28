@@ -145,9 +145,8 @@ impl Drop for JsonDiagnosticFlush {
 
 fn lower_program_to_semantics(
     program: &hew_parser::ast::Program,
-    source: &str,
-    label: &str,
     tco: &hew_types::TypeCheckOutput,
+    sources: &hew_compile::SourceSnapshot,
     target: &target::TargetSpec,
     checks: hew_compile::CheckSet,
 ) -> Result<hew_compile::SessionOutput, DiagChannel> {
@@ -161,41 +160,32 @@ fn lower_program_to_semantics(
     session.checks = checks;
     session
         .lower_program(program, tco)
-        .map_err(|error| render_session_error(error, program, source, label))
+        .map_err(|error| render_session_error(error, sources))
 }
 
 fn render_session_error(
     error: hew_compile::SessionError,
-    program: &hew_parser::ast::Program,
-    source: &str,
-    label: &str,
+    sources: &hew_compile::SourceSnapshot,
 ) -> DiagChannel {
     match error {
         hew_compile::SessionError::Hir(diagnostics) => {
-            let diagnostics = hew_compile::hir_diagnostics_to_frontend(
-                program,
-                source,
-                label,
-                diagnostics,
-                &hew_compile::SourceSet::new(),
-            );
+            let diagnostics = hew_compile::hir_diagnostics_to_frontend(diagnostics, sources);
             compile::render_frontend_diagnostics(&diagnostics).unwrap_or(DiagChannel::User)
         }
         hew_compile::SessionError::Ownership(diagnostics) => {
-            let diagnostics = hew_compile::ownership_diagnostics_to_frontend(
-                program,
-                source,
-                label,
-                diagnostics,
-                &hew_compile::SourceSet::new(),
-            );
+            let diagnostics = hew_compile::ownership_diagnostics_to_frontend(diagnostics, sources);
             compile::render_frontend_diagnostics(&diagnostics).unwrap_or(DiagChannel::User)
         }
         error @ hew_compile::SessionError::Semantic(_) => {
             emit_semantic_error("E_SIR_VERIFY", &error.to_string(), DiagChannel::Internal)
         }
         hew_compile::SessionError::Lowering { error, span, .. } => {
-            diagnostic::render_lowering_error(&error, span.as_ref(), source, label)
+            diagnostic::render_lowering_error(
+                &error,
+                span.as_ref(),
+                sources.root().0,
+                sources.root().1,
+            )
         }
         hew_compile::SessionError::Selection(message) => {
             emit_semantic_error("E_SOURCE_SELECTION", &message, DiagChannel::User)
@@ -218,7 +208,14 @@ fn lower_file_to_semantics(
     input_path: &Path,
     target: &target::TargetSpec,
     options: &compile::CompileOptions,
-) -> Result<(hew_compile::SessionOutput, native_link::ProgramInputs), DiagChannel> {
+) -> Result<
+    (
+        hew_compile::SessionOutput,
+        native_link::ProgramInputs,
+        std::sync::Arc<hew_compile::SourceSnapshot>,
+    ),
+    DiagChannel,
+> {
     let input = input_path.display().to_string();
     let fopts = compile::frontend_options(target, options);
     let state = hew_compile::run_file_frontend_to_typecheck(&input, &fopts).map_err(|failure| {
@@ -238,14 +235,13 @@ fn lower_file_to_semantics(
     })?;
     let mut output = lower_program_to_semantics(
         &state.program,
-        &state.source,
-        &input,
         tco,
+        &state.typecheck_result.sources,
         target,
         hew_compile::CheckSet::Build,
     )?;
     if let Some(path) = &options.coverage_map {
-        let coverage = output.instrument_coverage(&state.program, &state.source, &input);
+        let coverage = output.instrument_coverage(&state.typecheck_result.sources);
         let bytes = serde_json::to_vec(&coverage).map_err(|error| {
             diagnostic::emit_plain_diagnostic_line(&format!(
                 "Error: cannot encode coverage: {error}"
@@ -269,7 +265,7 @@ fn lower_file_to_semantics(
             DiagChannel::User
         })?;
     source_paths::register_packages(inputs.packages.iter().map(|package| package.root.as_path()));
-    Ok((output, inputs))
+    Ok((output, inputs, state.typecheck_result.sources))
 }
 
 /// Inspect semantic SSA before target storage and layout realization.
@@ -291,9 +287,16 @@ fn lower_file_to_physical_for_target(
     input_path: &Path,
     target: &target::TargetSpec,
     options: &compile::CompileOptions,
-) -> Result<(hew_mir::VerifiedPhysicalModule, native_link::ProgramInputs), DiagChannel> {
-    let (output, inputs) = lower_file_to_semantics(input_path, target, options)?;
-    Ok((lower_session_to_physical(&output, target)?, inputs))
+) -> Result<
+    (
+        hew_mir::VerifiedPhysicalModule,
+        native_link::ProgramInputs,
+        std::sync::Arc<hew_compile::SourceSnapshot>,
+    ),
+    DiagChannel,
+> {
+    let (output, inputs, sources) = lower_file_to_semantics(input_path, target, options)?;
+    Ok((lower_session_to_physical(&output, target)?, inputs, sources))
 }
 
 /// Lower a file that is built into an executable. An executable starts at
@@ -303,8 +306,15 @@ fn lower_program_to_physical(
     input_path: &Path,
     target: &target::TargetSpec,
     options: &compile::CompileOptions,
-) -> Result<(hew_mir::VerifiedPhysicalModule, native_link::ProgramInputs), DiagChannel> {
-    let (output, inputs) = lower_file_to_semantics(input_path, target, options)?;
+) -> Result<
+    (
+        hew_mir::VerifiedPhysicalModule,
+        native_link::ProgramInputs,
+        std::sync::Arc<hew_compile::SourceSnapshot>,
+    ),
+    DiagChannel,
+> {
+    let (output, inputs, sources) = lower_file_to_semantics(input_path, target, options)?;
     if output.semantics().module.entry_callable.is_none() && !target.is_wasm_freestanding() {
         return Err(emit_semantic_error(
             "E_NO_MAIN",
@@ -316,7 +326,7 @@ fn lower_program_to_physical(
             DiagChannel::User,
         ));
     }
-    Ok((lower_session_to_physical(&output, target)?, inputs))
+    Ok((lower_session_to_physical(&output, target)?, inputs, sources))
 }
 
 fn lower_session_to_physical(
@@ -392,7 +402,14 @@ fn run_check_deep_gates(
     };
 
     let _ = levels;
-    lower_program_to_semantics(&state.program, &state.source, input, tco, target, checks).map(Some)
+    lower_program_to_semantics(
+        &state.program,
+        tco,
+        &state.typecheck_result.sources,
+        target,
+        checks,
+    )
+    .map(Some)
 }
 
 fn emit_module(
@@ -402,6 +419,7 @@ fn emit_module(
     link_freestanding_wasm: bool,
     opt_level: hew_codegen_rs::OptLevel,
     emit_llvm: bool,
+    source: Option<(&str, &str)>,
 ) -> Result<hew_codegen_rs::EmitArtefacts, DiagChannel> {
     emit_module_with_triple(
         pipeline,
@@ -413,6 +431,7 @@ fn emit_module(
         opt_level,
         emit_llvm,
         None,
+        source,
     )
 }
 
@@ -436,6 +455,7 @@ fn emit_module_with_triple(
     opt_level: hew_codegen_rs::OptLevel,
     emit_llvm: bool,
     source_path: Option<&Path>,
+    source: Option<(&str, &str)>,
 ) -> Result<hew_codegen_rs::EmitArtefacts, DiagChannel> {
     let display_source = source_path.map(hew_compile::display_source_path);
     hew_codegen_rs::emit_physical_object(
@@ -447,15 +467,20 @@ fn emit_module_with_triple(
             opt_level,
             emit_llvm,
             address_sanitizer: link::address_sanitizer_requested(),
-            debug_source: debug.then_some(source_path).flatten(),
-            debug_display_source: display_source.as_deref(),
+            debug_source: if debug {
+                source
+                    .zip(display_source.as_deref())
+                    .map(|((text, _), path)| hew_codegen_rs::DebugSource { path, text })
+            } else {
+                None
+            },
             link_freestanding_wasm,
             build_info: Some(hew_compile::VERSION),
         },
     )
     .map_err(|error| {
         let channel = diagnostic::codegen_channel(&error);
-        diagnostic::render_codegen_emit_error(&error, source_path);
+        diagnostic::render_codegen_emit_error(&error, source);
         channel
     })
 }
@@ -481,6 +506,7 @@ fn emit_module_for_target(
     opt_level: hew_codegen_rs::OptLevel,
     emit_llvm: bool,
     source_path: Option<&Path>,
+    source: Option<(&str, &str)>,
 ) -> Result<hew_codegen_rs::EmitArtefacts, DiagChannel> {
     emit_module_with_triple(
         pipeline,
@@ -492,6 +518,7 @@ fn emit_module_for_target(
         opt_level,
         emit_llvm,
         source_path,
+        source,
     )
 }
 
@@ -539,7 +566,7 @@ fn compile_native_binary_with_paths(
             eprintln!("Error: {error}");
             DiagChannel::User
         })?;
-    let (pipeline, inputs) = lower_file_to_physical_for_target(input, &target, options)?;
+    let (pipeline, inputs, sources) = lower_file_to_physical_for_target(input, &target, options)?;
     let opt_level = options.opt_level.unwrap_or(hew_codegen_rs::OptLevel::O0);
     let native = link_program_native(&inputs, &target, false, opt_level)?;
     let emit_dir = bin_path.parent().unwrap_or_else(|| Path::new("."));
@@ -547,7 +574,15 @@ fn compile_native_binary_with_paths(
         .file_stem()
         .and_then(|s| s.to_str())
         .unwrap_or("module");
-    let artefacts = emit_module(&pipeline, module_name, emit_dir, true, opt_level, false)?;
+    let artefacts = emit_module(
+        &pipeline,
+        module_name,
+        emit_dir,
+        true,
+        opt_level,
+        false,
+        Some(sources.root()),
+    )?;
     let obj = artefacts.native_obj_path.as_deref().ok_or_else(|| {
         emit_semantic_error(
             "E_CODEGEN_ARTEFACT_MISSING",
@@ -666,9 +701,8 @@ pub(crate) fn compile_native_from_program_with_paths(
 
     let output = lower_program_to_semantics(
         &state.program,
-        &state.source,
-        source_label,
         tco,
+        &state.typecheck_result.sources,
         &target,
         hew_compile::CheckSet::Build,
     )?;
@@ -693,6 +727,7 @@ pub(crate) fn compile_native_from_program_with_paths(
         false,
         hew_codegen_rs::OptLevel::O0,
         false,
+        Some(state.typecheck_result.sources.root()),
     )?;
 
     match emit_target {
@@ -913,7 +948,7 @@ fn compile_build_binary_with_hew_lib(
 ) -> Result<Vec<PathBuf>, DiagChannel> {
     let wall_started = std::time::Instant::now();
     let lower_started = std::time::Instant::now();
-    let (physical, inputs) = lower_program_to_physical(input, target, options)?;
+    let (physical, inputs, sources) = lower_program_to_physical(input, target, options)?;
     if target.is_wasm() {
         refuse_native_for_wasm(&inputs)?;
     }
@@ -933,6 +968,7 @@ fn compile_build_binary_with_hew_lib(
         opt_level,
         emit_llvm,
         Some(input),
+        Some(sources.root()),
     )?;
     if target.is_wasm() {
         link_wasm_module_for_target(&artefacts, output_path, target)?;
@@ -1022,7 +1058,7 @@ fn emit_obj_only(
         )?;
         return Ok((final_path, Vec::new()));
     }
-    let (pipeline, inputs) = lower_file_to_physical_for_target(input, target, options)?;
+    let (pipeline, inputs, sources) = lower_file_to_physical_for_target(input, target, options)?;
     let out_dir = match final_path.parent() {
         Some(dir) if !dir.as_os_str().is_empty() => dir,
         _ => Path::new("."),
@@ -1049,6 +1085,7 @@ fn emit_obj_only(
         opt_level,
         emit_llvm,
         if debug { Some(input) } else { None },
+        Some(sources.root()),
     )?;
     let produced = match emit_target {
         CompileEmitTarget::Native => artefacts.native_obj_path,
@@ -1284,10 +1321,11 @@ fn cmd_compile_run(a: &args::CompileArgs) -> i32 {
         }
     };
     let options = compile::CompileOptions::default();
-    let (pipeline, inputs) = match lower_file_to_physical_for_target(&a.input, &target, &options) {
-        Ok(result) => result,
-        Err(channel) => return channel.exit_code(),
-    };
+    let (pipeline, inputs, sources) =
+        match lower_file_to_physical_for_target(&a.input, &target, &options) {
+            Ok(result) => result,
+            Err(channel) => return channel.exit_code(),
+        };
     if a.dump_mir.is_some() {
         let dump = format!("{:#?}\n", pipeline.module());
         if json {
@@ -1329,6 +1367,7 @@ fn cmd_compile_run(a: &args::CompileArgs) -> i32 {
         target.is_wasm_freestanding(),
         opt_level,
         a.emit_llvm,
+        Some(sources.root()),
     ) {
         Ok(artefacts) => artefacts,
         Err(channel) => return channel.exit_code(),
@@ -1505,7 +1544,7 @@ fn compile_temp_wasi_module(
     };
 
     let result = (|| -> Result<Vec<PathBuf>, DiagChannel> {
-        let (pipeline, inputs) =
+        let (pipeline, inputs, sources) =
             lower_program_to_physical(Path::new(input), &target_spec, options)?;
         refuse_native_for_wasm(&inputs)?;
         let emit_dir = tmp_dir_of_path(&wasm_path);
@@ -1523,6 +1562,7 @@ fn compile_temp_wasi_module(
             hew_codegen_rs::OptLevel::O0,
             false,
             None,
+            Some(sources.root()),
         )?;
         let obj = artefacts.wasm_obj_path.as_deref().ok_or_else(|| {
             emit_semantic_error(
@@ -1973,14 +2013,15 @@ fn cmd_check_run(a: &args::CheckArgs) -> i32 {
     let frontend_started = std::time::Instant::now();
     let mut checked = hew_compile::check_file_with_state(&input, &frontend_options);
     if a.fix {
-        let diagnostics = match &checked {
-            Ok((result, _)) => &result.diagnostics,
-            Err(failure) => &failure.diagnostics,
+        let (diagnostics, inputs) = match &checked {
+            Ok((result, _)) => (&result.diagnostics, &result.inputs),
+            Err(failure) => (&failure.diagnostics, &failure.inputs),
         };
         match fixes::apply(
             &resolved.source(),
             &frontend_options,
             diagnostics,
+            inputs,
             a.dry_run,
         ) {
             Ok(changed) if changed > 0 && !a.dry_run => {

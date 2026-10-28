@@ -96,8 +96,7 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
                     } else {
                         (
                             actor::message_symbol(codec_actor.id, handler.message_id),
-                            TargetData::create(&self.module.target.data_layout)
-                                .get_store_size(&payload),
+                            self.target_data.get_store_size(&payload),
                         )
                     };
                     let drop = self
@@ -153,9 +152,7 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
         );
         let builder = self.ctx.create_builder();
         builder.position_at_end(self.ctx.append_basic_block(init, "entry"));
-        let size_ty = self
-            .ctx
-            .ptr_sized_int_type(&TargetData::create(&self.module.target.data_layout), None);
+        let size_ty = self.ctx.ptr_sized_int_type(self.target_data, None);
         for (dispatch, message, identity, encode, decode, drop, size, reply, layout) in
             registrations
         {
@@ -256,8 +253,8 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
             return Ok(function);
         }
         let ptr = self.ctx.ptr_type(AddressSpace::default());
-        let target = TargetData::create(&self.module.target.data_layout);
-        let size_ty = self.ctx.ptr_sized_int_type(&target, None);
+        let target = self.target_data;
+        let size_ty = self.ctx.ptr_sized_int_type(target, None);
         let signature = if decode {
             ptr.fn_type(&[ptr.into(), size_ty.into(), ptr.into()], false)
         } else {
@@ -305,7 +302,7 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
             target.get_store_size(&payload)
         };
         let output = if decode {
-            actor::allocate(self.module, self.ctx, &self.llvm, &builder, byte_size)?
+            actor::allocate(self.ctx, self.target_data, &self.llvm, &builder, byte_size)?
         } else {
             input
         };
@@ -362,6 +359,7 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
             let callback = wire::emit_callback(
                 self.module,
                 self.ctx,
+                self.target_data,
                 &self.llvm,
                 plan,
                 &plan.root,
@@ -511,6 +509,7 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
         if decode {
             let values = ValueEmitter {
                 module: self.module,
+                target_data: self.target_data,
                 ctx: self.ctx,
                 llvm: &self.llvm,
                 builder: &builder,

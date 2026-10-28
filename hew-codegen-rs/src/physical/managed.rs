@@ -63,6 +63,7 @@ pub(super) fn bind_frame_roots<'ctx>(
 /// A protocol handle exposes only its existing typed provider descendants.
 pub(super) fn operation_layout<'ctx>(
     ctx: &'ctx Context,
+    target_data: &TargetData,
     llvm: &Module<'ctx>,
     visit: &str,
 ) -> CodegenResult<PointerValue<'ctx>> {
@@ -84,23 +85,16 @@ pub(super) fn operation_layout<'ctx>(
         ctx.i64_type().const_zero().into(),
         callback.as_global_value().as_pointer_value().into(),
     ]));
-    let data_layout = llvm.get_data_layout();
-    let target = TargetData::create(
-        data_layout
-            .as_str()
-            .to_str()
-            .map_err(|_| CodegenError::FailClosed("invalid target data layout".into()))?,
-    );
-    let size = ctx.ptr_sized_int_type(&target, None);
-    let layout_ty = value_descriptor_type(ctx, &target);
+    let size = ctx.ptr_sized_int_type(target_data, None);
+    let layout_ty = value_descriptor_type(ctx, target_data);
     let layout = llvm.add_global(layout_ty, None, &name);
     layout.set_linkage(Linkage::Internal);
     layout.set_constant(true);
     layout.set_initializer(
         &layout_ty.const_named_struct(&[
-            size.const_int(u64::from(target.get_pointer_byte_size(None)), false)
+            size.const_int(u64::from(target_data.get_pointer_byte_size(None)), false)
                 .into(),
-            size.const_int(u64::from(target.get_abi_alignment(&pointer)), false)
+            size.const_int(u64::from(target_data.get_abi_alignment(&pointer)), false)
                 .into(),
             ctx.i8_type()
                 .const_int(HewTypeOwnershipKind::Plain as u64, false)
@@ -118,6 +112,7 @@ pub(super) fn operation_layout<'ctx>(
 /// A cleanup cursor retains an allocation after its children begin disposal.
 pub(super) fn flat_backing_layout<'ctx>(
     ctx: &'ctx Context,
+    target_data: &TargetData,
     llvm: &Module<'ctx>,
     bytes: u64,
 ) -> CodegenResult<PointerValue<'ctx>> {
@@ -179,7 +174,7 @@ pub(super) fn flat_backing_layout<'ctx>(
             .build_return(Some(&result))
             .llvm_ctx("finish flat backing visit")?;
     }
-    operation_layout(ctx, llvm, &name)
+    operation_layout(ctx, target_data, llvm, &name)
 }
 
 pub(super) fn value_layout_symbol(
@@ -251,6 +246,7 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
         builder.position_at_end(visit);
         let values = ValueEmitter {
             module: self.module,
+            target_data: self.target_data,
             ctx: self.ctx,
             llvm: &self.llvm,
             builder: &builder,
@@ -310,6 +306,7 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
         let structure = llvm_type(self.ctx, &layout.repr)?.into_struct_type();
         let values = ValueEmitter {
             module: self.module,
+            target_data: self.target_data,
             ctx: self.ctx,
             llvm: &self.llvm,
             builder: &builder,
@@ -412,9 +409,9 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
             self.ctx.i64_type().const_zero().into(),
             scope_visit.as_global_value().as_pointer_value().into(),
         ]));
-        let target = TargetData::create(&self.module.target.data_layout);
-        let size_ty = self.ctx.ptr_sized_int_type(&target, None);
-        let layout_ty = value_descriptor_type(self.ctx, &target);
+        let target = self.target_data;
+        let size_ty = self.ctx.ptr_sized_int_type(target, None);
+        let layout_ty = value_descriptor_type(self.ctx, target);
         let scope_layout = self
             .llvm
             .add_global(layout_ty, None, "__hew_budget_task_scope");
@@ -482,6 +479,7 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
             let visitor = function.get_nth_param(1).unwrap().into_pointer_value();
             let values = ValueEmitter {
                 module: self.module,
+                target_data: self.target_data,
                 ctx: self.ctx,
                 llvm: &self.llvm,
                 builder: &builder,
@@ -776,6 +774,7 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
         let visitor = callback.get_nth_param(1).unwrap().into_pointer_value();
         let values = ValueEmitter {
             module: self.module,
+            target_data: self.target_data,
             ctx: self.ctx,
             llvm: &self.llvm,
             builder: &builder,

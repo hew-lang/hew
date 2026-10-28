@@ -216,6 +216,7 @@ pub fn compile_to_sandbox_bytecode_with_inputs(
         &mut Vec::new(),
         None,
     )
+    .map(|(output, _)| output)
 }
 
 /// Compile one test file through the shared frontend and project an executable
@@ -255,7 +256,7 @@ fn compile_tests_with_inputs(
     let label = source_path.to_string_lossy();
     let mut entries = Vec::new();
     let mut coverage = coverage_enabled.then(hew_compile::SourceCoverageMap::default);
-    let output = compile_from_semantics(
+    let (output, _) = compile_from_semantics(
         source,
         Some(DEFAULT_PROFILE_ALIAS),
         &label,
@@ -472,14 +473,23 @@ fn compile_from_semantics(
     mut options: hew_compile::FrontendOptions,
     test_entries: &mut Vec<sir_emit::Entry>,
     coverage: Option<&mut hew_compile::SourceCoverageMap>,
-) -> Result<CompileOutput, CompileError> {
+) -> Result<
+    (
+        CompileOutput,
+        Vec<hew_types::compile_time::CompilationInput>,
+    ),
+    CompileError,
+> {
     let canonical_profile = match canonical_profile(profile) {
         Ok(profile) => profile,
         Err(diagnostic) => {
-            return Ok(CompileOutput {
-                diagnostics: vec![diagnostic],
-                bytecode: None,
-            })
+            return Ok((
+                CompileOutput {
+                    diagnostics: vec![diagnostic],
+                    bytecode: None,
+                },
+                Vec::new(),
+            ))
         }
     };
 
@@ -488,12 +498,25 @@ fn compile_from_semantics(
     // body instead of an unresolved binding.
     add_embedded_standard_library(&mut options);
     let state = hew_compile::run_source_frontend(source, source_label, &options);
+    let inputs = state.typecheck_result.as_ref().map_or_else(
+        || {
+            state
+                .stopped
+                .as_ref()
+                .map(|failure| failure.inputs.clone())
+                .unwrap_or_default()
+        },
+        |checked| checked.sources.inputs(),
+    );
     let mut diagnostics: Vec<_> = state.diagnostics.iter().map(frontend_diagnostic).collect();
     if has_error_diagnostics(&diagnostics) {
-        return Ok(CompileOutput {
-            diagnostics,
-            bytecode: None,
-        });
+        return Ok((
+            CompileOutput {
+                diagnostics,
+                bytecode: None,
+            },
+            inputs,
+        ));
     }
 
     let Some(type_output) = state
@@ -513,16 +536,22 @@ fn compile_from_semantics(
                     }),
             ));
         }
-        return Ok(CompileOutput {
-            diagnostics,
-            bytecode: None,
-        });
+        return Ok((
+            CompileOutput {
+                diagnostics,
+                bytecode: None,
+            },
+            inputs,
+        ));
     };
     if has_error_diagnostics(&diagnostics) {
-        return Ok(CompileOutput {
-            diagnostics,
-            bytecode: None,
-        });
+        return Ok((
+            CompileOutput {
+                diagnostics,
+                bytecode: None,
+            },
+            inputs,
+        ));
     }
     let program = &state.program;
 
@@ -537,11 +566,12 @@ fn compile_from_semantics(
                 hew_compile::SessionError::Ownership(findings) => {
                     diagnostics.extend(
                         hew_compile::ownership_diagnostics_to_frontend(
-                            program,
-                            source,
-                            source_label,
                             findings,
-                            &options.documents,
+                            &state
+                                .typecheck_result
+                                .as_ref()
+                                .expect("checked frontend")
+                                .sources,
                         )
                         .iter()
                         .map(frontend_diagnostic),
@@ -549,15 +579,24 @@ fn compile_from_semantics(
                 }
                 error => diagnostics.push(semantic_diagnostic(&error)),
             }
-            return Ok(CompileOutput {
-                diagnostics,
-                bytecode: None,
-            });
+            return Ok((
+                CompileOutput {
+                    diagnostics,
+                    bytecode: None,
+                },
+                inputs,
+            ));
         }
     };
 
     if let Some(map) = coverage {
-        *map = semantics.instrument_coverage(program, source, source_label);
+        *map = semantics.instrument_coverage(
+            &state
+                .typecheck_result
+                .as_ref()
+                .expect("checked frontend")
+                .sources,
+        );
     }
     let module = &semantics.semantics().module;
     let package = sir_emit::emit_package(
@@ -593,10 +632,13 @@ fn compile_from_semantics(
         });
     }
 
-    Ok(CompileOutput {
-        diagnostics,
-        bytecode: Some(package),
-    })
+    Ok((
+        CompileOutput {
+            diagnostics,
+            bytecode: Some(package),
+        },
+        inputs,
+    ))
 }
 
 /// Render a semantic boundary failure the way the browser analysis surface

@@ -10,17 +10,15 @@ pub(super) fn environment_descriptor_symbol(index: usize) -> String {
 /// Acquire an independent code root through the canonical value descriptor.
 pub(super) fn acquire_value_code<'ctx>(
     ctx: &'ctx Context,
+    target_data: &TargetData,
     llvm: &Module<'ctx>,
     builder: &Builder<'ctx>,
     layout: PointerValue<'ctx>,
 ) -> CodegenResult<PointerValue<'ctx>> {
     let pointer = ctx.ptr_type(AddressSpace::default());
-    let target = TargetData::create(llvm.get_data_layout().as_str().to_str().map_err(|_| {
-        CodegenError::FailClosed("code owner has an invalid LLVM data layout".into())
-    })?);
     let slot = builder
         .build_struct_gep(
-            value_descriptor_type(ctx, &target),
+            value_descriptor_type(ctx, target_data),
             layout,
             6,
             "code.owner.slot",
@@ -46,6 +44,7 @@ pub(super) fn acquire_value_code<'ctx>(
 
 fn acquire_callable_code<'ctx>(
     ctx: &'ctx Context,
+    target_data: &TargetData,
     llvm: &Module<'ctx>,
     builder: &Builder<'ctx>,
     descriptor: PointerValue<'ctx>,
@@ -58,7 +57,7 @@ fn acquire_callable_code<'ctx>(
         )
         .llvm_ctx("read callable code provenance")?
         .into_pointer_value();
-    acquire_value_code(ctx, llvm, builder, layout)
+    acquire_value_code(ctx, target_data, llvm, builder, layout)
 }
 
 pub(super) fn release_code<'ctx>(
@@ -106,7 +105,7 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
         name: &str,
         glue: &PhysicalEnvironmentGlue,
     ) -> CodegenResult<()> {
-        let target = TargetData::create(&self.module.target.data_layout);
+        let target = self.target_data;
         let layout = self
             .module
             .target
@@ -115,7 +114,7 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
                 CodegenError::FailClosed("callable environment lacks its target layout".into())
             })?;
         let pointer = self.ctx.ptr_type(AddressSpace::default());
-        let size = self.ctx.ptr_sized_int_type(&target, None);
+        let size = self.ctx.ptr_sized_int_type(target, None);
         let (clone, drop, ownership) = if glue.fields.is_empty() {
             (
                 pointer.const_null(),
@@ -137,7 +136,7 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
                 HewTypeOwnershipKind::LayoutManaged,
             )
         };
-        let descriptor_ty = value_descriptor_type(self.ctx, &target);
+        let descriptor_ty = value_descriptor_type(self.ctx, target);
         let descriptor = descriptor_ty.const_named_struct(&[
             size.const_int(layout.size, false).into(),
             size.const_int(u64::from(layout.align), false).into(),
@@ -151,6 +150,7 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
             }) {
                 release::custom(
                     self.ctx,
+                    self.target_data,
                     &self.llvm,
                     self.module,
                     &format!("{name}_release"),
@@ -235,6 +235,7 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
         let record = crate::physical::glue_fault_record(self.ctx, &builder)?;
         let emitter = ValueEmitter {
             module: self.module,
+            target_data: self.target_data,
             ctx: self.ctx,
             llvm: &self.llvm,
             builder: &builder,
@@ -726,10 +727,10 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
             }
         }
         if !prepared.is_empty() || !mutable.is_empty() || !dynamic.is_empty() {
-            let target = TargetData::create(&self.module.target.data_layout);
+            let target = self.target_data;
             let pointer = self.ctx.ptr_type(AddressSpace::default());
-            let size = self.ctx.ptr_sized_int_type(&target, None);
-            let ty = value_descriptor_type(self.ctx, &target);
+            let size = self.ctx.ptr_sized_int_type(target, None);
+            let ty = value_descriptor_type(self.ctx, target);
             let environment = self.llvm.add_global(ty, None, "__hew_prepared_environment");
             environment.set_linkage(Linkage::Internal);
             environment.set_constant(true);
@@ -998,6 +999,7 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
             .llvm_ctx("retain method outcome")?;
         let values = ValueEmitter {
             module: self.module,
+            target_data: self.target_data,
             ctx: self.ctx,
             llvm: &self.llvm,
             builder,
@@ -1181,7 +1183,12 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
             None
         } else {
             Some(coro::begin(
-                self.ctx, &self.llvm, &builder, function, state,
+                self.ctx,
+                self.target_data,
+                &self.llvm,
+                &builder,
+                function,
+                state,
             )?)
         };
         let mut arguments = Vec::<BasicMetadataValueEnum<'ctx>>::new();
@@ -1210,6 +1217,7 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
             if update == hew_types::ReceiverUpdate::Staged {
                 let values = ValueEmitter {
                     module: self.module,
+                    target_data: self.target_data,
                     ctx: self.ctx,
                     llvm: &self.llvm,
                     builder: &builder,
@@ -1360,6 +1368,7 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
                 .llvm_ctx("retain body outcome")?;
             let values = ValueEmitter {
                 module: self.module,
+                target_data: self.target_data,
                 ctx: self.ctx,
                 llvm: &self.llvm,
                 builder: &builder,
@@ -1719,6 +1728,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
         )?;
         acquire_callable_code(
             self.ctx,
+            self.target_data,
             self.llvm,
             &self.builder,
             descriptor.as_pointer_value(),
@@ -1774,6 +1784,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
         }
         acquire_callable_code(
             self.ctx,
+            self.target_data,
             self.llvm,
             &self.builder,
             descriptor.as_pointer_value(),
@@ -1920,7 +1931,13 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             .llvm_ctx("load exact invocation adapter")?
             .into_pointer_value();
         let (argument_slots, moved) = self.prepare_callable_arguments(args)?;
-        let code = acquire_callable_code(self.ctx, self.llvm, &self.builder, descriptor)?;
+        let code = acquire_callable_code(
+            self.ctx,
+            self.target_data,
+            self.llvm,
+            &self.builder,
+            descriptor,
+        )?;
         if consuming {
             self.clear_owned(source)?;
         }

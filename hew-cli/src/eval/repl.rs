@@ -881,7 +881,12 @@ impl ReplSession {
                     input_name,
                     synthetic_program.diagnostic_view.as_ref(),
                     errors,
-                    &crate::diagnostic::build_module_source_map(&state.program),
+                    state
+                        .typecheck_result
+                        .as_ref()
+                        .expect("checked frontend")
+                        .sources
+                        .modules(),
                 );
                 return Err(CliEvalError::DiagnosticsRendered);
             }
@@ -967,7 +972,11 @@ impl ReplSession {
             }));
         }
 
-        let module_source_map = crate::diagnostic::build_module_source_map(&state.program);
+        let module_source_map = state
+            .typecheck_result
+            .as_ref()
+            .map(|result| result.sources.modules().clone())
+            .unwrap_or_default();
         let stopped = state.stopped;
         // A run that never reached the checker reports why, not "no type
         // information".
@@ -1215,9 +1224,15 @@ impl ReplSession {
                 source: synthetic_program.source,
                 diagnostic_view,
                 errors: errors.to_vec(),
-                module_source_map: Box::new(crate::diagnostic::build_module_source_map(
-                    &state.program,
-                )),
+                module_source_map: Box::new(
+                    state
+                        .typecheck_result
+                        .as_ref()
+                        .expect("checked frontend")
+                        .sources
+                        .modules()
+                        .clone(),
+                ),
             });
         }
 
@@ -2088,7 +2103,7 @@ mod tests {
         assert!(result.had_errors);
         assert_eq!(result.output, "");
         assert!(
-            result.errors[0].contains("program exited with status 101"),
+            result.errors[0].ends_with("status 1"),
             "unexpected errors: {:?}",
             result.errors
         );
@@ -2289,14 +2304,14 @@ mod tests {
 
         std::fs::write(
             src_dir.join("greet.hew"),
-            "pub fn hello() -> str { \"hi from greet\" }\n",
+            "pub fn hello() -> string { \"hi from greet\" }\n",
         )
         .expect("write greet.hew");
 
         let main_path = dir.path().join("main.hew");
         std::fs::write(
             &main_path,
-            "import local \"greet\";\nfn main() { println(local.hello()); }\n",
+            "import \"src/greet.hew\";\nfn main() { println(greet.hello()); }\n",
         )
         .expect("write main.hew");
 
@@ -2332,7 +2347,7 @@ mod tests {
         let main_path = dir.path().join("prog.hew");
         std::fs::write(
             &main_path,
-            "import local \"math\";\nfn main() { println(local.square(4)); }\n",
+            "import \"src/math.hew\";\nfn main() { println(math.square(4)); }\n",
         )
         .expect("write prog.hew");
 

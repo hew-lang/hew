@@ -131,7 +131,7 @@ fn render_frontend_type_diagnostic(diagnostic: &FrontendDiagnostic, error: &hew_
                 .get(index)
                 .and_then(Option::as_ref)
                 .map_or((source, filename), |(source, filename)| {
-                    (source.as_str(), filename.as_str())
+                    (source.as_ref(), filename.as_str())
                 });
             crate::diagnostic::DiagnosticNote {
                 source: note_source,
@@ -743,8 +743,7 @@ fn main() {
         }
     }
 
-    /// `diagnostic::build_module_source_map` must populate an entry for each non-root
-    /// module that has a source file on disk.
+    /// Checked source context includes imported modules for CLI diagnostics.
     #[test]
     fn build_module_source_map_populates_non_root_entries() {
         let fixture = TestFixtureDir::new(
@@ -759,29 +758,16 @@ fn main() {
         let root_label = root_path.display().to_string();
         let root_source = fs::read_to_string(&root_path).expect("root fixture must be readable");
 
-        let mut program = parse_source(&root_source, &root_label).expect("fixture must parse");
-        let documents = hew_compile::SourceSet::new();
-        let mut ctx = ImportResolutionContext {
-            in_progress_imports: HashSet::new(),
-            resolved_imports: HashMap::new(),
-            manifest_deps: None,
-            extra_pkg_path: None,
-            locked_versions: None,
-            package_name: None,
-            project_dir: &fixture.path,
-            module_search_paths: None,
-            documents: &documents,
-        };
-        let module_graph = build_module_graph(
-            &root_path,
-            &mut program.items,
-            program.module_doc.clone(),
-            &mut ctx,
-        )
-        .expect("fixture must build a module graph");
-        program.module_graph = Some(module_graph);
-
-        let source_map = crate::diagnostic::build_module_source_map(&program);
+        let state = hew_compile::run_source_frontend(
+            &root_source,
+            &root_label,
+            &hew_compile::FrontendOptions::default(),
+        );
+        let sources = state
+            .typecheck_result
+            .expect("fixture reaches checker")
+            .sources;
+        let source_map = sources.modules();
 
         assert!(
             !source_map.is_empty(),

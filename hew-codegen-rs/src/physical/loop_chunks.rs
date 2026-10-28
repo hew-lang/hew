@@ -283,6 +283,7 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
         let poll = self.ctx.append_basic_block(value, "poll");
         let mut emitter = FunctionEmitter {
             module: self.module,
+            target_data: self.target_data,
             function: self.function,
             ctx: self.ctx,
             llvm: self.llvm,

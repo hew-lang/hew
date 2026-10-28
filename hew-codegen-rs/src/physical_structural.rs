@@ -123,6 +123,7 @@ impl<'ctx> ValueEmitter<'_, 'ctx> {
                 let frame = if glue.is_resumable {
                     Some(coro::begin(
                         values.ctx,
+                        values.target_data,
                         values.llvm,
                         values.builder,
                         function,

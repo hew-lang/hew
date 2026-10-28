@@ -143,8 +143,8 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             CodegenError::FailClosed("service acquisition requires an invocation".into())
         })?;
         let ptr = self.ctx.ptr_type(AddressSpace::default());
-        let target = TargetData::create(&self.module.target.data_layout);
-        let size_ty = self.ctx.ptr_sized_int_type(&target, None);
+        let target = self.target_data;
+        let size_ty = self.ctx.ptr_sized_int_type(target, None);
         let descriptor =
             self.module.actors.get(actor.0 as usize).ok_or_else(|| {
                 CodegenError::FailClosed("service acquisition lacks actor".into())

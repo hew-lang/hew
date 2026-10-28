@@ -72,6 +72,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
     ) -> ValueEmitter<'b, 'ctx> {
         ValueEmitter {
             module: self.module,
+            target_data: self.target_data,
             ctx: self.ctx,
             llvm: self.llvm,
             builder,
@@ -248,12 +249,12 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             CodegenError::FailClosed("an offloaded call requires a resumable body".into())
         })?;
         let thunks = self.offload_thunks(id)?;
-        let data = TargetData::create(&self.module.target.data_layout);
+        let data = self.target_data;
         let size = data.get_abi_size(&thunks.env);
         let align = u64::from(data.get_abi_alignment(&thunks.env));
         let pointer = self.ctx.ptr_type(AddressSpace::default());
         let i64_ty = self.ctx.i64_type();
-        let usize_ty = self.ctx.ptr_sized_int_type(&data, None);
+        let usize_ty = self.ctx.ptr_sized_int_type(data, None);
         let alloc = get_or_declare_external(
             self.llvm,
             "hew_alloc",

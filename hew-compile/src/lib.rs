@@ -133,6 +133,8 @@ pub struct SourceSet {
     filesystem: bool,
     reads: Arc<std::sync::Mutex<BTreeMap<PathBuf, Option<String>>>>,
     dependency_roots: Arc<std::sync::Mutex<HashSet<PathBuf>>>,
+    /// Successful reads retained only within one explicit frontend admission.
+    admitted: Option<Arc<std::sync::Mutex<BTreeMap<PathBuf, SourceContent>>>>,
 }
 
 impl Default for SourceSet {
@@ -142,6 +144,7 @@ impl Default for SourceSet {
             filesystem: true,
             reads: Arc::default(),
             dependency_roots: Arc::default(),
+            admitted: None,
         }
     }
 }
@@ -154,6 +157,15 @@ enum SourceContent {
         source: Arc<str>,
         program: Arc<Program>,
     },
+}
+
+impl SourceContent {
+    fn bytes(&self) -> &[u8] {
+        match self {
+            Self::Text(source) | Self::Prepared { source, .. } => source.as_bytes(),
+            Self::Bytes(bytes) => bytes,
+        }
+    }
 }
 
 impl SourceSet {
@@ -175,38 +187,63 @@ impl SourceSet {
         }
     }
 
-    /// Read an input and record its content fingerprint.
-    ///
-    /// # Errors
-    ///
-    /// Returns an I/O error if the input cannot be read or was not supplied.
-    ///
-    /// # Panics
-    ///
-    /// Panics if the shared input table's mutex is poisoned.
-    pub fn read_bytes(&self, path: &Path) -> std::io::Result<Vec<u8>> {
-        use sha2::{Digest, Sha256};
-        use std::fmt::Write as _;
-        let identity = if self.filesystem {
+    /// Start a fresh read epoch while preserving the caller's supplied overlays.
+    /// Clones inside the run share admitted bytes; later runs never reuse them.
+    fn for_frontend(&self) -> Self {
+        Self {
+            sources: self.sources.clone(),
+            filesystem: self.filesystem,
+            reads: Arc::default(),
+            dependency_roots: Arc::default(),
+            admitted: Some(Arc::default()),
+        }
+    }
+
+    fn input_identity(&self, path: &Path) -> PathBuf {
+        if self.filesystem {
             buffer_identity(path).unwrap_or_else(|| path.to_path_buf())
         } else {
             compile_time::normalize(path)
-        };
+        }
+    }
+
+    fn read_content(&self, path: &Path, text: bool) -> std::io::Result<SourceContent> {
+        use sha2::{Digest, Sha256};
+        use std::fmt::Write as _;
+        let identity = self.input_identity(path);
+        let mut admitted = self
+            .admitted
+            .as_ref()
+            .map(|table| table.lock().expect("source admission table poisoned"));
+        if let Some(content) = admitted
+            .as_ref()
+            .and_then(|table| table.get(path).or_else(|| table.get(&identity)))
+        {
+            return Ok(content.clone());
+        }
         self.reads
             .lock()
             .expect("source input table poisoned")
             .insert(identity.clone(), None);
-        let bytes = if let Some(bytes) = self.get_bytes(path) {
-            bytes.to_vec()
+        let content = if let Some(content) = self.content(path) {
+            content.clone()
         } else if self.filesystem {
-            std::fs::read(path)?
+            let bytes = std::fs::read(path)?;
+            if text {
+                match String::from_utf8(bytes) {
+                    Ok(source) => SourceContent::Text(source.into()),
+                    Err(error) => SourceContent::Bytes(error.into_bytes().into()),
+                }
+            } else {
+                SourceContent::Bytes(bytes.into())
+            }
         } else {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::NotFound,
                 "compilation input was not supplied",
             ));
         };
-        let fingerprint = Sha256::digest(&bytes).iter().fold(
+        let fingerprint = Sha256::digest(content.bytes()).iter().fold(
             String::with_capacity(64),
             |mut fingerprint, byte| {
                 write!(fingerprint, "{byte:02x}").expect("writing to a String cannot fail");
@@ -216,8 +253,77 @@ impl SourceSet {
         self.reads
             .lock()
             .expect("source input table poisoned")
-            .insert(identity, Some(fingerprint));
-        Ok(bytes)
+            .insert(identity.clone(), Some(fingerprint));
+        if let Some(admitted) = admitted.as_mut() {
+            admitted.insert(identity, content.clone());
+            admitted.insert(path.to_path_buf(), content.clone());
+        }
+        Ok(content)
+    }
+
+    /// Read an input and record its content fingerprint.
+    ///
+    /// # Errors
+    /// Returns an I/O error if the input cannot be read or was not supplied.
+    ///
+    /// # Panics
+    /// Panics if a shared input table's mutex is poisoned.
+    pub fn read_bytes(&self, path: &Path) -> std::io::Result<Vec<u8>> {
+        self.read_content(path, false)
+            .map(|content| content.bytes().to_vec())
+    }
+
+    /// Read shared UTF-8 text, retaining the exact admitted bytes for this run.
+    ///
+    /// # Errors
+    /// Returns an I/O error for missing inputs or invalid UTF-8.
+    ///
+    /// # Panics
+    /// Panics if a shared input table's mutex is poisoned.
+    pub fn read_text(&self, path: &Path) -> std::io::Result<Arc<str>> {
+        match self.read_content(path, true)? {
+            SourceContent::Text(source) | SourceContent::Prepared { source, .. } => Ok(source),
+            SourceContent::Bytes(bytes) => {
+                let source: Arc<str> = std::str::from_utf8(&bytes)
+                    .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))?
+                    .into();
+                if let Some(admitted) = &self.admitted {
+                    let mut admitted = admitted.lock().expect("source admission table poisoned");
+                    admitted.insert(
+                        self.input_identity(path),
+                        SourceContent::Text(Arc::clone(&source)),
+                    );
+                    admitted.insert(path.to_path_buf(), SourceContent::Text(Arc::clone(&source)));
+                }
+                Ok(source)
+            }
+        }
+    }
+
+    /// Diagnostic text from an already observed input; never opens the filesystem.
+    fn admitted_text(&self, path: &Path) -> Option<Arc<str>> {
+        let admitted = self
+            .admitted
+            .as_ref()?
+            .lock()
+            .expect("source admission table poisoned");
+        match admitted
+            .get(path)
+            .or_else(|| admitted.get(&self.input_identity(path)))?
+        {
+            SourceContent::Text(source) | SourceContent::Prepared { source, .. } => {
+                Some(Arc::clone(source))
+            }
+            SourceContent::Bytes(bytes) => std::str::from_utf8(bytes).ok().map(Arc::from),
+        }
+    }
+
+    /// Mutating an admitted clone begins a new provider, preserving the old run.
+    fn leave_admission(&mut self) {
+        if self.admitted.take().is_some() {
+            self.reads = Arc::default();
+            self.dependency_roots = Arc::default();
+        }
     }
 
     /// Return the inputs observed by this frontend run.
@@ -248,6 +354,7 @@ impl SourceSet {
             .collect()
     }
     pub fn insert_bytes(&mut self, path: impl Into<PathBuf>, bytes: impl Into<Vec<u8>>) {
+        self.leave_admission();
         let mut path = path.into();
         if !self.filesystem {
             path = compile_time::normalize(&path);
@@ -277,6 +384,7 @@ impl SourceSet {
     /// The canonical spelling is recorded alongside the given one because the
     /// import resolver canonicalizes every candidate before loading it.
     pub fn insert(&mut self, path: impl Into<PathBuf>, source: impl Into<String>) {
+        self.leave_admission();
         let mut path = path.into();
         if !self.filesystem {
             path = compile_time::normalize(&path);
@@ -297,6 +405,10 @@ impl SourceSet {
 
     fn contains(&self, path: &Path) -> bool {
         self.content(path).is_some()
+            || self.admitted.as_ref().is_some_and(|table| {
+                let admitted = table.lock().expect("source admission table poisoned");
+                admitted.contains_key(path) || admitted.contains_key(&self.input_identity(path))
+            })
     }
 
     /// The documents directly inside `dir`, so a host without a filesystem
@@ -427,9 +539,8 @@ fn resolve_candidate(documents: &SourceSet, candidate: &Path) -> Option<PathBuf>
 }
 
 /// Read a source file, preferring an open buffer over the file on disk.
-fn read_source(documents: &SourceSet, path: &Path) -> std::io::Result<String> {
-    String::from_utf8(documents.read_bytes(path)?)
-        .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))
+fn read_source(documents: &SourceSet, path: &Path) -> std::io::Result<Arc<str>> {
+    documents.read_text(path)
 }
 
 /// Target facts that must stay coupled while a source is lowered.
@@ -1116,11 +1227,11 @@ pub struct FrontendMessageNote {
 
 #[derive(Debug, Clone)]
 pub struct FrontendDiagnostic {
-    pub source: Option<String>,
+    pub source: Option<Arc<str>>,
     pub filename: Option<String>,
     /// Per-note source text and filename when a secondary span belongs to a
     /// different module than the primary diagnostic.
-    pub note_sources: Vec<Option<(String, String)>>,
+    pub note_sources: Vec<Option<(Arc<str>, String)>>,
     pub kind: FrontendDiagnosticKind,
 }
 
@@ -1168,7 +1279,7 @@ impl FrontendDiagnostic {
         code: &str,
         message: impl Into<String>,
         span: Range<usize>,
-        source: &str,
+        source: impl Into<Arc<str>>,
         filename: &str,
     ) -> Self {
         Self {
@@ -1179,7 +1290,7 @@ impl FrontendDiagnostic {
                 code: code.to_string(),
                 message: message.into(),
                 span: Some(span),
-                source: Some(Arc::from(source)),
+                source: Some(source.into()),
                 notes: Vec::new(),
                 help: Vec::new(),
             }),
@@ -1194,7 +1305,7 @@ impl FrontendDiagnostic {
         code: &str,
         message: impl Into<String>,
         span: Range<usize>,
-        source: &str,
+        source: impl Into<Arc<str>>,
         filename: &str,
         notes: Vec<FrontendMessageNote>,
         help: Vec<String>,
@@ -1207,16 +1318,20 @@ impl FrontendDiagnostic {
                 code: code.to_string(),
                 message: message.into(),
                 span: Some(span),
-                source: Some(Arc::from(source)),
+                source: Some(source.into()),
                 notes,
                 help,
             }),
         }
     }
 
-    fn parse(source: &str, filename: &str, diagnostic: hew_parser::ParseError) -> Self {
+    fn parse(
+        source: impl Into<Arc<str>>,
+        filename: &str,
+        diagnostic: hew_parser::ParseError,
+    ) -> Self {
         Self {
-            source: Some(source.to_string()),
+            source: Some(source.into()),
             filename: Some(filename.to_string()),
             note_sources: Vec::new(),
             kind: FrontendDiagnosticKind::Parse(diagnostic),
@@ -1224,10 +1339,10 @@ impl FrontendDiagnostic {
     }
 
     fn type_(
-        source: &str,
+        source: Arc<str>,
         filename: &str,
         diagnostic: hew_types::TypeError,
-        module_source_map: &ModuleSourceMap,
+        module_source_map: &SourceSnapshot,
     ) -> Self {
         let note_sources = diagnostic
             .notes
@@ -1235,12 +1350,11 @@ impl FrontendDiagnostic {
             .map(|(_, _, source_module)| {
                 source_module
                     .as_deref()
-                    .and_then(|module| module_source_map.get(module))
-                    .cloned()
+                    .and_then(|module| module_source_map.source(module))
             })
             .collect();
         Self {
-            source: Some(source.to_string()),
+            source: Some(source),
             filename: Some(filename.to_string()),
             note_sources,
             kind: FrontendDiagnosticKind::Type(diagnostic),
@@ -1248,12 +1362,12 @@ impl FrontendDiagnostic {
     }
 
     fn hir(
-        source: Option<&str>,
+        source: Option<Arc<str>>,
         filename: Option<&str>,
         diagnostic: hew_hir::HirDiagnostic,
     ) -> Self {
         Self {
-            source: source.map(str::to_string),
+            source,
             filename: filename.map(str::to_string),
             note_sources: Vec::new(),
             kind: FrontendDiagnosticKind::Hir(diagnostic),
@@ -1265,6 +1379,8 @@ impl FrontendDiagnostic {
 pub struct FrontendFailure {
     pub message: String,
     pub diagnostics: Vec<FrontendDiagnostic>,
+    /// Inputs observed before this frontend request stopped.
+    pub inputs: Vec<hew_types::compile_time::CompilationInput>,
 }
 
 impl FrontendFailure {
@@ -1272,6 +1388,7 @@ impl FrontendFailure {
         Self {
             message: message.into(),
             diagnostics,
+            inputs: Vec::new(),
         }
     }
 
@@ -1470,19 +1587,56 @@ struct LockedPackageCheck {
 
 #[derive(Debug)]
 pub struct TypeCheckResult {
+    /// Exact admitted source text and routing retained for later compiler stages.
+    pub sources: Arc<SourceSnapshot>,
     pub tco: Option<hew_types::check::TypeCheckOutput>,
     pub module_registry: hew_types::module_registry::ModuleRegistry,
 }
 
 struct ProjectContext {
-    source: String,
+    source: Arc<str>,
     project_dir: PathBuf,
     manifest_deps: Option<Vec<String>>,
     package_name: Option<String>,
     locked_versions: Option<Vec<(String, String)>>,
 }
 
-type ModuleSourceMap = HashMap<String, (String, String)>;
+/// Source text and routing from one frontend admission, shared by diagnostic stages.
+#[derive(Debug)]
+pub struct SourceSnapshot {
+    root_source: Arc<str>,
+    root_filename: String,
+    modules: HashMap<String, (Arc<str>, String)>,
+    documents: SourceSet,
+}
+
+impl SourceSnapshot {
+    /// Input fingerprints observed in this admission, including failed reads.
+    #[must_use]
+    pub fn inputs(&self) -> Vec<hew_types::compile_time::CompilationInput> {
+        self.documents.inputs()
+    }
+
+    /// The checked root text and its diagnostic label.
+    #[must_use]
+    pub fn root(&self) -> (&str, &str) {
+        (&self.root_source, &self.root_filename)
+    }
+
+    /// Authored module and per-file aliases, all referring to admitted text.
+    #[must_use]
+    pub fn modules(&self) -> &HashMap<String, (Arc<str>, String)> {
+        &self.modules
+    }
+
+    fn source(&self, origin: &str) -> Option<(Arc<str>, String)> {
+        self.modules.get(origin).cloned().or_else(|| {
+            self.documents
+                .admitted_text(Path::new(origin))
+                .map(|source| (source, display_path(Path::new(origin))))
+        })
+    }
+}
 
 #[must_use]
 pub fn line_map_from_source(source: &str) -> Vec<usize> {
@@ -1656,7 +1810,9 @@ fn load_project_context(
     // `Is a directory` OS error a bare read would surface.
     let documents = options.map_or(&*EMPTY_DOCUMENTS, |options| &options.documents);
     let source = if let Some(source) = source_override {
-        source.to_string()
+        documents
+            .get(Path::new(input))
+            .map_or_else(|| Arc::from(source), Arc::from)
     } else {
         if documents.filesystem && Path::new(input).is_dir() {
             return Err(FrontendFailure::message_only(format!(
@@ -1719,7 +1875,7 @@ fn project_context_for_program(
             let (manifest_deps, package_name) =
                 load_manifest_metadata_from(dir, &options.documents)?;
             Ok(ProjectContext {
-                source: source.to_string(),
+                source: source.into(),
                 project_dir: dir.clone(),
                 manifest_deps,
                 package_name,
@@ -1731,7 +1887,7 @@ fn project_context_for_program(
             })
         }
         None => Ok(ProjectContext {
-            source: source.to_string(),
+            source: source.into(),
             project_dir: std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
             manifest_deps: None,
             package_name: None,
@@ -1824,13 +1980,16 @@ fn resolve_imports_internal(
     {
         for path in &module.source_paths {
             if let Ok(text) = read_source(&options.documents, path) {
-                sources.insert(path.clone(), text);
+                sources.insert(path.clone(), text.to_string());
             }
         }
     }
     sources.insert(input_canonical, source.to_string());
-    if let Err((path, error)) = hew_expand::expand_program(program, sources.clone()) {
-        let text = sources.get(&path).map_or(source, String::as_str);
+    if let Err((path, error)) = hew_expand::expand_program(program, sources) {
+        let text = options
+            .documents
+            .admitted_text(&path)
+            .unwrap_or_else(|| Arc::from(source));
         return Err(FrontendFailure::new(
             "macro expansion failed",
             vec![FrontendDiagnostic::parse(text, &display_path(&path), error)],
@@ -1855,12 +2014,26 @@ fn display_path(path: &Path) -> String {
         .unwrap_or(text)
 }
 
-fn build_module_source_map(program: &Program, documents: &SourceSet) -> ModuleSourceMap {
+fn build_module_source_map(
+    program: &Program,
+    root_source: &str,
+    root_filename: &str,
+    documents: &SourceSet,
+) -> SourceSnapshot {
+    let root_source = documents
+        .read_text(Path::new(root_filename))
+        .unwrap_or_else(|_| Arc::from(root_source));
+    let mut snapshot = SourceSnapshot {
+        root_source,
+        root_filename: root_filename.to_string(),
+        modules: HashMap::new(),
+        documents: documents.clone(),
+    };
     let Some(ref module_graph) = program.module_graph else {
-        return ModuleSourceMap::new();
+        return snapshot;
     };
 
-    let mut map = ModuleSourceMap::new();
+    let map = &mut snapshot.modules;
     for mod_id in &module_graph.topo_order {
         if *mod_id == module_graph.root {
             continue;
@@ -1878,7 +2051,7 @@ fn build_module_source_map(program: &Program, documents: &SourceSet) -> ModuleSo
                 {
                     map.insert(
                         mod_id.dotted(),
-                        ((*text).to_string(), format!("std/{leaf}.hew")),
+                        (Arc::from(*text), format!("std/{leaf}.hew")),
                     );
                 }
             }
@@ -1903,7 +2076,7 @@ fn build_module_source_map(program: &Program, documents: &SourceSet) -> ModuleSo
             }
         }
     }
-    map
+    snapshot
 }
 
 fn macro_type_origin(
@@ -1944,105 +2117,79 @@ fn macro_type_origin(
 }
 
 fn type_diagnostic_to_frontend(
-    root_source: &str,
-    root_filename: &str,
     diagnostic: hew_types::TypeError,
-    module_source_map: &ModuleSourceMap,
-    documents: &SourceSet,
+    sources: &SourceSnapshot,
 ) -> FrontendDiagnostic {
-    if let Some(input) = diagnostic.source_module.as_ref().and_then(|origin| {
-        documents
-            .inputs()
-            .into_iter()
-            .find(|input| input.path.to_string_lossy() == origin.as_str())
-    }) {
-        if let Ok(bytes) = documents.read_bytes(&input.path) {
-            let source = String::from_utf8_lossy(&bytes);
-            return FrontendDiagnostic::type_(
-                &source,
-                &display_path(&input.path),
-                diagnostic,
-                module_source_map,
-            );
-        }
-    }
-    let (source, filename) = if let Some(ref mod_name) = diagnostic.source_module {
-        module_source_map
-            .get(mod_name.as_str())
-            .map_or((root_source, root_filename), |(source, filename)| {
-                (source.as_str(), filename.as_str())
-            })
-    } else {
-        (root_source, root_filename)
-    };
-    FrontendDiagnostic::type_(source, filename, diagnostic, module_source_map)
+    let (source, filename) = diagnostic
+        .source_module
+        .as_deref()
+        .and_then(|origin| sources.source(origin))
+        .unwrap_or_else(|| {
+            (
+                Arc::clone(&sources.root_source),
+                sources.root_filename.clone(),
+            )
+        });
+    FrontendDiagnostic::type_(source, &filename, diagnostic, sources)
 }
 
 fn hir_diagnostic_to_frontend(
-    root_source: &str,
-    root_filename: &str,
     diagnostic: hew_hir::HirDiagnostic,
-    module_source_map: &ModuleSourceMap,
+    sources: &SourceSnapshot,
 ) -> FrontendDiagnostic {
-    let (source, filename) = match diagnostic.source_module.as_deref() {
-        None => (Some(root_source), Some(root_filename)),
-        Some(module) => module_source_map
-            .get(module)
-            .map_or((None, None), |(source, filename)| {
-                (Some(source.as_str()), Some(filename.as_str()))
-            }),
+    let source = match diagnostic.source_module.as_deref() {
+        None => Some((
+            Arc::clone(&sources.root_source),
+            sources.root_filename.clone(),
+        )),
+        Some(module) => sources.source(module),
     };
-    FrontendDiagnostic::hir(source, filename, diagnostic)
+    match source {
+        Some((source, filename)) => {
+            FrontendDiagnostic::hir(Some(source), Some(&filename), diagnostic)
+        }
+        None => FrontendDiagnostic::hir(None, None, diagnostic),
+    }
 }
 
-/// Route HIR diagnostics through the same source-map attribution path used by
-/// parser and type diagnostics. Non-root diagnostics never fall back to root
-/// source on a source-map miss; callers render an explicit unavailable note.
+/// Route HIR diagnostics through the exact source context admitted by the frontend.
+/// Unknown foreign origins remain unavailable rather than using the root file.
 #[must_use]
 pub fn hir_diagnostics_to_frontend(
-    program: &Program,
-    root_source: &str,
-    root_filename: &str,
     diagnostics: Vec<hew_hir::HirDiagnostic>,
-    documents: &SourceSet,
+    sources: &SourceSnapshot,
 ) -> Vec<FrontendDiagnostic> {
-    let module_source_map = build_module_source_map(program, documents);
     diagnostics
         .into_iter()
-        .map(|diagnostic| {
-            hir_diagnostic_to_frontend(root_source, root_filename, diagnostic, &module_source_map)
-        })
+        .map(|diagnostic| hir_diagnostic_to_frontend(diagnostic, sources))
         .collect()
 }
 
-/// Attribute source ownership findings from SIR using the ordinary module source map.
+/// Attribute ownership findings using the same admitted source text as type checking.
 #[must_use]
 pub fn ownership_diagnostics_to_frontend(
-    program: &Program,
-    root_source: &str,
-    root_filename: &str,
     diagnostics: Vec<hew_sir::SirDiagnostic>,
-    documents: &SourceSet,
+    sources: &SourceSnapshot,
 ) -> Vec<FrontendDiagnostic> {
-    let sources = build_module_source_map(program, documents);
+    let source_for = |origin: &hew_sir::FunctionSourceOrigin| match origin {
+        hew_sir::FunctionSourceOrigin::RootUnit => Some((
+            Arc::clone(&sources.root_source),
+            sources.root_filename.clone(),
+        )),
+        hew_sir::FunctionSourceOrigin::Foreign(module) => sources.source(module),
+        hew_sir::FunctionSourceOrigin::Unknown => None,
+    };
     diagnostics
         .into_iter()
         .map(|diagnostic| {
             if let hew_sir::SirDiagnosticKind::InvalidGeneratorSend { message, site } =
                 &diagnostic.kind
             {
-                let source = match &site.source {
-                    hew_sir::FunctionSourceOrigin::RootUnit => Some((root_source, root_filename)),
-                    hew_sir::FunctionSourceOrigin::Foreign(module) => sources
-                        .get(module)
-                        .map(|(source, filename)| (source.as_str(), filename.as_str())),
-                    hew_sir::FunctionSourceOrigin::Unknown => None,
-                };
-                return source.map_or_else(
+                return source_for(&site.source).map_or_else(
                     || FrontendDiagnostic::coded_message("InvalidSend", message.clone()),
                     |(source, filename)| FrontendDiagnostic {
-                        source: Some(source.to_string()),
-                        filename: Some(filename.to_string()),
+                        source: Some(source),
+                        filename: Some(filename),
                         note_sources: Vec::new(),
                         kind: FrontendDiagnosticKind::Type(hew_types::TypeError::new(
                             hew_types::error::TypeErrorKind::InvalidSend,
@@ -2056,6 +2203,7 @@ pub fn ownership_diagnostics_to_frontend(
                 binding,
                 span,
                 source_origin,
+                ..
             } = diagnostic.kind
             else {
                 unreachable!("SessionError::Ownership contains source ownership findings");
@@ -2066,14 +2214,7 @@ pub fn ownership_diagnostics_to_frontend(
                     format!("linear value `{binding}` must be consumed before this normal exit")
                 },
             );
-            let source = match &source_origin {
-                hew_sir::FunctionSourceOrigin::RootUnit => Some((root_source, root_filename)),
-                hew_sir::FunctionSourceOrigin::Foreign(module) => sources
-                    .get(module)
-                    .map(|(source, filename)| (source.as_str(), filename.as_str())),
-                hew_sir::FunctionSourceOrigin::Unknown => None,
-            };
-            source.map_or_else(
+            source_for(&source_origin).map_or_else(
                 || FrontendDiagnostic::coded_message("E_MUST_CONSUME", message.clone()),
                 |(source, filename)| {
                     FrontendDiagnostic::coded_message_at(
@@ -2081,7 +2222,7 @@ pub fn ownership_diagnostics_to_frontend(
                         message.clone(),
                         span,
                         source,
-                        filename,
+                        &filename,
                     )
                 },
             )
@@ -2119,9 +2260,16 @@ fn typecheck_program_with_dependency_cache(
     let search_paths = checker_search_paths(options);
     let module_registry = hew_types::module_registry::ModuleRegistry::new(search_paths);
 
+    let module_source_map = Arc::new(build_module_source_map(
+        program,
+        source,
+        input,
+        &options.documents,
+    ));
     if options.no_typecheck {
         return (
             TypeCheckResult {
+                sources: module_source_map,
                 tco: None,
                 module_registry,
             },
@@ -2157,17 +2305,17 @@ fn typecheck_program_with_dependency_cache(
     // `// hew:allow(...)` directives. The root source owns the entry file's
     // spans; each non-root module owns its own (built from the same source map
     // the diagnostic renderer uses below).
-    let module_source_map = build_module_source_map(program, &options.documents);
     let mut lint_sources = hew_types::LintSources::new();
-    lint_sources.set_root(source.to_string());
-    for (module, (module_source, _filename)) in &module_source_map {
-        lint_sources.set_module(module.clone(), module_source.clone());
+    lint_sources.set_root(Arc::clone(&module_source_map.root_source));
+    for (module, (module_source, _filename)) in module_source_map.modules() {
+        lint_sources.set_module(module.clone(), Arc::clone(module_source));
     }
     checker.set_lint_sources(lint_sources);
     let tco = if let Some(cache) = cache {
         let sources = module_source_map
+            .modules()
             .iter()
-            .map(|(module, (text, filename))| (module.clone(), text.clone(), filename.clone()))
+            .map(|(module, (text, filename))| (module.clone(), Arc::clone(text), filename.clone()))
             .collect();
         cache.check_program(&mut checker, program, sources)
     } else {
@@ -2178,28 +2326,17 @@ fn typecheck_program_with_dependency_cache(
         .iter()
         .cloned()
         .map(|diagnostic| {
-            type_diagnostic_to_frontend(
-                source,
-                input,
-                macro_type_origin(program, diagnostic),
-                &module_source_map,
-                &options.documents,
-            )
+            type_diagnostic_to_frontend(macro_type_origin(program, diagnostic), &module_source_map)
         })
         .collect::<Vec<_>>();
     diagnostics.extend(tco.warnings.iter().cloned().map(|diagnostic| {
-        type_diagnostic_to_frontend(
-            source,
-            input,
-            macro_type_origin(program, diagnostic),
-            &module_source_map,
-            &options.documents,
-        )
+        type_diagnostic_to_frontend(macro_type_origin(program, diagnostic), &module_source_map)
     }));
 
     let module_registry = checker.into_module_registry();
     (
         TypeCheckResult {
+            sources: module_source_map,
             tco: Some(tco),
             module_registry,
         },
@@ -2225,6 +2362,7 @@ pub fn typecheck_program(
 ) -> Result<TypeCheckResult, FrontendFailure> {
     let mut options = options.clone();
     options.documents.insert(input, source);
+    options.documents = options.documents.for_frontend();
     let _ = options.documents.read_bytes(Path::new(input));
     let options = &options;
     require_host_typecheck(options)?;
@@ -2276,6 +2414,7 @@ pub fn check_program(
 ) -> Result<CheckOutput, FrontendFailure> {
     let mut options = options.clone();
     options.documents.insert(source_label, source);
+    options.documents = options.documents.for_frontend();
     let _ = options.documents.read_bytes(Path::new(source_label));
     let options = &options;
     require_host_typecheck(options)?;
@@ -2684,7 +2823,6 @@ const DIRECTORY_MODULE_ROOT_LABEL: &str = "(directory module)";
 fn run_directory_module_frontend(
     entry: &Path,
     input: &str,
-    source_override: Option<&str>,
     options: &FrontendOptions,
 ) -> DocumentFrontendState {
     let label = entry
@@ -2693,7 +2831,7 @@ fn run_directory_module_frontend(
         .to_string();
     let empty = hew_parser::parse("");
     let mut state = DocumentFrontendState {
-        source: String::new(),
+        source: Arc::from(""),
         program: empty.program,
         parse_result: None,
         diagnostics: Vec::new(),
@@ -2702,25 +2840,16 @@ fn run_directory_module_frontend(
     };
     // The requested document keeps its own text and parse for the host; an
     // open buffer stands in for its file while the module is assembled.
-    let mut options = options.clone();
-    let source = match source_override {
-        Some(source) => {
-            options.documents.insert(input, source);
-            let _ = options.documents.read_bytes(Path::new(input));
-            source.to_string()
+    let source = match read_source(&options.documents, Path::new(input)) {
+        Ok(source) => source,
+        Err(error) => {
+            return state.stop(FrontendFailure::message_only(format!(
+                "Error: cannot read {input}: {error}"
+            )))
         }
-        None => match read_source(&options.documents, Path::new(input)) {
-            Ok(source) => source,
-            Err(error) => {
-                return state.stop(FrontendFailure::message_only(format!(
-                    "Error: cannot read {input}: {error}"
-                )))
-            }
-        },
     };
     state.parse_result = Some(hew_parser::parse(&source));
     state.source = source;
-    let options = &options;
     let project = match load_project_context(&label, Some(options), Some("")) {
         Ok(project) => project,
         Err(failure) => return state.stop(failure),
@@ -2813,7 +2942,7 @@ fn cycle_error_to_frontend_failure(
     let chain = cycle_err.to_string();
     let edge_count = cycle_err.import_spans.len();
 
-    let mut locations: Vec<(PathBuf, String, Range<usize>, String)> =
+    let mut locations: Vec<(PathBuf, Arc<str>, Range<usize>, String)> =
         Vec::with_capacity(edge_count);
     for i in 0..edge_count {
         let from_module = &cycle_err.cycle[i];
@@ -2883,7 +3012,7 @@ fn cycle_error_to_frontend_failure(
         .map(|(path, source, span, label)| FrontendMessageNote {
             message: label.clone(),
             span: span.clone(),
-            source: Arc::from(source.as_str()),
+            source: Arc::clone(source),
             filename: path.display().to_string(),
         })
         .collect();
@@ -3057,7 +3186,7 @@ pub fn attach_prelude_std_modules(program: &mut Program) {
             .iter()
             .find(|(leaf, _)| *leaf == name)
             .expect("every prelude module has a compiled-in source");
-        Ok((None, (*source).to_string()))
+        Ok((None, Arc::from(*source)))
     })
     .expect("the compiled-in prelude sources parse");
 }
@@ -3070,7 +3199,7 @@ pub fn attach_prelude_std_modules(program: &mut Program) {
 /// the checker's embedded builtin registration already owns those declarations.
 fn add_prelude_std_modules(
     graph: &mut hew_parser::module::ModuleGraph,
-    mut source_for: impl FnMut(&str) -> Result<(Option<PathBuf>, String), FrontendFailure>,
+    mut source_for: impl FnMut(&str) -> Result<(Option<PathBuf>, Arc<str>), FrontendFailure>,
 ) -> Result<(), FrontendFailure> {
     use hew_parser::module::Module;
     for (name, _) in hew_types::stdlib_authority::IMPLICIT_PRELUDE_STD_SOURCES {
@@ -3096,7 +3225,7 @@ fn add_prelude_std_modules(
                 parsed
                     .errors
                     .into_iter()
-                    .map(|error| FrontendDiagnostic::parse(&source, &filename, error))
+                    .map(|error| FrontendDiagnostic::parse(Arc::clone(&source), &filename, error))
                     .collect(),
             ));
         }
@@ -3121,7 +3250,7 @@ fn add_prelude_std_modules(
 fn resolve_prelude_std_source(
     ctx: &ImportResolutionContext<'_>,
     name: &str,
-) -> Result<(PathBuf, String), FrontendFailure> {
+) -> Result<(PathBuf, Arc<str>), FrontendFailure> {
     let search_paths = ctx.module_search_paths.map_or_else(
         hew_types::module_registry::stdlib_search_paths,
         <[PathBuf]>::to_vec,
@@ -4063,7 +4192,7 @@ fn parse_and_resolve_file_internal(
         .errors
         .iter()
         .cloned()
-        .map(|diagnostic| FrontendDiagnostic::parse(&source, &display_path, diagnostic))
+        .map(|diagnostic| FrontendDiagnostic::parse(Arc::clone(&source), &display_path, diagnostic))
         .collect::<Vec<_>>();
 
     if result
@@ -4162,7 +4291,7 @@ pub struct FileFrontendState {
     pub program: Program,
     pub diagnostics: Vec<FrontendDiagnostic>,
     pub typecheck_result: TypeCheckResult,
-    pub source: String,
+    pub source: Arc<str>,
 }
 
 #[allow(
@@ -4173,7 +4302,7 @@ pub struct ProgramFrontendState {
     pub program: Program,
     pub diagnostics: Vec<FrontendDiagnostic>,
     pub typecheck_result: TypeCheckResult,
-    pub source: String,
+    pub source: Arc<str>,
 }
 
 /// Shared frontend driver for on-disk source files.
@@ -4227,7 +4356,7 @@ pub fn run_file_frontend_to_expansion(
 )]
 pub struct DocumentFrontendState {
     /// The root buffer's text, from the document set or from disk.
-    pub source: String,
+    pub source: Arc<str>,
     /// The root buffer's parse. `None` when the host supplied an already
     /// parsed program through [`run_program_frontend_to_typecheck`].
     pub parse_result: Option<hew_parser::ParseResult>,
@@ -4291,7 +4420,8 @@ pub fn run_source_frontend(
 
 /// Frontend checks sharing immutable dependency analysis within one request.
 ///
-/// `options.documents` is frozen when the batch is created. Each call resolves
+/// Supplied overlays are frozen when the batch is created. Each call admits
+/// fresh disk inputs; the dependency key includes their exact text. It resolves
 /// imports using its genuine source root and forks mutable semantic state from
 /// a dependency-only checkpoint when independence is proved. Uncertain root
 /// shapes use the ordinary full frontend. Use a separate batch for proposed
@@ -4311,7 +4441,7 @@ impl SourceAnalysisBatch {
         }
     }
 
-    /// Run the shared frontend against this batch's immutable source snapshot.
+    /// Admit fresh disk inputs and check them against this batch's frozen overlays.
     #[must_use]
     pub fn run_source_frontend(&mut self, source: &str, label: &str) -> DocumentFrontendState {
         run_document_frontend_with_dependency_cache(
@@ -4358,25 +4488,31 @@ fn run_document_frontend_with_dependency_cache(
     roots: RootSelection,
     cache: Option<&mut hew_types::check::DependencyAnalysisCache>,
 ) -> DocumentFrontendState {
-    let mut supplied_options;
-    let options = if let Some(source) = source_override {
-        supplied_options = options.clone();
-        supplied_options.documents.insert(input, source);
-        let _ = supplied_options.documents.read_bytes(Path::new(input));
-        &supplied_options
-    } else {
-        options
-    };
+    let mut admitted_options = options.clone();
+    if let Some(source) = source_override {
+        admitted_options.documents.insert(input, source);
+    }
+    admitted_options.documents = admitted_options.documents.for_frontend();
+    let options = &admitted_options;
+    let mut state = run_admitted_document_frontend(input, source_override, options, roots, cache);
+    if let Some(failure) = &mut state.stopped {
+        failure.inputs = options.documents.inputs();
+    }
+    state
+}
+
+fn run_admitted_document_frontend(
+    input: &str,
+    source_override: Option<&str>,
+    options: &FrontendOptions,
+    roots: RootSelection,
+    cache: Option<&mut hew_types::check::DependencyAnalysisCache>,
+) -> DocumentFrontendState {
     if roots == RootSelection::Module {
         if let Some(membership) = module_membership(Path::new(input), options)
             .filter(|m| m.checks_as_directory_module() || m.is_package_root_module())
         {
-            return run_directory_module_frontend(
-                &membership.entry,
-                input,
-                source_override,
-                options,
-            );
+            return run_directory_module_frontend(&membership.entry, input, options);
         }
     }
     let project = match load_project_context(input, Some(options), source_override) {
@@ -4384,7 +4520,7 @@ fn run_document_frontend_with_dependency_cache(
         Err(failure) => {
             let empty = hew_parser::parse("");
             return DocumentFrontendState {
-                source: String::new(),
+                source: Arc::from(""),
                 program: empty.program.clone(),
                 parse_result: Some(empty),
                 diagnostics: Vec::new(),
@@ -4402,7 +4538,7 @@ fn run_document_frontend_with_dependency_cache(
         .errors
         .iter()
         .cloned()
-        .map(|diagnostic| FrontendDiagnostic::parse(&project.source, input, diagnostic))
+        .map(|diagnostic| FrontendDiagnostic::parse(Arc::clone(&project.source), input, diagnostic))
         .collect::<Vec<_>>();
     let parse_failed = parse_result
         .errors
@@ -4560,11 +4696,15 @@ pub fn run_program_frontend(
     source_label: &str,
     options: &FrontendOptions,
 ) -> DocumentFrontendState {
+    let mut admitted_options = options.clone();
+    admitted_options.documents.insert(source_label, source);
+    admitted_options.documents = admitted_options.documents.for_frontend();
+    let options = &admitted_options;
     let project = match project_context_for_program(source, options) {
         Ok(project) => project,
         Err(failure) => {
             return DocumentFrontendState {
-                source: source.to_string(),
+                source: source.into(),
                 parse_result: None,
                 program,
                 diagnostics: Vec::new(),
@@ -4575,7 +4715,7 @@ pub fn run_program_frontend(
         }
     };
     let state = DocumentFrontendState {
-        source: source.to_string(),
+        source: source.into(),
         parse_result: None,
         program,
         diagnostics: Vec::new(),
@@ -4612,7 +4752,12 @@ pub fn check_file_with_state(
 ) -> Result<(CheckOutput, FileFrontendState), FrontendFailure> {
     let state =
         run_document_frontend_from(input, None, options, RootSelection::Module).into_result()?;
-    let diagnostics = fail_on_warning_diagnostics(state.diagnostics.clone(), options)?;
+    let diagnostics = fail_on_warning_diagnostics(state.diagnostics.clone(), options).map_err(
+        |mut failure| {
+            failure.inputs = state.typecheck_result.sources.inputs();
+            failure
+        },
+    )?;
     let stack_hints = state
         .typecheck_result
         .tco
@@ -4628,7 +4773,7 @@ pub fn check_file_with_state(
             .unwrap_or_default(),
         diagnostics,
         stack_hints,
-        source: state.source.clone(),
+        source: state.source.to_string(),
     };
     Ok((output, state))
 }
@@ -8877,10 +9022,8 @@ extern "C" { fn hew_tcp_read(foo: Foo); }
         let state = run_file_frontend_to_typecheck(&main, &FrontendOptions::default())
             .expect("frontend should accept fixture");
 
+        fs::remove_file(dir.path().join("dep.hew")).unwrap();
         let diagnostics = hir_diagnostics_to_frontend(
-            &state.program,
-            &state.source,
-            &main,
             vec![hew_hir::HirDiagnostic::new(
                 hew_hir::HirDiagnosticKind::ConstIntegerEvaluation {
                     class: "arithmetic-overflow".to_string(),
@@ -8889,7 +9032,7 @@ extern "C" { fn hew_tcp_read(foo: Foo); }
                 "probe",
             )
             .with_source_module(Some("dep".to_string()))],
-            &SourceSet::new(),
+            &state.typecheck_result.sources,
         );
 
         assert_eq!(diagnostics.len(), 1);
@@ -8913,16 +9056,13 @@ extern "C" { fn hew_tcp_read(foo: Foo); }
         let program = parse_source(source, "main.hew").expect("source should parse");
 
         let diagnostics = hir_diagnostics_to_frontend(
-            &program,
-            source,
-            "main.hew",
             vec![hew_hir::HirDiagnostic::new(
                 hew_hir::HirDiagnosticKind::UnresolvedInferenceVar,
                 0..2,
                 "probe",
             )
             .with_source_module(Some("missing".to_string()))],
-            &SourceSet::new(),
+            &super::build_module_source_map(&program, source, "main.hew", &SourceSet::new()),
         );
 
         assert_eq!(diagnostics.len(), 1);
@@ -9405,6 +9545,91 @@ mod source_analysis_batch_tests {
                 .to_path_buf()]),
             ..FrontendOptions::default()
         }
+    }
+
+    #[test]
+    fn repeated_requests_refresh_disk_dependencies_and_retained_sources() {
+        let dir = tempfile::tempdir().unwrap();
+        let dep = dir.path().join("greeting.hew");
+        let label = dir.path().join("consumer.hew");
+        let label = label.to_str().unwrap();
+        let old = "pub fn greet() -> i32 { 7 }";
+        fs::write(&dep, old).unwrap();
+        let options = test_options();
+        let mut batch = SourceAnalysisBatch::new(options.clone());
+        let source = "import greeting; fn consumer() -> i32 { greeting.greet() }";
+        let first = assert_equivalent(source, label, &options, &mut batch);
+        assert!(first.stopped.is_none(), "{:?}", first.diagnostics);
+        let retained = &first.typecheck_result.as_ref().unwrap().sources;
+        fs::write(&dep, "pub fn greet() -> string { \"changed\" }").unwrap();
+        let changed = assert_equivalent(source, label, &options, &mut batch);
+        assert!(
+            changed.stopped.is_some(),
+            "updated dependency must reject the integer caller"
+        );
+        assert_eq!(batch.dependency_bootstraps(), 2);
+        fs::remove_file(&dep).unwrap();
+        let deleted = run_source_frontend(source, label, &options);
+        assert!(deleted.stopped.is_some());
+        let (text, _) = retained.source("greeting").unwrap();
+        assert_eq!(&*text, old);
+        assert!(retained.documents.is_file(&dep));
+        assert_eq!(&*retained.documents.read_text(&dep).unwrap(), old);
+
+        let error = hew_types::TypeError::new(
+            hew_types::error::TypeErrorKind::InvalidSend,
+            0..3,
+            "retained location",
+        )
+        .with_note_source(0..3, "dependency declaration", Some("greeting".into()));
+        let diagnostic = type_diagnostic_to_frontend(error, retained);
+        assert_eq!(diagnostic.source.as_deref(), Some(source));
+        assert_eq!(&*diagnostic.note_sources[0].as_ref().unwrap().0, old);
+        let diagnostic = ownership_diagnostics_to_frontend(
+            vec![hew_sir::SirDiagnostic {
+                function: "greet".into(),
+                callable: None,
+                kind: hew_sir::SirDiagnosticKind::UnconsumedLinear {
+                    binding: Some("value".into()),
+                    span: 0..3,
+                    source_origin: hew_sir::FunctionSourceOrigin::Foreign("greeting".into()),
+                },
+            }],
+            retained,
+        );
+        let FrontendDiagnosticKind::Message(message) = &diagnostic[0].kind else {
+            panic!("expected positioned ownership message");
+        };
+        assert_eq!(message.source.as_deref(), Some(old));
+    }
+
+    #[test]
+    fn source_epoch_keeps_binary_inputs_until_the_next_request() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("included.txt");
+        fs::write(&path, b"original").unwrap();
+        let options = SourceSet::new();
+        let admitted = options.for_frontend();
+        assert_eq!(admitted.read_bytes(&path).unwrap(), b"original");
+        fs::write(&path, b"changed").unwrap();
+        assert_eq!(&*admitted.read_text(&path).unwrap(), "original");
+        let fresh = options.for_frontend();
+        assert_eq!(&*fresh.read_text(&path).unwrap(), "changed");
+        assert_ne!(admitted.inputs()[0].sha256, fresh.inputs()[0].sha256);
+        fs::remove_file(&path).unwrap();
+        assert_eq!(admitted.read_bytes(&path).unwrap(), b"original");
+        assert!(!options.for_frontend().is_file(&path));
+
+        fs::write(&path, [0xff, 0x00]).unwrap();
+        let binary = options.for_frontend();
+        assert_eq!(binary.read_bytes(&path).unwrap(), [0xff, 0x00]);
+        fs::remove_file(&path).unwrap();
+        assert!(binary.is_file(&path));
+        assert_eq!(
+            binary.read_text(&path).unwrap_err().kind(),
+            std::io::ErrorKind::InvalidData
+        );
+        assert!(binary.admitted_text(&path).is_none());
     }
 
     fn identity(output: &hew_types::TypeCheckOutput, id: hew_types::DefId) -> String {

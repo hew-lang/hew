@@ -108,7 +108,7 @@ pub fn compile_project_to_sandbox_bytecode(
         return Ok(invalid("project entry is absent from files"));
     };
     let entry = root.join(&project.entry);
-    let mut output = compile_from_semantics(
+    let (mut output, admitted_inputs) = compile_from_semantics(
         source,
         profile,
         &entry.to_string_lossy(),
@@ -127,8 +127,7 @@ pub fn compile_project_to_sandbox_bytecode(
         }
     }
     let mut resolved = BTreeSet::from([project.entry]);
-    for input in inputs
-        .inputs()
+    for input in admitted_inputs
         .into_iter()
         .filter(|input| input.sha256.is_some())
     {

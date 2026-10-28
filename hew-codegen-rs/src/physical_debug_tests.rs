@@ -83,13 +83,20 @@ fn emit(dir: &Path, debug: bool) -> EmitArtefacts {
 fn emit_source(dir: &Path, name: &str, text: &str, debug: bool) -> EmitArtefacts {
     let source = dir.join(format!("{name}.hew"));
     std::fs::write(&source, text).expect("write fixture source");
-    hew_codegen_emit(&verified(text), dir, debug.then_some(source.as_path()))
+    hew_codegen_emit(
+        &verified(text),
+        dir,
+        debug.then_some(DebugSource {
+            path: &source,
+            text,
+        }),
+    )
 }
 
 fn hew_codegen_emit(
     verified: &hew_mir::VerifiedPhysicalModule,
     dir: &Path,
-    debug_source: Option<&Path>,
+    debug_source: Option<DebugSource<'_>>,
 ) -> EmitArtefacts {
     emit_physical_object(
         verified,
@@ -101,7 +108,6 @@ fn hew_codegen_emit(
             emit_llvm: true,
             address_sanitizer: false,
             debug_source,
-            debug_display_source: None,
             link_freestanding_wasm: false,
             build_info: None,
         },

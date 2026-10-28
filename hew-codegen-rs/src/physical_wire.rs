@@ -88,8 +88,8 @@ fn table_global<'ctx>(
         return global.as_pointer_value();
     }
     let ctx = values.ctx;
-    let target = TargetData::create(&values.module.target.data_layout);
-    let word = ctx.ptr_sized_int_type(&target, None);
+    let target = values.target_data;
+    let word = ctx.ptr_sized_int_type(target, None);
     let pointer = ctx.ptr_type(AddressSpace::default());
     let member_ty = ctx.struct_type(
         &[
@@ -202,6 +202,7 @@ fn decode_is_resumable(
 pub(super) fn emit_callback<'ctx>(
     module: &PhysicalModule,
     ctx: &'ctx Context,
+    target_data: &TargetData,
     llvm: &Module<'ctx>,
     plans: &SemWirePlans,
     ty: &ResolvedTy,
@@ -238,6 +239,7 @@ pub(super) fn emit_callback<'ctx>(
     let frame = if resumable {
         Some(coro::begin(
             ctx,
+            target_data,
             llvm,
             &builder,
             function,
@@ -251,6 +253,7 @@ pub(super) fn emit_callback<'ctx>(
         .expect("codec callback body exists");
     let values = ValueEmitter {
         module,
+        target_data,
         ctx,
         llvm,
         builder: &builder,
@@ -385,6 +388,7 @@ impl<'ctx> EncodeEmitter<'_, 'ctx> {
         let function = emit_callback(
             self.values.module,
             self.values.ctx,
+            self.values.target_data,
             self.values.llvm,
             self.plans,
             ty,
@@ -1170,6 +1174,7 @@ impl<'ctx> DecodeEmitter<'_, 'ctx> {
         let function = emit_callback(
             self.values.module,
             self.values.ctx,
+            self.values.target_data,
             self.values.llvm,
             self.plans,
             ty,
@@ -1833,6 +1838,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
         let callback = emit_callback(
             self.module,
             self.ctx,
+            self.target_data,
             self.llvm,
             plans,
             &plans.root,
@@ -2010,6 +2016,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
         let error_callback = emit_callback(
             self.module,
             self.ctx,
+            self.target_data,
             self.llvm,
             plans,
             &cases.error_ty,

@@ -13,10 +13,10 @@ pub(crate) fn apply(
     input: &Path,
     options: &FrontendOptions,
     diagnostics: &[FrontendDiagnostic],
+    inputs: &[hew_types::compile_time::CompilationInput],
     dry_run: bool,
 ) -> Result<usize, String> {
-    let inputs = options.documents.inputs();
-    let selected = selected_sources(input, options);
+    let selected = selected_sources(input, options, inputs);
     let mut grouped: BTreeMap<PathBuf, (String, Vec<DiagnosticInfo>)> = BTreeMap::new();
     for diagnostic in diagnostics {
         let fixes = match &diagnostic.kind {
@@ -56,8 +56,8 @@ pub(crate) fn apply(
         }
         let entry = grouped
             .entry(path)
-            .or_insert_with(|| (source.clone(), Vec::new()));
-        if entry.0 != *source {
+            .or_insert_with(|| (source.to_string(), Vec::new()));
+        if entry.0 != source.as_ref() {
             return Err("diagnostics refer to different source snapshots; check again".into());
         }
         entry.1.push(DiagnosticInfo::new(source, fixes.clone()));
@@ -112,15 +112,17 @@ pub(crate) fn apply(
     Ok(planned.len())
 }
 
-fn selected_sources(input: &Path, options: &FrontendOptions) -> HashSet<PathBuf> {
+fn selected_sources(
+    input: &Path,
+    options: &FrontendOptions,
+    inputs: &[hew_types::compile_time::CompilationInput],
+) -> HashSet<PathBuf> {
     let paths = match hew_compile::module_membership(input, options) {
         Some(membership) => match membership.anchor {
             ModuleAnchor::Std { .. } => Vec::new(),
-            ModuleAnchor::Package { dir, .. } => options
-                .documents
-                .inputs()
-                .into_iter()
-                .map(|input| input.path)
+            ModuleAnchor::Package { dir, .. } => inputs
+                .iter()
+                .map(|input| input.path.clone())
                 .filter(|path| hew_pkg::generate::is_package_path(&dir, path))
                 .collect(),
             ModuleAnchor::Loose => std::iter::once(membership.entry)
@@ -177,7 +179,14 @@ mod tests {
                 std::fs::write(&context, [1, 255]).unwrap();
             }
             let before = std::fs::read(&path).unwrap();
-            assert!(apply(&path, &options, &[diagnostic], false).is_err());
+            assert!(apply(
+                &path,
+                &options,
+                &[diagnostic],
+                &options.documents.inputs(),
+                false
+            )
+            .is_err());
             assert_eq!(std::fs::read(&path).unwrap(), before);
         }
     }
@@ -191,11 +200,28 @@ mod tests {
         let options = FrontendOptions::default();
         let diagnostic = diagnosed(&path, source, &options);
         assert_eq!(
-            apply(&path, &options, std::slice::from_ref(&diagnostic), true).unwrap(),
+            apply(
+                &path,
+                &options,
+                std::slice::from_ref(&diagnostic),
+                &options.documents.inputs(),
+                true
+            )
+            .unwrap(),
             1
         );
         assert_eq!(std::fs::read(&path).unwrap(), source.as_bytes());
-        assert_eq!(apply(&path, &options, &[diagnostic], false).unwrap(), 1);
+        assert_eq!(
+            apply(
+                &path,
+                &options,
+                &[diagnostic],
+                &options.documents.inputs(),
+                false
+            )
+            .unwrap(),
+            1
+        );
         assert_eq!(
             std::fs::read_to_string(&path).unwrap(),
             source.replacen("var value", "let value", 1)

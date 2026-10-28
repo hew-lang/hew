@@ -314,7 +314,6 @@ fn emit_live(
                 emit_llvm: true,
                 address_sanitizer: false,
                 debug_source: None,
-                debug_display_source: None,
                 link_freestanding_wasm: false,
                 build_info: None,
             },

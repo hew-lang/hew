@@ -204,6 +204,7 @@ impl<'a, 'ctx, 'm> SelectedValueEmitter<'a, 'ctx, 'm> {
         let frame = if resumable {
             Some(coro::begin(
                 parent.ctx,
+                parent.target_data,
                 &parent.llvm,
                 &builder,
                 function,
@@ -285,6 +286,7 @@ impl<'a, 'ctx, 'm> SelectedValueEmitter<'a, 'ctx, 'm> {
     fn values(&self) -> ValueEmitter<'_, 'ctx> {
         ValueEmitter {
             module: self.parent.module,
+            target_data: self.parent.target_data,
             ctx: self.parent.ctx,
             llvm: &self.parent.llvm,
             builder: &self.builder,
@@ -875,8 +877,8 @@ impl<'a, 'ctx, 'm> SelectedValueEmitter<'a, 'ctx, 'm> {
         }
         // Widen before adding: offset+index is an address, not wrapping u32
         // owner metadata. Empty regions never form or dereference a data pointer.
-        let target = TargetData::create(&self.parent.module.target.data_layout);
-        let size = ctx.ptr_sized_int_type(&target, None);
+        let target = self.parent.target_data;
+        let size = ctx.ptr_sized_int_type(target, None);
         let offset = self
             .builder
             .build_int_z_extend_or_bit_cast(offset, size, "key.bytes.offset")

@@ -482,9 +482,9 @@ impl<'ctx> ValueEmitter<'_, 'ctx> {
                 // The ABI carrier may include tail padding absent from storage
                 // (AAPCS64's two integer registers for a 12-byte record), or vice
                 // versa. Allocate enough space and alignment for both views.
-                let data = TargetData::create(&self.module.target.data_layout);
-                let (storage_size, storage_align) = measure_layout(&data, result.storage);
-                let (carrier_size, carrier_align) = measure_layout(&data, value.get_type());
+                let data = self.target_data;
+                let (storage_size, storage_align) = measure_layout(data, result.storage);
+                let (carrier_size, carrier_align) = measure_layout(data, value.get_type());
                 let scratch_type = if storage_size >= carrier_size {
                     result.storage
                 } else {

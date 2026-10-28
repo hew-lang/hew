@@ -147,12 +147,35 @@ pub(crate) fn verify_structural_glue(module: &PhysicalModule) -> Result<(), Phys
     Ok(())
 }
 
-#[allow(
-    clippy::too_many_lines,
-    reason = "Keep module verification in the dependency order of its physical tables"
-)]
+pub(crate) fn check_physical_module(
+    mut module: PhysicalModule,
+) -> Result<super::VerifiedPhysicalModule, PhysicalError> {
+    let mut initialization = verify_and_derive_physical(&mut module)?;
+    for function in &mut module.functions {
+        let facts = initialization
+            .remove(&function.callable)
+            .ok_or_else(|| PhysicalError::new("verified body lacks initialization facts"))?;
+        function.frame_roots = facts.frame_roots;
+        if let Some(debug) = module.debug.functions.get_mut(&function.callable) {
+            debug.available = facts.available;
+        }
+    }
+    Ok(super::VerifiedPhysicalModule(module))
+}
+
+#[cfg(test)]
 pub(crate) fn verify_physical_module(
     module: &PhysicalModule,
+) -> Result<BTreeMap<super::CallableId, super::verify_ops::FunctionInitialization>, PhysicalError> {
+    verify_and_derive_physical(&mut module.clone())
+}
+
+#[allow(
+    clippy::too_many_lines,
+    reason = "keep module verification in the dependency order of its physical tables"
+)]
+fn verify_and_derive_physical(
+    module: &mut PhysicalModule,
 ) -> Result<BTreeMap<super::CallableId, super::verify_ops::FunctionInitialization>, PhysicalError> {
     capability::verify(module)?;
     wire::verify_actor_codecs(module)?;
@@ -242,6 +265,7 @@ pub(crate) fn verify_physical_module(
             ));
         }
     }
+    module.releases = super::ReleaseEffects::compute(module);
     let mut function_ids = BTreeSet::new();
     let mut availability = BTreeMap::new();
     for function in &module.functions {

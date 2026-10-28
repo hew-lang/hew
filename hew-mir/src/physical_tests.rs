@@ -2078,6 +2078,8 @@ fn main() {
             block.terminator = PhysicalTerminator::Goto(normal.clone());
         }
     }
+    // Raw IR cannot suppress a close's fault by supplying empty derived facts.
+    physical.releases = ReleaseEffects::default();
     verify_physical_module(&physical)
         .expect_err("the caller owns a possible displaced-release fault");
 }

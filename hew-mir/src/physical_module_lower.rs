@@ -1,10 +1,10 @@
 //! Module-level lowering from ownership SIR into physical MIR: glue construction and the type inventory.
 
 use super::{
-    actor_value_recipes, capability, collection_type_arguments, debug_field, debug_variant_field,
-    physical_value_recipe, sequence_element_type, shared_handle_payload, structural, suspend,
-    verify_physical_module, AggregateShapeRef, BTreeMap, BTreeSet, BlockId, BuiltinType,
-    CallResult, CloneAction, CloneKind, DestroyAction, EncodingFormat, OwnKind, ParamCarrier,
+    actor_value_recipes, capability, check_physical_module, collection_type_arguments, debug_field,
+    debug_variant_field, physical_value_recipe, sequence_element_type, shared_handle_payload,
+    structural, suspend, AggregateShapeRef, BTreeMap, BTreeSet, BlockId, BuiltinType, CallResult,
+    CloneAction, CloneKind, DestroyAction, EncodingFormat, OwnKind, ParamCarrier,
     PhysicalAggregateDescriptor, PhysicalAggregateGlue, PhysicalAggregateId, PhysicalBlock,
     PhysicalCallSignature, PhysicalCallable, PhysicalClosure, PhysicalDebug, PhysicalDebugFunction,
     PhysicalDebugLocal, PhysicalDebugVariant, PhysicalEnvironmentGlue, PhysicalError,
@@ -388,18 +388,7 @@ fn lower_physical_with_inventory(
             .ok_or_else(|| PhysicalError::new("selected callback disappeared during lowering"))?
             .is_resumable = is_resumable;
     }
-    physical.releases = ReleaseEffects::compute(&physical);
-    let mut initialization = verify_physical_module(&physical)?;
-    for function in &mut physical.functions {
-        let facts = initialization
-            .remove(&function.callable)
-            .ok_or_else(|| PhysicalError::new("verified body lacks initialization facts"))?;
-        function.frame_roots = facts.frame_roots;
-        if let Some(debug) = physical.debug.functions.get_mut(&function.callable) {
-            debug.available = facts.available;
-        }
-    }
-    Ok(VerifiedPhysicalModule(physical))
+    check_physical_module(physical)
 }
 
 /// One index for resolving type-directed actions to their concrete recipes.

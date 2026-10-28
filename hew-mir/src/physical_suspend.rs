@@ -741,7 +741,7 @@ pub(super) fn terminator_suspends(
 pub(super) fn verify_callables(module: &PhysicalModule) -> Result<(), PhysicalError> {
     let mut resumable = BTreeSet::new();
     let mut calls = BTreeMap::<_, Vec<_>>::new();
-    let releases = super::release::ReleaseEffects::compute(module);
+    let releases = &module.releases;
     for function in &module.functions {
         if matches!(
             module.callables[function.callable.0 as usize].instance,
@@ -752,12 +752,12 @@ pub(super) fn verify_callables(module: &PhysicalModule) -> Result<(), PhysicalEr
         for block in &function.blocks {
             if block
                 .operations()
-                .any(|op| operation_suspends(&releases, op))
+                .any(|op| operation_suspends(releases, op))
             {
                 resumable.insert(function.callable);
             }
             let (direct, callees) =
-                terminator_dependencies(module, function, &block.terminator, &releases)?;
+                terminator_dependencies(module, function, &block.terminator, releases)?;
             if direct {
                 resumable.insert(function.callable);
             }

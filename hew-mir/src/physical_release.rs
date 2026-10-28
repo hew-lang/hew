@@ -1,9 +1,8 @@
 //! What releasing a value does, per release glue identity.
 //!
-//! Two questions share one fixpoint, because both are decided by the leaves a
-//! release recipe can reach and both propagate upward through the same glue
-//! graph. Recursive types make that graph cyclic, so each answer starts at no
-//! and is raised only by a leaf that says yes.
+//! User code, faults and suspension share one fixpoint over the leaves a
+//! release recipe can reach. Recursive types make that graph cyclic, so each
+//! property starts at no and is raised only by a leaf that says yes.
 //!
 //! * **Runs user-visible action.** The runtime releases a descriptor-backed
 //!   collection through an iterative walker so a deep structure costs no
@@ -24,57 +23,86 @@
 //!   code. Generated code brackets such a release with a release-fault sink,
 //!   so a failing close inside one still reaches the frame that asked for it,
 //!   and they answer the same as a release the frame emits itself.
+//!
+//! * **Suspends.** Resource continuations and authored asynchronous closes
+//!   require suspension-capable cleanup, including through aggregate fields.
 
 use super::{DestroyAction, PhysicalModule, PhysicalValueRecipe};
 
-/// Per-glue answers to one question, in glue-id order.
+/// The release properties propagated together through the glue graph.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct Effects {
+    user_code: bool,
+    faults: bool,
+    suspends: bool,
+}
+
+impl Effects {
+    const ALL: Self = Self {
+        user_code: true,
+        faults: true,
+        suspends: true,
+    };
+
+    fn union(self, other: Self) -> Self {
+        Self {
+            user_code: self.user_code || other.user_code,
+            faults: self.faults || other.faults,
+            suspends: self.suspends || other.suspends,
+        }
+    }
+}
+
+/// Per-glue release properties, in glue-id order.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 struct Tables {
-    resource: Vec<bool>,
-    aggregate: Vec<bool>,
-    variant: Vec<bool>,
-    vector: Vec<bool>,
-    map: Vec<bool>,
-    set: Vec<bool>,
-    shared: Vec<bool>,
+    resource: Vec<Effects>,
+    aggregate: Vec<Effects>,
+    variant: Vec<Effects>,
+    vector: Vec<Effects>,
+    map: Vec<Effects>,
+    set: Vec<Effects>,
+    shared: Vec<Effects>,
 }
 
 /// What releasing a value does, resolved once per module.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ReleaseEffects {
-    user_code: Tables,
-    faults: Tables,
-    suspends: Tables,
+    table: Tables,
 }
 
 impl ReleaseEffects {
-    /// Resolve both fixpoints over one module's release glue.
+    /// Resolve the release properties together over one module's glue graph.
     #[must_use]
-    pub fn compute(module: &PhysicalModule) -> Self {
-        Self {
-            // Every resource release runs the program's own close body or its
-            // declared release endpoint, so all of them are user-visible.
-            user_code: Tables::compute(module, &vec![true; module.resources.len()]),
-            faults: Tables::compute(module, &authored_closes(module)),
-            suspends: Tables::compute(
-                module,
-                &module
-                    .resources
-                    .iter()
-                    .map(|resource| match &resource.release {
-                        hew_sir::ResourceRelease::RecordClose { close, .. }
-                        | hew_sir::ResourceRelease::OpaqueClose { close, .. } => {
-                            module.callables[close.0 as usize].is_resumable
-                        }
-                        hew_sir::ResourceRelease::Generator
+    pub(crate) fn compute(module: &PhysicalModule) -> Self {
+        let resources = module
+            .resources
+            .iter()
+            .map(|resource| {
+                let authored = match &resource.release {
+                    hew_sir::ResourceRelease::RecordClose { close, .. }
+                    | hew_sir::ResourceRelease::OpaqueClose { close, .. } => {
+                        Some(module.callables[close.0 as usize].is_resumable)
+                    }
+                    _ => None,
+                };
+                let asynchronous = matches!(
+                    resource.release,
+                    hew_sir::ResourceRelease::Generator
                         | hew_sir::ResourceRelease::ActorCall
                         | hew_sir::ResourceRelease::ActorRequest
                         | hew_sir::ResourceRelease::Stream
-                        | hew_sir::ResourceRelease::Sink => true,
-                        _ => false,
-                    })
-                    .collect::<Vec<_>>(),
-            ),
+                        | hew_sir::ResourceRelease::Sink
+                );
+                Effects {
+                    user_code: true,
+                    faults: authored.is_some() || asynchronous,
+                    suspends: authored.unwrap_or(asynchronous),
+                }
+            })
+            .collect::<Vec<_>>();
+        Self {
+            table: Tables::compute(module, resources),
         }
     }
 
@@ -82,56 +110,34 @@ impl ReleaseEffects {
     /// action, so the runtime must not defer it into a walk in progress.
     #[must_use]
     pub fn runs_user_code(&self, action: DestroyAction) -> bool {
-        self.user_code.holds(action)
+        self.table.holds(action).user_code
     }
 
     /// Whether releasing a value through `action` can raise a fault the
     /// enclosing frame must own.
     #[must_use]
     pub fn raises_fault(&self, action: DestroyAction) -> bool {
-        self.faults.holds(action)
+        self.table.holds(action).faults
     }
 
     /// Whether consuming this value requires a continuation, including erased
     /// owners whose stored descriptor supplies the concrete release effect.
     #[must_use]
     pub fn suspends(&self, action: DestroyAction) -> bool {
-        self.suspends.holds(action)
+        self.table.holds(action).suspends
     }
 }
 
-/// Which resources release through a body that can fault. A record's and an
-/// authored opaque handle's `close` is an ordinary callable with the fault
-/// ABI; every other protocol releases through a C endpoint.
-fn authored_closes(module: &PhysicalModule) -> Vec<bool> {
-    module
-        .resources
-        .iter()
-        .map(|resource| {
-            matches!(
-                resource.release,
-                hew_sir::ResourceRelease::RecordClose { .. }
-                    | hew_sir::ResourceRelease::OpaqueClose { .. }
-                    | hew_sir::ResourceRelease::Stream
-                    | hew_sir::ResourceRelease::Sink
-                    | hew_sir::ResourceRelease::ActorCall
-                    | hew_sir::ResourceRelease::ActorRequest
-                    | hew_sir::ResourceRelease::Generator
-            )
-        })
-        .collect()
-}
-
 impl Tables {
-    fn compute(module: &PhysicalModule, resource: &[bool]) -> Self {
+    fn compute(module: &PhysicalModule, resource: Vec<Effects>) -> Self {
         let mut table = Self {
-            resource: resource.to_vec(),
-            aggregate: vec![false; module.aggregate_glue.len()],
-            variant: vec![false; module.variant_glue.len()],
-            vector: vec![false; module.vector_glue.len()],
-            map: vec![false; module.map_glue.len()],
-            set: vec![false; module.set_glue.len()],
-            shared: vec![false; module.shared_glue.len()],
+            resource,
+            aggregate: vec![Effects::default(); module.aggregate_glue.len()],
+            variant: vec![Effects::default(); module.variant_glue.len()],
+            vector: vec![Effects::default(); module.vector_glue.len()],
+            map: vec![Effects::default(); module.map_glue.len()],
+            set: vec![Effects::default(); module.set_glue.len()],
+            shared: vec![Effects::default(); module.shared_glue.len()],
         };
         let mut settled = false;
         while !settled {
@@ -144,16 +150,21 @@ impl Tables {
                 let holds = glue
                     .variants
                     .iter()
-                    .any(|case| table.any_recipe(&case.fields));
+                    .fold(Effects::default(), |effects, case| {
+                        effects.union(table.any_recipe(&case.fields))
+                    });
                 settled &= !raise(&mut table.variant[glue.id.0 as usize], holds);
             }
             for glue in &module.vector_glue {
-                let holds = !matches!(glue.ty, hew_types::ResolvedTy::Array(_, 0))
-                    && table.recipe(&glue.element);
+                let holds = if matches!(glue.ty, hew_types::ResolvedTy::Array(_, 0)) {
+                    Effects::default()
+                } else {
+                    table.recipe(&glue.element)
+                };
                 settled &= !raise(&mut table.vector[glue.id.0 as usize], holds);
             }
             for glue in &module.map_glue {
-                let holds = table.recipe(&glue.key) || table.recipe(&glue.value);
+                let holds = table.recipe(&glue.key).union(table.recipe(&glue.value));
                 settled &= !raise(&mut table.map[glue.id.0 as usize], holds);
             }
             for glue in &module.set_glue {
@@ -170,15 +181,15 @@ impl Tables {
         table
     }
 
-    fn holds(&self, action: DestroyAction) -> bool {
+    fn holds(&self, action: DestroyAction) -> Effects {
         match action {
             DestroyAction::Encoding(_)
             | DestroyAction::StringRelease
             | DestroyAction::BytesRelease
             | DestroyAction::ActorRelease
             // A weak handle owns no payload; dropping one only decrements.
-            | DestroyAction::WeakRelease => false,
-            DestroyAction::Callable | DestroyAction::TraitObject => true,
+            | DestroyAction::WeakRelease => Effects::default(),
+            DestroyAction::Callable | DestroyAction::TraitObject => Effects::ALL,
             DestroyAction::Resource(id) => self.resource[id.0 as usize],
             DestroyAction::Aggregate(id) => self.aggregate[id.0 as usize],
             DestroyAction::Variant(id) => self.variant[id.0 as usize],
@@ -189,21 +200,23 @@ impl Tables {
         }
     }
 
-    fn recipe(&self, recipe: &PhysicalValueRecipe) -> bool {
-        recipe.destroy.is_some_and(|action| self.holds(action))
+    fn recipe(&self, recipe: &PhysicalValueRecipe) -> Effects {
+        recipe
+            .destroy
+            .map_or_else(Effects::default, |action| self.holds(action))
     }
 
-    fn any_recipe(&self, recipes: &[PhysicalValueRecipe]) -> bool {
-        recipes.iter().any(|recipe| self.recipe(recipe))
+    fn any_recipe(&self, recipes: &[PhysicalValueRecipe]) -> Effects {
+        recipes.iter().fold(Effects::default(), |effects, recipe| {
+            effects.union(self.recipe(recipe))
+        })
     }
 }
 
-/// Raise one entry when this round found the answer yes. Reports whether the
-/// answer moved, which is what keeps the fixpoint iterating.
-fn raise(entry: &mut bool, holds: bool) -> bool {
-    if !*entry && holds {
-        *entry = true;
-        return true;
-    }
-    false
+/// Add newly discovered properties and report whether the fixpoint moved.
+fn raise(entry: &mut Effects, holds: Effects) -> bool {
+    let combined = entry.union(holds);
+    let changed = *entry != combined;
+    *entry = combined;
+    changed
 }

@@ -37,10 +37,12 @@ pub fn dump_hir(module: &HirModule) -> String {
             HirItem::Function(func) => {
                 writeln!(
                     out,
-                    "fn {} {} -> {}",
+                    "fn {} {} -> {} declaration={:?} path={}",
                     func.id,
                     func.name,
-                    func.return_ty.user_facing()
+                    func.return_ty.user_facing(),
+                    func.declaration,
+                    defs.path(func.declaration)
                 )
                 .expect("write to string");
                 for param in &func.params {
@@ -53,53 +55,17 @@ pub fn dump_hir(module: &HirModule) -> String {
                     )
                     .expect("write to string");
                 }
-                for stmt in &func.body.statements {
-                    match &stmt.kind {
-                        HirStmtKind::Let(binding, value) => {
-                            writeln!(
-                                out,
-                                "  let {} {}: {}",
-                                binding.id,
-                                binding.name,
-                                binding.ty.user_facing()
-                            )
-                            .expect("write to string");
-                            if let Some(value) = value {
-                                dump_expr(defs, &mut out, value, 4);
-                            }
-                        }
-                        HirStmtKind::Destructure { value, fields } => {
-                            dump_destructure(defs, &mut out, value, fields, 2);
-                        }
-                        HirStmtKind::Assign { target, value, .. } => {
-                            writeln!(out, "  assign").expect("write to string");
-                            dump_expr(defs, &mut out, target, 4);
-                            dump_expr(defs, &mut out, value, 4);
-                        }
-                        HirStmtKind::Expr(expr) => dump_expr(defs, &mut out, expr, 2),
-                        HirStmtKind::Return(Some(expr)) => {
-                            writeln!(out, "  return").expect("write to string");
-                            dump_expr(defs, &mut out, expr, 4);
-                        }
-                        HirStmtKind::Return(None) => {
-                            writeln!(out, "  return unit").expect("write to string");
-                        }
-                        HirStmtKind::Defer { body, .. } => {
-                            writeln!(out, "  defer").expect("write to string");
-                            dump_expr(defs, &mut out, body, 4);
-                        }
-                    }
-                }
-                if let Some(tail) = &func.body.tail {
-                    writeln!(out, "  tail").expect("write to string");
-                    dump_expr(defs, &mut out, tail, 4);
-                }
+                dump_block(defs, &mut out, &func.body, 2);
             }
             HirItem::TypeDecl(decl) => {
                 writeln!(
                     out,
-                    "type {} {} marker={:?}",
-                    decl.id, decl.name, decl.marker
+                    "type {} {} marker={:?} declaration={:?} path={}",
+                    decl.id,
+                    decl.name,
+                    decl.marker,
+                    decl.declaration,
+                    defs.path(decl.declaration)
                 )
                 .expect("write to string");
                 if let Some(module_short) = &decl.defining_module {
@@ -116,7 +82,15 @@ pub fn dump_hir(module: &HirModule) -> String {
                 }
             }
             HirItem::Record(record) => {
-                writeln!(out, "record {} {}", record.id, record.name).expect("write to string");
+                writeln!(
+                    out,
+                    "record {} {} declaration={:?} path={}",
+                    record.id,
+                    record.name,
+                    record.declaration,
+                    defs.path(record.declaration)
+                )
+                .expect("write to string");
                 if let Some(module_short) = &record.defining_module {
                     writeln!(
                         out,
@@ -133,13 +107,15 @@ pub fn dump_hir(module: &HirModule) -> String {
             HirItem::Actor(actor) => {
                 writeln!(
                     out,
-                    "actor {} {} isolated={} max_heap={:?} mailbox={:?} cycle_capable={}",
+                    "actor {} {} isolated={} max_heap={:?} mailbox={:?} cycle_capable={} declaration={:?} path={}",
                     actor.id,
                     actor.name,
                     actor.is_isolated,
                     actor.max_heap_bytes,
                     actor.protocol_descriptor.mailbox.capacity(),
-                    actor.cycle_capable
+                    actor.cycle_capable,
+                    actor.declaration,
+                    defs.path(actor.declaration)
                 )
                 .expect("write to string");
                 for field in &actor.state_fields {
@@ -169,14 +145,16 @@ pub fn dump_hir(module: &HirModule) -> String {
                 for rf in &actor.receive_handlers {
                     writeln!(
                         out,
-                        "  receive {} params={} -> {} state_guard={:?} every_ns={:?} is_generator={} body_scope={}",
+                        "  receive {} params={} -> {} state_guard={:?} every_ns={:?} is_generator={} body_scope={} declaration={:?} path={}",
                         rf.name,
                         rf.params.len(),
                         rf.return_ty.user_facing(),
                         rf.state_guard,
                         rf.every_ns,
                         rf.is_generator,
-                        rf.body.scope
+                        rf.body.scope,
+                        rf.declaration,
+                        defs.path(rf.declaration)
                     )
                     .expect("write to string");
                     for param in &rf.params {

@@ -121,6 +121,9 @@ pub enum Command {
     reason = "clap maps independent compile switches directly to booleans; collapsing them would obscure the CLI contract"
 )]
 #[derive(Debug, Args)]
+#[command(group(clap::ArgGroup::new("inspection").args([
+    "dump_ast", "dump_hir", "dump_defs", "dump_sir", "dump_mir"
+])))]
 pub struct CompileArgs {
     /// Input .hew file.
     pub input: PathBuf,
@@ -131,6 +134,12 @@ pub struct CompileArgs {
     /// Retain the textual LLVM IR used for object emission beside emitted artifacts.
     #[arg(long = "emit-llvm")]
     pub emit_llvm: bool,
+    /// Dump the import-expanded AST before type checking, then exit.
+    #[arg(long = "dump-ast")]
+    pub dump_ast: bool,
+    /// Dump verified typed HIR with declaration and source-site identities, then exit.
+    #[arg(long = "dump-hir")]
+    pub dump_hir: bool,
     /// Emit a textual MIR dump and exit (no LLVM emission).
     /// Accepts `physical` for the verified storage, layout and cleanup CFG.
     #[arg(long = "dump-mir", value_name = "STAGE", value_parser = ["physical"])]
@@ -141,11 +150,11 @@ pub struct CompileArgs {
     /// reported as unreached rather than lowered. Every body the entry demands
     /// but SIR cannot lower is reported explicitly with its reason. No MIR or
     /// LLVM artifacts are emitted.
-    #[arg(long = "dump-sir", conflicts_with = "dump_mir")]
+    #[arg(long = "dump-sir")]
     pub dump_sir: bool,
     /// Emit the compilation's declaration table (every module and
-    /// declaration row with its id, kind, owner and path) and exit.
-    #[arg(long = "dump-defs", conflicts_with_all = ["dump_mir", "dump_sir"])]
+    /// declaration row with its id, kind, owner and path), stopping after type checking.
+    #[arg(long = "dump-defs")]
     pub dump_defs: bool,
     /// Compilation target. Omit for native; pass `wasm32-unknown-unknown` for WASM.
     #[arg(long, value_name = "TRIPLE")]

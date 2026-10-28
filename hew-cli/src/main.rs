@@ -39,6 +39,7 @@ mod generate;
 mod help;
 mod host;
 mod host_text;
+mod inspection;
 mod link;
 mod live;
 mod machine;
@@ -160,37 +161,46 @@ fn lower_program_to_semantics(
     session.checks = checks;
     session
         .lower_program(program, tco)
-        .map_err(|error| match error {
-            hew_compile::SessionError::Hir(diagnostics) => {
-                let diagnostics = hew_compile::hir_diagnostics_to_frontend(
-                    program,
-                    source,
-                    label,
-                    diagnostics,
-                    &hew_compile::SourceSet::new(),
-                );
-                compile::render_frontend_diagnostics(&diagnostics).unwrap_or(DiagChannel::User)
-            }
-            hew_compile::SessionError::Ownership(diagnostics) => {
-                let diagnostics = hew_compile::ownership_diagnostics_to_frontend(
-                    program,
-                    source,
-                    label,
-                    diagnostics,
-                    &hew_compile::SourceSet::new(),
-                );
-                compile::render_frontend_diagnostics(&diagnostics).unwrap_or(DiagChannel::User)
-            }
-            error @ hew_compile::SessionError::Semantic(_) => {
-                emit_semantic_error("E_SIR_VERIFY", &error.to_string(), DiagChannel::Internal)
-            }
-            hew_compile::SessionError::Lowering { error, span, .. } => {
-                diagnostic::render_lowering_error(&error, span.as_ref(), source, label)
-            }
-            hew_compile::SessionError::Selection(message) => {
-                emit_semantic_error("E_SOURCE_SELECTION", &message, DiagChannel::User)
-            }
-        })
+        .map_err(|error| render_session_error(error, program, source, label))
+}
+
+fn render_session_error(
+    error: hew_compile::SessionError,
+    program: &hew_parser::ast::Program,
+    source: &str,
+    label: &str,
+) -> DiagChannel {
+    match error {
+        hew_compile::SessionError::Hir(diagnostics) => {
+            let diagnostics = hew_compile::hir_diagnostics_to_frontend(
+                program,
+                source,
+                label,
+                diagnostics,
+                &hew_compile::SourceSet::new(),
+            );
+            compile::render_frontend_diagnostics(&diagnostics).unwrap_or(DiagChannel::User)
+        }
+        hew_compile::SessionError::Ownership(diagnostics) => {
+            let diagnostics = hew_compile::ownership_diagnostics_to_frontend(
+                program,
+                source,
+                label,
+                diagnostics,
+                &hew_compile::SourceSet::new(),
+            );
+            compile::render_frontend_diagnostics(&diagnostics).unwrap_or(DiagChannel::User)
+        }
+        error @ hew_compile::SessionError::Semantic(_) => {
+            emit_semantic_error("E_SIR_VERIFY", &error.to_string(), DiagChannel::Internal)
+        }
+        hew_compile::SessionError::Lowering { error, span, .. } => {
+            diagnostic::render_lowering_error(&error, span.as_ref(), source, label)
+        }
+        hew_compile::SessionError::Selection(message) => {
+            emit_semantic_error("E_SOURCE_SELECTION", &message, DiagChannel::User)
+        }
+    }
 }
 
 fn emit_semantic_error(code: &str, message: &str, channel: DiagChannel) -> DiagChannel {
@@ -1258,33 +1268,13 @@ fn cmd_dump_sir(a: &args::CompileArgs, json: bool) -> i32 {
     0
 }
 
-/// Body of `hew tool compile --dump-defs`: the declaration table the whole
-/// pipeline indexes, printed in mint order.
-fn cmd_dump_defs(a: &args::CompileArgs, json: bool) -> i32 {
-    let sir = match lower_file_to_sir(
-        &a.input,
-        a.target.as_deref(),
-        &compile::CompileOptions::default(),
-    ) {
-        Ok(sir) => sir,
-        Err(channel) => return channel.exit_code(),
-    };
-    let dump = hew_types::dump::dump_defs(&sir.module.defs);
-    if json {
-        eprint!("{dump}");
-    } else {
-        print!("{dump}");
-    }
-    0
-}
-
 fn cmd_compile_run(a: &args::CompileArgs) -> i32 {
     let json = a.format == args::DiagnosticFormat::Json;
     if a.dump_sir {
         return cmd_dump_sir(a, json);
     }
-    if a.dump_defs {
-        return cmd_dump_defs(a, json);
+    if a.dump_ast || a.dump_hir || a.dump_defs {
+        return inspection::run(a);
     }
     let target = match target::TargetSpec::from_requested(a.target.as_deref()) {
         Ok(target) => target,

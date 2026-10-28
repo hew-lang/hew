@@ -1049,7 +1049,7 @@ fn ordinary_and_machine_wire_values_match_native() {
 
 #[cfg(unix)]
 #[test]
-fn finite_generic_recursion_matches_native() {
+fn finite_value_shapes_match_native() {
     set_test_hewpath();
     ensure_native_toolchain();
     ensure_parity_runner_built();
@@ -1061,6 +1061,10 @@ fn finite_generic_recursion_matches_native() {
         ParityCase {
             test_name: "finite-generic-recursion",
             source_rel: "tests/core-acceptance/cases/finite-generic-recursion.hew",
+        },
+        ParityCase {
+            test_name: "indirect-scalar-value",
+            source_rel: "tests/core-acceptance/cases/indirect-scalar-value.hew",
         },
     ] {
         assert_case(&case, "");

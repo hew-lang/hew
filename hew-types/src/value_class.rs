@@ -97,6 +97,9 @@ pub struct DeclaredType {
     /// This checked declaration is the classification authority. Types may carry
     /// a copy for ABI/layout consumers; that annotation cannot change the class.
     pub is_opaque: bool,
+    /// Every value owns an indirect enum box, independently of whether its
+    /// payload is recursive or contains other managed values.
+    pub is_indirect: bool,
     pub type_params: Vec<crate::ParamHead>,
     pub members: Vec<ResolvedTy>,
 }
@@ -298,8 +301,8 @@ pub fn classify_ty(
 type ClassFacts = Result<(ValueClass, CloneKind), ClassError>;
 
 /// One exact instantiated graph owns both class and clone facts. Recursive
-/// owning edges start at their heap floor; dependent facts settle before any
-/// query result is published.
+/// facts start at the bottom; declaration boxes and collections contribute
+/// their own heap ownership. Dependents settle before a result is published.
 #[derive(Debug, Clone, Default)]
 pub(crate) struct Walk {
     identities: HashMap<ResolvedTy, usize>,
@@ -693,7 +696,7 @@ fn classify(ty: &ResolvedTy, decls: &ClassContext<'_>, walk: &mut Walk) -> Class
     }
     if walk.nodes[id].computing {
         walk.cyclic = true;
-        return Ok((ValueClass::CowValue, CloneKind::FieldWise));
+        return Ok((ValueClass::BitCopy, CloneKind::Bits));
     }
     walk.nodes[id].computing = true;
     let parent = walk.current.replace(id);
@@ -929,39 +932,27 @@ fn classify_declaration(
         .ok_or_else(|| ClassError::UnknownDeclaration {
             name: name.to_string(),
         })?;
-    // the class table's indirect-enum row: a recursive occurrence is an **owning edge**,
-    // not a base case. The recursion is legal only because the payload sits
-    // behind a heap box, so the occurrence contributes the same heap floor a
-    // collection's buffer does — `CowValue` with a `FieldWise` clone. The
-    // aggregate join then keeps the declaration's payload class: a `BitCopy`
-    // payload gives `(CowValue, FieldWise)`, a payload holding an
-    // `AffineResource` gives `AffineResource`. It is never `BitCopy`, which is
-    // what a bottom-element cut published. `BitCopy` carries no ownership
-    // obligation and permits bitwise copies, including across an actor heap.
-    //
-    // Whether the cycle has a finite fixpoint at all is a property of the
-    // declaration's own pre-substitution members, not of the walk stack.
-    // Parameter-flow cycles distinguish unbounded constructor growth from
-    // finite permutations and constant resets. A growing cycle refuses at
-    // every instantiation rather than being approximated by the box's floor.
-    //
-    // MARKED SHORTCUT — the owning edge is the collection heap floor rather
-    // than the box's own retain path.
-    // WHY: `DeclaredType` carries the members, not the box, so the walk has no
-    // term for the allocation itself and borrows `collection_facts`' floor.
-    // The floor is sound for the ownership-kind mapping (the class is `Owned` either way) and only
-    // approximates the clone column for a box whose payload is shareable.
-    // WHEN: `DeclaredType` carries `is_indirect` (`HirTypeDecl.is_indirect`)
-    // and the box's own class row is available.
-    // WHAT: the recursive occurrence reads the box's row instead of the
-    // collection floor.
     if walk.is_polymorphic(id, decls) {
         return Err(ClassError::RecursiveInstantiation {
             name: name.to_string(),
         });
     }
     let members = decls.declarations.instantiate_members(&declared, args)?;
-    Ok(aggregate_facts(&classify_all(&members, decls, walk)?))
+    let (class, clone) = aggregate_facts(&classify_all(&members, decls, walk)?);
+    if declared.is_indirect {
+        // Copying a box allocates independent storage and copies its payload.
+        // Resource and linear payloads retain their stronger obligations.
+        Ok((
+            class.join(ValueClass::CowValue),
+            if clone == CloneKind::None {
+                clone
+            } else {
+                CloneKind::FieldWise
+            },
+        ))
+    } else {
+        Ok((class, clone))
+    }
 }
 
 #[cfg(test)]
@@ -1243,6 +1234,7 @@ mod graph_tests {
                 (
                     cycle,
                     DeclaredType {
+                        is_indirect: true,
                         members: vec![cycle_ty.clone()],
                         ..DeclaredType::default()
                     },

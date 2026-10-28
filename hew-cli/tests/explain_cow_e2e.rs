@@ -8,16 +8,24 @@ use support::{hew_binary, strip_ansi};
 #[test]
 fn explain_cow_composes_codec_borrows_and_actor_sends() {
     let dir = support::tempdir();
+    std::fs::write(
+        dir.path().join("packet.hew"),
+        r#"
+#[wire] pub type Packet { #[serial(key = "id")] value: i64 @1; }
+pub fn make(value: i64) -> Packet { Packet { value: value } }
+"#,
+    )
+    .unwrap();
     let file = dir.path().join("codec_send.hew");
     std::fs::write(
         &file,
         r#"
 import std.encoding.json;
-#[wire] type Packet { #[serial(key = "id")] value: i64 @1; }
+import packet;
 actor Printer { receive fn show(text: string) { println(text); } }
 fn main() {
     let printer = spawn Printer;
-    let encoded = json.encode(Packet { value: 42 });
+    println("élève 🦫"); let encoded = json.encode([packet.make(42)]);
     printer.show(encoded).expect("print");
 }
 "#,

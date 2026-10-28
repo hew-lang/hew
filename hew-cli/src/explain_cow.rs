@@ -6,6 +6,42 @@ use hew_sir::{
     ActorOperation, BoundaryDecision, SemModule, SemOpKind, SemTerminator, SuspendKind, ValueId,
 };
 use hew_types::{CloneKind, ResolvedTy, TypeInstanceKey};
+use serde::Serialize;
+
+#[derive(Serialize, PartialEq, Eq, PartialOrd, Ord)]
+struct Entry {
+    offset: u32,
+    detail: Detail,
+}
+
+#[derive(Serialize, PartialEq, Eq, PartialOrd, Ord)]
+enum Detail {
+    Codec {
+        direction: &'static str,
+        format: String,
+        ty: String,
+        planned_types: usize,
+    },
+    CodecPlan {
+        ty: String,
+        key: String,
+        tag: u64,
+        flags: u32,
+    },
+    Send {
+        index: usize,
+        ty: String,
+        action: &'static str,
+        preparation: &'static str,
+    },
+}
+
+#[derive(Serialize)]
+struct Presentation<'a> {
+    filename: &'a str,
+    source: &'a str,
+    entries: BTreeSet<Entry>,
+}
 
 pub fn print(module: &SemModule, path: &str, source: &str) {
     let mut entries = BTreeSet::new();
@@ -69,30 +105,30 @@ pub fn print(module: &SemModule, path: &str, source: &str) {
                     BoundaryDecision::Snapshot(hew_sir::SnapshotDecision::Transfer) => "transfer",
                 };
                 let preparation = preparation(module, ty, &producers, &forwarded, value);
-                entries.insert((
+                entries.insert(Entry {
                     offset,
-                    format!(
-                        "send - payload {} {}: {action}{preparation}",
-                        index + 1,
-                        ty.user_facing()
-                    ),
-                ));
+                    detail: Detail::Send {
+                        index: index + 1,
+                        ty: ty.user_facing().to_string(),
+                        action,
+                        preparation,
+                    },
+                });
             }
         }
     }
-    for (offset, description) in entries {
-        let prefix = &source[..offset as usize];
-        let line = prefix.bytes().filter(|byte| *byte == b'\n').count() + 1;
-        let column = prefix.rsplit('\n').next().unwrap_or("").chars().count() + 1;
-        println!("{path}:{line}:{column}: {description}");
+    if !entries.is_empty() {
+        let input = serde_json::to_string(&Presentation {
+            filename: path,
+            source,
+            entries,
+        })
+        .expect("ownership presentation is serializable");
+        print!("{}", crate::diagnostic::render_ownership(&input));
     }
 }
 
-fn codec_entries(
-    module: &SemModule,
-    block: &hew_sir::SemBlock,
-    entries: &mut BTreeSet<(u32, String)>,
-) {
+fn codec_entries(module: &SemModule, block: &hew_sir::SemBlock, entries: &mut BTreeSet<Entry>) {
     let SemTerminator::WireCodec { codec, plan, .. } = &block.terminator else {
         return;
     };
@@ -104,15 +140,15 @@ fn codec_entries(
     } else {
         "decode"
     };
-    entries.insert((
+    entries.insert(Entry {
         offset,
-        format!(
-            "codec - {direction} {:?} {}: borrow input ({} planned types)",
-            codec.format,
-            plan.root.user_facing(),
-            plan.plans.len(),
-        ),
-    ));
+        detail: Detail::Codec {
+            direction,
+            format: format!("{:?}", codec.format),
+            ty: plan.root.user_facing().to_string(),
+            planned_types: plan.plans.len(),
+        },
+    });
     for planned in plan.plans.values() {
         let (hew_sir::SemWireKind::Record {
             table: Some(table), ..
@@ -122,16 +158,15 @@ fn codec_entries(
             continue;
         };
         for member in &table.members {
-            entries.insert((
+            entries.insert(Entry {
                 offset,
-                format!(
-                    "codec plan - {}: key {:?}, tag {}, flags {}",
-                    planned.ty.user_facing(),
-                    member.key,
-                    member.tag,
-                    member.flags,
-                ),
-            ));
+                detail: Detail::CodecPlan {
+                    ty: planned.ty.user_facing().to_string(),
+                    key: member.key.clone(),
+                    tag: member.tag,
+                    flags: member.flags,
+                },
+            });
         }
     }
 }
@@ -183,18 +218,18 @@ fn preparation(
                 | SemOpKind::VariantProjectCopy { .. },
             ) => {
                 return match clone {
-                    CloneKind::Bits => " (bit copy)",
-                    CloneKind::Retain => " (retain)",
-                    CloneKind::DeepCopy => " (deep copy)",
-                    CloneKind::FieldWise => " (field-wise copy)",
+                    CloneKind::Bits => "bit copy",
+                    CloneKind::Retain => "retain",
+                    CloneKind::DeepCopy => "deep copy",
+                    CloneKind::FieldWise => "field-wise copy",
                     CloneKind::None => {
                         unreachable!("verified SIR does not copy non-copyable values")
                     }
                 };
             }
-            Some(SemOpKind::LoadTake { .. }) => return " (take from storage)",
-            Some(SemOpKind::Fork { .. }) => return " (copy on write)",
-            _ if clone == CloneKind::Bits => return " (bit copy)",
+            Some(SemOpKind::LoadTake { .. }) => return "take from storage",
+            Some(SemOpKind::Fork { .. }) => return "copy on write",
+            _ if clone == CloneKind::Bits => return "bit copy",
             _ => return "",
         }
     }

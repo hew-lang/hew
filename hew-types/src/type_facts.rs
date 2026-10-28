@@ -870,6 +870,10 @@ impl crate::value_class::ClassDeclarations for TypeFactContext {
         crate::value_class::ClassDeclarations::builtin_declaration(&self.declarations, builtin)
     }
 
+    fn parameter_source(&self, parameter: crate::ParamHead) -> crate::ParamHead {
+        self.associated_types.parameter_source(parameter)
+    }
+
     fn instantiate_members(
         &self,
         declaration: &DeclaredType,
@@ -2324,6 +2328,7 @@ fn main() {}"#,
             crate::NominalId::for_test("Conn"),
             DeclaredType {
                 builtin: None,
+                is_indirect: false,
                 is_opaque: false,
                 marker: DeclarationMarker::Resource,
                 type_params: vec![],
@@ -2334,6 +2339,7 @@ fn main() {}"#,
             crate::NominalId::for_test("Ticket"),
             DeclaredType {
                 builtin: None,
+                is_indirect: false,
                 is_opaque: false,
                 marker: DeclarationMarker::Linear,
                 type_params: vec![],
@@ -2344,6 +2350,7 @@ fn main() {}"#,
             crate::NominalId::for_test("Point"),
             DeclaredType {
                 builtin: None,
+                is_indirect: false,
                 is_opaque: false,
                 marker: DeclarationMarker::None,
                 type_params: vec![],
@@ -2354,6 +2361,7 @@ fn main() {}"#,
             crate::NominalId::for_test("Label"),
             DeclaredType {
                 builtin: None,
+                is_indirect: false,
                 is_opaque: false,
                 marker: DeclarationMarker::None,
                 type_params: vec![],
@@ -2365,6 +2373,7 @@ fn main() {}"#,
             crate::NominalId::for_test("std.failure.CrashInfo"),
             DeclaredType {
                 builtin: Some(BuiltinType::CrashInfo),
+                is_indirect: false,
                 is_opaque: false,
                 marker: DeclarationMarker::None,
                 type_params: vec![],
@@ -2379,6 +2388,7 @@ fn main() {}"#,
             crate::NominalId::for_test("std.failure.CrashNotification"),
             DeclaredType {
                 builtin: Some(BuiltinType::CrashNotification),
+                is_indirect: false,
                 is_opaque: false,
                 marker: DeclarationMarker::None,
                 type_params: vec![],
@@ -3080,6 +3090,7 @@ fn main() {}"#,
             crate::NominalId::for_test("Tree"),
             DeclaredType {
                 builtin: None,
+                is_indirect: true,
                 is_opaque: false,
                 marker: DeclarationMarker::None,
                 type_params: vec![],
@@ -3094,6 +3105,7 @@ fn main() {}"#,
             crate::NominalId::for_test("ResTree"),
             DeclaredType {
                 builtin: None,
+                is_indirect: true,
                 is_opaque: false,
                 marker: DeclarationMarker::None,
                 type_params: vec![],
@@ -3104,6 +3116,7 @@ fn main() {}"#,
             crate::NominalId::for_test("Pair"),
             DeclaredType {
                 builtin: None,
+                is_indirect: true,
                 is_opaque: false,
                 marker: DeclarationMarker::None,
                 type_params: vec![crate::ParamHead::for_test("T")],
@@ -3119,6 +3132,7 @@ fn main() {}"#,
             crate::NominalId::for_test("Wrapper"),
             DeclaredType {
                 builtin: None,
+                is_indirect: false,
                 is_opaque: false,
                 marker: DeclarationMarker::None,
                 type_params: vec![crate::ParamHead::for_test("T")],
@@ -3131,6 +3145,7 @@ fn main() {}"#,
             crate::NominalId::for_test("Outer"),
             DeclaredType {
                 builtin: None,
+                is_indirect: false,
                 is_opaque: false,
                 marker: DeclarationMarker::None,
                 type_params: vec![crate::ParamHead::for_test("T")],
@@ -3146,30 +3161,20 @@ fn main() {}"#,
         decls
     }
 
-    /// the class table's indirect-enum row: the recursive occurrence is an owning edge,
-    /// so the declaration keeps its payload class and clones field-wise. The
-    /// payload here is a scalar, and the answer is still `CowValue` because the
-    /// recursion is only legal behind a heap box.
     #[test]
-    fn a_self_recursive_declaration_keeps_its_payload_class_over_an_owning_edge() {
-        let decls = recursive_declarations();
-        let context = ClassContext::new(&decls);
-        assert_eq!(
-            Ok((ValueClass::CowValue, CloneKind::FieldWise)),
-            crate::value_class::classify_ty(&named("Tree", None, vec![]), &context)
-        );
-    }
-
-    /// A heap-boxed payload must not be `BitCopy`: that class has no owner
-    /// and permits bitwise copies, including across an actor heap.
-    #[test]
-    fn a_self_recursive_declaration_is_never_bit_copyable() {
-        let decls = recursive_declarations();
-        let context = ClassContext::new(&decls);
-        let facts = crate::value_class::classify_ty(&named("Tree", None, vec![]), &context)
-            .expect("an indirect enum has a class");
-        assert_ne!((ValueClass::BitCopy, CloneKind::Bits), facts);
-        assert_eq!(OwnershipObligation::Owned, obligation_of(facts.0));
+    fn indirect_boxes_are_owned_with_scalar_or_recursive_payloads() {
+        let mut decls = recursive_declarations();
+        let tree = named("Tree", None, vec![]);
+        for members in [vec![ResolvedTy::I64], vec![ResolvedTy::I64, tree.clone()]] {
+            decls
+                .get_mut(&crate::NominalId::for_test("Tree"))
+                .unwrap()
+                .members = members;
+            let facts = crate::value_class::classify_ty(&tree, &ClassContext::new(&decls))
+                .expect("an indirect enum has a class");
+            assert_eq!(facts, (ValueClass::CowValue, CloneKind::FieldWise));
+            assert_eq!(OwnershipObligation::Owned, obligation_of(facts.0));
+        }
     }
 
     /// The payload decides which owning class: a recursive declaration holding
@@ -3185,9 +3190,8 @@ fn main() {}"#,
         );
     }
 
-    /// The counterfactual for the rows above: a declaration whose members do
-    /// not reach it takes no owning edge, so the heap floor is about the cycle
-    /// and not about user declarations in general.
+    /// Inline declarations aggregate their members without acquiring an
+    /// indirect box of their own.
     #[test]
     fn a_non_recursive_declaration_over_the_same_members_still_classes() {
         let decls = recursive_declarations();
@@ -3231,6 +3235,7 @@ fn main() {}"#,
             crate::NominalId::for_test("Holder"),
             DeclaredType {
                 builtin: None,
+                is_indirect: false,
                 is_opaque: false,
                 marker: DeclarationMarker::None,
                 type_params: vec![crate::ParamHead::for_test("T")],
@@ -3241,6 +3246,7 @@ fn main() {}"#,
             crate::NominalId::for_test("Expr"),
             DeclaredType {
                 builtin: None,
+                is_indirect: true,
                 is_opaque: false,
                 marker: DeclarationMarker::None,
                 type_params: vec![],
@@ -3271,6 +3277,7 @@ fn main() {}"#,
             crate::NominalId::for_test("Deep"),
             DeclaredType {
                 builtin: None,
+                is_indirect: false,
                 is_opaque: false,
                 marker: DeclarationMarker::None,
                 type_params: vec![crate::ParamHead::for_test("T")],
@@ -3337,6 +3344,7 @@ fn main() {}"#,
             crate::NominalId::for_test("Grow"),
             DeclaredType {
                 builtin: None,
+                is_indirect: false,
                 is_opaque: false,
                 marker: DeclarationMarker::None,
                 type_params: vec![crate::ParamHead::for_test("T")],
@@ -3357,6 +3365,7 @@ fn main() {}"#,
             crate::NominalId::for_test("Relay"),
             DeclaredType {
                 builtin: None,
+                is_indirect: false,
                 is_opaque: false,
                 marker: DeclarationMarker::None,
                 type_params: vec![crate::ParamHead::for_test("U")],

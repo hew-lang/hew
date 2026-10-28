@@ -1,0 +1,17 @@
+indirect enum Scalar {
+    Number(i64);
+}
+
+fn value(consume item: Scalar) -> i64 {
+    match item {
+        .Number(number) => number,
+    }
+}
+
+fn main() {
+    let original: Scalar = .Number(42);
+    let saved = original;
+    println(value(original));
+    println(value(saved));
+    let _unused: Scalar = .Number(7);
+}

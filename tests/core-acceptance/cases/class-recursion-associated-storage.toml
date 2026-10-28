@@ -1,0 +1,10 @@
+[[case]]
+id = "class-recursion-associated-storage"
+intent = "A stored associated projection retains its generic base dependence and cannot hide an unbounded recursive instantiation."
+source = "cases/class-recursion-associated-storage.hew"
+suites = ["acceptance"]
+kind = "reject"
+timeout_seconds = 15
+
+[[case.expected.diagnostics]]
+code = "E_LIMIT_CLASS_RECURSION"

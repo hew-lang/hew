@@ -10,7 +10,7 @@
 //! [`Err`] the caller fails closed on.
 
 use std::borrow::Cow;
-use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
+use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 
 use crate::builtin_type::BuiltinType;
 use crate::resolved_ty::{substitute_type_params as substitute, ResolvedTy};
@@ -94,10 +94,12 @@ pub struct DeclaredType {
     /// The declaration carries `#[opaque]`, so its members are not the whole
     /// value and the Aggregate rule cannot see through it.
     ///
-    /// This is the declaration's own fact. `ResolvedTy::Named.is_opaque` is the
-    /// same fact spelled on a type, and only some producers stamp it, so the class table
-    /// reads whichever of the two says yes.
+    /// This checked declaration is the classification authority. Types may carry
+    /// a copy for ABI/layout consumers; that annotation cannot change the class.
     pub is_opaque: bool,
+    /// Every value owns an indirect enum box, independently of whether its
+    /// payload is recursive or contains other managed values.
+    pub is_indirect: bool,
     pub type_params: Vec<crate::ParamHead>,
     pub members: Vec<ResolvedTy>,
 }
@@ -118,6 +120,12 @@ pub trait ClassDeclarations {
 
     /// The exact source declaration implementing a compiler-owned aggregate.
     fn builtin_declaration(&self, builtin: BuiltinType) -> Option<crate::NominalId>;
+
+    /// The source binder on which an implicit associated-type binder depends.
+    /// Ordinary parameters are their own source.
+    fn parameter_source(&self, parameter: crate::ParamHead) -> crate::ParamHead {
+        parameter
+    }
 
     /// Instantiate declaration members using the checked associated-type schema.
     ///
@@ -174,8 +182,7 @@ static NO_DECLARATIONS: NoDeclarations = NoDeclarations;
 /// Declaration and recursive-instance lookup use nominal identity. Display
 /// spelling cannot change the ownership facts selected for a type.
 ///
-/// Deliberately not `Copy`: every class table entry point takes it by reference, so
-/// the class rule reads one context rather than silently duplicating it.
+/// Copying this borrowed view does not duplicate the declaration tables.
 #[derive(Clone, Copy)]
 pub struct ClassContext<'a> {
     declarations: &'a dyn ClassDeclarations,
@@ -228,7 +235,7 @@ pub enum ClassError {
     /// The class table: `Iterator`, `ActorState` and `MachineState` are compiler-internal
     /// names, never the type of a value.
     NotAValueType { builtin: BuiltinType },
-    /// The declaration's own members reach it at a *different* instantiation
+    /// The declaration's own members reach it at a *growing* instantiation
     /// (`type L<T> { n: L<Vec<T>> }`), directly or through another declaration.
     /// The argument grows on every turn of the cycle, so every instantiation on
     /// it is a distinct type, the walk has no finite fixpoint to join and there
@@ -257,7 +264,7 @@ impl std::fmt::Display for ClassError {
             ),
             Self::RecursiveInstantiation { name } => write!(
                 f,
-                "`{name}`'s own members reach it at a different instantiation, so its member walk has no finite fixpoint"
+                "`{name}`'s members form a growing generic cycle, so its member walk has no finite fixpoint"
             ),
         }
     }
@@ -300,8 +307,8 @@ pub fn classify_ty(
 type ClassFacts = Result<(ValueClass, CloneKind), ClassError>;
 
 /// One exact instantiated graph owns both class and clone facts. Recursive
-/// owning edges start at their heap floor; dependent facts settle before any
-/// query result is published.
+/// facts start at the bottom; declaration boxes and collections contribute
+/// their own heap ownership. Dependents settle before a result is published.
 #[derive(Debug, Clone, Default)]
 pub(crate) struct Walk {
     identities: HashMap<ResolvedTy, usize>,
@@ -309,6 +316,7 @@ pub(crate) struct Walk {
     current: Option<usize>,
     cyclic: bool,
     polymorphic: BTreeMap<crate::NominalId, bool>,
+    used_parameters: BTreeMap<crate::NominalId, Vec<bool>>,
 }
 
 #[derive(Debug, Clone)]
@@ -337,9 +345,68 @@ impl Walk {
         if let Some(answer) = self.polymorphic.get(&id) {
             return *answer;
         }
-        let answer = is_polymorphically_recursive(id, decls);
-        self.polymorphic.insert(id, answer);
-        answer
+        self.discover_parameter_uses(id, decls);
+        self.polymorphic
+            .extend(instantiation_growth(id, decls, &self.used_parameters));
+        self.polymorphic.get(&id).copied().unwrap_or(false)
+    }
+
+    /// Solve parameter use over declarations, without expanding instantiated
+    /// members. A parameter matters only if a stored member can reach its value.
+    /// Recursive declarations propagate those facts to a finite fixed point.
+    fn discover_parameter_uses(&mut self, root: crate::NominalId, decls: &ClassContext<'_>) {
+        if self.used_parameters.contains_key(&root) {
+            return;
+        }
+        let mut pending = vec![root];
+        let mut declarations = BTreeMap::new();
+        while let Some(id) = pending.pop() {
+            if self.used_parameters.contains_key(&id) {
+                continue;
+            }
+            let Some(declaration) = decls.declaration(id) else {
+                continue;
+            };
+            self.used_parameters
+                .insert(id, vec![false; declaration.type_params.len()]);
+            for member in &declaration.members {
+                visit_class_inputs(member, decls, None, &mut |input| {
+                    if let Some(id) = member_declaration(input, decls) {
+                        pending.push(id);
+                    }
+                });
+            }
+            declarations.insert(id, declaration);
+        }
+        loop {
+            let mut changed = false;
+            for (id, declaration) in &declarations {
+                let mut used = self.used_parameters[id].clone();
+                for member in &declaration.members {
+                    visit_class_inputs(member, decls, Some(&self.used_parameters), &mut |input| {
+                        if let Some(parameter) = type_parameter(input) {
+                            let source = if declaration.type_params.contains(&parameter) {
+                                parameter
+                            } else {
+                                decls.declarations.parameter_source(parameter)
+                            };
+                            if let Some(index) =
+                                declaration.type_params.iter().position(|p| *p == source)
+                            {
+                                used[index] = true;
+                            }
+                        }
+                    });
+                }
+                if used != self.used_parameters[id] {
+                    self.used_parameters.insert(*id, used);
+                    changed = true;
+                }
+            }
+            if !changed {
+                break;
+            }
+        }
     }
 
     fn intern(&mut self, ty: &ResolvedTy) -> usize {
@@ -399,8 +466,12 @@ impl Walk {
 /// An argument that mentions none of them is a constant: substituting the
 /// declaration's parameters cannot change it, so an edge carrying it reaches
 /// one fixed instantiation however many times the cycle turns.
-fn mentions_type_param(ty: &ResolvedTy, params: &[crate::ParamHead]) -> bool {
-    if is_own_parameter(ty, params) {
+fn mentions_type_param(
+    ty: &ResolvedTy,
+    params: &[crate::ParamHead],
+    decls: &ClassContext<'_>,
+) -> bool {
+    if is_own_parameter(ty, params, decls) {
         return true;
     }
     match ty {
@@ -413,16 +484,18 @@ fn mentions_type_param(ty: &ResolvedTy, params: &[crate::ParamHead]) -> bool {
                 .copied()
                 .filter(|parameter| !parameters.iter().any(|bound| bound.parameter == *parameter))
                 .collect();
-            mentions_type_param(callable, &free)
+            mentions_type_param(callable, &free, decls)
         }
         ResolvedTy::Tuple(elements) => elements
             .iter()
-            .any(|element| mentions_type_param(element, params)),
+            .any(|element| mentions_type_param(element, params, decls)),
         ResolvedTy::Array(element, _) | ResolvedTy::Slice(element) => {
-            mentions_type_param(element, params)
+            mentions_type_param(element, params, decls)
         }
-        ResolvedTy::Task(inner) => mentions_type_param(inner, params),
-        ResolvedTy::Named { args, .. } => args.iter().any(|arg| mentions_type_param(arg, params)),
+        ResolvedTy::Task(inner) => mentions_type_param(inner, params, decls),
+        ResolvedTy::Named { args, .. } => args
+            .iter()
+            .any(|arg| mentions_type_param(arg, params, decls)),
         ResolvedTy::Closure {
             params: p,
             ret,
@@ -430,14 +503,16 @@ fn mentions_type_param(ty: &ResolvedTy, params: &[crate::ParamHead]) -> bool {
             ..
         } => {
             p.iter()
-                .any(|parameter| mentions_type_param(&parameter.ty, params))
-                || mentions_type_param(ret, params)
-                || captures.iter().any(|t| mentions_type_param(t, params))
+                .any(|parameter| mentions_type_param(&parameter.ty, params, decls))
+                || mentions_type_param(ret, params, decls)
+                || captures
+                    .iter()
+                    .any(|t| mentions_type_param(t, params, decls))
         }
         ResolvedTy::Function { params: p, ret, .. } => {
             p.iter()
-                .any(|parameter| mentions_type_param(&parameter.ty, params))
-                || mentions_type_param(ret, params)
+                .any(|parameter| mentions_type_param(&parameter.ty, params, decls))
+                || mentions_type_param(ret, params, decls)
         }
         _ => false,
     }
@@ -448,154 +523,160 @@ fn mentions_type_param(ty: &ResolvedTy, params: &[crate::ParamHead]) -> bool {
 /// A parameter reaches here spelled either as an abstract `TypeParam` or, when
 /// the declaration was resolved without a type-parameter scope, as a
 /// zero-argument user `Named`. [`substitute`] reads both spellings and so does
-/// this.
-fn is_own_parameter(arg: &ResolvedTy, params: &[crate::ParamHead]) -> bool {
-    let name = match arg {
-        ResolvedTy::TypeParam { name } => name,
+/// this. Checked associated binders retain their dependence on the source
+/// parameter through the declaration's schema metadata.
+fn type_parameter(arg: &ResolvedTy) -> Option<crate::ParamHead> {
+    match arg {
+        ResolvedTy::TypeParam { name } => Some(*name),
         ResolvedTy::Named {
             head: crate::TypeHead::Param(param),
             args,
             ..
-        } if args.is_empty() => param,
-        _ => return false,
-    };
-    params.iter().any(|param| param == name)
-}
-
-/// Collect every declaration `ty` mentions, with the arguments it mentions it
-/// at, descending exactly where [`classify`] descends.
-///
-/// MARKED SHORTCUT — a declaration mention's own arguments are descended into
-/// even though [`classify_declaration`] only reaches an argument through a
-/// member that uses the parameter.
-/// WHY: a declaration that passes a growing argument through an intermediary
-/// (`L<T> { x: M<L<Vec<T>>> }`, `M<U> { u: U }`) has no edge at all without it,
-/// and the member walk then diverges instead of refusing. Over-approximating
-/// refuses a declaration whose growing argument lands on a phantom parameter no
-/// member reads; under-approximating overflows the stack.
-/// WHEN: `DeclaredType` records which parameters its members actually read.
-/// WHAT: descend into a mention's arguments only at the positions the mentioned
-/// declaration's members use.
-fn collect_mentions(
-    ty: &ResolvedTy,
-    decls: &ClassContext<'_>,
-    out: &mut Vec<(crate::NominalId, Vec<ResolvedTy>)>,
-) {
-    match ty {
-        ResolvedTy::Tuple(elements) => {
-            for element in elements {
-                collect_mentions(element, decls, out);
-            }
-        }
-        ResolvedTy::Array(element, _) => collect_mentions(element, decls, out),
-        ResolvedTy::GenericCallable { callable, .. } => collect_mentions(callable, decls, out),
-        ResolvedTy::Closure { captures, .. } => {
-            for capture in captures {
-                collect_mentions(capture, decls, out);
-            }
-        }
-        ResolvedTy::Named { head, args, .. } => {
-            let identity = head.nominal().or_else(|| {
-                head.builtin()
-                    .and_then(|builtin| decls.declarations.builtin_declaration(builtin))
-            });
-            let builtin = head.builtin();
-            match builtin {
-                // The two builtins whose class is the Aggregate rule over a
-                // declaration, so they are declaration mentions like any other.
-                Some(BuiltinType::CrashInfo | BuiltinType::CrashNotification) | None => {
-                    if let Some(id) = identity.filter(|id| decls.declaration(*id).is_some()) {
-                        out.push((id, args.clone()));
-                    }
-                    for arg in args {
-                        collect_mentions(arg, decls, out);
-                    }
-                }
-                // The builtins whose class is the join over their arguments.
-                Some(
-                    BuiltinType::Option
-                    | BuiltinType::Result
-                    | BuiltinType::Vec
-                    | BuiltinType::HashMap
-                    | BuiltinType::HashSet
-                    | BuiltinType::VecIter
-                    | BuiltinType::HashMapIter,
-                ) => {
-                    for arg in args {
-                        collect_mentions(arg, decls, out);
-                    }
-                }
-                // Every other builtin has a flat row: `classify` never looks at
-                // its arguments, so neither does the reachability walk.
-                Some(_) => {}
-            }
-        }
-        // `Slice`, `Pointer`, `Borrow`, `Function`, `TraitObject` and `Task`
-        // all have flat rows in the class table: their payloads are never classified, so a
-        // mention inside one is not an edge the member walk can take.
-        _ => {}
+        } if args.is_empty() => Some(*param),
+        _ => None,
     }
 }
 
-/// Does `name`'s declaration reach itself through its own members at an
-/// instantiation other than its own parameters?
-///
-/// This is the class table's polymorphic-recursion question, and it is asked of the
-/// declaration's **pre-substitution** members. `L<T>` whose body mentions
-/// `L<T>` reaches finitely many instantiations from any starting argument and
-/// takes the owning edge, and so does `Tree<T>` whose body mentions a constant
-/// `Tree<i64>`: substitution cannot change a constant, so that cycle reaches
-/// one fixed instantiation. `L<T>` whose body mentions `L<Vec<T>>` — alone or
-/// through an intermediary declaration — wraps the parameter and grows its
-/// argument on every turn, so it has no finite fixpoint to join. A declaration
-/// that never reaches itself refuses nothing, whatever arguments a caller
-/// supplies: a nested `Wrapper<Wrapper<i64>>` is an ordinary aggregate.
-fn is_polymorphically_recursive(id: crate::NominalId, decls: &ClassContext<'_>) -> bool {
-    let mut seen: BTreeSet<(crate::NominalId, bool)> = BTreeSet::new();
-    let mut stack = vec![(id, false)];
-    while let Some((current, grew)) = stack.pop() {
-        if !seen.insert((current, grew)) {
+fn is_own_parameter(
+    arg: &ResolvedTy,
+    params: &[crate::ParamHead],
+    decls: &ClassContext<'_>,
+) -> bool {
+    type_parameter(arg).is_some_and(|parameter| {
+        params.contains(&parameter)
+            || params.contains(&decls.declarations.parameter_source(parameter))
+    })
+}
+
+/// Nominal declarations reached by the member walk. Other builtins have their
+/// own rows, even when a source declaration also exists.
+fn member_declaration(ty: &ResolvedTy, decls: &ClassContext<'_>) -> Option<crate::NominalId> {
+    let ResolvedTy::Named { head, .. } = ty else {
+        return None;
+    };
+    if head.is_actor() {
+        return None;
+    }
+    match head.builtin() {
+        Some(BuiltinType::CrashInfo | BuiltinType::CrashNotification) => head
+            .builtin()
+            .and_then(|builtin| decls.declarations.builtin_declaration(builtin)),
+        None => head.nominal(),
+        Some(_) => None,
+    }
+}
+
+/// Visit dependencies within a member expression. Nominal arguments
+/// contribute only through parameters used by that declaration's members.
+/// Before the use summary is solved, `None` discovers all possible dependencies.
+fn visit_class_inputs(
+    ty: &ResolvedTy,
+    decls: &ClassContext<'_>,
+    used_parameters: Option<&BTreeMap<crate::NominalId, Vec<bool>>>,
+    visit: &mut impl FnMut(&ResolvedTy),
+) {
+    visit(ty);
+    if let ResolvedTy::Named { head, args, .. } = ty {
+        // Actor protocols and pool roles are identities, not nested values.
+        if head.is_actor() || head.builtin() == Some(BuiltinType::SupervisorPool) {
+            return;
+        }
+        let declaration = member_declaration(ty, decls);
+        for (index, arg) in args.iter().enumerate() {
+            if used_parameters.is_none_or(|uses| {
+                declaration
+                    .and_then(|id| uses.get(&id))
+                    .and_then(|positions| positions.get(index))
+                    .copied()
+                    .unwrap_or(true)
+            }) {
+                visit_class_inputs(arg, decls, used_parameters, visit);
+            }
+        }
+    } else {
+        // Flat ownership is not flat type structure: pointer pointees and
+        // callable signatures still participate in concrete shape admission.
+        let mut components = Vec::new();
+        crate::type_facts::push_type_components(ty, &mut components);
+        for component in components {
+            visit_class_inputs(&component, decls, used_parameters, visit);
+        }
+    }
+}
+
+/// Solve argument growth over a finite graph of declaration parameter positions.
+/// Refuse constructor-bearing parameter cycles. Constants cut the flow, while
+/// selecting or permuting bare parameters has a finite orbit. Associated
+/// binders retain dependence on their checked source parameter.
+fn instantiation_growth(
+    root: crate::NominalId,
+    decls: &ClassContext<'_>,
+    used_parameters: &BTreeMap<crate::NominalId, Vec<bool>>,
+) -> BTreeMap<crate::NominalId, bool> {
+    let mut declarations = BTreeMap::new();
+    let mut pending = vec![root];
+    while let Some(id) = pending.pop() {
+        if declarations.contains_key(&id) {
             continue;
         }
-        let Some(declared) = decls.declaration(current) else {
+        let Some(declaration) = decls.declaration(id) else {
             continue;
         };
         let mut mentions = Vec::new();
-        for member in &declared.members {
-            collect_mentions(member, decls, &mut mentions);
-        }
-        for (mentioned, args) in mentions {
-            // An argument grows the instantiation only when substitution can
-            // make it bigger: it must mention one of the mentioning
-            // declaration's parameters and must not be exactly one of them.
-            // `Tree<T> { Node(Tree<i64>) }` carries a constant, so every turn
-            // of that cycle reaches the same `Tree<i64>` and the walk is
-            // finite; `L<T> { n: L<Vec<T>> }` wraps the parameter and grows.
-            //
-            // MARKED SHORTCUT - a permutation of parameters counts as no
-            // growth, which is right, but a substitution that merely reorders
-            // or duplicates them is admitted by the same test rather than
-            // proved finite.
-            // WHY: the exact question is whether the substitution composed
-            // around the cycle is idempotent, which needs the composed map and
-            // not one edge at a time.
-            // WHEN: the walk carries the composed substitution rather than a
-            // per-edge boolean.
-            // WHAT: refuse exactly when the composition around the cycle is not
-            // idempotent, which admits `Pair<T, U> { Pair<U, T> }` by proof
-            // instead of by this argument-shape test.
-            let grows = args.iter().any(|arg| {
-                mentions_type_param(arg, &declared.type_params)
-                    && !is_own_parameter(arg, &declared.type_params)
+        for member in &declaration.members {
+            visit_class_inputs(member, decls, Some(used_parameters), &mut |input| {
+                if let ResolvedTy::Named { args, .. } = input {
+                    if let Some(id) = member_declaration(input, decls) {
+                        pending.push(id);
+                        mentions.push((id, args.clone()));
+                    }
+                }
             });
-            let grew = grew || grows;
-            if grew && mentioned == id {
-                return true;
+        }
+        declarations.insert(id, (declaration, mentions));
+    }
+
+    let mut nodes = Vec::new();
+    let mut edges: HashMap<_, HashSet<_>> = HashMap::new();
+    let mut growing = HashSet::new();
+    for (&id, (declaration, mentions)) in &declarations {
+        nodes.extend((0..declaration.type_params.len()).map(|index| (id, index)));
+        for (mentioned, args) in mentions {
+            let Some((target, _)) = declarations.get(mentioned) else {
+                continue;
+            };
+            for (index, arg) in args.iter().take(target.type_params.len()).enumerate() {
+                let to = (*mentioned, index);
+                for (position, parameter) in declaration.type_params.iter().enumerate() {
+                    if mentions_type_param(arg, &[*parameter], decls) {
+                        let from = (id, position);
+                        edges.entry(from).or_default().insert(to);
+                        // A schema parameter preserves dependence on its base.
+                        // A constructor around that dependency adds growth.
+                        if type_parameter(arg).is_none() {
+                            growing.insert((from, to));
+                        }
+                    }
+                }
             }
-            stack.push((mentioned, grew));
         }
     }
-    false
+    let mut answers: BTreeMap<_, _> = declarations.keys().map(|id| (*id, false)).collect();
+    for component in crate::cycle::tarjan_scc(&nodes, &edges) {
+        let members: HashSet<_> = component.iter().copied().collect();
+        if component.iter().any(|from| {
+            edges
+                .get(from)
+                .into_iter()
+                .flatten()
+                .any(|to| members.contains(to) && growing.contains(&(*from, *to)))
+        }) {
+            for (id, _) in component {
+                answers.insert(id, true);
+            }
+        }
+    }
+    answers
 }
 
 /// Class and clone of a heap collection over its element facts (the class table
@@ -651,7 +732,7 @@ fn classify(ty: &ResolvedTy, decls: &ClassContext<'_>, walk: &mut Walk) -> Class
     }
     if walk.nodes[id].computing {
         walk.cyclic = true;
-        return Ok((ValueClass::CowValue, CloneKind::FieldWise));
+        return Ok((ValueClass::BitCopy, CloneKind::Bits));
     }
     walk.nodes[id].computing = true;
     let parent = walk.current.replace(id);
@@ -833,7 +914,7 @@ fn classify_uncached(
                 | crate::TypeHead::Param(_)
                 | crate::TypeHead::Unresolved(_)),
             args,
-            is_opaque,
+            ..
         } => {
             let name = head.registry_key();
             // `builtin` is the identity fact. A `Named` that carries none and
@@ -858,7 +939,7 @@ fn classify_uncached(
                 // `BitCopy` exactly like any other opaque handle with no
                 // marker, whether or not its name happens to collide with a
                 // compiler builtin (`Location`, `Handle`).
-                DeclarationMarker::None if *is_opaque || declared.is_opaque => bits,
+                DeclarationMarker::None if declared.is_opaque => bits,
                 DeclarationMarker::None => classify_declaration(head, args, decls, walk)?,
             }
         }
@@ -887,43 +968,27 @@ fn classify_declaration(
         .ok_or_else(|| ClassError::UnknownDeclaration {
             name: name.to_string(),
         })?;
-    // the class table's indirect-enum row: a recursive occurrence is an **owning edge**,
-    // not a base case. The recursion is legal only because the payload sits
-    // behind a heap box, so the occurrence contributes the same heap floor a
-    // collection's buffer does — `CowValue` with a `FieldWise` clone. The
-    // aggregate join then keeps the declaration's payload class: a `BitCopy`
-    // payload gives `(CowValue, FieldWise)`, a payload holding an
-    // `AffineResource` gives `AffineResource`. It is never `BitCopy`, which is
-    // what a bottom-element cut published. `BitCopy` carries no ownership
-    // obligation and permits bitwise copies, including across an actor heap.
-    //
-    // Whether the cycle has a finite fixpoint at all is a property of the
-    // declaration's own pre-substitution members, not of the walk stack: a body
-    // that mentions itself at its own instantiation reaches finitely many
-    // instantiations from any argument, and a body that mentions itself at a
-    // different one grows its argument on every turn. The second case refuses,
-    // at every instantiation, rather than under-approximating the growing type
-    // as the box's own `CowValue`. A declaration whose members never reach it
-    // refuses nothing, so a nested `Wrapper<Wrapper<i64>>` is an ordinary
-    // aggregate.
-    //
-    // MARKED SHORTCUT — the owning edge is the collection heap floor rather
-    // than the box's own retain path.
-    // WHY: `DeclaredType` carries the members, not the box, so the walk has no
-    // term for the allocation itself and borrows `collection_facts`' floor.
-    // The floor is sound for the ownership-kind mapping (the class is `Owned` either way) and only
-    // approximates the clone column for a box whose payload is shareable.
-    // WHEN: `DeclaredType` carries `is_indirect` (`HirTypeDecl.is_indirect`)
-    // and the box's own class row is available.
-    // WHAT: the recursive occurrence reads the box's row instead of the
-    // collection floor.
     if walk.is_polymorphic(id, decls) {
         return Err(ClassError::RecursiveInstantiation {
             name: name.to_string(),
         });
     }
     let members = decls.declarations.instantiate_members(&declared, args)?;
-    Ok(aggregate_facts(&classify_all(&members, decls, walk)?))
+    let (class, clone) = aggregate_facts(&classify_all(&members, decls, walk)?);
+    if declared.is_indirect {
+        // Copying a box allocates independent storage and copies its payload.
+        // Resource and linear payloads retain their stronger obligations.
+        Ok((
+            class.join(ValueClass::CowValue),
+            if clone == CloneKind::None {
+                clone
+            } else {
+                CloneKind::FieldWise
+            },
+        ))
+    } else {
+        Ok((class, clone))
+    }
 }
 
 #[cfg(test)]
@@ -932,6 +997,148 @@ mod graph_tests {
 
     fn nominal(name: &str) -> ResolvedTy {
         ResolvedTy::user_for_test(name, vec![])
+    }
+
+    #[test]
+    fn nominal_classification_uses_the_checked_declaration_opacity() {
+        let id = crate::NominalId::for_test("Record");
+        let mut declarations = BTreeMap::from([(
+            id,
+            DeclaredType {
+                members: vec![ResolvedTy::String],
+                ..DeclaredType::default()
+            },
+        )]);
+        let ordinary = nominal("Record");
+        let mut annotated = ordinary.clone();
+        let ResolvedTy::Named { is_opaque, .. } = &mut annotated else {
+            unreachable!();
+        };
+        *is_opaque = true;
+        for ty in [&ordinary, &annotated] {
+            assert_eq!(
+                classify_ty(ty, &ClassContext::new(&declarations)),
+                Ok((ValueClass::CowValue, CloneKind::FieldWise))
+            );
+        }
+        declarations.get_mut(&id).unwrap().is_opaque = true;
+        for ty in [&ordinary, &annotated] {
+            assert_eq!(
+                classify_ty(ty, &ClassContext::new(&declarations)),
+                Ok((ValueClass::BitCopy, CloneKind::Bits))
+            );
+        }
+    }
+
+    #[test]
+    fn recursive_arguments_follow_transitive_parameter_use() {
+        let parameter = crate::ParamHead::for_test("T");
+        let parameter_ty = ResolvedTy::TypeParam { name: parameter };
+        let root = |argument| ResolvedTy::user_for_test("Tree", vec![argument]);
+        let intermediary = |argument| ResolvedTy::user_for_test("Wrapper", vec![argument]);
+        let mut declarations = BTreeMap::from([
+            (
+                crate::NominalId::for_test("Tree"),
+                DeclaredType {
+                    type_params: vec![parameter],
+                    members: vec![
+                        parameter_ty.clone(),
+                        intermediary(root(ResolvedTy::Named {
+                            head: crate::TypeHead::Builtin(BuiltinType::Vec),
+                            args: vec![parameter_ty.clone()],
+                            is_opaque: false,
+                        })),
+                    ],
+                    ..DeclaredType::default()
+                },
+            ),
+            (
+                crate::NominalId::for_test("Wrapper"),
+                DeclaredType {
+                    type_params: vec![parameter],
+                    members: vec![ResolvedTy::I64],
+                    ..DeclaredType::default()
+                },
+            ),
+        ]);
+        assert_eq!(
+            classify_ty(&root(ResolvedTy::String), &ClassContext::new(&declarations)),
+            Ok((ValueClass::CowValue, CloneKind::FieldWise))
+        );
+
+        // A stored parameter makes the growing argument reachable, including
+        // when another declaration forwards it before it becomes a value.
+        for member in [
+            parameter_ty.clone(),
+            ResolvedTy::Pointer {
+                is_mutable: true,
+                pointee: Box::new(parameter_ty.clone()),
+            },
+            ResolvedTy::user_for_test("Forward", vec![parameter_ty.clone()]),
+        ] {
+            declarations
+                .get_mut(&crate::NominalId::for_test("Wrapper"))
+                .unwrap()
+                .members = vec![member];
+            declarations.insert(
+                crate::NominalId::for_test("Forward"),
+                DeclaredType {
+                    type_params: vec![parameter],
+                    members: vec![parameter_ty.clone()],
+                    ..DeclaredType::default()
+                },
+            );
+            for marker in [DeclarationMarker::None, DeclarationMarker::Resource] {
+                declarations
+                    .get_mut(&crate::NominalId::for_test("Wrapper"))
+                    .unwrap()
+                    .marker = marker;
+                assert!(matches!(
+                    classify_ty(&root(ResolvedTy::String), &ClassContext::new(&declarations)),
+                    Err(ClassError::RecursiveInstantiation { .. })
+                ));
+            }
+        }
+    }
+
+    #[test]
+    fn argument_growth_requires_a_parameter_cycle() {
+        let first = crate::ParamHead::for_test("T");
+        let second = crate::ParamHead::for_test("U");
+        let first_ty = ResolvedTy::TypeParam { name: first };
+        let second_ty = ResolvedTy::TypeParam { name: second };
+        let wrapped = ResolvedTy::Named {
+            head: crate::TypeHead::Builtin(BuiltinType::Vec),
+            args: vec![second_ty.clone()],
+            is_opaque: false,
+        };
+        let pair = |args| ResolvedTy::user_for_test("Pair", args);
+        for (arguments, grows) in [
+            (vec![second_ty, first_ty.clone()], false),
+            (vec![wrapped.clone(), ResolvedTy::I64], false),
+            (vec![wrapped, first_ty.clone()], true),
+        ] {
+            let declarations = BTreeMap::from([(
+                crate::NominalId::for_test("Pair"),
+                DeclaredType {
+                    type_params: vec![first, second],
+                    members: vec![first_ty.clone(), pair(arguments)],
+                    ..DeclaredType::default()
+                },
+            )]);
+            let facts = classify_ty(
+                &pair(vec![ResolvedTy::String, ResolvedTy::I64]),
+                &ClassContext::new(&declarations),
+            );
+            if grows {
+                assert!(matches!(
+                    facts,
+                    Err(ClassError::RecursiveInstantiation { .. })
+                ));
+            } else {
+                assert_eq!(facts, Ok((ValueClass::CowValue, CloneKind::FieldWise)));
+            }
+        }
     }
 
     #[test]
@@ -1063,6 +1270,7 @@ mod graph_tests {
                 (
                     cycle,
                     DeclaredType {
+                        is_indirect: true,
                         members: vec![cycle_ty.clone()],
                         ..DeclaredType::default()
                     },

@@ -120,7 +120,7 @@ struct ExpectedOutcome {
     #[serde(default)]
     exit: Option<i32>,
     /// `kind = "check"` only: the exact diagnostics `hew check --format json`
-    /// must report, matched as a set on `(code, line, column)` with optional
+    /// must report, matched as a set on code with optional source coordinates,
     /// severity and source provenance.
     #[serde(default)]
     diagnostics: Vec<ExpectedDiagnostic>,
@@ -152,8 +152,11 @@ impl ExpectedOutcome {
 #[serde(deny_unknown_fields)]
 struct ExpectedDiagnostic {
     code: String,
-    line: usize,
-    column: usize,
+    /// Constrain coordinates only when location is part of the case's purpose.
+    #[serde(default)]
+    line: Option<usize>,
+    #[serde(default)]
+    column: Option<usize>,
     /// `error`, `warning`, `note` or `info`, matched when named; an
     /// unspecified severity matches any.
     #[serde(default)]
@@ -1487,8 +1490,10 @@ fn diagnostics_match(
                     .severity
                     .as_deref()
                     .is_none_or(|severity| got.severity == severity)
-                && got.span.start_line == want.line
-                && got.span.start_col == want.column
+                && want.line.is_none_or(|line| got.span.start_line == line)
+                && want
+                    .column
+                    .is_none_or(|column| got.span.start_col == column)
                 && match &want.file {
                     Some(suffix) => got.file.as_deref().is_some_and(|file| {
                         with_forward_slashes(file).ends_with(&with_forward_slashes(suffix))
@@ -1507,8 +1512,10 @@ fn diagnostics_match(
                     .as_deref()
                     .map(|f| format!("{f}:"))
                     .unwrap_or_default(),
-                want.line,
+                want.line
+                    .map_or_else(|| "*".to_string(), |line| line.to_string()),
                 want.column
+                    .map_or_else(|| "*".to_string(), |column| column.to_string())
             )),
         }
     }
@@ -2013,8 +2020,8 @@ mod tests {
             CaseKind::Run,
             vec![ExpectedDiagnostic {
                 code: "InvalidOperation".to_string(),
-                line: 1,
-                column: 1,
+                line: Some(1),
+                column: Some(1),
                 severity: None,
 
                 file: None,
@@ -2122,8 +2129,8 @@ mod tests {
             CaseKind::Check,
             vec![ExpectedDiagnostic {
                 code: "InvalidOperation".to_string(),
-                line: 1,
-                column: 1,
+                line: Some(1),
+                column: Some(1),
                 severity: None,
 
                 file: None,
@@ -2150,8 +2157,8 @@ mod tests {
         }];
         let mut expected = vec![ExpectedDiagnostic {
             code: "InvalidOperation".to_string(),
-            line: 10,
-            column: 9,
+            line: Some(10),
+            column: Some(9),
             severity: Some("error".to_string()),
             file: Some("probe.hew".to_string()),
         }];
@@ -2161,7 +2168,7 @@ mod tests {
     }
 
     #[test]
-    fn diagnostics_match_rejects_wrong_position() {
+    fn diagnostics_match_respects_requested_identity_and_position() {
         let actual = vec![ActualDiagnostic {
             code: "InvalidOperation".to_string(),
             severity: "error".to_string(),
@@ -2172,16 +2179,21 @@ mod tests {
 
             file: None,
         }];
-        let wrong_line = vec![ExpectedDiagnostic {
+        let mut wrong_line = vec![ExpectedDiagnostic {
             code: "InvalidOperation".to_string(),
-            line: 11,
-            column: 9,
+            line: Some(11),
+            column: Some(9),
             severity: None,
 
             file: None,
         }];
         let _ = diagnostics_match(&wrong_line, &actual, true)
             .expect_err("naming the wrong line must fail rather than silently pass");
+        wrong_line[0].line = None;
+        wrong_line[0].column = None;
+        assert!(diagnostics_match(&wrong_line, &actual, true).is_ok());
+        wrong_line[0].code = "OtherDiagnostic".to_string();
+        assert!(diagnostics_match(&wrong_line, &actual, true).is_err());
     }
 
     /// A multi-file case pins provenance, so naming the wrong file must fail
@@ -2200,8 +2212,8 @@ mod tests {
         }];
         let expected = vec![ExpectedDiagnostic {
             code: "E_BOUNDARY_RESOURCE_MUST_CONSUME".to_string(),
-            line: 13,
-            column: 5,
+            line: Some(13),
+            column: Some(5),
             severity: None,
 
             file: Some("cases/token.hew".to_string()),
@@ -2226,8 +2238,8 @@ mod tests {
         }];
         let expected = vec![ExpectedDiagnostic {
             code: "E_BOUNDARY_RESOURCE_MUST_CONSUME".to_string(),
-            line: 13,
-            column: 5,
+            line: Some(13),
+            column: Some(5),
             severity: None,
 
             file: Some("provenance/token.hew".to_string()),
@@ -2356,8 +2368,8 @@ mod tests {
             CaseKind::Check,
             vec![ExpectedDiagnostic {
                 code: "InvalidOperation".to_string(),
-                line: 10,
-                column: 9,
+                line: Some(10),
+                column: Some(9),
                 severity: None,
 
                 file: None,
@@ -2374,8 +2386,8 @@ mod tests {
             CaseKind::Check,
             vec![ExpectedDiagnostic {
                 code: "InvalidOperation".to_string(),
-                line: 99,
-                column: 9,
+                line: Some(99),
+                column: Some(9),
                 severity: None,
 
                 file: None,

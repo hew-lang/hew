@@ -1,0 +1,33 @@
+type Ignored<T> {
+    stored: i64;
+}
+
+indirect enum Tree<T> {
+    Leaf(T);
+    Hidden(Ignored<Tree<Vec<T>>>);
+}
+
+machine Visit {
+    events {
+        Finish;
+    }
+    state Holding { value: Tree<string>; }
+    state Done;
+    on Finish: Holding => Done;
+    default { state }
+}
+
+fn main() {
+    let values: Vec<Tree<string>> = [.Leaf("leaf".to_upper()), .Hidden(Ignored { stored: 42 })];
+    let saved = values;
+    for value in values {
+        match value {
+            .Leaf(text) => println(text),
+            .Hidden(record) => println(record.stored),
+        }
+    }
+    assert(saved.len() == 2);
+    var visit: Visit = .Holding { value: .Hidden(Ignored { stored: 7 }) };
+    let _ = visit.step(.Finish).expect("finish");
+    assert(visit.state_name() == "Done");
+}

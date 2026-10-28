@@ -257,6 +257,7 @@ impl crate::value_class::ClassDeclarations for CheckerClassDeclarations<'_> {
                     builtin: None,
                     marker,
                     is_opaque,
+                    is_indirect: false,
                     type_params: Vec::new(),
                     members: Vec::new(),
                 })
@@ -323,6 +324,7 @@ impl crate::value_class::ClassDeclarations for CheckerClassDeclarations<'_> {
                     builtin: None,
                     marker,
                     is_opaque,
+                    is_indirect: definition.is_indirect,
                     type_params: definition.type_params.clone(),
                     members: Vec::new(),
                 }));
@@ -346,6 +348,7 @@ impl crate::value_class::ClassDeclarations for CheckerClassDeclarations<'_> {
             builtin: None,
             marker,
             is_opaque,
+            is_indirect: definition.is_indirect,
             type_params: definition.type_params.clone(),
             members,
         }))
@@ -374,6 +377,12 @@ impl crate::value_class::ClassDeclarations for CheckerClassDeclarations<'_> {
                 }))
             })
             .collect()
+    }
+
+    fn parameter_source(&self, parameter: crate::ParamHead) -> crate::ParamHead {
+        self.checker
+            .associated_schema_parameters
+            .parameter_source(parameter)
     }
 }
 

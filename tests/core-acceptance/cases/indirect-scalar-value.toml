@@ -1,0 +1,10 @@
+[[case]]
+id = "indirect-scalar-value"
+intent = "An indirect enum owns its box even with scalar-only payloads, preserving independent copies and scope cleanup."
+source = "cases/indirect-scalar-value.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "42\n42\n"
+exit = 0

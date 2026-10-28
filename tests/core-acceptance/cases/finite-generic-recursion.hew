@@ -1,0 +1,30 @@
+indirect enum Entry<T> {
+    Value(T);
+    Next(Relay<Vec<T>>);
+}
+
+indirect enum Relay<U> {
+    Values(U);
+    Reset(Entry<i64>);
+}
+
+fn main() {
+    let text: Entry<string> = .Value("value".to_upper());
+    let nested: Entry<string> = .Next(.Reset(.Value(42)));
+    let saved = nested;
+    if let .Value(value) = text {
+        println(value);
+    } else {
+        assert(false);
+    }
+    if let .Next(.Reset(.Value(number))) = nested {
+        println(number);
+    } else {
+        assert(false);
+    }
+    if let .Next(.Reset(.Value(number))) = saved {
+        assert(number == 42);
+    } else {
+        assert(false);
+    }
+}

@@ -1,0 +1,10 @@
+[[case]]
+id = "finite-generic-recursion"
+intent = "Mutually recursive generic enums reset a wrapped argument to a constant, so specialization and owned cleanup reach a finite set of instances."
+source = "cases/finite-generic-recursion.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "VALUE\n42\n"
+exit = 0

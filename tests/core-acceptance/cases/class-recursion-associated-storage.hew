@@ -1,0 +1,26 @@
+trait Project {
+    type Item;
+}
+
+trait Stored {
+}
+
+type Wrapper<P: Project> where P.Item: Stored {
+    value: P.Item;
+}
+
+indirect enum Root<T> {
+    Leaf(T);
+    Hidden(Wrapper<Root<Vec<T>>>);
+}
+
+impl<T> Project for Root<T> {
+    type Item = Root<T>;
+}
+
+impl<T> Stored for Root<T> {}
+
+fn main() {
+    let value: Root<i64> = .Leaf(1);
+    let _ = value;
+}

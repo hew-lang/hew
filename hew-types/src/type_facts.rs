@@ -74,6 +74,12 @@ impl TypeInstanceKey {
     }
 }
 
+impl std::borrow::Borrow<ResolvedTy> for TypeInstanceKey {
+    fn borrow(&self) -> &ResolvedTy {
+        &self.0
+    }
+}
+
 impl From<ResolvedTy> for TypeInstanceKey {
     fn from(ty: ResolvedTy) -> Self {
         Self(ty)
@@ -852,11 +858,12 @@ impl TypeFactContext {
 pub struct TypeFactService {
     context: TypeFactContext,
     rows: BTreeMap<TypeInstanceKey, TypeFacts>,
+    classes: std::cell::RefCell<crate::value_class::Walk>,
 }
 
 impl crate::value_class::ClassDeclarations for TypeFactContext {
-    fn declared_type(&self, id: crate::NominalId) -> Option<DeclaredType> {
-        self.declarations.get(&id).cloned()
+    fn declared_type(&self, id: crate::NominalId) -> Option<std::borrow::Cow<'_, DeclaredType>> {
+        self.declarations.get(&id).map(std::borrow::Cow::Borrowed)
     }
 
     fn builtin_declaration(&self, builtin: BuiltinType) -> Option<crate::NominalId> {
@@ -879,7 +886,24 @@ impl crate::value_class::ClassDeclarations for TypeFactContext {
 impl TypeFactService {
     #[must_use]
     pub fn new(context: TypeFactContext, rows: BTreeMap<TypeInstanceKey, TypeFacts>) -> Self {
-        Self { context, rows }
+        Self {
+            context,
+            rows,
+            classes: std::cell::RefCell::default(),
+        }
+    }
+
+    /// Classify an exact type against this service's immutable declarations.
+    ///
+    /// # Errors
+    /// Returns the class authority's refusal for unsupported types.
+    pub fn classify(&self, ty: &ResolvedTy) -> Result<(ValueClass, CloneKind), ClassError> {
+        if let Some(row) = self.rows.get(ty) {
+            return Ok((row.class, row.clone));
+        }
+        self.classes
+            .borrow_mut()
+            .query(ty, &ClassContext::new(&self.context))
     }
 
     /// The declaration table the service's identities index.
@@ -900,8 +924,8 @@ impl TypeFactService {
 
     /// Return the unchanged declaration authority and the facts derived from it.
     ///
-    /// Fact queries mutate only `rows`; the context's metadata is supplied at
-    /// construction and stays immutable. Returning both preserves that single
+    /// The context's metadata is supplied at construction and stays immutable
+    /// while queries retain derived facts. Returning both preserves that single
     /// owned snapshot without cloning its declarations and registries.
     #[must_use]
     pub fn into_parts(self) -> (TypeFactContext, BTreeMap<TypeInstanceKey, TypeFacts>) {
@@ -1022,8 +1046,7 @@ impl TypeFactService {
     /// Refuses abstract types, unknown declarations, and recursive
     /// instantiations whose fact graph is not finite.
     pub fn require(&mut self, ty: &ResolvedTy) -> Result<TypeFacts, ClassError> {
-        let key = TypeInstanceKey(ty.clone());
-        if let Some(row) = self.rows.get(&key) {
+        if let Some(row) = self.rows.get(ty) {
             return Ok(*row);
         }
 
@@ -1034,7 +1057,7 @@ impl TypeFactService {
         }
 
         let row = self.contextual_facts(ty)?;
-        self.rows.insert(key, row);
+        self.rows.insert(TypeInstanceKey(ty.clone()), row);
         Ok(row)
     }
 
@@ -1378,7 +1401,7 @@ impl TypeFactService {
         walk: &mut CapabilityWalk,
         calls: &mut Vec<(crate::DefId, Vec<ResolvedTy>)>,
     ) -> Result<Option<ValueMethodPlan>, ClassError> {
-        crate::value_class::classify_ty(ty, &ClassContext::new(&self.context))?;
+        self.classify(ty)?;
         require_concrete_capability_type(ty)?;
         if let Some(method) = method {
             if capability == ValueCapability::Hash {
@@ -1869,7 +1892,6 @@ impl TypeFactService {
     }
 
     fn contextual_facts(&self, ty: &ResolvedTy) -> Result<TypeFacts, ClassError> {
-        let declarations = ClassContext::new(&self.context);
         let as_ty = ty.to_ty();
         let send = self.send_fact(ty, &as_ty);
         let hash = self.select_capability(ty, ValueCapability::Hash)?.is_some();
@@ -1885,7 +1907,16 @@ impl TypeFactService {
             self.select_capability(ty, capability)
                 .is_ok_and(|plan| plan.is_some())
         });
-        TypeFacts::of_type(ty, &declarations, send, hash, eq, partial_ord)
+        let (class, clone) = self.classify(ty)?;
+        Ok(TypeFacts::with_class(
+            ty,
+            class,
+            clone,
+            send,
+            hash,
+            eq,
+            partial_ord,
+        ))
     }
 
     fn send_fact(&self, ty: &ResolvedTy, as_ty: &crate::Ty) -> SendFact {
@@ -1964,6 +1995,26 @@ impl TypeFacts {
         partial_ord: bool,
     ) -> Result<Self, ClassError> {
         let (class, clone) = crate::value_class::classify_ty(ty, decls)?;
+        Ok(Self::with_class(
+            ty,
+            class,
+            clone,
+            send,
+            hash,
+            eq,
+            partial_ord,
+        ))
+    }
+
+    fn with_class(
+        ty: &ResolvedTy,
+        class: ValueClass,
+        clone: CloneKind,
+        send: SendFact,
+        hash: bool,
+        eq: bool,
+        partial_ord: bool,
+    ) -> Self {
         let send = match ty.callable_body() {
             ty if ty.generator_parts().is_some() => SendFact::DeferredToGeneratorFacts,
             ResolvedTy::Closure { .. } => SendFact::DeferredToClosureFacts,
@@ -1980,14 +2031,14 @@ impl TypeFacts {
             ResolvedTy::TraitObject { .. } => SendFact::Known(false),
             _ => send,
         };
-        Ok(Self {
+        Self {
             class,
             clone,
             send,
             hash,
             eq,
             partial_ord,
-        })
+        }
     }
 }
 
@@ -3324,6 +3375,70 @@ fn main() {}"#,
                 name: "Grow".to_string()
             }),
             crate::value_class::classify_ty(&named("Grow", None, vec![ResolvedTy::I64]), &context)
+        );
+    }
+
+    #[test]
+    fn classification_consumes_published_rows_before_expanding_instances() {
+        let ty = named("Published", None, vec![]);
+        let row = TypeFacts {
+            class: ValueClass::AffineResource,
+            clone: CloneKind::None,
+            send: SendFact::Known(false),
+            hash: false,
+            eq: false,
+            partial_ord: false,
+        };
+        let service = TypeFactService::new(
+            TypeFactContext::new(
+                BTreeMap::new(),
+                crate::traits::TraitRegistry::new(),
+                HashMap::new(),
+            ),
+            BTreeMap::from([(TypeInstanceKey(ty.clone()), row)]),
+        );
+        assert_eq!(service.classify(&ty), Ok((row.class, row.clone)));
+    }
+
+    #[test]
+    fn retained_classification_matches_fresh_queries_across_recursive_instances() {
+        let declarations = recursive_declarations();
+        let service = TypeFactService::new(
+            TypeFactContext::new(
+                declarations.clone(),
+                crate::traits::TraitRegistry::new(),
+                HashMap::new(),
+            ),
+            BTreeMap::new(),
+        );
+        let queries = [
+            named("Tree", None, vec![]),
+            named("ResTree", None, vec![]),
+            named("Pair", None, vec![ResolvedTy::I64]),
+            named("Pair", None, vec![conn()]),
+            named("Missing", None, vec![]),
+            closure_over(vec![conn()]),
+            closure_over(vec![ResolvedTy::I64]),
+        ];
+        for query in queries.iter().chain(queries.iter().rev()) {
+            assert_eq!(
+                service.classify(query),
+                crate::value_class::classify_ty(query, &ClassContext::new(&declarations))
+            );
+        }
+        // A new declaration epoch must not retain a previous refusal.
+        let mut updated = declarations;
+        updated.insert(
+            crate::NominalId::for_test("Missing"),
+            DeclaredType::default(),
+        );
+        let updated = TypeFactService::new(
+            TypeFactContext::new(updated, crate::traits::TraitRegistry::new(), HashMap::new()),
+            BTreeMap::new(),
+        );
+        assert_eq!(
+            updated.classify(&named("Missing", None, vec![])),
+            Ok((ValueClass::BitCopy, CloneKind::Bits))
         );
     }
 

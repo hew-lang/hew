@@ -6,6 +6,7 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
     pub(super) fn value_emitter(&self) -> ValueEmitter<'_, 'ctx> {
         ValueEmitter {
             module: self.module,
+            target_data: self.target_data,
             ctx: self.ctx,
             llvm: self.llvm,
             builder: &self.builder,
@@ -21,6 +22,7 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
         value: FunctionValue<'ctx>,
     ) -> CodegenResult<Self> {
         let ctx = module.ctx;
+        let target_data = module.target_data;
         let builder = ctx.create_builder();
         let prologue = ctx.append_basic_block(value, "physical.prologue");
         builder.position_at_end(prologue);
@@ -61,7 +63,8 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
             } else {
                 state
             };
-            let mut frame = coro::begin(ctx, &module.llvm, &builder, value, execution)?;
+            let mut frame =
+                coro::begin(ctx, target_data, &module.llvm, &builder, value, execution)?;
             frame.completion_state = state;
             if callable.is_authored_close {
                 frame.bind_cleanup_execution(ctx, &module.llvm, &builder)?;
@@ -146,6 +149,7 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
         }
         let values = ValueEmitter {
             module: module.module,
+            target_data: module.target_data,
             ctx,
             llvm: &module.llvm,
             builder: &builder,
@@ -225,6 +229,7 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
             .llvm_ctx("branch to physical entry")?;
         Ok(Self {
             module: module.module,
+            target_data: module.target_data,
             function,
             ctx,
             llvm: &module.llvm,

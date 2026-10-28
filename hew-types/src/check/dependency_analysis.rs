@@ -21,7 +21,7 @@ const MAX_CHECKPOINTS: usize = 4;
 struct DependencyKey {
     program: Program,
     next_default_span: usize,
-    sources: Vec<(String, String, String)>,
+    sources: Vec<(String, std::sync::Arc<str>, String)>,
     registry: (Vec<PathBuf>, Option<PathBuf>),
     lint_levels: Vec<LintLevel>,
 }
@@ -79,7 +79,7 @@ impl DependencyAnalysisCache {
         &mut self,
         checker: &mut Checker,
         program: &Program,
-        mut sources: Vec<(String, String, String)>,
+        mut sources: Vec<(String, std::sync::Arc<str>, String)>,
     ) -> TypeCheckOutput {
         if dependency_program(program).is_none() {
             return checker.check_program(program);

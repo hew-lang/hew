@@ -251,6 +251,60 @@ impl Checker {
         effects
     }
 
+    pub(super) fn cleanup_type_targets(
+        &self,
+        ty: &Ty,
+        substitutions: &HashMap<ParamHead, Ty>,
+        unknown: bool,
+    ) -> Vec<CleanupTarget> {
+        cleanup_targets(
+            &CleanupValue::for_type(self.subst.resolve(ty)),
+            substitutions,
+            self,
+            unknown,
+        )
+    }
+}
+
+impl CleanupValue {
+    fn for_type(ty: Ty) -> Self {
+        Self {
+            ty,
+            absent: Vec::new(),
+            owned: None,
+            own_close: false,
+            static_callable: false,
+            candidates: super::IndirectCallCandidates::unknown(),
+        }
+    }
+}
+
+/// The effect solver borrows the checker immutably for this entire snapshot.
+/// Only exact type classification is retained; per-value release state is walked
+/// for each query.
+pub(super) struct CleanupSession<'a> {
+    checker: &'a Checker,
+    facts: crate::TypeFactService,
+}
+
+impl std::ops::Deref for CleanupSession<'_> {
+    type Target = Checker;
+    fn deref(&self) -> &Self::Target {
+        self.checker
+    }
+}
+
+impl<'a> CleanupSession<'a> {
+    pub(super) fn new(checker: &'a Checker) -> Self {
+        Self {
+            checker,
+            facts: crate::TypeFactService::new(
+                checker.type_fact_context(),
+                std::collections::BTreeMap::new(),
+            ),
+        }
+    }
+
     pub(super) fn cleanup_effect_targets(
         &self,
         effect: &CleanupEffect,
@@ -379,9 +433,36 @@ impl CleanupModel for Checker {
     }
 }
 
-impl CleanupModel for super::TypeCheckOutput {
+impl CleanupModel for CleanupSession<'_> {
     fn trivial(&self, ty: &Ty) -> bool {
-        cleanup_is_trivial(ty, self.type_fact_context.declarations())
+        cleanup_class_is_trivial(ty, |ty| self.facts.classify(ty))
+    }
+    fn resource(&self, ty: &Ty) -> bool {
+        self.checker.resource(ty)
+    }
+    fn close(&self, ty: &Ty) -> Option<(crate::DefId, Vec<Ty>)> {
+        self.checker.close(ty)
+    }
+    fn definition(&self, id: crate::NominalId) -> Option<&super::TypeDef> {
+        self.checker.definition(id)
+    }
+}
+
+struct OutputCleanup<'a> {
+    output: &'a super::TypeCheckOutput,
+    facts: &'a crate::TypeFactService,
+}
+
+impl std::ops::Deref for OutputCleanup<'_> {
+    type Target = super::TypeCheckOutput;
+    fn deref(&self) -> &Self::Target {
+        self.output
+    }
+}
+
+impl CleanupModel for OutputCleanup<'_> {
+    fn trivial(&self, ty: &Ty) -> bool {
+        cleanup_class_is_trivial(ty, |ty| self.facts.classify(ty))
     }
     fn resource(&self, ty: &Ty) -> bool {
         (match ty {
@@ -416,18 +497,24 @@ impl CleanupModel for super::TypeCheckOutput {
 }
 
 fn cleanup_is_trivial(ty: &Ty, declarations: &impl crate::value_class::ClassDeclarations) -> bool {
+    cleanup_class_is_trivial(ty, |ty| {
+        crate::value_class::classify_ty(ty, &crate::value_class::ClassContext::new(declarations))
+    })
+}
+
+fn cleanup_class_is_trivial(
+    ty: &Ty,
+    classify: impl FnOnce(
+        &crate::ResolvedTy,
+    ) -> Result<(crate::ValueClass, crate::CloneKind), crate::ClassError>,
+) -> bool {
     crate::ResolvedTy::from_ty(ty).ok().is_some_and(|ty| {
         matches!(
-            crate::value_class::classify_ty(
-                &ty,
-                &crate::value_class::ClassContext::new(declarations)
-            ),
+            classify(&ty),
             Ok((
-                crate::value_class::ValueClass::BitCopy
-                    | crate::value_class::ValueClass::View
-                    | crate::value_class::ValueClass::Linear,
+                crate::ValueClass::BitCopy | crate::ValueClass::View | crate::ValueClass::Linear,
                 _
-            )) | Err(crate::value_class::ClassError::RecursiveInstantiation { .. })
+            )) | Err(crate::ClassError::RecursiveInstantiation { .. })
         )
     })
 }
@@ -436,15 +523,25 @@ impl super::TypeCheckOutput {
     #[must_use]
     pub fn release_targets(
         &self,
+        facts: &crate::TypeFactService,
         effect: &CleanupEffect,
         substitutions: &HashMap<ParamHead, Ty>,
     ) -> Vec<CleanupTarget> {
-        cleanup_targets(&effect.value, substitutions, self, true)
+        cleanup_targets(
+            &effect.value,
+            substitutions,
+            &OutputCleanup {
+                output: self,
+                facts,
+            },
+            true,
+        )
     }
 
     #[must_use]
     pub fn owned_release_targets(
         &self,
+        facts: &crate::TypeFactService,
         ty: &Ty,
         substitutions: &HashMap<ParamHead, Ty>,
         candidates: &super::IndirectCallCandidates,
@@ -459,7 +556,10 @@ impl super::TypeCheckOutput {
                 candidates: candidates.clone(),
             },
             substitutions,
-            self,
+            &OutputCleanup {
+                output: self,
+                facts,
+            },
             true,
         )
     }

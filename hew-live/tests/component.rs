@@ -236,6 +236,61 @@ fn foreign_bytes() -> Vec<u8> {
 }
 
 #[tokio::test(flavor = "current_thread")]
+async fn failed_rollback_resume_closes_the_retained_instance() {
+    use hew_live::component::host::{Error, Host};
+
+    let bytes = component_bytes(
+        &std::fs::read(environment("HEW_LIVE_FOREIGN_ROLLBACK_COMPONENT")).unwrap(),
+    );
+    let ordinary = foreign_bytes();
+    for (active, refuses_resume) in [(&ordinary, false), (&bytes, true)] {
+        let services = policy_services();
+        let host = Arc::new(Host::new(services.clone()).unwrap());
+        let deployment = host
+            .activate(host.prepare(active).unwrap(), Snapshot { accepted: 0 })
+            .await
+            .unwrap();
+        assert!(deployment
+            .route(Event {
+                source: "ok".into(),
+                body: "accepted".into(),
+            })
+            .await
+            .unwrap());
+        assert!(matches!(
+            deployment
+                .replace(
+                    host.prepare(&bytes).unwrap(),
+                    1,
+                    std::time::Duration::from_secs(5)
+                )
+                .await,
+            Err(Error::Guest(_))
+        ));
+        for _ in 0..2 {
+            let result = deployment
+                .route(Event {
+                    source: "ok".into(),
+                    body: "after rollback".into(),
+                })
+                .await;
+            if refuses_resume {
+                let Err(Error::Engine(error)) = result else {
+                    panic!("expected a terminated instance: {result:?}");
+                };
+                assert!(error.to_string().contains("foreign resumption refused"));
+            } else {
+                assert!(result.unwrap());
+            }
+        }
+        assert_eq!(
+            services.delivered.lock().unwrap().len(),
+            if refuses_resume { 1 } else { 3 }
+        );
+    }
+}
+
+#[tokio::test(flavor = "current_thread")]
 #[allow(
     clippy::too_many_lines,
     reason = "one admission lifecycle proves retention through caller loss and actual Store disposal"

@@ -144,6 +144,7 @@ pub(super) fn reply_symbol(actor: ActorId, message: u32) -> String {
 
 fn actor_value_release<'ctx>(
     ctx: &'ctx Context,
+    target_data: &TargetData,
     llvm: &Module<'ctx>,
     module: &PhysicalModule,
     ty: &ResolvedTy,
@@ -160,9 +161,11 @@ fn actor_value_release<'ctx>(
             let layout = module.target.layout(ty).ok_or_else(|| {
                 CodegenError::FailClosed("actor value release lacks layout".into())
             })?;
-            Ok(release::callback(ctx, llvm, module, layout, action)?
-                .as_global_value()
-                .as_pointer_value())
+            Ok(
+                release::callback(ctx, target_data, llvm, module, layout, action)?
+                    .as_global_value()
+                    .as_pointer_value(),
+            )
         }
         _ => Ok(pointer.const_null()),
     }
@@ -220,6 +223,7 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
             .llvm_ctx("initialize reply cleanup status")?;
         let values = ValueEmitter {
             module: self.module,
+            target_data: self.target_data,
             ctx: self.ctx,
             llvm: &self.llvm,
             builder,
@@ -365,6 +369,7 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
         let ptr = self.ctx.ptr_type(AddressSpace::default());
         let values = ValueEmitter {
             module: self.module,
+            target_data: self.target_data,
             ctx: self.ctx,
             llvm: &self.llvm,
             builder,
@@ -558,14 +563,13 @@ pub(super) fn initialize_message_occupancy<'ctx>(
 }
 
 pub(super) fn allocate<'ctx>(
-    module: &PhysicalModule,
     ctx: &'ctx Context,
+    target_data: &TargetData,
     llvm: &Module<'ctx>,
     builder: &Builder<'ctx>,
     size: u64,
 ) -> CodegenResult<PointerValue<'ctx>> {
-    let target = TargetData::create(&module.target.data_layout);
-    let size_ty = ctx.ptr_sized_int_type(&target, None);
+    let size_ty = ctx.ptr_sized_int_type(target_data, None);
     let allocate = get_or_declare_external(
         llvm,
         "hew_actor_payload_alloc",
@@ -812,6 +816,7 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
     fn emit_actor_stop_release(&self, actor: &SemActor) -> CodegenResult<()> {
         release::custom(
             self.ctx,
+            self.target_data,
             &self.llvm,
             self.module,
             &symbol(actor.id, "stop_release"),
@@ -941,6 +946,7 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
                     .llvm_ctx("load initialized actor state field")?;
                 ValueEmitter {
                     module: self.module,
+                    target_data: self.target_data,
                     ctx: self.ctx,
                     llvm: &self.llvm,
                     builder: &builder,
@@ -966,9 +972,9 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
         // The descriptor describes source payload fields. Initialization bytes
         // remain runtime wrapper storage; these existing callbacks consume only
         // present fields and are also used by terminal actor cleanup.
-        let target = TargetData::create(&self.module.target.data_layout);
-        let size_ty = self.ctx.ptr_sized_int_type(&target, None);
-        let descriptor_ty = value_descriptor_type(self.ctx, &target);
+        let target = self.target_data;
+        let size_ty = self.ctx.ptr_sized_int_type(target, None);
+        let descriptor_ty = value_descriptor_type(self.ctx, target);
         let descriptor =
             self.llvm
                 .add_global(descriptor_ty, None, &symbol(actor.id, "state_layout"));
@@ -1004,6 +1010,7 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
         if let Some(action) = recipe.clone {
             let values = ValueEmitter {
                 module: self.module,
+                target_data: self.target_data,
                 ctx: self.ctx,
                 llvm: &self.llvm,
                 builder: &builder,
@@ -1017,8 +1024,8 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
             )?;
             let copied = values.clone_loaded_value(loaded, layout, action)?;
             let allocation = allocate(
-                self.module,
                 self.ctx,
+                self.target_data,
                 &self.llvm,
                 &builder,
                 state_allocation_size(layout, self.module.actor_state_flag_count(actor))?,
@@ -1057,6 +1064,7 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
         let state_repr = llvm_type(self.ctx, &layout.repr)?.into_struct_type();
         release::custom(
             self.ctx,
+            self.target_data,
             &self.llvm,
             self.module,
             &symbol(actor.id, "state_release"),
@@ -1118,6 +1126,7 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
         }) {
             release::custom(
                 self.ctx,
+                self.target_data,
                 &self.llvm,
                 self.module,
                 &message_release_symbol(actor.id, handler.message_id),
@@ -1224,6 +1233,7 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
                         .llvm_ctx("load queued field")?;
                     ValueEmitter {
                         module: self.module,
+                        target_data: self.target_data,
                         ctx: self.ctx,
                         llvm: &self.llvm,
                         builder: &builder,
@@ -1241,9 +1251,9 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
         builder
             .build_return(None)
             .llvm_ctx("return from queued message drop")?;
-        let target = TargetData::create(&self.module.target.data_layout);
-        let size = self.ctx.ptr_sized_int_type(&target, None);
-        let descriptor_ty = value_descriptor_type(self.ctx, &target);
+        let target = self.target_data;
+        let size = self.ctx.ptr_sized_int_type(target, None);
+        let descriptor_ty = value_descriptor_type(self.ctx, target);
         let descriptor = self.llvm.add_global(
             descriptor_ty,
             None,
@@ -1403,8 +1413,8 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
 
     fn emit_actor_dispatch(&self, actor: &SemActor) -> CodegenResult<()> {
         let ptr = self.ctx.ptr_type(AddressSpace::default());
-        let target = TargetData::create(&self.module.target.data_layout);
-        let size_ty = self.ctx.ptr_sized_int_type(&target, None);
+        let target = self.target_data;
+        let size_ty = self.ctx.ptr_sized_int_type(target, None);
         let dispatch = self.llvm.add_function(
             &symbol(actor.id, "dispatch"),
             ptr.fn_type(
@@ -1559,7 +1569,14 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
         )?;
         let child =
             call_value(&builder, new_state, &[], "handler.invocation")?.into_pointer_value();
-        let frame = coro::begin(self.ctx, &self.llvm, &builder, ramp, child)?;
+        let frame = coro::begin(
+            self.ctx,
+            self.target_data,
+            &self.llvm,
+            &builder,
+            ramp,
+            child,
+        )?;
         let fault = builder
             .build_alloca(ptr, "handler.fault")
             .llvm_ctx("allocate persistent handler fault")?;
@@ -1588,6 +1605,7 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
                 ParamCarrier::Indirect => slot.into(),
                 ParamCarrier::Direct => ValueEmitter {
                     module: self.module,
+                    target_data: self.target_data,
                     ctx: self.ctx,
                     llvm: &self.llvm,
                     builder: &builder,
@@ -1927,8 +1945,8 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
                 let result = result.ok_or_else(|| {
                     CodegenError::FailClosed("`self` requires its actor handle result".into())
                 })?;
-                let target = TargetData::create(&self.module.target.data_layout);
-                let size_ty = self.ctx.ptr_sized_int_type(&target, None);
+                let target = self.target_data;
+                let size_ty = self.ctx.ptr_sized_int_type(target, None);
                 let token = get_or_declare_external(
                     self.llvm,
                     "hew_actor_self_token",
@@ -2207,8 +2225,8 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
         let allocation_size =
             state_allocation_size(layout, self.module.actor_state_flag_count(actor))?;
         let state = allocate(
-            self.module,
             self.ctx,
+            self.target_data,
             self.llvm,
             &self.builder,
             allocation_size,
@@ -2261,8 +2279,8 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             }
         }
         let ptr = self.ctx.ptr_type(AddressSpace::default());
-        let target = TargetData::create(&self.module.target.data_layout);
-        let size_ty = self.ctx.ptr_sized_int_type(&target, None);
+        let target = self.target_data;
+        let size_ty = self.ctx.ptr_sized_int_type(target, None);
         let periodic_ty = periodic_handler_type(self.ctx);
         let periodic: Vec<_> = actor
             .handlers
@@ -2684,8 +2702,8 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             .find(|handler| handler.message_id == message)
             .ok_or_else(|| CodegenError::FailClosed("stream start lacks its producer".into()))?;
         let wrapper_ty = message_type(self.module, self.ctx, handler)?;
-        let target_data = TargetData::create(&self.module.target.data_layout);
-        let size_ty = self.ctx.ptr_sized_int_type(&target_data, None);
+        let target_data = self.target_data;
+        let size_ty = self.ctx.ptr_sized_int_type(target_data, None);
         let size = target_data.get_abi_size(&wrapper_ty);
         let ptr = self.ctx.ptr_type(AddressSpace::default());
         let allocate = get_or_declare_external(
@@ -2828,8 +2846,8 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
                 CodegenError::FailClosed("timer lost its exact handler protocol".into())
             })?;
         let wrapper_ty = message_type(self.module, self.ctx, handler)?;
-        let target_data = TargetData::create(&self.module.target.data_layout);
-        let size_ty = self.ctx.ptr_sized_int_type(&target_data, None);
+        let target_data = self.target_data;
+        let size_ty = self.ctx.ptr_sized_int_type(target_data, None);
         let size = target_data.get_abi_size(&wrapper_ty);
         let ptr = self.ctx.ptr_type(AddressSpace::default());
         let allocate = get_or_declare_external(
@@ -3004,8 +3022,8 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             .llvm_ctx("read message payload")?
             .into_struct_value();
         let wrapper_ty = message_type(self.module, self.ctx, handler)?;
-        let target_data = TargetData::create(&self.module.target.data_layout);
-        let size_ty = self.ctx.ptr_sized_int_type(&target_data, None);
+        let target_data = self.target_data;
+        let size_ty = self.ctx.ptr_sized_int_type(target_data, None);
         let size = target_data.get_abi_size(&wrapper_ty);
         let ptr = self.ctx.ptr_type(AddressSpace::default());
         let submitted = self.ctx.append_basic_block(self.value, "submission.result");

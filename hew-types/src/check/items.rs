@@ -136,6 +136,7 @@ impl Checker {
                         &self.class_declarations(),
                         id,
                     )
+                    .map(std::borrow::Cow::into_owned)
                 })
                 .map(|declared| declared.marker);
             if !matches!(

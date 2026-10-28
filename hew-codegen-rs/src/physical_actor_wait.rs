@@ -233,8 +233,8 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             CodegenError::FailClosed("actor wait edge requires an invocation".into())
         })?;
         let ptr = self.ctx.ptr_type(AddressSpace::default());
-        let target_data = TargetData::create(&self.module.target.data_layout);
-        let size_ty = self.ctx.ptr_sized_int_type(&target_data, None);
+        let target_data = self.target_data;
+        let size_ty = self.ctx.ptr_sized_int_type(target_data, None);
         let new = get_or_declare_external(
             self.llvm,
             "hew_actor_wait_edge_new",
@@ -507,8 +507,8 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             CodegenError::FailClosed("submission requires a resumable invocation".into())
         })?;
         let ptr = self.ctx.ptr_type(AddressSpace::default());
-        let target = TargetData::create(&self.module.target.data_layout);
-        let word = self.ctx.ptr_sized_int_type(&target, None);
+        let target = self.target_data;
+        let word = self.ctx.ptr_sized_int_type(target, None);
         let wake = get_or_declare_external(
             self.llvm,
             "hew_coro_state_waker",
@@ -786,8 +786,8 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             CodegenError::FailClosed("waiting submission needs a resumable invocation".into())
         })?;
         let ptr = self.ctx.ptr_type(AddressSpace::default());
-        let target = TargetData::create(&self.module.target.data_layout);
-        let size_ty = self.ctx.ptr_sized_int_type(&target, None);
+        let target = self.target_data;
+        let size_ty = self.ctx.ptr_sized_int_type(target, None);
         let wake = get_or_declare_external(
             self.llvm,
             "hew_coro_state_waker",

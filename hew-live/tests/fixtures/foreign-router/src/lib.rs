@@ -26,6 +26,9 @@ impl Drop for Admission {
 
 impl Guest for Foreign {
     fn initialize(state: Snapshot) -> Result<(), String> {
+        if cfg!(feature = "rollback-refusal") && state.accepted != 0 {
+            return Err("foreign candidate refused".into());
+        }
         if DRAINING.load(Ordering::Relaxed) || INITIALIZED.swap(true, Ordering::Relaxed) {
             return Err("router is already initialized".into());
         }
@@ -69,6 +72,9 @@ impl Guest for Foreign {
     }
 
     fn resume() -> Result<(), String> {
+        if cfg!(feature = "rollback-refusal") {
+            return Err("foreign resumption refused".into());
+        }
         if !INITIALIZED.load(Ordering::Relaxed) || !DRAINING.swap(false, Ordering::Relaxed) {
             return Err("router has no suspended instance to resume".into());
         }

@@ -698,7 +698,12 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
         frame.bind_operation(
             self.ctx,
             &self.builder,
-            managed::operation_layout(self.ctx, self.llvm, "hew_managed_visit_stream_operation")?,
+            managed::operation_layout(
+                self.ctx,
+                self.target_data,
+                self.llvm,
+                "hew_managed_visit_stream_operation",
+            )?,
             request,
         )?;
         let poll = self.ctx.append_basic_block(self.value, "stream.next.poll");
@@ -958,7 +963,12 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
         frame.bind_operation(
             self.ctx,
             &self.builder,
-            managed::operation_layout(self.ctx, self.llvm, "hew_managed_visit_stream_operation")?,
+            managed::operation_layout(
+                self.ctx,
+                self.target_data,
+                self.llvm,
+                "hew_managed_visit_stream_operation",
+            )?,
             request,
         )?;
         self.clear_owned(*value)?;

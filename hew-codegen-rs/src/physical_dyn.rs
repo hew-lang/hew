@@ -90,7 +90,16 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
         let fault = function.get_nth_param(3).unwrap().into_pointer_value();
         let state = function.get_nth_param(4).unwrap().into_pointer_value();
         let frame = is_resumable
-            .then(|| coro::begin(self.ctx, &self.llvm, &builder, function, state))
+            .then(|| {
+                coro::begin(
+                    self.ctx,
+                    self.target_data,
+                    &self.llvm,
+                    &builder,
+                    function,
+                    state,
+                )
+            })
             .transpose()?;
         let object = builder
             .build_load(
@@ -191,6 +200,7 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
         if matches!(receiver, ArgumentTransfer::Move(_)) {
             let values = ValueEmitter {
                 module: self.module,
+                target_data: self.target_data,
                 ctx: self.ctx,
                 llvm: &self.llvm,
                 builder: &builder,
@@ -242,8 +252,8 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
     }
 
     fn emit_vtable(&self, table: &PhysicalVtable) -> CodegenResult<()> {
-        let target = TargetData::create(&self.module.target.data_layout);
-        let word = self.ctx.ptr_sized_int_type(&target, None);
+        let target = self.target_data;
+        let word = self.ctx.ptr_sized_int_type(target, None);
         let drop = self.emit_vtable_drop(table)?;
         let descriptor_name = format!("__hew_vtable_{}_layout", table.id.0);
         self.emit_value_descriptor(&descriptor_name, &table.concrete)?;
@@ -334,6 +344,7 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
         let frame = if callee.is_resumable {
             Some(coro::begin(
                 self.ctx,
+                self.target_data,
                 &self.llvm,
                 &builder,
                 function,
@@ -514,8 +525,8 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             .ok_or_else(|| {
                 CodegenError::FailClosed("erasure names no realized dispatch table".into())
             })?;
-        let target = TargetData::create(&self.module.target.data_layout);
-        let word = self.ctx.ptr_sized_int_type(&target, None);
+        let target = self.target_data;
+        let word = self.ctx.ptr_sized_int_type(target, None);
         let alloc = get_or_declare_external(
             self.llvm,
             hew_types::RuntimeCallFamily::DynBoxAlloc.c_symbol(),
@@ -552,8 +563,8 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             .ok_or_else(|| CodegenError::FailClosed("dispatch table was never emitted".into()))?
             .as_pointer_value();
         let pointer = self.ctx.ptr_type(AddressSpace::default());
-        let target = TargetData::create(&self.module.target.data_layout);
-        let word = self.ctx.ptr_sized_int_type(&target, None);
+        let target = self.target_data;
+        let word = self.ctx.ptr_sized_int_type(target, None);
         let prefix = self.ctx.struct_type(
             &[pointer.into(), word.into(), word.into(), pointer.into()],
             false,
@@ -567,7 +578,13 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             .build_load(pointer, layout_slot, "dyn.layout")
             .llvm_ctx("load concrete descriptor")?
             .into_pointer_value();
-        super::callable::acquire_value_code(self.ctx, self.llvm, &self.builder, layout)?;
+        super::callable::acquire_value_code(
+            self.ctx,
+            self.target_data,
+            self.llvm,
+            &self.builder,
+            layout,
+        )?;
         let fat = self
             .ctx
             .struct_type(&[pointer.into(), pointer.into()], false);

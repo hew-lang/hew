@@ -26,8 +26,8 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
         vector: PointerValue<'ctx>,
         failure: &PhysicalEdge,
     ) -> CodegenResult<()> {
-        let target = TargetData::create(&self.module.target.data_layout);
-        let word = self.ctx.ptr_sized_int_type(&target, None);
+        let target = self.target_data;
+        let word = self.ctx.ptr_sized_int_type(target, None);
         let data = self
             .builder
             .build_load(
@@ -37,7 +37,7 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
             )
             .llvm_ctx("load vector buffer before mutation")?
             .into_pointer_value();
-        let header = vector_header_type(self.ctx, &target);
+        let header = vector_header_type(self.ctx, target);
         let front_slot = self
             .builder
             .build_struct_gep(header, vector, 2, "vector.front.slot")
@@ -138,12 +138,12 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
     }
 
     fn vector_length(&self, vector: PointerValue<'ctx>) -> CodegenResult<IntValue<'ctx>> {
-        let target = TargetData::create(&self.module.target.data_layout);
-        let word = self.ctx.ptr_sized_int_type(&target, None);
+        let target = self.target_data;
+        let word = self.ctx.ptr_sized_int_type(target, None);
         let slot = self
             .builder
             .build_struct_gep(
-                vector_header_type(self.ctx, &target),
+                vector_header_type(self.ctx, target),
                 vector,
                 1,
                 "vector.len.slot",
@@ -1158,7 +1158,7 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                     CodegenError::FailClosed("map entry has no target layout".into())
                 })?;
                 let pair_ty = llvm_type(self.ctx, &layout.repr)?.into_struct_type();
-                let target = TargetData::create(&self.module.target.data_layout);
+                let target = self.target_data;
                 let offset = target.offset_of_element(&pair_ty, 1).ok_or_else(|| {
                     CodegenError::FailClosed("map entry has no value offset".into())
                 })?;

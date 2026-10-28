@@ -94,13 +94,12 @@ pub(super) fn emit(
             emit_llvm,
             address_sanitizer: crate::link::address_sanitizer_requested(),
             debug_source: None,
-            debug_display_source: None,
             link_freestanding_wasm: false,
             build_info: None,
         },
     )
     .map_err(|error| {
-        diagnostic::render_codegen_emit_error(&error, None);
+        diagnostic::render_codegen_emit_error(&error, Some(state.typecheck_result.sources.root()));
         diagnostic::codegen_channel(&error)
     })?;
     let produced = artefacts

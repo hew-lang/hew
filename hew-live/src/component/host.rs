@@ -388,8 +388,9 @@ impl Deployment {
 
     /// Replace the expected activation within one fenced interval. Candidate
     /// instantiation happens first without grants. The deadline covers admission
-    /// drain, snapshot and candidate initialization; expiry leaves the old Store
-    /// running and queues resume before reopening host admission.
+    /// drain, snapshot and candidate initialization; expiry queues resume of
+    /// the old Store before reopening host admission. Failed resume terminates
+    /// that instance and reports its failure to subsequent callers.
     ///
     /// # Errors
     /// Returns expiry, a changed predecessor, or guest/engine failures.
@@ -853,7 +854,8 @@ async fn serve(
             }
             Command::Resume => {
                 // Complete this control call before dispatching later routes.
-                let _ = router.hew_live_router_handler().call_resume(accessor).await;
+                let result = router.hew_live_router_handler().call_resume(accessor).await;
+                guest_result(accessor, result).map_err(wasmtime::Error::new)?;
             }
             Command::Dispose { reply } => {
                 let result = router

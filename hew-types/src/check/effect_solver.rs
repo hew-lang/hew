@@ -6,7 +6,7 @@ use super::{
     CallTarget, Checker, EffectBody, EffectCallSite, EffectGraph, Invocation, MethodCallRewrite,
     SpanKey,
 };
-use crate::check::cleanup_effects::CleanupTarget;
+use crate::check::cleanup_effects::{CleanupSession, CleanupTarget};
 use crate::{ParamHead, Ty};
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet, VecDeque};
@@ -82,7 +82,7 @@ struct ParameterTransfer {
 /// Demand flows backwards through checked substitutions. Cleanup-only
 /// parameters need their release effects; executable dispatch retains types.
 fn effect_parameters(
-    checker: &Checker,
+    checker: &CleanupSession<'_>,
     graph: &EffectGraph,
 ) -> (HashMap<EffectBody, Parameters>, HashSet<EffectBody>) {
     let mut parameters: HashMap<EffectBody, Parameters> = HashMap::new();
@@ -173,7 +173,7 @@ fn effect_parameters(
 }
 
 fn call_parameter_transfer(
-    checker: &Checker,
+    checker: &CleanupSession<'_>,
     site: &EffectCallSite,
     call: &Invocation,
     parameters: &mut Parameters,
@@ -228,7 +228,7 @@ fn call_parameter_transfer(
 }
 
 fn propagate_parameter_demands(
-    checker: &Checker,
+    checker: &CleanupSession<'_>,
     parameters: &mut HashMap<EffectBody, Parameters>,
     users: &HashMap<EffectBody, Vec<ParameterTransfer>>,
 ) {
@@ -270,7 +270,7 @@ fn propagate_parameter_demands(
     }
 }
 
-fn cleanup_argument(checker: &Checker, ty: &Ty) -> Ty {
+fn cleanup_argument(checker: &CleanupSession<'_>, ty: &Ty) -> Ty {
     let mut pending = vec![ty];
     let mut parts = Vec::new();
     let mut seen = HashSet::new();
@@ -363,7 +363,7 @@ impl Dependencies {
 /// All inputs are frozen after body checking. Node identities include the
 /// substitution and unknown-cleanup policy; answers never leak between them.
 pub(super) struct EffectSolver<'a> {
-    checker: &'a Checker,
+    checker: CleanupSession<'a>,
     graph: &'a EffectGraph,
     calls: HashMap<EffectBody, Vec<(&'a EffectCallSite, &'a Invocation)>>,
     releases: HashMap<EffectBody, Vec<&'a super::super::cleanup_effects::CleanupEffect>>,
@@ -384,6 +384,7 @@ impl<'a> EffectSolver<'a> {
         graph: &'a EffectGraph,
         flows: &HashMap<SpanKey, Vec<super::super::CallableArgumentFlow>>,
     ) -> Self {
+        let checker = CleanupSession::new(checker);
         let mut calls: HashMap<_, Vec<_>> = HashMap::new();
         for (site, invocation) in &graph.calls {
             if let Some(owner) = &invocation.owner {
@@ -410,7 +411,7 @@ impl<'a> EffectSolver<'a> {
         for releases in releases.values_mut() {
             releases.sort_by(|left, right| left.witness.cmp(&right.witness));
         }
-        let (parameters, value_parameters) = effect_parameters(checker, graph);
+        let (parameters, value_parameters) = effect_parameters(&checker, graph);
         let mut solver = Self {
             checker,
             graph,
@@ -462,7 +463,7 @@ impl<'a> EffectSolver<'a> {
                 .and_then(|parameters| parameters.get(parameter))
             {
                 Some(Demand::Cleanup) => {
-                    *ty = cleanup_argument(self.checker, ty);
+                    *ty = cleanup_argument(&self.checker, ty);
                     true
                 }
                 Some(Demand::Exact) => true,

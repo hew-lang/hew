@@ -79,7 +79,7 @@ fn encoding_values_require_shipped_source_and_have_semantic_copy_facts() {
             EqEligibility::Eligible
         );
         let resolved = ResolvedTy::from_ty(ty).unwrap();
-        let facts = output.type_facts[&resolved.clone().into()];
+        let facts = output.type_facts[&resolved];
         assert_eq!(
             (facts.class, facts.clone),
             (ValueClass::CowValue, CloneKind::DeepCopy)
@@ -293,7 +293,7 @@ fn encoding_value_names_do_not_grant_catalogue_authority() {
             ..
         }
     ));
-    let facts = output.type_facts[&ResolvedTy::from_ty(ty).unwrap().into()];
+    let facts = output.type_facts[&ResolvedTy::from_ty(ty).unwrap()];
     assert_eq!(
         (facts.class, facts.clone),
         (ValueClass::AffineResource, CloneKind::None)
@@ -345,7 +345,7 @@ fn encoding_value_import_aliases_preserve_identity_inside_generics() {
             );
             assert_eq!(output.sigs()["identity"].return_type, expected);
             let resolved = ResolvedTy::from_ty(&expected).unwrap();
-            let facts = output.type_facts[&resolved.into()];
+            let facts = output.type_facts[&resolved];
             assert_eq!(
                 (facts.class, facts.clone),
                 (ValueClass::CowValue, CloneKind::FieldWise)
@@ -442,7 +442,7 @@ fn encoding_value_import_alias_cannot_promote_a_same_named_user_resource() {
     assert!(output.errors.is_empty(), "{:?}", output.errors);
     let ty = &output.sigs()["identity"].return_type;
     assert_eq!(ty, &Ty::named_in(&output.defs, "user.format.Value", vec![]));
-    let facts = output.type_facts[&ResolvedTy::from_ty(ty).unwrap().into()];
+    let facts = output.type_facts[&ResolvedTy::from_ty(ty).unwrap()];
     assert_eq!(
         (facts.class, facts.clone),
         (ValueClass::AffineResource, CloneKind::None)

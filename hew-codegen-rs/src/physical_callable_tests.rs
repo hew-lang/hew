@@ -276,6 +276,7 @@ fn environment_llvm<'ctx>(ctx: &'ctx Context, physical: &PhysicalModule) -> Modu
     let emitter = ModuleEmitter {
         ctx,
         module: physical,
+        target_data: &TargetData::create(&physical.target.data_layout),
         llvm,
         functions: BTreeMap::new(),
         ramps: BTreeMap::new(),

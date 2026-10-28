@@ -141,7 +141,7 @@ impl HewLanguageServer {
         }
         let mut batch = hew_compile::SourceAnalysisBatch::new(hew_compile::FrontendOptions {
             pkg_path: self.extra_pkg_paths.first().cloned(),
-            documents: sources.clone(),
+            documents: sources,
             ..hew_compile::FrontendOptions::default()
         });
         for (uri, document) in &open {
@@ -155,7 +155,7 @@ impl HewLanguageServer {
                 &document.source,
                 &self.documents,
                 &self.extra_pkg_paths,
-                Some((&mut batch, &sources)),
+                Some(&mut batch),
             );
             publish.extend(state.diagnostics_by_uri.keys().cloned());
             publish.insert(uri.clone());

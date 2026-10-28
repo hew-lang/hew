@@ -147,11 +147,9 @@ pub struct PhysicalEmitOptions<'a> {
     pub opt_level: OptLevel,
     pub emit_llvm: bool,
     pub address_sanitizer: bool,
-    /// Source file whose text attributes native debug metadata; `None` emits
-    /// no debug info at all.
-    pub debug_source: Option<&'a Path>,
-    /// Display spelling for debug metadata; reading still uses `debug_source`.
-    pub debug_display_source: Option<&'a Path>,
+    /// Admitted source text and its display path for native debug metadata.
+    /// `None` emits no debug info.
+    pub debug_source: Option<DebugSource<'a>>,
     /// Link the freestanding `wasm32-unknown-unknown` object into a `.wasm`
     /// module with `wasm-ld --no-entry`. Ignored on every other triple: a WASI
     /// module is linked against the runtime archives by `hew-cli`'s linker.
@@ -589,7 +587,6 @@ fn emit_physical_object_with_host(
         Some(&object_path),
         host,
         options.debug_source,
-        options.debug_display_source,
         options.build_info,
     )?;
     if !wasm {
@@ -640,7 +637,6 @@ pub fn validate_physical_codegen(
         None,
         None,
         None,
-        None,
     )
 }
 
@@ -657,24 +653,19 @@ fn emit_physical_to_paths(
     ll_path: Option<&Path>,
     object_path: Option<&Path>,
     host: Option<&HostExport<'_>>,
-    debug_source: Option<&Path>,
-    debug_display_source: Option<&Path>,
+    debug_source: Option<DebugSource<'_>>,
     build_info: Option<&str>,
 ) -> CodegenResult<()> {
     let machine = crate::llvm::target_machine_for_triple_with_opt_level(triple, opt_level)?;
     let ctx = Context::create();
-    // Fail closed: `-g` against an unreadable source emits a location-free
-    // object rather than a fabricated line table.
-    let debug_text = debug_source.and_then(|path| std::fs::read_to_string(path).ok());
-    let debug = match (debug_source, &debug_text) {
-        (Some(path), Some(text)) => Some(DebugSource {
-            path: debug_display_source.unwrap_or(path),
-            text,
-        }),
-        _ => None,
-    };
-    let llvm_module =
-        build_module_with_host(&ctx, verified.module(), module_name, &machine, host, debug)?;
+    let llvm_module = build_module_with_host(
+        &ctx,
+        verified.module(),
+        module_name,
+        &machine,
+        host,
+        debug_source,
+    )?;
     if let Some(version) = build_info.filter(|_| !triple.starts_with("wasm32")) {
         build_info::emit_build_info(&llvm_module, version, triple);
     }
@@ -900,6 +891,7 @@ fn llvm_type<'ctx>(ctx: &'ctx Context, repr: &PhysicalRepr) -> CodegenResult<Bas
 struct ModuleEmitter<'ctx, 'm> {
     ctx: &'ctx Context,
     module: &'m PhysicalModule,
+    target_data: &'m TargetData,
     llvm: Module<'ctx>,
     functions: BTreeMap<CallableId, FunctionValue<'ctx>>,
     ramps: BTreeMap<CallableId, FunctionValue<'ctx>>,
@@ -909,6 +901,7 @@ struct ModuleEmitter<'ctx, 'm> {
 
 struct FunctionEmitter<'a, 'ctx> {
     module: &'a PhysicalModule,
+    target_data: &'a TargetData,
     function: &'a PhysicalFunction,
     ctx: &'ctx Context,
     llvm: &'a Module<'ctx>,
@@ -939,6 +932,7 @@ struct FunctionEmitter<'a, 'ctx> {
 /// element callback. Storage ownership and ABI transfers remain physical MIR facts.
 struct ValueEmitter<'a, 'ctx> {
     module: &'a PhysicalModule,
+    target_data: &'a TargetData,
     ctx: &'ctx Context,
     llvm: &'a Module<'ctx>,
     builder: &'a Builder<'ctx>,

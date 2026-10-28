@@ -1234,7 +1234,6 @@ fn physical_emit_option_instruments_generated_code_with_asan() {
             emit_llvm: true,
             address_sanitizer: true,
             debug_source: None,
-            debug_display_source: None,
             link_freestanding_wasm: false,
             build_info: None,
         },
@@ -1361,7 +1360,6 @@ fn build_info_record_survives_optimization_only_when_requested() {
                     emit_llvm: false,
                     address_sanitizer: false,
                     debug_source: None,
-                    debug_display_source: None,
                     link_freestanding_wasm: false,
                     build_info,
                 },
@@ -1631,7 +1629,15 @@ fn active_operation_root_uses_the_split_coroutine_owner_slot() {
         builder.position_at_end(ctx.append_basic_block(function, "entry"));
         let state = function.get_nth_param(0).unwrap().into_pointer_value();
         let owner = function.get_nth_param(1).unwrap().into_pointer_value();
-        let frame = coro::begin(&ctx, &llvm, &builder, function, state).unwrap();
+        let frame = coro::begin(
+            &ctx,
+            &machine.get_target_data(),
+            &llvm,
+            &builder,
+            function,
+            state,
+        )
+        .unwrap();
         let descriptor = llvm.add_global(ctx.i8_type(), None, "descriptor");
         descriptor.set_initializer(&ctx.i8_type().const_zero());
         frame

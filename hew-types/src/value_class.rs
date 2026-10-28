@@ -9,6 +9,7 @@
 //! class and no "assume `BitCopy`". A type this module cannot class is an
 //! [`Err`] the caller fails closed on.
 
+use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 
 use crate::builtin_type::BuiltinType;
@@ -113,7 +114,7 @@ pub trait ClassDeclarations {
     /// [`ClassError::UnknownDeclaration`] and the caller fails closed. A
     /// lookup that cannot render one of a declaration's member types must
     /// answer `None` rather than an aggregate over the members it managed.
-    fn declared_type(&self, id: crate::NominalId) -> Option<DeclaredType>;
+    fn declared_type(&self, id: crate::NominalId) -> Option<Cow<'_, DeclaredType>>;
 
     /// The exact source declaration implementing a compiler-owned aggregate.
     fn builtin_declaration(&self, builtin: BuiltinType) -> Option<crate::NominalId>;
@@ -136,8 +137,8 @@ pub trait ClassDeclarations {
 }
 
 impl ClassDeclarations for BTreeMap<crate::NominalId, DeclaredType> {
-    fn declared_type(&self, id: crate::NominalId) -> Option<DeclaredType> {
-        self.get(&id).cloned()
+    fn declared_type(&self, id: crate::NominalId) -> Option<Cow<'_, DeclaredType>> {
+        self.get(&id).map(Cow::Borrowed)
     }
 
     fn builtin_declaration(&self, builtin: BuiltinType) -> Option<crate::NominalId> {
@@ -151,7 +152,7 @@ impl ClassDeclarations for BTreeMap<crate::NominalId, DeclaredType> {
 pub struct NoDeclarations;
 
 impl ClassDeclarations for NoDeclarations {
-    fn declared_type(&self, _id: crate::NominalId) -> Option<DeclaredType> {
+    fn declared_type(&self, _id: crate::NominalId) -> Option<Cow<'_, DeclaredType>> {
         None
     }
 
@@ -206,7 +207,7 @@ impl<'a> ClassContext<'a> {
     }
 
     #[must_use]
-    pub fn declaration(&self, id: crate::NominalId) -> Option<DeclaredType> {
+    pub fn declaration(&self, id: crate::NominalId) -> Option<Cow<'_, DeclaredType>> {
         self.declarations.declared_type(id)
     }
 }
@@ -293,13 +294,7 @@ pub fn classify_ty(
     ty: &ResolvedTy,
     decls: &ClassContext<'_>,
 ) -> Result<(ValueClass, CloneKind), ClassError> {
-    let mut walk = Walk::default();
-    classify(ty, decls, &mut walk)?;
-    walk.settle(decls);
-    walk.nodes[walk.identities[ty]]
-        .facts
-        .clone()
-        .expect("classified root")
+    Walk::default().query(ty, decls)
 }
 
 type ClassFacts = Result<(ValueClass, CloneKind), ClassError>;
@@ -307,8 +302,8 @@ type ClassFacts = Result<(ValueClass, CloneKind), ClassError>;
 /// One exact instantiated graph owns both class and clone facts. Recursive
 /// owning edges start at their heap floor; dependent facts settle before any
 /// query result is published.
-#[derive(Default)]
-struct Walk {
+#[derive(Debug, Clone, Default)]
+pub(crate) struct Walk {
     identities: HashMap<ResolvedTy, usize>,
     nodes: Vec<ClassNode>,
     current: Option<usize>,
@@ -316,6 +311,7 @@ struct Walk {
     polymorphic: BTreeMap<crate::NominalId, bool>,
 }
 
+#[derive(Debug, Clone)]
 struct ClassNode {
     ty: ResolvedTy,
     facts: Option<ClassFacts>,
@@ -325,6 +321,18 @@ struct ClassNode {
 }
 
 impl Walk {
+    pub(crate) fn query(&mut self, ty: &ResolvedTy, decls: &ClassContext<'_>) -> ClassFacts {
+        let first_new = self.nodes.len();
+        // Errors also leave graph nodes behind. Settle their dependencies before
+        // publishing any result from this immutable declaration epoch.
+        let _ = classify(ty, decls, self);
+        self.settle(decls, first_new);
+        self.nodes[self.identities[ty]]
+            .facts
+            .clone()
+            .expect("classified root")
+    }
+
     fn is_polymorphic(&mut self, id: crate::NominalId, decls: &ClassContext<'_>) -> bool {
         if let Some(answer) = self.polymorphic.get(&id) {
             return *answer;
@@ -355,12 +363,13 @@ impl Walk {
         id
     }
 
-    fn settle(&mut self, decls: &ClassContext<'_>) {
+    fn settle(&mut self, decls: &ClassContext<'_>, first_new: usize) {
         if !self.cyclic {
             return;
         }
-        let mut pending: VecDeque<_> = (0..self.nodes.len()).collect();
-        for node in &mut self.nodes {
+        self.cyclic = false;
+        let mut pending: VecDeque<_> = (first_new..self.nodes.len()).collect();
+        for node in &mut self.nodes[first_new..] {
             node.queued = true;
         }
         while let Some(id) = pending.pop_front() {
@@ -1022,5 +1031,62 @@ mod graph_tests {
             classify_ty(&root, &ClassContext::new(&declarations)),
             Ok((ValueClass::CowValue, CloneKind::FieldWise))
         );
+    }
+    #[test]
+    fn retained_walk_does_not_revisit_settled_unrelated_declarations() {
+        struct Counted {
+            declarations: BTreeMap<crate::NominalId, DeclaredType>,
+            reads: std::cell::RefCell<BTreeMap<crate::NominalId, usize>>,
+        }
+        impl ClassDeclarations for Counted {
+            fn declared_type(&self, id: crate::NominalId) -> Option<Cow<'_, DeclaredType>> {
+                *self.reads.borrow_mut().entry(id).or_default() += 1;
+                self.declarations.get(&id).map(Cow::Borrowed)
+            }
+            fn builtin_declaration(&self, _: BuiltinType) -> Option<crate::NominalId> {
+                None
+            }
+        }
+        let plain = crate::NominalId::for_test("Plain");
+        let cycle = crate::NominalId::for_test("Cycle");
+        let plain_ty = ResolvedTy::user_for_test("Plain", vec![]);
+        let cycle_ty = ResolvedTy::user_for_test("Cycle", vec![]);
+        let declarations = Counted {
+            declarations: BTreeMap::from([
+                (
+                    plain,
+                    DeclaredType {
+                        members: vec![ResolvedTy::I64],
+                        ..DeclaredType::default()
+                    },
+                ),
+                (
+                    cycle,
+                    DeclaredType {
+                        members: vec![cycle_ty.clone()],
+                        ..DeclaredType::default()
+                    },
+                ),
+            ]),
+            reads: std::cell::RefCell::default(),
+        };
+        let context = ClassContext::new(&declarations);
+        let mut walk = Walk::default();
+        assert_eq!(
+            walk.query(&plain_ty, &context),
+            Ok((ValueClass::BitCopy, CloneKind::Bits))
+        );
+        let plain_reads = declarations.reads.borrow()[&plain];
+        assert_eq!(
+            walk.query(&cycle_ty, &context),
+            Ok((ValueClass::CowValue, CloneKind::FieldWise))
+        );
+        assert_eq!(declarations.reads.borrow()[&plain], plain_reads);
+        let reads = declarations.reads.borrow().clone();
+        assert_eq!(
+            walk.query(&cycle_ty, &context),
+            Ok((ValueClass::CowValue, CloneKind::FieldWise))
+        );
+        assert_eq!(*declarations.reads.borrow(), reads);
     }
 }

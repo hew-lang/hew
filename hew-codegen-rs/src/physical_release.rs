@@ -17,27 +17,36 @@ fn scratch<'ctx>(
 
 pub(super) fn callback<'ctx>(
     ctx: &'ctx Context,
+    target_data: &TargetData,
     llvm: &Module<'ctx>,
     module: &PhysicalModule,
     layout: &PhysicalLayout,
     action: DestroyAction,
 ) -> CodegenResult<FunctionValue<'ctx>> {
     let name = symbol(action);
-    custom(ctx, llvm, module, &name, |values, frame, source| {
-        if module.releases.suspends(action) {
-            body(values, frame, source, layout, action)
-        } else {
-            let value = values
-                .builder
-                .build_load(llvm_type(ctx, &layout.repr)?, source, "release.sync.owner")
-                .llvm_ctx("consume synchronous callback owner")?;
-            values.destroy_loaded_value(value, layout, action)
-        }
-    })
+    custom(
+        ctx,
+        target_data,
+        llvm,
+        module,
+        &name,
+        |values, frame, source| {
+            if module.releases.suspends(action) {
+                body(values, frame, source, layout, action)
+            } else {
+                let value = values
+                    .builder
+                    .build_load(llvm_type(ctx, &layout.repr)?, source, "release.sync.owner")
+                    .llvm_ctx("consume synchronous callback owner")?;
+                values.destroy_loaded_value(value, layout, action)
+            }
+        },
+    )
 }
 
 pub(super) fn custom<'ctx>(
     ctx: &'ctx Context,
+    target_data: &TargetData,
     llvm: &Module<'ctx>,
     module: &PhysicalModule,
     name: &str,
@@ -61,7 +70,7 @@ pub(super) fn custom<'ctx>(
     let source = function.get_nth_param(0).unwrap().into_pointer_value();
     let fault = function.get_nth_param(1).unwrap().into_pointer_value();
     let state = function.get_nth_param(2).unwrap().into_pointer_value();
-    let frame = coro::begin(ctx, llvm, &builder, function, state)?;
+    let frame = coro::begin(ctx, target_data, llvm, &builder, function, state)?;
     let status = builder
         .build_alloca(ctx.i32_type(), "release.status")
         .llvm_ctx("allocate release outcome")?;
@@ -73,6 +82,7 @@ pub(super) fn custom<'ctx>(
         .llvm_ctx("initialize release fault")?;
     let values = ValueEmitter {
         module,
+        target_data,
         ctx,
         llvm,
         builder: &builder,
@@ -216,6 +226,7 @@ fn combine<'ctx>(
         builder.position_at_end(values.ctx.append_basic_block(thunk, "entry"));
         let inner = ValueEmitter {
             module: values.module,
+            target_data: values.target_data,
             ctx: values.ctx,
             llvm: values.llvm,
             builder: &builder,
@@ -298,7 +309,14 @@ pub(super) fn slot<'ctx>(
         return callable_slot(values, frame, source, layout);
     }
     if values.module.releases.suspends(action) {
-        let callee = callback(values.ctx, values.llvm, values.module, layout, action)?;
+        let callee = callback(
+            values.ctx,
+            values.target_data,
+            values.llvm,
+            values.module,
+            layout,
+            action,
+        )?;
         invoke(
             values,
             frame,
@@ -393,6 +411,7 @@ fn callable_slot<'ctx>(
     values.builder.position_at_end(asynchronous);
     let callee = callback(
         values.ctx,
+        values.target_data,
         values.llvm,
         values.module,
         layout,
@@ -497,6 +516,7 @@ pub(super) fn handle<'ctx>(
     };
     let callee = custom(
         values.ctx,
+        values.target_data,
         values.llvm,
         values.module,
         kind.thunk(),
@@ -557,6 +577,7 @@ fn ready_release<'ctx>(
     let (owner, state) = (param(0), param(1));
     let inner = ValueEmitter {
         module: values.module,
+        target_data: values.target_data,
         ctx: values.ctx,
         llvm: values.llvm,
         builder: &builder,
@@ -740,14 +761,14 @@ fn fields<'ctx>(
             .build_struct_gep(object, source, index as u32, "release.field")
             .llvm_ctx("address owned release field")?;
         let name = managed::value_layout_symbol(values.module, &recipe.ty)?;
-        let target = TargetData::create(&values.module.target.data_layout);
+        let target = values.target_data;
         let descriptor = values
             .llvm
             .get_global(&name)
             .unwrap_or_else(|| {
                 values
                     .llvm
-                    .add_global(value_descriptor_type(values.ctx, &target), None, &name)
+                    .add_global(value_descriptor_type(values.ctx, target), None, &name)
             })
             .as_pointer_value();
         let initialized = scratch(
@@ -892,7 +913,12 @@ fn body<'ctx>(
                     .build_store(present, values.ctx.i8_type().const_int(1, false))
                     .llvm_ctx("retain variant backing until actual free")?;
                 Some((
-                    managed::flat_backing_layout(values.ctx, values.llvm, payload_bytes)?,
+                    managed::flat_backing_layout(
+                        values.ctx,
+                        values.target_data,
+                        values.llvm,
+                        payload_bytes,
+                    )?,
                     identity,
                     present,
                 ))
@@ -990,11 +1016,11 @@ fn body<'ctx>(
         ),
         DestroyAction::RcRelease(id) => {
             let name = format!("__hew_shared_payload_{}_layout", id.0);
-            let target = TargetData::create(&values.module.target.data_layout);
+            let target = values.target_data;
             let descriptor = values.llvm.get_global(&name).unwrap_or_else(|| {
                 values
                     .llvm
-                    .add_global(value_descriptor_type(values.ctx, &target), None, &name)
+                    .add_global(value_descriptor_type(values.ctx, target), None, &name)
             });
             cursor(
                 values,
@@ -1096,7 +1122,7 @@ fn drain_operation<'ctx>(
         frame.bind_operation(
             values.ctx,
             values.builder,
-            managed::operation_layout(values.ctx, values.llvm, visit)?,
+            managed::operation_layout(values.ctx, values.target_data, values.llvm, visit)?,
             owner,
         )?;
     }
@@ -1289,8 +1315,8 @@ fn descriptor_release_start<'ctx>(
     descriptor: PointerValue<'ctx>,
 ) -> CodegenResult<PointerValue<'ctx>> {
     let pointer = values.ctx.ptr_type(AddressSpace::default());
-    let target = TargetData::create(&values.module.target.data_layout);
-    let layout = value_descriptor_type(values.ctx, &target);
+    let target = values.target_data;
+    let layout = value_descriptor_type(values.ctx, target);
     let address = values
         .builder
         .build_struct_gep(layout, descriptor, 5, "release.start.slot")

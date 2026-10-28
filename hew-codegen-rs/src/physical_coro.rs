@@ -26,6 +26,7 @@ pub(super) struct Frame<'ctx> {
     child_invocation: Cell<Option<PointerValue<'ctx>>>,
     managed_view: Cell<Option<PointerValue<'ctx>>>,
     managed_operation: Cell<Option<(PointerValue<'ctx>, PointerValue<'ctx>)>>,
+    managed_frame_type: inkwell::types::StructType<'ctx>,
 }
 
 const _: () = {
@@ -137,6 +138,7 @@ pub(super) fn invocation_outcome<'ctx>(
 
 pub(super) fn begin<'ctx>(
     ctx: &'ctx Context,
+    target_data: &TargetData,
     module: &Module<'ctx>,
     builder: &Builder<'ctx>,
     function: FunctionValue<'ctx>,
@@ -345,6 +347,7 @@ pub(super) fn begin<'ctx>(
         child_invocation: Cell::new(None),
         managed_view: Cell::new(None),
         managed_operation: Cell::new(None),
+        managed_frame_type: managed_frame_type(ctx, target_data),
     };
     frame.bind_managed_roots(ctx, module, builder, pointer.const_null(), 0)?;
     Ok(frame)
@@ -360,7 +363,7 @@ impl<'ctx> Frame<'ctx> {
         builder: &Builder<'ctx>,
     ) -> CodegenResult<()> {
         let pointer = ctx.ptr_type(AddressSpace::default());
-        let view_ty = managed_frame_type(ctx, module)?;
+        let view_ty = self.managed_frame_type;
         let child = self.storage(ctx, pointer.into(), "close.execution.root")?;
         builder
             .build_store(child, self.state)
@@ -458,7 +461,7 @@ impl<'ctx> Frame<'ctx> {
         count: u64,
     ) -> CodegenResult<()> {
         let pointer = ctx.ptr_type(AddressSpace::default());
-        let view_ty = managed_frame_type(ctx, module)?;
+        let view_ty = self.managed_frame_type;
         let size = view_ty.get_field_type_at_index(1).unwrap().into_int_type();
         let view = if let Some(view) = self.managed_view.get() {
             view
@@ -727,19 +730,14 @@ pub(super) fn handle_operation<'ctx>(
 
 fn managed_frame_type<'ctx>(
     ctx: &'ctx Context,
-    module: &Module<'ctx>,
-) -> CodegenResult<inkwell::types::StructType<'ctx>> {
+    target_data: &TargetData,
+) -> inkwell::types::StructType<'ctx> {
     let pointer = ctx.ptr_type(AddressSpace::default());
-    let data_layout = module.get_data_layout();
-    let data_layout = data_layout
-        .as_str()
-        .to_str()
-        .map_err(|_| CodegenError::FailClosed("target data layout is not UTF-8".into()))?;
-    let size = ctx.ptr_sized_int_type(&TargetData::create(data_layout), None);
-    Ok(ctx.struct_type(
+    let size = ctx.ptr_sized_int_type(target_data, None);
+    ctx.struct_type(
         &[pointer.into(), size.into(), pointer.into(), pointer.into()],
         false,
-    ))
+    )
 }
 
 #[cfg(test)]

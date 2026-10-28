@@ -414,6 +414,7 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
         let context_ty = native_crash_context_type(self.ctx);
         release::custom(
             self.ctx,
+            self.target_data,
             &self.llvm,
             self.module,
             &symbol(actor.id, "on_crash"),
@@ -636,8 +637,8 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
     /// or null once the signal is handled.
     pub(super) fn emit_actor_sys_dispatch(&self, actor: &SemActor) -> CodegenResult<()> {
         let ptr = self.ctx.ptr_type(AddressSpace::default());
-        let target = TargetData::create(&self.module.target.data_layout);
-        let size_ty = self.ctx.ptr_sized_int_type(&target, None);
+        let target = self.target_data;
+        let size_ty = self.ctx.ptr_sized_int_type(target, None);
         let function = self.llvm.add_function(
             &symbol(actor.id, "sys_dispatch"),
             ptr.fn_type(
@@ -925,7 +926,14 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
             ptr.fn_type(&[], false),
         )?;
         let child = call_value(&builder, new_state, &[], "hook.invocation")?.into_pointer_value();
-        let frame = coro::begin(self.ctx, &self.llvm, &builder, ramp, child)?;
+        let frame = coro::begin(
+            self.ctx,
+            self.target_data,
+            &self.llvm,
+            &builder,
+            ramp,
+            child,
+        )?;
         let fault = builder
             .build_alloca(ptr, "hook.fault")
             .llvm_ctx("allocate persistent lifecycle hook fault")?;

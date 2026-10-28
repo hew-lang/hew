@@ -232,7 +232,10 @@ impl crate::value_class::ClassDeclarations for CheckerClassDeclarations<'_> {
         self.checker.defs.builtin_declaration(builtin)
     }
 
-    fn declared_type(&self, id: crate::NominalId) -> Option<crate::value_class::DeclaredType> {
+    fn declared_type(
+        &self,
+        id: crate::NominalId,
+    ) -> Option<std::borrow::Cow<'_, crate::value_class::DeclaredType>> {
         use crate::value_class::{DeclarationMarker, DeclaredType};
 
         // The `#[opaque]` attribute is a declaration fact, carried for a
@@ -249,12 +252,14 @@ impl crate::value_class::ClassDeclarations for CheckerClassDeclarations<'_> {
         let definition = self.checker.type_defs.get(&id);
         let Some(definition) = definition else {
             // A marker with no field table still decides the class outright.
-            return (marker != DeclarationMarker::None).then(|| DeclaredType {
-                builtin: None,
-                marker,
-                is_opaque,
-                type_params: Vec::new(),
-                members: Vec::new(),
+            return (marker != DeclarationMarker::None).then(|| {
+                std::borrow::Cow::Owned(DeclaredType {
+                    builtin: None,
+                    marker,
+                    is_opaque,
+                    type_params: Vec::new(),
+                    members: Vec::new(),
+                })
             });
         };
         let mut member_tys: Vec<Ty> = Vec::new();
@@ -314,13 +319,13 @@ impl crate::value_class::ClassDeclarations for CheckerClassDeclarations<'_> {
                 if marker == DeclarationMarker::None {
                     return None;
                 }
-                return Some(DeclaredType {
+                return Some(std::borrow::Cow::Owned(DeclaredType {
                     builtin: None,
                     marker,
                     is_opaque,
                     type_params: definition.type_params.clone(),
                     members: Vec::new(),
-                });
+                }));
             };
             let resolved = restore_member_opacity(resolved, &self.checker.defs, &|name| {
                 self.is_opaque_type(name)
@@ -337,13 +342,13 @@ impl crate::value_class::ClassDeclarations for CheckerClassDeclarations<'_> {
         // `BitCopy` while an identical `Handle` published nothing. The
         // builtin row is for a name the checker has no declaration of at
         // all.
-        Some(DeclaredType {
+        Some(std::borrow::Cow::Owned(DeclaredType {
             builtin: None,
             marker,
             is_opaque,
             type_params: definition.type_params.clone(),
             members,
-        })
+        }))
     }
 
     fn instantiate_members(
@@ -754,7 +759,8 @@ impl Checker {
         let rendered = identities
             .filter_map(|id| {
                 crate::value_class::ClassDeclarations::declared_type(&declarations, id).map(
-                    |mut declaration| {
+                    |declaration| {
+                        let mut declaration = declaration.into_owned();
                         declaration.builtin = self.defs.declared_builtin(id.declaration());
                         (id, declaration)
                     },

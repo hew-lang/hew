@@ -44,6 +44,7 @@ pub(super) fn build_module_with_host<'ctx>(
     let mut emitter = ModuleEmitter {
         ctx,
         module: physical,
+        target_data: &target_data,
         llvm,
         functions: BTreeMap::new(),
         ramps: BTreeMap::new(),
@@ -483,10 +484,10 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
         name: &str,
         recipe: &PhysicalValueRecipe,
     ) -> CodegenResult<inkwell::values::StructValue<'ctx>> {
-        let target = TargetData::create(&self.module.target.data_layout);
-        let size_ty = self.ctx.ptr_sized_int_type(&target, None);
+        let target = self.target_data;
+        let size_ty = self.ctx.ptr_sized_int_type(target, None);
         let pointer = self.ctx.ptr_type(AddressSpace::default());
-        let descriptor_ty = value_descriptor_type(self.ctx, &target);
+        let descriptor_ty = value_descriptor_type(self.ctx, target);
         let layout =
             self.module.target.layout(&recipe.ty).ok_or_else(|| {
                 CodegenError::FailClosed("value recipe has no target layout".into())
@@ -519,11 +520,16 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
             clone.into(),
             drop.into(),
             match recipe.destroy {
-                Some(action) if self.module.releases.suspends(action) => {
-                    release::callback(self.ctx, &self.llvm, self.module, layout, action)?
-                        .as_global_value()
-                        .as_pointer_value()
-                }
+                Some(action) if self.module.releases.suspends(action) => release::callback(
+                    self.ctx,
+                    self.target_data,
+                    &self.llvm,
+                    self.module,
+                    layout,
+                    action,
+                )?
+                .as_global_value()
+                .as_pointer_value(),
                 _ => pointer.const_null(),
             }
             .into(),
@@ -556,6 +562,7 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
         builder.position_at_end(body);
         let emitter = ValueEmitter {
             module: self.module,
+            target_data: self.target_data,
             ctx: self.ctx,
             llvm: &self.llvm,
             builder: &builder,
@@ -626,6 +633,7 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
         builder.position_at_end(body);
         let emitter = ValueEmitter {
             module: self.module,
+            target_data: self.target_data,
             ctx: self.ctx,
             llvm: &self.llvm,
             builder: &builder,

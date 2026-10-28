@@ -211,13 +211,6 @@ pub(crate) trait UriParse: Sized + FromStr {
 #[cfg(test)]
 impl UriParse for Url {}
 
-#[derive(Debug)]
-struct DiagnosticSource {
-    uri: Url,
-    source: String,
-    line_offsets: Vec<usize>,
-}
-
 // ── Helpers ──────────────────────────────────────────────────────────
 
 /// Convert an LSP `Position` (UTF-16 character offset) to a byte offset in source,

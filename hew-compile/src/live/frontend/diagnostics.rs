@@ -61,7 +61,7 @@ fn diagnostic(
                 if let Some((source, filename)) = note {
                     if let Some(view) = views.get(Path::new(filename)) {
                         *location = span(view, location)?;
-                        source.clone_from(&view.source);
+                        *source = view.source.clone().into();
                     }
                 } else {
                     *location = span(view, location)?;
@@ -88,7 +88,7 @@ fn diagnostic(
             }
         }
     }
-    diagnostic.source = Some(view.source.clone());
+    diagnostic.source = Some(view.source.clone().into());
     Some(())
 }
 
@@ -117,33 +117,24 @@ pub(super) fn remap_all(
 
 pub(super) fn lowering(
     error: crate::SessionError,
-    program: &hew_parser::ast::Program,
-    source: &str,
-    path: &Path,
+    sources: &crate::SourceSnapshot,
     state: &State,
 ) -> Error {
     let message = error.to_string();
     let diagnostics = match error {
-        crate::SessionError::Hir(diagnostics) => crate::hir_diagnostics_to_frontend(
-            program,
-            source,
-            &path.to_string_lossy(),
-            diagnostics,
-            &state.options.documents,
-        ),
-        crate::SessionError::Ownership(diagnostics) => crate::ownership_diagnostics_to_frontend(
-            program,
-            source,
-            &path.to_string_lossy(),
-            diagnostics,
-            &state.options.documents,
-        ),
+        crate::SessionError::Hir(diagnostics) => {
+            crate::hir_diagnostics_to_frontend(diagnostics, sources)
+        }
+        crate::SessionError::Ownership(diagnostics) => {
+            crate::ownership_diagnostics_to_frontend(diagnostics, sources)
+        }
         error => return Error::Lowering(error),
     };
     Error::Frontend(remap(
         FrontendFailure {
             message,
             diagnostics,
+            inputs: sources.inputs(),
         },
         &state.views,
     ))

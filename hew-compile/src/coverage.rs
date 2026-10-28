@@ -19,28 +19,22 @@ impl super::SessionOutput {
     ///
     /// # Panics
     /// Panics if source lines or coverage counters exceed the `u32` range.
-    pub fn instrument_coverage(
-        &mut self,
-        program: &hew_parser::ast::Program,
-        source: &str,
-        filename: &str,
-    ) -> SourceCoverageMap {
+    pub fn instrument_coverage(&mut self, sources: &super::SourceSnapshot) -> SourceCoverageMap {
         let plan = self.sir.instrument_coverage();
-        let sources = super::build_module_source_map(program, &super::SourceSet::new());
         let mut counters = Vec::new();
         for counter in plan.values() {
             let mut files = std::collections::BTreeMap::<String, BTreeSet<u32>>::new();
             for (module, offset) in &counter.sites {
                 let (text, file) = match module {
-                    None => (source, filename),
+                    None => (sources.root_source.as_ref(), sources.root_filename.as_str()),
                     Some(name) => {
                         if name == "std" || name.starts_with("std.") {
                             continue;
                         }
-                        let Some((text, file)) = sources.get(name) else {
+                        let Some((text, file)) = sources.modules().get(name) else {
                             continue;
                         };
-                        (text.as_str(), file.as_str())
+                        (text.as_ref(), file.as_str())
                     }
                 };
                 if *offset > text.len() {

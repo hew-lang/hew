@@ -228,6 +228,7 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
         let config = function.get_first_param().unwrap().into_pointer_value();
         let emitter = ValueEmitter {
             module: self.module,
+            target_data: self.target_data,
             ctx: self.ctx,
             llvm: &self.llvm,
             builder: &builder,
@@ -266,8 +267,8 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
         let spawn = callable(self.module, supervisor.children[child].spawn)?;
         let config_ty = config_type(self.module, self.ctx, supervisor)?;
         let ptr = self.ctx.ptr_type(AddressSpace::default());
-        let target = TargetData::create(&self.module.target.data_layout);
-        let word = self.ctx.ptr_sized_int_type(&target, None);
+        let target = self.target_data;
+        let word = self.ctx.ptr_sized_int_type(target, None);
         let function = self.llvm.add_function(
             &symbol(supervisor, &format!("child_{child}_spawn")),
             ptr.fn_type(
@@ -457,8 +458,8 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
         self.builder.position_at_end(pending);
         frame.suspend(self.ctx, &self.builder, poll, frame.invalid_destroy)?;
         self.builder.position_at_end(complete);
-        let target = TargetData::create(&self.module.target.data_layout);
-        let word = self.ctx.ptr_sized_int_type(&target, None);
+        let target = self.target_data;
+        let word = self.ctx.ptr_sized_int_type(target, None);
         let take = get_or_declare_external(
             self.llvm,
             "hew_supervisor_native_spawn_take",
@@ -536,15 +537,15 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
         let child_count = u32::try_from(supervisor.children.len())
             .map_err(|_| CodegenError::FailClosed("supervisor child count exceeds u32".into()))?;
         let ptr = self.ctx.ptr_type(AddressSpace::default());
-        let target = TargetData::create(&self.module.target.data_layout);
-        let word = self.ctx.ptr_sized_int_type(&target, None);
+        let target = self.target_data;
+        let word = self.ctx.ptr_sized_int_type(target, None);
         let config_ty = config_type(self.module, self.ctx, supervisor)?;
         let config = if supervisor.config.is_empty() {
             ptr.const_null()
         } else {
             let size = target.get_abi_size(&config_ty.as_basic_type_enum());
             let config =
-                super::actor::allocate(self.module, self.ctx, self.llvm, &self.builder, size)?;
+                super::actor::allocate(self.ctx, self.target_data, self.llvm, &self.builder, size)?;
             for (index, source) in sources.iter().enumerate() {
                 let index = u32::try_from(index)
                     .map_err(|_| CodegenError::FailClosed("config field exceeds u32".into()))?;

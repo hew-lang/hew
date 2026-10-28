@@ -43,9 +43,7 @@ pub(super) fn allocate_slot<'ctx>(
     let descriptor = format!("__hew_session_{}_{}", function.callable.0, slot);
     module.emit_value_descriptor(&descriptor, recipe)?;
     let pointer = module.ctx.ptr_type(AddressSpace::default());
-    let usize_ty = module
-        .ctx
-        .ptr_sized_int_type(&TargetData::create(&module.module.target.data_layout), None);
+    let usize_ty = module.ctx.ptr_sized_int_type(module.target_data, None);
     let prepare = get_or_declare_external(
         &module.llvm,
         "hew_live_slot_storage",
@@ -85,9 +83,7 @@ pub(super) fn register_leaves<'ctx>(
         CodegenError::FailClosed("session place lacks its canonical leaf partition".into())
     })?;
     let pointer = module.ctx.ptr_type(AddressSpace::default());
-    let usize_ty = module
-        .ctx
-        .ptr_sized_int_type(&TargetData::create(&module.module.target.data_layout), None);
+    let usize_ty = module.ctx.ptr_sized_int_type(module.target_data, None);
     let leaf_ty = module.ctx.struct_type(
         &[
             pointer.into(),
@@ -214,9 +210,7 @@ impl FunctionEmitter<'_, '_> {
             return Ok(());
         };
         let pointer = self.ctx.ptr_type(AddressSpace::default());
-        let usize_ty = self
-            .ctx
-            .ptr_sized_int_type(&TargetData::create(&self.module.target.data_layout), None);
+        let usize_ty = self.ctx.ptr_sized_int_type(self.target_data, None);
         let publish = get_or_declare_external(
             self.llvm,
             "hew_live_slot_changed",

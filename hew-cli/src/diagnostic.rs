@@ -154,44 +154,28 @@ pub(crate) fn codegen_error_code(error: &hew_codegen_rs::CodegenError) -> &'stat
     }
 }
 
-/// Render a codegen-emit error (`emit_module` failure path).
-///
-/// FAIL-CLOSED RENDER RULE: renders a `^^^` caret only when the error carries a
-/// source span, `source_path` can be read, and the span's start byte is within
-/// that source's length.  Any of those conditions failing degrades to a bare
-/// plain-line carrying the same [`codegen_error_code`] — never a caret against
-/// the wrong source.
-///
-/// CROSS-MODULE SAFETY: the span is attached upstream ONLY for a function
-/// carrying `SourceOrigin::RootUnit`, so it provably indexes the root source
-/// named by `source_path`.  A non-root function reaches here spanless (the span
-/// was stripped at `build_module_for_target`), so its error renders bare.  The
-/// bounds check is belt-and-braces; the carried origin is the attribution.
+/// Render an emission failure against its retained authored source, when available.
+/// Foreign or unavailable source locations remain unpositioned.
 pub(crate) fn render_codegen_emit_error(
     error: &hew_codegen_rs::CodegenError,
-    source_path: Option<&std::path::Path>,
+    source: Option<(&str, &str)>,
 ) {
     let prefix = codegen_channel(error).prefix();
     let code = codegen_error_code(error);
-    if let Some((span_start, span_end)) = error.span() {
-        if let Some(path) = source_path {
-            if let Ok(text) = std::fs::read_to_string(path) {
-                let start = span_start as usize;
-                let end = span_end as usize;
-                if start < text.len() {
-                    let filename = path.to_str().unwrap_or("<unknown>");
-                    let span = start..end.min(text.len());
-                    render_diagnostic(
-                        &text,
-                        filename,
-                        &span,
-                        &format!("{prefix}{code}: {error}"),
-                        &[],
-                        &[],
-                    );
-                    return;
-                }
-            }
+    if let (Some((span_start, span_end)), Some((text, filename))) = (error.span(), source) {
+        let start = span_start as usize;
+        let end = span_end as usize;
+        if start < text.len() {
+            let span = start..end.min(text.len());
+            render_diagnostic(
+                text,
+                filename,
+                &span,
+                &format!("{prefix}{code}: {error}"),
+                &[],
+                &[],
+            );
+            return;
         }
     }
     emit_plain_diagnostic_line(&format!("{prefix}{code}: {error}"));
@@ -315,7 +299,7 @@ pub struct DiagnosticNote<'a> {
     pub message: &'a str,
 }
 
-pub(crate) type ModuleSourceMap = HashMap<String, (String, String)>;
+pub(crate) type ModuleSourceMap = HashMap<String, (std::sync::Arc<str>, String)>;
 
 /// Render a diagnostic message with source context and span underline.
 ///
@@ -504,35 +488,6 @@ pub fn render_diagnostic_with_raw_notes(
     render_diagnostic(source, filename, span, message, &notes, suggestions);
 }
 
-/// Build a map from dotted module path to `(source_text, display_filename)` for
-/// every non-root module in the program that has an on-disk source file.
-///
-/// // WASM-TODO(diagnostic-source-map): `std::fs` is unavailable in WASM / no-fs contexts, so this
-/// // map is empty there and non-root diagnostics fall back to root-source
-/// // rendering until the WASM diagnostic pass grows a source-provider hook.
-pub(crate) fn build_module_source_map(program: &hew_parser::ast::Program) -> ModuleSourceMap {
-    let Some(ref module_graph) = program.module_graph else {
-        return ModuleSourceMap::new();
-    };
-
-    let mut map = ModuleSourceMap::new();
-    for mod_id in &module_graph.topo_order {
-        if *mod_id == module_graph.root {
-            continue;
-        }
-        let Some(module) = module_graph.modules.get(mod_id) else {
-            continue;
-        };
-        let Some(path) = module.source_paths.first() else {
-            continue;
-        };
-        if let Ok(text) = std::fs::read_to_string(path) {
-            map.insert(mod_id.dotted(), (text, path.display().to_string()));
-        }
-    }
-    map
-}
-
 /// Notes for the internal-compiler-error channel: the program is not at
 /// fault, so the note says so and asks for a bug report.
 fn push_lowering_invariant_notes(notes: &mut Vec<String>, block: Option<u32>) {
@@ -555,7 +510,7 @@ fn type_diagnostic_source<'a>(
 ) -> (&'a str, &'a str) {
     if let Some(ref mod_name) = diagnostic.source_module {
         if let Some((mod_src, mod_file)) = module_source_map.get(mod_name.as_str()) {
-            return (mod_src.as_str(), mod_file.as_str());
+            return (mod_src.as_ref(), mod_file.as_str());
         }
     }
     (root_source, root_filename)
@@ -601,7 +556,7 @@ pub(crate) fn render_type_diagnostics_with_sources(
                     .as_deref()
                     .and_then(|module| module_source_map.get(module))
                     .map_or((source, filename), |(source, filename)| {
-                        (source.as_str(), filename.as_str())
+                        (source.as_ref(), filename.as_str())
                     });
                 DiagnosticNote {
                     source: note_source,
@@ -762,7 +717,7 @@ mod tests {
         let mut module_source_map = ModuleSourceMap::new();
         module_source_map.insert(
             "dep".to_string(),
-            ("pub fn oops() {}\n".to_string(), "dep.hew".to_string()),
+            ("pub fn oops() {}\n".into(), "dep.hew".to_string()),
         );
 
         let (source, filename) = type_diagnostic_source(
@@ -806,14 +761,11 @@ mod tests {
         let mut module_source_map = ModuleSourceMap::new();
         module_source_map.insert(
             "std.net".to_string(),
-            ("net_call()\n".to_string(), "std/net/net.hew".to_string()),
+            ("net_call()\n".into(), "std/net/net.hew".to_string()),
         );
         module_source_map.insert(
             "std.stream".to_string(),
-            (
-                "first\nstream_decl\n".to_string(),
-                "std/stream.hew".to_string(),
-            ),
+            ("first\nstream_decl\n".into(), "std/stream.hew".to_string()),
         );
 
         start_diagnostic_capture();

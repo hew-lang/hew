@@ -1437,7 +1437,7 @@ fn site_for_call(
     root_label: &str,
     documents: &SourceSet,
     span: &SpanKey,
-) -> Option<(SourceSite, String, String)> {
+) -> Option<(SourceSite, std::sync::Arc<str>, String)> {
     let path = (span.module_idx != 0)
         .then(|| source_path(program, output, span.module_idx))
         .flatten();
@@ -1447,7 +1447,7 @@ fn site_for_call(
             path.display().to_string(),
         )
     } else {
-        (root_source.to_string(), root_label.to_string())
+        (root_source.into(), root_label.to_string())
     };
     source.get(span.start..span.end)?;
     let mut display_start = span.start;
@@ -1706,7 +1706,7 @@ fn body_site(
     source: &str,
     label: &str,
     options: &FrontendOptions,
-) -> Option<(SourceSite, String, String)> {
+) -> Option<(SourceSite, std::sync::Arc<str>, String)> {
     let site = output.defs.site(root)?;
     let (mut site, source, filename) = site_for_call(
         program,
@@ -1724,11 +1724,21 @@ fn confinement_diagnostic(
     output: &TypeCheckOutput,
     root: DefId,
     site: SourceSite,
-    source: &str,
+    source: &std::sync::Arc<str>,
     filename: &str,
     reason: &str,
 ) -> FrontendDiagnostic {
-    FrontendDiagnostic::coded_message_at("E_CONFINED_AUTHORITY", format!("confined `{}` reaches `{}`: {reason}; supply a narrow resource or service at construction", output.defs.name(root), site.spelling), site.span, source, filename)
+    FrontendDiagnostic::coded_message_at(
+        "E_CONFINED_AUTHORITY",
+        format!(
+            "confined `{}` reaches `{}`: {reason}; supply a narrow resource or service at construction",
+            output.defs.name(root),
+            site.spelling
+        ),
+        site.span,
+        source.clone(),
+        filename,
+    )
 }
 
 /// Check each selected root independently using checker-owned call edges.
@@ -1790,14 +1800,14 @@ fn check_profile(
             }
             let source = source_path
                 .and_then(|path| read_source(&options.documents, path).ok())
-                .unwrap_or_else(|| root_source.to_owned());
+                .unwrap_or_else(|| root_source.into());
             let filename = source_path
                 .map_or_else(|| root_label.to_owned(), |path| path.display().to_string());
             diagnostics.push(FrontendDiagnostic::coded_message_at(
                 "E_GENERATE_EXTERN",
                 format!("generator declares user extern `{}`; host access must use the admitted standard library", output.defs.name(id)),
                 site.span(),
-                &source,
+                source.clone(),
                 &filename,
             ));
         }
@@ -1828,7 +1838,7 @@ fn check_profile(
     }) {
         let mut queue = VecDeque::from([(
             CallableNode::Declaration(root),
-            None::<(SourceSite, String, String)>,
+            None::<(SourceSite, std::sync::Arc<str>, String)>,
             Vec::<Ty>::new(),
             if confined {
                 definition_env(output, root)
@@ -2004,12 +2014,14 @@ fn check_profile(
                             .cloned()
                             .unwrap_or_else(IndirectCallCandidates::unknown);
                         implicit_releases.extend(output.owned_release_targets(
+                            facts,
                             &ty,
                             &HashMap::new(),
                             &candidates,
                         ));
                     } else if let Some(calls) = iteration_calls(output, &ty) {
                         implicit_releases.extend(output.owned_release_targets(
+                            facts,
                             &calls.iterator,
                             &HashMap::new(),
                             &IndirectCallCandidates::unknown(),
@@ -2187,7 +2199,13 @@ fn check_profile(
                     .releases
                     .iter()
                     .filter(|effect| effect.owner == caller)
-                    .flat_map(|effect| output.release_targets(effect, &substitutions))
+                    .flat_map(|effect| {
+                        output.release_targets(
+                            value_facts.as_ref().expect("confined type facts"),
+                            effect,
+                            &substitutions,
+                        )
+                    })
                     .map(|target| (target, caller_env.clone()))
                     .collect();
                 releases.extend(
@@ -2246,6 +2264,9 @@ fn check_profile(
                                             releases.extend(
                                                 output
                                                     .owned_release_targets(
+                                                        value_facts
+                                                            .as_ref()
+                                                            .expect("confined type facts"),
                                                         &coercion.concrete_type,
                                                         &captures.types.iter().cloned().collect(),
                                                         &value,
@@ -2281,6 +2302,9 @@ fn check_profile(
                                                         })
                                                         .flat_map(|effect| {
                                                             output.release_targets(
+                                                                value_facts
+                                                                    .as_ref()
+                                                                    .expect("confined type facts"),
                                                                 effect,
                                                                 &captures
                                                                     .types
@@ -2324,7 +2348,10 @@ fn check_profile(
                                                 || ty.named_builtin()
                                                     == Some(hew_types::BuiltinType::Generator)
                                             {
-                                                format!("cleanup of `{}` without a checked authority summary", ty.user_facing())
+                                                format!(
+                                                    "cleanup of `{}` without a checked authority summary",
+                                                    ty.user_facing()
+                                                )
                                             } else {
                                                 "cleanup of a callable with unknown captured authority".into()
                                             };
@@ -2481,11 +2508,9 @@ fn check_profile(
                             )
                         } else {
                             format!(
-                            "`{}` reaches host operation `{}` ({}), which a deterministic entry cannot schedule",
-                            name,
-                            site.spelling,
-                            operation.capability
-                        )
+                                "`{}` reaches host operation `{}` ({}), which a deterministic entry cannot schedule",
+                                name, site.spelling, operation.capability
+                            )
                         };
                         let mut diagnostic = FrontendDiagnostic::coded_message_at(
                             if generating {
@@ -2495,7 +2520,7 @@ fn check_profile(
                             },
                             message,
                             site.span,
-                            &source,
+                            source.clone(),
                             &filename,
                         );
                         if let crate::FrontendDiagnosticKind::Message(detail) = &mut diagnostic.kind
@@ -2531,13 +2556,19 @@ fn check_profile(
                             if reported_indirect.insert((root, filename.clone(), site.span.start)) {
                                 let name = output.defs.name(diagnostic_root);
                                 let mut diagnostic = FrontendDiagnostic::coded_message_at(
-                                    if confined { "E_CONFINED_INDIRECT_CALL" } else if generating { "E_GENERATE_INDIRECT_CALL" } else { "E_DETERMINISTIC_INDIRECT_CALL" },
+                                    if confined {
+                                        "E_CONFINED_INDIRECT_CALL"
+                                    } else if generating {
+                                        "E_GENERATE_INDIRECT_CALL"
+                                    } else {
+                                        "E_DETERMINISTIC_INDIRECT_CALL"
+                                    },
                                     format!(
                                         "`{name}` reaches indirect call `{}` whose callable target is not fully known",
                                         site.spelling
                                     ),
                                     site.span,
-                                    &source,
+                                    source.clone(),
                                     &filename,
                                 );
                                 if let crate::FrontendDiagnosticKind::Message(detail) =
@@ -2945,7 +2976,10 @@ mod tests {
             "import std.os; type Token {} impl Display for Token { fn fmt(self) -> string { let _ = os.env(\"PATH\"); \"token\" } } fn main() { let token = Token {}; println(f\"{token}\"); }",
         ] {
             let failure = check_source(source, HostAdmission::Generate).expect_err(source);
-            assert!(failure.contains("E_GENERATE_HOST_OPERATION"), "{source}: {failure}");
+            assert!(
+                failure.contains("E_GENERATE_HOST_OPERATION"),
+                "{source}: {failure}"
+            );
         }
     }
 
@@ -3091,8 +3125,7 @@ fn main() { launch(); }
 
     #[test]
     fn selected_test_refuses_stdin_read() {
-        let source =
-            "import std.io;\n#[test] fn input() { let line = io.read_line().expect(\"standard I/O\") ?? \"\"; println(line); }";
+        let source = "import std.io;\n#[test] fn input() { let line = io.read_line().expect(\"standard I/O\") ?? \"\"; println(line); }";
         let selection = selected_test(source, "input");
         let failure = check_source(source, HostAdmission::Tests(vec![selection])).unwrap_err();
         assert!(
@@ -3201,7 +3234,9 @@ fn main() { launch(); }
             "mailbox(worker)(7)",
             "policy(worker, on_full: .Reject)(7)",
         ] {
-            let source = format!("fn main() {{ let factor = 3; let worker = actor |n: i64| {{ if n > 1 {{ let _ = worker(n - 1); }} println(n * factor); }}; let _ = {call}; stop(worker); stopped(worker); }}");
+            let source = format!(
+                "fn main() {{ let factor = 3; let worker = actor |n: i64| {{ if n > 1 {{ let _ = worker(n - 1); }} println(n * factor); }}; let _ = {call}; stop(worker); stopped(worker); }}"
+            );
             check_source(&source, HostAdmission::ProcessEntry).unwrap();
         }
     }
@@ -3209,7 +3244,9 @@ fn main() { launch(); }
     #[test]
     fn lambda_actor_delivery_cannot_hide_a_host_operation() {
         for call in ["worker(7)", "mailbox(worker)(7)"] {
-            let source = format!("import std.io; fn main() {{ let worker = actor |n: i64| {{ let line = io.read_line().expect(\"standard I/O\") ?? \"\"; println(line); }}; let _ = {call}; stop(worker); stopped(worker); }}");
+            let source = format!(
+                "import std.io; fn main() {{ let worker = actor |n: i64| {{ let line = io.read_line().expect(\"standard I/O\") ?? \"\"; println(line); }}; let _ = {call}; stop(worker); stopped(worker); }}"
+            );
             let failure = check_source(&source, HostAdmission::ProcessEntry).unwrap_err();
             assert!(
                 failure.contains("E_DETERMINISTIC_HOST_OPERATION"),
@@ -3242,8 +3279,7 @@ fn main() { launch(); }
 
     #[test]
     fn unused_closure_does_not_admit_its_host_operation() {
-        let source =
-            "import std.io;\nfn main() { let unused = || io.read_line().expect(\"standard I/O\") ?? \"\"; println(\"safe\"); }";
+        let source = "import std.io;\nfn main() { let unused = || io.read_line().expect(\"standard I/O\") ?? \"\"; println(\"safe\"); }";
         check_source(source, HostAdmission::ProcessEntry).unwrap();
     }
 

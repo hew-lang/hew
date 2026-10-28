@@ -42,7 +42,12 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
         frame.bind_operation(
             self.ctx,
             &self.builder,
-            managed::operation_layout(self.ctx, self.llvm, "hew_managed_visit_actor_call")?,
+            managed::operation_layout(
+                self.ctx,
+                self.target_data,
+                self.llvm,
+                "hew_managed_visit_actor_call",
+            )?,
             operation,
         )?;
         let ArgumentTransfer::Borrow(target) = args[0] else {
@@ -174,9 +179,9 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
                 )),
             })
             .collect::<CodegenResult<Vec<_>>>()?;
-        let target = TargetData::create(&self.module.target.data_layout);
+        let target = self.target_data;
         let ptr = self.ctx.ptr_type(AddressSpace::default());
-        let size_ty = self.ctx.ptr_sized_int_type(&target, None);
+        let size_ty = self.ctx.ptr_sized_int_type(target, None);
         let wrapper_ty = message_type(self.module, self.ctx, handler)?;
         let size = target.get_abi_size(&wrapper_ty);
         let wrapper = if sealed {
@@ -314,7 +319,14 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
         }
         types.push(ptr.into());
         arguments.push(
-            actor_value_release(self.ctx, self.llvm, self.module, &handler.return_ty)?.into(),
+            actor_value_release(
+                self.ctx,
+                self.target_data,
+                self.llvm,
+                self.module,
+                &handler.return_ty,
+            )?
+            .into(),
         );
         types.push(ptr.into());
         arguments.push(self.sender_stamp()?.into());
@@ -644,6 +656,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             })?;
         let thunk = ask_result_thunk(
             self.ctx,
+            self.target_data,
             self.llvm,
             self.module,
             glue,
@@ -671,6 +684,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
 /// table indexed by the runtime status. One exists per result type and handler.
 fn ask_result_thunk<'ctx>(
     ctx: &'ctx Context,
+    target_data: &TargetData,
     llvm: &Module<'ctx>,
     module: &PhysicalModule,
     glue: &PhysicalVariantGlue,
@@ -706,6 +720,7 @@ fn ask_result_thunk<'ctx>(
     builder.position_at_end(ctx.append_basic_block(function, "entry"));
     let values = ValueEmitter {
         module,
+        target_data,
         ctx,
         llvm,
         builder: &builder,

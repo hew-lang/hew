@@ -12,8 +12,8 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
         option_glue: PhysicalVariantId,
     ) -> CodegenResult<()> {
         let ptr = self.ctx.ptr_type(AddressSpace::default());
-        let target = TargetData::create(&self.module.target.data_layout);
-        let size_ty = self.ctx.ptr_sized_int_type(&target, None);
+        let target = self.target_data;
+        let size_ty = self.ctx.ptr_sized_int_type(target, None);
         let value_out = self
             .value_emitter()
             .entry_scratch(ptr.into(), "utf8.value")?;

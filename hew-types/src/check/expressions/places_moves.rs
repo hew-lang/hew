@@ -134,6 +134,7 @@ impl Checker {
                             &self.class_declarations(),
                             id,
                         )
+                        .map(std::borrow::Cow::into_owned)
                     })
                     .is_some_and(|declaration| {
                         declaration.is_opaque
@@ -333,7 +334,8 @@ impl Checker {
                 let declaration = crate::value_class::ClassDeclarations::declared_type(
                     &self.class_declarations(),
                     head.declaration(&self.defs)?,
-                )?;
+                )
+                .map(std::borrow::Cow::into_owned)?;
                 if declaration.marker != crate::value_class::DeclarationMarker::None
                     || declaration.is_opaque
                 {

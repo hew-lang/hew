@@ -48,7 +48,7 @@ fn build_renderer(module_name: &str, source_path: &str, exports: &[(&str, &str)]
     };
     let state = hew_compile::run_file_frontend_to_typecheck(source.to_str().unwrap(), &frontend)
         .unwrap_or_else(|error| panic!("presentation renderer frontend: {}", error.message));
-    for input in frontend.documents.inputs() {
+    for input in state.typecheck_result.sources.inputs() {
         // Absent optional package files are not renderer dependencies. Cargo
         // would rebuild on every invocation if asked to watch a missing file.
         if input.sha256.is_some() {
@@ -110,7 +110,6 @@ fn build_renderer(module_name: &str, source_path: &str, exports: &[(&str, &str)]
             emit_llvm: false,
             address_sanitizer: false,
             debug_source: None,
-            debug_display_source: None,
             link_freestanding_wasm: false,
             build_info: None,
         },

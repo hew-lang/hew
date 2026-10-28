@@ -63,18 +63,14 @@ pub(crate) fn run(args: &CompileArgs) -> i32 {
     let module = match session.lower_hir_program(&state.program, checked) {
         Ok(module) => module,
         Err(error) => {
-            return crate::render_session_error(error, &state.program, &state.source, &input)
-                .exit_code();
+            return crate::render_session_error(error, &state.typecheck_result.sources).exit_code();
         }
     };
     let analysis = hew_hir::analyze_hir(&module);
     if !analysis.diagnostics().is_empty() {
         let diagnostics = hew_compile::hir_diagnostics_to_frontend(
-            &state.program,
-            &state.source,
-            &input,
             analysis.diagnostics().to_vec(),
-            &options.documents,
+            &state.typecheck_result.sources,
         );
         return compile::render_frontend_diagnostics(&diagnostics)
             .unwrap_or(DiagChannel::Internal)

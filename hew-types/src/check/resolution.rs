@@ -2196,23 +2196,8 @@ impl Checker {
             .instantiate(args)
     }
 
-    /// Whether a just-registered top-level alias `name` is self-referential
-    /// (directly `type Loop = Loop;`, or indirectly through an alias chain).
-    ///
-    /// Every USE site of a recursive alias runs through `expand_type_aliases`,
-    /// whose recursion guard returns `Ty::Error` silently — correct for
-    /// keeping the walk total, but it broke the invariant that a `Ty::Error`
-    /// always has an associated diagnostic: nothing had reported one yet.
-    /// Downstream HIR lowering never runs (the checker returns early on any
-    /// error), so the invariant held only by accident when this alias was
-    /// never actually used; the moment it WAS used, HIR discovered the bogus
-    /// shape at 3-4 different consumers (Display dispatch, verifier, produced-
-    /// value tracking) and each emitted its own checker-boundary-violation
-    /// diagnostic — one root cause read as five errors.
-    ///
-    /// Called once, right after registration, so the checker emits exactly
-    /// ONE root-cause diagnostic per recursive alias declaration, before any
-    /// use site can ever observe the silent `Ty::Error`.
+    /// Detect alias cycles at registration, including growing generic cycles.
+    /// Report the declaration before use-site expansion recovers with `Ty::Error`.
     pub(super) fn alias_expansion_is_recursive(&self, alias: crate::DefId) -> bool {
         let Some(definition) = self.type_aliases.get(&alias) else {
             return false;
@@ -2276,11 +2261,19 @@ impl Checker {
         active: &mut Vec<Ty>,
         completed: &mut HashMap<Ty, Ty>,
     ) -> Ty {
-        if let Some(expanded) = completed.get(ty) {
-            return expanded.clone();
-        }
         if let Ty::Named { head, args } = ty {
-            if let Some(target) = self.alias_target_for_instance(*head, args) {
+            if let Some(alias) = head
+                .nominal()
+                .and_then(|head| self.type_aliases.get(&head.declaration()))
+            {
+                if let Some(expanded) = completed.get(ty) {
+                    return expanded.clone();
+                }
+                let Some(target) = alias.instantiate(args) else {
+                    return ty.map_children(&mut |child| {
+                        self.expand_type_aliases(child, active, completed)
+                    });
+                };
                 if active.iter().any(|ancestor| {
                     ancestor == ty
                         || super::admissibility::StructuralTypeWalk::grows_from(ancestor, ty)
@@ -2294,10 +2287,7 @@ impl Checker {
                 return expanded;
             }
         }
-        let expanded =
-            ty.map_children(&mut |child| self.expand_type_aliases(child, active, completed));
-        completed.insert(ty.clone(), expanded.clone());
-        expanded
+        ty.map_children(&mut |child| self.expand_type_aliases(child, active, completed))
     }
 
     pub(super) fn resolve_type_expr(&mut self, te: &Spanned<TypeExpr>) -> Ty {

@@ -12,6 +12,10 @@ use super::{
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct StorageId(pub u32);
 
+/// Module-local identity of one managed type descriptor.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct PhysicalManagedId(pub u32);
+
 /// Module-local identity of one verified aggregate layout and glue recipe.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct PhysicalAggregateId(pub u32);
@@ -406,6 +410,7 @@ pub struct PhysicalValueRecipe {
 /// Owning-stage storage facts projected without target-dependent arithmetic.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PhysicalManagedType {
+    pub id: PhysicalManagedId,
     pub slot_bytes: u64,
     pub shape: hew_sir::ManagedStorageShape,
     pub recipe: PhysicalValueRecipe,

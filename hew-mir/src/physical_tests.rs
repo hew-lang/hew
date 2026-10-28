@@ -3888,3 +3888,15 @@ fn loop_constants_respect_accepted_physical_terminator_overwrites() {
         "a checked result must supersede the earlier constant fact"
     );
 }
+
+#[test]
+fn physical_managed_type_identities_must_be_unique() {
+    let semantic = lower_source("fn main() { println(\"hello\"); }");
+    let mut physical = lower_physical_module(&semantic, target_for_inventory(&semantic))
+        .unwrap()
+        .into_unverified();
+    let mut rows = physical.managed_types.values_mut();
+    let first = rows.next().expect("fixture has managed types").id;
+    rows.next().expect("fixture has multiple managed types").id = first;
+    assert!(verify_physical_module(&physical).is_err());
+}

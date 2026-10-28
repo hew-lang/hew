@@ -5,13 +5,13 @@ pub mod physical;
 /// The closed runtime variant roles a physical variant glue names its cases by.
 pub use hew_sir::{RuntimeVariantRole, SAFEPOINT_BUDGET};
 pub use physical::{
-    lower_checked_physical_module, lower_physical_module, ArgumentTransfer, CloneAction,
-    DestroyAction, ParamCarrier, PhysicalArguments, PhysicalBlock, PhysicalCallable,
-    PhysicalCheckedFailure, PhysicalConst, PhysicalEdge, PhysicalError, PhysicalFunction,
-    PhysicalLayout, PhysicalModule, PhysicalOp, PhysicalParam, PhysicalRepr, PhysicalRuntimeAction,
-    PhysicalRuntimeCarrier, PhysicalStorage, PhysicalTarget, PhysicalTerminator,
-    PhysicalVectorDescriptor, PhysicalVectorGlue, PhysicalVectorId, PhysicalVectorOp,
-    ReturnTransfer, StorageId, StorageOrigin, VerifiedPhysicalModule,
+    lower_physical_module, ArgumentTransfer, CloneAction, DestroyAction, ParamCarrier,
+    PhysicalArguments, PhysicalBlock, PhysicalCallable, PhysicalCheckedFailure, PhysicalConst,
+    PhysicalEdge, PhysicalError, PhysicalFunction, PhysicalLayout, PhysicalModule, PhysicalOp,
+    PhysicalParam, PhysicalRepr, PhysicalRuntimeAction, PhysicalRuntimeCarrier, PhysicalStorage,
+    PhysicalTarget, PhysicalTerminator, PhysicalVectorDescriptor, PhysicalVectorGlue,
+    PhysicalVectorId, PhysicalVectorOp, ReturnTransfer, StorageId, StorageOrigin,
+    VerifiedPhysicalModule,
 };
 
 /// Pointer width selected by a compilation host.

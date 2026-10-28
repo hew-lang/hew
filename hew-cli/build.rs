@@ -72,10 +72,10 @@ fn build_renderer(module_name: &str, source_path: &str, exports: &[(&str, &str)]
     let (semantic, declarations) = session
         .lower_host_program(&state.program, checked, &names)
         .expect("lower presentation renderer");
-    let inventory = hew_mir::physical::physical_type_inventory(&semantic.semantics().module);
-    let target = hew_codegen_rs::physical::physical_target_for_inventory(&triple, &inventory)
+    let plan = semantic.physical_plan();
+    let target = hew_codegen_rs::physical::physical_target_for_inventory(&triple, plan.inventory())
         .expect("presentation renderer target layout");
-    let physical = semantic.lower_physical(target).expect("physical renderer");
+    let physical = plan.lower(target).expect("physical renderer");
     let selections: Vec<_> = declarations
         .iter()
         .zip(exports)

@@ -330,16 +330,16 @@ fn lower_session_to_physical(
             DiagChannel::User,
         ));
     }
-    let inventory = hew_mir::physical::physical_type_inventory(&output.semantics().module);
+    let plan = output.physical_plan();
     let physical_target = hew_codegen_rs::physical::physical_target_for_inventory(
         &target.linker_triple(),
-        &inventory,
+        plan.inventory(),
     )
     .map_err(|error| {
         diagnostic::render_codegen_emit_error(&error, None);
         diagnostic::codegen_channel(&error)
     })?;
-    output.lower_physical(physical_target).map_err(|error| {
+    plan.lower(physical_target).map_err(|error| {
         emit_semantic_error(
             "E_PHYSICAL_LOWERING",
             &error.to_string(),

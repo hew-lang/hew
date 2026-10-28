@@ -659,10 +659,6 @@ impl Session {
     ///
     /// # Errors
     /// Returns HIR diagnostics or a failure of semantic lowering or verification.
-    #[expect(
-        clippy::too_many_lines,
-        reason = "one semantic session owns verification, completion and selected roots"
-    )]
     pub fn lower_analyzed_hir(
         &self,
         analysis: hew_hir::HirAnalysis<'_>,
@@ -780,6 +776,12 @@ impl SessionOutput {
         self.sir.into_lowered()
     }
 
+    /// Prepare one physical type inventory tied to this checked semantic input.
+    #[must_use]
+    pub fn physical_plan(&self) -> hew_mir::physical::PhysicalPlan<'_> {
+        hew_mir::physical::PhysicalPlan::new(self.sir.checked())
+    }
+
     /// Realize verified semantics using the backend's measured target layouts.
     ///
     /// # Errors
@@ -789,7 +791,7 @@ impl SessionOutput {
         &self,
         target: hew_mir::PhysicalTarget,
     ) -> Result<hew_mir::VerifiedPhysicalModule, hew_mir::PhysicalError> {
-        hew_mir::lower_checked_physical_module(&self.sir.checked(), target)
+        self.physical_plan().lower(target)
     }
 }
 

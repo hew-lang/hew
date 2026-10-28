@@ -162,6 +162,14 @@ pub(crate) fn verify_physical_module(
             "physical module requires a target triple and data layout",
         ));
     }
+    let mut managed_ids = BTreeSet::new();
+    for (ty, managed) in &module.managed_types {
+        if !managed_ids.insert(managed.id) || &managed.recipe.ty != ty {
+            return Err(PhysicalError::new(
+                "physical managed type has a duplicate identity or mismatched recipe",
+            ));
+        }
+    }
     verify_structural_glue(module)?;
     verify_aggregate_glue(module)?;
     for (index, glue) in module.variant_glue.iter().enumerate() {

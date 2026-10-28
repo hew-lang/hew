@@ -2,7 +2,7 @@
 
 use super::*;
 
-impl LowerCtx {
+impl LowerCtx<'_> {
     pub(super) fn make_range_value(
         &mut self,
         start: HirExpr,

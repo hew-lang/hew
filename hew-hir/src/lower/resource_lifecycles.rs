@@ -539,7 +539,7 @@ pub(super) fn is_exact_release_forwarding_expr(
     }
 }
 
-impl LowerCtx {
+impl LowerCtx<'_> {
     /// Query checker signatures by their canonical receiver identity.
     pub(super) fn inherent_close_signature(
         &self,

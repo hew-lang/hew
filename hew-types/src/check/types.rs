@@ -416,6 +416,9 @@ pub enum RaceOperandKind {
 /// Result of type-checking a program.
 #[derive(Debug, Clone, Default)]
 pub struct TypeCheckOutput {
+    /// File discriminators for the exact normalized graph admitted by this check.
+    /// Every span-key producer and checked consumer shares this allocation.
+    pub file_span_indices: std::sync::Arc<hew_parser::module::FileSpanIndices>,
     /// Full canonical builtin source selected for this compilation. Registration,
     /// effect checking and HIR must share its exact declaration occurrences.
     /// Present after program preparation; absent only in unprepared fixtures.
@@ -3239,6 +3242,8 @@ pub(super) enum BareActorResolution {
     reason = "checker state flags are independent booleans"
 )]
 pub struct Checker {
+    /// The current admitted graph epoch; replaced only before graph registration.
+    pub(super) file_span_indices: std::sync::Arc<hew_parser::module::FileSpanIndices>,
     pub(super) expansions: std::sync::Arc<hew_parser::macro_syntax::ExpansionMap>,
     pub(super) input_references: HashMap<SpanKey, crate::compile_time::InputReference>,
     pub(super) input_provider: Option<std::sync::Arc<dyn crate::compile_time::InputProvider>>,
@@ -3289,10 +3294,6 @@ pub struct Checker {
     /// no file identity, so this table is the sole sound authority for "which
     /// file declared item N of directory module M" (rc1-F1 stage C).
     pub(super) module_item_sources: HashMap<String, Vec<std::path::PathBuf>>,
-    /// Checker span-key index assigned to each non-root source file. Resolved
-    /// import copies use this table to re-enter their declaration's file-local
-    /// import scope instead of resolving signatures in the importing file.
-    pub(super) source_file_span_indices: HashMap<std::path::PathBuf, u32>,
     /// Defining source file of the item currently being registered or checked.
     /// Per-item attribution wins for directory modules; their primary source
     /// is the fail-closed fallback when no item table was recorded. `None` for
@@ -4405,6 +4406,7 @@ impl Checker {
     )]
     pub fn new(module_registry: ModuleRegistry) -> Self {
         Self {
+            file_span_indices: std::sync::Arc::default(),
             expansions: std::sync::Arc::default(),
             input_provider: None,
             input_references: HashMap::new(),
@@ -4429,7 +4431,6 @@ impl Checker {
             canonical_std_module_sources: HashSet::new(),
             module_source_paths: HashMap::new(),
             module_item_sources: HashMap::new(),
-            source_file_span_indices: HashMap::new(),
             current_item_source: None,
             current_item_ordinal: 0,
             entry_selection: None,

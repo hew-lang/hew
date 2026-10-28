@@ -17,7 +17,7 @@ pub(super) struct ForkCallInputs {
     values: HashMap<SpanKey, HirBinding>,
 }
 
-impl LowerCtx {
+impl LowerCtx<'_> {
     pub(super) fn fork_input(&mut self, span: &Span, intent: IntentKind) -> Option<HirExpr> {
         let key = self.mk_key(span);
         let inputs = self.fork_call_inputs.as_ref()?;

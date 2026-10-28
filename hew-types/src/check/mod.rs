@@ -2919,6 +2919,7 @@ impl Checker {
                         normalized_program.as_deref(),
                         displays,
                     ));
+                self.admit_file_span_indices(&normalized.program);
                 self.implied_display_context = normalized.implied_context;
                 self.mint_source_declaration_identities(&normalized.program);
                 if let Some(graph) = &normalized.program.module_graph {
@@ -3014,6 +3015,7 @@ impl Checker {
     )]
     fn fork_dependency_state(&self) -> Self {
         Self {
+            file_span_indices: std::sync::Arc::clone(&self.file_span_indices),
             expansions: self.expansions.clone(),
             input_provider: self.input_provider.clone(),
             input_references: self.input_references.clone(),
@@ -3039,7 +3041,6 @@ impl Checker {
             canonical_std_module_sources: self.canonical_std_module_sources.clone(),
             module_source_paths: self.module_source_paths.clone(),
             module_item_sources: self.module_item_sources.clone(),
-            source_file_span_indices: self.source_file_span_indices.clone(),
             current_item_source: self.current_item_source.clone(),
             current_item_ordinal: self.current_item_ordinal.clone(),
             entry_selection: self.entry_selection.clone(),
@@ -3310,7 +3311,18 @@ impl Checker {
         }
     }
 
+    fn admit_file_span_indices(&mut self, program: &Program) {
+        self.file_span_indices = std::sync::Arc::new(
+            program
+                .module_graph
+                .as_ref()
+                .map(hew_parser::module::ModuleGraph::file_span_indices)
+                .unwrap_or_default(),
+        );
+    }
+
     fn prepare_program(&mut self, program: &Program, dependency_bootstrap: bool) {
+        self.admit_file_span_indices(program);
         // Mint the compile's module identities FIRST (rc1-F1 stage A): every
         // registration pass below resolves declaration identity through this
         // table, so it must be complete before any key is minted.
@@ -3340,12 +3352,10 @@ impl Checker {
         self.canonical_std_root_sources.clear();
         self.module_source_paths.clear();
         self.module_item_sources.clear();
-        self.source_file_span_indices.clear();
         self.current_item_source = None;
         self.current_item_ordinal = 0;
         self.file_type_decls.clear();
         if let Some(module_graph) = &program.module_graph {
-            let span_indices = module_graph.file_span_indices();
             self.module_item_sources
                 .clone_from(&module_graph.item_sources);
             // `hew check std/foo.hew` rewrites the graph root to a synthetic,
@@ -3363,13 +3373,6 @@ impl Checker {
                 if !module.source_paths.is_empty() {
                     self.module_source_paths
                         .insert(module_full_path.clone(), module.source_paths.clone());
-                    for source in &module.source_paths {
-                        if let Some(index) = span_indices.path_index(source) {
-                            self.source_file_span_indices
-                                .entry(source.clone())
-                                .or_insert(index);
-                        }
-                    }
                 }
                 if module.source_paths.iter().any(|source| {
                     crate::module_registry::is_canonical_stdlib_module_source(
@@ -3471,7 +3474,7 @@ impl Checker {
         // `self.deferred_inference_holes` and are drained by
         // `report_unresolved_inference_holes` at the end of check_program.
         if let Some(ref mg) = program.module_graph {
-            let span_indices = mg.file_span_indices();
+            let span_indices = std::sync::Arc::clone(&self.file_span_indices);
             for mod_id in &mg.topo_order {
                 if *mod_id == mg.root {
                     continue;
@@ -4001,7 +4004,7 @@ impl Checker {
         // `self.actor_protocol_descriptors`. Take it for the typed output here
         // rather than rebuilding: a rebuild would re-run collision detection
         // and double-emit the diagnostics.
-        self.select_wire_actor_codecs(program);
+        self.select_wire_actor_codecs();
         let actor_protocol_descriptors = std::mem::take(&mut self.actor_protocol_descriptors);
 
         // Compute the set of monomorphic builtin enum names that landed in
@@ -4207,6 +4210,7 @@ impl Checker {
             })
             .collect();
         let mut output = TypeCheckOutput {
+            file_span_indices: std::sync::Arc::clone(&self.file_span_indices),
             selected_builtin_program: self.selected_builtin_program.clone(),
             input_references: std::mem::take(&mut self.input_references),
             inputs: self
@@ -4532,7 +4536,7 @@ impl Checker {
                     .filter(|mod_id| **mod_id != mg.root)
                     .cloned()
                     .collect(),
-                Some(mg.file_span_indices()),
+                Some(std::sync::Arc::clone(&self.file_span_indices)),
             ),
             None => (Vec::new(), None),
         };
@@ -4583,7 +4587,7 @@ impl Checker {
                     .filter(|mod_id| **mod_id != mg.root)
                     .cloned()
                     .collect(),
-                Some(mg.file_span_indices()),
+                Some(std::sync::Arc::clone(&self.file_span_indices)),
             ),
             None => (Vec::new(), None),
         };
@@ -5365,7 +5369,7 @@ impl Checker {
     /// holds. It does NOT classify or default; it only reports gaps.
     fn validate_closure_facts_complete(&mut self, program: &Program) {
         let mut sites: Vec<(Span, Option<String>, u32)> = Vec::new();
-        collect_closure_literal_spans(program, &mut sites);
+        collect_closure_literal_spans(program, &self.file_span_indices, &mut sites);
         let mut diagnostics = Vec::new();
         emit_unresolved_closure_diagnostics(
             &sites,
@@ -5386,14 +5390,15 @@ impl Checker {
 /// hint only) and the owning `module_idx` (0 for the root unit, otherwise
 /// the per-file index of the declaring file).
 ///
-/// The `module_idx` MUST be assigned exactly as the checker assigns
-/// `current_module_idx` while body-checking: the file index
-/// [`hew_parser::module::ModuleGraph::file_span_indices`] gives each item.
-/// A directory module owns one index per file, so counting modules drifts
-/// for every module after it. The capture/escape facts for each closure are
-/// stamped with that same index, so the fail-closed lookup below can only
-/// line up if this walk reproduces the assignment site-for-site.
-fn collect_closure_literal_spans(program: &Program, out: &mut Vec<(Span, Option<String>, u32)>) {
+/// Read each item's canonical file discriminator from the admitted graph
+/// index used by body checking. Directory peers retain distinct identities,
+/// and capture/escape lookups share those identities without reallocating
+/// or reproducing the graph's numbering.
+fn collect_closure_literal_spans(
+    program: &Program,
+    span_indices: &hew_parser::module::FileSpanIndices,
+    out: &mut Vec<(Span, Option<String>, u32)>,
+) {
     let mut root_sites: Vec<(Span, Option<String>)> = Vec::new();
     for (item, _) in &program.items {
         collect_lambda_spans_in_item(item, &mut root_sites);
@@ -5402,7 +5407,6 @@ fn collect_closure_literal_spans(program: &Program, out: &mut Vec<(Span, Option<
         out.push((span, name, 0));
     }
     if let Some(mg) = &program.module_graph {
-        let span_indices = mg.file_span_indices();
         for mod_id in &mg.topo_order {
             if *mod_id == mg.root {
                 continue;

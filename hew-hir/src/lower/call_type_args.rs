@@ -2,7 +2,7 @@
 
 use super::*;
 
-impl LowerCtx {
+impl LowerCtx<'_> {
     pub(super) fn record_method_call_type_args(
         &mut self,
         callee: &str,

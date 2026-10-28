@@ -268,7 +268,7 @@ impl Checker {
     /// Complete alias targets once all lexical imports have been published.
     pub(in crate::check) fn resolve_alias_declarations(&mut self, program: &Program) {
         if let Some(graph) = &program.module_graph {
-            let indices = graph.file_span_indices();
+            let indices = std::sync::Arc::clone(&self.file_span_indices);
             for module_id in &graph.topo_order {
                 if *module_id == graph.root {
                     continue;
@@ -631,8 +631,7 @@ impl Checker {
             self.current_module_idx = self
                 .current_item_source
                 .as_ref()
-                .and_then(|source| self.source_file_span_indices.get(source))
-                .copied()
+                .and_then(|source| self.file_span_indices.path_index(source))
                 .unwrap_or(importer_file);
             let Item::Import(decl) = item else {
                 continue;
@@ -676,8 +675,7 @@ impl Checker {
             self.current_module_idx = self
                 .current_item_source
                 .as_ref()
-                .and_then(|source| self.source_file_span_indices.get(source))
-                .copied()
+                .and_then(|source| self.file_span_indices.path_index(source))
                 .unwrap_or(importer_file);
             match item {
                 Item::TypeDecl(td) => {
@@ -951,8 +949,7 @@ impl Checker {
             self.current_module_idx = self
                 .current_item_source
                 .as_ref()
-                .and_then(|source| self.source_file_span_indices.get(source))
-                .copied()
+                .and_then(|source| self.file_span_indices.path_index(source))
                 .unwrap_or(importer_file);
             if let Item::Impl(id) = item {
                 if Self::impl_decl_is_drop_impl(id) {
@@ -1080,8 +1077,7 @@ impl Checker {
             self.current_module_idx = self
                 .current_item_source
                 .as_ref()
-                .and_then(|source| self.source_file_span_indices.get(source))
-                .copied()
+                .and_then(|source| self.file_span_indices.path_index(source))
                 .unwrap_or(importer_file);
             match item {
                 Item::TypeDecl(td) => {
@@ -1297,8 +1293,7 @@ impl Checker {
             self.current_item_ordinal = item_idx;
             let declaring_file_idx = item_source_paths
                 .get(item_idx)
-                .and_then(|source| self.source_file_span_indices.get(source))
-                .copied()
+                .and_then(|source| self.file_span_indices.path_index(source))
                 .unwrap_or(importer_file_idx);
             match item {
                 Item::Function(fd) => {

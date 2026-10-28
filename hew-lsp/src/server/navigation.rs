@@ -277,7 +277,7 @@ fn source_uri_for_module_idx(uri: &Url, doc: &DocumentState, module_idx: u32) ->
         return Some(uri.clone());
     }
     let graph = doc.parse_result.program.module_graph.as_ref()?;
-    let indices = graph.file_span_indices();
+    let indices = &doc.type_output.as_ref()?.file_span_indices;
     graph
         .modules
         .values()

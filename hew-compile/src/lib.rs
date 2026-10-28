@@ -9636,12 +9636,17 @@ mod source_analysis_batch_tests {
             .typecheck_result
             .as_ref()
             .and_then(|result| result.tco.as_ref())
-            .unwrap();
+            .unwrap_or_else(|| panic!("frontend did not reach checking: {:?}", fresh.diagnostics));
         let checked = shared
             .typecheck_result
             .as_ref()
             .and_then(|result| result.tco.as_ref())
-            .unwrap();
+            .unwrap_or_else(|| {
+                panic!(
+                    "shared frontend did not reach checking: {:?}",
+                    shared.diagnostics
+                )
+            });
         assert_eq!(physical_declarations(fresh), physical_declarations(checked));
         assert_eq!(checked_resolutions(fresh), checked_resolutions(checked));
         assert_eq!(finalized_facts(fresh), finalized_facts(checked));
@@ -9677,6 +9682,141 @@ mod source_analysis_batch_tests {
         }
         assert_eq!(batch.dependency_bootstraps(), 1);
         assert_eq!(batch.reused_roots(), 0);
+    }
+
+    #[test]
+    fn directory_generated_displays_keep_final_file_indices() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("hew.toml"), "[package]\nname = \"app\"\n").unwrap();
+        let catalog = dir.path().join("catalog");
+        fs::create_dir(&catalog).unwrap();
+        fs::write(
+            catalog.join("catalog.hew"),
+            "pub fn first(value: i64 = 11) -> i64 { value }",
+        )
+        .unwrap();
+        fs::write(
+            catalog.join("other.hew"),
+            "pub fn other(value: i32 = 22) -> i32 { value }",
+        )
+        .unwrap();
+        let errors = catalog.join("errors.hew");
+        fs::write(&errors, "pub enum Fault { Broken; }\nimpl Error for Fault {}\npub fn message() -> string { f\"{Fault.Broken}\" }").unwrap();
+        let errors = errors.canonicalize().unwrap();
+        let mut options = test_options();
+        options.project_dir = Some(dir.path().to_path_buf());
+        let mut batch = SourceAnalysisBatch::new(options.clone());
+        let source = "import catalog; fn value() -> i64 { catalog.first() + (catalog.other() as i64) } fn main() { println(catalog.message()); }";
+        for name in ["consumer_first.hew", "consumer_second.hew"] {
+            let label = dir.path().join(name);
+            let state = assert_equivalent(source, label.to_str().unwrap(), &options, &mut batch);
+            assert!(state.stopped.is_none(), "{:?}", state.diagnostics);
+            let checked = state
+                .typecheck_result
+                .as_ref()
+                .unwrap()
+                .tco
+                .as_ref()
+                .unwrap();
+            let normalized = checked
+                .normalized_program
+                .as_ref()
+                .expect("Error generates Display");
+            let graph = normalized.program.module_graph.as_ref().unwrap();
+            let root_path = graph.modules[&graph.root].source_paths.first().unwrap();
+            assert_eq!(checked.file_span_indices.path_index(root_path), Some(0));
+            let (module, source_module) = graph
+                .modules
+                .iter()
+                .find(|(_, module)| module.source_paths.contains(&errors))
+                .unwrap();
+            let error_index = checked.file_span_indices.path_index(&errors).unwrap();
+            let error_items: Vec<_> = source_module
+                .items
+                .iter()
+                .enumerate()
+                .filter(|(ordinal, _)| graph.item_source(module, *ordinal) == Some(&errors))
+                .collect();
+            assert!(
+                error_items.len() > 3,
+                "generated Display stays in the declaring peer"
+            );
+            for (ordinal, _) in error_items {
+                assert_eq!(
+                    checked.file_span_indices.item_index(module, ordinal),
+                    Some(error_index)
+                );
+            }
+            let lowered = hew_hir::lower_program(
+                &state.program,
+                checked,
+                &hew_hir::ResolutionCtx,
+                hew_hir::TargetArch::host(),
+            );
+            assert!(lowered.diagnostics.is_empty(), "{:?}", lowered.diagnostics);
+            assert!(hew_hir::analyze_hir(&lowered.module)
+                .diagnostics()
+                .is_empty());
+        }
+        // User impl declarations deliberately use full checking, not the
+        // independent-function dependency checkpoint.
+        assert_eq!(batch.reused_roots(), 0);
+    }
+
+    #[test]
+    fn cached_directory_defaults_keep_final_file_indices() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("hew.toml"), "[package]\nname = \"app\"\n").unwrap();
+        let catalog = dir.path().join("catalog");
+        fs::create_dir(&catalog).unwrap();
+        fs::write(
+            catalog.join("catalog.hew"),
+            "pub fn first(value: i64 = 11) -> i64 { value }",
+        )
+        .unwrap();
+        fs::write(
+            catalog.join("other.hew"),
+            "pub fn other(value: i32 = 22) -> i32 { value }",
+        )
+        .unwrap();
+        let first = catalog.join("catalog.hew").canonicalize().unwrap();
+        let other = catalog.join("other.hew").canonicalize().unwrap();
+        let mut options = test_options();
+        options.project_dir = Some(dir.path().to_path_buf());
+        let mut batch = SourceAnalysisBatch::new(options.clone());
+        let source =
+            "import catalog; fn main() { println(catalog.first()); println(catalog.other()); }";
+        for name in ["consumer_first.hew", "consumer_second.hew"] {
+            let label = dir.path().join(name);
+            let state = assert_equivalent(source, label.to_str().unwrap(), &options, &mut batch);
+            assert!(state.stopped.is_none(), "{:?}", state.diagnostics);
+            let checked = state
+                .typecheck_result
+                .as_ref()
+                .unwrap()
+                .tco
+                .as_ref()
+                .unwrap();
+            let graph = state.program.module_graph.as_ref().unwrap();
+            let root = graph.modules[&graph.root].source_paths.first().unwrap();
+            assert_eq!(checked.file_span_indices.path_index(root), Some(0));
+            let first_index = checked.file_span_indices.path_index(&first).unwrap();
+            let other_index = checked.file_span_indices.path_index(&other).unwrap();
+            assert_ne!(first_index, other_index);
+            let lowered = hew_hir::lower_program(
+                &state.program,
+                checked,
+                &hew_hir::ResolutionCtx,
+                hew_hir::TargetArch::host(),
+            );
+            assert!(lowered.diagnostics.is_empty(), "{:?}", lowered.diagnostics);
+            assert!(hew_hir::analyze_hir(&lowered.module)
+                .diagnostics()
+                .is_empty());
+        }
+        assert_eq!(batch.dependency_bootstraps(), 1);
+        assert_eq!(batch.dependency_cache_hits(), 1);
+        assert_eq!(batch.reused_roots(), 2);
     }
 
     #[test]

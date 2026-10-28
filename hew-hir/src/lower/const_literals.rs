@@ -1,7 +1,7 @@
 use super::*;
 use hew_types::compile_time::{ConstantValue, TypedConstant};
 
-impl LowerCtx {
+impl LowerCtx<'_> {
     fn const_fact<T>(&mut self, result: Result<T, String>, span: &Span) -> Option<T> {
         match result {
             Ok(value) => Some(value),

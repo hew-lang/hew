@@ -163,17 +163,17 @@ struct FileDiagnostic {
 /// The type diagnostics a check of `root` reports, with the file each is in.
 struct UnitDiagnostics {
     diagnostics: Vec<(Option<PathBuf>, FileDiagnostic)>,
-    indices: hew_parser::module::FileSpanIndices,
+    indices: std::sync::Arc<hew_parser::module::FileSpanIndices>,
     checked: bool,
 }
 
 fn unit_diagnostics(root: &Path, documents: &SourceSet, units: &mut CheckUnits) -> UnitDiagnostics {
     let state = units.check(root, documents);
     let indices = state
-        .program
-        .module_graph
+        .typecheck_result
         .as_ref()
-        .map(hew_parser::module::ModuleGraph::file_span_indices)
+        .and_then(|result| result.tco.as_ref())
+        .map(|output| std::sync::Arc::clone(&output.file_span_indices))
         .unwrap_or_default();
     let checked = state
         .typecheck_result

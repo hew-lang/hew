@@ -3,7 +3,7 @@
 use super::*;
 use hew_parser::ast::{Ident, Path};
 
-impl LowerCtx {
+impl LowerCtx<'_> {
     pub(super) fn lower_expr(&mut self, expr: &Spanned<Expr>, intent: IntentKind) -> HirExpr {
         let mut lowered = self.lower_expr_with_tail_coercion(expr, intent);
         let normalized_ty = self.restore_type_declaration_facts(lowered.ty.clone());
@@ -483,15 +483,12 @@ impl LowerCtx {
                 // `from_ty` returns Err and we fall back to the `lower_literal` default.
                 let ty = {
                     let checker_key = self.mk_key(&span);
-                    if let Some(checker_ty) = self.expr_types.get(&checker_key) {
-                        ResolvedTy::from_ty(checker_ty).unwrap_or(default_ty)
+                    if let Some(checker_ty) = self.checked_expr_type(&checker_key) {
+                        ResolvedTy::from_ty(&checker_ty).unwrap_or(default_ty)
                     } else {
                         default_ty
                     }
                 };
-                // W4.047 P1.2: prove the typed handoff agrees with the live
-                // path at this fail-open literal site (no behaviour change).
-                self.assert_resolved_ty_totality(&span);
                 (kind, ty)
             }
             Expr::RegexLiteral(pattern) => {
@@ -503,18 +500,16 @@ impl LowerCtx {
                 // resolved type rather than hard-coding keeps capture / generic
                 // resolution consistent with the rest of the pipeline.
                 let checker_key = self.mk_key(&span);
-                let resolved_ty = if let Some(ty) = self.expr_types.get(&checker_key).cloned() {
-                    ResolvedTy::from_ty(&ty).unwrap_or(ResolvedTy::named_path(
-                        &self.defs,
-                        "std.text.regex.Pattern",
-                        Vec::new(),
-                    ))
-                } else {
-                    ResolvedTy::named_path(&self.defs, "std.text.regex.Pattern", Vec::new())
-                };
-                // W4.047 P1.2: prove the typed handoff agrees with the live
-                // path at this fail-open regex-literal site (no behaviour change).
-                self.assert_resolved_ty_totality(&span);
+                let resolved_ty =
+                    if let Some(ty) = self.checked_expr_type(&checker_key).map(Cow::into_owned) {
+                        ResolvedTy::from_ty(&ty).unwrap_or(ResolvedTy::named_path(
+                            &self.defs,
+                            "std.text.regex.Pattern",
+                            Vec::new(),
+                        ))
+                    } else {
+                        ResolvedTy::named_path(&self.defs, "std.text.regex.Pattern", Vec::new())
+                    };
                 // No named captures from a standalone literal — captures are
                 // resolved per-arm in the match-arm context. Pass an empty
                 // capture list; the table deduplicates by pattern only.
@@ -545,7 +540,7 @@ impl LowerCtx {
                 // here, and an impl/trait method's `self` receiver is a real
                 // binding, so `lookup` resolves it before this arm applies.
                 let checker_key = self.mk_key(&span);
-                match self.expr_types.get(&checker_key).cloned() {
+                match self.checked_expr_type(&checker_key).map(Cow::into_owned) {
                     Some(ty) => match ResolvedTy::from_ty(&ty) {
                         Ok(
                             resolved @ ResolvedTy::Named {
@@ -648,10 +643,10 @@ impl LowerCtx {
                         span,
                     };
                 }
-                let Some(checked_ty) = self.expr_types.get(&dispatch_key) else {
+                let Some(checked_ty) = self.checked_expr_type(&dispatch_key) else {
                     return self.unsupported_expr(span, "binary expression has no checked type");
                 };
-                let Ok(ty) = ResolvedTy::from_ty(checked_ty) else {
+                let Ok(ty) = ResolvedTy::from_ty(&checked_ty) else {
                     return self.unsupported_expr(span, "binary expression type is unresolved");
                 };
                 if matches!(op, BinaryOp::Range | BinaryOp::RangeInclusive) {
@@ -750,9 +745,9 @@ impl LowerCtx {
                 let checked_constructor = self
                     .dyn_trait_coercions
                     .get(&self.mk_key(&span))
-                    .map(|coercion| &coercion.concrete_type)
-                    .or_else(|| self.expr_types.get(&self.mk_key(&span)));
-                let checker_ctor_ty = match checked_constructor.map(ResolvedTy::from_ty) {
+                    .map(|coercion| Cow::Borrowed(&coercion.concrete_type))
+                    .or_else(|| self.checked_expr_type(&self.mk_key(&span)));
+                let checker_ctor_ty = match checked_constructor.map(|ty| ResolvedTy::from_ty(&ty)) {
                     Some(Ok(ty)) => Some(ty),
                     missing_or_poisoned => {
                         self.diagnostics.push(HirDiagnostic::new(
@@ -911,10 +906,10 @@ impl LowerCtx {
                 if !self.task_scope_results.contains(&self.mk_key(&span)) {
                     return self.unsupported_expr(span, "scope lacks its checked result lifetime");
                 }
-                let Some(checked_ty) = self.expr_types.get(&self.mk_key(&span)) else {
+                let Some(checked_ty) = self.checked_expr_type(&self.mk_key(&span)) else {
                     return self.unsupported_expr(span, "scope has no checked result type");
                 };
-                let Ok(result_ty) = ResolvedTy::from_ty(checked_ty) else {
+                let Ok(result_ty) = ResolvedTy::from_ty(&checked_ty) else {
                     return self.unsupported_expr(span, "scope result type is unresolved");
                 };
                 self.scope_depth += 1;
@@ -946,11 +941,14 @@ impl LowerCtx {
                     Expr::Tuple(branches) => Some(branches.as_slice()),
                     _ => None,
                 }) {
-                    let Some(Ty::Task(output)) = self.expr_types.get(&self.mk_key(&span)) else {
+                    let Some(Ty::Task(output)) = self
+                        .checked_expr_type(&self.mk_key(&span))
+                        .map(Cow::into_owned)
+                    else {
                         return self
                             .unsupported_expr(span, "fork batch has no checked task result");
                     };
-                    let Ok(output_ty) = ResolvedTy::from_ty(output) else {
+                    let Ok(output_ty) = ResolvedTy::from_ty(&output) else {
                         return self.unsupported_expr(span, "fork batch result type is unresolved");
                     };
                     let batch =
@@ -967,10 +965,12 @@ impl LowerCtx {
                     return self.unsupported_expr(span, "fork lacks its checked result lifetime");
                 }
                 let checker_key = self.mk_key(&span);
-                let Some(Ty::Task(output)) = self.expr_types.get(&checker_key) else {
+                let Some(Ty::Task(output)) =
+                    self.checked_expr_type(&checker_key).map(Cow::into_owned)
+                else {
                     return self.unsupported_expr(span, "fork block has no checked task result");
                 };
-                let Ok(output_ty) = ResolvedTy::from_ty(output) else {
+                let Ok(output_ty) = ResolvedTy::from_ty(&output) else {
                     return self.unsupported_expr(span, "fork block result type is unresolved");
                 };
                 let task_ty = ResolvedTy::Task(Box::new(output_ty.clone()));
@@ -1002,10 +1002,10 @@ impl LowerCtx {
                 if !self.task_scope_results.contains(&self.mk_key(&span)) {
                     return self.unsupported_expr(span, "scope lacks its checked result lifetime");
                 }
-                let Some(checked_ty) = self.expr_types.get(&self.mk_key(&span)) else {
+                let Some(checked_ty) = self.checked_expr_type(&self.mk_key(&span)) else {
                     return self.unsupported_expr(span, "scope has no checked result type");
                 };
-                let Ok(result_ty) = ResolvedTy::from_ty(checked_ty) else {
+                let Ok(result_ty) = ResolvedTy::from_ty(&checked_ty) else {
                     return self.unsupported_expr(span, "scope result type is unresolved");
                 };
                 let duration = self.lower_expr(duration, IntentKind::Read);
@@ -1292,7 +1292,9 @@ impl LowerCtx {
                 // we never re-derive the element type from the container;
                 // the checker is the sole owner.
                 let checker_key = self.mk_key(&span);
-                let result_ty = if let Some(ty) = self.expr_types.get(&checker_key).cloned() {
+                let result_ty = if let Some(ty) =
+                    self.checked_expr_type(&checker_key).map(Cow::into_owned)
+                {
                     match ResolvedTy::from_ty(&ty) {
                         Ok(resolved) => resolved,
                         Err(err) => {
@@ -1716,7 +1718,8 @@ impl LowerCtx {
                         }
                     } else {
                         let checker_key = self.mk_key(&span);
-                        let field_ty = if let Some(ty) = self.expr_types.get(&checker_key).cloned()
+                        let field_ty = if let Some(ty) =
+                            self.checked_expr_type(&checker_key).map(Cow::into_owned)
                         {
                             match ResolvedTy::from_ty(&ty) {
                                 // `Ty::Named` does not carry HIR's opacity bit.
@@ -1820,10 +1823,8 @@ impl LowerCtx {
                 // The result type is looked up from the checker's `resolved_expr_types`
                 // side-table, mirroring `Expr::If` (same authority path).
                 let result_ty = self
-                    .resolved_expr_types
-                    .get(&self.mk_key(&span))
-                    .cloned()
-                    .unwrap_or(ResolvedTy::Unit);
+                    .checked_resolved_type(&self.mk_key(&span))
+                    .map_or(ResolvedTy::Unit, Cow::into_owned);
                 let lowered = self.lower_condition_chain(
                     conditions,
                     body,

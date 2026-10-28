@@ -2,7 +2,7 @@
 
 use super::*;
 
-impl LowerCtx {
+impl LowerCtx<'_> {
     pub(super) fn checked_actor_lambda_handle_ty(&mut self, span: &Span) -> ResolvedTy {
         if let Some(ty) = self.checker_expr_ty_if_present(span) {
             if ty.is_builtin(hew_types::BuiltinType::ActorFn)
@@ -100,7 +100,7 @@ impl LowerCtx {
         span: std::ops::Range<usize>,
     ) -> (HirExprKind, ResolvedTy) {
         let checker_key = self.mk_key(&span);
-        let gen_ty = if let Some(ty) = self.expr_types.get(&checker_key).cloned() {
+        let gen_ty = if let Some(ty) = self.checked_expr_type(&checker_key).map(Cow::into_owned) {
             match ResolvedTy::from_ty(&ty) {
                 Ok(resolved) => resolved,
                 Err(err) => {
@@ -205,13 +205,13 @@ impl LowerCtx {
         span: std::ops::Range<usize>,
     ) -> (HirExprKind, ResolvedTy) {
         let checker_key = self.mk_key(&span);
-        let Some(ty) = self.expr_types.get(&checker_key) else {
+        let Some(ty) = self.checked_expr_type(&checker_key) else {
             return self.reject_closure_boundary(
                 span,
                 "expr_types has no callable type for closure literal span",
             );
         };
-        let closure_ty = match ResolvedTy::from_ty(ty) {
+        let closure_ty = match ResolvedTy::from_ty(&ty) {
             Ok(ty) => ty,
             Err(error) => return self.reject_closure_boundary(span, error.to_string()),
         };

@@ -2,7 +2,7 @@
 
 use super::*;
 
-impl LowerCtx {
+impl LowerCtx<'_> {
     pub(super) fn seed_stdlib_fn_registry(&mut self) {
         for (index, builtin) in stdlib_catalog::entries().iter().enumerate() {
             // W4.001 Stage C0b: `LayoutDescriptorSymbol` rows declare

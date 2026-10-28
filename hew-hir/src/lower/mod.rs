@@ -6,6 +6,7 @@
 )]
 
 use std::{
+    borrow::Cow,
     collections::{HashMap, HashSet},
     sync::Arc,
 };
@@ -757,8 +758,18 @@ fn machine_event_surface_type(machine: &str) -> String {
     format!("{machine}.Event")
 }
 
+/// A declaration-owned receiver and its checker/HIR representations.
 #[derive(Debug)]
-struct LowerCtx {
+struct DefaultReceiver {
+    parameter: hew_types::ParamHead,
+    resolved: ResolvedTy,
+    checker: Ty,
+}
+
+#[derive(Debug)]
+struct LowerCtx<'checked> {
+    /// Receiver binders active while materializing trait default bodies.
+    default_receivers: Vec<DefaultReceiver>,
     compile_time_values: HashMap<SpanKey, hew_types::compile_time::ConstantValue>,
     ids: IdGen,
     checked_sites: HashMap<SiteId, SpanKey>,
@@ -770,7 +781,7 @@ struct LowerCtx {
     checked_field_scopes: Vec<HashMap<(hew_types::NominalId, u32), ScopeBinding>>,
     checked_actor_fields: HashMap<TypeBindingId, (hew_types::NominalId, u32)>,
     /// Exact source-site resolutions; synthetic expressions have no row.
-    resolutions: HashMap<SpanKey, Resolution>,
+    resolutions: &'checked HashMap<SpanKey, Resolution>,
     current_actor_nominal: Option<hew_types::NominalId>,
     /// Maps function name → pre-allocated `ItemId` + return type + param types.
     fn_registry: HashMap<String, FnEntry>,
@@ -819,11 +830,11 @@ struct LowerCtx {
     diagnostics: Vec<HirDiagnostic>,
     /// Checker-owned function and method signatures used for iterator dispatch
     /// and concrete call instantiation.
-    fn_sigs: HashMap<hew_types::DefId, hew_types::FnSig>,
+    fn_sigs: &'checked HashMap<hew_types::DefId, hew_types::FnSig>,
     /// Checker-selected targets for ordinary calls, keyed by the call span.
     /// Missing facts lower as an explicit unsupported target; HIR never
     /// guesses from the callee spelling.
-    direct_call_targets: HashMap<SpanKey, CallTarget>,
+    direct_call_targets: &'checked HashMap<SpanKey, CallTarget>,
     /// Checker-owned impl-method declaration identities.  Keys are linker
     /// presentation strings retained only to locate the already-allocated ID;
     /// HIR never constructs an ID from a method spelling.
@@ -945,14 +956,14 @@ struct LowerCtx {
     /// `MethodTarget.symbol_name` verbatim. MIR consumes that symbol via
     /// `Terminator::Call`. This is the production path for builtin
     /// HashMap/HashSet dispatch today; Vec/Option/Result migrate later.
-    resolved_calls: HashMap<SpanKey, hew_types::ResolvedCall>,
+    resolved_calls: &'checked HashMap<SpanKey, hew_types::ResolvedCall>,
     /// Checker-inferred types for every expression, keyed by expression span.
     /// Consulted at `Expr::Call` sites to determine the call-result type from
     /// checker authority rather than re-deriving from the callee's HIR type.
     /// This is the canonical source of truth for builtin callee result types
     /// (e.g. `link`) that have no AST `fn` entry and therefore no
     /// `fn_registry` hit.
-    expr_types: HashMap<SpanKey, Ty>,
+    expr_types: &'checked HashMap<SpanKey, Ty>,
     /// Checker-authoritative closed ownership classification for each concrete
     /// type instance. HIR projects this fact but does not derive a second
     /// ownership answer from type shape.
@@ -979,21 +990,12 @@ struct LowerCtx {
     /// later stages through the same declaration shape.
     extern_method_signatures:
         HashMap<(hew_types::DefId, String), (ItemId, hew_types::ExternMethodSignature)>,
-    /// W4.047 P1.2 — the **typed** checker→HIR handoff map (the shadow of
-    /// `expr_types`). Carries `ResolvedTy` (never `Ty::Var`/`Ty::Error`/literal)
-    /// for every concrete accepted span; cloned verbatim from
-    /// `TypeCheckOutput::resolved_expr_types`.
-    ///
-    /// In Phase 1 this is a *shadow*: lowering still derives every node type
-    /// from `expr_types`, and the typed map is only consulted by the
-    /// `assert_resolved_ty_totality` net to prove — across the whole real
-    /// corpus — that it agrees with the live `expr_types`→`from_ty` path at
-    /// every fail-open / boundary-violation site. Zero behaviour change in
-    /// Phase 1; Phase 2 promotes this to the primary read path.
-    resolved_expr_types: HashMap<SpanKey, ResolvedTy>,
+    /// Checker-resolved expression types, borrowed for the lowering transaction.
+    /// Queries apply the current trait-default receiver without rewriting facts.
+    resolved_expr_types: &'checked HashMap<SpanKey, ResolvedTy>,
     declaration_type_parameters:
         HashMap<hew_types::DefId, (hew_types::ModuleId, Vec<Span>, Vec<hew_types::ParamHead>)>,
-    resolved_annotation_types: HashMap<SpanKey, ResolvedTy>,
+    resolved_annotation_types: &'checked HashMap<SpanKey, ResolvedTy>,
     associated_type_schemas: hew_types::AssociatedTypeSchemas,
     /// Checker-authoritative RHS spans for accepted `lhs is TypeName`
     /// patterns. When present, the RHS identifier is a type pattern, not a

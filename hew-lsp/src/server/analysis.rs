@@ -1,4 +1,7 @@
+use std::borrow::Cow;
+use std::cell::OnceCell;
 use std::collections::{HashMap, HashSet, VecDeque};
+use std::rc::Rc;
 
 use dashmap::DashMap;
 use hew_analysis::util::compute_line_offsets;
@@ -322,11 +325,11 @@ pub(super) fn analyze_document_with_batch(
             .extend(diagnostics);
     }
 
-    let document_file = state.program.module_graph.as_ref().and_then(|graph| {
+    let document_file = type_output.as_ref().and_then(|output| {
         let path = root_path
             .canonicalize()
             .unwrap_or_else(|_| root_path.clone());
-        graph.file_span_indices().path_index(&path)
+        output.file_span_indices.path_index(&path)
     });
     if let (Some(tco), Some(file)) = (type_output.as_mut(), document_file) {
         hew_analysis::identity::focus_file(tco, file);
@@ -504,52 +507,83 @@ pub(super) fn insert_diagnostic(
     diagnostics_by_uri.entry(uri).or_default().push(diagnostic);
 }
 
-/// Where a shared-frontend diagnostic points: its own module's file when it
-/// carries one, otherwise the document being analyzed.
-struct DiagnosticTarget {
+/// Source text, positions and fix identity for one publication snapshot.
+struct DiagnosticSnapshot<'a> {
+    source: &'a str,
+    line_offsets: Cow<'a, [usize]>,
+    source_hash: OnceCell<String>,
+}
+
+struct DiagnosticTarget<'a> {
     uri: Url,
-    source: String,
-    line_offsets: Vec<usize>,
+    snapshot: Rc<DiagnosticSnapshot<'a>>,
 }
 
-impl DiagnosticTarget {
+impl DiagnosticTarget<'_> {
     fn range(&self, span: &hew_parser::ast::Span) -> tower_lsp_server::ls_types::Range {
-        super::span_to_range(&self.source, &self.line_offsets, span)
+        super::span_to_range(self.snapshot.source, &self.snapshot.line_offsets, span)
     }
 }
 
-fn diagnostic_target(
-    filename: Option<&str>,
-    text: Option<&str>,
-    root_uri: &Url,
-    root_source: &str,
-    root_line_offsets: &[usize],
-) -> DiagnosticTarget {
-    let mut uri = filename
-        .map(std::path::Path::new)
-        .and_then(Url::from_checked_file_path)
-        .unwrap_or_else(|| root_uri.clone());
-    if same_source_file(&uri, root_uri) {
-        uri = root_uri.clone();
+/// Reuse source-derived facts within one immutable diagnostic publication.
+/// A filename may carry distinct snapshots, so its text also selects the entry.
+struct DiagnosticSources<'a> {
+    root_uri: &'a Url,
+    root: Rc<DiagnosticSnapshot<'a>>,
+    files: HashMap<Url, Vec<Rc<DiagnosticSnapshot<'a>>>>,
+}
+
+impl<'a> DiagnosticSources<'a> {
+    fn new(root_uri: &'a Url, source: &'a str, line_offsets: &'a [usize]) -> Self {
+        Self {
+            root_uri,
+            root: Rc::new(DiagnosticSnapshot {
+                source,
+                line_offsets: Cow::Borrowed(line_offsets),
+                source_hash: OnceCell::new(),
+            }),
+            files: HashMap::new(),
+        }
     }
-    match text {
-        Some(text) if uri != *root_uri => DiagnosticTarget {
-            uri,
-            line_offsets: compute_line_offsets(text),
-            source: text.to_string(),
-        },
-        _ => DiagnosticTarget {
-            uri,
-            source: root_source.to_string(),
-            line_offsets: root_line_offsets.to_vec(),
-        },
+
+    fn target(&mut self, filename: Option<&str>, text: Option<&'a str>) -> DiagnosticTarget<'a> {
+        let uri = filename
+            .map(std::path::Path::new)
+            .and_then(Url::from_checked_file_path)
+            .unwrap_or_else(|| self.root_uri.clone());
+        self.target_at(uri, text)
+    }
+
+    fn target_at(&mut self, mut uri: Url, text: Option<&'a str>) -> DiagnosticTarget<'a> {
+        if same_source_file(&uri, self.root_uri) {
+            uri = self.root_uri.clone();
+        }
+        let source = text.unwrap_or(self.root.source);
+        let snapshot = if source == self.root.source {
+            Rc::clone(&self.root)
+        } else {
+            let snapshots = self.files.entry(uri.clone()).or_default();
+            if let Some(snapshot) = snapshots.iter().find(|snapshot| snapshot.source == source) {
+                Rc::clone(snapshot)
+            } else {
+                let snapshot = Rc::new(DiagnosticSnapshot {
+                    source,
+                    line_offsets: Cow::Owned(compute_line_offsets(source)),
+                    source_hash: OnceCell::new(),
+                });
+                snapshots.push(Rc::clone(&snapshot));
+                snapshot
+            }
+        };
+        DiagnosticTarget { uri, snapshot }
     }
 }
 
-fn type_related_information(
+fn type_related_information<'a>(
     diagnostic: &hew_types::TypeError,
-    note_sources: &[Option<(String, String)>],
-    target: &DiagnosticTarget,
+    note_sources: &'a [Option<(String, String)>],
+    target: &DiagnosticTarget<'a>,
+    sources: &mut DiagnosticSources<'a>,
 ) -> Option<Vec<DiagnosticRelatedInformation>> {
     (!diagnostic.notes.is_empty()).then(|| {
         diagnostic
@@ -560,11 +594,7 @@ fn type_related_information(
                 let note_target = note_sources.get(index).and_then(Option::as_ref).and_then(
                     |(text, filename)| {
                         let uri = Url::from_checked_file_path(std::path::Path::new(filename))?;
-                        Some(DiagnosticTarget {
-                            uri,
-                            line_offsets: compute_line_offsets(text),
-                            source: text.clone(),
-                        })
+                        Some(sources.target_at(uri, Some(text)))
                     },
                 );
                 let note_target = note_target.as_ref().unwrap_or(target);
@@ -580,7 +610,10 @@ fn type_related_information(
     })
 }
 
-fn parse_lsp_diagnostic(error: &hew_parser::ParseError, target: &DiagnosticTarget) -> Diagnostic {
+fn parse_lsp_diagnostic(
+    error: &hew_parser::ParseError,
+    target: &DiagnosticTarget<'_>,
+) -> Diagnostic {
     Diagnostic {
         range: target.range(&error.span),
         severity: Some(match error.severity {
@@ -602,10 +635,11 @@ fn parse_lsp_diagnostic(error: &hew_parser::ParseError, target: &DiagnosticTarge
     }
 }
 
-fn type_lsp_diagnostic(
+fn type_lsp_diagnostic<'a>(
     error: &hew_types::TypeError,
-    note_sources: &[Option<(String, String)>],
-    target: &DiagnosticTarget,
+    note_sources: &'a [Option<(String, String)>],
+    target: &DiagnosticTarget<'a>,
+    sources: &mut DiagnosticSources<'a>,
 ) -> Diagnostic {
     Diagnostic {
         range: target.range(&error.span),
@@ -622,7 +656,7 @@ fn type_lsp_diagnostic(
                 error.suggestions.join(", ")
             )
         },
-        related_information: type_related_information(error, note_sources, target),
+        related_information: type_related_information(error, note_sources, target, sources),
         data: Some(bind_diagnostic_fixes(
             diagnostic_data(&error.kind, &error.suggestions),
             target,
@@ -632,12 +666,10 @@ fn type_lsp_diagnostic(
     }
 }
 
-fn message_lsp_diagnostic(
-    message: &hew_compile::FrontendMessageDiagnostic,
-    target: &DiagnosticTarget,
-    root_uri: &Url,
-    root_source: &str,
-    root_line_offsets: &[usize],
+fn message_lsp_diagnostic<'a>(
+    message: &'a hew_compile::FrontendMessageDiagnostic,
+    target: &DiagnosticTarget<'a>,
+    sources: &mut DiagnosticSources<'a>,
 ) -> Diagnostic {
     Diagnostic {
         range: message
@@ -657,13 +689,7 @@ fn message_lsp_diagnostic(
                 .notes
                 .iter()
                 .map(|note| {
-                    let note_target = diagnostic_target(
-                        Some(&note.filename),
-                        Some(&note.source),
-                        root_uri,
-                        root_source,
-                        root_line_offsets,
-                    );
+                    let note_target = sources.target(Some(&note.filename), Some(&note.source));
                     DiagnosticRelatedInformation {
                         location: Location {
                             uri: note_target.uri.clone(),
@@ -693,27 +719,22 @@ fn build_frontend_diagnostics_by_uri(
     use hew_compile::FrontendDiagnosticKind;
 
     let mut diagnostics_by_uri = DiagnosticMap::new();
+    let mut sources = DiagnosticSources::new(root_uri, root_source, root_line_offsets);
 
     for diagnostic in diagnostics {
         let inline_source = match &diagnostic.kind {
             FrontendDiagnosticKind::Message(message) => message.source.as_deref(),
             _ => diagnostic.source.as_deref(),
         };
-        let target = diagnostic_target(
-            diagnostic.filename.as_deref(),
-            inline_source,
-            root_uri,
-            root_source,
-            root_line_offsets,
-        );
+        let target = sources.target(diagnostic.filename.as_deref(), inline_source);
 
         let lsp_diagnostic = match &diagnostic.kind {
             FrontendDiagnosticKind::Parse(error) => parse_lsp_diagnostic(error, &target),
             FrontendDiagnosticKind::Type(error) => {
-                type_lsp_diagnostic(error, &diagnostic.note_sources, &target)
+                type_lsp_diagnostic(error, &diagnostic.note_sources, &target, &mut sources)
             }
             FrontendDiagnosticKind::Message(message) => {
-                message_lsp_diagnostic(message, &target, root_uri, root_source, root_line_offsets)
+                message_lsp_diagnostic(message, &target, &mut sources)
             }
             FrontendDiagnosticKind::Hir(_) => continue,
         };
@@ -910,12 +931,14 @@ pub(super) fn severity_to_lsp(severity: Severity) -> DiagnosticSeverity {
 
 fn bind_diagnostic_fixes(
     mut data: serde_json::Value,
-    target: &DiagnosticTarget,
+    target: &DiagnosticTarget<'_>,
     fixes: &[hew_parser::diagnostic::DiagnosticFix],
 ) -> serde_json::Value {
     data["sourceUri"] = serde_json::json!(target.uri.as_str());
-    data["source_hash"] =
-        serde_json::json!(hew_analysis::code_actions::source_hash(&target.source));
+    data["source_hash"] = serde_json::json!(target
+        .snapshot
+        .source_hash
+        .get_or_init(|| hew_analysis::code_actions::source_hash(target.snapshot.source)));
     data["fixes"] = serde_json::json!(fixes);
     data
 }
@@ -953,7 +976,7 @@ fn unnecessary_diagnostic_tags(kind: &TypeErrorKind) -> Option<Vec<DiagnosticTag
 pub(super) mod tests {
     use hew_hir::{HirItem, HirModule, HirNodeId};
     use hew_parser::ast::Span;
-    use tower_lsp_server::ls_types::Position;
+    use tower_lsp_server::ls_types::{Position, Range};
 
     use super::*;
 
@@ -1038,6 +1061,64 @@ pub(super) mod tests {
             message,
             "ConstIntegerEvaluation\n\nnote: constant arithmetic overflows u8"
         );
+    }
+
+    #[test]
+    fn frontend_diagnostics_keep_distinct_text_snapshots_for_one_uri() {
+        let path = std::env::temp_dir().join("hew-lsp-diagnostic-shared.hew");
+        let uri = Url::from_checked_file_path(&path).unwrap();
+        let filename = path.to_string_lossy().into_owned();
+        let root_source = "fn main() {}";
+        let first = "😀x\n";
+        let second = "line\n😀x\n";
+        let diagnostics = vec![
+            hew_compile::FrontendDiagnostic {
+                source: Some(first.to_string()),
+                filename: Some(filename.clone()),
+                note_sources: vec![Some((second.to_string(), filename.clone()))],
+                kind: hew_compile::FrontendDiagnosticKind::Type(
+                    hew_types::TypeError::new(TypeErrorKind::ReturnTypeMismatch, 4..5, "first")
+                        .with_note(9..10, "other snapshot"),
+                ),
+            },
+            hew_compile::FrontendDiagnostic {
+                source: Some(second.to_string()),
+                filename: Some(filename.clone()),
+                note_sources: Vec::new(),
+                kind: hew_compile::FrontendDiagnosticKind::Type(hew_types::TypeError::new(
+                    TypeErrorKind::ReturnTypeMismatch,
+                    9..10,
+                    "second",
+                )),
+            },
+        ];
+        let published = build_frontend_diagnostics_by_uri(
+            &uri,
+            root_source,
+            &compute_line_offsets(root_source),
+            &diagnostics,
+            None,
+        );
+        let rows = &published[&uri];
+        assert_eq!(
+            rows[0].range,
+            Range::new(Position::new(0, 2), Position::new(0, 3))
+        );
+        assert_eq!(
+            rows[1].range,
+            Range::new(Position::new(1, 2), Position::new(1, 3))
+        );
+        let related = &rows[0].related_information.as_ref().unwrap()[0].location;
+        assert_eq!(related.uri, uri);
+        assert_eq!(related.range, rows[1].range);
+        for (row, source) in rows.iter().zip([first, second]) {
+            let data = row.data.as_ref().unwrap();
+            assert_eq!(data["sourceUri"], uri.as_str());
+            assert_eq!(
+                data["source_hash"],
+                hew_analysis::code_actions::source_hash(source)
+            );
+        }
     }
 
     #[test]

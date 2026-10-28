@@ -1259,8 +1259,7 @@ impl Checker {
             .map(|module| self.defs.module_path(module).to_string());
         self.current_module_idx = file
             .and_then(|file| self.defs.module_source(file))
-            .and_then(|source| self.source_file_span_indices.get(source))
-            .copied()
+            .and_then(|source| self.file_span_indices.path_index(source))
             .unwrap_or_default();
         let resolved = self.resolve_fn_sig(sig);
         self.current_module = saved_module;

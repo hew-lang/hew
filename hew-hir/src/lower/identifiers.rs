@@ -2,7 +2,7 @@
 
 use super::*;
 
-impl LowerCtx {
+impl LowerCtx<'_> {
     /// Normalize a checker-selected runtime function value into an ordinary
     /// capture-free callable. The checked signature retains parameter modes
     /// and suspension effects; its body uses the same invocation as a direct call.
@@ -494,8 +494,7 @@ impl LowerCtx {
         }
         if let Some(reader) = ExecutionContextReader::from_surface_name(name) {
             if self
-                .expr_types
-                .get(&key)
+                .checked_expr_type(&key)
                 .is_some_and(|ty| *ty == reader.ty())
             {
                 let ty = ResolvedTy::from_ty(&reader.ty()).expect("reader type resolves");
@@ -532,16 +531,14 @@ impl LowerCtx {
         // without depending on registration-order races in the pre-pass.
         let key = self.mk_key(&span);
         let checker_owner = self
-            .expr_types
-            .get(&key)
-            .and_then(|ty| ResolvedTy::from_ty(ty).ok())
+            .checked_expr_type(&key)
+            .and_then(|ty| ResolvedTy::from_ty(&ty).ok())
             .map(|ty| self.restore_type_declaration_facts(ty));
         let registry_hit = self
             .lookup_variant_ctor(name, checker_owner.as_ref())
             .map(|(type_name, variant_idx, _)| (type_name, variant_idx));
         if let Some((tagged_union_name, variant_idx)) = registry_hit {
             if let Some(result_ty) = checker_owner {
-                self.assert_resolved_ty_totality(&span);
                 return (
                     HirExprKind::MachineVariantCtor {
                         machine_name: tagged_union_name,

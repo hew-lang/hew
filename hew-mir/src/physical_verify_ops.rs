@@ -693,10 +693,17 @@ pub(crate) fn verify_initialization(
     // block instead of a re-run of everything downstream per loop.
     let order = reverse_postorder(function, &blocks);
     let mut pending = BTreeSet::from([(order[&function.entry], function.entry)]);
+    let mut block_suspension = BTreeMap::new();
     while let Some((_, block_id)) = pending.pop_first() {
         let block = blocks.get(&block_id).ok_or_else(|| {
             PhysicalError::new(format!("physical CFG has no block {}", block_id.0))
         })?;
+        let suspends = match block_suspension.entry(block_id) {
+            std::collections::btree_map::Entry::Occupied(entry) => *entry.get(),
+            std::collections::btree_map::Entry::Vacant(entry) => *entry.insert(
+                super::suspend::terminator_suspends(module, function, &block.terminator)?,
+            ),
+        };
         for mut state in incoming[&block_id].clone() {
             defer::verify_entry_phase(&defer_plan, block_id, &state)?;
             for operation in &block.ops {
@@ -714,7 +721,7 @@ pub(crate) fn verify_initialization(
                 }
                 apply_operation(module, function, borrows, operation, &mut state, block_id)?;
             }
-            if super::suspend::terminator_suspends(module, function, &block.terminator)? {
+            if suspends {
                 retain_frame_roots(function, &state, &mut frame_roots);
             }
             retain_materialization_roots(

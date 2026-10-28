@@ -1016,11 +1016,11 @@ fn refused_endpoint(symbol: &str, admission: &HostAdmission) -> Option<&'static 
 
 fn source_item<'a>(
     program: &'a Program,
+    indices: &hew_parser::module::FileSpanIndices,
     module_idx: u32,
     item_span: &Range<usize>,
 ) -> Option<&'a Item> {
     if let Some(graph) = &program.module_graph {
-        let indices = graph.file_span_indices();
         for (module_path, module) in &graph.modules {
             for (item_index, (item, span)) in module.items.iter().enumerate() {
                 if indices.item_index(module_path, item_index) == Some(module_idx)
@@ -1075,17 +1075,13 @@ fn body_span(item: &Item, site: DeclarationOccurrence) -> Option<Range<usize>> {
     (!span.is_empty()).then(|| span.clone())
 }
 
-fn module_index(program: &Program, output: &TypeCheckOutput, id: DefId) -> Option<u32> {
+fn module_index(output: &TypeCheckOutput, id: DefId) -> Option<u32> {
     let module = output.defs.site(id)?.module()?;
     if Some(module) == output.defs.root_module() {
         return Some(0);
     }
     let path = output.defs.module_source(module)?;
-    program
-        .module_graph
-        .as_ref()?
-        .file_span_indices()
-        .path_index(path)
+    output.file_span_indices.path_index(path)
 }
 
 #[allow(
@@ -1103,8 +1099,8 @@ fn call_graph(
         .defs
         .declarations()
         .filter_map(|(site, id)| {
-            let index = module_index(program, output, id)?;
-            let item = source_item(program, index, &site.span())?;
+            let index = module_index(output, id)?;
+            let item = source_item(program, &output.file_span_indices, index, &site.span())?;
             Some((id, index, body_span(item, site)?))
         })
         .collect();
@@ -1304,7 +1300,7 @@ fn call_graph(
             let Some(site) = output.defs.site(*actor) else {
                 continue;
             };
-            let Some(module) = module_index(program, output, *actor) else {
+            let Some(module) = module_index(output, *actor) else {
                 continue;
             };
             let calls = edges.entry(CallableNode::Declaration(*actor)).or_default();
@@ -1347,7 +1343,7 @@ fn call_graph(
             else {
                 continue;
             };
-            let Some(index) = module_index(program, output, id) else {
+            let Some(index) = module_index(output, id) else {
                 continue;
             };
             let trusted_compiled_stdlib = declaration
@@ -1404,7 +1400,7 @@ fn call_graph(
             let Some(site) = output.defs.site(source) else {
                 continue;
             };
-            let Some(module_idx) = module_index(program, output, source) else {
+            let Some(module_idx) = module_index(output, source) else {
                 continue;
             };
             edges
@@ -1423,9 +1419,9 @@ fn call_graph(
     edges
 }
 
-fn source_path(program: &Program, index: u32) -> Option<PathBuf> {
+fn source_path(program: &Program, output: &TypeCheckOutput, index: u32) -> Option<PathBuf> {
     let graph = program.module_graph.as_ref()?;
-    let indices = graph.file_span_indices();
+    let indices = &output.file_span_indices;
     graph
         .modules
         .values()
@@ -1436,13 +1432,14 @@ fn source_path(program: &Program, index: u32) -> Option<PathBuf> {
 
 fn site_for_call(
     program: &Program,
+    output: &TypeCheckOutput,
     root_source: &str,
     root_label: &str,
     documents: &SourceSet,
     span: &SpanKey,
 ) -> Option<(SourceSite, String, String)> {
     let path = (span.module_idx != 0)
-        .then(|| source_path(program, span.module_idx))
+        .then(|| source_path(program, output, span.module_idx))
         .flatten();
     let (source, filename) = if let Some(path) = path {
         (
@@ -1713,10 +1710,11 @@ fn body_site(
     let site = output.defs.site(root)?;
     let (mut site, source, filename) = site_for_call(
         program,
+        output,
         source,
         label,
         &options.documents,
-        &SpanKey::in_module(&site.span(), module_index(program, output, root)?),
+        &SpanKey::in_module(&site.span(), module_index(output, root)?),
     )?;
     site.spelling = format!("implicit release in {}", output.defs.name(root));
     Some((site, source, filename))
@@ -1951,7 +1949,7 @@ fn check_profile(
                     .and_then(|module| output.defs.module_source(module))
                     .map(std::path::Path::to_path_buf),
                 CallableNode::Closure(span) | CallableNode::GeneratorBlock(span) => {
-                    source_path(program, span.module_idx)
+                    source_path(program, output, span.module_idx)
                 }
             };
             let caller_is_std = caller_source
@@ -2022,9 +2020,14 @@ fn check_profile(
                                 .into_iter()
                                 .map(|(method, args)| (span.clone(), method, args)),
                         );
-                    } else if let Some((site, source, filename)) =
-                        site_for_call(program, root_source, root_label, &options.documents, span)
-                    {
+                    } else if let Some((site, source, filename)) = site_for_call(
+                        program,
+                        output,
+                        root_source,
+                        root_label,
+                        &options.documents,
+                        span,
+                    ) {
                         diagnostics.push(confinement_diagnostic(
                             output,
                             diagnostic_root,
@@ -2056,9 +2059,14 @@ fn check_profile(
                                 args.iter().map(ResolvedTy::to_ty).collect::<Vec<_>>(),
                             )
                         }));
-                    } else if let Some((site, source, filename)) =
-                        site_for_call(program, root_source, root_label, &options.documents, span)
-                    {
+                    } else if let Some((site, source, filename)) = site_for_call(
+                        program,
+                        output,
+                        root_source,
+                        root_label,
+                        &options.documents,
+                        span,
+                    ) {
                         diagnostics.push(confinement_diagnostic(
                             output,
                             diagnostic_root,
@@ -2135,9 +2143,14 @@ fn check_profile(
                                 args.iter().map(ResolvedTy::to_ty).collect(),
                             ));
                         }
-                    } else if let Some((site, source, filename)) =
-                        site_for_call(program, root_source, root_label, &options.documents, &span)
-                    {
+                    } else if let Some((site, source, filename)) = site_for_call(
+                        program,
+                        output,
+                        root_source,
+                        root_label,
+                        &options.documents,
+                        &span,
+                    ) {
                         diagnostics.push(confinement_diagnostic(
                             output,
                             diagnostic_root,
@@ -2149,9 +2162,15 @@ fn check_profile(
                     }
                 }
                 for (span, method, args) in implicit {
-                    let site =
-                        site_for_call(program, root_source, root_label, &options.documents, &span)
-                            .or_else(|| user_site.clone());
+                    let site = site_for_call(
+                        program,
+                        output,
+                        root_source,
+                        root_label,
+                        &options.documents,
+                        &span,
+                    )
+                    .or_else(|| user_site.clone());
                     queue.push_back((
                         CallableNode::Declaration(method),
                         site,
@@ -2358,6 +2377,7 @@ fn check_profile(
             for call in graph.get(&caller).into_iter().flatten() {
                 let current = site_for_call(
                     program,
+                    output,
                     root_source,
                     root_label,
                     &options.documents,

@@ -2,12 +2,12 @@
 
 use super::*;
 
-impl LowerCtx {
+impl<'checked> LowerCtx<'checked> {
     #[allow(
         clippy::too_many_lines,
         reason = "initializes the complete checker-to-HIR typed context atomically"
     )]
-    pub(super) fn new(tc_output: &TypeCheckOutput, target_arch: TargetArch) -> Self {
+    pub(super) fn new(tc_output: &'checked TypeCheckOutput, target_arch: TargetArch) -> Self {
         let mut type_classes = crate::value_class::TypeClassTable::default();
         // Seed compiler-known M2 substrate types before source-order TypeDecls.
         // This registers Sink/Stream resource lifecycle metadata as
@@ -20,13 +20,14 @@ impl LowerCtx {
             .map(|(key, signature)| (key.clone(), (ids.item(), signature.clone())))
             .collect();
         let mut context = Self {
+            default_receivers: Vec::new(),
             ids,
             checked_sites: HashMap::new(),
             binding_scopes: Vec::new(),
             checked_scopes: Vec::new(),
             checked_field_scopes: Vec::new(),
             checked_actor_fields: tc_output.suspension_effects.actor_fields.clone(),
-            resolutions: tc_output.resolutions.clone(),
+            resolutions: &tc_output.resolutions,
             current_actor_nominal: None,
             fn_registry: HashMap::new(),
             source_fn_entries: HashMap::new(),
@@ -41,8 +42,8 @@ impl LowerCtx {
             // Resolution spellings remain a checker lookup index. Declaration
             // identity comes only from `tc_output.defs`; HIR must never
             // manufacture a second canonical-string namespace here.
-            fn_sigs: tc_output.fn_sigs.clone(),
-            direct_call_targets: tc_output.direct_call_targets.clone(),
+            fn_sigs: &tc_output.fn_sigs,
+            direct_call_targets: &tc_output.direct_call_targets,
             impl_method_declaration_ids: tc_output.impl_method_declaration_ids.clone(),
             imported_impl_body_facts: tc_output.imported_impl_body_facts.clone(),
             impl_method_symbol_collisions: impl_method_symbol_collisions(&tc_output.defs),
@@ -82,8 +83,8 @@ impl LowerCtx {
             error_conversions: tc_output.error_conversions.clone(),
             dyn_trait_method_calls: tc_output.dyn_trait_method_calls.clone(),
             trait_object_layouts: std::sync::Arc::new(tc_output.trait_object_layouts.clone()),
-            resolved_calls: tc_output.resolved_calls.clone(),
-            expr_types: tc_output.expr_types.clone(),
+            resolved_calls: &tc_output.resolved_calls,
+            expr_types: &tc_output.expr_types,
             compile_time_values: tc_output.compile_time_values.clone(),
             type_facts: tc_output.type_facts.clone(),
             type_declarations: tc_output.type_fact_context.declarations().clone(),
@@ -97,9 +98,9 @@ impl LowerCtx {
             user_comparison_dispatch: tc_output.user_comparison_dispatch.clone(),
             numeric_operand_coercions: tc_output.numeric_operand_coercions.clone(),
             extern_method_signatures,
-            resolved_expr_types: tc_output.resolved_expr_types.clone(),
+            resolved_expr_types: &tc_output.resolved_expr_types,
             declaration_type_parameters: tc_output.declaration_type_parameters.clone(),
-            resolved_annotation_types: tc_output.resolved_annotation_types.clone(),
+            resolved_annotation_types: &tc_output.resolved_annotation_types,
             associated_type_schemas: tc_output.associated_type_schemas.clone(),
             is_type_patterns: tc_output.is_type_patterns.clone(),
             closure_capture_facts: tc_output.closure_capture_facts.clone(),
@@ -273,25 +274,13 @@ impl LowerCtx {
         receiver: &ResolvedTy,
         f: impl FnOnce(&mut Self) -> T,
     ) -> T {
-        let parameter = hew_types::ParamHead::receiver(trait_id);
-        let substitutions = HashMap::from([(parameter, receiver.clone())]);
-        let annotations = self.resolved_annotation_types.clone();
-        let expressions = self.resolved_expr_types.clone();
-        let checker_expressions = self.expr_types.clone();
-        for ty in self.resolved_annotation_types.values_mut() {
-            *ty = substitute_ty(ty, &substitutions);
-        }
-        for ty in self.resolved_expr_types.values_mut() {
-            *ty = substitute_ty(ty, &substitutions);
-        }
-        let checker_receiver = receiver.to_ty();
-        for ty in self.expr_types.values_mut() {
-            *ty = ty.substitute_type_param(parameter, &checker_receiver);
-        }
+        self.default_receivers.push(DefaultReceiver {
+            parameter: hew_types::ParamHead::receiver(trait_id),
+            resolved: receiver.clone(),
+            checker: receiver.to_ty(),
+        });
         let result = f(self);
-        self.resolved_annotation_types = annotations;
-        self.resolved_expr_types = expressions;
-        self.expr_types = checker_expressions;
+        self.default_receivers.pop();
         result
     }
 
@@ -308,8 +297,44 @@ impl LowerCtx {
 
     /// Read the checker-resolved type for a source expression. Synthesized
     /// expressions and abstract generic bodies may have no recorded type.
-    pub(super) fn checked_ty(&self, span: &Span) -> Option<&ResolvedTy> {
-        self.resolved_expr_types.get(&self.mk_key(span))
+    pub(super) fn checked_ty(&self, span: &Span) -> Option<Cow<'checked, ResolvedTy>> {
+        self.checked_resolved_type(&self.mk_key(span))
+    }
+
+    /// Apply only the active declaration-owned receiver binders to a queried row.
+    /// Ordinary bodies borrow the checker facts without copying their type spines.
+    pub(super) fn checked_expr_type(&self, key: &SpanKey) -> Option<Cow<'checked, Ty>> {
+        let mut ty = Cow::Borrowed(self.expr_types.get(key)?);
+        for receiver in &self.default_receivers {
+            ty = Cow::Owned(ty.substitute_type_param(receiver.parameter, &receiver.checker));
+        }
+        Some(ty)
+    }
+
+    pub(super) fn checked_resolved_type(&self, key: &SpanKey) -> Option<Cow<'checked, ResolvedTy>> {
+        self.resolved_expr_types
+            .get(key)
+            .map(|ty| self.bind_receiver(ty))
+    }
+
+    pub(super) fn checked_annotation_type(
+        &self,
+        key: &SpanKey,
+    ) -> Option<Cow<'checked, ResolvedTy>> {
+        self.resolved_annotation_types
+            .get(key)
+            .map(|ty| self.bind_receiver(ty))
+    }
+
+    fn bind_receiver(&self, ty: &'checked ResolvedTy) -> Cow<'checked, ResolvedTy> {
+        let mut ty = Cow::Borrowed(ty);
+        for receiver in &self.default_receivers {
+            ty = Cow::Owned(ty.substitute_type_params(
+                &[receiver.parameter],
+                std::slice::from_ref(&receiver.resolved),
+            ));
+        }
+        ty
     }
 
     /// Read the checker's move-only ownership facts for a user resource argument.
@@ -323,13 +348,13 @@ impl LowerCtx {
                 | hew_types::TypeHead::Param(_)
                 | hew_types::TypeHead::Unresolved(_)),
             ..
-        } = ty
+        } = ty.as_ref()
         else {
             return None;
         };
         let name = head.registry_key();
         self.type_facts
-            .get(&hew_types::TypeInstanceKey(ty.clone()))
+            .get(&hew_types::TypeInstanceKey(ty.into_owned()))
             .filter(|facts| {
                 facts.class == hew_types::ValueClass::AffineResource
                     && facts.clone == hew_types::CloneKind::None
@@ -462,45 +487,6 @@ impl LowerCtx {
             "checker did not provide a canonical plan for this record-shaped enum/record pattern",
         ));
         true
-    }
-
-    /// W4.047 P1.2 — the totality assert net (zero behaviour change).
-    ///
-    /// At a fail-open / boundary-violation lowering site, prove that the typed
-    /// `resolved_expr_types` map agrees *exactly* with the live
-    /// `expr_types`→`ResolvedTy::from_ty` path the production code still drives
-    /// off. The two must be observationally identical at every concrete
-    /// accepted span:
-    ///
-    /// - span present + `from_ty` succeeds → typed map has the identical value,
-    /// - span present + `from_ty` fails (covered generic var) → typed map omits
-    ///   it and the live `.ok()` is `None`, so both agree on absence,
-    /// - span absent → both miss.
-    ///
-    /// A trip means the typed handoff is missing an entry for an accepted
-    /// concrete expr (a real fail-open gap the `.unwrap_or(Unit)` was masking)
-    /// or that P1.1's population diverged from the live conversion. Compiled
-    /// out of release: the live path is unchanged, so lowering output is
-    /// byte-identical.
-    #[inline]
-    pub(super) fn assert_resolved_ty_totality(&self, span: &Span) {
-        #[cfg(debug_assertions)]
-        {
-            let key = self.mk_key(span);
-            let live = self
-                .expr_types
-                .get(&key)
-                .and_then(|ty| ResolvedTy::from_ty(ty).ok());
-            debug_assert_eq!(
-                self.checked_ty(span),
-                live.as_ref(),
-                "W4.047 totality: typed resolved_expr_types disagrees with the \
-                 live expr_types->from_ty path at span {key:?} — the typed \
-                 checker->HIR handoff is not total over this accepted span"
-            );
-        }
-        #[cfg(not(debug_assertions))]
-        let _ = span;
     }
 
     pub(super) fn tag_diagnostics_since(&mut self, start: usize, source_module: &str) {

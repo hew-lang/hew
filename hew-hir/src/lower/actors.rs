@@ -11,7 +11,7 @@ pub(super) fn lower_supervisor_strategy(strategy: SupervisorStrategy) -> HirSupe
     }
 }
 
-impl LowerCtx {
+impl LowerCtx<'_> {
     pub(super) fn source_supervisor_declarations(
         &mut self,
         span: &Span,
@@ -63,7 +63,7 @@ impl LowerCtx {
         let owner = HirBinding {
             id: self.ids.binding(),
             name: "supervisor".into(),
-            ty: self.checked_ty(&span)?.clone(),
+            ty: self.checked_ty(&span)?.into_owned(),
             mutable: false,
             span: span.clone(),
             is_consume: true,
@@ -90,20 +90,24 @@ impl LowerCtx {
                     static_slot += 1;
                     idx
                 };
-                let child_ty = self.checked_ty(&child.span).cloned().unwrap_or_else(|| {
-                    self.diagnostics.push(
-                        HirDiagnostic::new(
-                            HirDiagnosticKind::CheckerBoundaryViolation {
-                                name: child.actor_type.to_string(),
-                                reason: "supervisor child has no checked handle type".to_string(),
-                            },
-                            child.span.clone(),
-                            "supervisor child types must survive checker resolution",
-                        )
-                        .with_source_module(self.current_module_name.clone()),
-                    );
-                    ResolvedTy::Unit
-                });
+                let child_ty = self.checked_ty(&child.span).map_or_else(
+                    || {
+                        self.diagnostics.push(
+                            HirDiagnostic::new(
+                                HirDiagnosticKind::CheckerBoundaryViolation {
+                                    name: child.actor_type.to_string(),
+                                    reason: "supervisor child has no checked handle type"
+                                        .to_string(),
+                                },
+                                child.span.clone(),
+                                "supervisor child types must survive checker resolution",
+                            )
+                            .with_source_module(self.current_module_name.clone()),
+                        );
+                        ResolvedTy::Unit
+                    },
+                    Cow::into_owned,
+                );
                 let mut init_args: Vec<_> = child
                     .args
                     .iter()
@@ -134,7 +138,7 @@ impl LowerCtx {
                         HirExpr {
                             node: self.ids.node(),
                             site,
-                            ty: self.checked_ty(&sibling.span)?.clone(),
+                            ty: self.checked_ty(&sibling.span)?.into_owned(),
                             intent: IntentKind::Read,
                             kind: HirExprKind::FieldAccess {
                                 object: Box::new(HirExpr {

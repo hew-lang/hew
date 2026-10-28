@@ -3,7 +3,7 @@
 use super::*;
 use hew_types::compile_time::{ConstantValue as HirConstValue, TypedConstant};
 
-impl LowerCtx {
+impl LowerCtx<'_> {
     pub(super) fn lower_constant_value(
         &mut self,
         value: &HirConstValue,

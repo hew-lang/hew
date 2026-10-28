@@ -213,7 +213,7 @@ fn convert_unit(
 struct UnitCheck {
     diagnostics: Vec<(Option<PathBuf>, FileDiagnostic)>,
     output: Option<TypeCheckOutput>,
-    indices: hew_parser::module::FileSpanIndices,
+    indices: std::sync::Arc<hew_parser::module::FileSpanIndices>,
 }
 
 #[derive(Clone)]
@@ -236,10 +236,10 @@ impl FileDiagnostic {
 fn check_unit(root: &Path, documents: &SourceSet, units: &mut CheckUnits) -> UnitCheck {
     let state = units.check(root, documents);
     let indices = state
-        .program
-        .module_graph
+        .typecheck_result
         .as_ref()
-        .map(hew_parser::module::ModuleGraph::file_span_indices)
+        .and_then(|result| result.tco.as_ref())
+        .map(|output| std::sync::Arc::clone(&output.file_span_indices))
         .unwrap_or_default();
     let canonical = |file: Option<String>| file.and_then(|file| std::fs::canonicalize(file).ok());
     let mut diagnostics: Vec<(Option<PathBuf>, FileDiagnostic)> = state

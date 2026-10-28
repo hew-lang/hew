@@ -36,11 +36,7 @@ pub fn lower_program(
     declaration_uses.sort_unstable_by_key(|(site, _)| (site.module_idx, site.start));
     // Every index a module owns — one per source file, so a directory module's
     // peers all carry their assembled module's name.
-    let span_indices = program
-        .module_graph
-        .as_ref()
-        .map(hew_parser::module::ModuleGraph::file_span_indices)
-        .unwrap_or_default();
+    let span_indices = type_check_output.file_span_indices.as_ref();
     // The checker selected this module's full canonical source as the builtin
     // declaration authority. HIR emits that source through its prelude and
     // callable projections below; the ordinary imported-module walks must not
@@ -355,7 +351,7 @@ pub fn lower_program(
                 let private_closure = collect_imported_private_fn_closure(
                     &ctx,
                     module,
-                    &span_indices,
+                    span_indices,
                     &type_check_output.test_entry_plans,
                     &declaration_uses,
                 );
@@ -1519,7 +1515,7 @@ pub fn lower_program(
         &mut ctx,
         program,
         &preferred_modules,
-        &span_indices,
+        span_indices,
         selected_builtin_graph_module,
     );
 
@@ -1847,7 +1843,7 @@ pub fn lower_program(
                 let imported_private_closure = collect_imported_private_fn_closure(
                     &ctx,
                     module,
-                    &span_indices,
+                    span_indices,
                     &type_check_output.test_entry_plans,
                     &declaration_uses,
                 );

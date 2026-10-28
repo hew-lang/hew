@@ -80,13 +80,25 @@ pub(crate) fn run(args: &CompileArgs) -> i32 {
             .unwrap_or(DiagChannel::Internal)
             .exit_code();
     }
-    print_dump(&dump_hir(&analysis, &state.program, &args.input), json);
+    let program = checked
+        .normalized_program
+        .as_ref()
+        .map_or(&state.program, |normalized| &normalized.program);
+    print_dump(
+        &dump_hir(&analysis, program, &args.input, &checked.file_span_indices),
+        json,
+    );
     0
 }
 
-fn dump_hir(analysis: &hew_hir::HirAnalysis<'_>, program: &Program, input: &Path) -> String {
+fn dump_hir(
+    analysis: &hew_hir::HirAnalysis<'_>,
+    program: &Program,
+    input: &Path,
+    indices: &hew_parser::module::FileSpanIndices,
+) -> String {
     let module = analysis.module();
-    let mut dump = dump_sources(program, input);
+    let mut dump = dump_sources(program, input, indices);
     dump.push_str(&hew_types::dump::dump_defs(&module.defs));
     dump.push_str("hir\n");
     dump.push_str(&hew_hir::dump_hir(module));
@@ -135,12 +147,15 @@ fn print_dump(dump: &str, json: bool) {
     }
 }
 
-fn dump_sources(program: &Program, input: &Path) -> String {
+fn dump_sources(
+    program: &Program,
+    input: &Path,
+    indices: &hew_parser::module::FileSpanIndices,
+) -> String {
     let mut out = String::from("sources\n");
     let input = input.canonicalize().unwrap_or_else(|_| input.to_path_buf());
     writeln!(out, "  root file#0 path={:?}", input.display()).expect("write to string");
     if let Some(graph) = &program.module_graph {
-        let indices = graph.file_span_indices();
         for id in &graph.topo_order {
             if *id == graph.root {
                 continue;
@@ -183,7 +198,13 @@ fn dump_sources(program: &Program, input: &Path) -> String {
 }
 
 fn dump_ast(program: &Program, input: &Path) -> String {
-    let mut out = dump_sources(program, input);
+    // AST inspection stops before checker admission and indexes this expanded graph once.
+    let indices = program
+        .module_graph
+        .as_ref()
+        .map(hew_parser::module::ModuleGraph::file_span_indices)
+        .unwrap_or_default();
+    let mut out = dump_sources(program, input, &indices);
     out.push_str("ast root (expanded imports; before type checking)\n");
     for (ordinal, (item, span)) in program.items.iter().enumerate() {
         writeln!(

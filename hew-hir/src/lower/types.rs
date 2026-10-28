@@ -2,7 +2,7 @@
 
 use super::*;
 
-impl LowerCtx {
+impl LowerCtx<'_> {
     pub(super) fn lower_type_decl(&mut self, decl: &TypeDecl, span: Span) -> Option<HirTypeDecl> {
         let declaration = self.source_declaration(
             &span,
@@ -399,8 +399,8 @@ impl LowerCtx {
     /// Consume the checker-resolved annotation at its exact source occurrence.
     pub(super) fn lower_type(&mut self, ty: &Spanned<TypeExpr>) -> ResolvedTy {
         let key = SpanKey::in_module(&ty.1, self.current_module_idx);
-        if let Some(resolved) = self.resolved_annotation_types.get(&key) {
-            return resolved.clone();
+        if let Some(resolved) = self.checked_annotation_type(&key) {
+            return resolved.into_owned();
         }
         self.diagnostics.push(HirDiagnostic::new(
             HirDiagnosticKind::CheckerBoundaryViolation {

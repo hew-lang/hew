@@ -478,7 +478,7 @@ pub(super) fn struct_variant_pattern_parts(
     }
 }
 
-impl LowerCtx {
+impl LowerCtx<'_> {
     pub(super) fn lower_pattern_value_into_stmts(
         &mut self,
         pattern: &Spanned<Pattern>,

@@ -1,0 +1,51 @@
+// One default body is specialized independently for concrete and generic receivers.
+trait Preserve {
+    fn preserve(self) -> Self {
+        let saved: Self = self;
+        saved
+    }
+
+    fn wrapped(self) -> Option<Self> {
+        .Some(self.preserve())
+    }
+}
+
+type Number {
+    value: i64;
+}
+
+type Text {
+    value: string;
+}
+
+type Holder<T> {
+    value: T;
+}
+
+impl Preserve for Number {}
+
+impl Preserve for Text {}
+
+impl<T> Preserve for Holder<T> {}
+
+fn identity<T>(value: T) -> T {
+    value
+}
+
+fn main() {
+    let number = match (Number { value: 17 }.wrapped()) {
+        .Some(value) => value,
+        .None => return,
+    };
+    let text = match (Text { value: "kept" }.wrapped()) {
+        .Some(value) => value,
+        .None => return,
+    };
+    let numeric = Holder { value: 23 }.preserve();
+    let textual = Holder { value: "generic" }.preserve();
+    let callable: fn(Number) -> Number = identity;
+    println(callable(number).value);
+    println(text.value);
+    println(numeric.value);
+    println(textual.value);
+}

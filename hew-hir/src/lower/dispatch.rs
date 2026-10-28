@@ -2,7 +2,7 @@
 
 use super::*;
 
-impl LowerCtx {
+impl LowerCtx<'_> {
     /// Lower a `==`/`!=`/`<`/`<=`/`>`/`>=` binary expression the checker
     /// marked for user-impl dispatch (D340 — see [`UserComparisonDispatch`])
     /// into a call to the resolved impl method, rather than the structural
@@ -707,7 +707,7 @@ impl LowerCtx {
             let rendering = self
                 .unrendered_assertion_operands
                 .contains(&operand_key)
-                .then(|| self.expr_types.get(&operand_key).cloned())
+                .then(|| self.checked_expr_type(&operand_key).map(Cow::into_owned))
                 .flatten();
             let value = self.lower_expr(operand, IntentKind::Read);
             let ty = value.ty.clone();

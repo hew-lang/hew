@@ -679,7 +679,8 @@ fn two_import_paths_select_one_declaration_owned_impl_body_symbol() {
 
 #[test]
 fn impl_body_projection_never_retries_through_a_same_leaf_symbol() {
-    let mut ctx = LowerCtx::new(&TypeCheckOutput::default(), TargetArch::host());
+    let ctx_output = TypeCheckOutput::default();
+    let mut ctx = LowerCtx::new(&ctx_output, TargetArch::host());
     let left = hew_types::DefId::for_test(
         "left.render.Result::<impl inherent for left.render.Result>::echo",
     );
@@ -713,7 +714,8 @@ fn impl_body_projection_never_retries_through_a_same_leaf_symbol() {
 
 #[test]
 fn checker_stream_compatibility_spelling_requires_exact_std_provenance() {
-    let mut ctx = LowerCtx::new(&TypeCheckOutput::default(), TargetArch::host());
+    let ctx_output = TypeCheckOutput::default();
+    let mut ctx = LowerCtx::new(&ctx_output, TargetArch::host());
     ctx.canonical_std_source_type_identities
         .insert("std.stream.Sink".to_string());
     ctx.current_module_name = Some("std.net.http.server".to_string());
@@ -793,7 +795,8 @@ fn checker_stream_compatibility_spelling_requires_exact_std_provenance() {
 
 #[test]
 fn imported_const_key_uses_the_checker_module_owner() {
-    let mut ctx = LowerCtx::new(&TypeCheckOutput::default(), TargetArch::host());
+    let ctx_output = TypeCheckOutput::default();
+    let mut ctx = LowerCtx::new(&ctx_output, TargetArch::host());
     ctx.module_import_bindings.insert(
         (None, 0, "codec".to_string()),
         "std.net.http.codec".to_string(),
@@ -1667,25 +1670,27 @@ fn builtin_lowering_gates_use_discriminants_not_type_spellings() {
     );
     assert_eq!(LowerCtx::actor_handle_identity(&user_nominal), None);
 
-    let mut vec_ctx = LowerCtx::new(&TypeCheckOutput::default(), TargetArch::host());
-    vec_ctx.expr_types.insert(
+    let mut vec_ctx_output = TypeCheckOutput::default();
+    vec_ctx_output.expr_types.insert(
         SpanKey::in_module(&(0..0), 0),
         Ty::Named {
             args: vec![Ty::I64],
             head: hew_types::TypeHead::Builtin(BuiltinType::Vec),
         },
     );
+    let mut vec_ctx = LowerCtx::new(&vec_ctx_output, TargetArch::host());
     assert_eq!(
         vec_ctx.array_literal_ty(&(0..0)).map(|(_, elem)| elem),
         Some(ResolvedTy::I64),
         "a renamed builtin Vec<T> still owns array literal lowering"
     );
 
-    let mut user_vec_ctx = LowerCtx::new(&TypeCheckOutput::default(), TargetArch::host());
-    user_vec_ctx.expr_types.insert(
+    let mut user_vec_ctx_output = TypeCheckOutput::default();
+    user_vec_ctx_output.expr_types.insert(
         SpanKey::in_module(&(0..0), 0),
         Ty::user_for_test("Vec", vec![Ty::I64]),
     );
+    let mut user_vec_ctx = LowerCtx::new(&user_vec_ctx_output, TargetArch::host());
     let stored_user_vec_ty = user_vec_ctx
         .expr_types
         .get(&SpanKey::in_module(&(0..0), 0))
@@ -1709,14 +1714,15 @@ fn builtin_lowering_gates_use_discriminants_not_type_spellings() {
         "a user Vec<T> must not acquire array literal runtime lowering, got {user_vec_literal_ty:?}"
     );
 
-    let mut map_ctx = LowerCtx::new(&TypeCheckOutput::default(), TargetArch::host());
-    map_ctx.expr_types.insert(
+    let mut map_ctx_output = TypeCheckOutput::default();
+    map_ctx_output.expr_types.insert(
         SpanKey::in_module(&(0..0), 0),
         Ty::Named {
             args: vec![Ty::String, Ty::I64],
             head: hew_types::TypeHead::Builtin(BuiltinType::HashMap),
         },
     );
+    let mut map_ctx = LowerCtx::new(&map_ctx_output, TargetArch::host());
     assert_eq!(
         map_ctx.map_literal_hashmap_ty(&(0..0)),
         Some((
@@ -1730,17 +1736,19 @@ fn builtin_lowering_gates_use_discriminants_not_type_spellings() {
         )),
         "a renamed builtin HashMap<K, V> still owns map literal lowering"
     );
-    let mut user_map_ctx = LowerCtx::new(&TypeCheckOutput::default(), TargetArch::host());
-    user_map_ctx.expr_types.insert(
+    let mut user_map_ctx_output = TypeCheckOutput::default();
+    user_map_ctx_output.expr_types.insert(
         SpanKey::in_module(&(0..0), 0),
         Ty::user_for_test("HashMap", vec![Ty::String, Ty::I64]),
     );
+    let mut user_map_ctx = LowerCtx::new(&user_map_ctx_output, TargetArch::host());
     assert!(
         user_map_ctx.map_literal_hashmap_ty(&(0..0)).is_none(),
         "a user HashMap<K, V> must not acquire map literal runtime lowering"
     );
 
-    let mut select_ctx = LowerCtx::new(&TypeCheckOutput::default(), TargetArch::host());
+    let select_ctx_output = TypeCheckOutput::default();
+    let mut select_ctx = LowerCtx::new(&select_ctx_output, TargetArch::host());
     let renamed_stream = select_ctx.make_expr(
         HirExprKind::Unsupported("test stream".to_string()),
         named(
@@ -2858,7 +2866,8 @@ fn imported_encoding_mutators_keep_the_checked_writeback_contract() {
 
 #[test]
 fn encoding_spelling_and_opacity_cannot_replace_checked_declaration_authority() {
-    let mut ctx = LowerCtx::new(&TypeCheckOutput::default(), TargetArch::host());
+    let ctx_output = TypeCheckOutput::default();
+    let mut ctx = LowerCtx::new(&ctx_output, TargetArch::host());
     for builtin in [
         BuiltinType::JsonValue,
         BuiltinType::YamlValue,

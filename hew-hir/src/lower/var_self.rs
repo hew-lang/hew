@@ -2,7 +2,7 @@
 
 use super::*;
 
-impl LowerCtx {
+impl LowerCtx<'_> {
     /// THE var-self receiver predicate: a method takes a `var self`
     /// receiver iff the parser published its first parameter as the receiver
     /// and it is mutable. Registration (dual-return `(ret, Self)` ABI) and

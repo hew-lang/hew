@@ -54,7 +54,7 @@ pub use value_class::{
     ResourceMarker, ResourceRecordLifecycle, TypeClassTable,
 };
 pub use verify::{
-    collect_scope_extents, collect_site_spans, verify_hir, HirScopeExtent, HirSiteSource,
+    analyze_hir, verify_hir, HirAnalysis, HirScopeExtent, HirSiteSource, HirSourceFacts,
 };
 
 /// Convert a dotted module-qualified name to a native-object-safe symbol.

@@ -59,17 +59,13 @@ impl Session {
                     })
             })
             .collect::<Result<Vec<_>, _>>()?;
-        let lowered =
-            hew_hir::lower_program(program, tco, &hew_hir::ResolutionCtx, self.target.hir_arch);
-        if !lowered.diagnostics.is_empty() {
-            return Err(SessionError::Hir(lowered.diagnostics));
-        }
-        if lowered.module.entry_exit_plan.is_some() {
+        let module = self.lower_hir_program(program, tco)?;
+        if module.entry_exit_plan.is_some() {
             return Err(selection_error(
                 "C export input must be a library without a process entry".into(),
             ));
         }
-        let output = self.lower_hir_module(&lowered.module, tco, &declarations)?;
+        let output = self.lower_hir_module(&module, tco, &declarations)?;
         Ok((output, declarations))
     }
 }

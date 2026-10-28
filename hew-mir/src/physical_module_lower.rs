@@ -21,7 +21,7 @@ use super::{
 
 /// Lower verified ownership SIR into the sole target-realized MIR.
 ///
-/// This boundary re-runs SIR verification, resolves every type layout and
+/// This boundary verifies raw SIR, resolves every type layout and
 /// explicit ownership action, then verifies the resulting storage/CFG model.
 /// Code generation accepts only the returned immutable wrapper.
 ///
@@ -30,10 +30,6 @@ use super::{
 /// Returns [`PhysicalError`] when SIR verification fails, a concrete target
 /// layout is absent, an ownership action has no admitted physical realization,
 /// or the resulting storage/CFG model violates the physical verifier.
-#[expect(
-    clippy::too_many_lines,
-    reason = "materializes the complete checked module and its callable ABI"
-)]
 pub fn lower_physical_module(
     module: &SemModule,
     target: PhysicalTarget,
@@ -44,6 +40,22 @@ pub fn lower_physical_module(
             diagnostics[0].kind
         ))
     })?;
+    lower_checked_physical_module(&checked, target)
+}
+
+/// Realize already checked semantics using their original ownership certificates.
+///
+/// # Errors
+/// Returns a layout, ownership-realization or physical verification diagnostic.
+#[expect(
+    clippy::too_many_lines,
+    reason = "materializes the complete checked module and its callable ABI"
+)]
+pub fn lower_checked_physical_module(
+    checked: &hew_sir::CheckedModule<'_>,
+    target: PhysicalTarget,
+) -> Result<VerifiedPhysicalModule, PhysicalError> {
+    let module = checked.module();
 
     let PhysicalGlue {
         resources,
@@ -57,7 +69,7 @@ pub fn lower_physical_module(
         ids,
     } = build_glue(module)?;
 
-    let resumable = suspend::semantic_callables(&checked);
+    let resumable = suspend::semantic_callables(checked);
     let resumable_methods: BTreeSet<_> = module
         .vtables
         .iter()

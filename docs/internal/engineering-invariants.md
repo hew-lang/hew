@@ -20,6 +20,10 @@ specifications.
   they do not reconstruct it from weaker fallbacks.
 - Preserve authoritative type, ownership, and diagnostic information across
   lowering and serialization boundaries.
+- Retain successful analyses with their immutable IR. HIR structural analysis
+  also supplies source attribution; checked SIR carries its place and lifetime
+  certificates into physical lowering. Semantic rewrites relinquish that
+  verification and validate the changed result.
 - When two representations disagree, reject the ambiguity or resolve it at the
   owning layer before crossing the boundary.
 

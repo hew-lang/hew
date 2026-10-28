@@ -243,6 +243,7 @@ pub fn lower_module_with_demand(
     // SIR discovers concrete direct-user instances from each resolved call's
     // `SiteId -> call_site_type_args` fact, applies the enclosing semantic
     // substitution, and creates its own closed instance worklist.
+    let analysis = hew_hir::analyze_hir(module);
     let mut service = InstanceService::new(module, facts);
     match demand {
         SirLoweringDemand::Entry => service.request_entry(),
@@ -250,7 +251,7 @@ pub fn lower_module_with_demand(
     }
     service.lower_pending();
 
-    service.finish()
+    service.finish(crate::SemDebugFacts::project(analysis))
 }
 
 /// Lower the resolved entry and a caller-selected set of declaration roots.
@@ -273,15 +274,28 @@ pub fn lower_module_with_roots(
     facts: &TypeCheckOutput,
     roots: &[DefId],
 ) -> Result<LoweredModule, Vec<SirRootSelectionError>> {
+    lower_analyzed_module_with_roots(hew_hir::analyze_hir(module), facts, roots)
+}
+
+/// Lower resolved roots while reusing the immutable HIR analysis of the host.
+///
+/// # Errors
+/// Returns every requested declaration that cannot select a concrete body.
+pub fn lower_analyzed_module_with_roots(
+    analysis: hew_hir::HirAnalysis<'_>,
+    facts: &TypeCheckOutput,
+    roots: &[DefId],
+) -> Result<LoweredModule, Vec<SirRootSelectionError>> {
+    let module = analysis.module();
     let mut service = InstanceService::new(module, facts);
     service.request_roots(roots)?;
     service.request_entry();
     service.lower_pending();
-    Ok(service.finish())
+    Ok(service.finish(crate::SemDebugFacts::project(analysis)))
 }
 
 impl InstanceService<'_> {
-    fn finish(self) -> LoweredModule {
+    fn finish(self, debug: crate::SemDebugFacts) -> LoweredModule {
         let statuses = self
             .module
             .items
@@ -297,7 +311,7 @@ impl InstanceService<'_> {
             .collect();
         let callable_statuses = self.callable_statuses();
         LoweredModule {
-            module: self.into_module(),
+            module: self.into_module(debug),
             statuses,
             callable_statuses,
         }

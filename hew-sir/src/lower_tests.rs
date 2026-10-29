@@ -10,6 +10,57 @@ use hew_hir::IntentKind;
 use hew_types::{ResolvedTy, TypeFactContext, TypeFactService};
 
 #[test]
+fn signature_rollback_preserves_nested_shape_admission_on_retry() {
+    let parsed = hew_parser::parse(
+        r"type Payload { text: string; }
+          enum Envelope { Item(Payload); Empty; }
+          fn selected(value: Vec<Envelope>) {}
+          fn main() {}",
+    );
+    assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+    let mut checker =
+        hew_types::Checker::new(hew_types::module_registry::ModuleRegistry::new(Vec::new()));
+    let facts = checker.check_program(&parsed.program);
+    assert!(facts.errors.is_empty(), "{:?}", facts.errors);
+    let hir = hew_hir::lower_program_host_target(&parsed.program, &facts, &hew_hir::ResolutionCtx);
+    assert!(hir.diagnostics.is_empty(), "{:?}", hir.diagnostics);
+    let function = hir
+        .module
+        .items
+        .iter()
+        .find_map(|item| match item {
+            hew_hir::HirItem::Function(function) if function.name == "selected" => Some(function),
+            _ => None,
+        })
+        .unwrap();
+    let nested = function.params[0].ty.clone();
+    let signature = crate::SemSignature {
+        failure_domain: function.failure_domain,
+        params: vec![crate::SemAbiParam {
+            ty: nested.clone(),
+            passing: SemParamPassing::Borrow,
+            caller_visible_projection: false,
+        }],
+        return_ty: ResolvedTy::param(hew_types::ParamHead::for_test("UnboundReturn")),
+    };
+    let mut service = super::InstanceService::new(&hir.module, &facts);
+    assert!(service.require_signature_shapes(&signature).is_err());
+    assert!(service.aggregate_shapes.is_empty());
+    assert!(service.variant_shapes.is_empty());
+
+    service.require_type_facts(&nested).unwrap();
+    assert_eq!(service.aggregate_shapes.len(), 1);
+    assert_eq!(service.variant_shapes.len(), 1);
+    let payload = &service.aggregate_shapes[0];
+    assert_eq!(payload.fields[0].ty, ResolvedTy::String);
+    assert!(service.variant_shapes[0]
+        .variants
+        .iter()
+        .flat_map(|variant| &variant.fields)
+        .any(|field| field.ty == payload.aggregate_ty));
+}
+
+#[test]
 fn runtime_variant_roles_follow_exact_enum_identity_and_declaration_order() {
     use crate::{RuntimeVariantRole as Role, SemVariant, SemVariantKind};
 

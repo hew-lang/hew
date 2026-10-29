@@ -609,6 +609,8 @@ struct InstanceService<'a> {
     aggregate_shapes_by_type: HashMap<ResolvedTy, AggregateShapeId>,
     variant_shapes: Vec<SemVariantShape>,
     variant_shapes_by_type: HashMap<ResolvedTy, VariantShapeId>,
+    /// Successfully admitted transitive shape graphs for this immutable HIR module.
+    completed_shape_closures: std::collections::HashSet<ResolvedTy>,
     string_literals: BTreeMap<StringLiteralId, String>,
     bytes_literals: BTreeMap<BytesLiteralId, Vec<u8>>,
     wire_plans: HashMap<ResolvedTy, std::sync::Arc<crate::SemWirePlans>>,
@@ -1060,134 +1062,6 @@ pub(crate) fn runtime_variant_tags(
                 })
         })
         .collect()
-}
-
-fn require_signature_shapes(
-    module: &HirModule,
-    facts: &mut TypeFactService,
-    aggregate_shapes: &mut Vec<SemAggregateShape>,
-    aggregate_shapes_by_type: &mut HashMap<ResolvedTy, AggregateShapeId>,
-    variant_shapes: &mut Vec<SemVariantShape>,
-    variant_shapes_by_type: &mut HashMap<ResolvedTy, VariantShapeId>,
-    signature: &SemSignature,
-) -> Result<(), SirLoweringError> {
-    for ty in signature
-        .params
-        .iter()
-        .map(|parameter| &parameter.ty)
-        .chain(std::iter::once(&signature.return_ty))
-    {
-        require_type_shapes(
-            module,
-            facts,
-            aggregate_shapes,
-            aggregate_shapes_by_type,
-            variant_shapes,
-            variant_shapes_by_type,
-            ty,
-        )?;
-    }
-    Ok(())
-}
-
-/// Publish the complete shape closure using exact checked type identities.
-/// Header admission uses the same walk as demanded bodies, without lowering
-/// those bodies merely to discover nested payload shapes.
-fn require_type_shapes(
-    module: &HirModule,
-    facts: &mut TypeFactService,
-    aggregate_shapes: &mut Vec<SemAggregateShape>,
-    aggregate_shapes_by_type: &mut HashMap<ResolvedTy, AggregateShapeId>,
-    variant_shapes: &mut Vec<SemVariantShape>,
-    variant_shapes_by_type: &mut HashMap<ResolvedTy, VariantShapeId>,
-    ty: &ResolvedTy,
-) -> Result<(), SirLoweringError> {
-    let mut pending = vec![ty.clone()];
-    let mut seen = BTreeSet::new();
-    while let Some(ty) = pending.pop() {
-        if !seen.insert(ty.clone()) {
-            continue;
-        }
-        require_type_facts(facts, &ty)?;
-        if !matches!(ty, ResolvedTy::Unit | ResolvedTy::Never)
-            && !is_supported_call_value(module, facts, &ty)
-        {
-            return Err(format!(
-                "nested type `{}` has no semantic value contract",
-                ty.user_facing()
-            )
-            .into());
-        }
-        if let ResolvedTy::Array(element, _) = &ty {
-            pending.push((**element).clone());
-            continue;
-        } else if let Some(payload) = hew_types::runtime_call::shared_handle_payload(&ty) {
-            // The allocation's payload is an ordinary nested value; the walk's
-            // own admission decides it.
-            pending.push(payload.clone());
-            continue;
-        } else if let Some((builtin, arguments)) = collection_type_arguments(&ty) {
-            for argument in arguments {
-                if !is_supported_call_value(module, facts, argument) {
-                    let component = if builtin == hew_types::BuiltinType::Vec {
-                        "vector element"
-                    } else {
-                        "collection component"
-                    };
-                    return Err(format!(
-                        "{component} `{}` has no semantic value contract",
-                        argument.user_facing(),
-                    )
-                    .into());
-                }
-            }
-            // Execution-domain admission is distinct from copyability.
-            // Publish facts/shapes; the shared dependency verifier owns
-            // recursive collection copy admissibility.
-            pending.extend(arguments.iter().cloned());
-            continue;
-        } else if is_concrete_variant_type(module, &ty) {
-            let id =
-                require_variant_shape(module, facts, variant_shapes, variant_shapes_by_type, &ty)?;
-            pending.extend(
-                variant_shapes[id.0 as usize]
-                    .variants
-                    .iter()
-                    .flat_map(|variant| &variant.fields)
-                    .map(|field| field.ty.clone()),
-            );
-            continue;
-        } else if is_concrete_aggregate_type(module, facts, &ty) {
-            if let AggregateShapeRef::Record(id) = require_aggregate_shape(
-                module,
-                facts,
-                aggregate_shapes,
-                aggregate_shapes_by_type,
-                &ty,
-            )? {
-                pending.extend(
-                    aggregate_shapes[id.0 as usize]
-                        .fields
-                        .iter()
-                        .map(|field| field.ty.clone()),
-                );
-                // Stored fields define the shape closure. Generic arguments
-                // may be phantom and do not independently require storage.
-                continue;
-            }
-        }
-        // A pool view's parameters name the role its accessors mint,
-        // rather than independently carried values that need SIR shapes.
-        if ty.is_builtin(hew_types::BuiltinType::SupervisorPool) {
-            continue;
-        }
-        if actor::declaration(module, &ty).is_none()
-            && supervisor::declaration(module, &ty).is_none()
-        {
-            hew_types::push_type_components(&ty, &mut pending);
-        }
-    }
-    Ok(())
 }
 
 /// Project the checker's §6.2 rows onto the types one SIR module mentions.

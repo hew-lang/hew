@@ -232,7 +232,7 @@ pub fn snapshot_tree_json() -> String {
 /// `restarts` reads the same `CrashStats::total_crashes` lifetime counter
 /// `append_supervisor_rows` formats into its debug tree row above (under the
 /// same `roster.lock_or_recover()` discipline), not the bounded
-/// `roster.restart_count` ring used only for the restart-budget window.
+/// `roster.restart_times` history used only for the restart-budget window.
 #[cfg(feature = "profiler")]
 fn append_restart_rows(rows: &mut Vec<(String, String, u64)>, sup: *mut HewSupervisor) {
     if sup.is_null() {
@@ -483,21 +483,12 @@ unsafe impl Send for InternalPoolSpec {}
 
 /// Initial capacity for the dynamic children `Vec`.
 const SUP_INITIAL_CAPACITY: usize = 16;
-const MAX_RESTARTS_TRACK: usize = 32;
 
-/// Restart strategies. `pub` so codegen names them by symbol when emitting
-/// the `hew_supervisor_new(strategy, ...)` call from a supervisor bootstrap
-/// function — single source of truth across runtime + codegen.
-pub const STRATEGY_ONE_FOR_ONE: c_int = 0;
-pub const STRATEGY_ONE_FOR_ALL: c_int = 1;
-pub const STRATEGY_REST_FOR_ONE: c_int = 2;
-/// `simple_one_for_one` (pool dynamics). Reserved in the strategy ABI so
-/// every variant is explicit on the runtime side; the codegen surface that
-/// emits this constant — and the per-pool runtime semantics — lands in S-E.
-/// Today the match arm in `restart_with_budget_and_strategy` accepts the
-/// variant as a documented no-op (pool restart is driven by the per-pool
-/// machinery on `HewSupervisor.pool_*`, not by this child-restart helper).
-pub const STRATEGY_SIMPLE_ONE_FOR_ONE: c_int = 3;
+mod restart_history;
+mod restart_policy;
+pub use restart_policy::{
+    STRATEGY_ONE_FOR_ALL, STRATEGY_ONE_FOR_ONE, STRATEGY_REST_FOR_ONE, STRATEGY_SIMPLE_ONE_FOR_ONE,
+};
 
 /// Restart policies. `pub` for the same reason as the strategy constants:
 /// codegen names them when emitting `HewChildSpec.restart_policy` from a
@@ -1152,9 +1143,7 @@ pub(crate) struct SupervisorRoster {
     child_supervisor_specs: Vec<Option<SupervisorChildSpec>>,
     retiring_children: Vec<Arc<crate::actor_native::NativeActorCompletion>>,
     pending_group_restart: Option<PendingGroupRestart>,
-    restart_times: [u64; MAX_RESTARTS_TRACK],
-    restart_count: usize,
-    restart_head: usize,
+    restart_times: restart_history::RestartHistory,
     pool_slots: Vec<*mut HewActorPool>,
     pool_specs: Vec<InternalPoolSpec>,
     config_buf: *mut c_void,
@@ -1691,6 +1680,9 @@ struct CircuitBreakerState {
     opened_at_ns: u64,
     /// Crash statistics for this child.
     crash_stats: *mut crate::crash::CrashStats,
+    /// Decision history, bounded by the configured threshold rather than the
+    /// diagnostic crash log's fixed eight entries.
+    crash_times: std::collections::VecDeque<u64>,
 }
 
 impl Default for CircuitBreakerState {
@@ -1703,6 +1695,7 @@ impl Default for CircuitBreakerState {
             opened_at_ns: 0,
             // SAFETY: crash::hew_crash_stats_new returns valid pointer.
             crash_stats: unsafe { crate::crash::hew_crash_stats_new() },
+            crash_times: std::collections::VecDeque::new(),
         }
     }
 }
@@ -2037,35 +2030,18 @@ fn monotonic_time_ns() -> u64 {
 }
 
 /// Count restarts within the sliding window.
-#[expect(clippy::cast_sign_loss, reason = "C ABI: window_secs is non-negative")]
 fn restart_within_window(window_secs: c_int, roster: &SupervisorRoster) -> c_int {
-    // ROSTER-GUARDED-HELPER: callers bound this borrow by their MutexGuard.
-    // SAFETY: no preconditions.
-    let now = unsafe { hew_now_ms() };
-    let window_ms = (window_secs as u64).wrapping_mul(1000);
-
-    let mut count: c_int = 0;
-    let limit = roster.restart_count.min(MAX_RESTARTS_TRACK);
-    for i in 0..limit {
-        let idx = (roster.restart_head + MAX_RESTARTS_TRACK - 1 - i) % MAX_RESTARTS_TRACK;
-        if now.wrapping_sub(roster.restart_times[idx]) <= window_ms {
-            count += 1;
-        } else {
-            break;
-        }
-    }
-    count
+    // SAFETY: this clock read has no caller preconditions.
+    roster
+        .restart_times
+        .recent(unsafe { hew_now_ms() }, window_secs)
 }
-
-/// Record a restart timestamp.
-fn record_restart(roster: &mut SupervisorRoster) {
-    // ROSTER-GUARDED-HELPER: callers bound this borrow by their MutexGuard.
-    // SAFETY: no preconditions.
-    roster.restart_times[roster.restart_head] = unsafe { hew_now_ms() };
-    roster.restart_head = (roster.restart_head + 1) % MAX_RESTARTS_TRACK;
-    if roster.restart_count < MAX_RESTARTS_TRACK {
-        roster.restart_count += 1;
-    }
+fn record_restart(roster: &mut SupervisorRoster, max_restarts: c_int) {
+    // SAFETY: this clock read has no caller preconditions.
+    roster.restart_times.record(
+        unsafe { hew_now_ms() },
+        usize::try_from(max_restarts).unwrap_or(0),
+    );
 }
 
 /// Resolve the supervisor's own actor id for trace attribution. Returns `0`
@@ -2233,57 +2209,60 @@ fn circuit_breaker_should_restart(spec: &mut InternalChildSpec, sup_actor_id: u6
 /// Update circuit breaker state after a crash.
 fn circuit_breaker_record_crash(spec: &mut InternalChildSpec, signal: i32, sup_actor_id: u64) {
     let now_ns = monotonic_time_ns();
+    circuit_breaker_record_crash_at(&mut spec.circuit_breaker, signal, sup_actor_id, now_ns);
+}
 
+fn circuit_breaker_record_crash_at(
+    breaker: &mut CircuitBreakerState,
+    signal: i32,
+    sup_actor_id: u64,
+    now_ns: u64,
+) {
     // Record crash in statistics
-    if !spec.circuit_breaker.crash_stats.is_null() {
+    if !breaker.crash_stats.is_null() {
         // SAFETY: crash_stats was created by hew_crash_stats_new.
         unsafe {
-            crate::crash::hew_crash_stats_record(spec.circuit_breaker.crash_stats, signal, now_ns);
+            crate::crash::hew_crash_stats_record(breaker.crash_stats, signal, now_ns);
         }
     }
 
     // Check if circuit breaker is configured (max_crashes > 0)
-    if spec.circuit_breaker.max_crashes == 0 {
+    if breaker.max_crashes == 0 {
         return;
     }
 
-    match spec.circuit_breaker.state {
+    let threshold = usize::try_from(breaker.max_crashes).unwrap_or(usize::MAX);
+    let window_ns = u64::from(breaker.window_secs) * 1_000_000_000;
+    while breaker
+        .crash_times
+        .front()
+        .is_some_and(|stamp| now_ns.wrapping_sub(*stamp) > window_ns)
+        || breaker.crash_times.len() >= threshold
+    {
+        breaker.crash_times.pop_front();
+    }
+    breaker.crash_times.push_back(now_ns);
+
+    match breaker.state {
         0 => {
             // HEW_CIRCUIT_BREAKER_CLOSED
-            // Check if we should open the circuit
-            let window_ns = u64::from(spec.circuit_breaker.window_secs).wrapping_mul(1_000_000_000);
-            if !spec.circuit_breaker.crash_stats.is_null() {
-                // Pass the supervisor-clock `now_ns` (the SAME clock used to
-                // record the crash timestamp at the top of this fn) so the
-                // window comparison is single-clock. Reading a second,
-                // independently-epoched clock inside `recent_count` made a
-                // freshly-recorded timestamp look "in the future" under load and
-                // silently undercounted crashes, leaving the breaker CLOSED.
-                // SAFETY: crash_stats was created by hew_crash_stats_new.
-                let recent_count = unsafe {
-                    crate::crash::hew_crash_stats_recent_count(
-                        spec.circuit_breaker.crash_stats,
-                        window_ns,
-                        now_ns,
-                    )
-                };
-                if recent_count >= spec.circuit_breaker.max_crashes {
-                    spec.circuit_breaker.state = 1; // HEW_CIRCUIT_BREAKER_OPEN
-                    spec.circuit_breaker.opened_at_ns = now_ns;
-                    // Observability (AFTER the CLOSED → OPEN transition).
-                    crate::tracing::record_supervisor_event(
-                        sup_actor_id,
-                        crate::tracing::SPAN_SUPERVISOR_CIRCUIT_OPEN,
-                        i32::try_from(recent_count).unwrap_or(i32::MAX),
-                    );
-                }
+            let recent_count = breaker.crash_times.len();
+            if recent_count >= threshold {
+                breaker.state = 1; // HEW_CIRCUIT_BREAKER_OPEN
+                breaker.opened_at_ns = now_ns;
+                // Observability (AFTER the CLOSED → OPEN transition).
+                crate::tracing::record_supervisor_event(
+                    sup_actor_id,
+                    crate::tracing::SPAN_SUPERVISOR_CIRCUIT_OPEN,
+                    i32::try_from(recent_count).unwrap_or(i32::MAX),
+                );
             }
         }
         2 => {
             // HEW_CIRCUIT_BREAKER_HALF_OPEN
             // Probe restart failed, go back to open
-            spec.circuit_breaker.state = 1; // HEW_CIRCUIT_BREAKER_OPEN
-            spec.circuit_breaker.opened_at_ns = now_ns;
+            breaker.state = 1; // HEW_CIRCUIT_BREAKER_OPEN
+            breaker.opened_at_ns = now_ns;
             // Observability (AFTER the HALF_OPEN → OPEN transition).
             crate::tracing::record_supervisor_event(
                 sup_actor_id,
@@ -2296,6 +2275,10 @@ fn circuit_breaker_record_crash(spec: &mut InternalChildSpec, signal: i32, sup_a
         }
     }
 }
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+#[path = "../../../proofs/runtime_protocols/src/circuit_breaker_properties.rs"]
+mod failure_properties;
 
 /// Update circuit breaker state after a successful restart.
 fn circuit_breaker_record_success(spec: &mut InternalChildSpec, sup_actor_id: u64) {

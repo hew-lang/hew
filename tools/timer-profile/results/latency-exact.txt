@@ -1,0 +1,33 @@
+repeat=1
+timer_entry_bytes=48
+wheel precise=true loaded=false delay_ns=50000 n=300 late_p50_ns=61848 late_p99_ns=157241 cpu_ns_per_timer=13920 waits=300 wall_ns=35463451
+wheel precise=true loaded=false delay_ns=250000 n=300 late_p50_ns=70923 late_p99_ns=161680 cpu_ns_per_timer=12846 waits=300 wall_ns=100367540
+wheel precise=true loaded=false delay_ns=1000000 n=300 late_p50_ns=78253 late_p99_ns=130181 cpu_ns_per_timer=14306 waits=300 wall_ns=324499703
+wheel precise=true loaded=false delay_ns=10000000 n=300 late_p50_ns=100214 late_p99_ns=411090 cpu_ns_per_timer=33524 waits=300 wall_ns=3038041362
+wheel precise=true loaded=true delay_ns=50000 n=300 late_p50_ns=62038 late_p99_ns=154057 cpu_ns_per_timer=12748 waits=300 wall_ns=34886636
+wheel precise=true loaded=true delay_ns=250000 n=300 late_p50_ns=74980 late_p99_ns=165927 cpu_ns_per_timer=14524 waits=300 wall_ns=99003872
+wheel precise=true loaded=true delay_ns=1000000 n=300 late_p50_ns=77452 late_p99_ns=129841 cpu_ns_per_timer=16581 waits=300 wall_ns=325273636
+wheel precise=true loaded=true delay_ns=10000000 n=300 late_p50_ns=92213 late_p99_ns=161926 cpu_ns_per_timer=22711 waits=300 wall_ns=3029121574
+idle wall_ns=250280786 cpu_ns=25518 waits=1
+repeat=2
+timer_entry_bytes=48
+wheel precise=true loaded=false delay_ns=50000 n=300 late_p50_ns=61698 late_p99_ns=144894 cpu_ns_per_timer=12007 waits=300 wall_ns=34966843
+wheel precise=true loaded=false delay_ns=250000 n=300 late_p50_ns=71725 late_p99_ns=150437 cpu_ns_per_timer=12830 waits=300 wall_ns=98557716
+wheel precise=true loaded=false delay_ns=1000000 n=300 late_p50_ns=75228 late_p99_ns=158264 cpu_ns_per_timer=12820 waits=300 wall_ns=324091059
+wheel precise=true loaded=false delay_ns=10000000 n=300 late_p50_ns=92918 late_p99_ns=187636 cpu_ns_per_timer=22109 waits=300 wall_ns=3030138720
+wheel precise=true loaded=true delay_ns=50000 n=300 late_p50_ns=61808 late_p99_ns=129219 cpu_ns_per_timer=11090 waits=300 wall_ns=34498215
+wheel precise=true loaded=true delay_ns=250000 n=300 late_p50_ns=74048 late_p99_ns=104879 cpu_ns_per_timer=12481 waits=300 wall_ns=97853543
+wheel precise=true loaded=true delay_ns=1000000 n=300 late_p50_ns=78314 late_p99_ns=108298 cpu_ns_per_timer=13784 waits=300 wall_ns=324071308
+wheel precise=true loaded=true delay_ns=10000000 n=300 late_p50_ns=93053 late_p99_ns=197275 cpu_ns_per_timer=24678 waits=300 wall_ns=3030237514
+idle wall_ns=250260477 cpu_ns=40741 waits=1
+repeat=3
+timer_entry_bytes=48
+wheel precise=true loaded=false delay_ns=50000 n=300 late_p50_ns=61658 late_p99_ns=169701 cpu_ns_per_timer=12606 waits=300 wall_ns=35040205
+wheel precise=true loaded=false delay_ns=250000 n=300 late_p50_ns=72245 late_p99_ns=170643 cpu_ns_per_timer=13629 waits=300 wall_ns=99435355
+wheel precise=true loaded=false delay_ns=1000000 n=300 late_p50_ns=75809 late_p99_ns=130823 cpu_ns_per_timer=17016 waits=300 wall_ns=324948981
+wheel precise=true loaded=false delay_ns=10000000 n=300 late_p50_ns=94458 late_p99_ns=153436 cpu_ns_per_timer=24337 waits=300 wall_ns=3029854647
+wheel precise=true loaded=true delay_ns=50000 n=300 late_p50_ns=63831 late_p99_ns=79555 cpu_ns_per_timer=11894 waits=300 wall_ns=34293995
+wheel precise=true loaded=true delay_ns=250000 n=300 late_p50_ns=74048 late_p99_ns=151514 cpu_ns_per_timer=13928 waits=300 wall_ns=98343984
+wheel precise=true loaded=true delay_ns=1000000 n=300 late_p50_ns=76460 late_p99_ns=146886 cpu_ns_per_timer=13420 waits=300 wall_ns=323954733
+wheel precise=true loaded=true delay_ns=10000000 n=300 late_p50_ns=91362 late_p99_ns=180395 cpu_ns_per_timer=22266 waits=300 wall_ns=3029165589
+idle wall_ns=250243887 cpu_ns=37235 waits=1

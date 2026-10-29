@@ -505,6 +505,8 @@ pub(super) fn lint_source(
 pub trait NodeVisitor {
     /// A block, visited before its contents are descended.
     fn visit_block(&mut self, _block: &Block) {}
+    /// A block, after its contents have been visited.
+    fn leave_block(&mut self, _block: &Block) {}
     /// A statement, visited before its sub-nodes are descended.
     fn visit_stmt(&mut self, _stmt: &Stmt, _span: &Span) {}
     /// An expression, visited before its sub-expressions are descended.
@@ -529,6 +531,7 @@ pub fn walk_block<V: NodeVisitor>(block: &Block, visitor: &mut V) {
     if let Some(trailing) = &block.trailing_expr {
         walk_expr(&trailing.0, &trailing.1, visitor);
     }
+    visitor.leave_block(block);
 }
 
 #[allow(

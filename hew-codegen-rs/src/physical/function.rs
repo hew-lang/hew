@@ -408,6 +408,22 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
         Ok(())
     }
 
+    /// Loop snapshots restore scalar values and invariant borrowed vector
+    /// handles. Their owners and occupancy remain in the calling coroutine;
+    /// restoring a snapshot does not initialize or transfer an owning seat.
+    pub(super) fn restore_loop_carrier(
+        &self,
+        id: StorageId,
+        value: BasicValueEnum<'ctx>,
+    ) -> CodegenResult<()> {
+        self.value_emitter().store_value(
+            self.slots[id.0 as usize],
+            &self.storage(id)?.layout,
+            value,
+        )?;
+        self.debug_value(id, value)
+    }
+
     pub(super) fn clear_owned(&self, id: StorageId) -> CodegenResult<()> {
         if self.storage(id)?.own == OwnKind::Owned {
             self.debug_unavailable(id);

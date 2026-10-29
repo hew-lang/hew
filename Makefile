@@ -83,6 +83,62 @@
 .PHONY: compile-determinism-verify compile-determinism-verify-build compile-determinism-selftest compile-determinism-selftest-build ir-size-verify
 .PHONY: hew-check-all
 .PHONY: downstream-check
+.PHONY: prove prove-runtime prove-runtime-checks prove-ready-gate prove-request-deadline prove-runtime-protocols prove-llvm-frames proof-status
+.PHONY: prove-pipeline prove-periodic prove-reactor prove-one-shot prove-machines prove-machine-codegen check-vector-widths
+
+check-vector-widths: ## Execute actual vector runtime and compiled Hew on native and wasm32
+	@python3 proofs/runtime_protocols/check_vector_widths.py
+
+prove: prove-runtime prove-llvm-frames prove-machines ## Verify runtime, emitted LLVM cleanup and machine selection
+
+prove-runtime: ## Verify runtime rules and record evidence for this source tree
+	@python3 proofs/coverage.py --run runtime
+
+prove-runtime-checks: prove-ready-gate prove-request-deadline prove-runtime-protocols
+	@python3 proofs/check_evidence.py
+
+prove-llvm-frames: ## Kernel-check frame cleanup in current O0/O2 LLVM output
+	@python3 proofs/coverage.py --run llvm
+
+proof-status: ## Explain rules, confidence, current evidence and remaining gaps
+	@python3 proofs/coverage.py
+
+prove-ready-gate: ## Verify scheduled-work rules, implementation, races, and regression witnesses
+	@python3 proofs/ready_gate/generate.py
+	@kani proofs/ready_gate/check.rs --output-format terse -Z concrete-playback --concrete-playback print
+	cargo test --manifest-path proofs/ready_gate/Cargo.toml --locked --lib
+	@python3 proofs/ready_gate/check_mutations.py
+
+prove-request-deadline: ## Verify full-width deadline composition, arithmetic, and expiry
+	@kani proofs/request_deadline/check.rs --output-format terse -Z concrete-playback --concrete-playback print
+	@python3 proofs/request_deadline/check_mutations.py
+
+prove-pipeline: hew-native wasm-runtime ## Check compiled timer, mailbox, restart and cleanup histories
+	@python3 proofs/runtime_protocols/run.py pipeline
+	cargo run --manifest-path proofs/runtime_protocols/Cargo.toml --locked --features pipeline --bin pipeline -- "$(CURDIR)/target/debug/hew"
+
+prove-machines: ## Validate machine charts, dispatch, reaction progress and commit structure (Z3)
+	HEW_MACHINE_MUTATIONS=1 HEW_MACHINE_PROOF_DIR="$(CURDIR)/proofs/target/machines" cargo run --locked -p hew-types --example verify_machines --features verify-machines
+
+prove-machine-codegen: hew-native wasm-runtime ## Compare actual machine outcomes across native/WASI and O0/O2
+	HEW_MACHINE_PROOF_DIR="$(CURDIR)/proofs/target/machines" cargo run --locked -p hew-types --example verify_machines --features verify-machines -- --compiler "$(CURDIR)/target/debug/hew"
+
+prove-one-shot: ## Verify production one-shot custody, consuming dispatch and terminal states
+	@python3 proofs/runtime_protocols/run.py one_shot
+	@python3 proofs/runtime_protocols/check_mutations.py --feature one_shot
+
+prove-periodic: ## Check production periodic timer publication, cancellation and cadence
+	@python3 proofs/runtime_protocols/run.py periodic
+	@python3 proofs/runtime_protocols/check_mutations.py --feature periodic_loom
+
+prove-reactor: ## Check production reactor parking, virtual-time behavior, and defect witnesses
+	@python3 proofs/runtime_protocols/run.py reactor
+	@python3 proofs/runtime_protocols/check_mutations.py --feature reactor_loom
+
+prove-runtime-protocols: ## Verify production runtime contracts and bounded concurrent models
+	@python3 proofs/runtime_protocols/run.py
+	@python3 proofs/runtime_protocols/check_mutations.py
+
 
 
 
@@ -1933,3 +1989,10 @@ node-protocol: ## Generate: checked internal node control bindings and CDDL
 LINT_GATES += node-protocol-check
 node-protocol-check: ## Check: internal node control bindings match checked Hew plans
 	cargo run -p xtask -- node-protocol --check
+
+# Timing experiments are opt-in: wall-clock performance is host dependent.
+.PHONY: profile-timers
+profile-timers: ## Bench: compare exact and millisecond timer policies on Linux
+	cargo run --release --locked --manifest-path tools/timer-profile/Cargo.toml -- kernel
+	cargo run --release --locked --manifest-path tools/timer-profile/Cargo.toml -- throughput
+	cargo run --release --locked --manifest-path tools/timer-profile/Cargo.toml -- latency

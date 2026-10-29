@@ -181,7 +181,7 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                     "loop.output.value",
                 )
                 .llvm_ctx("restore loop output")?;
-            self.store(id, value)?;
+            self.restore_loop_carrier(id, value)?;
         }
         Ok(())
     }

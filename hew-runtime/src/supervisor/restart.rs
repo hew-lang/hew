@@ -5,72 +5,35 @@
 )]
 use super::*;
 
-/// One stable child identity in the parent's declaration order.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum RestartChildRole {
-    Actor(u64),
-    Supervisor { index: usize, identity: u64 },
-}
-
-impl RestartChildRole {
-    pub(super) fn identity(self) -> u64 {
-        match self {
-            Self::Actor(identity) | Self::Supervisor { identity, .. } => identity,
-        }
-    }
-}
-
-/// The roles one restart strategy restarts after `failed`, in declaration
-/// order; empty when `failed` itself is no longer restartable.
-///
-/// # Safety
-/// `sup` remains live throughout the roster snapshot.
+pub(crate) use super::restart_policy::RestartChildRole;
 unsafe fn restart_roles_for_strategy(
     sup: *mut HewSupervisor,
     strategy: c_int,
     failed: RestartChildRole,
 ) -> Vec<RestartChildRole> {
-    let roles = {
-        // SAFETY: the caller keeps the parent alive through the roster snapshot.
-        let roster = unsafe { &(*sup).roster }.lock_or_recover();
-        // A spent spec is a role this supervisor already ruled against
-        // restarting. A group restart triggered by a SIBLING must not resurrect
-        // it: the same `!spent` filter the nested specs carry applies to actor
-        // specs, or a `temporary` child declined moments ago comes back under
-        // `one_for_all` / `rest_for_one`.
-        let mut roles: Vec<_> =
-            roster
-                .child_specs
-                .iter()
-                .filter(|spec| !spec.spent)
-                .map(|spec| RestartChildRole::Actor(spec.identity))
-                .chain(roster.child_supervisor_specs.iter().enumerate().filter_map(
-                    |(index, spec)| {
-                        spec.as_ref().filter(|spec| !spec.spent).map(|spec| {
-                            RestartChildRole::Supervisor {
-                                index,
-                                identity: spec.identity,
-                            }
-                        })
-                    },
-                ))
-                .collect();
-        roles.sort_unstable_by_key(|role| role.identity());
-        roles
-            .into_iter()
-            .filter(|role| match strategy {
-                STRATEGY_ONE_FOR_ONE | STRATEGY_SIMPLE_ONE_FOR_ONE => *role == failed,
-                STRATEGY_ONE_FOR_ALL => true,
-                STRATEGY_REST_FOR_ONE => role.identity() >= failed.identity(),
-                _ => unreachable!("unknown supervisor restart strategy"),
-            })
-            .collect::<Vec<_>>()
-    };
-    if roles.contains(&failed) {
-        roles
-    } else {
-        Vec::new()
-    }
+    // SAFETY: the caller retains the supervisor through this roster snapshot.
+    let roster = unsafe { &(*sup).roster }.lock_or_recover();
+    let actors = roster
+        .child_specs
+        .iter()
+        .map(|spec| (RestartChildRole::Actor(spec.identity), spec.spent));
+    let supervisors =
+        roster
+            .child_supervisor_specs
+            .iter()
+            .enumerate()
+            .filter_map(|(index, spec)| {
+                spec.as_ref().map(|spec| {
+                    (
+                        RestartChildRole::Supervisor {
+                            index,
+                            identity: spec.identity,
+                        },
+                        spec.spent,
+                    )
+                })
+            });
+    super::restart_policy::choose_roles(actors.chain(supervisors), strategy, failed)
 }
 
 /// Apply one restart strategy across both child kinds in declaration order:
@@ -404,7 +367,7 @@ pub(crate) unsafe fn restart_with_budget_and_strategy(
         };
         let recent = restart_within_window(window_secs, s);
         if recent < max_restarts {
-            record_restart(s);
+            record_restart(s, max_restarts);
         }
         (
             strategy,
@@ -538,7 +501,7 @@ pub(crate) unsafe fn restart_child_supervisor_with_budget(
             0
         };
         if restartable && recent < max_restarts {
-            record_restart(s);
+            record_restart(s, max_restarts);
         }
         (restartable, recent, max_restarts, sup_actor_id, strategy)
     };

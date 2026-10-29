@@ -1,0 +1,121 @@
+[
+  {
+    "id": "readiness",
+    "subsystem": "Scheduling readiness",
+    "suite": "runtime",
+    "rules": [
+      "One poll owner at a time.",
+      "A wake during polling survives for the next poll.",
+      "Frozen or completed work cannot restart."
+    ],
+    "basis": "Lean legal traces; Rust state refinement; bounded races",
+    "confidence": "Strong local gate; scheduler partly covered",
+    "missing": "Queue/frame integration, fairness, preemption and delivery latency.",
+    "summary": "Permission to resume is exclusive; wakeups are retained."
+  },
+  {
+    "id": "time",
+    "subsystem": "Deadlines and timers",
+    "suite": "runtime",
+    "rules": [
+      "An inherited deadline can only tighten.",
+      "Deadline arithmetic cannot wrap into extra time.",
+      "A timer payload goes to removal or firing once; stale handles cannot claim it."
+    ],
+    "basis": "All 64-bit arithmetic/registration inputs; bounded lists and callback races",
+    "confidence": "Strong arithmetic; timer wheel partly covered",
+    "missing": "Arbitrary calendar cascades, process ticker and real-time scheduling.",
+    "summary": "Time budgets only tighten; timer payloads have one terminal owner."
+  },
+  {
+    "id": "heap",
+    "subsystem": "Allocation",
+    "suite": "runtime",
+    "rules": [
+      "Successful arena extents fit and do not overlap earlier extents.",
+      "Failure consumes no arena quota or cursor space.",
+      "Realloc preserves or releases the exact allocation owner."
+    ],
+    "basis": "Full-width layout arithmetic; bounded real API lifecycles; allocator contracts",
+    "confidence": "Strong arithmetic; bounded allocator lifecycles",
+    "missing": "Arbitrary allocation histories, OS allocator behavior and OOM abort execution.",
+    "summary": "Allocation extents fit, and failure preserves ownership/accounting."
+  },
+  {
+    "id": "managed",
+    "subsystem": "Managed ownership",
+    "suite": "runtime",
+    "rules": [
+      "Each waker owner retains one reference.",
+      "Backing aliases charge quota once per account.",
+      "Abandoned allocation/growth guards refund reservations."
+    ],
+    "basis": "Bounded reference sequences and concurrent production ledger operations",
+    "confidence": "Bounded ownership/accounting evidence",
+    "missing": "Complete descriptor walks, COW mutation, provider transfers and all generated clone/drop paths.",
+    "summary": "References and quota balance across aliasing and abandoned work."
+  },
+  {
+    "id": "lifecycle",
+    "subsystem": "Runtime lifecycle",
+    "suite": "runtime",
+    "rules": [
+      "Await cleanup has one terminal authority.",
+      "Semaphores conserve permits and hand them to live waiters.",
+      "Read-slot teardown preserves in-flight ownership.",
+      "Closed supervisors admit no pins; final pin release authorizes drain notification."
+    ],
+    "basis": "Full-width gate arithmetic and bounded production compositions",
+    "confidence": "Bounded lifecycle evidence; some unbounded scalar rules",
+    "missing": "Every shutdown/destructor path, OS wait loops, arbitrary populations and unbounded progress.",
+    "summary": "Completion, resource handoff and teardown have one authority."
+  },
+  {
+    "id": "root_driver",
+    "subsystem": "Root/host frame ownership",
+    "suite": "runtime",
+    "rules": [
+      "A pending root resumes at most once per consumed readiness notification.",
+      "Completed frames are destroyed once and their owner slot becomes null.",
+      "Results are observed after frame retirement; later polls touch no retired frame.",
+      "Missing/prematurely completed pending frames, yielded roots and unfinished terminal frames are rejected."
+    ],
+    "basis": "Production shared poll function; every guard combination and signed 32-bit result; two consecutive polls; seven required reachability witnesses",
+    "confidence": "Exhaustive caller-side rules within a two-poll scenario",
+    "missing": "Producer returns a live handle; resume preserves storage; real frame primitives, host readiness glue, concurrency and generated finalizers.",
+    "summary": "Readiness permits resume; completion destroys and clears the frame owner."
+  },
+  {
+    "id": "llvm",
+    "subsystem": "Emitted LLVM cleanup",
+    "suite": "llvm",
+    "rules": [
+      "After explicit frame release, generated instructions only branch, return or terminate.",
+      "The same generated path cannot execute another explicit frame release."
+    ],
+    "basis": "Lean kernel certificates for actual O0/O2 LLVM CFGs; arbitrary path length per artifact",
+    "confidence": "Strong local artifact rule; compiler partly covered",
+    "missing": "Returned/escaped handle lifetime, calls before release, cross-entry ownership, leaks and other LLVM memory safety.",
+    "summary": "Explicit frame release ends generated memory/call work."
+  },
+  {
+    "id": "lowering",
+    "subsystem": "HIR/SIR/MIR lowering",
+    "suite": null,
+    "rules": [],
+    "basis": "No maintained semantic preservation proof",
+    "confidence": "Uncovered",
+    "missing": "Ownership preservation and source-to-machine semantic equivalence.",
+    "summary": "No semantic preservation proof maintained."
+  },
+  {
+    "id": "distributed",
+    "subsystem": "Distributed transport",
+    "suite": null,
+    "rules": [],
+    "basis": "No maintained formal target",
+    "confidence": "Uncovered",
+    "missing": "Authentication/authority, reconnect fencing, wire parsing and distributed delivery guarantees.",
+    "summary": "No formal transport contract maintained."
+  }
+]

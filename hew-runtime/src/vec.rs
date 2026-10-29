@@ -38,17 +38,31 @@ use hew_cabi::string::HewString;
 use std::alloc::{alloc, dealloc, realloc, Layout};
 use std::sync::atomic::{fence, AtomicUsize, Ordering};
 
+#[cfg(all(kani, hew_protocol_host))]
+#[path = "../../proofs/runtime_protocols/src/vector.rs"]
+pub(crate) mod formal_vectors;
+
+#[path = "vec/bounds.rs"]
 mod bounds;
 #[cfg(test)]
 mod index_width_tests;
 use bounds::{checked_index, checked_range};
 
+#[path = "vec/managed.rs"]
 mod managed;
 pub use managed::*;
 
 // ---------------------------------------------------------------------------
 // Internal helpers
 // ---------------------------------------------------------------------------
+
+// Preserve the C abort boundary behind a Rust function so validators can
+// distinguish required rejection from an unexpected process termination.
+#[inline]
+unsafe fn abort_vector() -> ! {
+    // SAFETY: abort terminates the process and accepts no arguments.
+    unsafe { libc::abort() }
+}
 
 use crate::trap_code::write_stderr;
 
@@ -198,7 +212,7 @@ unsafe fn buffer_allocation(v: *const HewVec, capacity: usize) -> (Layout, usize
             .unwrap_or_else(|| allocation_size_overflow());
         let layout =
             Layout::from_size_align(bytes, align.max(core::mem::align_of::<AtomicUsize>()))
-                .unwrap_or_else(|_| libc::abort());
+                .unwrap_or_else(|_| abort_vector());
         (layout, offset)
     }
 }
@@ -207,7 +221,7 @@ unsafe fn allocation_size_overflow() -> ! {
     // SAFETY: writing the existing capacity diagnostic precedes a terminal abort.
     unsafe {
         write_stderr(b"PANIC: Vec allocation size overflow\n");
-        libc::abort();
+        abort_vector();
     }
 }
 
@@ -232,7 +246,7 @@ unsafe fn allocate_buffer(v: *const HewVec, capacity: usize) -> *mut u8 {
         let (layout, offset) = buffer_allocation(v, capacity);
         let base = alloc(layout);
         if base.is_null() {
-            libc::abort();
+            abort_vector();
         }
         let data = base.add(offset);
         data.sub(core::mem::size_of::<AtomicUsize>())
@@ -274,7 +288,7 @@ unsafe fn resize_buffer(v: *mut HewVec, capacity: usize) {
             let (new_layout, offset) = buffer_allocation(v, capacity);
             let base = realloc((*v).data.sub(old_offset), old_layout, new_layout.size());
             if base.is_null() {
-                libc::abort();
+                abort_vector();
             }
             base.add(offset)
         } else {
@@ -387,7 +401,7 @@ unsafe fn abort_layout_aware_operation() -> ! {
     unsafe {
         let msg = b"PANIC: Vec layout-aware operation is not implemented\n\0";
         write_stderr(&msg[..msg.len() - 1]);
-        libc::abort();
+        abort_vector();
     }
 }
 
@@ -425,7 +439,7 @@ unsafe fn abort_null_eq_fn() -> ! {
     unsafe {
         let msg = b"PANIC: Vec layout contains equality thunk is null\n\0";
         write_stderr(&msg[..msg.len() - 1]);
-        libc::abort();
+        abort_vector();
     }
 }
 
@@ -455,16 +469,16 @@ unsafe fn validate_type_layout(layout: *const HewTypeLayout) {
         if descriptor.size == 0 {
             let msg = b"PANIC: HewTypeLayout size must be non-zero\n\0";
             write_stderr(&msg[..msg.len() - 1]);
-            libc::abort();
+            abort_vector();
         }
         if descriptor.align == 0 || !descriptor.align.is_power_of_two() {
             let msg = b"PANIC: HewTypeLayout align must be a non-zero power of two\n\0";
             write_stderr(&msg[..msg.len() - 1]);
-            libc::abort();
+            abort_vector();
         }
         if !descriptor.size.is_multiple_of(descriptor.align) {
             write_stderr(b"PANIC: HewTypeLayout size must preserve element alignment\n");
-            libc::abort();
+            abort_vector();
         }
     }
 }
@@ -481,11 +495,11 @@ unsafe fn validate_elem_layout(layout: *const HewValueLayout) {
         if descriptor.align == 0 || !descriptor.align.is_power_of_two() {
             let msg = b"PANIC: HewValueLayout align must be a non-zero power of two\n\0";
             write_stderr(&msg[..msg.len() - 1]);
-            libc::abort();
+            abort_vector();
         }
         if !descriptor.size.is_multiple_of(descriptor.align) {
             write_stderr(b"PANIC: HewValueLayout size must preserve element alignment\n");
-            libc::abort();
+            abort_vector();
         }
         if descriptor.ownership_kind != HewTypeOwnershipKind::Plain
             && descriptor.drop_fn.is_none()
@@ -493,7 +507,7 @@ unsafe fn validate_elem_layout(layout: *const HewValueLayout) {
         {
             let msg = b"PANIC: HewValueLayout non-Plain ownership requires drop_fn\n\0";
             write_stderr(&msg[..msg.len() - 1]);
-            libc::abort();
+            abort_vector();
         }
     }
 }
@@ -541,7 +555,7 @@ pub unsafe extern "C" fn hew_vec_new_with_elem_size(elem_size: i64) -> *mut HewV
     unsafe {
         let v: *mut HewVec = crate::mem::buf_try_alloc(core::mem::size_of::<HewVec>()).cast(); // ALLOCATOR-PAIRING: GlobalAlloc
         if v.is_null() {
-            libc::abort();
+            abort_vector();
         }
         (*v).data = ptr::null_mut();
         (*v).len = 0;
@@ -739,12 +753,12 @@ pub unsafe extern "C" fn hew_vec_new_with_layout(layout: *const HewTypeLayout) -
         if descriptor.ownership_kind == HewTypeOwnershipKind::LayoutManaged {
             let msg = b"PANIC: HewTypeLayout LayoutManaged requires HewValueLayout thunks\n\0";
             write_stderr(&msg[..msg.len() - 1]);
-            libc::abort();
+            abort_vector();
         }
         let elem_size = i64::try_from(descriptor.size).unwrap_or_else(|_| {
             let msg = b"PANIC: HewTypeLayout size exceeds Hew ABI range\n\0";
             write_stderr(&msg[..msg.len() - 1]);
-            libc::abort();
+            abort_vector();
         });
         let v = hew_vec_new_with_elem_size(elem_size);
         (*v).elem_kind = match descriptor.ownership_kind {
@@ -755,7 +769,7 @@ pub unsafe extern "C" fn hew_vec_new_with_layout(layout: *const HewTypeLayout) -
                 // HewValueLayout entry rather than this thunk-less ABI.
                 let msg = b"PANIC: HewTypeLayout ownership_kind=Bytes is not valid for Vec\n\0";
                 write_stderr(&msg[..msg.len() - 1]);
-                libc::abort();
+                abort_vector();
             }
         };
         (*v).layout_storage = HewValueLayout {
@@ -898,7 +912,7 @@ macro_rules! vec_push_primitive {
             unsafe {
                 let len = (*v).len;
                 let Some(new_len) = len.checked_add(1) else {
-                    libc::abort();
+                    abort_vector();
                 };
                 ensure_cap_raw(v, new_len);
                 let slot = (*v).data.cast::<$ty>().add(len);
@@ -930,7 +944,7 @@ pub unsafe extern "C" fn hew_vec_push_str(v: *mut HewVec, val: *const HewString)
     unsafe {
         let len = (*v).len;
         let Some(new_len) = len.checked_add(1) else {
-            libc::abort();
+            abort_vector();
         };
         ensure_cap_raw(v, new_len);
         // Retain one owner for the vec (VWT copy ingress).
@@ -960,7 +974,7 @@ pub unsafe extern "C" fn hew_vec_push_ptr(v: *mut HewVec, val: *mut c_void) {
         }
         let len = (*v).len;
         let Some(new_len) = len.checked_add(1) else {
-            libc::abort();
+            abort_vector();
         };
         ensure_cap_raw(v, new_len);
         (*v).data.cast::<*mut c_void>().add(len).write(val);
@@ -1033,7 +1047,7 @@ unsafe fn abort_ptr_stride_mismatch(elem_size: usize) -> ! {
                     use hew_vec_get_layout for value-record element types\n\0";
         write_stderr(&msg[..msg.len() - 1]);
         let _ = elem_size; // suppress unused warning; carries diagnostic context
-        libc::abort();
+        abort_vector();
     }
 }
 
@@ -1215,7 +1229,7 @@ pub unsafe extern "C-unwind" fn hew_vec_slice_range_bytesize(
         let out = hew_vec_new_with_elem_size(i64::try_from(elem_size).unwrap_or_else(|_| {
             let msg = b"PANIC: Vec element size overflow\n\0";
             write_stderr(&msg[..msg.len() - 1]);
-            libc::abort();
+            abort_vector();
         }));
         if count == 0 {
             return out;
@@ -1224,12 +1238,12 @@ pub unsafe extern "C-unwind" fn hew_vec_slice_range_bytesize(
         let byte_count = count.checked_mul(elem_size).unwrap_or_else(|| {
             let msg = b"PANIC: Vec slice byte count overflow\n\0";
             write_stderr(&msg[..msg.len() - 1]);
-            libc::abort();
+            abort_vector();
         });
         let start_byte = start_u.checked_mul(elem_size).unwrap_or_else(|| {
             let msg = b"PANIC: Vec slice start offset overflow\n\0";
             write_stderr(&msg[..msg.len() - 1]);
-            libc::abort();
+            abort_vector();
         });
         let src = (*v).data.add(start_byte);
         core::ptr::copy_nonoverlapping(src, (*out).data, byte_count);
@@ -1330,7 +1344,7 @@ pub unsafe extern "C-unwind" fn hew_vec_slice_range_layout(
         let count = end_u - start_u;
         let out = hew_vec_new_with_layout(layout);
         if out.is_null() {
-            libc::abort();
+            abort_vector();
         }
         if count == 0 {
             return out;
@@ -1340,12 +1354,12 @@ pub unsafe extern "C-unwind" fn hew_vec_slice_range_layout(
         let byte_count = count.checked_mul(elem_size).unwrap_or_else(|| {
             let msg = b"PANIC: Vec layout slice byte count overflow\n\0";
             write_stderr(&msg[..msg.len() - 1]);
-            libc::abort();
+            abort_vector();
         });
         let start_byte = start_u.checked_mul(elem_size).unwrap_or_else(|| {
             let msg = b"PANIC: Vec layout slice start offset overflow\n\0";
             write_stderr(&msg[..msg.len() - 1]);
-            libc::abort();
+            abort_vector();
         });
         let src = (*v).data.add(start_byte);
         core::ptr::copy_nonoverlapping(src, (*out).data, byte_count);
@@ -1378,7 +1392,7 @@ pub unsafe extern "C-unwind" fn hew_vec_slice_range_owned(
         let count = end_u - start_u;
         let out = hew_vec_new_with_elem_layout(layout);
         if out.is_null() {
-            libc::abort();
+            abort_vector();
         }
         if count == 0 {
             return out;
@@ -1400,7 +1414,7 @@ pub unsafe extern "C-unwind" fn hew_vec_slice_range_owned(
                 hew_vec_free_owned(out);
                 let msg = b"PANIC: Vec owned slice clone failed\n\0";
                 write_stderr(&msg[..msg.len() - 1]);
-                libc::abort();
+                abort_vector();
             }
             (*out).len = i + 1;
         }
@@ -1971,7 +1985,7 @@ unsafe fn clone_vec_descriptor(v: *const HewVec) -> *mut HewVec {
                 && layout.release_start.is_none()
         }) {
             if (*buffer_owner(v)).fetch_add(1, Ordering::Relaxed) >= isize::MAX as usize {
-                libc::abort();
+                abort_vector();
             }
             (*new_v).data = src.data;
             (*new_v).len = src.len;
@@ -2007,7 +2021,7 @@ unsafe fn clone_vec_descriptor(v: *const HewVec) -> *mut HewVec {
                     release_vector(new_v, false);
                     let msg = b"PANIC: Vec descriptor clone failed\n\0";
                     write_stderr(&msg[..msg.len() - 1]);
-                    libc::abort();
+                    abort_vector();
                 }
                 (*new_v).len = i + 1;
             }
@@ -2086,10 +2100,10 @@ pub unsafe extern "C" fn hew_vec_append(dst: *mut HewVec, src: *const HewVec) {
             || (*dst).elem_kind != (*src).elem_kind
             || (*dst).layout.is_null() != (*src).layout.is_null()
         {
-            libc::abort();
+            abort_vector();
         }
         let Some(new_len) = (*dst).len.checked_add(src_len) else {
-            libc::abort();
+            abort_vector();
         };
         ensure_cap_raw(dst, new_len);
         let elem_size = (*dst).elem_size;
@@ -2123,7 +2137,7 @@ pub unsafe extern "C" fn hew_vec_append(dst: *mut HewVec, src: *const HewVec) {
             if clone_fn(src_slot.cast::<c_void>(), dst_slot.cast::<c_void>()) != 0 {
                 let msg = b"PANIC: Vec descriptor clone failed\n\0";
                 write_stderr(&msg[..msg.len() - 1]);
-                libc::abort();
+                abort_vector();
             }
             (*dst).len += 1;
         }
@@ -2614,7 +2628,7 @@ pub unsafe extern "C" fn hew_vec_push_generic(v: *mut HewVec, data: *const core:
         abort_if_layout_aware(v);
         let len = (*v).len;
         let Some(new_len) = len.checked_add(1) else {
-            libc::abort();
+            abort_vector();
         };
         let data = ensure_cap_with_source(v, new_len, data);
         let elem_size = (*v).elem_size;
@@ -2643,7 +2657,7 @@ pub unsafe extern "C" fn hew_vec_push_layout(
         validate_bitcopy_layout_operation(v, layout);
         let len = (*v).len;
         let Some(new_len) = len.checked_add(1) else {
-            libc::abort();
+            abort_vector();
         };
         let data = ensure_cap_with_source(v, new_len, data);
         let elem_size = (*layout).size;
@@ -2830,7 +2844,7 @@ unsafe fn abort_owned_descriptor_missing() -> ! {
     unsafe {
         let msg = b"PANIC: Vec owned operation requires an element layout descriptor\n\0";
         write_stderr(&msg[..msg.len() - 1]);
-        libc::abort();
+        abort_vector();
     }
 }
 
@@ -2843,7 +2857,7 @@ unsafe fn abort_owned_thunk_missing(which: &str) -> ! {
         write_stderr(b"PANIC: Vec owned descriptor is missing the ");
         write_stderr(which.as_bytes());
         write_stderr(b" thunk\n");
-        libc::abort();
+        abort_vector();
     }
 }
 
@@ -2897,7 +2911,7 @@ pub unsafe extern "C" fn hew_vec_new_with_elem_layout(
         let elem_size = i64::try_from(descriptor.size).unwrap_or_else(|_| {
             let msg = b"PANIC: HewValueLayout size exceeds Hew ABI range\n\0";
             write_stderr(&msg[..msg.len() - 1]);
-            libc::abort();
+            abort_vector();
         });
         let v = hew_vec_new_with_elem_size(elem_size);
         // Owned elements use the Plain bulk-buffer kind; ownership is driven by
@@ -2927,7 +2941,7 @@ pub unsafe extern "C" fn hew_vec_new_with_elem_layout_capacity(
 ) -> *mut HewVec {
     // SAFETY: the constructor validates and copies the supplied descriptor.
     unsafe {
-        let capacity = usize::try_from(capacity).unwrap_or_else(|_| libc::abort());
+        let capacity = usize::try_from(capacity).unwrap_or_else(|_| abort_vector());
         let value = hew_vec_new_with_elem_layout(layout);
         if value.is_null() {
             return value;
@@ -2967,7 +2981,7 @@ pub unsafe extern "C" fn hew_vec_push_owned(v: *mut HewVec, data: *const core::f
         let clone_fn = owned_clone_fn(layout);
         let len = (*v).len;
         let Some(new_len) = len.checked_add(1) else {
-            libc::abort();
+            abort_vector();
         };
         let data = ensure_cap_with_source(v, new_len, data);
         let dst = (*v).data.add(len * elem_size);
@@ -2982,7 +2996,7 @@ pub unsafe extern "C" fn hew_vec_push_owned(v: *mut HewVec, data: *const core::f
             // live. Fail closed rather than admit a half-cloned element.
             let msg = b"PANIC: Vec owned element clone failed\n\0";
             write_stderr(&msg[..msg.len() - 1]);
-            libc::abort();
+            abort_vector();
         }
         (*v).len = new_len;
     }
@@ -3010,7 +3024,7 @@ pub unsafe extern "C" fn hew_vec_push_owned_move(v: *mut HewVec, data: *const co
         let elem_size = layout.size;
         let len = (*v).len;
         let Some(new_len) = len.checked_add(1) else {
-            libc::abort();
+            abort_vector();
         };
         let data = ensure_cap_with_source(v, new_len, data);
         let dst = (*v).data.add(len * elem_size);
@@ -3109,7 +3123,7 @@ pub unsafe extern "C" fn hew_vec_get_clone(
                         // half-cloned element to `Some`.
                         let msg = b"PANIC: Vec owned element clone failed (get)\n\0";
                         write_stderr(&msg[..msg.len() - 1]);
-                        libc::abort();
+                        abort_vector();
                     }
                 }
             }
@@ -3264,7 +3278,7 @@ unsafe fn set_owned_release(
             let status = owned_clone_fn(&layout).map_or(0, |clone| clone(data, scratch.cast()));
             if status != 0 {
                 write_stderr(b"PANIC: Vec owned element clone failed\n");
-                libc::abort();
+                abort_vector();
             }
         }
         let displaced = HewReleaseCursor::detached(slot.cast(), layout);

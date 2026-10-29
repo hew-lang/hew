@@ -5,8 +5,9 @@
 //! is observed by every descendant. The tree carries no thread state, so it is
 //! the same authority on every target.
 
-use std::sync::atomic::{AtomicI32, AtomicI64, AtomicUsize, Ordering};
-use std::sync::Mutex;
+use crate::runtime_sync::AtomicI32;
+use crate::runtime_sync::Mutex;
+use std::sync::atomic::{AtomicI64, AtomicUsize, Ordering};
 
 use crate::util::MutexExt as _;
 
@@ -16,32 +17,9 @@ pub use wake::{hew_cancel_observe, hew_cancel_unobserve, HewCancelObserver};
 
 // ── Cancellation tokens ─────────────────────────────────────────────────
 
-#[repr(i32)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum HewCancellationState {
-    Active = 0,
-    CancelRequested = 1,
-    Observed = 2,
-    Trapped = 3,
-    Completed = 4,
-}
-
-impl HewCancellationState {
-    fn from_i32(raw: i32) -> Self {
-        match raw {
-            0 => Self::Active,
-            1 => Self::CancelRequested,
-            2 => Self::Observed,
-            3 => Self::Trapped,
-            4 => Self::Completed,
-            _ => panic!("HewCancellationToken.state contained an invalid discriminant"),
-        }
-    }
-
-    fn is_requested(self) -> bool {
-        matches!(self, Self::CancelRequested | Self::Observed | Self::Trapped)
-    }
-}
+#[path = "cancel_state.rs"]
+mod state;
+pub(crate) use state::HewCancellationState;
 
 /// Opaque, ref-counted cancellation token used by scope-owned tasks.
 ///
@@ -191,19 +169,7 @@ pub unsafe extern "C" fn hew_cancel_token_cancel(token: *mut HewCancellationToke
     let t = unsafe { &*token };
     // Publish the winning reason before making cancellation observable. A
     // competing requester may publish the state, but cannot replace the reason.
-    let reason = if reason == 0 { 1 } else { reason };
-    let _ = t
-        .reason
-        .compare_exchange(0, reason, Ordering::AcqRel, Ordering::Acquire);
-    if t.state
-        .compare_exchange(
-            HewCancellationState::Active as i32,
-            HewCancellationState::CancelRequested as i32,
-            Ordering::AcqRel,
-            Ordering::Acquire,
-        )
-        .is_ok()
-    {
+    if state::request(&t.state, &t.reason, reason) {
         let observers = {
             let mut registered = t.observers.lock_or_recover();
             std::mem::take(&mut *registered)

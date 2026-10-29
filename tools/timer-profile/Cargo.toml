@@ -1,0 +1,9 @@
+[package]
+name = "hew-timer-profile"
+version = "0.1.0"
+edition = "2021"
+publish = false
+[workspace]
+[dependencies]
+libc = "=0.2.189"
+hew-cabi = { path = "../../hew-cabi" }

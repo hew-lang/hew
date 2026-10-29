@@ -21,3 +21,5 @@ pub(crate) mod poison_safe;
 
 pub(crate) use poison_safe::PoisonSafe;
 pub(crate) use poison_safe::PoisonSafeRw;
+
+mod pin_state;

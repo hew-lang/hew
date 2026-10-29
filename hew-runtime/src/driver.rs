@@ -25,10 +25,9 @@ use std::sync::atomic::{AtomicPtr, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 
 use crate::activation::{activate_queued_actor, SchedulerQueueEntry};
-use crate::timer_wheel::{
-    hew_timer_wheel_new, hew_timer_wheel_next_deadline_ms, timer_wheel_cursor_ms,
-    timer_wheel_tick_to, HewTimerWheel,
-};
+use crate::timer_wheel::{hew_timer_wheel_new, HewTimerWheel};
+#[cfg(target_arch = "wasm32")]
+use crate::timer_wheel::{hew_timer_wheel_next_deadline_ms, timer_wheel_cursor_ms};
 use crate::util::MutexExt;
 use crate::wake::blocking::Readiness;
 
@@ -401,7 +400,7 @@ fn now_ms() -> u64 {
 /// Fire every timer due at the current clock. Returns how many fired.
 fn fire_due_timers() -> i32 {
     // SAFETY: `global_wheel` returns the live process-owned wheel.
-    unsafe { timer_wheel_tick_to(global_wheel(), now_ms()) }
+    unsafe { crate::timer_wheel::hew_timer_wheel_tick(global_wheel()) }
 }
 
 /// A spent compute budget advances deterministic time and services due timers.
@@ -422,21 +421,20 @@ pub(crate) fn safepoint_tick() {
 fn advance_to_next_timer() -> bool {
     let wheel = global_wheel();
     // SAFETY: the live process-owned wheel; the query takes its own lock.
-    let remaining = unsafe { hew_timer_wheel_next_deadline_ms(wheel) };
-    if remaining < 0 {
+    let Some(deadline) = (unsafe { crate::timer_wheel::timer_wheel_next_deadline(wheel) }) else {
         return false;
-    }
+    };
     if active_config().virtual_clock {
-        // SAFETY: same live wheel.
-        let cursor = unsafe { timer_wheel_cursor_ms(wheel) };
-        let deadline = cursor.saturating_add(remaining.cast_unsigned());
-        if deadline > now_ms() {
+        // The simulation/guest clock protocol deliberately uses milliseconds.
+        // Round only at that host boundary, never inside the timer wheel.
+        let deadline_ms = deadline.ceil_millis().unwrap_or(u64::MAX);
+        if deadline_ms > now_ms() {
             let _ = crate::deterministic::hew_simtime_set_ms(
-                i64::try_from(deadline).unwrap_or(i64::MAX),
+                i64::try_from(deadline_ms).unwrap_or(i64::MAX),
             );
         }
-    } else if remaining > 0 {
-        std::thread::sleep(std::time::Duration::from_millis(remaining.cast_unsigned()));
+    } else {
+        std::thread::sleep(deadline.remaining(crate::timer_wheel::now_for_wheel()));
     }
     fire_due_timers();
     true

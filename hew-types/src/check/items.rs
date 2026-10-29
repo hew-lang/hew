@@ -2548,17 +2548,6 @@ impl Checker {
                         attr.span.clone(),
                         "#[every] duration must be positive",
                     ));
-                } else if *ns < 1_000_000 {
-                    // The periodic timer ABI (`hew_actor_schedule_periodic`)
-                    // is millisecond-grained and treats a 0 ms interval as
-                    // invalid; a sub-millisecond duration would floor to 0 at
-                    // MIR lowering and be refused at spawn. Catch it here
-                    // with a source-level diagnostic instead.
-                    self.errors.push(TypeError::new(
-                        TypeErrorKind::InvalidOperation,
-                        attr.span.clone(),
-                        "#[every] duration is less than 1ms, which floors to a 0ms timer interval; the minimum periodic interval is 1ms",
-                    ));
                 } else {
                     valid_every_duration = true;
                 }

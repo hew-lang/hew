@@ -16,6 +16,9 @@ workspace = true
 # Exposes fixture-only identities to direct dev-dependencies. Production builds
 # leave this disabled, so fixture constructors are absent from the public API.
 test = []
+# Development-only translation validation of generated machine selection.
+# Requires a Z3 executable; absent from normal compiler and runtime builds.
+verify-machines = []
 # Wire schema generation uses the existing runtime identities.
 sandbox-schema = ["dep:schemars", "dep:ts-rs"]
 
@@ -40,6 +43,7 @@ strum = { version = "0.28.0", features = ["derive"] }
 regex = "1"
 
 [dev-dependencies]
+toml.workspace = true
 # Integration tests build named types through the fixture constructors.
 hew-types = { path = ".", features = ["test"] }
 # W4.001 Stage C0b — `resolved_call_kernel_symbols` resolves Stage B
@@ -54,3 +58,7 @@ hew-cabi = { path = "../hew-cabi" }
 
 [build-dependencies]
 hew-parser = { path = "../hew-parser" }
+
+[[example]]
+name = "verify_machines"
+required-features = ["verify-machines"]

@@ -1,4 +1,7 @@
 fn main() {
+    println!("cargo:rustc-check-cfg=cfg(hew_fault_loom)");
+    println!("cargo:rustc-check-cfg=cfg(kani)");
+    println!("cargo:rustc-check-cfg=cfg(hew_protocol_host)");
     println!("cargo:rerun-if-env-changed=LLVM_SYS_221_PREFIX");
     println!("cargo:rerun-if-changed=src/coro_llvm.cpp");
     // The coroutine builtins lower the indirect calls with LLVM's calling

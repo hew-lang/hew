@@ -79,6 +79,10 @@
 use std::alloc::{alloc, dealloc, realloc, Layout};
 use std::ptr;
 
+#[cfg(kani)]
+#[path = "../../proofs/runtime_protocols/src/heap.rs"]
+mod formal_heap;
+
 pub use hew_cabi::mem::{buf_alloc, buf_free, buf_realloc, buf_try_alloc, BUF_ALIGN};
 
 /// Reconstruct the allocation [`Layout`] for a `(size, align)` pair.

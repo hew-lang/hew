@@ -41,6 +41,10 @@
 use std::os::raw::c_void;
 use std::ptr;
 
+#[cfg(kani)]
+#[path = "../../proofs/runtime_protocols/src/arena_allocation.rs"]
+mod formal_allocation;
+
 // ── Windows virtual memory API ──────────────────────────────────────────────
 
 #[cfg(windows)]

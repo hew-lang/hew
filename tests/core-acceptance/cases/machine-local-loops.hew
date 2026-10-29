@@ -1,0 +1,50 @@
+machine Local {
+    events { Tick; }
+    emits { Trace { value: i64; } }
+    state A { value: i64; }
+    state B {
+        value: i64;
+        entry {
+            var count = 0;
+            loop {
+                count += 1;
+                if count == 2 { break; }
+            }
+            state.value += count;
+            emit Trace { value: state.value };
+        }
+    }
+    always: A => B when {
+        var count = 0;
+        while count < 2 {
+            count += 1;
+            if count == 1 { continue; }
+        }
+        count == 2
+    } {
+        var count = 0;
+        @outer: while count < 3 {
+            count += 1;
+            for i in 0 .. 3 {
+                if i == 0 { continue; }
+                if count == 2 { break @outer; }
+                break;
+            }
+        }
+        B { value: state.value + count }
+    }
+    default { state }
+}
+fn main() {
+    var value: Local = .A { value: 10 };
+    let report = value.step(.Tick).expect("local loop step failed");
+    assert(report.rules == [0]);
+    match value {
+        .B { value } => assert(value == 14),
+        _ => panic("reaction did not progress"),
+    }
+    match report.outputs[0] {
+        .Trace { value } => assert(value == 14),
+    }
+    println("local machine jumps preserved");
+}

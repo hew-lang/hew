@@ -230,6 +230,8 @@ impl Builder {
         hierarchy: &Hierarchy,
         observed: bool,
     ) -> Result<Block, TypeError> {
+        #[cfg(feature = "verify-machines")]
+        let mut verified_passes = Vec::new();
         let mut shell = self.step_body_shell(machine);
         if !observed {
             let event = self.ident("event");
@@ -262,6 +264,8 @@ impl Builder {
                 Some(event),
                 observed,
             )?;
+            #[cfg(feature = "verify-machines")]
+            verified_passes.push((pass.clone(), MachineTrigger::Event(event.name)));
             let body = self.block(vec![set_input], pass);
             arms.push(MatchArm {
                 append_separator: None,
@@ -284,6 +288,8 @@ impl Builder {
                 .any(|rule| rule.trigger == trigger)
             {
                 let pass = self.configuration_pass(machine, hierarchy, trigger, None, observed)?;
+                #[cfg(feature = "verify-machines")]
+                verified_passes.push((pass.clone(), trigger));
                 let again = self.stmt(Stmt::Continue { label: None });
                 reactions.push(self.if_do(pass, vec![again]));
             }
@@ -310,6 +316,8 @@ impl Builder {
             report
         };
         shell.trailing_expr = Some(Box::new(self.result("Ok", report)));
+        #[cfg(feature = "verify-machines")]
+        super::verification::verify_step(machine, &shell, &verified_passes, observed);
         Ok(shell)
     }
 
@@ -387,6 +395,10 @@ impl Builder {
     ) -> Result<Spanned<Expr>, TypeError> {
         let mut stmts = Vec::new();
         let ordered = hierarchy.candidate_order(machine, trigger);
+        #[cfg(feature = "verify-machines")]
+        let mut guard_atoms = Vec::new();
+        #[cfg(feature = "verify-machines")]
+        let mut effects = Vec::new();
         let mut authored = Vec::new();
         for index in &ordered {
             let value = self.boolean(false);
@@ -407,6 +419,10 @@ impl Builder {
             } else {
                 self.boolean(true)
             };
+            #[cfg(feature = "verify-machines")]
+            if rule.guard.is_some() {
+                guard_atoms.push((*index, guard.1.clone()));
+            }
             let seen = self.boolean(true);
             let seen = self.assign(
                 format!("_$machine_seen_{}", hierarchy.ordinal(*index)),
@@ -443,6 +459,8 @@ impl Builder {
             .collect();
         let selected = self.disjunction(selections);
         stmts.push(self.let_value("_$machine_any", None, selected));
+        #[cfg(feature = "verify-machines")]
+        let selection_end = stmts.len();
         let used = self.ident(USED);
         let limit = self.ident("limit");
         let exhausted = self.binary(hew_parser::ast::BinaryOp::GreaterEqual, used, limit);
@@ -454,10 +472,33 @@ impl Builder {
         let charge = self.assign(USED, increment);
         let selected = self.ident("_$machine_any");
         stmts.push(self.if_do(selected, vec![refuse, charge]));
-        self.configuration_hooks(machine, hierarchy, event, &ordered, false, &mut stmts)?;
-        self.capture_history(machine, hierarchy, &ordered, &mut stmts)?;
+        self.configuration_hooks(
+            machine,
+            hierarchy,
+            event,
+            &ordered,
+            false,
+            &mut stmts,
+            #[cfg(feature = "verify-machines")]
+            &mut effects,
+        )?;
+        self.capture_history(
+            machine,
+            hierarchy,
+            &ordered,
+            &mut stmts,
+            #[cfg(feature = "verify-machines")]
+            &mut effects,
+        )?;
         if observed {
-            self.capture_departures(machine, hierarchy, &ordered, &mut stmts)?;
+            self.capture_departures(
+                machine,
+                hierarchy,
+                &ordered,
+                &mut stmts,
+                #[cfg(feature = "verify-machines")]
+                &mut effects,
+            )?;
         }
         let mut bodies = ordered.clone();
         bodies.sort_by_key(|index| machine.transitions[*index].span.start);
@@ -498,18 +539,51 @@ impl Builder {
             )?;
             let body = self.retain_history(machine, hierarchy, body)?;
             let update = self.assign(WORK, body);
+            #[cfg(feature = "verify-machines")]
+            effects.push(super::verification::Effect {
+                span: update.1.clone(),
+                stage: super::verification::Stage::Body(index),
+            });
             let selected = self.ident(format!("_$machine_selected_{index}"));
             let record = self.record_rule(hierarchy.ordinal(index));
             let taken = self.variant(Ident::new("Taken"), Vec::new(), Vec::new());
             let disposition = self.assign(DISPOSITION, taken);
             stmts.push(self.if_do(selected, vec![update, record, disposition]));
         }
-        self.configuration_hooks(machine, hierarchy, event, &ordered, true, &mut stmts)?;
+        self.configuration_hooks(
+            machine,
+            hierarchy,
+            event,
+            &ordered,
+            true,
+            &mut stmts,
+            #[cfg(feature = "verify-machines")]
+            &mut effects,
+        )?;
 
         let selected = self.ident("_$machine_any");
-        Ok(self.block(stmts, selected))
+        let result = self.block(stmts, selected);
+        #[cfg(feature = "verify-machines")]
+        super::verification::verify(
+            machine,
+            hierarchy,
+            trigger,
+            &result,
+            &guard_atoms,
+            selection_end,
+            &effects,
+            observed,
+        );
+        Ok(result)
     }
 
+    #[cfg_attr(
+        feature = "verify-machines",
+        expect(
+            clippy::too_many_arguments,
+            reason = "development observer records update identities without affecting normal emission"
+        )
+    )]
     fn configuration_hooks(
         &mut self,
         machine: &MachineDecl,
@@ -518,6 +592,7 @@ impl Builder {
         rules: &[usize],
         entry: bool,
         stmts: &mut Vec<Spanned<Stmt>>,
+        #[cfg(feature = "verify-machines")] effects: &mut Vec<super::verification::Effect>,
     ) -> Result<(), TypeError> {
         let mut nodes = hierarchy.hook_nodes();
         nodes.sort_by_key(|node| hierarchy.boundary_order_key(machine, *node, entry));
@@ -561,6 +636,9 @@ impl Builder {
                 }
                 let state = self.source_configuration(machine, hierarchy, config)?;
                 let hook = self.rewrite_block(hook, machine, &state, event)?;
+                #[cfg(feature = "verify-machines")]
+                super::super::machine_control::validate_block(&hook)
+                    .expect("rewritten hook must retain local jump scopes");
                 let value = self.state_value(machine, &state);
                 let hook_expr = self.expr(Expr::Block(hook));
                 let hook_stmt = self.stmt(Stmt::Expression(hook_expr));
@@ -573,7 +651,17 @@ impl Builder {
                     Focus::Configuration(hierarchy.container(config)),
                     hierarchy.container(node).is_some(),
                 )?;
-                updates.push(self.assign(WORK, update));
+                let update = self.assign(WORK, update);
+                #[cfg(feature = "verify-machines")]
+                effects.push(super::verification::Effect {
+                    span: update.1.clone(),
+                    stage: super::verification::Stage::Hook {
+                        node,
+                        config,
+                        entry,
+                    },
+                });
+                updates.push(update);
             }
             stmts.push(self.if_do(condition, updates));
         }
@@ -834,6 +922,11 @@ impl Builder {
         let was_initializing = self.initializing;
         self.initializing = true;
         let result = self.rewrite(value, machine, &scope, None);
+        #[cfg(feature = "verify-machines")]
+        if let Ok(value) = &result {
+            super::super::machine_control::validate_expr(value)
+                .expect("rewritten initializer must retain local jump scopes");
+        }
         self.initializing = was_initializing;
         result
     }

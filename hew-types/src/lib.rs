@@ -65,6 +65,8 @@ pub use builtin_type::{
     lookup_builtin_type, lookup_source_owned_lifecycle_type, source_owned_lifecycle_owner,
     BuiltinType, BuiltinTypeInfo, SourceOwnedLifecycleOwner, SOURCE_OWNED_LIFECYCLE_OWNERS,
 };
+#[cfg(feature = "verify-machines")]
+pub use check::machine_verification_statistics;
 pub use check::{
     builtin_function_names, directive_suppresses, normalize_machine_declarations, ActorMethodKind,
     ActorStateGuard, ArmResolution, AssignTargetKind, AssignTargetShape, AssociatedTypeSchemas,

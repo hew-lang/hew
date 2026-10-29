@@ -9,10 +9,11 @@
     reason = "FFI entry-point module; SAFETY documented at each fn signature."
 )]
 
+use crate::runtime_sync::AtomicI32;
+use crate::runtime_sync::Mutex;
 use std::ffi::c_void;
 use std::ptr;
-use std::sync::atomic::{AtomicI32, AtomicUsize, Ordering};
-use std::sync::Mutex;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use crate::actor::HewActor;
 use crate::cancel_token::{
@@ -24,28 +25,9 @@ use crate::timer_wheel::{
 };
 use crate::util::MutexExt;
 
-/// Terminal state for an internal suspended await registration.
-///
-/// Values are ABI-visible to codegen/runtime adapters.
-#[repr(i32)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum AwaitCancelStatus {
-    Pending = 0,
-    Completed = 1,
-    Cancelled = 2,
-    TimedOut = 3,
-}
-
-impl AwaitCancelStatus {
-    fn terminal_for(raw: i32) -> Self {
-        match raw {
-            1 => Self::Completed,
-            2 => Self::Cancelled,
-            3 => Self::TimedOut,
-            _ => Self::Pending,
-        }
-    }
-}
+#[path = "await_state.rs"]
+mod state;
+pub use state::AwaitCancelStatus;
 
 pub type HewAwaitCleanup = Option<unsafe extern "C" fn(*mut c_void, i32)>;
 
@@ -140,31 +122,20 @@ unsafe fn await_cancel_finish(
 
     // SAFETY: caller holds a live registration reference.
     let r = unsafe { &*reg };
-    if r.state
-        .compare_exchange(
-            AwaitCancelStatus::Pending as i32,
-            status as i32,
-            Ordering::AcqRel,
-            Ordering::Acquire,
-        )
-        .is_err()
-    {
+    let Some(disposition) = state::settle(&r.state, status, wake_actor) else {
         return false;
-    }
+    };
 
     // SAFETY: caller holds a live registration reference.
     unsafe { cancel_timer(reg) };
 
-    if matches!(
-        status,
-        AwaitCancelStatus::Cancelled | AwaitCancelStatus::TimedOut
-    ) {
+    if disposition.cleanup {
         if let Some(cleanup) = r.cleanup {
             // SAFETY: the wait source installed this callback together with its
             // source pointer and the common CAS above guarantees it runs once.
             unsafe { cleanup(r.source, status as i32) };
         }
-        if wake_actor {
+        if disposition.wake {
             crate::resume::enqueue_resume_by_incarnation(r.actor);
         }
     }
@@ -288,10 +259,7 @@ pub unsafe extern "C" fn hew_await_cancel_cancel(
     status: i32,
     wake_actor: i32,
 ) -> i32 {
-    let terminal = match AwaitCancelStatus::terminal_for(status) {
-        AwaitCancelStatus::TimedOut => AwaitCancelStatus::TimedOut,
-        _ => AwaitCancelStatus::Cancelled,
-    };
+    let terminal = state::cancellation_status(status);
     // SAFETY: upheld by this function's caller.
     let finished = unsafe { await_cancel_finish(reg, terminal, wake_actor != 0) };
     i32::from(finished)

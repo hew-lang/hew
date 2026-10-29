@@ -1,0 +1,10 @@
+[[case]]
+id = "timer-nanosecond-deadlines"
+intent = "Sub-millisecond and fractional-millisecond periodic handlers survive compiler lowering, deliver turns, and quiesce on stop alongside exact sleep-until deadlines."
+source = "cases/timer-nanosecond-deadlines.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "nanosecond timer deadlines\n"
+exit = 0

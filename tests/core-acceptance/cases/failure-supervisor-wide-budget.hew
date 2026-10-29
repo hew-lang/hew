@@ -1,0 +1,22 @@
+import std.restart;
+
+actor Worker {
+    receive fn crash() { panic("restart budget probe"); }
+}
+
+supervisor App {
+    strategy: one_for_one;
+    intensity: 40 within 60s;
+    backoff: restart.exponential(initial: 1ms, maximum: 1ms);
+    child worker: Worker;
+}
+
+fn main() {
+    let app = spawn App;
+    for _ in 0 .. 41 {
+        let _ = app.worker.crash();
+        let role = app.worker;
+        restarted(role);
+    }
+    println("budget spent");
+}

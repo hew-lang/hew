@@ -4,15 +4,16 @@
 //! until taken; abandoning that reservation transfers it to another waiter or
 //! returns it to the count. The same operation serves coroutine and host waits.
 
+use crate::runtime_sync::{AtomicI32, Mutex};
 use crate::timer_wheel::{
-    hew_timer_wheel_remove, timer_wheel_schedule_at_handle, HewTimerHandle, HewTimerWheel,
+    hew_timer_wheel_remove, timer_wheel_schedule_precise_handle, HewTimerHandle, HewTimerWheel,
 };
 use crate::util::MutexExt;
 use crate::wake::{HewWaker, OwnedWaker};
 use std::collections::VecDeque;
 use std::ffi::c_void;
-use std::sync::atomic::{AtomicI32, Ordering};
-use std::sync::{Arc, Mutex, Weak};
+use std::sync::atomic::Ordering;
+use std::sync::{Arc, Weak};
 
 const PENDING: i32 = 0;
 const ACQUIRED: i32 = 1;
@@ -161,7 +162,11 @@ pub unsafe extern "C" fn hew_semaphore_acquire_new(
     if sem.is_null() || waker.is_null() {
         return std::ptr::null_mut();
     }
-    let expires = crate::clock::hew_now_ms().saturating_add(timeout_ms.max(0).cast_unsigned());
+    let expires = crate::timer_wheel::now_for_wheel()
+        .checked_add(std::time::Duration::from_millis(
+            timeout_ms.max(0).cast_unsigned(),
+        ))
+        .unwrap_or(crate::timer_deadline::Deadline::from_millis(u64::MAX));
     // SAFETY: the caller holds both live handles throughout registration.
     let backing = unsafe { &*sem }.state.clone();
     let waiter = Arc::new(Waiter {
@@ -206,7 +211,7 @@ pub unsafe extern "C" fn hew_semaphore_acquire_new(
 unsafe fn arm_deadline(
     operation: &mut HewSemaphoreAcquire,
     wheel: *mut HewTimerWheel,
-    expires: u64,
+    expires: crate::timer_deadline::Deadline,
 ) {
     operation.wheel = wheel;
     let payload = Arc::into_raw(operation.waiter.clone()).cast_mut().cast();
@@ -217,7 +222,7 @@ unsafe fn arm_deadline(
     } else {
         // SAFETY: the caller supplies a live wheel and the retained callback
         // payload outlives firing or removal.
-        unsafe { timer_wheel_schedule_at_handle(operation.wheel, expires, deadline, payload) }
+        unsafe { timer_wheel_schedule_precise_handle(operation.wheel, expires, deadline, payload) }
     };
     if operation.timer.entry.is_null() {
         // SAFETY: failed registration did not accept the callback payload.
@@ -545,7 +550,11 @@ mod tests {
         // the production registration failure path without changing global state.
         unsafe {
             let operation = hew_semaphore_acquire_new(sem, -1, waker.descriptor());
-            arm_deadline(&mut *operation, std::ptr::null_mut(), 1);
+            arm_deadline(
+                &mut *operation,
+                std::ptr::null_mut(),
+                crate::timer_deadline::Deadline::from_millis(1),
+            );
             assert_eq!(hew_semaphore_acquire_status(operation), FAULT);
             let waiter = Arc::downgrade(&(*operation).waiter);
             assert_eq!(wait_blocking(operation, &ready), Err(()));

@@ -1,0 +1,10 @@
+[[case]]
+id = "failure-pipe-owned-cancellation"
+intent = "Cancelling sends on a full typed pipe releases rejected nested owners while preserving the accepted message and admitting a successor."
+source = "cases/failure-pipe-owned-cancellation.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 30
+
+[case.expected]
+stdout = "FIRST\nSUCCESSOR\n"
+exit = 0

@@ -1,0 +1,12 @@
+[[case]]
+id = "machine-reaction-jump-refused"
+intent = "A jump in an authored reaction cannot capture the compiler's internal reaction loop."
+source = "cases/machine-reaction-jump-refused.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+kind = "check"
+
+[[case.expected.diagnostics]]
+code = "MachineExhaustivenessError"
+line = 7
+column = 13

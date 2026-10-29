@@ -1,0 +1,10 @@
+[[case]]
+id = "machine-local-loops"
+intent = "Authored guards, actions and hooks retain their local labelled and unlabelled loop transfers."
+source = "cases/machine-local-loops.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "local machine jumps preserved\n"
+exit = 0

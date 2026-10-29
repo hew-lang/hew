@@ -4,6 +4,9 @@
 //! * **Level 1:** 64 slots × 256 ms ≈ 16.4 s range
 //! * **Overflow:** sorted linked list for timers > 16.4 s
 //!
+//! Entries retain nanosecond fractions; buckets index time without rounding
+//! deadlines. A tick only collects entries whose exact deadline has elapsed.
+//!
 //! O(1) insert for the vast majority of timers.  O(1) per-tick firing.
 //! Only the overflow list has O(n) insertion for rare long-duration timers.
 //!
@@ -14,9 +17,15 @@
     reason = "FFI entry-point module; SAFETY documented at fn signature."
 )]
 
+use crate::runtime_sync::Mutex;
+use crate::timer_deadline::Deadline;
 use std::ffi::{c_int, c_void};
 use std::ptr;
-use std::sync::{Mutex, OnceLock};
+use std::sync::OnceLock;
+
+#[cfg(kani)]
+#[path = "../../proofs/runtime_protocols/src/wheel_registration.rs"]
+mod formal_registration;
 
 // ---------------------------------------------------------------------------
 // Platform clock
@@ -41,6 +50,15 @@ fn now_ms_for_wheel() -> u64 {
     }
     // SAFETY: symbol is always present on wasm32 (wasm_stubs::hew_now_ms).
     unsafe { hew_now_ms() }
+}
+
+pub(crate) fn now_for_wheel() -> Deadline {
+    // SAFETY: monotonic clock sampling has no preconditions.
+    Deadline::from_nanos(
+        unsafe { crate::clock::hew_instant_now() }
+            .max(0)
+            .cast_unsigned(),
+    )
 }
 
 /// Timer callback signature matching the C `hew_timer_cb` typedef.
@@ -69,11 +87,11 @@ pub(crate) fn register_insert_hook(hook: InsertHook) {
     let _ = INSERT_HOOK.set(hook);
 }
 
-/// Report an insert at `deadline_ms`. Called with the wheel lock released.
+/// Report an insert at `deadline_ns`. Called with the wheel lock released.
 #[inline]
-fn notify_inserted(tw: *mut HewTimerWheel, deadline_ms: u64) {
+fn notify_inserted(tw: *mut HewTimerWheel, deadline_ns: u64) {
     if let Some(hook) = INSERT_HOOK.get() {
-        hook(tw, deadline_ms);
+        hook(tw, deadline_ns);
     }
 }
 
@@ -93,20 +111,13 @@ const MAX_MS: u64 = (L1_SIZE as u64) * L1_MS; // 16384
 // Types
 // ---------------------------------------------------------------------------
 
-/// A single timer entry stored inside the wheel.
-#[repr(C)]
-#[derive(Debug)]
-pub struct HewTimerEntry {
-    deadline_ms: u64,
-    generation: u64,
-    cb: Option<HewTimerCb>,
-    data: *mut c_void,
-    cancelled: c_int,
-    next: *mut HewTimerEntry,
-}
-
-// SAFETY: Entries are only accessed under the wheel's Mutex.
-unsafe impl Send for HewTimerEntry {}
+#[path = "timer_entry.rs"]
+mod entry;
+pub use entry::HewTimerEntry;
+use entry::{
+    collect_expired_entries_at, fire_expired_entries, free_entry_list, remove_entry_from_list,
+    ExpiredEntry,
+};
 
 /// Internal state protected by a [`Mutex`].
 #[derive(Debug)]
@@ -115,6 +126,7 @@ struct WheelInner {
     l1: [*mut HewTimerEntry; L1_SIZE],
     overflow: *mut HewTimerEntry,
     current_ms: u64,
+    current_fraction_ns: u32,
     next_generation: u64,
 }
 
@@ -180,89 +192,12 @@ fn insert_entry(w: &mut WheelInner, entry: *mut HewTimerEntry) {
         let mut pp: *mut *mut HewTimerEntry = &raw mut w.overflow;
         // SAFETY: walking the overflow list under lock.
         unsafe {
-            while !(*pp).is_null() && (**pp).deadline_ms <= deadline {
+            while !(*pp).is_null() && (**pp).deadline() <= (*entry).deadline() {
                 pp = &raw mut (**pp).next;
             }
             (*entry).next = *pp;
             *pp = entry;
         }
-    }
-}
-
-/// Free every entry in a linked list starting at `head`.
-fn free_entry_list(mut head: *mut HewTimerEntry) {
-    while !head.is_null() {
-        // SAFETY: each node was Box-allocated and is owned by the wheel.
-        unsafe {
-            let next = (*head).next;
-            drop(Box::from_raw(head));
-            head = next;
-        }
-    }
-}
-
-/// Collected timer entry ready to fire outside the lock.
-struct ExpiredEntry {
-    cb: Option<HewTimerCb>,
-    data: *mut c_void,
-    cancelled: c_int,
-    raw: *mut HewTimerEntry,
-}
-
-// SAFETY: The raw pointer and data pointer are only used on the thread that
-// collected them, after the lock is released.
-unsafe impl Send for ExpiredEntry {}
-
-/// Unlink all entries whose deadline ≤ `now` from the list rooted at
-/// `*slot_head` and push them onto `expired`.  Entries that are not yet due
-/// remain in the list.
-///
-/// Caller must hold the lock.  Callbacks are **not** invoked here — the
-/// caller fires them after releasing the lock to avoid deadlock.
-fn collect_expired_entries(
-    slot_head: *mut *mut HewTimerEntry,
-    now: u64,
-    expired: &mut Vec<ExpiredEntry>,
-) {
-    let mut prev: *mut HewTimerEntry = ptr::null_mut();
-    // SAFETY: caller holds the lock; slot_head points into the wheel arrays.
-    let mut cur = unsafe { *slot_head };
-
-    while !cur.is_null() {
-        // SAFETY: cur is a valid node in the slot list; all fields accessed
-        // under the caller's lock.
-        let next = unsafe { (*cur).next };
-        // SAFETY: cur is a valid node; reading deadline under lock.
-        let cur_deadline = unsafe { (*cur).deadline_ms };
-
-        if cur_deadline <= now {
-            // Unlink from list.
-            if prev.is_null() {
-                // SAFETY: updating the slot head.
-                unsafe {
-                    *slot_head = next;
-                }
-            } else {
-                // SAFETY: prev is a valid preceding node.
-                unsafe {
-                    (*prev).next = next;
-                }
-            }
-
-            // SAFETY: accessing fields of a valid entry under lock.
-            unsafe {
-                expired.push(ExpiredEntry {
-                    cb: (*cur).cb,
-                    data: (*cur).data,
-                    cancelled: (*cur).cancelled,
-                    raw: cur,
-                });
-            }
-        } else {
-            prev = cur;
-        }
-
-        cur = next;
     }
 }
 
@@ -341,47 +276,6 @@ fn mark_entry_cancelled(w: &WheelInner, entry: *mut HewTimerEntry, generation: u
     let _ = mark_entry_cancelled_in_list(w.overflow, entry, generation);
 }
 
-/// Unlink the entry matching `entry`/`generation` from the list rooted at
-/// `*slot_head`, free its node, and return its `data` pointer. Returns `None`
-/// if no matching live entry is present in this list.
-///
-/// Caller must hold the lock.
-fn remove_entry_from_list(
-    slot_head: &mut *mut HewTimerEntry,
-    entry: *mut HewTimerEntry,
-    generation: u64,
-) -> Option<*mut c_void> {
-    let mut prev: *mut HewTimerEntry = ptr::null_mut();
-    let mut cur = *slot_head;
-    while !cur.is_null() {
-        // SAFETY: `cur` is a live node in this slot list; caller holds the lock.
-        let next = unsafe { (*cur).next };
-        // SAFETY: reading identity fields of a live node under the lock.
-        let matches = cur == entry && unsafe { (*cur).generation } == generation;
-        if matches {
-            if prev.is_null() {
-                *slot_head = next;
-            } else {
-                // SAFETY: `prev` is a live preceding node.
-                unsafe {
-                    (*prev).next = next;
-                }
-            }
-            // SAFETY: `cur` was unlinked and is exclusively owned now; capture
-            // its data before freeing the node.
-            let data = unsafe { (*cur).data };
-            // SAFETY: `cur` was Box-allocated by schedule_handle; reclaim it.
-            unsafe {
-                drop(Box::from_raw(cur));
-            }
-            return Some(data);
-        }
-        prev = cur;
-        cur = next;
-    }
-    None
-}
-
 fn remove_entry(w: &mut WheelInner, entry: *mut HewTimerEntry, generation: u64) -> *mut c_void {
     for slot in &mut w.l0 {
         if let Some(data) = remove_entry_from_list(slot, entry, generation) {
@@ -417,6 +311,7 @@ pub unsafe extern "C" fn hew_timer_wheel_new() -> *mut HewTimerWheel {
             l1: [ptr::null_mut(); L1_SIZE],
             overflow: ptr::null_mut(),
             current_ms: now,
+            current_fraction_ns: 0,
             next_generation: 1,
         }),
     });
@@ -475,14 +370,16 @@ pub unsafe extern "C" fn hew_timer_wheel_schedule(
 #[derive(Clone, Copy)]
 enum TimerSchedule {
     After(u64),
+    #[cfg(any(test, hew_protocol_host))]
     At(u64),
+    Precise(Deadline),
 }
 
 /// Advance across a long reactor stall without visiting every elapsed
 /// millisecond. All entries are already linked under this lock, so one scan can
 /// separate due callbacks from future entries and re-bucket the latter around
 /// the new cursor.
-fn advance_large_gap(w: &mut WheelInner, now: u64, expired: &mut Vec<ExpiredEntry>) {
+fn advance_large_gap(w: &mut WheelInner, now: Deadline, expired: &mut Vec<ExpiredEntry>) {
     let mut entries = Vec::new();
     let mut take = |mut entry: *mut HewTimerEntry| {
         while !entry.is_null() {
@@ -501,10 +398,10 @@ fn advance_large_gap(w: &mut WheelInner, now: u64, expired: &mut Vec<ExpiredEntr
         take(std::mem::replace(slot, ptr::null_mut()));
     }
     take(std::mem::replace(&mut w.overflow, ptr::null_mut()));
-    w.current_ms = now;
+    w.current_ms = now.millis;
     for entry in entries {
         // SAFETY: detached entries remain live and exclusively owned here.
-        if unsafe { (*entry).deadline_ms } <= now {
+        if unsafe { (*entry).deadline() } <= now {
             // SAFETY: fields are read while this function exclusively owns the
             // detached node; the callback runs after the wheel lock is released.
             unsafe {
@@ -521,7 +418,7 @@ fn advance_large_gap(w: &mut WheelInner, now: u64, expired: &mut Vec<ExpiredEntr
     }
     expired.sort_by_key(|entry| {
         // SAFETY: collected nodes stay owned until their callbacks finish.
-        unsafe { (*entry.raw).deadline_ms }
+        unsafe { (*entry.raw).deadline() }
     });
 }
 
@@ -543,19 +440,36 @@ unsafe fn timer_wheel_schedule_handle_inner(
         crate::set_last_error("timer entry generation space exhausted");
         return HewTimerHandle::null();
     }
-    let deadline_ms = match schedule {
+    let deadline = match schedule {
         TimerSchedule::After(delay_ms) => {
-            let now = now_ms_for_wheel();
-            w.current_ms.max(now).saturating_add(delay_ms)
+            let coarse = now_ms_for_wheel();
+            let sampled = now_for_wheel();
+            let start = sampled.max(Deadline::from_millis(coarse)).max(Deadline {
+                millis: w.current_ms,
+                fraction_ns: w.current_fraction_ns,
+            });
+            let Some(millis) = start.millis.checked_add(delay_ms) else {
+                crate::set_last_error("timer deadline exceeds wheel range");
+                return HewTimerHandle::null();
+            };
+            Deadline {
+                millis,
+                fraction_ns: start.fraction_ns,
+            }
         }
         // A deadline that elapsed before registration is already due. Keep it
         // in the current slot so the next tick can collect it immediately.
-        TimerSchedule::At(deadline_ms) => deadline_ms.max(w.current_ms),
+        #[cfg(any(test, hew_protocol_host))]
+        TimerSchedule::At(deadline_ms) => Deadline::from_millis(deadline_ms.max(w.current_ms)),
+        TimerSchedule::Precise(deadline) => deadline.max(Deadline {
+            millis: w.current_ms,
+            fraction_ns: w.current_fraction_ns,
+        }),
     };
     // `hew_timer_wheel_next_deadline_ms` reserves u64::MAX as its empty-wheel
     // sentinel. Reject that deadline explicitly instead of accepting a timer
     // that the ticker would then treat as absent forever.
-    if deadline_ms == u64::MAX {
+    if deadline.millis == u64::MAX {
         crate::set_last_error("timer deadline u64::MAX is reserved");
         return HewTimerHandle::null();
     }
@@ -563,7 +477,8 @@ unsafe fn timer_wheel_schedule_handle_inner(
     w.next_generation = w.next_generation.wrapping_add(1);
 
     let entry = Box::into_raw(Box::new(HewTimerEntry {
-        deadline_ms,
+        deadline_ms: deadline.millis,
+        fraction_ns: deadline.fraction_ns,
         generation,
         cb: Some(cb),
         data,
@@ -576,7 +491,7 @@ unsafe fn timer_wheel_schedule_handle_inner(
     // Release the wheel lock before notifying, so the woken reactor can read
     // the next deadline without contending.
     drop(w);
-    notify_inserted(tw, deadline_ms);
+    notify_inserted(tw, deadline.saturated_nanos().min(u64::MAX - 1));
     handle
 }
 
@@ -607,6 +522,7 @@ pub unsafe extern "C" fn hew_timer_wheel_schedule_handle(
 ///
 /// `tw` must be a valid pointer returned by [`hew_timer_wheel_new`]. `cb` and
 /// `data` must remain valid until the timer fires or is cancelled.
+#[cfg(any(test, hew_protocol_host))]
 pub(crate) unsafe fn timer_wheel_schedule_at_handle(
     tw: *mut HewTimerWheel,
     deadline_ms: u64,
@@ -615,6 +531,19 @@ pub(crate) unsafe fn timer_wheel_schedule_at_handle(
 ) -> HewTimerHandle {
     // SAFETY: upheld by this function's caller.
     unsafe { timer_wheel_schedule_handle_inner(tw, TimerSchedule::At(deadline_ms), cb, data) }
+}
+
+/// Schedule an exact absolute deadline; wheel buckets do not quantize it.
+/// # Safety
+/// Same wheel and callback ownership contract as `timer_wheel_schedule_at_handle`.
+pub(crate) unsafe fn timer_wheel_schedule_precise_handle(
+    tw: *mut HewTimerWheel,
+    deadline: Deadline,
+    cb: HewTimerCb,
+    data: *mut c_void,
+) -> HewTimerHandle {
+    // SAFETY: caller supplies the live wheel and callback ownership.
+    unsafe { timer_wheel_schedule_handle_inner(tw, TimerSchedule::Precise(deadline), cb, data) }
 }
 
 /// Mark a timer entry as cancelled.
@@ -634,6 +563,7 @@ pub unsafe extern "C" fn hew_timer_wheel_cancel(
 ) {
     cabi_guard!(tw.is_null() || entry.is_null() || generation == 0);
     // SAFETY: caller guarantees `tw` is valid.
+    // SAFETY: caller guarantees the wheel remains live.
     let wheel = unsafe { &*tw };
     let w = wheel
         .inner
@@ -681,7 +611,16 @@ pub unsafe extern "C" fn hew_timer_wheel_remove(
 /// Advance `tw` through `now` and synchronously run every callback due in that
 /// interval. Returning from this function is the completion boundary for all
 /// callbacks included in its fired count.
+#[cfg(any(test, hew_protocol_host))]
 pub(crate) unsafe fn timer_wheel_tick_to(tw: *mut HewTimerWheel, now: u64) -> c_int {
+    // SAFETY: caller supplies the live wheel and callback ownership.
+    unsafe { timer_wheel_tick_at(tw, Deadline::from_millis(now)) }
+}
+
+/// Advance using exact time, retaining not-yet-due entries in the current bucket.
+/// # Safety
+/// The wheel and callback data must remain live through this call.
+pub(crate) unsafe fn timer_wheel_tick_at(tw: *mut HewTimerWheel, now: Deadline) -> c_int {
     cabi_guard!(tw.is_null(), 0);
     // SAFETY: caller guarantees `tw` is valid.
     let wheel = unsafe { &*tw };
@@ -697,7 +636,11 @@ pub(crate) unsafe fn timer_wheel_tick_to(tw: *mut HewTimerWheel, now: u64) -> c_
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
 
-        if now.saturating_sub(w.current_ms) > MAX_MS {
+        let now = now.max(Deadline {
+            millis: w.current_ms,
+            fraction_ns: w.current_fraction_ns,
+        });
+        if now.millis.saturating_sub(w.current_ms) > MAX_MS {
             advance_large_gap(&mut w, now, &mut expired);
         }
 
@@ -709,10 +652,9 @@ pub(crate) unsafe fn timer_wheel_tick_to(tw: *mut HewTimerWheel, now: u64) -> c_
             reason = "masked to L0_SIZE which fits in usize"
         )]
         let current_slot = (w.current_ms / L0_MS) as usize & (L0_SIZE - 1);
-        let current_ms = w.current_ms;
-        collect_expired_entries(&raw mut w.l0[current_slot], current_ms, &mut expired);
+        collect_expired_entries_at(&raw mut w.l0[current_slot], now, &mut expired);
 
-        while w.current_ms < now {
+        while w.current_ms < now.millis {
             w.current_ms += 1;
 
             #[expect(
@@ -734,13 +676,13 @@ pub(crate) unsafe fn timer_wheel_tick_to(tw: *mut HewTimerWheel, now: u64) -> c_
                 }
             }
 
-            collect_expired_entries(&raw mut w.l0[l0_slot], w.current_ms, &mut expired);
+            collect_expired_entries_at(&raw mut w.l0[l0_slot], now, &mut expired);
         }
 
         // Collect any overflow entries past their deadline.
         while !w.overflow.is_null() {
             // SAFETY: overflow head is valid under lock.
-            if unsafe { (*w.overflow).deadline_ms } > now {
+            if unsafe { (*w.overflow).deadline() } > now {
                 break;
             }
             let entry = w.overflow;
@@ -755,27 +697,11 @@ pub(crate) unsafe fn timer_wheel_tick_to(tw: *mut HewTimerWheel, now: u64) -> c_
                 });
             }
         }
+        w.current_fraction_ns = now.fraction_ns;
         // Lock is released here.
     }
 
-    // Fire callbacks and free entries outside the lock.
-    let mut total_fired: c_int = 0;
-    for e in expired {
-        // SAFETY: entry was unlinked from the wheel under the lock and is
-        // exclusively owned.  The callback and data pointers are valid per
-        // the caller's contract.
-        unsafe {
-            if e.cancelled == 0 {
-                if let Some(cb) = e.cb {
-                    cb(e.data);
-                    total_fired += 1;
-                }
-            }
-            drop(Box::from_raw(e.raw));
-        }
-    }
-
-    total_fired
+    fire_expired_entries(expired)
 }
 
 /// Advance the wheel to the current time and fire all expired timers.
@@ -788,21 +714,21 @@ pub(crate) unsafe fn timer_wheel_tick_to(tw: *mut HewTimerWheel, now: u64) -> c_
 /// callback/data pairs must still be valid.
 #[no_mangle]
 pub unsafe extern "C" fn hew_timer_wheel_tick(tw: *mut HewTimerWheel) -> c_int {
-    let now = now_ms_for_wheel();
+    let now = now_for_wheel();
     // SAFETY: upheld by this function's caller.
-    unsafe { timer_wheel_tick_to(tw, now) }
+    unsafe { timer_wheel_tick_at(tw, now) }
 }
 
 /// The earliest live deadline in one list, if any.
-fn list_earliest(mut entry: *mut HewTimerEntry) -> Option<u64> {
+fn list_earliest(mut entry: *mut HewTimerEntry) -> Option<Deadline> {
     let mut earliest = None;
     while !entry.is_null() {
         // SAFETY: list entries are owned by the wheel; the caller holds its lock.
         unsafe {
             if (*entry).cancelled == 0 {
-                earliest = Some(
-                    earliest.map_or((*entry).deadline_ms, |d: u64| d.min((*entry).deadline_ms)),
-                );
+                earliest = Some(earliest.map_or((*entry).deadline(), |d: Deadline| {
+                    d.min((*entry).deadline())
+                }));
             }
             entry = (*entry).next;
         }
@@ -815,7 +741,7 @@ fn list_earliest(mut entry: *mut HewTimerEntry) -> Option<u64> {
 /// consecutive, non-overlapping ranges, so the first non-empty slot holds the
 /// level's earliest entry; entries left in a slot the cursor has passed are
 /// overdue and found in the cursor's own slot first.
-fn earliest_deadline(w: &WheelInner) -> Option<u64> {
+fn earliest_deadline(w: &WheelInner) -> Option<Deadline> {
     #[expect(
         clippy::cast_possible_truncation,
         reason = "masked to the level size, which fits in usize"
@@ -826,7 +752,10 @@ fn earliest_deadline(w: &WheelInner) -> Option<u64> {
             return Some(deadline);
         }
     }
-    let l1_start = (w.current_ms / L1_MS) as usize & (L1_SIZE - 1);
+    // The current L1 bucket was already cascaded. A newly inserted entry
+    // there belongs to the next rotation, so visit that bucket last. Starting
+    // there can hide a nearer deadline after a large-gap re-bucket.
+    let l1_start = ((w.current_ms / L1_MS) as usize + 1) & (L1_SIZE - 1);
     for offset in 0..L1_SIZE {
         if let Some(deadline) = list_earliest(w.l1[(l1_start + offset) & (L1_SIZE - 1)]) {
             return Some(deadline);
@@ -838,7 +767,7 @@ fn earliest_deadline(w: &WheelInner) -> Option<u64> {
         // SAFETY: overflow entries are owned by the wheel under its lock.
         unsafe {
             if (*entry).cancelled == 0 {
-                return Some((*entry).deadline_ms);
+                return Some((*entry).deadline());
             }
             entry = (*entry).next;
         }
@@ -856,6 +785,7 @@ fn earliest_deadline(w: &WheelInner) -> Option<u64> {
 pub unsafe extern "C" fn hew_timer_wheel_next_deadline_ms(tw: *mut HewTimerWheel) -> i64 {
     cabi_guard!(tw.is_null(), -1);
     // SAFETY: caller guarantees `tw` is valid.
+    // SAFETY: caller guarantees the wheel remains live.
     let wheel = unsafe { &*tw };
     let w = wheel
         .inner
@@ -866,7 +796,13 @@ pub unsafe extern "C" fn hew_timer_wheel_next_deadline_ms(tw: *mut HewTimerWheel
     };
     let now = w.current_ms;
     drop(w);
-    i64::try_from(earliest.saturating_sub(now)).unwrap_or(i64::MAX)
+    i64::try_from(
+        earliest
+            .ceil_millis()
+            .unwrap_or(u64::MAX)
+            .saturating_sub(now),
+    )
+    .unwrap_or(i64::MAX)
 }
 
 #[cfg(test)]
@@ -876,6 +812,7 @@ pub(crate) unsafe fn timer_wheel_earliest_abs_deadline_ms(tw: *mut HewTimerWheel
         return None;
     }
     // SAFETY: caller guarantees `tw` is valid.
+    // SAFETY: caller guarantees the wheel remains live.
     let wheel = unsafe { &*tw };
     let w = wheel
         .inner
@@ -907,6 +844,22 @@ pub(crate) unsafe fn timer_wheel_earliest_abs_deadline_ms(tw: *mut HewTimerWheel
     }
 }
 
+/// Exact earliest pending deadline for native reactors and drivers.
+/// # Safety
+/// The wheel must be live for this call.
+pub(crate) unsafe fn timer_wheel_next_deadline(tw: *mut HewTimerWheel) -> Option<Deadline> {
+    if tw.is_null() {
+        return None;
+    }
+    // SAFETY: caller guarantees the wheel remains live.
+    let wheel = unsafe { &*tw };
+    let w = wheel
+        .inner
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    earliest_deadline(&w)
+}
+
 /// Test-only: move the wheel cursor forward by `delta_ms` without changing any
 /// entries. This models a wheel cursor that was advanced independently of a
 /// caller's separately sampled monotonic deadline.
@@ -924,6 +877,23 @@ pub(crate) unsafe fn timer_wheel_advance_cursor_for_test(tw: *mut HewTimerWheel,
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     w.current_ms = w.current_ms.saturating_add(delta_ms);
+    w.current_fraction_ns = 0;
+}
+
+/// Read the exact cursor most recently serviced by the wheel.
+/// # Safety
+/// The wheel must be live.
+pub(crate) unsafe fn timer_wheel_cursor(tw: *mut HewTimerWheel) -> Deadline {
+    // SAFETY: caller guarantees the wheel remains live.
+    let wheel = unsafe { &*tw };
+    let w = wheel
+        .inner
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    Deadline {
+        millis: w.current_ms,
+        fraction_ns: w.current_fraction_ns,
+    }
 }
 
 /// Read the current wheel cursor without advancing it.
@@ -931,6 +901,7 @@ pub(crate) unsafe fn timer_wheel_advance_cursor_for_test(tw: *mut HewTimerWheel,
 /// # Safety
 ///
 /// `tw` must be a valid pointer returned by [`hew_timer_wheel_new`].
+#[cfg(any(test, hew_protocol_host, target_arch = "wasm32"))]
 pub(crate) unsafe fn timer_wheel_cursor_ms(tw: *mut HewTimerWheel) -> u64 {
     // SAFETY: caller guarantees `tw` is valid.
     let wheel = unsafe { &*tw };
@@ -947,6 +918,7 @@ pub(crate) unsafe fn timer_wheel_cursor_ms(tw: *mut HewTimerWheel) -> u64 {
 
 #[cfg(test)]
 mod tests {
+    use super::entry::collect_expired_entries;
     use super::*;
     use std::sync::atomic::{AtomicI32, Ordering};
 
@@ -1038,6 +1010,7 @@ mod tests {
             l1: [ptr::null_mut(); L1_SIZE],
             overflow: ptr::null_mut(),
             current_ms,
+            current_fraction_ns: 0,
             next_generation: 1,
         }
     }
@@ -1045,6 +1018,7 @@ mod tests {
     fn make_entry_at(deadline_ms: u64) -> *mut HewTimerEntry {
         Box::into_raw(Box::new(HewTimerEntry {
             deadline_ms,
+            fraction_ns: 0,
             generation: 1,
             cb: None,
             data: ptr::null_mut(),
@@ -1098,6 +1072,7 @@ mod tests {
                 l1: [ptr::null_mut(); L1_SIZE],
                 overflow: ptr::null_mut(),
                 current_ms,
+                current_fraction_ns: 0,
                 next_generation: 1,
             }),
         }))
@@ -1136,11 +1111,11 @@ mod tests {
             let handle = hew_timer_wheel_schedule_handle(tw, 0, test_cb, data);
             assert!(!handle.entry.is_null());
 
-            let now = now_ms_for_wheel();
-            assert!((*handle.entry).deadline_ms <= now);
-            assert_eq!(timer_wheel_tick_to(tw, now), 1);
+            let now = now_for_wheel();
+            assert!((*handle.entry).deadline() <= now);
+            assert_eq!(timer_wheel_tick_at(tw, now), 1);
             assert_eq!(fire_count.load(Ordering::SeqCst), 1);
-            assert_eq!(timer_wheel_tick_to(tw, now.saturating_add(255)), 0);
+            assert_eq!(timer_wheel_tick_to(tw, now.millis.saturating_add(255)), 0);
             assert_eq!(fire_count.load(Ordering::SeqCst), 1);
 
             hew_timer_wheel_free(tw);
@@ -1574,6 +1549,7 @@ mod tests {
             ptr::write(
                 entry,
                 HewTimerEntry {
+                    fraction_ns: 0,
                     deadline_ms: 1,
                     generation: 41,
                     cb: Some(test_cb),
@@ -1589,6 +1565,7 @@ mod tests {
             ptr::write(
                 entry,
                 HewTimerEntry {
+                    fraction_ns: 0,
                     deadline_ms: 10,
                     generation: 42,
                     cb: Some(test_cb),
@@ -1648,6 +1625,78 @@ mod tests {
             // earliest == current_ms → remaining = 0
             assert_eq!(hew_timer_wheel_next_deadline_ms(tw), 0);
             hew_timer_wheel_free(tw);
+        }
+    }
+    #[test]
+    fn next_deadline_after_large_gap_orders_l1_rotation_correctly() {
+        // SAFETY: this fixture owns the wheel and uses inert callbacks.
+        let (next, fired) = unsafe {
+            let wheel = make_timer_wheel(0);
+            timer_wheel_schedule_at_handle(wheel, 49_152, test_cb, ptr::null_mut());
+            timer_wheel_schedule_at_handle(wheel, 33_259, test_cb, ptr::null_mut());
+            let fired = timer_wheel_tick_to(wheel, 32_769);
+            let next = hew_timer_wheel_next_deadline_ms(wheel);
+            hew_timer_wheel_free(wheel);
+            (next, fired)
+        };
+        assert_eq!(fired, 0);
+        assert_eq!(next, 490);
+    }
+
+    // Independent absolute-nanosecond oracle, exercising bucket rollover,
+    // cancellation, cascades and overflow with arbitrary fractional deadlines.
+    #[cfg(not(target_arch = "wasm32"))]
+    mod failure_properties {
+        use super::*;
+        use proptest::prelude::*;
+
+        unsafe extern "C" fn count(data: *mut c_void) {
+            // SAFETY: each callback borrows one fixture-owned counter.
+            unsafe { &*data.cast::<AtomicI32>() }.fetch_add(1, Ordering::Relaxed);
+        }
+
+        struct TestWheel(*mut HewTimerWheel);
+        impl Drop for TestWheel {
+            fn drop(&mut self) {
+                // SAFETY: this owner is unique and outlives callback counters.
+                unsafe { hew_timer_wheel_free(self.0) };
+            }
+        }
+
+        proptest! {
+            #![proptest_config(ProptestConfig { cases: 1024, ..ProptestConfig::default() })]
+            #[test]
+            fn exact_wheel_matches_absolute_deadline_oracle(
+                entries in prop::collection::vec((prop_oneof![0u64..2_000_000, 0u64..50_000_000_000, 255_999_900u64..256_000_100, 16_383_999_900u64..16_384_000_100], any::<bool>()), 1..64),
+                mut ticks in prop::collection::vec(prop_oneof![0u64..2_000_000, 0u64..50_000_000_000, 255_999_900u64..256_000_100, 16_383_999_900u64..16_384_000_100], 1..32),
+            ) {
+                let counters: Vec<_> = entries.iter().map(|_| AtomicI32::new(0)).collect();
+                ticks.push(50_000_000_000);
+                ticks.sort_unstable();
+                // SAFETY: callbacks only borrow fixture-owned counters. The
+                // wheel is destroyed before any counter goes out of scope.
+                unsafe {
+                    let owner = TestWheel(make_timer_wheel(0));
+                    let wheel = owner.0;
+                    for (index, &(ns, cancel)) in entries.iter().enumerate() {
+                        let handle = timer_wheel_schedule_precise_handle(wheel, Deadline::from_nanos(ns), count, std::ptr::from_ref(&counters[index]).cast_mut().cast());
+                        assert!(!handle.entry.is_null());
+                        if cancel {
+                            let removed = hew_timer_wheel_remove(wheel, handle.entry, handle.generation);
+                            assert_eq!(removed, std::ptr::from_ref(&counters[index]).cast_mut().cast());
+                        }
+                    }
+                    for now in ticks {
+                        timer_wheel_tick_at(wheel, Deadline::from_nanos(now));
+                        for (index, &(deadline, cancel)) in entries.iter().enumerate() {
+                            assert_eq!(counters[index].load(Ordering::Relaxed), i32::from(!cancel && deadline <= now), "deadline={deadline} now={now} cancelled={cancel}");
+                        }
+                        let expected = entries.iter().filter(|(deadline, cancel)| !cancel && *deadline > now).map(|(deadline, _)| *deadline).min();
+                        assert_eq!(timer_wheel_next_deadline(wheel).map(Deadline::saturated_nanos), expected);
+                    }
+
+                }
+            }
         }
     }
 }

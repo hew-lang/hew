@@ -5,7 +5,6 @@ use super::{ChannelCore, NativeRegistration};
 use crate::owned_value_budget::{current_owner, transfer, ManagedStorage, ValueOwner};
 use crate::wake::OwnedWaker;
 use core::ffi::c_void;
-use core::ptr::NonNull;
 use hew_cabi::managed::{
     visit_value, HewManagedStorageVisitor, HewManagedWalkKind, DESCEND, SKIP_DESCENDANTS,
     TRANSFER_PENDING,
@@ -214,84 +213,7 @@ impl ChannelCore {
         }
     }
 }
-use std::alloc::{alloc, dealloc, handle_alloc_error, Layout};
-
-#[derive(Debug)]
-pub(super) enum QueueItem {
-    Content(Vec<u8>),
-    Typed(Slot),
-}
-
-impl From<Vec<u8>> for QueueItem {
-    fn from(value: Vec<u8>) -> Self {
-        Self::Content(value)
-    }
-}
-
-impl QueueItem {
-    pub(super) fn into_content(self) -> Vec<u8> {
-        match self {
-            Self::Content(bytes) => bytes,
-            Self::Typed(_) => crate::channel_common::abort_elem_witness(
-                "typed Pipe",
-                "a raw typed slot reached a content-only queue operation",
-            ),
-        }
-    }
-}
-
-/// Aligned storage for one ordinary typed value image. Slot ownership is
-/// transferred explicitly by queue admission, read take and semantic cleanup;
-/// dropping this carrier frees only its representation storage.
-#[derive(Debug)]
-pub(crate) struct Slot {
-    pointer: NonNull<u8>,
-    allocation: Layout,
-    pub(crate) layout: HewValueLayout,
-    _code: crate::code_owner::CodeRoot,
-}
-
-impl Slot {
-    /// # Safety
-    /// Input is an initialized value of this descriptor. The copied image
-    /// borrows its owners until the caller commits the semantic transfer.
-    pub(crate) unsafe fn copy_image(layout: HewValueLayout, input: *const c_void) -> Self {
-        let allocation = Layout::from_size_align(layout.size.max(1), layout.align)
-            .expect("verified Pipe element geometry");
-        // SAFETY: the descriptor supplies a valid nonzero allocation geometry.
-        let pointer = unsafe { alloc(allocation) };
-        let pointer = NonNull::new(pointer).unwrap_or_else(|| handle_alloc_error(allocation));
-        if layout.size != 0 {
-            // SAFETY: input is live and the new aligned allocation is disjoint.
-            unsafe {
-                core::ptr::copy_nonoverlapping(input.cast::<u8>(), pointer.as_ptr(), layout.size);
-            };
-        }
-        Self {
-            pointer,
-            allocation,
-            layout,
-            // SAFETY: the input pins its descriptor's defining code.
-            _code: unsafe { crate::code_owner::CodeRoot::acquire(layout.code_owner) },
-        }
-    }
-
-    pub(crate) fn as_ptr(&self) -> *mut c_void {
-        self.pointer.as_ptr().cast()
-    }
-}
-
-impl Drop for Slot {
-    fn drop(&mut self) {
-        // SAFETY: this carrier exclusively owns the exact aligned allocation.
-        unsafe {
-            dealloc(self.pointer.as_ptr(), self.allocation);
-        };
-    }
-}
-
-// SAFETY: a queued slot has one owner; access is serialized by its Pipe core.
-unsafe impl Send for Slot {}
+pub(crate) use super::item::{QueueItem, Slot};
 
 /// A reserved, unpublished send borrowing its enclosing operation's typed slot.
 /// The parent remains responsible for that slot until poll returns acceptance.
@@ -410,6 +332,11 @@ impl TypedWrite {
         Ok(())
     }
 
+    fn channel_closed(&self) -> bool {
+        let inner = self.core.locked();
+        inner.stream_closed || inner.sink_closed || inner.sink_fault
+    }
+
     /// Reserve actual space before acquiring the recipient's typed graph.
     pub(crate) fn poll(&mut self) -> i32 {
         if self.accepted {
@@ -420,8 +347,8 @@ impl TypedWrite {
                 return status;
             }
         }
-        // A close while providers were quiescing refuses before ownership moves.
-        if self.core.locked().stream_closed {
+        // Every terminal edge refuses unpublished input while providers quiesce.
+        if self.channel_closed() {
             self.cancel();
             return 2;
         }
@@ -455,7 +382,7 @@ impl TypedWrite {
             }
             Ok(true) => {}
         }
-        if self.core.locked().stream_closed {
+        if self.channel_closed() {
             self.cancel();
             return 2;
         }
@@ -1206,10 +1133,28 @@ mod tests {
     ) -> i32 {
         unsafe { (&**slot.cast::<*const ChannelCore>()).visit_typed(visitor) }
     }
+    #[derive(Clone, Copy)]
+    enum TerminalEdge {
+        ReaderClosed,
+        SinkClosed,
+        ProducerFault,
+    }
+    impl TerminalEdge {
+        fn publish(self, core: &ChannelCore) {
+            match self {
+                Self::ReaderClosed => {
+                    core.prepare_typed_close(None);
+                }
+                Self::SinkClosed => core.close_sink(),
+                Self::ProducerFault => core.fault_close(73),
+            }
+        }
+    }
     struct ProtocolProbe {
         core: Arc<ChannelCore>,
         ready: bool,
-        close_on_commit: bool,
+        terminal_on_prepare: Option<TerminalEdge>,
+        terminal_on_commit: Option<TerminalEdge>,
         aborted: Arc<std::sync::atomic::AtomicBool>,
         resumed: Arc<std::sync::atomic::AtomicBool>,
     }
@@ -1226,9 +1171,20 @@ mod tests {
             error => return error,
         }
         match unsafe { (*visitor).kind } {
-            HewManagedWalkKind::PrepareTransfer if !probe.ready => TRANSFER_PENDING,
-            HewManagedWalkKind::CommitTransfer if probe.close_on_commit => {
-                assert!(!probe.core.prepare_typed_close(None));
+            HewManagedWalkKind::PrepareTransfer => {
+                if let Some(edge) = probe.terminal_on_prepare {
+                    edge.publish(&probe.core);
+                }
+                if probe.ready {
+                    0
+                } else {
+                    TRANSFER_PENDING
+                }
+            }
+            HewManagedWalkKind::CommitTransfer => {
+                if let Some(edge) = probe.terminal_on_commit {
+                    edge.publish(&probe.core);
+                }
                 0
             }
             HewManagedWalkKind::ResumeTransfer => {
@@ -1268,7 +1224,8 @@ mod tests {
         Box::into_raw(Box::new(ProtocolProbe {
             core,
             ready,
-            close_on_commit,
+            terminal_on_prepare: None,
+            terminal_on_commit: close_on_commit.then_some(TerminalEdge::ReaderClosed),
             aborted: Arc::default(),
             resumed: Arc::default(),
         }))
@@ -1308,6 +1265,129 @@ mod tests {
             drop_probe((&raw mut value).cast());
         });
         core.close_typed_sync();
+        assert_eq!(receiver.live_bytes(), 0);
+    }
+
+    #[test]
+    fn producer_fault_aborts_unpublished_pending_provider_and_releases_reader() {
+        use std::sync::atomic::Ordering;
+        let source = ValueOwner::new(Some(0));
+        let receiver = ValueOwner::new(Some(8));
+        let layout = probe_layout();
+        let core = core(&receiver, 1, layout);
+        let mut value = probe(core.clone(), false, false);
+        let aborted = unsafe { (*value).aborted.clone() };
+        unsafe {
+            source
+                .acquire_value(&layout, (&raw const value).cast())
+                .unwrap()
+                .commit();
+        }
+        let mut write = send(core.clone(), (&raw mut value).cast(), layout);
+        assert_eq!(with_value_owner(&Some(source.clone()), || write.poll()), 0);
+        core.fault_close(73);
+        let status = write.poll();
+        let read_status = TypedRead::new(core.clone(), waker()).poll();
+        let was_aborted = aborted.load(Ordering::SeqCst);
+        // Clean the fixture even when exercising the broken implementation.
+        write.cancel();
+        with_value_owner(&Some(source.clone()), || unsafe {
+            drop_probe((&raw mut value).cast());
+        });
+        core.close_typed_sync();
+        assert_eq!(source.live_bytes(), 0);
+        assert_eq!(receiver.live_bytes(), 0);
+        assert_eq!(status, 2, "producer fault must refuse unpublished input");
+        assert!(
+            was_aborted,
+            "producer fault must abort provider acquisition"
+        );
+        assert_eq!(read_status, 3, "reader must observe the producer fault");
+    }
+
+    #[test]
+    fn terminal_edges_during_prepare_refuse_input_and_return_capacity() {
+        use std::sync::atomic::Ordering;
+        for edge in [
+            TerminalEdge::ReaderClosed,
+            TerminalEdge::SinkClosed,
+            TerminalEdge::ProducerFault,
+        ] {
+            let source = ValueOwner::new(Some(0));
+            let receiver = ValueOwner::new(Some(8));
+            let layout = probe_layout();
+            let core = core(&receiver, 1, layout);
+            let mut value = probe(core.clone(), false, false);
+            let aborted = unsafe { (*value).aborted.clone() };
+            unsafe {
+                source
+                    .acquire_value(&layout, (&raw const value).cast())
+                    .unwrap()
+                    .commit();
+            }
+            let mut write = send(core.clone(), (&raw mut value).cast(), layout);
+            assert_eq!(with_value_owner(&Some(source.clone()), || write.poll()), 0);
+            unsafe {
+                (*value).ready = true;
+                (*value).terminal_on_prepare = Some(edge);
+            }
+            assert_eq!(write.poll(), 2);
+            assert!(aborted.load(Ordering::SeqCst));
+            assert!(core.locked().queue.is_empty());
+            let expected = if matches!(edge, TerminalEdge::ProducerFault) {
+                3
+            } else {
+                2
+            };
+            assert_eq!(TypedRead::new(core.clone(), waker()).poll(), expected);
+            let reservation = receiver
+                .acquire(&[ManagedStorage {
+                    identity: 123,
+                    bytes: 8,
+                }])
+                .unwrap();
+            drop(reservation);
+            with_value_owner(&Some(source.clone()), || unsafe {
+                drop_probe((&raw mut value).cast());
+            });
+            core.close_typed_sync();
+            assert_eq!(source.live_bytes(), 0);
+            assert_eq!(receiver.live_bytes(), 0);
+        }
+    }
+
+    #[test]
+    fn producer_fault_during_commit_preserves_accepted_item_before_fault() {
+        use std::sync::atomic::Ordering;
+        let source = ValueOwner::new(Some(0));
+        let receiver = ValueOwner::new(Some(8));
+        let layout = probe_layout();
+        let core = core(&receiver, 1, layout);
+        let mut value = probe(core.clone(), true, false);
+        let resumed = unsafe { (*value).resumed.clone() };
+        unsafe {
+            (*value).terminal_on_commit = Some(TerminalEdge::ProducerFault);
+            source
+                .acquire_value(&layout, (&raw const value).cast())
+                .unwrap()
+                .commit();
+        }
+        let mut write = send(core.clone(), (&raw mut value).cast(), layout);
+        assert_eq!(with_value_owner(&Some(source.clone()), || write.poll()), 1);
+        assert!(resumed.load(Ordering::SeqCst));
+        let mut read = TypedRead::new(core.clone(), waker());
+        assert_eq!(read.poll(), 1);
+        let mut output = core::ptr::null_mut::<ProtocolProbe>();
+        unsafe {
+            assert!(read.take((&raw mut output).cast()));
+        }
+        assert_eq!(output, value);
+        with_value_owner(&Some(receiver.clone()), || unsafe {
+            drop_probe((&raw mut output).cast());
+        });
+        assert_eq!(TypedRead::new(core.clone(), waker()).poll(), 3);
+        core.close_typed_sync();
+        assert_eq!(source.live_bytes(), 0);
         assert_eq!(receiver.live_bytes(), 0);
     }
 

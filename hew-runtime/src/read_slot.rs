@@ -25,7 +25,8 @@
     reason = "FFI entry-point module; SAFETY documented at each fn signature."
 )]
 
-use std::sync::atomic::{AtomicI32, AtomicPtr, AtomicUsize, Ordering};
+use crate::runtime_sync::{AtomicI32, AtomicPtr, AtomicUsize};
+use std::sync::atomic::Ordering;
 
 use crate::await_cancel::{
     hew_await_cancel_complete, hew_await_cancel_free, hew_await_cancel_retain,

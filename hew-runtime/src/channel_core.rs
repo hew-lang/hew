@@ -34,9 +34,9 @@
 //! scheduler and the single-threaded wasm32 driver park and wake a pipe peer
 //! the same way; only where the runnable entry is published differs.
 
+use crate::runtime_sync::{Condvar, Mutex, MutexGuard};
 use std::collections::VecDeque;
 use std::sync::Arc;
-use std::sync::{Condvar, Mutex};
 use std::time::Duration;
 
 use hew_cabi::sink::TrySendResult;
@@ -52,8 +52,18 @@ use crate::read_slot::{
 };
 use crate::wake::{HewWaker, OwnedWaker, WakeTarget};
 
+#[path = "channel_core/item.rs"]
+mod item;
+#[cfg(not(hew_protocol_host))]
+pub(crate) mod typed;
+#[cfg(hew_protocol_host)]
+#[path = "../../proofs/runtime_protocols/src/channel_typed_boundary.rs"]
 pub(crate) mod typed;
 use typed::QueueItem;
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+#[path = "../../proofs/runtime_protocols/src/channel_stateful.rs"]
+mod failure_properties;
 
 /// Whether a producer blocked on a full ring must abandon its send because the
 /// runtime is shutting down.
@@ -308,7 +318,7 @@ impl ChannelCore {
 
     /// Lock the inner state, recovering from poisoning rather than panicking
     /// (a poisoned channel lock must not take down an unrelated worker).
-    fn locked(&self) -> std::sync::MutexGuard<'_, Inner> {
+    fn locked(&self) -> MutexGuard<'_, Inner> {
         self.inner
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -1000,17 +1010,21 @@ impl ChannelCore {
     ///
     /// `slot` must be the producer's read slot.
     pub unsafe fn detach_producer(&self, slot: *mut HewReadSlot) {
-        let removed = {
+        let (layout, removed) = {
             let mut inner = self.locked();
-            if let Some(pos) = inner.producers.iter().position(|w| w.slot == slot) {
+            let removed = if let Some(pos) = inner.producers.iter().position(|w| w.slot == slot) {
                 inner.producers.remove(pos)
             } else {
                 None
-            }
+            };
+            (inner.elem_layout, removed)
         };
-        if let Some(w) = removed {
+        if let Some(mut w) = removed {
             // SAFETY: removed under the lock; release the core's in-flight ref.
             unsafe { hew_read_slot_free(w.slot) };
+            if let Some(item) = w.item.take() {
+                Self::drop_envelope(layout.as_ref(), item);
+            }
         }
     }
 

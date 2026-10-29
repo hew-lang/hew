@@ -878,10 +878,9 @@ static REACTOR_RUNNING: AtomicBool = AtomicBool::new(false);
 static REACTOR_STOP: AtomicBool = AtomicBool::new(false);
 static REACTOR_HANDLE: Mutex<Option<JoinHandle<()>>> = Mutex::new(None);
 
-/// When the reactor next wakes on its own, in wheel milliseconds: `AWAKE`
+/// When the reactor next wakes on its own, in monotonic nanoseconds: `AWAKE`
 /// while it runs, `u64::MAX` when it sleeps with no deadline.
-static SLEEP_UNTIL: AtomicU64 = AtomicU64::new(AWAKE);
-const AWAKE: u64 = 0;
+static SLEEP_UNTIL: AtomicU64 = AtomicU64::new(crate::reactor_wait::AWAKE);
 
 /// Windows I/O completions in flight; each owns one retained slot reference.
 #[cfg(windows)]
@@ -943,39 +942,55 @@ pub(crate) fn ensure_reactor_started() -> bool {
     }
 }
 
-/// Wake the reactor when `deadline_ms` falls before its current sleep limit.
+/// Wake the reactor when `deadline_ns` falls before its current sleep limit.
 /// Called after every insert into the process wheel.
-pub(crate) fn timer_inserted(deadline_ms: u64) {
-    if deadline_ms < SLEEP_UNTIL.load(Ordering::SeqCst) {
+pub(crate) fn timer_inserted(deadline_ns: u64) {
+    crate::reactor_wait::inserted(&SLEEP_UNTIL, deadline_ns, || {
         if let Ok(poller) = poller() {
             poller.wake();
         }
-    }
+    });
 }
 
-/// How long the next wait may sleep. Publishing the sleep limit before
-/// re-reading the wheel pairs with `timer_inserted`: an insert either sees the
-/// published limit and wakes the poller, or this re-read sees the insert.
-fn next_timeout(wheel: *mut HewTimerWheel) -> c_int {
-    if wheel.is_null() {
-        SLEEP_UNTIL.store(u64::MAX, Ordering::SeqCst);
-        return -1;
+struct ReactorDriver<'a> {
+    poller: &'a Poller,
+    events: Vec<Event>,
+    wheel: *mut HewTimerWheel,
+}
+
+impl crate::reactor_wait::Driver for ReactorDriver<'_> {
+    fn stopping(&self) -> bool {
+        REACTOR_STOP.load(Ordering::Acquire)
     }
-    // SAFETY: the wheel stays live until the reactor has been joined.
-    let mut gap = unsafe { crate::timer_wheel::hew_timer_wheel_next_deadline_ms(wheel) };
-    loop {
-        let until = u64::try_from(gap).map_or(u64::MAX, |gap| {
-            // SAFETY: hew_now_ms has no preconditions on native targets.
-            unsafe { crate::clock::hew_now_ms() }.saturating_add(gap)
-        });
-        SLEEP_UNTIL.store(until, Ordering::SeqCst);
-        // SAFETY: as above.
-        let again = unsafe { crate::timer_wheel::hew_timer_wheel_next_deadline_ms(wheel) };
-        let sooner = again >= 0 && (gap < 0 || again < gap);
-        if !sooner {
-            return c_int::try_from(gap).unwrap_or(c_int::MAX).max(-1);
+
+    fn next_deadline(&mut self) -> Option<crate::timer_deadline::Deadline> {
+        self.wheel = crate::timer_periodic::process_wheel();
+        // SAFETY: the process wheel remains live until the reactor joins.
+        unsafe { crate::timer_wheel::timer_wheel_next_deadline(self.wheel) }
+    }
+
+    fn now(&self) -> crate::timer_deadline::Deadline {
+        crate::timer_wheel::now_for_wheel()
+    }
+
+    fn wait(&mut self, timeout: Option<Duration>) -> io::Result<()> {
+        let waited = self.poller.wait_for(timeout, &mut self.events);
+        #[cfg(test)]
+        LOOP_TURNS.fetch_add(1, Ordering::SeqCst);
+        waited
+    }
+
+    fn dispatch(&mut self) {
+        for event in self.events.drain(..) {
+            dispatch(event);
         }
-        gap = again;
+    }
+
+    fn tick(&mut self) {
+        if !self.wheel.is_null() {
+            // SAFETY: the wheel stays live until the reactor has joined.
+            unsafe { crate::timer_wheel::hew_timer_wheel_tick(self.wheel) };
+        }
     }
 }
 
@@ -984,29 +999,13 @@ fn reactor_loop() {
         REACTOR_RUNNING.store(false, Ordering::Release);
         return;
     };
-    let mut events: Vec<Event> = Vec::with_capacity(256);
-    while !REACTOR_STOP.load(Ordering::Acquire) {
-        let wheel = crate::timer_periodic::process_wheel();
-        let timeout = next_timeout(wheel);
-        let waited = poller.wait(timeout, &mut events);
-        SLEEP_UNTIL.store(AWAKE, Ordering::SeqCst);
-        #[cfg(test)]
-        LOOP_TURNS.fetch_add(1, Ordering::SeqCst);
-        match waited {
-            Ok(()) => {}
-            Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
-            Err(error) => {
-                fail_reactor(&error);
-                return;
-            }
-        }
-        for event in events.drain(..) {
-            dispatch(event);
-        }
-        if !wheel.is_null() {
-            // SAFETY: the wheel stays live until the reactor has been joined.
-            unsafe { crate::timer_wheel::hew_timer_wheel_tick(wheel) };
-        }
+    let mut driver = ReactorDriver {
+        poller,
+        events: Vec::with_capacity(256),
+        wheel: std::ptr::null_mut(),
+    };
+    if let Err(error) = crate::reactor_wait::run(&SLEEP_UNTIL, &mut driver) {
+        fail_reactor(&error);
     }
 }
 

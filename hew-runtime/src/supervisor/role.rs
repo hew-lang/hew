@@ -480,6 +480,8 @@ pub unsafe extern "C" fn hew_supervisor_is_running(sup: *mut HewSupervisor) -> c
 }
 
 /// Configure circuit breaker settings for a child.
+/// Changing the threshold or window starts a fresh decision history. The
+/// diagnostic crash statistics remain cumulative.
 ///
 /// # Safety
 ///
@@ -512,6 +514,11 @@ pub unsafe extern "C" fn hew_supervisor_set_circuit_breaker(
     }
 
     let spec = &mut s.child_specs[index];
+    if spec.circuit_breaker.max_crashes != max_crashes
+        || spec.circuit_breaker.window_secs != window_secs
+    {
+        spec.circuit_breaker.crash_times.clear();
+    }
     spec.circuit_breaker.max_crashes = max_crashes;
     spec.circuit_breaker.window_secs = window_secs;
     spec.circuit_breaker.cooldown_secs = cooldown_secs;

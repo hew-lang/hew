@@ -1,0 +1,10 @@
+[[case]]
+id = "failure-supervisor-wide-budget"
+intent = "A restart intensity above 32 is enforced, and the first unrecovered crash fails the process."
+source = "cases/failure-supervisor-wide-budget.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 30
+
+[case.expected]
+stdout = "budget spent\n"
+exit = 1

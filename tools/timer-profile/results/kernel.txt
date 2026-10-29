@@ -1,0 +1,9 @@
+timer_entry_bytes=48
+kernel precise=false delay_ns=50000 n=300 late_p50_ns=1025610 late_p99_ns=1097127 cpu_ns_per_wait=13407 wall_ns=323972206
+kernel precise=true delay_ns=50000 n=300 late_p50_ns=61357 late_p99_ns=143682 cpu_ns_per_wait=10915 wall_ns=34801807
+kernel precise=false delay_ns=250000 n=300 late_p50_ns=827032 late_p99_ns=928120 cpu_ns_per_wait=15555 wall_ns=325654600
+kernel precise=true delay_ns=250000 n=300 late_p50_ns=70783 late_p99_ns=153187 cpu_ns_per_wait=12457 wall_ns=99476679
+kernel precise=false delay_ns=1000000 n=300 late_p50_ns=75840 late_p99_ns=127368 cpu_ns_per_wait=16363 wall_ns=323789893
+kernel precise=true delay_ns=1000000 n=300 late_p50_ns=75409 late_p99_ns=157433 cpu_ns_per_wait=12810 wall_ns=323913680
+kernel precise=false delay_ns=10000000 n=300 late_p50_ns=92639 late_p99_ns=184932 cpu_ns_per_wait=24415 wall_ns=3030060349
+kernel precise=true delay_ns=10000000 n=300 late_p50_ns=99815 late_p99_ns=635741 cpu_ns_per_wait=28552 wall_ns=3037393398

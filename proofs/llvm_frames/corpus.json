@@ -1,0 +1,42 @@
+[
+  {
+    "id": "counter",
+    "source": "examples/ux/04_counter_actor.hew",
+    "purpose": "actor construction, calls and completion"
+  },
+  {
+    "id": "calls",
+    "source": "examples/async_comprehensive.hew",
+    "purpose": "multiple actor call results and discarded completions"
+  },
+  {
+    "id": "select-fork",
+    "source": "examples/test_select_race.hew",
+    "purpose": "selection losers, timeout and fork cleanup"
+  },
+  {
+    "id": "pipe-select",
+    "source": "examples/pipe/select_recv.hew",
+    "purpose": "typed stream ownership and cancelled receive arms"
+  },
+  {
+    "id": "sleep-crash",
+    "source": "examples/actor/await_crash_after_sleep_resume.hew",
+    "purpose": "fault cleanup after repeated suspension"
+  },
+  {
+    "id": "deferred-owned",
+    "source": "examples/sandbox-graduation/deferred_locals.hew",
+    "purpose": "owned local values, deferred initialization and actor fields"
+  },
+  {
+    "id": "pipe-cancellation",
+    "source": "tests/core-acceptance/cases/failure-pipe-owned-cancellation.hew",
+    "purpose": "nested owner cleanup across cancelled sends"
+  },
+  {
+    "id": "restart-storm",
+    "source": "tests/core-acceptance/cases/failure-supervisor-wide-budget.hew",
+    "purpose": "restart budget exhaustion and failure completion"
+  }
+]

@@ -2,6 +2,8 @@
 
 use hew_cabi::host_error::{HewError, HewText};
 use serde::Serialize;
+use std::cell::RefCell;
+use std::collections::HashMap;
 
 use super::{DiagnosticNote, DiagnosticPalette};
 
@@ -31,20 +33,99 @@ pub(crate) fn render_ownership(input: &str) -> String {
 
 #[derive(Serialize)]
 struct Label<'a> {
-    source: &'a str,
     filename: String,
+    line: usize,
+    text: &'a str,
     start: i64,
     end: i64,
     message: String,
 }
 
+/// Line tables by source identity (address and length).
+type LineTables = HashMap<(usize, usize), Vec<usize>>;
+
+thread_local! {
+    /// Line tables for the sources of the render loop in progress, keyed by
+    /// the address and length of the borrowed source text.
+    static LINE_STARTS: RefCell<Option<LineTables>> = const { RefCell::new(None) };
+}
+
+/// Builds each source's line table once while it is alive, so a loop that
+/// renders many diagnostics does not rescan the file from the start for each.
+/// The loop borrows its sources throughout, which keeps the address keys valid.
+/// Outside a scope each label builds a table of its own.
+pub(crate) struct LineIndexScope {
+    owner: bool,
+}
+
+impl LineIndexScope {
+    pub(crate) fn new() -> Self {
+        let owner = LINE_STARTS.with(|cell| {
+            let mut cell = cell.borrow_mut();
+            let owner = cell.is_none();
+            if owner {
+                *cell = Some(HashMap::new());
+            }
+            owner
+        });
+        Self { owner }
+    }
+}
+
+impl Drop for LineIndexScope {
+    fn drop(&mut self) {
+        if self.owner {
+            LINE_STARTS.with(|cell| *cell.borrow_mut() = None);
+        }
+    }
+}
+
+/// Byte offset at which each line of `source` starts (a final empty line
+/// included when the source ends in a newline).
+fn line_starts(source: &str) -> Vec<usize> {
+    std::iter::once(0)
+        .chain(
+            source
+                .bytes()
+                .enumerate()
+                .filter_map(|(at, byte)| (byte == b'\n').then_some(at + 1)),
+        )
+        .collect()
+}
+
+fn with_line_starts<R>(source: &str, use_starts: impl FnOnce(&[usize]) -> R) -> R {
+    LINE_STARTS.with(|cell| match cell.borrow_mut().as_mut() {
+        Some(tables) => {
+            let key = (source.as_ptr() as usize, source.len());
+            use_starts(tables.entry(key).or_insert_with(|| line_starts(source)))
+        }
+        None => use_starts(&line_starts(source)),
+    })
+}
+
 impl<'a> From<&DiagnosticNote<'a>> for Label<'a> {
     fn from(note: &DiagnosticNote<'a>) -> Self {
+        let source = note.source;
+        let offset = note.span.start.min(source.len());
+        // The line holding the span start, newline included. Line starts
+        // follow ASCII newlines, so each slice lands on a character boundary.
+        let (line, line_start, line_end) = with_line_starts(source, |starts| {
+            let line = starts.partition_point(|&start| start <= offset);
+            (
+                line,
+                starts[line - 1],
+                starts.get(line).copied().unwrap_or(source.len()),
+            )
+        });
+        let relative = |position: usize| {
+            i64::try_from(position).unwrap_or(i64::MAX) - i64::try_from(line_start).unwrap_or(0)
+        };
         Self {
-            source: note.source,
             filename: super::display_filename(note.filename),
-            start: i64::try_from(note.span.start).unwrap_or(i64::MAX),
-            end: i64::try_from(note.span.end).unwrap_or(i64::MAX),
+            line,
+            text: &source[line_start..line_end],
+            start: relative(note.span.start),
+            end: relative(note.span.end),
             message: hew_compile::source_path_policy().display_text(note.message),
         }
     }
@@ -141,6 +222,56 @@ mod tests {
              2 | élève 🦫 bad\n   |         ^^^\n\
              <declaration>:1:1: note: declared here\n \
              1 | declared()\n   | ^^^^^^^^\n  = help: replace `bad` with `good`\n"
+        );
+    }
+
+    #[test]
+    fn long_lines_show_a_window_around_the_span() {
+        let source = format!("{}BAD{}\nnext\n", "a".repeat(500), "b".repeat(500));
+        let note = DiagnosticNote {
+            source: &source,
+            filename: "<input>",
+            span: &(500..503),
+            message: "wrong",
+        };
+        let rendered = render(
+            &note,
+            "error",
+            &[],
+            &[],
+            &super::super::diagnostic_palette(),
+        );
+        let mut lines = rendered.lines();
+        assert_eq!(lines.next(), Some("<input>:1:501: error: wrong"));
+        let shown = lines.next().unwrap();
+        let carets = lines.next().unwrap();
+        assert!(shown.contains("...") && shown.contains("BAD"), "{shown}");
+        assert!(shown.len() < 200, "{} bytes", shown.len());
+        // The carets sit under `BAD` in the windowed text.
+        let under = carets.find('^').unwrap();
+        assert_eq!(&shown[under..under + 3], "BAD", "{shown}\n{carets}");
+        assert_eq!(carets.matches('^').count(), 3);
+    }
+
+    #[test]
+    fn a_span_on_a_later_line_reports_that_line_and_column() {
+        let source = "one\ntwo\nthree three\n";
+        let note = DiagnosticNote {
+            source,
+            filename: "<input>",
+            span: &(14..19),
+            message: "wrong",
+        };
+        let rendered = render(
+            &note,
+            "error",
+            &[],
+            &[],
+            &super::super::diagnostic_palette(),
+        );
+        assert_eq!(
+            rendered,
+            "<input>:3:7: error: wrong\n 3 | three three\n   |       ^^^^^\n"
         );
     }
 

@@ -86,6 +86,7 @@ fn a_rejected_file_reported_through_a_closed_pipe_does_not_abort() {
     // say.
     let mut checker = Command::new(hew_binary())
         .arg("check")
+        .args(["--error-limit", "0"])
         .arg(&fixture)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -125,6 +126,7 @@ fn the_same_file_still_reports_its_full_diagnostics_when_nobody_closes_the_pipe(
 
     let output = Command::new(hew_binary())
         .arg("check")
+        .args(["--error-limit", "0"])
         .arg(&fixture)
         .output()
         .expect("run hew check");

@@ -80,16 +80,21 @@ fn await_ready(signal: &ReadySignal) {
 fn async_file_write_rejects_null_nonempty_bytes_before_pointer_arithmetic() {
     let _runtime = crate::runtime_test_guard();
     let signal = Arc::new(ReadySignal::default());
+    let output =
+        crate::file_resources::HewWriteFile::new(tempfile::tempfile().expect("temporary file"));
     let malformed = crate::bytes::BytesTriple {
         ptr: ptr::null_mut(),
         offset: 0,
         len: 1,
     };
     // SAFETY: the malformed triple is intentionally passed across the public
-    // boundary; the operation must reject it without inspecting file or data.
+    // boundary; the operation must reject the payload without reading it.
     unsafe {
-        let operation =
-            file::hew_async_file_write(ptr::null(), &raw const malformed, &descriptor(&signal));
+        let operation = file::hew_async_file_write(
+            &raw const output,
+            &raw const malformed,
+            &descriptor(&signal),
+        );
         assert_eq!(hew_async_io_status(operation), AsyncIoStatus::Error as i32);
         hew_async_io_free(operation);
     }

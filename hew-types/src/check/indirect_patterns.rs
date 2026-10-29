@@ -1,7 +1,6 @@
 use super::scope::Resolution;
 use super::{
-    CallableCandidate, Checker, IndirectCallCandidates, PatternKind, PayloadBinding,
-    PayloadVariantPattern, SpanKey,
+    Checker, IndirectCallCandidates, PatternKind, PayloadBinding, PayloadVariantPattern, SpanKey,
 };
 use hew_parser::ast::{Expr, Pattern, Spanned};
 
@@ -67,7 +66,7 @@ impl Checker {
         match (&pattern.0, self.subst.resolve(ty)) {
             (Pattern::Tuple(patterns), crate::Ty::Tuple(types)) => {
                 for (index, (pattern, ty)) in patterns.iter().zip(types).enumerate() {
-                    let candidates = Self::project_pattern_candidates(source, None, index);
+                    let candidates = source.project_member(None, index);
                     self.record_pattern_candidate_sources(pattern, &ty, &candidates);
                 }
             }
@@ -104,8 +103,7 @@ impl Checker {
             return;
         };
         for field in &plan.fields {
-            let candidates = Self::project_pattern_candidates(
-                source,
+            let candidates = source.project_member(
                 Some(owner),
                 usize::try_from(field.decl_idx).expect("checked field index"),
             );
@@ -127,31 +125,6 @@ impl Checker {
         }
     }
 
-    fn project_pattern_candidates(
-        source: &IndirectCallCandidates,
-        owner: Option<crate::NominalId>,
-        index: usize,
-    ) -> IndirectCallCandidates {
-        IndirectCallCandidates {
-            known: source
-                .known
-                .iter()
-                .map(|receiver| match owner {
-                    Some(owner) => CallableCandidate::Field {
-                        receiver: Box::new(receiver.clone()),
-                        owner,
-                        index: u32::try_from(index).expect("checked field index"),
-                    },
-                    None => CallableCandidate::Element {
-                        receiver: Box::new(receiver.clone()),
-                        index,
-                    },
-                })
-                .collect(),
-            may_be_unknown: source.may_be_unknown,
-        }
-    }
-
     fn record_payload_candidate_sources(
         &mut self,
         bindings: &[PayloadBinding],
@@ -161,10 +134,7 @@ impl Checker {
     ) {
         for binding in bindings {
             if let Some(span) = &binding.def_span {
-                self.bind_pattern_candidates(
-                    span,
-                    Self::project_pattern_candidates(source, owner, binding.field_idx),
-                );
+                self.bind_pattern_candidates(span, source.project_member(owner, binding.field_idx));
             }
         }
         for pattern in nested {
@@ -172,7 +142,7 @@ impl Checker {
                 &pattern.bindings,
                 &pattern.nested,
                 None,
-                &Self::project_pattern_candidates(source, owner, pattern.field_idx),
+                &source.project_member(owner, pattern.field_idx),
             );
         }
     }

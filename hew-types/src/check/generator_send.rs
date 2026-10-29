@@ -1,8 +1,8 @@
 //! Generator capture conditions and their exact value provenance.
 
 use super::{
-    effects, CallableArgumentFlow, CallableCandidate, Checker, ClosureCaptureFact, HashMap,
-    HashSet, IndirectCallCandidates, MarkerTrait, SpanKey, Ty, TypeError, TypeErrorKind,
+    effects, CallableArgumentFlow, Checker, ClosureCaptureFact, HashMap, HashSet,
+    IndirectCallCandidates, MarkerTrait, SpanKey, Ty, TypeError, TypeErrorKind,
 };
 
 #[derive(Debug, Clone)]
@@ -118,32 +118,12 @@ impl Checker {
         if !seen.insert(schema.clone()) {
             return false;
         }
-        let project = |index, owner| IndirectCallCandidates {
-            known: candidates
-                .known
-                .iter()
-                .cloned()
-                .map(|receiver| match owner {
-                    Some(owner) => CallableCandidate::Field {
-                        receiver: Box::new(receiver),
-                        owner,
-                        index: u32::try_from(index)
-                            .expect("checked record field index exceeds u32"),
-                    },
-                    None => CallableCandidate::Element {
-                        receiver: Box::new(receiver),
-                        index,
-                    },
-                })
-                .collect(),
-            may_be_unknown: candidates.may_be_unknown,
-        };
         let proven = match schema {
             Ty::Tuple(fields) => fields.iter().enumerate().all(|(index, field)| {
                 self.project_generator_bound_input(
                     field,
                     parameter,
-                    &project(index, None),
+                    &candidates.project_member(None, index),
                     output,
                     seen,
                 )
@@ -166,7 +146,7 @@ impl Checker {
                                     self.project_generator_bound_input(
                                         &field,
                                         parameter,
-                                        &project(index, Some(owner)),
+                                        &candidates.project_member(Some(owner), index),
                                         output,
                                         seen,
                                     )

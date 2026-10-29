@@ -185,6 +185,14 @@ pub unsafe extern "C" fn hew_file_write_handle(
         invalid_resource("write file resource");
         return -1;
     };
+    if data.len != 0 && data.ptr.is_null() {
+        set_file_io_errno(
+            "write file resource",
+            "bytes triple has a null data pointer with non-zero length",
+            libc::EINVAL,
+        );
+        return -1;
+    }
     let bytes = if data.len == 0 {
         &[]
     } else {
@@ -226,5 +234,24 @@ pub unsafe extern "C" fn hew_file_write_close(file: *mut HewWriteFile) {
     if !file.is_null() {
         // SAFETY: this invocation consumes the unique Box::into_raw owner.
         drop(unsafe { Box::from_raw(file) });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn write_handle_rejects_null_nonempty_bytes_before_pointer_arithmetic() {
+        let file = HewWriteFile::new(tempfile::tempfile().expect("temporary file"));
+        let malformed = BytesTriple {
+            ptr: std::ptr::null_mut(),
+            offset: 0,
+            len: 1,
+        };
+        // SAFETY: both wrapper objects are live for the call; the malformed
+        // payload is intentionally rejected at the public boundary.
+        let result = unsafe { hew_file_write_handle(&raw const file, &raw const malformed) };
+        assert_eq!(result, -1);
     }
 }

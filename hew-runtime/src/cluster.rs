@@ -1620,6 +1620,26 @@ impl HewCluster {
         incarnation: u64,
         source_conn_node_id: u16,
     ) {
+        // SAFETY: hew_now_ms has no preconditions.
+        let now_ms = unsafe { crate::clock::hew_now_ms() };
+        self.process_message_at(
+            msg_type,
+            from_node,
+            incarnation,
+            source_conn_node_id,
+            now_ms,
+        );
+    }
+
+    /// [`Self::process_message`] observed at `now_ms`.
+    fn process_message_at(
+        &self,
+        msg_type: i32,
+        from_node: u16,
+        incarnation: u64,
+        source_conn_node_id: u16,
+        now_ms: u64,
+    ) {
         if from_node != source_conn_node_id {
             eprintln!(
                 "[cluster] rejecting message: from_node {from_node} doesn't match connection node {source_conn_node_id}"
@@ -1634,7 +1654,7 @@ impl HewCluster {
             _ => return,
         };
         if decision.update_last_seen {
-            self.update_last_seen(from_node);
+            self.update_last_seen(from_node, now_ms);
         }
         if decision.upsert_alive {
             self.upsert_member(from_node, MEMBER_ALIVE, incarnation, &[]);
@@ -1650,15 +1670,13 @@ impl HewCluster {
     /// that long gaps are normal and dull all future detections. We
     /// still advance the detector's anchor so the next genuine interval
     /// is measured correctly.
-    fn update_last_seen(&self, node_id: u16) {
+    fn update_last_seen(&self, node_id: u16, now: u64) {
         let mut members = self.members.lock_or_recover();
         let Some(member) = members.iter_mut().find(|member| member.node_id == node_id) else {
             return;
         };
         // Publish the member timestamp and detector sample as one observation.
         // Readers take the same members → detectors lock order.
-        // SAFETY: hew_now_ms has no preconditions.
-        let now = unsafe { crate::clock::hew_now_ms() };
         let was_suspect = member.state == MEMBER_SUSPECT;
         member.last_seen_ms = now;
         if was_suspect {
@@ -2054,6 +2072,13 @@ impl HewCluster {
         if should_drain {
             self.drain_member_transitions();
         }
+    }
+
+    /// Run one protocol period at `now_ms`: apply due transitions, then choose
+    /// the peer to probe directly.
+    fn run_protocol_period(&self, now_ms: u64) -> Option<u16> {
+        self.tick(now_ms);
+        self.next_ping_target()
     }
 
     /// Get the next ping target, delegating selection to the installed
@@ -2527,8 +2552,7 @@ pub unsafe extern "C" fn hew_cluster_tick(cluster: *mut HewCluster) -> u16 {
     // take `&self`, so a shared reference is sound even when the connection
     // reader thread concurrently drives `process_message` (also `&self`).
     let cluster = unsafe { &*cluster };
-    cluster.tick(now);
-    cluster.next_ping_target().unwrap_or(0)
+    cluster.run_protocol_period(now).unwrap_or(0)
 }
 
 /// Register a callback for membership change notifications.
@@ -3417,10 +3441,8 @@ mod tests {
                     1,
                 );
             } else {
-                cluster.update_last_seen(2);
-                // This tick uses a synthetic 500 ms clock. Align the heartbeat
-                // timestamp with it without depending on host clock resolution.
-                cluster.members.lock_or_recover()[0].last_seen_ms = 500;
+                // This tick uses a synthetic 500 ms clock.
+                cluster.update_last_seen(2, 500);
             }
             resume_tx.send(()).expect("resume tick after peer refresh");
             tick.join().expect("tick completes");

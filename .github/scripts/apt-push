@@ -1,0 +1,169 @@
+#!/usr/bin/env bash
+# apt-push: publish .deb files to a spod/hew apt repository.
+#
+#   apt-push [--repo hewpkg|spod] [--suite stable|testing] [--url URL] [--auth auto|github|access|token] FILE...
+#   apt-push promote --repo R [--format deb|rpm|pacman] --package P --version V --arch A --from testing --to stable
+# FILE is a .deb, .rpm or .pkg.tar.* (pacman); the format comes from the name.
+#
+# Exit codes: 0 ok, 1 rejected by the server (or bad input), 2 transient failure after retries, 3 usage.
+set -euo pipefail
+
+repo="" suite="stable" url="" auth="auto" attempts=5
+usage() { sed -n '2,9p' "$0" | sed 's/^# \{0,1\}//' >&2; exit 3; }
+die() { echo "apt-push: $*" >&2; exit "${2:-1}"; }
+need() { command -v "$1" >/dev/null 2>&1 || die "$1 is required" 3; }
+
+need curl; need jq
+
+sha256_of() { if command -v sha256sum >/dev/null; then sha256sum "$1" | cut -d' ' -f1; else shasum -a 256 "$1" | cut -d' ' -f1; fi; }
+size_of() { wc -c <"$1" | tr -d ' '; }
+
+mode=push
+if [ "${1:-}" = promote ]; then mode=promote; shift; fi
+pkg="" version="" arch="" from="" to="" format=deb
+files=()
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --repo) repo=$2; shift 2 ;;
+    --suite) suite=$2; shift 2 ;;
+    --url) url=$2; shift 2 ;;
+    --auth) auth=$2; shift 2 ;;
+    --package) pkg=$2; shift 2 ;;
+    --version) version=$2; shift 2 ;;
+    --arch) arch=$2; shift 2 ;;
+    --from) from=$2; shift 2 ;;
+    --to) to=$2; shift 2 ;;
+    --format) format=$2; shift 2 ;;
+    -h|--help) usage ;;
+    -*) die "unknown option $1" 3 ;;
+    *) files+=("$1"); shift ;;
+  esac
+done
+
+case "$repo" in
+  hewpkg) : "${url:=https://dist.hewpkg.com}" ;;
+  spod) : "${url:=https://apt.spod.ca}" ;;
+  "")
+    case "$url" in
+      *dist.hewpkg.com*) repo=hewpkg ;;
+      *apt.spod.ca*) repo=spod ;;
+      *) die "give --repo (hewpkg or spod)" 3 ;;
+    esac ;;
+  *) die "unknown repo $repo" 3 ;;
+esac
+url=${url%/}
+
+# Print the HTTP header line carrying the credential, chosen by --auth.
+credential_header() {
+  local want=$1
+  if [ "$want" = auto ]; then
+    if [ -n "${APT_PUSH_TOKEN:-}" ]; then want=token
+    elif [ -n "${ACTIONS_ID_TOKEN_REQUEST_URL:-}" ]; then want=github
+    elif command -v cf >/dev/null || command -v cloudflared >/dev/null; then want=access
+    else die "no credentials: set APT_PUSH_TOKEN, run in GitHub Actions with id-token: write, or install cf or cloudflared" 3; fi
+  fi
+  case "$want" in
+    token)
+      [ -n "${APT_PUSH_TOKEN:-}" ] || die "APT_PUSH_TOKEN is not set" 3
+      echo "Authorization: Bearer $APT_PUSH_TOKEN" ;;
+    github)
+      [ -n "${ACTIONS_ID_TOKEN_REQUEST_URL:-}" ] || die "not running in GitHub Actions with id-token: write" 3
+      local t
+      t=$(curl -fsS -H "Authorization: Bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN:-}" \
+            "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=${url}" | jq -er .value) || die "could not obtain a GitHub OIDC token" 1
+      echo "Authorization: Bearer $t" ;;
+    access)
+      local app="$url/_access/" t token_cmd login_cmd
+      if command -v cf >/dev/null; then
+        token_cmd=(cf access token "$app"); login_cmd=(cf access login "$app")
+      elif command -v cloudflared >/dev/null; then
+        token_cmd=(cloudflared access token -app="$app"); login_cmd=(cloudflared access login "$app")
+      else die "install cf or cloudflared for Cloudflare Access logins" 3; fi
+      t=$("${token_cmd[@]}" 2>/dev/null) || {
+        "${login_cmd[@]}" >&2 || die "Cloudflare Access login failed" 1
+        t=$("${token_cmd[@]}") || die "could not get an Access token" 1
+      }
+      echo "Cf-Access-Jwt-Assertion: $t" ;;
+    *) die "unknown --auth $want" 3 ;;
+  esac
+}
+AUTH_HEADER=$(credential_header "$auth")
+
+work=$(mktemp -d); trap 'rm -rf "$work"' EXIT
+
+# api METHOD PATH [JSON]  -> body in $work/body, prints nothing; dies on failure.
+# 4xx exits 1 with the server's message; network errors and 5xx retry, then exit 2.
+api() {
+  local method=$1 path=$2 data=${3:-} n=0 code
+  while :; do
+    n=$((n + 1))
+    if [ -n "$data" ]; then
+      code=$(curl -sS -o "$work/body" -w '%{http_code}' -X "$method" -H "$AUTH_HEADER" \
+               -H 'Content-Type: application/json' --data "$data" "$url$path" 2>"$work/err") || code=000
+    else
+      code=$(curl -sS -o "$work/body" -w '%{http_code}' -X "$method" -H "$AUTH_HEADER" "$url$path" 2>"$work/err") || code=000
+    fi
+    case "$code" in
+      2??) return 0 ;;
+      4??) die "$method $path: $(jq -r '.error // empty' "$work/body" 2>/dev/null || true) (HTTP $code)" 1 ;;
+    esac
+    [ "$n" -lt "$attempts" ] || die "$method $path: giving up after $n attempts (HTTP $code) $(cat "$work/err" 2>/dev/null)" 2
+    sleep "${APT_PUSH_RETRY_SLEEP:-$((n < 4 ? 2 ** (n - 1) : 8))}" # 1s, 2s, 4s, 8s
+  done
+}
+
+if [ "$mode" = promote ]; then
+  [ -n "$pkg$version$arch$from$to" ] && [ -n "$pkg" ] && [ -n "$version" ] && [ -n "$arch" ] && [ -n "$from" ] && [ -n "$to" ] \
+    || die "promote needs --package --version --arch --from --to" 3
+  api POST /v1/promote "$(jq -n --arg repo "$repo" --arg fmt "$format" --arg p "$pkg" --arg v "$version" --arg a "$arch" --arg f "$from" --arg t "$to" \
+    '{repo:$repo, format:$fmt, package:$p, version:$v, arch:$a, from:$f, to:$t}')"
+  echo "promoted $pkg $version ($arch): $from -> $to"
+  exit 0
+fi
+
+[ ${#files[@]} -gt 0 ] || usage
+# The text of .PKGINFO inside a pacman package, which the server needs because it cannot open zstd archives.
+pkginfo_of() {
+  if command -v bsdtar >/dev/null; then bsdtar -xOf "$1" .PKGINFO 2>/dev/null
+  else tar -xOf "$1" .PKGINFO 2>/dev/null; fi
+}
+
+push_one() {
+  local f=$1 name sha size stanza="" record="" fmt
+  [ -f "$f" ] || die "no such file: $f" 1
+  name=$(basename "$f")
+  case "$name" in
+    *.deb)
+      fmt=deb; need dpkg-deb
+      stanza=$(dpkg-deb -f "$f") || die "$f is not a readable .deb" 1 ;;
+    *.rpm) fmt=rpm ;;
+    *.pkg.tar | *.pkg.tar.*)
+      fmt=pacman
+      record=$(pkginfo_of "$f")
+      [ -n "$record" ] || die "$f has no .PKGINFO (is it a pacman package, and is bsdtar or tar with zstd support installed?)" 1 ;;
+    *) die "$name: expected a .deb, .rpm or .pkg.tar.* file" 1 ;;
+  esac
+  sha=$(sha256_of "$f"); size=$(size_of "$f")
+
+  api POST /v1/uploads "$(jq -n --arg repo "$repo" --arg suite "$suite" --arg fmt "$fmt" --arg fn "$name" --arg sha "$sha" \
+    --argjson size "$size" --arg stanza "$stanza" --arg record "$record" \
+    '{repo:$repo, format:$fmt, suite:$suite, filename:$fn, sha256:$sha, size:$size, stanza:$stanza, record:$record}')"
+  local id up hdrs
+  id=$(jq -er .id "$work/body"); up=$(jq -er .uploadUrl "$work/body")
+  hdrs=()
+  while IFS= read -r h; do hdrs+=(-H "$h"); done < <(jq -r '.uploadHeaders | to_entries[] | "\(.key): \(.value)"' "$work/body")
+
+  local n=0 code
+  while :; do
+    n=$((n + 1))
+    code=$(curl -sS -o "$work/put" -w '%{http_code}' -X PUT "${hdrs[@]}" --upload-file "$f" "$up" 2>"$work/err") || code=000
+    case "$code" in 2??) break ;; esac
+    [ "$n" -lt "$attempts" ] || die "uploading $name failed (HTTP $code) $(head -c 300 "$work/put" 2>/dev/null)" 2
+    sleep "${APT_PUSH_RETRY_SLEEP:-$((n < 4 ? 2 ** (n - 1) : 8))}"
+  done
+
+  api POST "/v1/uploads/$id/finalize"
+  echo "$(jq -r .status "$work/body") $name -> $(jq -r '.suites | join(", ")' "$work/body")"
+}
+
+for f in "${files[@]}"; do push_one "$f"; done

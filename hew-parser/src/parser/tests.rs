@@ -1539,6 +1539,28 @@ fn parse_deeply_nested_expr_produces_error() {
 }
 
 #[test]
+fn parse_nested_blocks_past_limit_terminates_with_bounded_errors() {
+    // Past MAX_DEPTH a statement-start block is refused without consuming
+    // input; the block loop must skip it rather than retry it forever.
+    let errors = std::thread::Builder::new()
+        .stack_size(64 * 1024 * 1024)
+        .spawn(|| {
+            let source = format!("fn main() {}", "{".repeat(400));
+            parse(&source).errors
+        })
+        .expect("failed to spawn thread")
+        .join()
+        .expect("thread panicked");
+    assert!(
+        errors
+            .iter()
+            .any(|e| e.message.contains("maximum nesting depth exceeded")),
+        "{errors:?}"
+    );
+    assert!(errors.len() < 2_000, "{} errors", errors.len());
+}
+
+#[test]
 fn expression_nesting_below_limit_still_parses() {
     let errors = std::thread::Builder::new()
         .stack_size(16 * 1024 * 1024)

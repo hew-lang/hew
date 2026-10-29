@@ -179,9 +179,15 @@ impl Parser<'_> {
             // next statement, so a `.Ok(x)` tail on the next line is its own
             // expression. Using the block's value needs parentheses.
             if self.peek_opens_statement_block() {
+                let before = self.pos;
                 if let Some(tail) = self.parse_statement_block(&mut stmts) {
                     trailing_expr = Some(Box::new(tail));
                     break;
+                }
+                // A refused block (the nesting limit) consumes nothing; skip
+                // its opening token so the loop cannot retry it forever.
+                if self.pos == before {
+                    self.advance();
                 }
                 continue;
             }

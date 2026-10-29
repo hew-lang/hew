@@ -504,3 +504,105 @@ fn registry_names_require_the_exact_authenticated_origin_session_and_publication
         crate::cluster::hew_cluster_free(cluster);
     }
 }
+
+/// A peer that declared this session dead dropped its registered names. The
+/// refutation readmits the same session over the same connection, so the
+/// refuting node must announce its names again or they stay missing for as
+/// long as that connection lives.
+#[test]
+fn refuting_a_death_reannounces_local_names() {
+    let sends = Box::into_raw(Box::new(Mutex::new(Vec::<(c_int, Vec<u8>)>::new())));
+    let ops = Box::new(crate::transport::HewTransportOps {
+        connect: None,
+        listen: None,
+        accept: None,
+        send: Some(record_registry_gossip_send),
+        recv: None,
+        close_conn: None,
+        destroy: None,
+    });
+    let transport_ptr = Box::into_raw(Box::new(HewTransport {
+        ops: &raw const *ops,
+        r#impl: sends.cast(),
+    }));
+    let registry = crate::hew_node::HewRegistry::default();
+    let cfg = crate::cluster::ClusterConfig {
+        local_node_id: 1,
+        ..crate::cluster::ClusterConfig::default()
+    };
+    let local_name = test_location(1, 0x51);
+    let sent_controls = |channel: &mut snow::TransportState| {
+        // SAFETY: the test owns `sends` until the cleanup below.
+        let guard = unsafe { &*sends }
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        guard
+            .iter()
+            .map(|(conn, sealed)| {
+                let WireFrame::Control(control) =
+                    decode_wire_frame(&open_sent_frame(channel, sealed)).expect("frame")
+                else {
+                    panic!("expected a control frame");
+                };
+                (*conn, control)
+            })
+            .collect::<Vec<_>>()
+    };
+    // SAFETY: test-owned pointers remain valid until the explicit cleanup.
+    unsafe {
+        let cluster = crate::cluster::hew_cluster_new(&raw const cfg);
+        let mgr = hew_connmgr_new(transport_ptr, None, std::ptr::null_mut(), cluster, 1);
+        (*mgr).registry = &raw const registry;
+        assert!(registry.apply_origin_name("relay", local_name, true));
+
+        let (mut peer, mut peer_channel) = test_actor_with_peer(10);
+        peer.peer_node_id = 2;
+        peer.peer_feature_flags = HEW_FEATURE_SUPPORTS_GOSSIP;
+        peer.posture = Posture::Strict;
+        peer.state.store(CONN_STATE_ACTIVE, Ordering::Release);
+        (&*mgr).connections.access(|conns| conns.push(peer));
+        let token = test_publish_claim(&*mgr, 2, 10);
+
+        let swim_ack = |state: i32| {
+            let ack = SwimControlPayload {
+                msg_type: crate::cluster::SWIM_MSG_ACK,
+                from: test_node_session(2),
+                incarnation: 1,
+                target: None,
+                gossip: vec![SwimGossipEntry {
+                    member: test_node_session(1),
+                    state,
+                    incarnation: 4,
+                }],
+            };
+            let WireFrame::Control(control) =
+                decode_wire_frame(&swim_control_frame_bytes(&ack)).expect("frame")
+            else {
+                panic!("expected control frame");
+            };
+            control
+        };
+
+        // A suspicion is refuted without touching names the peer still holds.
+        let suspected = swim_ack(crate::cluster::MEMBER_SUSPECT);
+        handle_swim_control_frame(mgr, HEW_FEATURE_SUPPORTS_GOSSIP, 10, token, &suspected);
+        assert!(sent_controls(&mut peer_channel).is_empty());
+
+        let buried = swim_ack(crate::cluster::MEMBER_DEAD);
+        handle_swim_control_frame(mgr, HEW_FEATURE_SUPPORTS_GOSSIP, 10, token, &buried);
+        let sent = sent_controls(&mut peer_channel);
+        assert_eq!(sent.len(), 1, "one re-announcement per local name");
+        assert_eq!(sent[0].0, 10);
+        assert_eq!(sent[0].1.ctrl_kind, CTRL_REGISTRY_GOSSIP);
+        let payload = decode_registry_gossip_payload(&sent[0].1.payload).expect("payload");
+        assert_eq!(payload.op, crate::cluster::GOSSIP_REGISTRY_ADD);
+        assert_eq!(payload.name, "relay");
+        assert_eq!(payload.location, local_name);
+
+        hew_connmgr_free(mgr);
+        crate::cluster::hew_cluster_free(cluster);
+        drop(Box::from_raw(transport_ptr));
+        drop(Box::from_raw(sends));
+    }
+    drop(ops);
+}

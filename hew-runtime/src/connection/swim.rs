@@ -13,6 +13,7 @@ use crate::set_last_error;
 use crate::util::MutexExt;
 
 use super::control::authenticated_peer_identity;
+use super::gossip::reannounce_local_names;
 use super::handshake::supports_gossip;
 use super::peer::authenticated_peer_node_id_for_conn;
 use super::send::{claim_send_to_route, hew_connmgr_feature_flags_for_node};
@@ -362,9 +363,8 @@ pub(super) fn handle_swim_control_frame(
     // C6: fold piggybacked membership gossip into our view.
     mgr_ref.record_gossip_received();
     cluster.apply_swim_gossip(&gossip);
-    // C5: if any gossip suspects us, refute by bumping our incarnation. The
-    // refutation rides out on our next PING/ACK as an ALIVE-about-self event.
-    let _ = cluster.refute_if_suspected(&gossip);
+    // SAFETY: manager is live for this call.
+    unsafe { refute_claims_about_self(mgr, cluster, &gossip) };
 
     // Run the SWIM state machine for this message. The authenticated peer ID
     // is supplied as the source-connection identity so the cluster's
@@ -401,6 +401,30 @@ pub(super) fn handle_swim_control_frame(
             // ACK (and any other type) requires no response; state already
             // updated via process_message above.
         }
+    }
+}
+
+/// C5: if any gossip suspects us, refute by bumping our incarnation. The
+/// refutation rides out on our next PING/ACK as an ALIVE-about-self event.
+/// A peer that declared us dead also dropped our names, and the refutation
+/// readmits this session without a new admission flush, so they are sent again.
+///
+/// # Safety
+///
+/// `mgr` must be the live manager that owns `cluster`.
+unsafe fn refute_claims_about_self(
+    mgr: *mut HewConnMgr,
+    cluster: &HewCluster,
+    gossip: &[(u16, u32, i32, u64)],
+) {
+    // SAFETY: caller guarantees manager pointer validity.
+    let local = unsafe { &*mgr }.local_node_id;
+    let buried = gossip
+        .iter()
+        .any(|&(slot, _, state, _)| slot == local && state == crate::cluster::MEMBER_DEAD);
+    if cluster.refute_if_suspected(gossip).is_some() && buried {
+        // SAFETY: caller guarantees manager pointer validity.
+        unsafe { reannounce_local_names(mgr) };
     }
 }
 

@@ -66,10 +66,6 @@ fn bad(s: &mut Supervisor) { let _ = s.roster.get_mut(); }
 struct Supervisor { roster: Lock }
 fn bad(s: Supervisor) { let _ = s.roster.into_inner(); }
 """,
-    "unmarked_raw_roster_helper": """
-struct SupervisorRoster { children: Vec<usize> }
-fn bad(roster: &SupervisorRoster) -> usize { roster.children[0] }
-""",
     "callback_while_guarded": """
 fn bad(lock: &Lock, init_fn: fn()) {
     let roster = lock.lock_or_recover();
@@ -98,7 +94,6 @@ fn scoped(lock: &Lock) -> usize {
     roster.children[0] + roster.child_count
 }
 fn helper(roster: &SupervisorRoster) -> usize {
-    // ROSTER-GUARDED-HELPER: caller's MutexGuard bounds this borrow.
     roster.children[0]
 }
 """

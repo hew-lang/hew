@@ -1992,7 +1992,7 @@ node-protocol-check: ## Check: internal node control bindings match checked Hew 
 
 # Timing experiments are opt-in: wall-clock performance is host dependent.
 .PHONY: profile-timers
-profile-timers: ## Bench: compare exact and millisecond timer policies on Linux
+profile-timers: ## Measure: compare exact and millisecond timer policies on Linux
 	cargo run --release --locked --manifest-path tools/timer-profile/Cargo.toml -- kernel
 	cargo run --release --locked --manifest-path tools/timer-profile/Cargo.toml -- throughput
 	cargo run --release --locked --manifest-path tools/timer-profile/Cargo.toml -- latency

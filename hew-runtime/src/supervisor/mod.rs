@@ -2030,15 +2030,13 @@ fn monotonic_time_ns() -> u64 {
 }
 
 /// Count restarts within the sliding window.
-fn restart_within_window(window_secs: c_int, roster: &SupervisorRoster) -> c_int {
+fn restart_within_window(window_secs: c_int, history: &restart_history::RestartHistory) -> c_int {
     // SAFETY: this clock read has no caller preconditions.
-    roster
-        .restart_times
-        .recent(unsafe { hew_now_ms() }, window_secs)
+    history.recent(unsafe { hew_now_ms() }, window_secs)
 }
-fn record_restart(roster: &mut SupervisorRoster, max_restarts: c_int) {
+fn record_restart(history: &mut restart_history::RestartHistory, max_restarts: c_int) {
     // SAFETY: this clock read has no caller preconditions.
-    roster.restart_times.record(
+    history.record(
         unsafe { hew_now_ms() },
         usize::try_from(max_restarts).unwrap_or(0),
     );

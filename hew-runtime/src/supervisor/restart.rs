@@ -365,9 +365,9 @@ pub(crate) unsafe fn restart_with_budget_and_strategy(
             // Dynamic removal retired the spec: no entry left to restart.
             return FaultRuling::Unrecovered;
         };
-        let recent = restart_within_window(window_secs, s);
+        let recent = restart_within_window(window_secs, &s.restart_times);
         if recent < max_restarts {
-            record_restart(s, max_restarts);
+            record_restart(&mut s.restart_times, max_restarts);
         }
         (
             strategy,
@@ -496,12 +496,12 @@ pub(crate) unsafe fn restart_child_supervisor_with_budget(
             .and_then(Option::as_ref)
             .is_some();
         let recent = if restartable {
-            restart_within_window(window_secs, s)
+            restart_within_window(window_secs, &s.restart_times)
         } else {
             0
         };
         if restartable && recent < max_restarts {
-            record_restart(s, max_restarts);
+            record_restart(&mut s.restart_times, max_restarts);
         }
         (restartable, recent, max_restarts, sup_actor_id, strategy)
     };

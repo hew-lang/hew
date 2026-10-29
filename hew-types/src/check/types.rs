@@ -1235,6 +1235,28 @@ impl IndirectCallCandidates {
         self
     }
 
+    /// Select a checked record field or positional member from each possible source.
+    pub(super) fn project_member(&self, owner: Option<crate::NominalId>, index: usize) -> Self {
+        Self {
+            known: self
+                .known
+                .iter()
+                .map(|receiver| match owner {
+                    Some(owner) => CallableCandidate::Field {
+                        receiver: Box::new(receiver.clone()),
+                        owner,
+                        index: u32::try_from(index).expect("checked field index"),
+                    },
+                    None => CallableCandidate::Element {
+                        receiver: Box::new(receiver.clone()),
+                        index,
+                    },
+                })
+                .collect(),
+            may_be_unknown: self.may_be_unknown,
+        }
+    }
+
     pub(crate) fn join(&mut self, other: Self) {
         for candidate in other.known {
             if !self.known.contains(&candidate) {

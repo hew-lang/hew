@@ -565,6 +565,15 @@ impl super::TypeCheckOutput {
     }
 }
 
+/// One structural cleanup place, with callable provenance already projected to it.
+struct CleanupPlace {
+    ty: Ty,
+    path: Vec<String>,
+    own_close: bool,
+    inline_ancestors: Vec<Ty>,
+    candidates: super::IndirectCallCandidates,
+}
+
 #[allow(
     clippy::too_many_lines,
     reason = "Keep the structural cleanup walk and its ownership filters together"
@@ -575,17 +584,24 @@ fn cleanup_targets(
     model: &impl CleanupModel,
     unknown: bool,
 ) -> Vec<CleanupTarget> {
-    let root = value.ty.substitute_type_params_parallel(substitutions);
     let mut effects = Vec::new();
-    let mut pending = vec![(
-        root.clone(),
-        Vec::<String>::new(),
-        value.own_close,
-        Vec::<Ty>::new(),
-    )];
+    let mut pending = vec![CleanupPlace {
+        ty: value.ty.substitute_type_params_parallel(substitutions),
+        path: Vec::new(),
+        own_close: value.own_close,
+        inline_ancestors: Vec::new(),
+        candidates: value.candidates.clone(),
+    }];
     let mut seen = HashSet::new();
 
-    while let Some((ty, path, own_close, mut inline_ancestors)) = pending.pop() {
+    while let Some(CleanupPlace {
+        ty,
+        path,
+        own_close,
+        mut inline_ancestors,
+        candidates,
+    }) = pending.pop()
+    {
         // An inline containment cycle has no realizable value. Leave its layout
         // diagnostic to HIR instead of growing symbolic field projections while
         // checking cleanup effects. Heap boundaries start a new inline chain.
@@ -609,7 +625,6 @@ fn cleanup_targets(
         } else {
             inline_ancestors.clear();
         }
-        let candidates = || cleanup_candidates(&root, &value.candidates, &path, model);
         if value.absent.iter().any(|absent| path.starts_with(absent)) {
             continue;
         }
@@ -641,41 +656,59 @@ fn cleanup_targets(
             whole,
             remaining_absent,
             remaining_owned,
-            candidates(),
+            candidates.clone(),
         )) {
             continue;
         }
         if model.trivial(&ty) {
             continue;
         }
-        let mut child = |label: String, ty: Ty| {
+        let mut child = |label: String, ty: Ty, candidates| {
             let mut child_path = path.clone();
             child_path.push(label);
-            pending.push((ty, child_path, false, inline_ancestors.clone()));
+            pending.push(CleanupPlace {
+                ty,
+                path: child_path,
+                own_close: false,
+                inline_ancestors: inline_ancestors.clone(),
+                candidates,
+            });
         };
         match ty.callable_body() {
             Ty::Closure { captures, .. } => {
                 for (index, ty) in captures.iter().enumerate() {
-                    child(index.to_string(), ty.clone());
+                    child(
+                        index.to_string(),
+                        ty.clone(),
+                        super::IndirectCallCandidates::unknown(),
+                    );
                 }
             }
             Ty::Function { .. } if whole && !value.static_callable => {
                 effects.push(CleanupTarget::Callable {
                     ty: ty.clone(),
-                    candidates: candidates(),
+                    candidates,
                 });
             }
             Ty::TraitObject { .. } if whole => effects.push(CleanupTarget::Callable {
                 ty: ty.clone(),
-                candidates: candidates(),
+                candidates,
             }),
             Ty::Var(_) if whole && unknown => effects.push(CleanupTarget::Unknown(ty.clone())),
             Ty::Tuple(fields) => {
                 for (index, ty) in fields.iter().enumerate() {
-                    child(index.to_string(), ty.clone());
+                    child(
+                        index.to_string(),
+                        ty.clone(),
+                        candidates.project_member(None, index),
+                    );
                 }
             }
-            Ty::Array(element, size) if *size != 0 => child("[]".into(), (**element).clone()),
+            Ty::Array(element, size) if *size != 0 => child(
+                "[]".into(),
+                (**element).clone(),
+                super::IndirectCallCandidates::unknown(),
+            ),
             Ty::Named { head, args } => {
                 if head.is_param() && whole && unknown {
                     effects.push(CleanupTarget::Unknown(ty.clone()));
@@ -687,7 +720,7 @@ fn cleanup_targets(
                             body: EffectBody::Declaration(close),
                             type_args,
                             receiver: ty.clone(),
-                            candidates: candidates(),
+                            candidates,
                         }),
                         None => effects.push(CleanupTarget::Unknown(ty.clone())),
                     }
@@ -698,7 +731,7 @@ fn cleanup_targets(
                     Some(BuiltinType::Generator) if whole && unknown => {
                         effects.push(CleanupTarget::Callable {
                             ty: ty.clone(),
-                            candidates: candidates(),
+                            candidates,
                         });
                     }
                     Some(BuiltinType::Generator) if whole => {
@@ -712,7 +745,11 @@ fn cleanup_targets(
                     ) if whole => {
                         effects.push(CleanupTarget::Suspends);
                         for (index, ty) in args.iter().enumerate() {
-                            child(index.to_string(), ty.clone());
+                            child(
+                                index.to_string(),
+                                ty.clone(),
+                                super::IndirectCallCandidates::unknown(),
+                            );
                         }
                     }
                     Some(
@@ -726,14 +763,28 @@ fn cleanup_targets(
                         | BuiltinType::Result,
                     ) => {
                         for (index, ty) in args.iter().enumerate() {
-                            child(index.to_string(), ty.clone());
+                            child(
+                                index.to_string(),
+                                ty.clone(),
+                                super::IndirectCallCandidates::unknown(),
+                            );
                         }
                     }
                     Some(_) => {}
                     None => {
-                        if let Some(definition) = head.nominal().and_then(|id| model.definition(id))
-                        {
+                        if let Some((owner, definition)) = head.nominal().and_then(|owner| {
+                            model
+                                .definition(owner)
+                                .map(|definition| (owner, definition))
+                        }) {
                             for (label, ty) in &definition.fields {
+                                let projected = definition
+                                    .field_order
+                                    .iter()
+                                    .position(|field| field == label)
+                                    .map_or_else(super::IndirectCallCandidates::unknown, |index| {
+                                        candidates.project_member(Some(owner), index)
+                                    });
                                 child(
                                     label.clone(),
                                     Checker::instantiate_type_def_member(
@@ -741,6 +792,7 @@ fn cleanup_targets(
                                         &definition.type_params,
                                         args,
                                     ),
+                                    projected,
                                 );
                             }
                             for variant in definition.variants.values() {
@@ -755,6 +807,7 @@ fn cleanup_targets(
                                                     &definition.type_params,
                                                     args,
                                                 ),
+                                                super::IndirectCallCandidates::unknown(),
                                             );
                                         }
                                     }
@@ -767,6 +820,7 @@ fn cleanup_targets(
                                                     &definition.type_params,
                                                     args,
                                                 ),
+                                                super::IndirectCallCandidates::unknown(),
                                             );
                                         }
                                     }
@@ -780,68 +834,4 @@ fn cleanup_targets(
         }
     }
     effects
-}
-
-fn cleanup_candidates(
-    root: &Ty,
-    source: &super::IndirectCallCandidates,
-    path: &[String],
-    model: &impl CleanupModel,
-) -> super::IndirectCallCandidates {
-    let mut ty = root.clone();
-    let mut candidates = source.clone();
-    for label in path {
-        let (index, owner, next) = match &ty {
-            Ty::Named { head, args } => {
-                let Some(owner) = head.nominal() else {
-                    return super::IndirectCallCandidates::unknown();
-                };
-                let Some(definition) = model.definition(owner) else {
-                    return super::IndirectCallCandidates::unknown();
-                };
-                let Some(index) = definition
-                    .field_order
-                    .iter()
-                    .position(|field| field == label)
-                else {
-                    return super::IndirectCallCandidates::unknown();
-                };
-                let Some(field) = definition.fields.get(label) else {
-                    return super::IndirectCallCandidates::unknown();
-                };
-                (
-                    index,
-                    Some(owner),
-                    Checker::instantiate_type_def_member(field, &definition.type_params, args),
-                )
-            }
-            Ty::Tuple(fields) => {
-                let Some(index) = label.parse::<usize>().ok() else {
-                    return super::IndirectCallCandidates::unknown();
-                };
-                let Some(field) = fields.get(index) else {
-                    return super::IndirectCallCandidates::unknown();
-                };
-                (index, None, field.clone())
-            }
-            _ => return super::IndirectCallCandidates::unknown(),
-        };
-        candidates.known = candidates
-            .known
-            .into_iter()
-            .map(|receiver| match owner {
-                Some(owner) => super::CallableCandidate::Field {
-                    receiver: Box::new(receiver),
-                    owner,
-                    index: u32::try_from(index).expect("checked field index"),
-                },
-                None => super::CallableCandidate::Element {
-                    receiver: Box::new(receiver),
-                    index,
-                },
-            })
-            .collect();
-        ty = next;
-    }
-    candidates
 }

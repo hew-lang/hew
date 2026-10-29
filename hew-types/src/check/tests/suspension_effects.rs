@@ -773,6 +773,36 @@ fn main() {
 }
 
 #[test]
+fn nested_record_and_tuple_cleanup_retains_callable_origins() {
+    let source = r"
+#[resource] type Ticket { id: i64; }
+impl Ticket { fn close(consume self) { sleep(1ms); } }
+type Callback { invoke: fn() -> i64; }
+type Bundle { entries: (i64, Callback); }
+fn discard(consume bundle: Bundle) {}
+fn pure() -> i64 { 1 }
+fn main() {
+    let plain = Bundle { entries: (0, Callback { invoke: pure }) };
+    discard(plain);
+    let ticket = Ticket { id: 1 };
+    let callback = move || ticket.id;
+    let captured = Bundle { entries: (0, Callback { invoke: callback }) };
+    discard(captured);
+}
+";
+    let output = check_source(source);
+    assert!(output.errors.is_empty(), "{:?}", output.errors);
+    assert_eq!(
+        call_effects(&output, source, "discard(plain)"),
+        vec![SuspensionEffect::Never]
+    );
+    assert_eq!(
+        call_effects(&output, source, "discard(captured)"),
+        vec![SuspensionEffect::MaySuspend]
+    );
+}
+
+#[test]
 fn effect_graph_ignores_irrelevant_growing_generic_arguments() {
     let source = r"
 fn recurse<T>(n: i64) {

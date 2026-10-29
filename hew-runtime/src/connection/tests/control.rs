@@ -563,7 +563,7 @@ fn refuting_a_death_reannounces_local_names() {
         (&*mgr).connections.access(|conns| conns.push(peer));
         let token = test_publish_claim(&*mgr, 2, 10);
 
-        let swim_ack = |state: i32| {
+        let swim_ack = |state: i32, incarnation: u64| {
             let ack = SwimControlPayload {
                 msg_type: crate::cluster::SWIM_MSG_ACK,
                 from: test_node_session(2),
@@ -572,7 +572,7 @@ fn refuting_a_death_reannounces_local_names() {
                 gossip: vec![SwimGossipEntry {
                     member: test_node_session(1),
                     state,
-                    incarnation: 4,
+                    incarnation,
                 }],
             };
             let WireFrame::Control(control) =
@@ -584,11 +584,12 @@ fn refuting_a_death_reannounces_local_names() {
         };
 
         // A suspicion is refuted without touching names the peer still holds.
-        let suspected = swim_ack(crate::cluster::MEMBER_SUSPECT);
+        let suspected = swim_ack(crate::cluster::MEMBER_SUSPECT, 4);
         handle_swim_control_frame(mgr, HEW_FEATURE_SUPPORTS_GOSSIP, 10, token, &suspected);
         assert!(sent_controls(&mut peer_channel).is_empty());
 
-        let buried = swim_ack(crate::cluster::MEMBER_DEAD);
+        // Refuting at 4 moved us to 5; the burial carries the current incarnation.
+        let buried = swim_ack(crate::cluster::MEMBER_DEAD, 5);
         handle_swim_control_frame(mgr, HEW_FEATURE_SUPPORTS_GOSSIP, 10, token, &buried);
         let sent = sent_controls(&mut peer_channel);
         assert_eq!(sent.len(), 1, "one re-announcement per local name");
@@ -598,6 +599,21 @@ fn refuting_a_death_reannounces_local_names() {
         assert_eq!(payload.op, crate::cluster::GOSSIP_REGISTRY_ADD);
         assert_eq!(payload.name, "relay");
         assert_eq!(payload.location, local_name);
+
+        // The same burial relayed again is stale once refuted: no second broadcast.
+        let sent_before = (*sends)
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .len();
+        handle_swim_control_frame(mgr, HEW_FEATURE_SUPPORTS_GOSSIP, 10, token, &buried);
+        let sent_after = (*sends)
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .len();
+        assert_eq!(
+            sent_after, sent_before,
+            "a stale burial is not re-announced"
+        );
 
         hew_connmgr_free(mgr);
         crate::cluster::hew_cluster_free(cluster);

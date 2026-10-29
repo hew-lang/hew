@@ -2342,8 +2342,13 @@ impl HewCluster {
     pub fn refute_if_suspected(&self, entries: &[(u16, u32, i32, u64)]) -> Option<u64> {
         let local = self.config.local_node_id;
         let mut max_suspect_incarnation: Option<u64> = None;
+        let ours = self.local_incarnation.load(Ordering::SeqCst);
         for &(node_id, _session, state, incarnation) in entries {
-            if node_id == local && (state == MEMBER_SUSPECT || state == MEMBER_DEAD) {
+            // A claim below our incarnation is already refuted.
+            if node_id == local
+                && (state == MEMBER_SUSPECT || state == MEMBER_DEAD)
+                && incarnation >= ours
+            {
                 max_suspect_incarnation =
                     Some(max_suspect_incarnation.map_or(incarnation, |m| m.max(incarnation)));
             }

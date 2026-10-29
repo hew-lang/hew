@@ -4380,6 +4380,9 @@ impl Checker {
                 })
                 .collect(),
             lang_items: std::mem::take(&mut self.lang_items),
+            // Publish after the remaining pattern/signature finalization has
+            // finished crediting lexical and implementation-provider routes.
+            used_imports: self.scopes.take_used_imports(),
         };
 
         // Detect actor reference cycles and emit warnings.

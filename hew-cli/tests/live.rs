@@ -131,3 +131,59 @@ stop(circuit); stopped(circuit); stop(service); stopped(service);
         "{stderr}"
     );
 }
+
+#[test]
+fn replacements_preserve_helper_closure_generator_and_impl_scope() {
+    let compiler = Path::new(env!("CARGO_BIN_EXE_hew"));
+    let runtime = compiler
+        .parent()
+        .unwrap()
+        .join(if cfg!(target_os = "macos") {
+            "libhew.dylib"
+        } else {
+            "libhew.so"
+        });
+    let mut process = Command::new(compiler)
+        .args(["tool", "live", "--runtime"])
+        .arg(runtime)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    process
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(
+            br"
+fn base() -> i64 { 40 }
+fn saved() -> i64 { base() + 2 }
+let previous = || base();
+fn base() -> i64 { 100 }
+saved()
+previous()
+base()
+type Number { value: i64; }
+impl Number { fn read(self) -> i64 { self.value } }
+let number = Number { value: 7 };
+number.read()
+fn make_values() -> Generator<i64, ()> { gen { yield saved(); } }
+let values = make_values();
+fn make_values() -> Generator<i64, ()> { gen { yield 100; } }
+let alias = values;
+for value in alias { println(value); }
+:clear
+:quit
+",
+        )
+        .unwrap();
+    let output = process.wait_with_output().unwrap();
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    assert!(output.status.success(), "{stderr}");
+    assert!(stderr.is_empty(), "{stderr}");
+    assert_eq!(
+        String::from_utf8(output.stdout).unwrap(),
+        "42\n40\n100\n7\n42\n"
+    );
+}

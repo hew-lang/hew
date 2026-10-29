@@ -3368,6 +3368,14 @@ fn sibling_bare_and_selected_imports_credit_the_binding_used() {
         );
         let output = check_qualified_variant_root(&source);
         assert!(output.errors.is_empty(), "{:#?}", output.errors);
+        assert!(output
+            .used_imports
+            .iter()
+            .any(|site| site.start == source.find("import m;").unwrap()));
+        assert!(output
+            .used_imports
+            .iter()
+            .all(|site| site.start != source.find("import m.{ Mode };").unwrap()));
         let unused: Vec<_> = output
             .warnings
             .iter()
@@ -3383,6 +3391,14 @@ fn sibling_bare_and_selected_imports_credit_the_binding_used() {
     let source = "import m;\nimport m.{ Mode };\nfn main() { let value: Mode = Mode.Present(42); }";
     let output = check_qualified_variant_root(source);
     assert!(output.errors.is_empty(), "{:#?}", output.errors);
+    assert!(output
+        .used_imports
+        .iter()
+        .any(|site| site.start == source.find("import m.{ Mode };").unwrap()));
+    assert!(output
+        .used_imports
+        .iter()
+        .all(|site| site.start != source.find("import m;").unwrap()));
     let unused: Vec<_> = output
         .warnings
         .iter()
@@ -3394,6 +3410,7 @@ fn sibling_bare_and_selected_imports_credit_the_binding_used() {
     let shadowed = "import m;\nfn main() { let m = 1; assert(m == 1); }";
     let output = check_qualified_variant_root(shadowed);
     assert!(output.errors.is_empty(), "{:#?}", output.errors);
+    assert!(output.used_imports.is_empty());
     assert!(output.warnings.iter().any(|warning| {
         warning.kind == TypeErrorKind::UnusedImport
             && warning.span.start == shadowed.find("import m;").unwrap()
@@ -3586,16 +3603,24 @@ fn selected_associated_provider_credits_direct_and_facade_imports() {
         );
         let output = check_prelude_impl_import_route(&source, via_facade);
         assert!(output.errors.is_empty(), "{:#?}", output.errors);
+        assert!(output.used_imports.iter().any(|site| site.start == 0));
+        assert!(output
+            .used_imports
+            .iter()
+            .all(|site| site.start != source.find("import unused;").unwrap()));
+        if via_facade {
+            let facade = output.defs.module_for_path("facade").unwrap();
+            assert!(output
+                .used_imports
+                .iter()
+                .any(|site| site.file == facade && site.start == 0));
+        }
         let unused: Vec<_> = output
             .warnings
             .iter()
             .filter(|warning| warning.kind == TypeErrorKind::UnusedImport)
             .collect();
         assert_eq!(unused.len(), 1, "{:#?}", output.warnings);
-        assert!(
-            unused[0].message.contains("unused"),
-            "the independent control import must remain unused: {unused:#?}"
-        );
     }
 
     let control =
@@ -3621,6 +3646,8 @@ fn public_facade_credits_external_impl_provider_without_local_call() {
     assert!(provider.errors.is_empty(), "parse: {:?}", provider.errors);
     assert!(unused.errors.is_empty(), "parse: {:?}", unused.errors);
     assert!(facade.errors.is_empty(), "parse: {:?}", facade.errors);
+    let provider_span = facade.program.items[0].1.clone();
+    let unused_span = facade.program.items[1].1.clone();
 
     for (item, _) in &mut facade.program.items {
         if let Item::Import(import) = item {
@@ -3667,16 +3694,22 @@ fn public_facade_credits_external_impl_provider_without_local_call() {
     });
 
     assert!(output.errors.is_empty(), "{:#?}", output.errors);
+    let facade = output.defs.module_for_path("facade").unwrap();
+    assert!(output
+        .used_imports
+        .contains(&super::super::scope::ImportSite::new(
+            facade,
+            &provider_span
+        )));
+    assert!(!output
+        .used_imports
+        .contains(&super::super::scope::ImportSite::new(facade, &unused_span)));
     let unused: Vec<_> = output
         .warnings
         .iter()
         .filter(|warning| warning.kind == TypeErrorKind::UnusedImport)
         .collect();
     assert_eq!(unused.len(), 1, "{:#?}", output.warnings);
-    assert!(
-        unused[0].message.contains("unused"),
-        "only the unrelated import should remain unused: {unused:#?}"
-    );
 }
 
 #[test]

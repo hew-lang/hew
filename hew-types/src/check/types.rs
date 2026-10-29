@@ -703,6 +703,9 @@ pub struct TypeCheckOutput {
     /// the identity `Scope::resolve` answered. HIR and tooling read it rather
     /// than resolving a spelling again.
     pub resolutions: HashMap<SpanKey, super::scope::Resolution>,
+    /// Exact import declarations used by lexical resolution, macro expansion
+    /// or an implementation provider, including public impl surfaces.
+    pub used_imports: HashSet<super::scope::ImportSite>,
     /// The field each shorthand initializer label (`Point { x }`) names, keyed
     /// by the label's token. That token is also the value expression, whose
     /// binding `resolutions` holds; tooling reads both for one occurrence.

@@ -729,12 +729,17 @@ pub unsafe extern "C" fn hew_checked_task_race(
     task_slot_bytes: u64,
     provider_layout: *const HewValueLayout,
 ) -> *mut HewTask {
-    // SAFETY: generated code supplies distinct owned members and a live array.
+    // Reject the empty race before constructing a Rust slice. C callers
+    // conventionally represent an empty array as `(NULL, 0)`, but
+    // `slice::from_raw_parts` requires a non-null aligned pointer even when its
+    // length is zero.
+    if count == 0 {
+        std::process::abort();
+    }
+    // SAFETY: generated code supplies distinct owned members and a live,
+    // non-empty array.
     unsafe {
         let members = std::slice::from_raw_parts(members, count as usize).to_vec();
-        if members.is_empty() {
-            std::process::abort();
-        }
         for member in &members {
             let mut state = checked(*member).lock_or_recover();
             if state.accounting == TaskAccounting::Group || state.taken {

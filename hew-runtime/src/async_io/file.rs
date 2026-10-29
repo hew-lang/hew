@@ -255,6 +255,10 @@ pub unsafe extern "C" fn hew_async_file_write(
         |data| {
             let bytes = if data.len == 0 {
                 Vec::new()
+            } else if data.ptr.is_null() {
+                return Err(IoFailure::invalid(
+                    "bytes triple has a null data pointer with non-zero length",
+                ));
             } else {
                 // SAFETY: the triple lends data.len initialized bytes at offset.
                 unsafe {

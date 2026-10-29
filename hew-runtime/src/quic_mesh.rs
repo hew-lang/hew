@@ -2478,6 +2478,37 @@ mod tests {
                     .authenticated_node_id(),
                 Some(expected_server)
             );
+            if hostname {
+                let original = client.get_conn(connection).unwrap();
+                {
+                    let mut slots = client.slot_table.lock().unwrap();
+                    while slots.alloc().is_some() {}
+                }
+                // SAFETY: client and target remain live throughout the dial.
+                let rejected = unsafe {
+                    quic_mesh_connect((&raw const client).cast_mut().cast(), target.as_ptr())
+                };
+                assert_eq!(rejected, HEW_CONN_INVALID);
+                assert!(Arc::ptr_eq(
+                    &original,
+                    &client.get_conn(connection).unwrap()
+                ));
+                // Drain the refused connection and clear test-only reservations.
+                server
+                    .incoming_rx
+                    .lock()
+                    .unwrap()
+                    .as_ref()
+                    .unwrap()
+                    .recv_timeout(Duration::from_secs(10))
+                    .unwrap();
+                let mut slots = client.slot_table.lock().unwrap();
+                for idx in 0..MAX_CONNS {
+                    if idx != connection as usize {
+                        slots.release(idx);
+                    }
+                }
+            }
             drop(busy);
             client.remove_conn(connection);
         }

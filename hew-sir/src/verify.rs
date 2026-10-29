@@ -474,15 +474,23 @@ fn verify_variant_shapes(module: &SemModule, diagnostics: &mut Vec<SirDiagnostic
     }
 }
 
-/// Per-function place analysis retained by successful semantic verification.
-/// Its plan and cleanup dispositions come from the same checked body.
+/// Per-function control-flow and ownership facts retained by successful verification.
+/// Every analysis describes the same immutable checked body.
 #[derive(Debug, Clone)]
 pub struct CheckedFunction {
+    cfg: crate::CfgIndex,
     places: crate::PlacePlan,
     lifetimes: crate::PlaceLifetimes,
 }
 
 impl CheckedFunction {
+    /// Structural control flow of this checked body, before any later rewrites.
+    /// Ownership feasibility remains part of [`Self::place_lifetimes`].
+    #[must_use]
+    pub fn cfg(&self) -> &crate::CfgIndex {
+        &self.cfg
+    }
+
     #[must_use]
     pub fn place_plan(&self) -> &crate::PlacePlan {
         &self.places
@@ -502,7 +510,7 @@ pub struct CheckedModule<'a> {
     functions: Cow<'a, BTreeMap<CallableId, CheckedFunction>>,
 }
 
-/// Immutable semantic output retaining the place and lifetime certificates
+/// Immutable semantic output retaining the control-flow and ownership certificates
 /// produced by its final verification.
 #[derive(Debug)]
 pub struct VerifiedModule {
@@ -1666,8 +1674,9 @@ fn check_function_with_context(
             &mut diagnostics,
         );
     }
+    let cfg = crate::build_cfg_index(function);
     if blocks.contains_key(&function.entry) {
-        let dominators = crate::compute_dominators(function);
+        let dominators = crate::compute_indexed_dominators(&cfg);
         for block in &function.blocks {
             for (op_index, op) in block.ops.iter().enumerate() {
                 verify_uses(
@@ -1754,6 +1763,7 @@ fn check_function_with_context(
             )
         }));
         lifetimes = Some(CheckedFunction {
+            cfg,
             places: projections,
             lifetimes: analysis.lifetimes,
         });

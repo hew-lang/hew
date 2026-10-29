@@ -253,11 +253,11 @@ pub(super) fn semantic_callables(checked: &hew_sir::CheckedModule<'_>) -> BTreeS
                 types.insert(result.id, result.ty.clone());
             });
         }
-        let lifetimes = checked
+        let certificate = checked
             .function(function.callable)
-            .expect("verified callable body")
-            .place_lifetimes();
-        let cfg = hew_sir::build_cfg_index(function);
+            .expect("verified callable body");
+        let lifetimes = certificate.place_lifetimes();
+        let cfg = certificate.cfg();
         let order: BTreeMap<_, _> = cfg
             .rpo()
             .iter()

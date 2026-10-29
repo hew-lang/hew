@@ -5,14 +5,14 @@ use crate::SirLoweringError;
 use super::{
     callable_signature, callable_signature_with_substitution, dyn_boundary_passing,
     dyn_passing_admits, function_source_origin, is_supported_instance_type_arg, project_type_facts,
-    require_aggregate_shape, require_signature_shapes, require_type_shapes, require_variant_shape,
-    AggregateShapeRef, BTreeMap, BTreeSet, BodySource, Builder, BytesLiteralId, CallableId,
-    CallableInstance, CallableState, CallableTable, Cow, DefId, EntryAdapter, EntryExitAction,
-    FunctionSourceOrigin, HashMap, HirExpr, HirExprKind, HirFn, HirModule, InstanceService,
-    LoweringInput, OwnKind, ResolvedTy, SemAbiParam, SemCallConv, SemCallable, SemCallableKind,
-    SemFunction, SemGenericTemplate, SemModule, SemParamPassing, SemSignature, SirInstanceKey,
-    SirLoweringStatus, SirRootSelectionError, StringLiteralId, TypeCheckOutput, TypeFactService,
-    TypeInstanceKey, TypeSubstitution, VariantShapeId, VecDeque, SIR_GENERIC_INSTANCE_CAP,
+    require_aggregate_shape, require_variant_shape, AggregateShapeRef, BTreeMap, BTreeSet,
+    BodySource, Builder, BytesLiteralId, CallableId, CallableInstance, CallableState,
+    CallableTable, Cow, DefId, EntryAdapter, EntryExitAction, FunctionSourceOrigin, HashMap,
+    HirExpr, HirExprKind, HirFn, HirModule, InstanceService, LoweringInput, OwnKind, ResolvedTy,
+    SemAbiParam, SemCallConv, SemCallable, SemCallableKind, SemFunction, SemGenericTemplate,
+    SemModule, SemParamPassing, SemSignature, SirInstanceKey, SirLoweringStatus,
+    SirRootSelectionError, StringLiteralId, TypeCheckOutput, TypeFactService, TypeInstanceKey,
+    TypeSubstitution, VariantShapeId, VecDeque, SIR_GENERIC_INSTANCE_CAP,
 };
 
 impl<'a> InstanceService<'a> {
@@ -53,6 +53,7 @@ impl<'a> InstanceService<'a> {
             aggregate_shapes_by_type: HashMap::new(),
             variant_shapes: Vec::new(),
             variant_shapes_by_type: HashMap::new(),
+            completed_shape_closures: std::collections::HashSet::new(),
             string_literals: BTreeMap::new(),
             bytes_literals: BTreeMap::new(),
             value_capabilities: BTreeMap::new(),
@@ -335,16 +336,88 @@ impl<'a> InstanceService<'a> {
         })
     }
 
+    /// Admit a complete nested shape graph once per exact checked type.
+    /// Single-row interning remains separate from successful closure admission.
     pub(super) fn require_type_facts(&mut self, ty: &ResolvedTy) -> Result<(), SirLoweringError> {
-        require_type_shapes(
-            self.module,
-            &mut self.checked_facts,
-            &mut self.aggregate_shapes,
-            &mut self.aggregate_shapes_by_type,
-            &mut self.variant_shapes,
-            &mut self.variant_shapes_by_type,
-            ty,
-        )
+        if self.completed_shape_closures.contains(ty) {
+            return Ok(());
+        }
+        let mut pending = vec![ty.clone()];
+        let mut seen = BTreeSet::new();
+        while let Some(ty) = pending.pop() {
+            if self.completed_shape_closures.contains(&ty) || !seen.insert(ty.clone()) {
+                continue;
+            }
+            super::require_type_facts(&mut self.checked_facts, &ty)?;
+            if !matches!(ty, ResolvedTy::Unit | ResolvedTy::Never)
+                && !super::is_supported_call_value(self.module, &self.checked_facts, &ty)
+            {
+                return Err(format!(
+                    "nested type `{}` has no semantic value contract",
+                    ty.user_facing()
+                )
+                .into());
+            }
+            if let ResolvedTy::Array(element, _) = &ty {
+                pending.push((**element).clone());
+                continue;
+            } else if let Some(payload) = hew_types::runtime_call::shared_handle_payload(&ty) {
+                pending.push(payload.clone());
+                continue;
+            } else if let Some((builtin, arguments)) = super::collection_type_arguments(&ty) {
+                for argument in arguments {
+                    if !super::is_supported_call_value(self.module, &self.checked_facts, argument) {
+                        let component = if builtin == hew_types::BuiltinType::Vec {
+                            "vector element"
+                        } else {
+                            "collection component"
+                        };
+                        return Err(format!(
+                            "{component} `{}` has no semantic value contract",
+                            argument.user_facing(),
+                        )
+                        .into());
+                    }
+                }
+                // Copy admissibility is checked separately from value admission.
+                pending.extend(arguments.iter().cloned());
+                continue;
+            } else if super::is_concrete_variant_type(self.module, &ty) {
+                let id = self.require_variant_shape(&ty)?;
+                pending.extend(
+                    self.variant_shapes[id.0 as usize]
+                        .variants
+                        .iter()
+                        .flat_map(|variant| &variant.fields)
+                        .map(|field| field.ty.clone()),
+                );
+                continue;
+            } else if super::is_concrete_aggregate_type(self.module, &self.checked_facts, &ty) {
+                if let AggregateShapeRef::Record(id) = self.require_aggregate_shape(&ty)? {
+                    pending.extend(
+                        self.aggregate_shapes[id.0 as usize]
+                            .fields
+                            .iter()
+                            .map(|field| field.ty.clone()),
+                    );
+                    // Stored members close storage; phantom arguments add no shape.
+                    continue;
+                }
+            }
+            // Pool arguments describe roles, not independently stored values.
+            if ty.is_builtin(hew_types::BuiltinType::SupervisorPool) {
+                continue;
+            }
+            if super::actor::declaration(self.module, &ty).is_none()
+                && super::supervisor::declaration(self.module, &ty).is_none()
+            {
+                hew_types::push_type_components(&ty, &mut pending);
+            }
+        }
+        // Publish together: recursive graphs are complete only after every
+        // reachable member has succeeded. A failed walk leaves no completion claim.
+        self.completed_shape_closures.extend(seen);
+        Ok(())
     }
 
     /// Intern the exact checker-resolved shape of one concrete aggregate.
@@ -424,15 +497,12 @@ impl<'a> InstanceService<'a> {
     ) -> Result<(), SirLoweringError> {
         let prior_aggregate_count = self.aggregate_shapes.len();
         let prior_variant_count = self.variant_shapes.len();
-        let result = require_signature_shapes(
-            self.module,
-            &mut self.checked_facts,
-            &mut self.aggregate_shapes,
-            &mut self.aggregate_shapes_by_type,
-            &mut self.variant_shapes,
-            &mut self.variant_shapes_by_type,
-            signature,
-        );
+        let result = signature
+            .params
+            .iter()
+            .map(|parameter| &parameter.ty)
+            .chain(std::iter::once(&signature.return_ty))
+            .try_for_each(|ty| self.require_type_facts(ty));
         if result.is_err() {
             self.aggregate_shapes.truncate(prior_aggregate_count);
             self.aggregate_shapes_by_type
@@ -440,6 +510,7 @@ impl<'a> InstanceService<'a> {
             self.variant_shapes.truncate(prior_variant_count);
             self.variant_shapes_by_type
                 .retain(|_, id| usize::try_from(id.0).is_ok_and(|id| id < prior_variant_count));
+            self.completed_shape_closures.clear();
         }
         result
     }

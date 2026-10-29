@@ -2504,7 +2504,7 @@ mod tests {
                     .unwrap();
                 let mut slots = client.slot_table.lock().unwrap();
                 for idx in 0..MAX_CONNS {
-                    if idx != connection as usize {
+                    if idx != usize::try_from(connection).unwrap() {
                         slots.release(idx);
                     }
                 }
@@ -2686,7 +2686,7 @@ mod tests {
         let rt = Arc::new(tokio::runtime::Runtime::new().unwrap());
         let transport = QuicMeshTransport::new(rt);
         let idx = transport.slot_table.lock().unwrap().alloc().unwrap();
-        transport.remove_conn(idx as c_int);
+        transport.remove_conn(c_int::try_from(idx).unwrap());
         assert_ne!(transport.slot_table.lock().unwrap().alloc(), Some(idx));
     }
 

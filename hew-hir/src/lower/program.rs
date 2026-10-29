@@ -44,14 +44,7 @@ pub fn lower_program(
     let selected_builtin_graph_module = program.module_graph.as_ref().and_then(|graph| {
         graph.topo_order.iter().find(|module_id| {
             module_id.dotted() == "std.builtins"
-                && graph.modules.get(*module_id).is_some_and(|module| {
-                    module.source_paths.iter().any(|source| {
-                        hew_types::module_registry::is_canonical_stdlib_module_source(
-                            source,
-                            "std.builtins",
-                        )
-                    })
-                })
+                && type_check_output.canonical_std_modules.contains(*module_id)
         })
     });
     if let Some(root) = ctx.defs.root_module() {
@@ -176,16 +169,10 @@ pub fn lower_program(
             ctx.source_type_identities
                 .extend(identities.iter().cloned());
             // A `std` path segment is not provenance: a user package may use
-            // that spelling.  Only the resolved source selected by the
-            // stdlib search-path authority can grant compiler builtin
+            // that spelling.  Only a module the checker proved canonical
+            // against the compilation's std roots grants compiler builtin
             // identity to declarations in this module.
-            let canonical_std_source = module.source_paths.iter().any(|source| {
-                hew_types::module_registry::is_canonical_stdlib_module_source(
-                    source,
-                    &module_full_path,
-                )
-            });
-            if canonical_std_source {
+            if type_check_output.canonical_std_modules.contains(module_id) {
                 ctx.canonical_std_source_type_identities.extend(identities);
             }
         }

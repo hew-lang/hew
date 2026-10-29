@@ -30,7 +30,11 @@ impl Checker {
                 .modules
                 .get(&hew_parser::module::ModulePath::new(["std", "builtins"]))?;
             let canonical = module.source_paths.iter().any(|source| {
-                crate::module_registry::is_canonical_stdlib_module_source(source, "std.builtins")
+                crate::module_registry::is_canonical_stdlib_module_source(
+                    source,
+                    "std.builtins",
+                    self.module_registry.std_roots(),
+                )
             });
             canonical.then(|| {
                 std::sync::Arc::new(Program {
@@ -289,7 +293,11 @@ impl Checker {
             .module_for_path("std.builtins")
             .is_some_and(|module| {
                 self.defs.module_source(module).is_none_or(|path| {
-                    crate::module_registry::is_canonical_stdlib_module_source(path, "std.builtins")
+                    crate::module_registry::is_canonical_stdlib_module_source(
+                        path,
+                        "std.builtins",
+                        self.module_registry.std_roots(),
+                    )
                 })
             });
         if trusted_owner {

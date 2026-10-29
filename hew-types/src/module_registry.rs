@@ -52,7 +52,9 @@ pub struct ModuleRegistry {
     cache: ModuleParseCache,
     configured: ProgramModuleState,
     active: ProgramModuleState,
-    /// Ordered search paths for module resolution.
+    /// Ordered standard-library roots for module resolution, as the
+    /// compilation was given them. They also decide which module sources are
+    /// the canonical std; see [`Self::std_roots`].
     search_paths: Vec<PathBuf>,
     /// Compiler-owned root that may confer stdlib-only authority.
     ///
@@ -512,25 +514,30 @@ fn stdlib_comparable_path(path: &std::path::Path) -> Option<PathBuf> {
     }
 }
 
-/// Return the canonical stdlib owner for an exact shipped source file.
+/// Return the canonical stdlib owner for an exact shipped source file below
+/// one of `std_roots`, the standard-library roots the compilation was given.
 ///
 /// A peer of a std directory module has the directory module as its owner
 /// (D461); see [`module_membership`].
 #[must_use]
-pub fn canonical_stdlib_module_for_source(source_file: &std::path::Path) -> Option<ModulePath> {
+pub fn canonical_stdlib_module_for_source(
+    source_file: &std::path::Path,
+    std_roots: &[PathBuf],
+) -> Option<ModulePath> {
     let input = stdlib_comparable_path(source_file)?;
-    let roots = stdlib_search_paths()
+    let roots = std_roots
         .iter()
         .filter_map(|root| stdlib_comparable_path(root))
         .collect::<Vec<_>>();
     let anchor = std_anchor_for(&input, &roots)?;
     let membership = module_membership(&anchor, &input, &filesystem_dir_listing);
-    is_canonical_stdlib_module_source(&input, &membership.module.dotted())
+    is_canonical_stdlib_module_source(&input, &membership.module.dotted(), std_roots)
         .then_some(membership.module)
 }
 
 /// Whether `source_file` is the canonical source selected for `dotted_module`
-/// by Hew's stdlib search-path authority.
+/// below one of `std_roots`, the standard-library roots the compilation was
+/// given.
 ///
 /// This compares canonical paths, not filenames or generic arity. It is used
 /// when a shipped stdlib file is compiled directly as a root unit but its
@@ -539,8 +546,9 @@ pub fn canonical_stdlib_module_for_source(source_file: &std::path::Path) -> Opti
 pub fn is_canonical_stdlib_module_source(
     source_file: &std::path::Path,
     dotted_module: &str,
+    std_roots: &[PathBuf],
 ) -> bool {
-    canonical_stdlib_module_source_in_roots(source_file, dotted_module, &stdlib_search_paths())
+    canonical_stdlib_module_source_in_roots(source_file, dotted_module, std_roots)
 }
 
 /// Does this path spell the shipped source of `dotted_module`?
@@ -612,6 +620,7 @@ fn canonical_stdlib_module_source_in_roots(
 pub fn canonical_source_module_identity(
     requested: &ModulePath,
     source_paths: &[PathBuf],
+    std_roots: &[PathBuf],
 ) -> ModulePath {
     // Directory-module peers are alternate physical spellings of the same
     // shipped module.  Resolve their owner from the trusted source path so a
@@ -619,7 +628,7 @@ pub fn canonical_source_module_identity(
     // owner beside the assembled `std.net.http.codec` module.
     source_paths
         .iter()
-        .find_map(|source| canonical_stdlib_module_for_source(source))
+        .find_map(|source| canonical_stdlib_module_for_source(source, std_roots))
         .unwrap_or_else(|| requested.clone())
 }
 
@@ -778,18 +787,28 @@ impl ModuleRegistry {
                 return None;
             }
             let source_paths = info.source_path.iter().cloned().collect::<Vec<_>>();
-            return Some(canonical_source_module_identity(&module_id, &source_paths).dotted());
+            return Some(
+                canonical_source_module_identity(&module_id, &source_paths, &self.search_paths)
+                    .dotted(),
+            );
         }
         self.search_paths.iter().find_map(|search_path| {
-            let info =
-                load_module_with_inputs(&loader_path, search_path, self.input_provider.as_deref())
-                    .ok()
-                    .flatten()?;
+            let info = load_module_with_inputs(
+                &loader_path,
+                search_path,
+                &self.search_paths,
+                self.input_provider.as_deref(),
+            )
+            .ok()
+            .flatten()?;
             if !Self::module_info_declares_nominal(&info, leaf) {
                 return None;
             }
             let source_paths = info.source_path.iter().cloned().collect::<Vec<_>>();
-            Some(canonical_source_module_identity(&module_id, &source_paths).dotted())
+            Some(
+                canonical_source_module_identity(&module_id, &source_paths, &self.search_paths)
+                    .dotted(),
+            )
         })
     }
 
@@ -926,6 +945,14 @@ impl ModuleRegistry {
         !self.search_paths.is_empty()
     }
 
+    /// The standard-library roots this compilation was given: the one
+    /// authority for which module sources are the canonical std. Each root
+    /// holds a `std/` directory.
+    #[must_use]
+    pub fn std_roots(&self) -> &[PathBuf] {
+        &self.search_paths
+    }
+
     /// Whether `source_file` is the exact source for `dotted_module` below the
     /// running compiler's own stdlib root.
     ///
@@ -1027,6 +1054,7 @@ impl ModuleRegistry {
             let Some(info) = load_module_with_inputs(
                 &loader_path,
                 &compiler_root,
+                std::slice::from_ref(&compiler_root),
                 self.input_provider.as_deref(),
             )?
             else {
@@ -1040,7 +1068,11 @@ impl ModuleRegistry {
         };
 
         let source_paths = info.source_path.iter().cloned().collect::<Vec<_>>();
-        let canonical_id = canonical_source_module_identity(&id, &source_paths);
+        let canonical_id = canonical_source_module_identity(
+            &id,
+            &source_paths,
+            std::slice::from_ref(&compiler_root),
+        );
         if !self.module_info_has_stdlib_authority(&canonical_id, &info) {
             return Err(CompilerModuleError::SourceOutsideAuthority {
                 module_path: module_path.to_string(),
@@ -1116,6 +1148,7 @@ impl ModuleRegistry {
                 let Some(info) = load_module_with_inputs(
                     &loader_path,
                     search_path,
+                    &search_paths,
                     self.input_provider.as_deref(),
                 )?
                 else {
@@ -1126,7 +1159,7 @@ impl ModuleRegistry {
                 info
             };
             let source_paths = info.source_path.iter().cloned().collect::<Vec<_>>();
-            let canonical_id = canonical_source_module_identity(&id, &source_paths);
+            let canonical_id = canonical_source_module_identity(&id, &source_paths, &search_paths);
             return Ok(self.activate_module(&canonical_id, info));
         }
 
@@ -1603,31 +1636,76 @@ mod tests {
         assert_eq!(loose.module, ModulePath::new(["greeting"]));
     }
 
+    /// The std roots of the checkout this crate builds from, given
+    /// explicitly as a compilation would give them.
+    fn checkout_std_roots() -> Vec<PathBuf> {
+        vec![PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .expect("hew-types lives below the repository root")
+            .to_path_buf()]
+    }
+
+    /// Canonical std provenance is judged against the std roots the
+    /// compilation was given, never a process-wide lookup: a copied std is
+    /// canonical under its own root, and the checkout's std is not canonical
+    /// under a root that does not hold it.
+    #[test]
+    fn canonical_stdlib_provenance_follows_the_given_roots() {
+        let copy = TestDir::new("module-registry-given-std-root");
+        let copied = copy.root.join("std/string.hew");
+        fs::create_dir_all(copied.parent().expect("copy has a parent")).expect("create std");
+        fs::copy(checkout_std_roots()[0].join("std/string.hew"), &copied).expect("copy std source");
+        let given = vec![copy.root.clone()];
+
+        assert!(is_canonical_stdlib_module_source(
+            &copied,
+            "std.string",
+            &given
+        ));
+        assert_eq!(
+            canonical_stdlib_module_for_source(&copied, &given).map(|module| module.dotted()),
+            Some("std.string".to_string())
+        );
+        let checkout = checkout_std_roots()[0].join("std/string.hew");
+        assert!(!is_canonical_stdlib_module_source(
+            &checkout,
+            "std.string",
+            &given
+        ));
+        assert_eq!(canonical_stdlib_module_for_source(&checkout, &given), None);
+        assert!(!is_canonical_stdlib_module_source(
+            &copied,
+            "std.string",
+            &checkout_std_roots()
+        ));
+    }
+
     #[test]
     fn canonical_stdlib_owner_follows_flat_package_and_peer_layouts() {
-        let stdlib = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../std");
+        let roots = checkout_std_roots();
+        let stdlib = roots[0].join("std");
         assert_eq!(
-            canonical_stdlib_module_for_source(&stdlib.join("string.hew"))
+            canonical_stdlib_module_for_source(&stdlib.join("string.hew"), &roots)
                 .map(|module| module.dotted()),
             Some("std.string".to_string())
         );
         assert_eq!(
-            canonical_stdlib_module_for_source(&stdlib.join("net/http/server.hew"))
+            canonical_stdlib_module_for_source(&stdlib.join("net/http/server.hew"), &roots)
                 .map(|module| module.dotted()),
             Some("std.net.http.server".to_string())
         );
         assert_eq!(
-            canonical_stdlib_module_for_source(&stdlib.join("net/http/client.hew"))
+            canonical_stdlib_module_for_source(&stdlib.join("net/http/client.hew"), &roots)
                 .map(|module| module.dotted()),
             Some("std.net.http.client".to_string())
         );
         assert_eq!(
-            canonical_stdlib_module_for_source(&stdlib.join("net/http/codec/request.hew"))
+            canonical_stdlib_module_for_source(&stdlib.join("net/http/codec/request.hew"), &roots)
                 .map(|module| module.dotted()),
             Some("std.net.http.codec".to_string())
         );
         assert_eq!(
-            canonical_stdlib_module_for_source(&stdlib.join("io/scanner.hew"))
+            canonical_stdlib_module_for_source(&stdlib.join("io/scanner.hew"), &roots)
                 .map(|module| module.dotted()),
             Some("std.io.scanner".to_string())
         );
@@ -1635,18 +1713,21 @@ mod tests {
 
     #[test]
     fn canonical_source_owner_follows_directory_peer_layout() {
-        let stdlib = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../std");
+        let roots = checkout_std_roots();
+        let stdlib = roots[0].join("std");
         assert_eq!(
             canonical_source_module_identity(
                 &ModulePath::new(["std", "net", "http", "codec", "request"]),
-                &[stdlib.join("net/http/codec/request.hew")]
+                &[stdlib.join("net/http/codec/request.hew")],
+                &roots,
             ),
             ModulePath::new(["std", "net", "http", "codec"])
         );
         assert_eq!(
             canonical_source_module_identity(
                 &ModulePath::new(["std", "net", "http", "codec"]),
-                &[stdlib.join("net/http/codec/codec.hew")]
+                &[stdlib.join("net/http/codec/codec.hew")],
+                &roots,
             ),
             ModulePath::new(["std", "net", "http", "codec"])
         );
@@ -1654,7 +1735,8 @@ mod tests {
         assert_eq!(
             canonical_source_module_identity(
                 &ModulePath::new(["std", "net", "http", "codec", "request"]),
-                &[user_lookalike]
+                &[user_lookalike],
+                &roots,
             ),
             ModulePath::new(["std", "net", "http", "codec", "request"]),
             "only a shipped source names a directory module; a user source keeps its own owner"
@@ -1663,13 +1745,17 @@ mod tests {
 
     #[test]
     fn canonical_stdlib_owner_rejects_a_user_lookalike() {
+        let roots = checkout_std_roots();
         let user_dir = TestDir::new("module-registry-user-stdlib-lookalike");
         let user_source = user_dir.root.join("std/string.hew");
         fs::create_dir_all(user_source.parent().expect("lookalike has a parent"))
             .expect("create lookalike directory");
         fs::write(&user_source, "pub fn len() -> i64 { 0 }\n").expect("write lookalike source");
 
-        assert_eq!(canonical_stdlib_module_for_source(&user_source), None);
+        assert_eq!(
+            canonical_stdlib_module_for_source(&user_source, &roots),
+            None
+        );
     }
 
     #[test]
@@ -1715,6 +1801,7 @@ mod tests {
 
     #[test]
     fn a_user_file_spelling_a_shipped_module_path_is_still_refused() {
+        let roots = checkout_std_roots();
         // On a host with a filesystem the compiled-in arm is never reached: an
         // absent file reports `NotFound`, and a user file that spells the same
         // module path canonicalizes to somewhere no search root owns.
@@ -1730,58 +1817,20 @@ mod tests {
         .expect("write lookalike source");
 
         assert!(
-            !is_canonical_stdlib_module_source(&user_source, "std.math"),
+            !is_canonical_stdlib_module_source(&user_source, "std.math", &roots),
             "a user file must not acquire the shipped module's provenance"
         );
-        assert_eq!(canonical_stdlib_module_for_source(&user_source), None);
+        assert_eq!(
+            canonical_stdlib_module_for_source(&user_source, &roots),
+            None
+        );
 
         // The same spelling, with nothing behind it, stays refused too.
         assert!(!is_canonical_stdlib_module_source(
             &user_dir.root.join("std/math/absent.hew"),
-            "std.math"
+            "std.math",
+            &roots,
         ));
-    }
-
-    #[test]
-    fn net_legacy_request_resolves_source_before_consulting_canonical_cache() {
-        let mut reg = registry();
-        reg.load("std.net")
-            .expect("prime the canonical shipped net owner");
-        let shipped = reg
-            .get("std.net")
-            .and_then(|info| info.source_path.clone())
-            .expect("canonical cache entry has a source path");
-
-        let user_dir = TestDir::new("module-registry-user-net-lookalike");
-        let user_net_dir = user_dir.root.join("std/net");
-        fs::create_dir_all(&user_net_dir).expect("create user net module directory");
-        let user_source = user_net_dir.join("net.hew");
-        fs::write(
-            &user_source,
-            "pub type Handle {\n    marker: i64;\n}\n\npub type Endpoint {\n    marker: i64;\n}\n",
-        )
-        .expect("write user net lookalike");
-
-        // Model a new importer resolution context while preserving the cache.
-        // The legacy request must resolve this source before deciding whether
-        // its repeated basename denotes the canonical shipped owner.
-        reg.search_paths = vec![user_dir.root.clone()];
-        let loaded = reg
-            .load("std.net.net")
-            .expect("load the user lookalike through the legacy spelling");
-        assert_eq!(loaded.source_path.as_deref(), Some(user_source.as_path()));
-        assert_eq!(
-            reg.get("std.net.net")
-                .and_then(|info| info.source_path.as_deref()),
-            Some(user_source.as_path()),
-            "the user source keeps the nested nominal owner"
-        );
-        assert_eq!(
-            reg.get("std.net")
-                .and_then(|info| info.source_path.as_deref()),
-            Some(shipped.as_path()),
-            "resolving a lookalike must not replace the proven shipped owner"
-        );
     }
 
     fn test_root() -> PathBuf {

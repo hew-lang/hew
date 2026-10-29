@@ -219,7 +219,11 @@ impl Checker {
         source_paths: &[std::path::PathBuf],
     ) {
         if source_paths.iter().any(|source| {
-            crate::module_registry::is_canonical_stdlib_module_source(source, module_name)
+            crate::module_registry::is_canonical_stdlib_module_source(
+                source,
+                module_name,
+                self.module_registry.std_roots(),
+            )
         }) {
             self.canonical_std_module_sources
                 .insert(module_name.to_string());
@@ -227,23 +231,15 @@ impl Checker {
     }
 
     /// The isolated-checker prelude is compiled from the shipped lifecycle
-    /// sources. Preserve its intentionally import-free bare spellings, but
-    /// make that trust explicit with the same canonical-source proof used for
-    /// ordinary imports.
+    /// sources. Preserve its intentionally import-free bare spellings, and
+    /// make that trust explicit: the text is compiled into the checker, so no
+    /// path or std root can supply it.
     pub(super) fn record_canonical_lifecycle_prelude_authority(&mut self, module_name: &str) {
         let owner = match module_name {
             "std.failure" => "std.failure",
             "std.link_monitor" => "std.link_monitor",
             _ => return,
         };
-        let source = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .parent()
-            .expect("hew-types crate has a workspace parent")
-            .join("std")
-            .join(format!("{}.hew", owner.rsplit('.').next().unwrap_or(owner)));
-        if !crate::module_registry::is_canonical_stdlib_module_source(&source, module_name) {
-            return;
-        }
         let lifecycle_names: &[&str] = match owner {
             "std.failure" => &[
                 "CrashInfo",

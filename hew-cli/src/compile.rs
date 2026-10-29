@@ -567,7 +567,7 @@ fn main() {
             locked_versions: None,
             package_name: None,
             project_dir: &fixture.path,
-            module_search_paths: None,
+            std_roots: &hew_types::module_registry::stdlib_search_paths(),
             documents: &documents,
         };
 
@@ -657,7 +657,7 @@ fn main() {
             locked_versions: None,
             package_name: None,
             project_dir: &fixture.path,
-            module_search_paths: None,
+            std_roots: &hew_types::module_registry::stdlib_search_paths(),
             documents: &documents,
         };
 
@@ -715,7 +715,7 @@ fn main() {
             locked_versions: None,
             package_name: None,
             project_dir: &fixture.path,
-            module_search_paths: None,
+            std_roots: &hew_types::module_registry::stdlib_search_paths(),
             documents: &documents,
         };
         let module_graph = build_module_graph(
@@ -823,7 +823,7 @@ fn main() {
             locked_versions: None,
             package_name: None,
             project_dir: &fixture.path,
-            module_search_paths: None,
+            std_roots: &hew_types::module_registry::stdlib_search_paths(),
             documents: &documents,
         };
         let module_graph = build_module_graph(
@@ -883,7 +883,7 @@ fn main() {
             locked_versions: None,
             package_name: None,
             project_dir: &fixture.path,
-            module_search_paths: None,
+            std_roots: &hew_types::module_registry::stdlib_search_paths(),
             documents: &documents,
         };
         let module_graph = build_module_graph(

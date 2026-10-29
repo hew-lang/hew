@@ -1600,6 +1600,17 @@ jobs:
           REGISTRY: https://registry.npmjs.org
         run: python3 scripts/release-channel.py npm
 
+  # dist.hewpkg.com — apt, dnf, zypper and pacman repositories, signed. Finals only.
+  publish-dist:
+    needs: [validate, github-release]
+    if: ${{ !cancelled() && needs.validate.outputs.publish == 'true' && needs.validate.outputs.prerelease == 'false' && github.ref_type == 'tag' && needs.github-release.result == 'success' }}
+    permissions:
+      contents: read
+      id-token: write # the called workflow requests the OIDC token
+    uses: ./.github/workflows/publish-dist.yml
+    with:
+      tag: ${{ needs.validate.outputs.tag }}
+
   publish-github-packages:
     needs: [validate, github-release]
     if: ${{ !cancelled() && needs.validate.outputs.publish == 'true' && github.ref_type == 'tag' && needs.github-release.result == 'success' }}

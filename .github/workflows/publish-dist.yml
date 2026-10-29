@@ -1,0 +1,68 @@
+# Publish a final release's .deb, .rpm and Arch packages to https://dist.hewpkg.com (apt, dnf, zypper, pacman).
+#
+# No secret and no package-repository install: GitHub's OIDC token is the credential (dist.hewpkg.com accepts it
+# only from hew-lang/hew on a tag), and .github/scripts/apt-push is the client. Prereleases carry no distro
+# packages, so they are skipped. Run it by hand to republish a tag:
+#   gh workflow run publish-dist.yml -f tag=v0.9.3
+name: publish-dist
+
+on:
+  workflow_call:
+    inputs:
+      tag:
+        type: string
+        required: true
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Release tag to publish (for example v0.9.3)
+        type: string
+        required: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: publish-dist-${{ inputs.tag }}
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    name: Publish to dist.hewpkg.com
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      id-token: write # apt-push requests the OIDC token
+    env:
+      TAG: ${{ inputs.tag }}
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+    steps:
+      - name: Checkout apt-push
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          sparse-checkout: .github/scripts
+
+      - name: Download the release's distro packages
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "${TAG}" == *-* ]]; then
+            echo "::notice::${TAG} is a prerelease; distro packages ship with final releases"
+            echo "SKIP=1" >>"${GITHUB_ENV}"
+            exit 0
+          fi
+          mkdir pkgs
+          gh release download "${TAG}" --dir pkgs \
+            --pattern '*.deb' --pattern '*.rpm' --pattern '*.pkg.tar.zst'
+          rm -f pkgs/*.src.rpm
+          ls -l pkgs
+
+      - name: Install the Arch package reader
+        if: env.SKIP != '1'
+        run: sudo apt-get install -y -qq libarchive-tools # bsdtar reads .pkg.tar.zst
+
+      - name: Publish to stable
+        if: env.SKIP != '1'
+        run: ./.github/scripts/apt-push --repo hewpkg --suite stable pkgs/*

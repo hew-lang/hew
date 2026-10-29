@@ -67,9 +67,12 @@ pub use lints::{walk_block, walk_expr, NodeVisitor};
 mod race;
 mod task_lifetimes;
 pub use self::lints::{directive_suppresses, LintId, LintLevel, LintLevels, LintSources};
+mod machine_control;
 mod machine_effects;
 mod machine_hierarchy;
 mod machine_normalize;
+#[cfg(feature = "verify-machines")]
+pub use machine_normalize::machine_verification_statistics;
 pub use machine_normalize::{
     normalize as normalize_machine_declarations, NormalizedProgram, SourceSpanOrigins,
 };

@@ -541,6 +541,7 @@ pub mod coro_exec;
 pub mod coro_state;
 
 pub mod coro_sleep;
+mod timer_deadline;
 
 pub mod coro_root;
 pub mod generator_checked;
@@ -561,6 +562,7 @@ pub mod vecdeque;
 
 pub mod bytes;
 mod channel_common;
+mod channel_envelope;
 pub mod duration;
 pub mod machine_emit;
 /// Process-wide monotonic clock epoch shared by every subsystem that reports
@@ -692,6 +694,7 @@ pub mod blocking_pool;
 /// The single-thread process driver: always on wasm32, selected natively by
 /// `HEW_DETERMINISTIC` for deterministic runs.
 pub mod driver;
+mod runtime_sync;
 pub mod task_scope;
 pub mod timer_actor;
 pub mod timer_periodic;
@@ -755,6 +758,8 @@ pub mod process;
 /// not compiled).
 #[cfg(not(target_arch = "wasm32"))]
 pub mod reactor;
+#[cfg(not(target_arch = "wasm32"))]
+mod reactor_wait;
 pub mod registry;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod routing;

@@ -1,0 +1,173 @@
+// The same program runs with real workers and the deterministic process driver.
+extern "C" {
+    fn hew_test_driver_active() -> bool;
+    fn hew_test_seed() -> u64;
+}
+
+fn cross_pending_deadlines() {
+    if unsafe {
+        hew_test_driver_active()
+    } {
+        sleep(2h);
+    }
+}
+
+actor Audit {
+    var next_id: i64 = 1;
+    var deliveries: Vec<i64> = [];
+
+    receive fn issue(kind: i64, case_id: i64, owner: i64) -> i64 {
+        let id = next_id;
+        next_id += 1;
+        println(f"I {id} {kind} {case_id} {owner}");
+        id
+    }
+    receive fn started(id: i64, owner: i64, case_id: i64) {
+        deliveries.push(case_id);
+        println(f"S {id} {owner}");
+    }
+    receive fn delivered(case_id: i64) -> bool {
+        for i in 0..deliveries.len() {
+            if deliveries[i] == case_id {
+                return true;
+            }
+        }
+        false
+    }
+    receive fn closed(id: i64, owner: i64) {
+        println(f"C {id} {owner}");
+    }
+    receive fn fault(owner: i64, case_id: i64, kind: i64) {
+        println(f"F {owner} {case_id} {kind}");
+    }
+    receive fn retired(case_id: i64) {
+        println(f"Q {case_id}");
+    }
+    receive fn finish() {
+        println("END");
+    }
+}
+
+#[resource]
+type Ticket {
+    audit: Audit;
+    id: i64;
+    owner: i64;
+}
+
+impl Ticket {
+    fn close(consume self) {
+        // Resource retirement itself suspends and resumes through the scheduler.
+        sleep(1ms);
+        self.audit.closed(self.id, self.owner).expect("record retirement");
+    }
+}
+
+actor Worker {
+    mailbox 1 overflow fail;
+    let audit: Audit;
+    let case_id: i64;
+    let mode: i64;
+    let lease: Ticket;
+
+    init() {
+        let id = audit.issue(0, case_id, -1).expect("issue incarnation lease");
+        lease = Ticket { audit: audit, id: id, owner: id };
+    }
+
+    receive fn identity() -> i64 {
+        lease.id
+    }
+
+    receive fn run() {
+        let id = audit.issue(1, case_id, lease.id).expect("issue operation");
+        let ticket = Ticket { audit: audit, id: id, owner: lease.id };
+        if mode == 0 {
+            let timer = mailbox(self, after: 1h).tick(ticket);
+            timer.cancel();
+            cross_pending_deadlines();
+        } else if mode == 1 {
+            let _ = mailbox(self, after: 0ms).tick(ticket);
+        } else if mode == 2 {
+            let timer = mailbox(self, after: 0ms, overdue: 1h).tick(ticket);
+            sleep(2ms);
+            timer.cancel();
+            cross_pending_deadlines();
+        } else if mode == 3 {
+            let _ = mailbox(self, after: 1h).tick(ticket);
+        } else if mode == 4 {
+            let _ = mailbox(self, after: 1h).tick(ticket);
+            panic("pipeline requested crash");
+        } else if mode == 5 {
+            let _ = mailbox(self, after: 0ms, overdue: 2ms).tick(ticket);
+            loop {}
+        } else {
+            mailbox(self, on_full: .Reject).filler().expect("occupy mailbox");
+            if mode == 6 {
+                let _ = mailbox(self, after: 0ms, overdue: 1h, on_full: .Reject).tick(ticket);
+            } else {
+                let _ = mailbox(self, after: 0ms, overdue: 1h, on_full: .DropNewest).tick(ticket);
+            }
+            loop {}
+        }
+    }
+
+    receive fn filler() {}
+    receive fn tick(ticket: Ticket) {
+        assert(ticket.owner == lease.id);
+        audit.started(ticket.id, lease.id, case_id).expect("record handler start");
+    }
+
+    #[on(crash)]
+    fn crashed(info: CrashInfo) -> CrashAction {
+        let kind = match info.kind {
+            .TimerOverdue => 1,
+            .Fault => 0,
+            _ => 2,
+        };
+        audit.fault(lease.id, case_id, kind).expect("record fault");
+        CrashAction.Restart
+    }
+}
+
+supervisor App(audit: Audit, case_id: i64, mode: i64) {
+    strategy: one_for_one;
+    intensity: 4 within 60s;
+    child worker: Worker { audit: audit, case_id: case_id, mode: mode };
+}
+
+fn main() {
+    let audit = spawn Audit;
+    let shift = (unsafe {
+        hew_test_seed()
+    } % 8) as i64;
+    for round in 0..4 {
+        for offset in 0..8 {
+            let mode = (offset + shift + round) % 8;
+            let case_id = round * 8 + mode;
+            let app = spawn App { audit: audit, case_id: case_id, mode: mode };
+            let original = app.worker.identity().expect("original incarnation");
+            let outcome = app.worker.run();
+            if mode >= 4 {
+                assert(outcome.is_err());
+                restarted(app.worker);
+                assert(app.worker.identity().expect("replacement incarnation") != original);
+                cross_pending_deadlines();
+            } else {
+                outcome.expect("schedule operation");
+                if mode == 1 || mode == 2 {
+                    while !audit.delivered(case_id).expect("delivery status") {
+                        sleep(1ms);
+                    }
+                }
+            }
+            stop(app);
+            stopped(app);
+            cross_pending_deadlines();
+            audit.retired(case_id).expect("record completed scenario");
+        }
+    }
+    audit.finish().expect("finish trace");
+    stop(audit);
+    stopped(audit);
+}

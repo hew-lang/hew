@@ -4,10 +4,8 @@
 use crate::cancel_token::{
     hew_cancel_token_new_child, hew_cancel_token_release, HewCancellationToken,
 };
-use crate::cont::{hew_cont_destroy, hew_cont_done, hew_cont_resume};
 use crate::coro_state::{
-    hew_coro_state_free, hew_coro_state_new, hew_coro_state_private_status, hew_coro_state_status,
-    CoroStatus, HewCoroState,
+    hew_coro_state_free, hew_coro_state_new, hew_coro_state_status, CoroStatus, HewCoroState,
 };
 use crate::execution_context::{current_context, set_current_context, HewExecutionContext};
 use crate::fault::HewFault;
@@ -15,6 +13,9 @@ use crate::wake::blocking::Readiness;
 use crate::wake::HewWaker;
 use std::cell::Cell;
 use std::ffi::c_void;
+
+mod poll;
+pub(crate) use poll::poll_root;
 
 thread_local! {
     /// The context of the root task this thread is driving, or null.
@@ -201,51 +202,6 @@ unsafe fn drive_root(
         readiness.wait();
         ready = true;
     }
-}
-
-/// Poll the existing root frame after consuming readiness. Terminal cleanup and
-/// frame destruction are shared by blocking and asynchronous hosting drivers.
-/// # Safety
-/// The driver exclusively owns `frame` and `state`, has installed their root
-/// execution context, and keeps all typed input/output storage live.
-pub(crate) unsafe fn poll_root(
-    frame: &mut *mut c_void,
-    state: *mut HewCoroState,
-    ready: bool,
-) -> Option<i32> {
-    // SAFETY: the owning driver retains its live invocation state.
-    if unsafe { hew_coro_state_status(state) } == CoroStatus::Pending as i32 {
-        // SAFETY: a non-null frame is still owned by this invocation.
-        if frame.is_null() || unsafe { hew_cont_done(*frame) } {
-            // A generated body must publish its outcome before final suspend.
-            std::process::abort();
-        }
-        if !ready {
-            return None;
-        }
-        // SAFETY: frame is live, suspended and exclusively driven here.
-        unsafe { hew_cont_resume(*frame) };
-        // SAFETY: a pending invocation retains its suspended frame and state.
-        if unsafe { hew_coro_state_status(state) } == CoroStatus::Pending as i32 {
-            return None;
-        }
-    }
-    // SAFETY: the state remains owned until after frame destruction below.
-    if unsafe { hew_coro_state_status(state) } == CoroStatus::Yielded as i32 {
-        // A process root is not a generator consumer.
-        std::process::abort();
-    }
-    if !frame.is_null() {
-        // SAFETY: the live frame is exclusively owned, including when complete.
-        if !unsafe { hew_cont_done(*frame) } {
-            std::process::abort();
-        }
-        // SAFETY: final-suspended frame has discharged its typed cleanup.
-        unsafe { hew_cont_destroy(*frame) };
-        *frame = std::ptr::null_mut();
-    }
-    // SAFETY: completion was observed above and the state is still owned here.
-    Some(unsafe { hew_coro_state_private_status(state) })
 }
 
 /// Drive an erased callable at an explicit synchronous hosting boundary.

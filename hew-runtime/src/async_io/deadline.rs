@@ -8,7 +8,7 @@ use std::time::Duration;
 
 use super::{HewAsyncIo, IoFailure};
 use crate::timer_wheel::{
-    hew_timer_wheel_remove, timer_wheel_schedule_at_handle, HewTimerHandle, HewTimerWheel,
+    hew_timer_wheel_remove, timer_wheel_schedule_precise_handle, HewTimerHandle, HewTimerWheel,
 };
 use crate::util::MutexExt;
 
@@ -59,11 +59,23 @@ impl HewAsyncIo {
     /// Complete with `failure` after `duration` unless the operation finishes
     /// first. Replaces any earlier deadline; completion removes it.
     pub(super) fn set_deadline(self: &Arc<Self>, duration: Duration, failure: fn() -> IoFailure) {
+        let wheel = crate::timer_periodic::global_wheel();
+        // SAFETY: the process monotonic clock has no preconditions.
+        let now_ns = u64::try_from(unsafe { crate::clock::hew_instant_now() }).unwrap_or(0);
+        self.set_deadline_on_wheel(duration, failure, now_ns, wheel);
+    }
+
+    fn set_deadline_on_wheel(
+        self: &Arc<Self>,
+        duration: Duration,
+        failure: fn() -> IoFailure,
+        now_ns: u64,
+        wheel: *mut HewTimerWheel,
+    ) {
         if duration.is_zero() {
             self.complete(Err(failure()));
             return;
         }
-        let wheel = crate::timer_periodic::global_wheel();
         if wheel.is_null() {
             self.complete(Err(IoFailure::invalid("I/O timer is unavailable")));
             return;
@@ -78,16 +90,18 @@ impl HewAsyncIo {
             operation: Arc::downgrade(self),
             failure,
         }));
-        let delay = u64::try_from(duration.as_millis())
-            .unwrap_or(u64::MAX)
-            .max(1);
-        // Anchor to the clock, not the wheel cursor, which rests at its last
-        // tick while the reactor sleeps; a delay from it would fire early.
-        // SAFETY: hew_now_ms has no preconditions on native targets.
-        let deadline_ms = unsafe { crate::clock::hew_now_ms() }.saturating_add(delay);
+        // Preserve both the start clock and the duration exactly.
+        let Some(absolute) = crate::timer_deadline::after(now_ns, duration) else {
+            // SAFETY: registration has not accepted this callback payload.
+            drop(unsafe { Box::from_raw(payload) });
+            drop(deadline);
+            self.complete(Err(IoFailure::invalid("I/O deadline exceeds timer range")));
+            return;
+        };
         // SAFETY: wheel is live and the callback receives one owned payload.
-        let timer =
-            unsafe { timer_wheel_schedule_at_handle(wheel, deadline_ms, expired, payload.cast()) };
+        let timer = unsafe {
+            timer_wheel_schedule_precise_handle(wheel, absolute, expired, payload.cast())
+        };
         if timer.entry.is_null() {
             // SAFETY: failed registration did not accept the payload.
             drop(unsafe { Box::from_raw(payload) });
@@ -107,5 +121,143 @@ impl HewAsyncIo {
     pub(super) fn clear_deadline(&self) {
         let deadline = self.deadline.lock_or_recover().take();
         drop(deadline);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::async_io::AsyncIoStatus;
+    use crate::timer_wheel::{
+        hew_timer_wheel_free, hew_timer_wheel_new, timer_wheel_cursor_ms, timer_wheel_tick_to,
+    };
+    use crate::wake::blocking::Readiness;
+
+    fn timeout() -> IoFailure {
+        timed_out("deadline probe")
+    }
+
+    #[test]
+    fn io_deadline_never_rounds_a_fractional_start_down() {
+        let _runtime = crate::runtime_test_guard();
+        let (ready, waker) = Readiness::new();
+        // SAFETY: this fixture owns its operation and wheel until cleanup.
+        for (offset, duration, _early, _final_tick) in [
+            (900_000, 1_000_000, 1, 2),
+            (0, 1_500_000, 1, 2),
+            (999_999, 2, 1, 2),
+            (0, 1, 0, 1),
+        ] {
+            // SAFETY: this iteration owns the operation, wheel and retained waker.
+            unsafe {
+                let wheel = hew_timer_wheel_new();
+                let base = timer_wheel_cursor_ms(wheel);
+                let operation = HewAsyncIo::new(waker.descriptor());
+                operation.set_deadline_on_wheel(
+                    Duration::from_nanos(duration),
+                    timeout,
+                    base * 1_000_000 + offset,
+                    wheel,
+                );
+                let expiry = base * 1_000_000 + offset + duration;
+                crate::timer_wheel::timer_wheel_tick_at(
+                    wheel,
+                    crate::timer_deadline::Deadline::from_nanos(expiry - 1),
+                );
+                let early_status = operation.state.lock_or_recover().status();
+                let early_wake = ready.take_ready();
+                crate::timer_wheel::timer_wheel_tick_at(
+                    wheel,
+                    crate::timer_deadline::Deadline::from_nanos(expiry),
+                );
+                let final_status = operation.state.lock_or_recover().status();
+                drop(operation);
+                hew_timer_wheel_free(wheel);
+                assert_eq!(early_status, AsyncIoStatus::Pending);
+                assert_eq!(final_status, AsyncIoStatus::Error);
+                assert!(!early_wake);
+                assert!(ready.take_ready());
+            }
+        }
+    }
+
+    #[test]
+    fn replacement_removes_old_deadline_and_preserves_fractional_start() {
+        let _runtime = crate::runtime_test_guard();
+        let (ready, waker) = Readiness::new();
+        // SAFETY: the fixture owns its operation and wheel through removal.
+        unsafe {
+            let wheel = hew_timer_wheel_new();
+            let base = timer_wheel_cursor_ms(wheel);
+            let now = base * 1_000_000 + 900_000;
+            let operation = HewAsyncIo::new(waker.descriptor());
+            operation.set_deadline_on_wheel(Duration::from_millis(1), timeout, now, wheel);
+            operation.set_deadline_on_wheel(Duration::from_millis(3), timeout, now, wheel);
+            for tick in [base + 2, base + 3] {
+                timer_wheel_tick_to(wheel, tick);
+                assert_eq!(
+                    operation.state.lock_or_recover().status(),
+                    AsyncIoStatus::Pending
+                );
+                assert!(!ready.take_ready());
+            }
+            timer_wheel_tick_to(wheel, base + 4);
+            assert_eq!(
+                operation.state.lock_or_recover().status(),
+                AsyncIoStatus::Error
+            );
+            assert!(ready.take_ready());
+            assert!(!operation.has_deadline());
+            drop(operation);
+            hew_timer_wheel_free(wheel);
+        }
+    }
+
+    #[test]
+    fn zero_duration_completes_and_retires_existing_deadline() {
+        let _runtime = crate::runtime_test_guard();
+        let (ready, waker) = Readiness::new();
+        // SAFETY: the fixture owns its operation and wheel through removal.
+        unsafe {
+            let wheel = hew_timer_wheel_new();
+            let base = timer_wheel_cursor_ms(wheel);
+            let operation = HewAsyncIo::new(waker.descriptor());
+            operation.set_deadline_on_wheel(
+                Duration::from_millis(1),
+                timeout,
+                base * 1_000_000,
+                wheel,
+            );
+            operation.set_deadline_on_wheel(Duration::ZERO, timeout, base * 1_000_000, wheel);
+            assert_eq!(
+                operation.state.lock_or_recover().status(),
+                AsyncIoStatus::Error
+            );
+            assert!(ready.take_ready());
+            assert!(!operation.has_deadline());
+            timer_wheel_tick_to(wheel, base + 2);
+            assert!(!ready.take_ready());
+            drop(operation);
+            hew_timer_wheel_free(wheel);
+        }
+    }
+
+    #[test]
+    fn unrepresentable_deadline_is_rejected_without_registering_a_timer() {
+        let _runtime = crate::runtime_test_guard();
+        let (ready, waker) = Readiness::new();
+        // SAFETY: the fixture owns its operation and wheel through removal.
+        unsafe {
+            let wheel = hew_timer_wheel_new();
+            let operation = HewAsyncIo::new(waker.descriptor());
+            operation.set_deadline_on_wheel(Duration::MAX, timeout, 0, wheel);
+            assert!(
+                matches!(&*operation.state.lock_or_recover(), super::super::State::Ready(Err(error)) if error.message.contains("exceeds timer range"))
+            );
+            assert!(ready.take_ready());
+            assert!(!operation.has_deadline());
+            drop(operation);
+            hew_timer_wheel_free(wheel);
+        }
     }
 }

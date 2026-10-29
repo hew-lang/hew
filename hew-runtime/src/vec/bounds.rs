@@ -49,3 +49,7 @@ mod tests {
         );
     }
 }
+
+#[cfg(all(kani, hew_protocol_host))]
+#[path = "../../../proofs/runtime_protocols/src/vector_bounds.rs"]
+mod formal;

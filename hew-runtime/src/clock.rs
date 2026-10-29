@@ -69,7 +69,7 @@ pub unsafe extern "C" fn hew_sleep_ns(ns: i64) {
 ///
 /// Computes remaining = `instant_ns - now`; if positive, sleeps that duration.
 /// Called by the blocking (free-fn) path. Suspending actor callers are
-/// intercepted at MIR lowering and arm the timer wheel for the remaining ms.
+/// intercepted at MIR lowering and arm the timer wheel at the absolute nanosecond deadline.
 ///
 /// # Safety
 ///

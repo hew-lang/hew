@@ -1,0 +1,26 @@
+import std.stream;
+
+fn payload(text: string) -> Vec<string> {
+    var values: Vec<string> = Vec.new();
+    values.push(text.to_upper());
+    values
+}
+
+fn main() {
+    let (output, input): (stream.Sink<Vec<string>>, stream.Stream<Vec<string>>) = stream.pipe(1).expect("pipe");
+    output.send(payload("first")).expect("initial capacity");
+    for _ in 0 .. 8 {
+        let outcome = scope within 1ms {
+            output.send(payload("cancelled")).expect("send");
+            "sent"
+        } handle _ { "cancelled" };
+        assert(outcome == "cancelled");
+    }
+    let first = input.recv().expect("committed message survives cancellation");
+    println(first.get(0).expect("first payload"));
+    output.send(payload("successor")).expect("capacity recovered");
+    let successor = input.recv().expect("successor delivered");
+    println(successor.get(0).expect("successor payload"));
+    output.close();
+    assert(input.recv().is_none());
+}

@@ -1,0 +1,30 @@
+actor FineTicker {
+    var ticks: i64 = 0;
+    #[every(250us)]
+    receive fn tick() { ticks += 1; }
+    receive fn count() -> i64 { ticks }
+}
+actor FractionalTicker {
+    var ticks: i64 = 0;
+    #[every(1500us)]
+    receive fn tick() { ticks += 1; }
+    receive fn count() -> i64 { ticks }
+}
+fn main() {
+    let fine = spawn FineTicker;
+    let fractional = spawn FractionalTicker;
+    var ready = false;
+    for i in 0 .. 1000 {
+        if fine.count().expect("fine timer") >= 3 && fractional.count().expect("fractional timer") >= 3 {
+            ready = true;
+            break;
+        }
+        sleep_until(instant.now() + 100us);
+    }
+    assert(ready);
+    stop(fine);
+    stopped(fine);
+    stop(fractional);
+    stopped(fractional);
+    println("nanosecond timer deadlines");
+}

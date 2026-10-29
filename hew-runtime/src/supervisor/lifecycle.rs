@@ -378,9 +378,7 @@ pub unsafe extern "C" fn hew_supervisor_new(
             child_supervisor_specs: Vec::new(),
             retiring_children: Vec::new(),
             pending_group_restart: None,
-            restart_times: [0u64; MAX_RESTARTS_TRACK],
-            restart_count: 0,
-            restart_head: 0,
+            restart_times: restart_history::RestartHistory::default(),
             pool_slots: Vec::new(),
             pool_specs: Vec::new(),
             config_buf: ptr::null_mut(),
@@ -4102,6 +4100,65 @@ mod tests {
     /// A tripped circuit breaker declines the restart the same way. Without the
     /// spent mark the slot would read `Transient(CircuitOpen)` for the whole
     /// cooldown even though nothing will refill it.
+    #[test]
+    fn circuit_breaker_threshold_above_eight_opens_at_configured_count() {
+        let _rt = crate::runtime_test_guard();
+        // SAFETY: this fixture owns its supervisor and records policy events
+        // directly under the roster lock, without starting scheduler workers.
+        unsafe {
+            let (sup, _child, _self_actor) = make_supervisor_with_child();
+            assert_eq!(hew_supervisor_set_circuit_breaker(sup, 0, 9, 60, 5), 0);
+            let mut states = Vec::new();
+            {
+                let mut roster = locked_roster!(sup);
+                for _ in 0..9 {
+                    circuit_breaker_record_crash(&mut roster.child_specs[0], 1, 0);
+                    states.push(roster.child_specs[0].circuit_breaker.state);
+                }
+            }
+            hew_supervisor_stop(sup);
+            assert_eq!(&states[..8], &[0; 8]);
+            assert_eq!(states[8], 1, "ninth crash must open threshold-nine breaker");
+        }
+    }
+
+    #[test]
+    fn circuit_breaker_reconfiguration_resets_decision_history_only() {
+        let _rt = crate::runtime_test_guard();
+        // SAFETY: this fixture exclusively owns its supervisor and child.
+        unsafe {
+            let (sup, _child, _self_actor) = make_supervisor_with_child();
+            assert_eq!(hew_supervisor_set_circuit_breaker(sup, 0, 2, 60, 5), 0);
+            {
+                let mut roster = locked_roster!(sup);
+                circuit_breaker_record_crash(&mut roster.child_specs[0], 1, 0);
+                assert_eq!(roster.child_specs[0].circuit_breaker.crash_times.len(), 1);
+            }
+            assert_eq!(hew_supervisor_set_circuit_breaker(sup, 0, 3, 60, 5), 0);
+            {
+                let mut roster = locked_roster!(sup);
+                let spec = &mut roster.child_specs[0];
+                assert!(spec.circuit_breaker.crash_times.is_empty());
+                circuit_breaker_record_crash(spec, 1, 0);
+                assert_eq!((*spec.circuit_breaker.crash_stats).total_crashes, 2);
+            }
+            assert_eq!(hew_supervisor_set_circuit_breaker(sup, 0, 3, 60, 8), 0);
+            assert_eq!(
+                locked_roster!(sup).child_specs[0]
+                    .circuit_breaker
+                    .crash_times
+                    .len(),
+                1
+            );
+            assert_eq!(hew_supervisor_set_circuit_breaker(sup, 0, 3, 10, 8), 0);
+            assert!(locked_roster!(sup).child_specs[0]
+                .circuit_breaker
+                .crash_times
+                .is_empty());
+            hew_supervisor_stop(sup);
+        }
+    }
+
     #[test]
     fn breaker_declined_child_slot_classifies_dead_budget_exhausted() {
         let _rt = crate::runtime_test_guard();

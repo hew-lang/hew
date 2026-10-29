@@ -1,0 +1,14 @@
+Linux 6.18.55 x86_64 GNU/Linux
+rustc 1.96.0 (ac68faa20 2026-05-25)
+baseline_revision=ea3d0604d183f52e0a13bc540edf917ff5252778
+cpu_quota=400000 100000
+latency_samples_per_delay=300
+throughput_batches=25
+background_load_threads=4
+timestamp=2026-10-28
+4819e38fad2a3f86cbb180e18654cbf3efee98088191a3d12e13303dc15ac5fd  hew-runtime/src/timer_wheel.rs
+4d31d323c71074df32b4acb5649570ad75ec2b00ee6328972ff8ef8895f1bf89  hew-runtime/src/timer_entry.rs
+faf6d208ed346533a63e774de03f6febcfcf94fba89f51d5e5ff5498dadb8fcf  hew-runtime/src/timer_deadline.rs
+a71f411f33109d5297003ba740da95f61b315c186e377edd280000977ef386ca  hew-runtime/src/io_time.rs
+d96e53edde6302cdeae8f30e561bd52936a927a97c7a0ab1ec6aaf7369da4591  hew-runtime/src/reactor.rs
+750cfcddcc0ab1a060405c21904560c9851e2c049a3df7f6b7dce7ddadf8bbbb  tools/timer-profile/src/main.rs

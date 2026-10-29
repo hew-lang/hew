@@ -706,7 +706,7 @@ pub unsafe extern "C" fn hew_actor_spawn_opts_adopt(
 #[derive(Debug, Clone, Copy)]
 pub struct HewNativePeriodicHandler {
     pub message: i32,
-    pub interval_ms: u64,
+    pub interval_ns: u64,
 }
 
 /// Reserve actor identity and cleanup before init and start run.

@@ -192,17 +192,66 @@ mod platform {
 
         /// Wait up to `timeout_ms` (negative: no limit) and append readiness
         /// reports. A wake is drained here and reports nothing.
-        pub(crate) fn wait(&self, timeout_ms: c_int, out: &mut Vec<Event>) -> io::Result<()> {
+        pub(crate) fn wait_for(
+            &self,
+            timeout: Option<std::time::Duration>,
+            out: &mut Vec<Event>,
+        ) -> io::Result<()> {
+            static HIGH_RESOLUTION: std::sync::atomic::AtomicBool =
+                std::sync::atomic::AtomicBool::new(true);
             let mut events = [libc::epoll_event { events: 0, u64: 0 }; MAX_EVENTS];
-            // SAFETY: the buffer holds MAX_EVENTS entries.
-            let count = check(unsafe {
-                libc::epoll_wait(
-                    self.epfd,
-                    events.as_mut_ptr(),
-                    MAX_EVENTS as c_int,
-                    timeout_ms,
-                )
-            })?;
+            // Old kernels retain the rounded-up millisecond fallback. Never
+            // spin for a fractional deadline or request a shorter timeout.
+            let mut count = -1;
+            if HIGH_RESOLUTION.load(std::sync::atomic::Ordering::Relaxed) {
+                // epoll_pwait2's raw syscall expects __kernel_timespec (64-bit
+                // members even on 32-bit Linux) and a kernel sigset size.
+                #[repr(C)]
+                struct KernelTimespec {
+                    seconds: i64,
+                    nanos: i64,
+                }
+                let spec = timeout.map(|duration| KernelTimespec {
+                    seconds: i64::try_from(duration.as_secs()).unwrap_or(i64::MAX),
+                    nanos: i64::from(duration.subsec_nanos()),
+                });
+                let spec_ptr = spec.as_ref().map_or(std::ptr::null(), std::ptr::from_ref);
+                // SAFETY: buffer and optional timespec live through the syscall;
+                // null sigmask leaves the thread's signal mask unchanged.
+                count = unsafe {
+                    libc::syscall(
+                        libc::SYS_epoll_pwait2,
+                        self.epfd,
+                        events.as_mut_ptr(),
+                        MAX_EVENTS as c_int,
+                        spec_ptr,
+                        std::ptr::null::<libc::sigset_t>(),
+                        8,
+                    )
+                } as c_int;
+                if count < 0 && io::Error::last_os_error().raw_os_error() == Some(libc::ENOSYS) {
+                    HIGH_RESOLUTION.store(false, std::sync::atomic::Ordering::Relaxed);
+                } else {
+                    check(count)?;
+                }
+            }
+            if !HIGH_RESOLUTION.load(std::sync::atomic::Ordering::Relaxed) && count < 0 {
+                let timeout_ms = timeout.map_or(-1, |duration| {
+                    c_int::try_from(
+                        duration.as_millis() + u128::from(duration.subsec_nanos() % 1_000_000 != 0),
+                    )
+                    .unwrap_or(c_int::MAX)
+                });
+                // SAFETY: buffer holds MAX_EVENTS entries.
+                count = check(unsafe {
+                    libc::epoll_wait(
+                        self.epfd,
+                        events.as_mut_ptr(),
+                        MAX_EVENTS as c_int,
+                        timeout_ms,
+                    )
+                })?;
+            }
             for event in &events[..count as usize] {
                 if event.u64 == WAKE_TOKEN {
                     let mut drained: u64 = 0;
@@ -342,19 +391,19 @@ mod platform {
             )]);
         }
 
-        pub(crate) fn wait(&self, timeout_ms: c_int, out: &mut Vec<Event>) -> io::Result<()> {
+        pub(crate) fn wait_for(
+            &self,
+            timeout: Option<std::time::Duration>,
+            out: &mut Vec<Event>,
+        ) -> io::Result<()> {
             // SAFETY: kevent is plain data; all-zero is a valid value.
             let mut events: [libc::kevent; MAX_EVENTS] = unsafe { std::mem::zeroed() };
-            let spec;
-            let timeout = if timeout_ms < 0 {
-                std::ptr::null()
-            } else {
-                spec = libc::timespec {
-                    tv_sec: libc::time_t::from(timeout_ms / 1000),
-                    tv_nsec: libc::c_long::from(timeout_ms % 1000) * 1_000_000,
-                };
-                &raw const spec
-            };
+            let spec = timeout.map(|duration| libc::timespec {
+                tv_sec: libc::time_t::try_from(duration.as_secs()).unwrap_or(libc::time_t::MAX),
+                // Duration fractions are below 1e9 and fit a 32-bit c_long.
+                tv_nsec: duration.subsec_nanos() as libc::c_long,
+            });
+            let timeout = spec.as_ref().map_or(std::ptr::null(), std::ptr::from_ref);
             // SAFETY: the buffer holds MAX_EVENTS entries.
             let count = unsafe {
                 libc::kevent(
@@ -850,15 +899,23 @@ mod platform {
 
         /// Wait for completions. AFD reports its arm context and pipe reads
         /// recover their retained slot from the completed request.
-        pub(crate) fn wait(&self, timeout_ms: c_int, out: &mut Vec<Event>) -> io::Result<()> {
+        pub(crate) fn wait_for(
+            &self,
+            timeout: Option<std::time::Duration>,
+            out: &mut Vec<Event>,
+        ) -> io::Result<()> {
             // SAFETY: plain data; all-zero is valid.
             let mut entries: [OVERLAPPED_ENTRY; MAX_EVENTS] = unsafe { std::mem::zeroed() };
             let mut removed: u32 = 0;
-            let timeout = if timeout_ms < 0 {
-                INFINITE
-            } else {
-                timeout_ms as u32
-            };
+            // IOCP's wait API is millisecond based. Keep exact eligibility in
+            // the wheel and round only at this OS boundary.
+            let timeout = timeout.map_or(INFINITE, |duration| {
+                u32::try_from(
+                    duration.as_millis() + u128::from(duration.subsec_nanos() % 1_000_000 != 0),
+                )
+                .unwrap_or(INFINITE - 1)
+                .min(INFINITE - 1)
+            });
             // SAFETY: the buffer holds MAX_EVENTS entries.
             let ok = unsafe {
                 GetQueuedCompletionStatusEx(
@@ -946,7 +1003,11 @@ mod platform {
 
         pub(crate) fn wake(&self) {}
 
-        pub(crate) fn wait(&self, _timeout_ms: c_int, _out: &mut Vec<Event>) -> io::Result<()> {
+        pub(crate) fn wait_for(
+            &self,
+            _timeout: Option<std::time::Duration>,
+            _out: &mut Vec<Event>,
+        ) -> io::Result<()> {
             Err(io::Error::new(
                 io::ErrorKind::Unsupported,
                 "no readiness poller on this target",
@@ -958,6 +1019,18 @@ mod platform {
 #[cfg(windows)]
 pub(crate) use platform::AfdPoll;
 pub(crate) use platform::Poller;
+
+#[cfg(test)]
+impl Poller {
+    pub(crate) fn wait(&self, timeout_ms: c_int, out: &mut Vec<Event>) -> std::io::Result<()> {
+        self.wait_for(
+            u64::try_from(timeout_ms)
+                .ok()
+                .map(std::time::Duration::from_millis),
+            out,
+        )
+    }
+}
 
 #[cfg(test)]
 mod tests {

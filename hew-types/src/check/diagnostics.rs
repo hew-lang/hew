@@ -337,15 +337,9 @@ impl Checker {
             severity: crate::error::Severity::Warning,
             kind: TypeErrorKind::PlatformLimitation,
             span: span.clone(),
-            message: format!(
-                "{} are not supported on WASM32 — {}",
-                feature.label(),
-                feature.reason()
-            ),
+            message: format!("{} on WASM32: {}", feature.label(), feature.reason()),
             notes: vec![],
-            suggestions: vec![
-                "consider using basic actors (spawn/send/ask) which work on WASM".to_string(),
-            ],
+            suggestions: Vec::new(),
             source_module: self.current_module.clone(),
         });
     }

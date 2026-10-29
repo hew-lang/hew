@@ -592,14 +592,10 @@ mod every_attribute {
     }
 
     #[test]
-    fn sub_millisecond_interval_rejected() {
+    fn sub_millisecond_interval_accepted() {
         let output =
             check_source("actor Ticker { #[every(500us)] receive fn tick() {} } fn main() {}");
-        assert!(
-            invalid_op_contains(&output, "minimum periodic interval is 1ms"),
-            "500us floors to a 0ms timer interval and must be rejected; got: {:#?}",
-            output.errors
-        );
+        assert!(output.errors.is_empty(), "{:#?}", output.errors);
     }
 
     #[test]

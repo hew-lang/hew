@@ -2498,22 +2498,22 @@ constructors such as `duration.from_millis(count)`.
 
 These produce a `duration` value. `instant + duration` and `duration + instant`
 both produce a new `instant`. Timeouts in the networking APIs take `duration`,
-so write `connection.set_read_timeout(250ms)`. Conversion to a millisecond
-runtime deadline rounds positive fractions upward.
+so write `connection.set_read_timeout(250ms)`. Networking APIs with a
+millisecond C ABI round positive fractions upward at that boundary.
 
-**Timer model:** both `sleep` and `sleep_until` arm a single entry in the
-runtime's two-level hierarchical wheel (256 × 1 ms slots + 64 × 256 ms
-slots; overflow list for intervals > 16 s). There is one shared wheel per
-process; all sleeping actors and threads compete for its entries. Scheduling
-granularity is 1 ms on the native target. Sub-millisecond values in actor
-handlers convert to 0 ms (next tick); in `fn main` the OS sleep is
-nanosecond-precise (subject to OS granularity, typically ≥ 1 µs on
-Linux/macOS).
+**Timer model:** `sleep`, `sleep_until`, actor timers and I/O timer entries retain
+nanosecond deadlines in a shared, tickless timer wheel. Its millisecond buckets
+index timers without rounding their deadlines. Linux 5.11+ and macOS/FreeBSD
+use high-resolution OS waits; older Linux kernels and Windows round waits up
+to milliseconds. The deterministic driver and guest host clock protocol also
+use milliseconds. Actual wake-up lateness depends on the OS and scheduler load;
+a nanosecond deadline does not promise nanosecond wake-up accuracy.
 
 ### Periodic receive handlers — `#[every(duration)]`
 
 `#[every(duration)]` marks a zero-argument `receive fn` as periodic. The timer
-starts when the actor is spawned and repeats until the actor stops. Each firing
+starts when the actor is spawned and repeats until the actor stops. Intervals
+may be any positive whole number of nanoseconds. Each firing
 is dispatched through the actor mailbox as its own message, so ordinary receive
 handlers can run between ticks.
 

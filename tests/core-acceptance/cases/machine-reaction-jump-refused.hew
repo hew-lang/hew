@@ -1,0 +1,13 @@
+machine Escape {
+    events { Tick; }
+    state A { escape: bool; }
+    state B;
+    always: A => B {
+        if state.escape {
+            break;
+        }
+        B
+    }
+    default { state }
+}
+fn main() {}

@@ -261,8 +261,13 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
     pub(super) fn place_flag(&self, leaf: StorageId) -> CodegenResult<PointerValue<'ctx>> {
         self.place_flags.get(&leaf).copied().ok_or_else(|| {
             CodegenError::FailClosed(format!(
-                "aggregate leaf {} lacks initialization storage",
-                leaf.0
+                "aggregate leaf {} in {} lacks initialization storage (origin {:?})",
+                leaf.0,
+                self.value.get_name().to_string_lossy(),
+                self.function
+                    .storage
+                    .get(leaf.0 as usize)
+                    .map(|storage| &storage.origin)
             ))
         })
     }

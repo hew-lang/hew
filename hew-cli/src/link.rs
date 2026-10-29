@@ -771,6 +771,10 @@ fn link_wasm(object_path: &str, output_path: &str, target: &str) -> Result<(), S
 
     cmd.arg("-o")
         .arg(output_path)
+        // Match the Rust WASI runtime's link policy. wasm-ld's own 64 KiB
+        // default is insufficient for ordinary checked-call chains, and a
+        // stack placed after static data can overwrite it on underflow.
+        .args(["-z", "stack-size=1048576", "--stack-first"])
         // We provide `_start` in the runtime, not via WASI CRT1.
         .arg("--no-entry")
         .arg("--export=_start");

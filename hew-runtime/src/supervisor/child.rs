@@ -381,7 +381,7 @@ fn child_get_from_supervisor(
 /// `child_specs` is parallel to `children` after `hew_supervisor_start`, so
 /// the index is always valid here.
 pub(crate) fn classify_null_child_slot(s: &SupervisorRoster, i: usize) -> ChildLookupResult {
-    // ROSTER-GUARDED-HELPER: every caller holds this supervisor's
+    // every caller holds this supervisor's
     // `roster` for the complete borrowed-spec classification.
     let spec = &s.child_specs[i];
 
@@ -975,7 +975,9 @@ pub unsafe extern "C" fn hew_supervisor_set_child_state_clone(
             return;
         }
         if s.child_specs[idx].state_template.borrows_typed_fields {
-            set_last_error("hew_supervisor_set_child_state_clone: externally borrowed state cannot transfer ownership");
+            set_last_error(
+                "hew_supervisor_set_child_state_clone: externally borrowed state cannot transfer ownership",
+            );
             return;
         }
         (

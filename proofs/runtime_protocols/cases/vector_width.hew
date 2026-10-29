@@ -1,0 +1,24 @@
+type Pair { x: i64; y: i64; }
+
+fn scalar_read(index: i64) -> i64 {
+    var v: Vec<i64> = Vec.new();
+    v.push(11);
+    v.push(22);
+    return match v.get(index) { .Some(value) => value, .None => -1, };
+}
+
+fn record_read(index: i64) -> i64 {
+    var v: Vec<Pair> = Vec.new();
+    v.push(Pair { x: 11, y: 12 });
+    v.push(Pair { x: 22, y: 23 });
+    return match v.get(index) { .Some(value) => value.x, .None => -1, };
+}
+
+fn main() {
+    println(scalar_read(4294967296));
+    println(record_read(4294967296));
+    println(scalar_read(4294967297));
+    println(record_read(4294967297));
+    println(scalar_read(1));
+    println(record_read(1));
+}

@@ -97,6 +97,13 @@ pub(crate) fn run_module_pipeline(
     level: OptLevel,
 ) -> CodegenResult<()> {
     let pipeline = match level {
+        // Engines bound the number of locals in a Wasm function. At O0,
+        // unpromoted scalar scratch seats create a distinct register for each
+        // load and can make ordinary generated machine evaluators unloadable.
+        // Promote nonescaping scalar storage after coroutine splitting; keep
+        // the requested O0 IR and target-codegen profiles otherwise intact.
+        OptLevel::O0 if machine.get_triple().as_str().to_bytes().starts_with(b"wasm") =>
+            "default<O0>,function(mem2reg,instsimplify),globaldce",
         // Coroutine splitting leaves constant cleanup selectors behind at O0.
         // Fold those selectors before reachability cleanup removes dead parts.
         OptLevel::O0 => "default<O0>,function(instsimplify),globaldce",

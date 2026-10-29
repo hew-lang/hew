@@ -243,6 +243,7 @@ impl Builder {
         hierarchy: &Hierarchy,
         rules: &[usize],
         stmts: &mut Vec<Spanned<Stmt>>,
+        #[cfg(feature = "verify-machines")] effects: &mut Vec<super::verification::Effect>,
     ) -> Result<(), TypeError> {
         for slot in self.history_slots.clone() {
             let selected = rules
@@ -280,7 +281,17 @@ impl Builder {
                 let truth = self.boolean(true);
                 let body = self.block(vec![assign], truth);
                 let body = self.focus(machine, hierarchy, config, body, Focus::Predicate, true)?;
-                capture.push(self.stmt(Stmt::Expression(body)));
+                let capture_stmt = self.stmt(Stmt::Expression(body));
+                #[cfg(feature = "verify-machines")]
+                effects.push(super::verification::Effect {
+                    span: capture_stmt.1.clone(),
+                    stage: super::verification::Stage::History {
+                        target: slot.target,
+                        owner: slot.owner,
+                        config,
+                    },
+                });
+                capture.push(capture_stmt);
             }
             stmts.push(self.if_do(condition, capture));
         }

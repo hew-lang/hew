@@ -50,6 +50,52 @@ struct ResolvedRule {
 }
 
 impl Hierarchy {
+    #[cfg(feature = "verify-machines")]
+    pub(super) fn verification_nodes(&self) -> Vec<NodeId> {
+        (0..self.nodes.len()).map(NodeId).collect()
+    }
+
+    #[cfg(feature = "verify-machines")]
+    pub(super) fn verification_rule_count(&self) -> usize {
+        self.rules.len()
+    }
+
+    #[cfg(feature = "verify-machines")]
+    pub(super) fn verification_corruption(&self, kind: usize) -> Option<Self> {
+        let mut changed = self.clone();
+        match kind {
+            0 => {
+                changed
+                    .nodes
+                    .iter_mut()
+                    .find(|node| node.parent.is_some())?
+                    .parent = None;
+            }
+            1 => {
+                changed
+                    .nodes
+                    .iter_mut()
+                    .find(|node| node.initial.is_some())?
+                    .initial = None;
+            }
+            2 => {
+                let rule = changed.rules.first_mut()?;
+                rule.domain = if rule.domain.is_some() {
+                    None
+                } else {
+                    Some(rule.source)
+                };
+            }
+            3 => {
+                let count = changed.rules.len();
+                changed.rules.first_mut()?.ordinal += count;
+            }
+            4 => changed.nodes.push(changed.nodes.first()?.clone()),
+            _ => return None,
+        }
+        Some(changed)
+    }
+
     pub(super) fn check(machine: &MachineDecl) -> Result<Self, TypeError> {
         let mut result = Self {
             nodes: Vec::new(),
@@ -439,6 +485,11 @@ impl Hierarchy {
 
     pub(super) fn ordinal(&self, rule: usize) -> usize {
         self.rules[rule].ordinal
+    }
+
+    #[cfg(feature = "verify-machines")]
+    pub(super) fn selection_owner(&self, rule: usize) -> Option<NodeId> {
+        self.rules[rule].owner
     }
 
     pub(super) fn candidate_order(

@@ -856,9 +856,9 @@ pub(crate) fn activate_queued_actor(actor: *mut HewActor) {
                 // A timer's start claim races its one overdue deadline. Losing
                 // the claim leaves this payload to ordinary node cleanup.
                 // SAFETY: this worker exclusively owns the dequeued envelope.
-                let timer = unsafe { msg_ref.envelope.as_ref() }
-                    .and_then(|envelope| envelope.timer.as_ref());
-                if timer.is_some_and(|timer| !timer.started()) {
+                let timer =
+                    unsafe { msg_ref.envelope.as_mut() }.and_then(|envelope| envelope.timer.take());
+                if timer.is_some_and(|timer| !timer.start()) {
                     // SAFETY: no handler has borrowed this request.
                     unsafe { hew_msg_node_free(msg) };
                     msgs_processed += 1;

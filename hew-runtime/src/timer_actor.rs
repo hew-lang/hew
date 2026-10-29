@@ -1,28 +1,35 @@
 //! Actor-owned one-shot requests on the shared timer wheel.
 
 use std::ffi::c_void;
-use std::ptr;
+use std::ptr::{self, NonNull};
 use std::sync::{Arc, Mutex};
 
 use crate::lifetime::live_actors::ActorIncarnation;
 use crate::mailbox::HewMsgEnvelope;
+use crate::timer_deadline::Deadline;
 use crate::timer_wheel::{HewTimerHandle, HewTimerWheel};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Phase {
-    Scheduled,
-    Fired,
-    Started,
-    Cancelled,
-    Overdue,
-}
+mod protocol;
+use protocol::{Firing, Request as Protocol};
 
 #[derive(Debug)]
 struct Request {
-    phase: Phase,
-    envelope: *mut HewMsgEnvelope,
+    protocol: Protocol<NonNull<HewMsgEnvelope>>,
     pending: Option<HewTimerHandle>,
-    overdue_at: Option<u64>,
+}
+
+pub(crate) type Delivery = protocol::Delivery<Arc<OneShot>>;
+
+// Keep the envelope's private timer seat one pointer wide on every target.
+const _: () = assert!(size_of::<Option<Delivery>>() == size_of::<Option<Arc<OneShot>>>());
+
+impl protocol::DeliveryOwner for Arc<OneShot> {
+    fn start(&self) -> bool {
+        self.started()
+    }
+    fn discarded(&self) {
+        OneShot::discarded(self);
+    }
 }
 
 /// One owner arbitrates firing, handler start, cancellation and overdue.
@@ -33,7 +40,7 @@ pub struct OneShot {
     registry_key: usize,
     message: i32,
     wheel: *mut HewTimerWheel,
-    overdue_ms: Option<u64>,
+    overdue_ns: Option<u64>,
     request: Mutex<Request>,
 }
 
@@ -69,11 +76,13 @@ impl OneShot {
         }
     }
 
-    fn arm(self: &Arc<Self>, request: &mut Request, deadline_ms: u64) -> bool {
+    fn arm(self: &Arc<Self>, request: &mut Request, deadline: Deadline) -> bool {
         let raw = Arc::into_raw(Arc::clone(self)).cast_mut().cast();
         // SAFETY: the wheel lives through timer quiescence; raw owns one Arc.
         let handle = unsafe {
-            crate::timer_wheel::timer_wheel_schedule_at_handle(self.wheel, deadline_ms, fired, raw)
+            crate::timer_wheel::timer_wheel_schedule_precise_handle(
+                self.wheel, deadline, fired, raw,
+            )
         };
         if handle.entry.is_null() {
             // SAFETY: failed scheduling did not take the supplied reference.
@@ -92,11 +101,9 @@ impl OneShot {
                 .request
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
-            if request.phase != Phase::Overdue {
-                request.phase = Phase::Cancelled;
-            }
+            let envelope = request.protocol.cancel();
             self.remove_pending(&mut request);
-            std::mem::replace(&mut request.envelope, ptr::null_mut())
+            envelope.map_or(ptr::null_mut(), NonNull::as_ptr)
         };
         if !envelope.is_null() {
             // SAFETY: the timer owns this receiver-bound pending envelope.
@@ -107,36 +114,25 @@ impl OneShot {
     }
 
     /// Called at the mailbox's handler-start claim, before invoking user code.
-    pub(crate) fn started(&self) -> bool {
+    fn started(&self) -> bool {
         let mut request = self
             .request
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let expired = request.phase == Phase::Fired
-            && request
-                .overdue_at
-                .is_some_and(|deadline| now_ms() >= deadline);
-        let allowed = request.phase != Phase::Overdue && !expired;
-        if request.phase == Phase::Fired {
-            request.phase = if expired {
-                Phase::Overdue
-            } else {
-                Phase::Started
-            };
-        }
+        let claim = request.protocol.start(crate::timer_wheel::now_for_wheel());
         self.remove_pending(&mut request);
-        if expired {
+        if claim.fault {
             // Keep the claim registered until cancellation can observe that
             // its winning fault has reached the actor's terminal-request latch.
             self.fault_owner();
         }
         drop(request);
         self.unregister();
-        allowed
+        claim.allowed
     }
 
     /// Every envelope loss before handler start passes through this claim.
-    pub(crate) fn discarded(&self) {
+    fn discarded(&self) {
         self.overdue(true);
     }
 
@@ -146,14 +142,8 @@ impl OneShot {
                 .request
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
-            if request.phase != Phase::Fired {
+            let Some(fault) = request.protocol.lost(self.overdue_ns.is_some(), discarded) else {
                 return;
-            }
-            let fault = self.overdue_ms.is_some();
-            request.phase = if fault {
-                Phase::Overdue
-            } else {
-                Phase::Cancelled
             };
             self.remove_pending(&mut request);
             // Cancellation uses this same mutex. It cannot finish terminal
@@ -194,37 +184,36 @@ unsafe extern "C" fn fired(data: *mut c_void) {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         request.pending = None;
-        match request.phase {
-            Phase::Scheduled => {
-                request.phase = Phase::Fired;
-                let envelope = std::mem::replace(&mut request.envelope, ptr::null_mut());
-                if let Some(overdue) = timer.overdue_ms {
-                    let deadline = now_ms().saturating_add(overdue);
-                    request.overdue_at = Some(deadline);
+        match request.protocol.fire() {
+            Firing::Deliver(envelope) => {
+                let envelope = envelope.as_ptr();
+                if let Some(overdue) = timer.overdue_ns {
+                    let deadline = crate::timer_wheel::now_for_wheel()
+                        .checked_add(std::time::Duration::from_nanos(overdue))
+                        .expect("nanosecond durations fit the wheel");
+                    request.protocol.arm_overdue(deadline);
                     if !timer.arm(&mut request, deadline) {
-                        // A failed overdue registration cannot leave a hung
-                        // actor unobserved. The existing overdue claim faults it.
                         drop(request);
                         timer.overdue(false);
-                        // SAFETY: firing took the timer's receiver-bound envelope.
+                        // SAFETY: firing took the receiver-bound envelope.
                         unsafe { crate::cow_envelope::release(envelope) };
                         return;
                     }
                 }
                 envelope
             }
-            Phase::Fired => {
+            Firing::Deadline => {
                 drop(request);
                 timer.overdue(false);
                 return;
             }
-            Phase::Started | Phase::Cancelled | Phase::Overdue => return,
+            Firing::Ignore => return,
         }
     };
     // The timer no longer owns the envelope, so this reference cannot form a
     // cycle. Its final release observes loss unless dispatch already claimed it.
     // SAFETY: firing exclusively owns the envelope until mailbox publication.
-    unsafe { (*envelope).timer = Some(Arc::clone(&timer)) };
+    unsafe { (*envelope).timer = Some(Delivery::new(Arc::clone(&timer))) };
     let outcome = crate::lifetime::live_actors::with_live_incarnation(timer.actor, |pin| {
         // SAFETY: the timer transfers its bound envelope only on admission.
         unsafe {
@@ -297,6 +286,9 @@ pub unsafe extern "C" fn hew_actor_timer_new(
             if wheel.is_null() {
                 return None;
             }
+            let deadline = crate::timer_wheel::now_for_wheel().checked_add(
+                std::time::Duration::from_nanos(u64::try_from(after_ns).unwrap_or(0)),
+            )?;
             // SAFETY: the actor is pinned and this envelope is unpublished.
             if !unsafe { crate::cow_envelope::bind_receiver(envelope, target) } {
                 return None;
@@ -307,19 +299,17 @@ pub unsafe extern "C" fn hew_actor_timer_new(
                 registry_key: actor as usize,
                 message,
                 wheel,
-                overdue_ms: has_overdue.then(|| nanos_to_ms(overdue_ns)),
+                overdue_ns: has_overdue.then(|| u64::try_from(overdue_ns).unwrap_or(0)),
                 request: Mutex::new(Request {
-                    phase: Phase::Scheduled,
-                    envelope,
+                    protocol: Protocol::new(NonNull::new(envelope)?),
                     pending: None,
-                    overdue_at: None,
                 }),
             });
             let mut request = timer
                 .request
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
-            let deadline = now_ms().saturating_add(nanos_to_ms(after_ns));
+
             // SAFETY: target is pinned; publication is ordered against stop.
             let registered =
                 unsafe { crate::timer_periodic::register_one_shot(actor, Arc::clone(&timer)) };
@@ -327,8 +317,7 @@ pub unsafe extern "C" fn hew_actor_timer_new(
                 drop(request);
                 Some(Arc::into_raw(timer))
             } else {
-                request.phase = Phase::Cancelled;
-                request.envelope = ptr::null_mut();
+                let _ = request.protocol.cancel();
                 drop(request);
                 timer.unregister();
                 // SAFETY: no callback can have published this failed request.
@@ -349,15 +338,6 @@ pub unsafe extern "C" fn hew_actor_timer_new(
         }
         ptr::null()
     }
-}
-
-fn now_ms() -> u64 {
-    // SAFETY: reading the runtime clock has no caller preconditions.
-    unsafe { crate::clock::hew_now_ms() }
-}
-
-fn nanos_to_ms(nanos: i64) -> u64 {
-    u64::try_from(nanos).unwrap_or(0).div_ceil(1_000_000)
 }
 
 /// Disarm a live cancellation handle without consuming it.

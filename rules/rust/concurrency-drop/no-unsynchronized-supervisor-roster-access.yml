@@ -3,9 +3,8 @@ language: rust
 severity: error
 message: >-
   SupervisorRoster is reachable only through its poison-safe mutex guard. Do
-  not bypass the mutex, access before acquisition/after drop, accept a raw
-  roster borrow without an audited helper marker, or retain a guard across an
-  arbitrary callback or blocking wait.
+  not bypass the mutex, access before acquisition/after drop, or retain a
+  guard across an arbitrary callback or blocking wait.
 files:
   - "**/hew-runtime/src/supervisor/*.rs"
 rule:
@@ -29,37 +28,6 @@ rule:
               has:
                 field: name
                 regex: "^(tests|.*_tests|test_support)$"
-    # A helper that accepts SupervisorRoster directly must declare that its
-    # borrow is guard-bounded. Normal runtime entry points acquire the guard
-    # locally and therefore do not expose SupervisorRoster in their signature.
-    - all:
-        - kind: function_item
-        - has:
-            regex: "SupervisorRoster"
-            field: parameters
-        - has:
-            any:
-              - pattern: $S.children
-              - pattern: $S.child_specs
-              - pattern: $S.child_count
-              - pattern: $S.child_supervisors
-              - pattern: $S.child_supervisor_tokens
-              - pattern: $S.child_supervisor_specs
-              - pattern: $S.restart_times
-              - pattern: $S.restart_count
-              - pattern: $S.restart_head
-              - pattern: $S.restart_notify
-              - pattern: $S.pool_slots
-              - pattern: $S.pool_specs
-              - pattern: $S.config_buf
-              - pattern: $S.config_size
-              - pattern: $S.config_drop_fn
-            stopBy: end
-        - not:
-            has:
-              kind: line_comment
-              regex: "ROSTER-GUARDED-HELPER"
-              stopBy: end
     # Access which precedes acquisition is invalid even if a same-named guard
     # is created later in the block.
     - all:

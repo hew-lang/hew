@@ -1,0 +1,179 @@
+name: Formal verification
+
+# Advisory while the verification setup matures; never part of the PR or
+# merge-queue workflow. Manual runs can select a development branch.
+on:
+  schedule:
+    - cron: "23 8 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: formal-verification-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  machines:
+    name: Machine control semantics
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    env:
+      CARGO_PROFILE_DEV_DEBUG: line-tables-only
+      CARGO_INCREMENTAL: "0"
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup-rust-build
+        with:
+          cache-shared-key: machine-proofs
+      - name: Install Z3
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq z3
+      - name: Validate machine charts, control flow and defect witnesses
+        run: make prove-machines
+      - name: Save machine queries and counterexamples
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: machine-proof-diagnostics
+          path: proofs/target/machines/**
+          if-no-files-found: error
+          retention-days: 14
+
+  runtime:
+    name: Runtime contracts
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup-rust-build
+        with:
+          components: rustfmt
+          targets: wasm32-wasip1
+          cache-shared-key: runtime-proofs
+      - uses: ./.github/actions/setup-lean
+      - name: Install Kani 0.68.0
+        run: |
+          cargo install --locked kani-verifier --version 0.68.0
+          cargo kani setup
+      - name: Verify runtime contracts
+        run: |
+          set -o pipefail
+          make prove-runtime 2>&1 | tee "$RUNNER_TEMP/formal-verification.log"
+      - name: Execute vector bounds on both word widths
+        run: python3 proofs/runtime_protocols/check_vector_widths.py --runtime-only
+      - name: Save verification diagnostics
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: runtime-proof-diagnostics
+          path: |
+            ${{ runner.temp }}/formal-verification.log
+            proofs/runtime_protocols/target/proof-logs/*.log
+            proofs/runtime_protocols/target/proof-logs/vector-widths/**
+            proofs/target/runtime.*
+          if-no-files-found: ignore
+          retention-days: 14
+
+  llvm:
+    name: Generated LLVM frame cleanup
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    env:
+      CARGO_PROFILE_DEV_DEBUG: "line-tables-only"
+      CARGO_INCREMENTAL: "0"
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          persist-credentials: false
+      - name: Install compiler build dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq libssl-dev pkg-config zlib1g-dev libzstd-dev z3
+      - uses: ./.github/actions/setup-llvm
+      - uses: ./.github/actions/setup-rust-build
+        with:
+          targets: wasm32-wasip1
+          cache-shared-key: llvm-frame-proofs
+      - uses: ./.github/actions/setup-lean
+      - name: Check actual emitted LLVM and rejection witnesses
+        run: make prove-llvm-frames
+      - name: Execute compiled Hew vector bounds on both word widths
+        run: make check-vector-widths
+      - name: Compare compiled machine behavior across native and WASI at O0 and O2
+        run: make prove-machine-codegen
+      - name: Execute compiled failure scenarios on native and WASI
+        run: cargo run --manifest-path proofs/runtime_protocols/Cargo.toml --locked --features failure_corpus --bin failure-corpus -- "$PWD/target/debug/hew"
+      - name: Validate whole timer and actor lifetime histories
+        env:
+          HEW_PIPELINE_ASAN: "1"
+        run: |
+          set -o pipefail
+          cargo run --manifest-path proofs/runtime_protocols/Cargo.toml --locked --features pipeline --bin pipeline -- "$PWD/target/debug/hew" 2>&1 | tee "$RUNNER_TEMP/pipeline-campaign.log"
+      - name: Save LLVM certificates and confidence evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: llvm-frame-proof-diagnostics
+          path: |
+            proofs/target/llvm.*
+            proofs/llvm_frames/target/report.json
+            proofs/llvm_frames/target/*.log
+            proofs/llvm_frames/target/*.ll
+            proofs/llvm_frames/target/*/*.lean
+            proofs/llvm_frames/target/*/*.json
+            proofs/llvm_frames/target/*/*.log
+            proofs/runtime_protocols/target/proof-logs/vector-widths/**
+            proofs/runtime_protocols/target/proof-logs/failure-corpus/*.log
+            proofs/runtime_protocols/target/proof-logs/pipeline/*.log
+            proofs/target/machine-codegen/*.log
+            proofs/target/machines/**
+            ${{ runner.temp }}/pipeline-campaign.log
+          if-no-files-found: ignore
+          retention-days: 14
+
+  failure-safety:
+    name: Generated failure histories under ASan and LSan
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    env:
+      CARGO_PROFILE_TEST_DEBUG: line-tables-only
+      CARGO_INCREMENTAL: "0"
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup-llvm
+      - uses: ./.github/actions/setup-rust-build
+        with:
+          cache-shared-key: failure-safety
+      - name: Install pinned sanitizer toolchain
+        run: rustup toolchain install nightly-2026-08-21 --profile minimal
+      - name: Check generated histories against the real runtime
+        env:
+          RUSTFLAGS: -Zsanitizer=address -Cforce-frame-pointers=yes -Cunsafe-allow-abi-mismatch=sanitizer
+          ASAN_OPTIONS: detect_leaks=1:halt_on_error=1:exitcode=99
+        run: |
+          set -o pipefail
+          cargo +nightly-2026-08-21 test --target x86_64-unknown-linux-gnu -p hew-runtime --lib failure_properties -- --test-threads=1 2>&1 | tee "$RUNNER_TEMP/failure-safety.log"
+          rg -q 'test result: ok\. 9 passed; 0 failed;' "$RUNNER_TEMP/failure-safety.log"
+          cargo +nightly-2026-08-21 test --target x86_64-unknown-linux-gnu -p hew-runtime --lib channel_core::typed -- --test-threads=1 2>&1 | tee -a "$RUNNER_TEMP/failure-safety.log"
+          rg -q 'test result: ok\. 11 passed; 0 failed;' "$RUNNER_TEMP/failure-safety.log"
+          cargo +nightly-2026-08-21 test --target x86_64-unknown-linux-gnu -p hew-runtime --lib coro_sleep::tests -- --test-threads=1 2>&1 | tee -a "$RUNNER_TEMP/failure-safety.log"
+          rg -q 'test result: ok\. 6 passed; 0 failed;' "$RUNNER_TEMP/failure-safety.log"
+          cargo +nightly-2026-08-21 test --target x86_64-unknown-linux-gnu -p hew-runtime --lib async_io::deadline::tests -- --test-threads=1 2>&1 | tee -a "$RUNNER_TEMP/failure-safety.log"
+          rg -q 'test result: ok\. 4 passed; 0 failed;' "$RUNNER_TEMP/failure-safety.log"
+      - name: Save sanitizer diagnostics and shrunk histories
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: failure-safety-diagnostics
+          path: |
+            ${{ runner.temp }}/failure-safety.log
+            **/proptest-regressions/**/*.txt
+          if-no-files-found: ignore
+          retention-days: 14

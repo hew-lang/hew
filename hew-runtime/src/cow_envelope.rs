@@ -41,7 +41,7 @@ pub struct HewMsgEnvelope {
     /// Queued ask sender reference retired after its payload finishes cleanup.
     pub release_reply: *mut c_void,
     /// One-shot start/loss claim, attached only after the timer releases its payload.
-    pub(crate) timer: Option<std::sync::Arc<crate::timer_actor::OneShot>>,
+    pub(crate) timer: Option<crate::timer_actor::Delivery>,
     /// Undelivered payload or lifecycle cleanup, consumed at dispatch entry.
     pub(crate) ingress_drop: Option<IngressDrop>,
     /// The same immutable request state retained by its optional reply owner.
@@ -354,9 +354,7 @@ pub unsafe fn release(env: *mut HewMsgEnvelope) {
         debug_assert!(prev >= 1, "release on a zero-count envelope");
         if prev == 1 {
             (*env).transfer.take();
-            if let Some(timer) = (*env).timer.take() {
-                timer.discarded();
-            }
+            drop((*env).timer.take());
             header_validate((*env).header_bits.load(Ordering::Acquire));
             if let Some(start) = (*env).release_start {
                 let _ = start;

@@ -1,0 +1,103 @@
+[package]
+name = "hew-runtime-protocol-verification"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[workspace]
+
+
+[features]
+waker = []
+cancellation = []
+await = []
+timer = []
+one_shot = ["timer"]
+deadline = []
+arena = []
+heap = ["dep:hew-cabi"]
+managed_budget = ["dep:hew-cabi"]
+semaphore = []
+read_slot = ["dep:smallvec"]
+supervisor = []
+root_driver = []
+channel = ["read_slot", "dep:hew-cabi"]
+channel_loom = ["channel", "dep:loom"]
+restart = []
+failure_properties = ["restart", "deadline", "dep:proptest"]
+pipeline = []
+failure_corpus = []
+fault_records = []
+fault_loom = ["fault_records", "dep:loom"]
+executor = []
+executor_loom = ["executor", "dep:loom"]
+periodic_loom = ["dep:loom"]
+reactor = []
+reactor_loom = ["reactor", "dep:loom"]
+vector = ["dep:hew-cabi", "dep:libc"]
+
+cancellation_delivery = ["dep:smallvec"]
+await_race = ["dep:smallvec"]
+sleep_teardown = []
+
+loom = [
+  "dep:loom",
+  "cancellation_delivery",
+  "await_race",
+  "sleep_teardown",
+  "semaphore",
+  "read_slot",
+  "supervisor",
+  "managed_budget",
+]
+
+[dependencies]
+proptest = { version = "=1.11.0", optional = true }
+libc = { version = "=0.2.189", optional = true }
+hew-cabi = { path = "../../hew-cabi", optional = true }
+loom = { version = "=0.7.2", optional = true }
+smallvec = { version = "=1.16.2", optional = true }
+
+[[bin]]
+name = "protocols"
+path = "src/main.rs"
+required-features = ["loom"]
+
+[[example]]
+name = "vector_width"
+required-features = ["vector"]
+
+[[bin]]
+name = "executor"
+path = "src/executor_main.rs"
+required-features = ["executor_loom"]
+
+[[bin]]
+name = "channels"
+path = "src/channel_main.rs"
+required-features = ["channel_loom"]
+
+[[bin]]
+name = "faults"
+path = "src/fault_main.rs"
+required-features = ["fault_loom"]
+
+[[bin]]
+name = "failure-corpus"
+path = "src/failure_corpus.rs"
+required-features = ["failure_corpus"]
+
+[[bin]]
+name = "reactor"
+path = "src/reactor_main.rs"
+required-features = ["reactor_loom"]
+
+[[bin]]
+name = "periodic"
+path = "src/periodic_main.rs"
+required-features = ["periodic_loom"]
+
+[[bin]]
+name = "pipeline"
+path = "src/pipeline_main.rs"
+required-features = ["pipeline"]

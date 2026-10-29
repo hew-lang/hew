@@ -454,7 +454,7 @@ fn register_native_child(
     if child.stop_ns < -1 || (child.role_kind == ROLE_KIND_ACTOR && child.stop_ns < 0) {
         return None;
     }
-    // ROSTER-GUARDED-HELPER: construction holds the owning supervisor mutex
+    // construction holds the owning supervisor mutex
     // throughout registration; this helper invokes no callbacks or waits.
     let invalid = crate::lifetime::local_handles::HewLocalPidId::INVALID;
     let next_identity = s.next_child_spec_identity.checked_add(1)?;

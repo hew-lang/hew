@@ -2287,13 +2287,9 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             .iter()
             .filter_map(|handler| handler.every_ns.map(|ns| (handler, ns)))
             .map(|(handler, ns)| {
-                let interval = u64::try_from(ns)
-                    .ok()
-                    .filter(|ns| *ns >= 1_000_000)
-                    .ok_or_else(|| {
-                        CodegenError::FailClosed("invalid checked periodic interval".into())
-                    })?
-                    / 1_000_000;
+                let interval = u64::try_from(ns).ok().filter(|ns| *ns > 0).ok_or_else(|| {
+                    CodegenError::FailClosed("invalid checked periodic interval".into())
+                })?;
                 Ok(periodic_ty.const_named_struct(&[
                     self.ctx
                         .i32_type()
@@ -3464,8 +3460,8 @@ mod abi_tests {
                 field_size(|handler: &HewNativePeriodicHandler| &handler.message),
             ),
             (
-                offset_of!(HewNativePeriodicHandler, interval_ms),
-                field_size(|handler: &HewNativePeriodicHandler| &handler.interval_ms),
+                offset_of!(HewNativePeriodicHandler, interval_ns),
+                field_size(|handler: &HewNativePeriodicHandler| &handler.interval_ns),
             ),
         ]
     }

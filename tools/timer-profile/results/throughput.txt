@@ -1,0 +1,39 @@
+repeat=1 source=baseline
+timer_entry_bytes=48
+throughput precise=false timers=32 repeats=25 median_ns_per_timer=39 p99_ns_per_timer=215
+throughput precise=false timers=512 repeats=25 median_ns_per_timer=34 p99_ns_per_timer=206
+throughput precise=false timers=8192 repeats=25 median_ns_per_timer=49 p99_ns_per_timer=60
+repeat=1 source=candidate
+timer_entry_bytes=48
+throughput precise=false timers=32 repeats=25 median_ns_per_timer=38 p99_ns_per_timer=80
+throughput precise=false timers=512 repeats=25 median_ns_per_timer=35 p99_ns_per_timer=61
+throughput precise=false timers=8192 repeats=25 median_ns_per_timer=55 p99_ns_per_timer=73
+throughput precise=true timers=32 repeats=25 median_ns_per_timer=38 p99_ns_per_timer=50
+throughput precise=true timers=512 repeats=25 median_ns_per_timer=35 p99_ns_per_timer=36
+throughput precise=true timers=8192 repeats=25 median_ns_per_timer=54 p99_ns_per_timer=63
+repeat=2 source=baseline
+timer_entry_bytes=48
+throughput precise=false timers=32 repeats=25 median_ns_per_timer=38 p99_ns_per_timer=83
+throughput precise=false timers=512 repeats=25 median_ns_per_timer=34 p99_ns_per_timer=57
+throughput precise=false timers=8192 repeats=25 median_ns_per_timer=40 p99_ns_per_timer=65
+repeat=2 source=candidate
+timer_entry_bytes=48
+throughput precise=false timers=32 repeats=25 median_ns_per_timer=38 p99_ns_per_timer=61
+throughput precise=false timers=512 repeats=25 median_ns_per_timer=35 p99_ns_per_timer=35
+throughput precise=false timers=8192 repeats=25 median_ns_per_timer=53 p99_ns_per_timer=68
+throughput precise=true timers=32 repeats=25 median_ns_per_timer=37 p99_ns_per_timer=41
+throughput precise=true timers=512 repeats=25 median_ns_per_timer=35 p99_ns_per_timer=35
+throughput precise=true timers=8192 repeats=25 median_ns_per_timer=50 p99_ns_per_timer=58
+repeat=3 source=baseline
+timer_entry_bytes=48
+throughput precise=false timers=32 repeats=25 median_ns_per_timer=41 p99_ns_per_timer=154
+throughput precise=false timers=512 repeats=25 median_ns_per_timer=34 p99_ns_per_timer=60
+throughput precise=false timers=8192 repeats=25 median_ns_per_timer=50 p99_ns_per_timer=57
+repeat=3 source=candidate
+timer_entry_bytes=48
+throughput precise=false timers=32 repeats=25 median_ns_per_timer=38 p99_ns_per_timer=71
+throughput precise=false timers=512 repeats=25 median_ns_per_timer=35 p99_ns_per_timer=35
+throughput precise=false timers=8192 repeats=25 median_ns_per_timer=51 p99_ns_per_timer=62
+throughput precise=true timers=32 repeats=25 median_ns_per_timer=35 p99_ns_per_timer=40
+throughput precise=true timers=512 repeats=25 median_ns_per_timer=35 p99_ns_per_timer=35
+throughput precise=true timers=8192 repeats=25 median_ns_per_timer=49 p99_ns_per_timer=51

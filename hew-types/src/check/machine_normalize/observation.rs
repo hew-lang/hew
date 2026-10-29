@@ -401,6 +401,7 @@ impl Builder {
         hierarchy: &Hierarchy,
         rules: &[usize],
         stmts: &mut Vec<Spanned<Stmt>>,
+        #[cfg(feature = "verify-machines")] effects: &mut Vec<super::verification::Effect>,
     ) -> Result<(), TypeError> {
         for snapshot in self.snapshots(machine, hierarchy)? {
             let selected = rules
@@ -452,7 +453,16 @@ impl Builder {
                 let capture = self.block(vec![push], truth);
                 let capture =
                     self.focus(machine, hierarchy, node, capture, Focus::Predicate, true)?;
-                captures.push(self.stmt(Stmt::Expression(capture)));
+                let capture_stmt = self.stmt(Stmt::Expression(capture));
+                #[cfg(feature = "verify-machines")]
+                effects.push(super::verification::Effect {
+                    span: capture_stmt.1.clone(),
+                    stage: super::verification::Stage::Departure {
+                        scope: snapshot.scope,
+                        config: node,
+                    },
+                });
+                captures.push(capture_stmt);
             }
             stmts.push(self.if_do(condition, captures));
         }

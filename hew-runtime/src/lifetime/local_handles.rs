@@ -186,8 +186,7 @@ struct SupervisorRole {
     slot: u32,
 }
 
-const SUPERVISOR_CLOSING_BIT: usize = 1usize << (usize::BITS - 1);
-const SUPERVISOR_PIN_MASK: usize = !SUPERVISOR_CLOSING_BIT;
+use super::pin_state::PinState;
 
 /// Stable liveness authority for one supervisor allocation.
 ///
@@ -208,8 +207,7 @@ pub(crate) struct SupervisorControl {
     supervisor_addr: usize,
     direct_id: HewLocalPidId,
     runtime_id: RuntimeId,
-    access_state: AtomicUsize,
-    teardown_claimed: AtomicBool,
+    pins: PinState,
     /// Forceful request remains reachable after the direct route closes so a
     /// terminate can escalate an in-progress graceful supervisor stop.
     terminate_requested: AtomicBool,
@@ -231,8 +229,7 @@ impl SupervisorControl {
             supervisor_addr: supervisor as usize,
             direct_id,
             runtime_id,
-            access_state: AtomicUsize::new(0),
-            teardown_claimed: AtomicBool::new(false),
+            pins: PinState::new(),
             terminate_requested: AtomicBool::new(false),
             stop_constraint: Mutex::new(None),
             completion: Arc::default(),
@@ -350,53 +347,32 @@ impl SupervisorControl {
     }
 
     pub(crate) fn try_pin(self: &Arc<Self>) -> Option<SupervisorPin> {
-        let mut state = self.access_state.load(Ordering::Acquire);
-        loop {
-            if state & SUPERVISOR_CLOSING_BIT != 0
-                || state & SUPERVISOR_PIN_MASK == SUPERVISOR_PIN_MASK
-            {
-                return None;
-            }
-            match self.access_state.compare_exchange_weak(
-                state,
-                state + 1,
-                Ordering::AcqRel,
-                Ordering::Acquire,
-            ) {
-                Ok(_) => return Some(SupervisorPin(Arc::clone(self))),
-                Err(observed) => state = observed,
-            }
-        }
+        self.pins.try_pin().then(|| SupervisorPin(Arc::clone(self)))
     }
 
     /// Claim the exact-once destructor authority for this allocation.
     pub(crate) fn claim_teardown(&self) -> bool {
-        self.teardown_claimed
-            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
-            .is_ok()
+        self.pins.claim_teardown()
     }
 
     /// Roll back a claimed teardown after a failed ownership handoff.
     pub(crate) fn release_teardown(&self) {
-        self.teardown_claimed.store(false, Ordering::Release);
+        self.pins.release_teardown();
     }
 
     #[cfg(test)]
     pub(crate) fn teardown_is_claimed(&self) -> bool {
-        self.teardown_claimed.load(Ordering::Acquire)
+        self.pins.teardown_is_claimed()
     }
 
     /// Whether stable access is closed and every admitted operation drained.
     pub(crate) fn is_closed_and_drained(&self) -> bool {
-        self.access_state.load(Ordering::Acquire) == SUPERVISOR_CLOSING_BIT
+        self.pins.is_closed_and_drained()
     }
 
     /// Close new admission. Returns true only to the linearization winner.
     pub(crate) fn begin_close(&self) -> bool {
-        self.access_state
-            .fetch_or(SUPERVISOR_CLOSING_BIT, Ordering::AcqRel)
-            & SUPERVISOR_CLOSING_BIT
-            == 0
+        self.pins.begin_close()
     }
 
     pub(crate) fn wait_for_pins(&self, timeout: Duration) -> bool {
@@ -406,7 +382,7 @@ impl SupervisorControl {
             .lock()
             .unwrap_or_else(PoisonError::into_inner);
         loop {
-            if self.access_state.load(Ordering::Acquire) & SUPERVISOR_PIN_MASK == 0 {
+            if !self.pins.has_pins() {
                 return true;
             }
             let Some(deadline) = deadline else {
@@ -429,9 +405,7 @@ impl SupervisorControl {
                 .wait_timeout(guard, remaining)
                 .unwrap_or_else(PoisonError::into_inner);
             guard = next;
-            if result.timed_out()
-                && self.access_state.load(Ordering::Acquire) & SUPERVISOR_PIN_MASK != 0
-            {
+            if result.timed_out() && self.pins.has_pins() {
                 return false;
             }
         }
@@ -452,9 +426,7 @@ impl SupervisorPin {
 
 impl Drop for SupervisorPin {
     fn drop(&mut self) {
-        let previous = self.0.access_state.fetch_sub(1, Ordering::AcqRel);
-        debug_assert_ne!(previous & SUPERVISOR_PIN_MASK, 0);
-        if previous & SUPERVISOR_CLOSING_BIT != 0 && previous & SUPERVISOR_PIN_MASK == 1 {
+        if self.0.pins.release_pin() {
             let _guard = self
                 .0
                 .drain_mutex

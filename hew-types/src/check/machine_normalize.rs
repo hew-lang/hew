@@ -28,7 +28,11 @@ mod configuration;
 mod defaults;
 mod history;
 mod observation;
+#[cfg(feature = "verify-machines")]
+mod verification;
 use crate::error::{TypeError, TypeErrorKind};
+#[cfg(feature = "verify-machines")]
+pub use verification::statistics as machine_verification_statistics;
 
 /// The program the checker checks and HIR lowers when the compiler writes
 /// declarations of its own into it, with diagnostic provenance for the
@@ -872,8 +876,11 @@ impl Builder {
         key: &ExpansionKey,
     ) -> Result<Vec<Spanned<Item>>, TypeError> {
         self.expansion += 1;
+        super::machine_control::validate(machine)?;
         let mut hierarchy = Hierarchy::check(machine)?;
         let resolved = hierarchy.resolve_relation(machine)?;
+        #[cfg(feature = "verify-machines")]
+        let authored = machine;
         let machine = &resolved;
         if let Some(state) = machine
             .states
@@ -890,6 +897,8 @@ impl Builder {
             ));
         }
         self.validate_relation(machine, &hierarchy)?;
+        #[cfg(feature = "verify-machines")]
+        verification::verify_chart(authored, machine, &hierarchy);
         let params = if machine.type_params.is_empty() {
             None
         } else {
@@ -1713,6 +1722,9 @@ impl Builder {
     ) -> Result<Spanned<Expr>, TypeError> {
         let rule = &machine.transitions[index];
         let value = self.rewrite(part, machine, state, event)?;
+        #[cfg(feature = "verify-machines")]
+        super::machine_control::validate_expr(&value)
+            .expect("rewritten machine fragment must retain local jump scopes");
         if rule.event_bindings.is_empty() {
             return Ok(value);
         }

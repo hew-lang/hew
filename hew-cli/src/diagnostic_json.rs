@@ -27,7 +27,7 @@ use std::ops::Range;
 use serde::Serialize;
 
 use crate::args::DiagnosticFormat;
-use crate::diagnostic::offset_to_line_col;
+use crate::diagnostic::{offset_to_line_col, source_hash};
 use hew_types::error::DiagChannel;
 
 // ---------------------------------------------------------------------------
@@ -231,7 +231,13 @@ fn fixes_from_code_actions(
     source: &str,
     fixes: &[hew_parser::diagnostic::DiagnosticFix],
 ) -> Vec<JsonFix> {
-    let info = hew_analysis::code_actions::DiagnosticInfo::new(source, fixes.to_vec());
+    if fixes.is_empty() {
+        return Vec::new();
+    }
+    let info = hew_analysis::code_actions::DiagnosticInfo {
+        source_hash: source_hash(source),
+        fixes: fixes.to_vec(),
+    };
     hew_analysis::code_actions::build_code_actions(source, &[info])
         .into_iter()
         .map(|action| JsonFix {
@@ -351,7 +357,7 @@ pub(crate) fn from_parse_error(
         hew_parser::Severity::Error => SEVERITY_ERROR,
     };
     JsonDiagnostic {
-        source_hash: Some(hew_analysis::code_actions::source_hash(source)),
+        source_hash: Some(source_hash(source)),
         code: error.kind.as_kind_str().to_string(),
         severity: severity.to_string(),
         channel: DiagChannel::User.as_json_str().to_string(),
@@ -398,7 +404,7 @@ pub(crate) fn from_type_error(
         .collect();
     let fixes = fixes_from_code_actions(source, &error.fixes);
     JsonDiagnostic {
-        source_hash: Some(hew_analysis::code_actions::source_hash(source)),
+        source_hash: Some(source_hash(source)),
         code: code.to_string(),
         severity: severity.to_string(),
         channel: error.kind.channel().as_json_str().to_string(),

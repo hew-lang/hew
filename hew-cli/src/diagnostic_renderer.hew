@@ -13,12 +13,15 @@ type Palette {
     reset: string;
 }
 
-/// One source location. The host supplies the containing line (with its
-/// terminating newline) and byte offsets relative to that line, so the cost of
-/// a label does not grow with the size of the file.
+/// One source location. The host supplies the line and column of the span
+/// start and an excerpt of its line: more than `WINDOW` bytes on each side of
+/// the span start, with the terminating newline when it reaches the line end.
+/// Byte offsets are relative to the excerpt, so the cost of a label grows with
+/// neither the file nor the line.
 type Label {
     filename: string;
     line: i64;
+    column: i64;
     text: string;
     start: i64;
     end: i64;
@@ -92,25 +95,10 @@ fn locate(data: bytes, offset: i64, from: Position) -> Position {
 /// Longest run of a source line shown around the span; the rest becomes `...`.
 const WINDOW: i64 = 160;
 
-/// One-based column of `offset` in a line: scalars before it, ignoring the
-/// carriage return of a CRLF terminator.
-fn column(data: bytes, offset: i64) -> i64 {
-    var count = 1;
-    for index in 0..math.min(offset, data.len()) {
-        let byte = data[index];
-        if byte == 13 && index + 1 < data.len() && data[index + 1] == 10 {
-            continue;
-        } else if (byte as i64 & 192) != 128 {
-            count += 1;
-        }
-    }
-    count
-}
-
 fn render_label(label: Label, level: string, colour: string, palette: Palette) -> string {
     let data = label.text.to_bytes();
     let line = label.line;
-    let header = f"{palette.bold}{label.filename}:{line}:{column(data, label.start)}:{palette.reset} {colour}{level}{palette.reset}{palette.bold}: {label.message}{palette.reset}\n";
+    let header = f"{palette.bold}{label.filename}:{line}:{label.column}:{palette.reset} {colour}{level}{palette.reset}{palette.bold}: {label.message}{palette.reset}\n";
     let number = f"{line}";
     let padding = " ".repeat(number.len());
     // EOF receives a line marker and one caret, without an extra empty line

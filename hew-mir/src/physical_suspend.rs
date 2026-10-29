@@ -238,19 +238,19 @@ pub(super) fn semantic_callables(checked: &hew_sir::CheckedModule<'_>) -> BTreeS
         }
         let mut types = BTreeMap::new();
         for parameter in &function.params {
-            types.insert(parameter.value, parameter.ty.clone());
+            types.insert(parameter.value, &parameter.ty);
         }
         for block in &function.blocks {
             for parameter in &block.args {
-                types.insert(parameter.value, parameter.ty.clone());
+                types.insert(parameter.value, &parameter.ty);
             }
-            for operation in block.operations() {
+            for operation in &block.ops {
                 for result in &operation.results {
-                    types.insert(result.id, result.ty.clone());
+                    types.insert(result.id, &result.ty);
                 }
             }
             block.terminator.visit_results(|result| {
-                types.insert(result.id, result.ty.clone());
+                types.insert(result.id, &result.ty);
             });
         }
         let certificate = checked
@@ -285,7 +285,7 @@ pub(super) fn semantic_callables(checked: &hew_sir::CheckedModule<'_>) -> BTreeS
                     resumable.insert(function.callable);
                 }
                 let ty = match &operation.kind {
-                    hew_sir::SemOpKind::DestroyValue { value } => Some(&types[&value.value]),
+                    hew_sir::SemOpKind::DestroyValue { value } => Some(types[&value.value]),
                     hew_sir::SemOpKind::StoreAssign { place, .. }
                     | hew_sir::SemOpKind::EndLifetime { place } => Some(
                         &function
@@ -368,7 +368,7 @@ pub(super) fn semantic_callables(checked: &hew_sir::CheckedModule<'_>) -> BTreeS
                     resumable.insert(function.callable);
                     let (_, dependencies) = semantic_release_dependencies(
                         module,
-                        &types[&inputs[1].operand.value],
+                        types[&inputs[1].operand.value],
                         None,
                     );
                     calls
@@ -424,7 +424,7 @@ pub(super) fn semantic_callables(checked: &hew_sir::CheckedModule<'_>) -> BTreeS
                     ..
                 } => {
                     let mut pending = vec![hew_sir::StructuralType::canonical(
-                        &types[&args[0].operand.value],
+                        types[&args[0].operand.value],
                     )];
                     let mut seen = BTreeSet::new();
                     while let Some(key) = pending.pop() {
@@ -470,7 +470,7 @@ pub(super) fn semantic_callables(checked: &hew_sir::CheckedModule<'_>) -> BTreeS
                     if family.releases_receiver_contents() {
                         let (intrinsic, dependencies) = semantic_release_dependencies(
                             module,
-                            &types[&args[0].operand.value],
+                            types[&args[0].operand.value],
                             None,
                         );
                         if intrinsic {
@@ -482,7 +482,7 @@ pub(super) fn semantic_callables(checked: &hew_sir::CheckedModule<'_>) -> BTreeS
                             .extend(dependencies);
                     }
                     for capability in family.value_callback_capabilities() {
-                        let receiver = &types[&args[0].operand.value];
+                        let receiver = types[&args[0].operand.value];
                         let (_, arguments) =
                             hew_types::runtime_call::collection_type_arguments(receiver)
                                 .expect("verified collection callback receiver");

@@ -2441,7 +2441,7 @@ impl SemTerminator {
         clippy::too_many_lines,
         reason = "Keep the exhaustive terminator vocabulary together"
     )]
-    pub fn visit_results(&self, mut visit: impl FnMut(&ValueDef)) {
+    pub fn visit_results<'a>(&'a self, mut visit: impl FnMut(&'a ValueDef)) {
         if let Some(handback) = self.call_handback() {
             visit(handback);
         }

@@ -107,6 +107,9 @@ pub struct ClusterMember {
     pub addr: [u8; 128],
     /// Monotonic timestamp (ms) of last successful ping response.
     pub last_seen_ms: u64,
+    /// Monotonic timestamp (ms) of this node's oldest direct probe of the
+    /// member that has not been answered. Any frame from the member answers it.
+    pub probe_sent_ms: Option<u64>,
 }
 
 /// A membership event for gossip dissemination.
@@ -310,7 +313,8 @@ pub struct ClusterConfig {
     pub local_node_id: u16,
     /// Protocol period in milliseconds (how often to ping).
     pub protocol_period_ms: u32,
-    /// Ping timeout in milliseconds.
+    /// How long a direct probe may go unanswered before the peer is suspected,
+    /// in milliseconds.
     pub ping_timeout_ms: u32,
     /// Suspect timeout in milliseconds (before declaring dead).
     pub suspect_timeout_ms: u32,
@@ -637,16 +641,19 @@ impl ClusterProtocol for SimpleSwim {
                     incarnation: member.incarnation,
                 });
             } else if member.state == MEMBER_ALIVE {
+                // Silence alone is not evidence: contact with one peer is
+                // naturally a full probe cycle apart. Only a direct probe left
+                // unanswered past its timeout can raise suspicion, and a warm
+                // detector then waits until the silence is anomalous for this
+                // peer.
+                let probe_overdue = member
+                    .probe_sent_ms
+                    .is_some_and(|sent| now_ms.saturating_sub(sent) > ping_timeout_ms);
                 let (phi, warm) = phi_snapshot
                     .get(&member.node_id)
                     .copied()
                     .unwrap_or((0.0, false));
-                let suspect = if warm {
-                    phi > PHI_THRESHOLD
-                } else {
-                    elapsed > ping_timeout_ms
-                };
-                if suspect {
+                if probe_overdue && (!warm || phi > PHI_THRESHOLD) {
                     changes.push(StateChange {
                         node_id: member.node_id,
                         new_state: MEMBER_SUSPECT,
@@ -695,15 +702,18 @@ impl ClusterProtocol for SimpleSwim {
 //     learned distribution)
 //   - 200-sample sliding window — enough to track minutes of cadence
 //     at a 1Hz heartbeat without becoming sluggish to react.
-//   - 10-sample warm-up — below this we fall back to `ping_timeout_ms`
+//   - 10-sample warm-up — below this an overdue probe alone suspects,
 //     so brand-new peers and quiet peers are not blind-spots.
+//
+// Phi only ever delays suspicion: it is consulted once a direct probe has
+// gone unanswered past `ping_timeout_ms`.
 
 /// Suspect a peer when its phi value exceeds this threshold.
 const PHI_THRESHOLD: f64 = 8.0;
 /// Maximum number of inter-arrival samples retained per peer.
 const PHI_WINDOW_SIZE: usize = 200;
-/// Minimum interval samples before phi is consulted; below this
-/// the legacy `ping_timeout_ms` fixed threshold is used.
+/// Minimum interval samples before phi is consulted; below this an overdue
+/// direct probe suspects on its own.
 const PHI_MIN_SAMPLES: usize = 10;
 
 // ── Core protocol logic ────────────────────────────────────────────────
@@ -786,6 +796,11 @@ impl HewCluster {
                 let old_state = existing.state;
                 existing.state = state;
                 existing.incarnation = incarnation;
+                if state == MEMBER_ALIVE {
+                    // A newer ALIVE refutes the suspicion an unanswered probe
+                    // was building; the next probe starts afresh.
+                    existing.probe_sent_ms = None;
+                }
                 if !addr.is_empty() {
                     let len = addr.len().min(127);
                     existing.addr[..len].copy_from_slice(&addr[..len]);
@@ -814,6 +829,7 @@ impl HewCluster {
             // not immediately mark a brand-new member as suspect.
             // SAFETY: hew_now_ms has no preconditions.
             last_seen_ms: unsafe { crate::clock::hew_now_ms() },
+            probe_sent_ms: None,
         };
         let len = addr.len().min(127);
         member.addr[..len].copy_from_slice(&addr[..len]);
@@ -1441,6 +1457,7 @@ impl HewCluster {
                             addr: [0; 128],
                             // SAFETY: hew_now_ms has no preconditions.
                             last_seen_ms: unsafe { crate::clock::hew_now_ms() },
+                            probe_sent_ms: None,
                         };
                         member.addr[0] = 0;
                         members.push(member);
@@ -1542,6 +1559,7 @@ impl HewCluster {
                 addr: [0u8; 128],
                 // SAFETY: hew_now_ms has no preconditions.
                 last_seen_ms: unsafe { crate::clock::hew_now_ms() },
+                probe_sent_ms: None,
             });
         }
     }
@@ -1679,6 +1697,7 @@ impl HewCluster {
         // Readers take the same members → detectors lock order.
         let was_suspect = member.state == MEMBER_SUSPECT;
         member.last_seen_ms = now;
+        member.probe_sent_ms = None;
         if was_suspect {
             member.state = MEMBER_ALIVE;
         }
@@ -1700,6 +1719,7 @@ impl HewCluster {
         // SAFETY: hew_now_ms has no preconditions.
         let now = unsafe { crate::clock::hew_now_ms() };
         member.last_seen_ms = now;
+        member.probe_sent_ms = None;
         if let Some(detector) = self.detectors.lock_or_recover().get_mut(&member.node_id) {
             detector.heartbeat_anchor_only(now);
         }
@@ -1707,12 +1727,11 @@ impl HewCluster {
 
     /// Advance the protocol: check for suspects and dead members.
     ///
-    /// The ALIVE → SUSPECT transition uses the phi-accrual failure
-    /// detector once the per-peer window holds at least
-    /// [`PHI_MIN_SAMPLES`] inter-arrival samples (the "warm" state).
-    /// While cold, the legacy `ping_timeout_ms` threshold is used as a
-    /// conservative fallback so brand-new or quiet peers are not blind
-    /// spots. The SUSPECT → DEAD escalation is unchanged.
+    /// The ALIVE → SUSPECT transition requires a direct probe left
+    /// unanswered for longer than `ping_timeout_ms`. Once the per-peer window
+    /// holds at least [`PHI_MIN_SAMPLES`] inter-arrival samples (the "warm"
+    /// state), the phi-accrual detector must also exceed its threshold. A
+    /// SUSPECT member silent for longer than `suspect_timeout_ms` is DEAD.
     ///
     /// Note: this changes *when* a [`HEW_MEMBERSHIP_EVENT_NODE_SUSPECT`]
     /// fires, never *what* the consumer observes — the membership event
@@ -2078,7 +2097,18 @@ impl HewCluster {
     /// the peer to probe directly.
     fn run_protocol_period(&self, now_ms: u64) -> Option<u16> {
         self.tick(now_ms);
-        self.next_ping_target()
+        let target = self.next_ping_target()?;
+        // Stamp before the caller sends, so the answer cannot precede it. A
+        // re-probe keeps the original stamp: the probe deadline never slides.
+        if let Some(member) = self
+            .members
+            .lock_or_recover()
+            .iter_mut()
+            .find(|member| member.node_id == target)
+        {
+            member.probe_sent_ms.get_or_insert(now_ms);
+        }
+        Some(target)
     }
 
     /// Get the next ping target, delegating selection to the installed
@@ -2319,6 +2349,7 @@ impl HewCluster {
                                 addr: [0; 128],
                                 // SAFETY: hew_now_ms has no preconditions.
                                 last_seen_ms: unsafe { crate::clock::hew_now_ms() },
+                                probe_sent_ms: None,
                             });
                         }
                         should_drain = self.queue_member_transition(MemberTransition {
@@ -2922,6 +2953,7 @@ pub(crate) unsafe fn hew_cluster_notify_connection_established_for_token_if_not_
                 addr: [0; 128],
                 // SAFETY: hew_now_ms has no preconditions.
                 last_seen_ms: unsafe { crate::clock::hew_now_ms() },
+                probe_sent_ms: None,
             });
             should_drain = cluster.queue_member_transition(
                 MemberTransition {
@@ -3105,6 +3137,8 @@ pub fn snapshot_members_json(cluster: &HewCluster) -> String {
 mod tests {
     use super::*;
 
+    #[path = "detector_mesh.rs"]
+    mod detector_mesh;
     #[path = "terminal_session_queue.rs"]
     mod terminal_session_queue;
     use crate::node_identity::NodeId;
@@ -3146,6 +3180,7 @@ mod tests {
             incarnation: 42,
             addr: [0; 128],
             last_seen_ms: fixture_last_seen_ms,
+            probe_sent_ms: None,
         };
         let addr = b"node\"\\\\name\n:9000";
         member.addr[..addr.len()].copy_from_slice(addr);
@@ -3311,21 +3346,20 @@ mod tests {
             member.last_seen_ms = 0;
         }
         let initial = (
-            cluster.next_ping_target(),
+            cluster.run_protocol_period(0),
             cluster.member_state(1),
             cluster.member_state(2),
         );
 
-        cluster.tick(150);
+        // The unanswered probe of node 2 is overdue; node 1 is never probed.
         let suspected = (
-            cluster.next_ping_target(),
+            cluster.run_protocol_period(150),
             cluster.member_state(1),
             cluster.member_state(2),
         );
 
-        cluster.tick(500);
         let terminal = (
-            cluster.next_ping_target(),
+            cluster.run_protocol_period(500),
             cluster.member_state(1),
             cluster.member_state(2),
         );
@@ -3413,6 +3447,7 @@ mod tests {
         cluster.upsert_member(2, initial_state, 1, b"10.0.0.1:9000");
         cluster.sessions.lock_or_recover().insert(2, 1);
         cluster.members.lock_or_recover()[0].last_seen_ms = 0;
+        cluster.members.lock_or_recover()[0].probe_sent_ms = Some(0);
         cluster.events.lock_or_recover().clear();
         let tick_cluster = SendCluster(std::ptr::from_ref(&cluster));
         std::thread::scope(|scope| {
@@ -3522,7 +3557,7 @@ mod tests {
             },
             1
         );
-        cluster.tick(1_000);
+        assert_eq!(cluster.run_protocol_period(1_000), Some(2));
         assert_eq!(cluster.member_state(2), MEMBER_ALIVE);
         assert_eq!(
             cluster.detectors.lock_or_recover()[&2].sample_count(),
@@ -3533,7 +3568,7 @@ mod tests {
         assert_eq!(
             cluster.member_state(2),
             MEMBER_SUSPECT,
-            "a new silence must still be detected after reconnect"
+            "an unanswered probe after reconnect must still be detected"
         );
         crate::deterministic::hew_simtime_disable();
     }

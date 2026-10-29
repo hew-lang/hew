@@ -8,6 +8,13 @@ use hew_mir::physical::{ParamCarrier, SemParamPassing};
 use hew_types::ResolvedTy;
 
 fn main() {
+    // The renderers are part of this toolchain, so they compile against the
+    // standard library this checkout's compiler crates were built from.
+    // `HEW_STD` selects the std a user program runs against; left in place
+    // it would resolve std sources outside this checkout while this
+    // checkout's builtins stay compiled in, and the checker then refuses the
+    // checkout's own prelude declarations as user redeclarations.
+    std::env::remove_var("HEW_STD");
     let build = std::thread::Builder::new()
         .name("hew-presentation-renderers".into())
         .stack_size(hew_compile::COMPILER_STACK_SIZE)
@@ -40,14 +47,23 @@ fn build_renderer(module_name: &str, source_path: &str, exports: &[(&str, &str)]
     let triple = std::env::var("TARGET").unwrap();
     println!("cargo:rerun-if-changed=build.rs");
     println!("cargo:rerun-if-changed={}", source.display());
-    // Resolve against this source tree, never an installed SDK. Cargo rebuilds
-    // the compiler dependencies; the frontend records exact source inputs.
+    // Resolve against this source tree, never an installed SDK. The checker
+    // decides which sources are the canonical std from the compiler's own std
+    // root, so the frontend resolves from that same root, and it must be this
+    // checkout. Cargo rebuilds the compiler dependencies; the frontend records
+    // exact source inputs.
+    let std_roots = hew_types::module_registry::stdlib_search_paths();
+    assert_eq!(
+        std_roots,
+        [root.canonicalize().unwrap()],
+        "the compiler's standard-library root must be this checkout"
+    );
     let frontend = hew_compile::FrontendOptions {
-        module_search_paths: Some(vec![root.to_path_buf()]),
+        module_search_paths: Some(std_roots),
         ..Default::default()
     };
     let state = hew_compile::run_file_frontend_to_typecheck(source.to_str().unwrap(), &frontend)
-        .unwrap_or_else(|error| panic!("presentation renderer frontend: {}", error.message));
+        .unwrap_or_else(|error| panic!("presentation renderer frontend: {}", describe(&error)));
     for input in state.typecheck_result.sources.inputs() {
         // Absent optional package files are not renderer dependencies. Cargo
         // would rebuild on every invocation if asked to watch a missing file.
@@ -119,4 +135,19 @@ fn build_renderer(module_name: &str, source_path: &str, exports: &[(&str, &str)]
     cc::Build::new()
         .object(artefacts.native_obj_path.expect("native renderer object"))
         .compile(module_name);
+}
+
+/// The failure message with each diagnostic's own message.
+fn describe(error: &hew_compile::FrontendFailure) -> String {
+    let mut text = error.message.clone();
+    for diagnostic in &error.diagnostics {
+        text.push('\n');
+        text += &match &diagnostic.kind {
+            hew_compile::FrontendDiagnosticKind::Message(message) => message.message.clone(),
+            hew_compile::FrontendDiagnosticKind::Parse(error) => error.message.clone(),
+            hew_compile::FrontendDiagnosticKind::Type(error) => error.to_string(),
+            hew_compile::FrontendDiagnosticKind::Hir(error) => error.note.clone(),
+        };
+    }
+    text
 }

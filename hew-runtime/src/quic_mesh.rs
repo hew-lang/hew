@@ -918,11 +918,11 @@ impl QuicMeshTransport {
                 conn.peer
                     .conn
                     .close(VarInt::from_u32(0), b"quic-mesh conn closed");
+                self.slot_table
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .release(idx);
             }
-            self.slot_table
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .release(idx);
         }
     }
 }
@@ -2650,7 +2650,16 @@ mod tests {
     // SlotTable — stable peer-connection handle bookkeeping
     // -----------------------------------------------------------------------
 
-    /// Empty LRU returns the first slot.
+    #[test]
+    fn closing_empty_slot_preserves_pending_reservation() {
+        let rt = Arc::new(tokio::runtime::Runtime::new().unwrap());
+        let transport = QuicMeshTransport::new(rt);
+        let idx = transport.slot_table.lock().unwrap().alloc().unwrap();
+        transport.remove_conn(idx as c_int);
+        assert_ne!(transport.slot_table.lock().unwrap().alloc(), Some(idx));
+    }
+
+    /// An empty table returns the first slot.
     #[test]
     fn slot_table_empty_alloc_uses_first_empty_slot() {
         let mut slots = SlotTable::new(4);

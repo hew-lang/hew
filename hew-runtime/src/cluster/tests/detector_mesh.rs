@@ -2,9 +2,9 @@
 //!
 //! Three in-process clusters exchange SWIM frames on a simulated clock. Each
 //! protocol period mirrors `swim_driver::run_one_period` (tick, direct PING,
-//! `PING_REQ` through the remaining peer) and each delivery mirrors
+//! `PING_REQ` through every other connected peer) and each delivery mirrors
 //! `connection::swim::handle_swim_control_frame` (gossip import, refutation,
-//! `process_message`, then ACK or the forwarded PING).
+//! then `receive_swim` and the replies it returns).
 
 use super::*;
 
@@ -51,6 +51,9 @@ struct Mesh {
     /// A stalled node keeps its connections but neither runs nor reads; frames
     /// to and from it wait in the transport until the stall ends.
     stalled: Option<u16>,
+    /// Black-holed links: frames between the pair are lost while both stay
+    /// connected.
+    cut: Vec<[u16; 2]>,
 }
 
 impl Mesh {
@@ -91,6 +94,7 @@ impl Mesh {
             in_flight: Vec::new(),
             sent: 0,
             stalled: None,
+            cut: Vec::new(),
         }
     }
 
@@ -102,18 +106,36 @@ impl Mesh {
         &self.nodes[Self::index(slot)]
     }
 
+    fn is_cut(&self, a: u16, b: u16) -> bool {
+        self.cut
+            .iter()
+            .any(|link| *link == [a, b] || *link == [b, a])
+    }
+
+    /// Black-hole the `a`–`b` link, losing the frames already on it.
+    fn cut_link(&mut self, a: u16, b: u16) {
+        self.cut.push([a, b]);
+        self.in_flight.retain(|frame| {
+            !(frame.from == a && frame.to == b || frame.from == b && frame.to == a)
+        });
+    }
+
     /// Queue a frame with a deterministic 1–40 ms one-way latency, draining
-    /// the sender's piggybacked gossip exactly as an outbound frame does.
+    /// the sender's piggybacked gossip exactly as an outbound frame does. A
+    /// frame on a cut link is lost after its gossip is spent.
     fn send(&mut self, now: u64, from: u16, to: u16, msg_type: i32, target: u16) {
         let sender = self.node(from);
         let gossip = sender
-            .take_swim_gossip(sender.max_gossip_per_msg())
+            .take_swim_gossip(to, sender.max_gossip_per_msg())
             .into_iter()
             .map(|(slot, session, state, incarnation)| {
                 (slot, session.unwrap_or(1), state, incarnation)
             })
             .collect();
         let incarnation = sender.local_incarnation();
+        if self.is_cut(from, to) {
+            return;
+        }
         self.sent += 1;
         self.in_flight.push(Frame {
             deliver_at: now + 1 + (self.sent * 7_919) % 40,
@@ -130,19 +152,15 @@ impl Mesh {
         let receiver = self.node(frame.to);
         receiver.apply_swim_gossip(&frame.gossip);
         receiver.refute_if_suspected(&frame.gossip);
-        receiver.process_message_at(
+        let replies = receiver.receive_swim_at(
             frame.msg_type,
             frame.from,
             frame.incarnation,
-            frame.from,
+            frame.target,
             now,
         );
-        match frame.msg_type {
-            SWIM_MSG_PING => self.send(now, frame.to, frame.from, SWIM_MSG_ACK, 0),
-            SWIM_MSG_PING_REQ if frame.target != frame.to => {
-                self.send(now, frame.to, frame.target, SWIM_MSG_PING, 0);
-            }
-            _ => {}
+        for reply in replies {
+            self.send(now, frame.to, reply.to, reply.msg_type, reply.target);
         }
     }
 
@@ -345,4 +363,87 @@ fn brief_pause_is_never_buried() {
         .collect::<Vec<_>>();
     assert_eq!(buried, Vec::new(), "a brief pause is forgiven");
     mesh.assert_all_alive();
+}
+
+/// A black hole between two live members is bridged by the third: the relay
+/// forwards the probed member's ACK, so neither side of the cut is suspected
+/// and nobody has to refute.
+#[test]
+fn pairwise_partition_is_bridged_by_indirect_acks() {
+    const CUT_AT: u64 = 20_000;
+    let _guard = crate::runtime_test_guard();
+    for phases in [ALIGNED_PHASES_MS, SPREAD_PHASES_MS] {
+        let mut mesh = Mesh::new(phases);
+        mesh.run_until(CUT_AT);
+        let start = mesh.incarnations();
+        mesh.cut_link(SLOTS[0], SLOTS[1]);
+        mesh.run_until(CUT_AT + 60_000);
+
+        let faults = mesh.faults_since(0);
+        assert!(
+            faults.is_empty(),
+            "tick phases {phases:?} raised {} faults across the cut, first {:?}",
+            faults.len(),
+            faults.iter().take(4).collect::<Vec<_>>()
+        );
+        assert_eq!(mesh.incarnations(), start, "no member may need to refute");
+        mesh.assert_all_alive();
+    }
+}
+
+/// A member buried while its frames were lost, not held, still learns of its
+/// burial once traffic flows again, long after every gossiped obituary was
+/// spent, and returns by refuting it.
+#[test]
+fn dropped_burial_is_refuted_after_heal() {
+    const STALL_AT: u64 = 20_000;
+    const HEAL_AT: u64 = 40_000;
+    const REJOIN_BY: u64 = HEAL_AT + 10_000;
+    let _guard = crate::runtime_test_guard();
+    let buried = SLOTS[2];
+    let mut mesh = Mesh::new(ALIGNED_PHASES_MS);
+    mesh.run_until(STALL_AT);
+    mesh.stalled = Some(buried);
+    mesh.cut_link(buried, SLOTS[0]);
+    mesh.cut_link(buried, SLOTS[1]);
+    mesh.run_until(HEAL_AT);
+
+    for observer in [SLOTS[0], SLOTS[1]] {
+        let node = mesh.node(observer);
+        assert_eq!(
+            node.member_state(buried),
+            MEMBER_DEAD,
+            "slot {observer} buried it"
+        );
+        assert!(
+            !node
+                .events
+                .lock_or_recover()
+                .iter()
+                .any(|event| event.node_id == buried),
+            "slot {observer} spent its gossiped obituary on lost frames"
+        );
+    }
+    let buried_incarnation = mesh.node(buried).local_incarnation();
+    mesh.stalled = None;
+    mesh.cut.clear();
+    mesh.run_until(REJOIN_BY);
+
+    mesh.assert_all_alive();
+    assert!(
+        mesh.node(buried).local_incarnation() > buried_incarnation,
+        "the buried member refuted its death"
+    );
+    let settled = mesh.incarnations();
+    mesh.run_until(REJOIN_BY + 60_000);
+    assert_eq!(
+        mesh.faults_since(REJOIN_BY),
+        Vec::new(),
+        "no fault after rejoining"
+    );
+    assert_eq!(
+        mesh.incarnations(),
+        settled,
+        "no refutation after rejoining"
+    );
 }

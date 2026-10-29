@@ -128,6 +128,26 @@ struct MemberEvent {
     dissemination_count: u32,
 }
 
+/// A `PING_REQ` this node relayed: an ACK from `target` before `expires_ms`
+/// is forwarded to `requester`.
+#[derive(Debug, Clone, Copy)]
+struct IndirectProbe {
+    target: u16,
+    requester: u16,
+    expires_ms: u64,
+}
+
+/// A SWIM frame that a received frame obliges this node to send.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct SwimReply {
+    /// Route slot to send to.
+    pub(crate) to: u16,
+    /// `SWIM_MSG_PING` or `SWIM_MSG_ACK`.
+    pub(crate) msg_type: i32,
+    /// Probed member a forwarded ACK vouches for; `0` for a direct frame.
+    pub(crate) target: u16,
+}
+
 /// A registry event for gossip dissemination.
 ///
 /// Propagates actor name registrations and removals across the cluster
@@ -383,6 +403,8 @@ pub struct HewCluster {
     pending_member_transitions: Mutex<PendingMemberTransitions>,
     /// Recent membership events for gossip dissemination.
     events: Mutex<VecDeque<MemberEvent>>,
+    /// `PING_REQ`s relayed for other members, awaiting the target's ACK.
+    indirect_probes: Mutex<Vec<IndirectProbe>>,
     /// Recent registry events for gossip dissemination.
     registry_events: Mutex<VecDeque<RegistryEvent>>,
     /// Our own incarnation number.
@@ -391,6 +413,9 @@ pub struct HewCluster {
     /// connection reader thread (on receiving SUSPECT-about-self) while the
     /// SWIM driver thread reads it to stamp outbound PING/ACK frames.
     local_incarnation: AtomicU64,
+    /// Local incarnation at which this node last answered a claim that it is
+    /// DEAD; see [`Self::claim_burial_answer`].
+    burial_answered_incarnation: AtomicU64,
     /// Membership change callback.
     callback: Option<MemberChangeCallback>,
     /// Membership event callback binding.
@@ -599,10 +624,14 @@ impl SimpleSwim {
 }
 
 impl ClusterProtocol for SimpleSwim {
+    // Every authenticated PING, ACK and PING_REQ carries the sender's own
+    // incarnation, so each is contact and an ALIVE claim at that incarnation:
+    // a buried member that refuted its death returns through whichever frame
+    // it sends first.
     fn handle_ping(&self, _from_node: u16) -> ProtocolDecision {
         ProtocolDecision {
             update_last_seen: true,
-            upsert_alive: false,
+            upsert_alive: true,
         }
     }
 
@@ -616,7 +645,7 @@ impl ClusterProtocol for SimpleSwim {
     fn handle_ping_req(&self, _from_node: u16) -> ProtocolDecision {
         ProtocolDecision {
             update_last_seen: true,
-            upsert_alive: false,
+            upsert_alive: true,
         }
     }
 
@@ -729,8 +758,10 @@ impl HewCluster {
             connection_tokens: Mutex::new(ConnectionTokens::default()),
             pending_member_transitions: Mutex::new(PendingMemberTransitions::default()),
             events: Mutex::new(VecDeque::with_capacity(MAX_GOSSIP_EVENTS)),
+            indirect_probes: Mutex::new(Vec::new()),
             registry_events: Mutex::new(VecDeque::with_capacity(MAX_GOSSIP_EVENTS)),
             local_incarnation: AtomicU64::new(1),
+            burial_answered_incarnation: AtomicU64::new(0),
             callback: None,
             membership_callback_binding: Mutex::new(MembershipCallbackBinding::default()),
             registry_callback: None,
@@ -1679,6 +1710,108 @@ impl HewCluster {
         }
     }
 
+    /// Run the SWIM state machine for one authenticated frame from `from` and
+    /// return the frames it obliges this node to send.
+    ///
+    /// - `PING` is answered with an `ACK`.
+    /// - `PING_REQ` naming `target` is relayed as a `PING` to the target, and
+    ///   the target's next `ACK` within `ping_timeout_ms` is forwarded to the
+    ///   requester as an `ACK` naming the target.
+    /// - An `ACK` naming a target is a relay's report that the target answered
+    ///   this node's indirect probe: it counts as contact with the target.
+    ///
+    /// The caller has already folded the frame's gossip and refuted claims
+    /// about this node.
+    pub(crate) fn receive_swim(
+        &self,
+        msg_type: i32,
+        from: u16,
+        incarnation: u64,
+        target: u16,
+    ) -> Vec<SwimReply> {
+        // SAFETY: hew_now_ms has no preconditions.
+        let now_ms = unsafe { crate::clock::hew_now_ms() };
+        self.receive_swim_at(msg_type, from, incarnation, target, now_ms)
+    }
+
+    /// [`Self::receive_swim`] observed at `now_ms`.
+    fn receive_swim_at(
+        &self,
+        msg_type: i32,
+        from: u16,
+        incarnation: u64,
+        target: u16,
+        now_ms: u64,
+    ) -> Vec<SwimReply> {
+        self.process_message_at(msg_type, from, incarnation, from, now_ms);
+        let local = self.config.local_node_id;
+        let named = target != 0 && target != local && target != from;
+        match msg_type {
+            SWIM_MSG_PING => vec![SwimReply {
+                to: from,
+                msg_type: SWIM_MSG_ACK,
+                target: 0,
+            }],
+            SWIM_MSG_PING_REQ if named => {
+                self.await_indirect_ack(target, from, now_ms);
+                vec![SwimReply {
+                    to: target,
+                    msg_type: SWIM_MSG_PING,
+                    target: 0,
+                }]
+            }
+            SWIM_MSG_ACK if target == 0 => self
+                .take_indirect_requesters(from, now_ms)
+                .into_iter()
+                .map(|requester| SwimReply {
+                    to: requester,
+                    msg_type: SWIM_MSG_ACK,
+                    target: from,
+                })
+                .collect(),
+            SWIM_MSG_ACK if named => {
+                // The relay's incarnation says nothing about the target, so
+                // this is contact only: it answers the overdue probe but can
+                // never readmit or re-stamp a buried target.
+                self.update_last_seen(target, now_ms);
+                Vec::new()
+            }
+            _ => Vec::new(),
+        }
+    }
+
+    /// Remember that `requester` asked this node to probe `target`.
+    fn await_indirect_ack(&self, target: u16, requester: u16, now_ms: u64) {
+        let expires_ms = now_ms + u64::from(self.config.ping_timeout_ms);
+        let mut probes = self.indirect_probes.lock_or_recover();
+        probes.retain(|probe| probe.expires_ms > now_ms);
+        if let Some(probe) = probes
+            .iter_mut()
+            .find(|probe| probe.target == target && probe.requester == requester)
+        {
+            probe.expires_ms = expires_ms;
+        } else {
+            probes.push(IndirectProbe {
+                target,
+                requester,
+                expires_ms,
+            });
+        }
+    }
+
+    /// Claim every unexpired relay request waiting on an ACK from `target`.
+    fn take_indirect_requesters(&self, target: u16, now_ms: u64) -> Vec<u16> {
+        let mut requesters = Vec::new();
+        self.indirect_probes.lock_or_recover().retain(|probe| {
+            if probe.target == target && probe.expires_ms > now_ms {
+                requesters.push(probe.requester);
+                return false;
+            }
+            probe.expires_ms > now_ms
+        });
+        requesters
+    }
+
     /// Update `last_seen_ms` for a member, and record the heartbeat
     /// into that peer's phi-accrual detector.
     ///
@@ -2230,8 +2363,8 @@ impl HewCluster {
         self.config.indirect_ping_count as usize
     }
 
-    /// Drain up to `max_count` pending membership-gossip entries for
-    /// piggybacking on an outbound SWIM frame (C6 infection-style export).
+    /// Drain up to `max_count` membership-gossip entries for piggybacking on
+    /// an outbound SWIM frame to `to` (C6 infection-style export).
     ///
     /// Returns `(node_id, session, state, incarnation)` tuples. The caller maps
     /// these onto the wire `SwimGossipEntry` type; the cluster stays decoupled
@@ -2239,12 +2372,44 @@ impl HewCluster {
     /// events pruned, exactly as [`Self::take_registry_gossip`] does for
     /// registry events. This internal wire-facing drain preserves the session
     /// captured by each event and is not part of the host ABI.
-    pub(crate) fn take_swim_gossip(&self, max_count: usize) -> Vec<(u16, Option<u32>, i32, u64)> {
+    ///
+    /// A frame to a member this node holds DEAD leads with that member's
+    /// obituary, outside the dissemination budget. A buried member that is
+    /// still connected therefore learns of its burial from the next frame it
+    /// receives from any node that buried it, however many earlier copies were
+    /// lost, and refutes it. The obituary rides frames the protocol already
+    /// sends, so a buried member never causes extra traffic.
+    pub(crate) fn take_swim_gossip(
+        &self,
+        to: u16,
+        max_count: usize,
+    ) -> Vec<(u16, Option<u32>, i32, u64)> {
+        let obituary = {
+            let sessions = self.sessions.lock_or_recover();
+            let members = self.members.lock_or_recover();
+            members
+                .iter()
+                .find(|member| member.node_id == to && member.state == MEMBER_DEAD)
+                .map(|member| {
+                    (
+                        to,
+                        sessions.get(&to).copied(),
+                        MEMBER_DEAD,
+                        member.incarnation,
+                    )
+                })
+        };
         let mut events = self.events.lock_or_recover();
-        let mut result = Vec::with_capacity(max_count.min(events.len()));
+        let mut result = Vec::with_capacity(max_count.min(events.len() + 1));
+        if max_count > 0 {
+            result.extend(obituary);
+        }
         for event in events.iter_mut() {
             if result.len() >= max_count {
                 break;
+            }
+            if obituary.is_some() && event.node_id == to {
+                continue;
             }
             result.push((
                 event.node_id,
@@ -2431,6 +2596,32 @@ impl HewCluster {
                 Err(observed) => current = observed,
             }
         }
+    }
+}
+
+impl HewCluster {
+    /// Whether `entries` tell this node it was declared DEAD and it has not
+    /// yet answered a burial at its current incarnation.
+    ///
+    /// A peer that buried this node dropped its names, and a same-session
+    /// readmission repeats no admission flush, so the caller re-announces
+    /// them. The claim may sit below the local incarnation when this node
+    /// already refuted a suspicion the burying peer never heard; the names are
+    /// still gone there. Answering once per local incarnation bounds the cost:
+    /// every frame from a burying peer carries the obituary until it readmits
+    /// this node.
+    pub(crate) fn claim_burial_answer(&self, entries: &[(u16, u32, i32, u64)]) -> bool {
+        let local = self.config.local_node_id;
+        if !entries
+            .iter()
+            .any(|&(node_id, _, state, _)| node_id == local && state == MEMBER_DEAD)
+        {
+            return false;
+        }
+        let current = self.local_incarnation();
+        self.burial_answered_incarnation
+            .fetch_max(current, Ordering::SeqCst)
+            < current
     }
 }
 
@@ -5134,26 +5325,181 @@ mod tests {
     fn cluster_protocol_dyn_dispatch_produces_correct_decisions() {
         let protocol: Box<dyn ClusterProtocol> = Box::new(SimpleSwim::new());
 
-        // PING: update last_seen, do NOT upsert alive.
-        let d = protocol.handle_ping(2);
-        assert!(d.update_last_seen, "PING must update last_seen");
-        assert!(!d.upsert_alive, "PING must not upsert alive");
-
-        // ACK: update last_seen AND upsert alive.
-        let d = protocol.handle_ack(2, 1);
-        assert!(d.update_last_seen, "ACK must update last_seen");
-        assert!(d.upsert_alive, "ACK must upsert alive");
-
-        // PING_REQ: update last_seen, do NOT upsert alive (forwarding is
-        // the C3 driver's responsibility).
-        let d = protocol.handle_ping_req(3);
-        assert!(d.update_last_seen, "PING_REQ must update last_seen");
-        assert!(!d.upsert_alive, "PING_REQ must not upsert alive");
+        // PING, ACK and PING_REQ are each contact and an ALIVE claim at the
+        // sender's own incarnation.
+        for d in [
+            protocol.handle_ping(2),
+            protocol.handle_ack(2, 1),
+            protocol.handle_ping_req(3),
+        ] {
+            assert!(d.update_last_seen, "a probe frame is contact");
+            assert!(d.upsert_alive, "a probe frame claims ALIVE");
+        }
 
         // GOSSIP: no-op default.
         let d = protocol.handle_gossip(4, 1);
         assert!(!d.update_last_seen, "GOSSIP default must be a no-op");
         assert!(!d.upsert_alive, "GOSSIP default must be a no-op");
+    }
+
+    #[test]
+    fn dead_member_returns_through_any_frame_at_higher_incarnation() {
+        for msg_type in [SWIM_MSG_PING, SWIM_MSG_ACK, SWIM_MSG_PING_REQ] {
+            let cluster = HewCluster::new(make_config(1));
+            cluster.upsert_member(2, MEMBER_DEAD, 5, &[]);
+            cluster.process_message(msg_type, 2, 5, 2);
+            assert_eq!(
+                cluster.member_state(2),
+                MEMBER_DEAD,
+                "type {msg_type} at the buried incarnation"
+            );
+            cluster.process_message(msg_type, 2, 6, 2);
+            assert_eq!(cluster.member_state(2), MEMBER_ALIVE, "type {msg_type}");
+            assert_eq!(cluster.member_incarnation(2), Some(6));
+        }
+    }
+
+    #[test]
+    fn relay_forwards_the_targets_ack_once_within_the_probe_timeout() {
+        let cluster = HewCluster::new(make_config(1));
+        for peer in [2, 3, 4] {
+            cluster.upsert_member(peer, MEMBER_ALIVE, 1, &[]);
+        }
+        let ping = |to| SwimReply {
+            to,
+            msg_type: SWIM_MSG_PING,
+            target: 0,
+        };
+        let forwarded = |to| SwimReply {
+            to,
+            msg_type: SWIM_MSG_ACK,
+            target: 2,
+        };
+        assert_eq!(
+            cluster.receive_swim_at(SWIM_MSG_PING_REQ, 3, 1, 2, 1_000),
+            vec![ping(2)]
+        );
+        assert_eq!(
+            cluster.receive_swim_at(SWIM_MSG_PING_REQ, 4, 1, 2, 1_010),
+            vec![ping(2)]
+        );
+        // The target's ACK is forwarded once to each requester.
+        let mut replies = cluster.receive_swim_at(SWIM_MSG_ACK, 2, 1, 0, 1_050);
+        replies.sort_by_key(|reply| reply.to);
+        assert_eq!(replies, vec![forwarded(3), forwarded(4)]);
+        assert_eq!(
+            cluster.receive_swim_at(SWIM_MSG_ACK, 2, 1, 0, 1_060),
+            vec![]
+        );
+
+        // An ACK after the probe timeout is not forwarded.
+        let timeout = u64::from(cluster.config.ping_timeout_ms);
+        cluster.receive_swim_at(SWIM_MSG_PING_REQ, 3, 1, 2, 2_000);
+        assert_eq!(
+            cluster.receive_swim_at(SWIM_MSG_ACK, 2, 1, 0, 2_000 + timeout),
+            vec![]
+        );
+        // A PING_REQ about the relay itself or its sender is not relayed.
+        assert_eq!(
+            cluster.receive_swim_at(SWIM_MSG_PING_REQ, 3, 1, 1, 3_000),
+            vec![]
+        );
+        assert_eq!(
+            cluster.receive_swim_at(SWIM_MSG_PING_REQ, 3, 1, 3, 3_000),
+            vec![]
+        );
+    }
+
+    #[test]
+    fn forwarded_ack_answers_the_probe_without_vouching_for_incarnation() {
+        let cluster = HewCluster::new(make_config(1));
+        cluster.upsert_member(2, MEMBER_ALIVE, 4, &[]);
+        cluster.upsert_member(3, MEMBER_ALIVE, 1, &[]);
+        cluster.upsert_member(5, MEMBER_DEAD, 5, &[]);
+        cluster
+            .members
+            .lock_or_recover()
+            .iter_mut()
+            .find(|member| member.node_id == 2)
+            .unwrap()
+            .probe_sent_ms = Some(1_000);
+
+        // Relay 3 at incarnation 9 vouches that 2 answered.
+        assert_eq!(
+            cluster.receive_swim_at(SWIM_MSG_ACK, 3, 9, 2, 1_100),
+            vec![]
+        );
+        let members = cluster.members.lock_or_recover().clone();
+        let probed = members.iter().find(|member| member.node_id == 2).unwrap();
+        assert_eq!(
+            probed.probe_sent_ms, None,
+            "the indirect ACK answers the probe"
+        );
+        assert_eq!(probed.last_seen_ms, 1_100);
+        assert_eq!(probed.incarnation, 4, "the relay's incarnation is its own");
+        assert_eq!(cluster.member_incarnation(3), Some(9));
+
+        // A forwarded ACK can never readmit a buried member.
+        cluster.receive_swim_at(SWIM_MSG_ACK, 3, 9, 5, 1_200);
+        assert_eq!(cluster.member_state(5), MEMBER_DEAD);
+        assert_eq!(cluster.member_incarnation(5), Some(5));
+    }
+
+    #[test]
+    fn burial_is_answered_once_per_local_incarnation() {
+        let cluster = HewCluster::new(make_config(1));
+        let suspected = [(1, 1, MEMBER_SUSPECT, 1)];
+        assert!(!cluster.claim_burial_answer(&suspected));
+        cluster.refute_if_suspected(&suspected);
+        assert_eq!(cluster.local_incarnation(), 2);
+
+        // A burial below the refuted incarnation still cost this node its
+        // names at the burying peer.
+        let stale = [(1, 1, MEMBER_DEAD, 1)];
+        assert_eq!(cluster.refute_if_suspected(&stale), None);
+        assert!(cluster.claim_burial_answer(&stale));
+        assert!(!cluster.claim_burial_answer(&stale), "answered already");
+
+        let current = [(1, 1, MEMBER_DEAD, 2)];
+        assert_eq!(cluster.refute_if_suspected(&current), Some(3));
+        assert!(cluster.claim_burial_answer(&current));
+        assert!(!cluster.claim_burial_answer(&current));
+        assert!(!cluster.claim_burial_answer(&[(2, 1, MEMBER_DEAD, 9)]));
+    }
+
+    #[test]
+    fn frames_to_a_buried_member_lead_with_its_obituary() {
+        let cluster = HewCluster::new(make_config(1));
+        cluster.sessions.lock_or_recover().insert(2, 7);
+        cluster.upsert_member(2, MEMBER_ALIVE, 1, &[]);
+        cluster.upsert_member(2, MEMBER_DEAD, 3, &[]);
+        cluster.upsert_member(4, MEMBER_LEFT, 2, &[]);
+        // Spend the gossiped obituary on other destinations.
+        while cluster
+            .events
+            .lock_or_recover()
+            .iter()
+            .any(|e| e.node_id == 2)
+        {
+            cluster.take_swim_gossip(3, 8);
+        }
+
+        for _ in 0..16 {
+            let gossip = cluster.take_swim_gossip(2, 8);
+            assert_eq!(gossip.first(), Some(&(2, Some(7), MEMBER_DEAD, 3)));
+            assert_eq!(gossip.iter().filter(|entry| entry.0 == 2).count(), 1);
+        }
+        assert!(cluster
+            .take_swim_gossip(3, 8)
+            .iter()
+            .all(|entry| entry.0 != 2));
+        assert!(
+            cluster
+                .take_swim_gossip(4, 8)
+                .iter()
+                .all(|entry| entry.0 != 4),
+            "a member that left is not told it died"
+        );
     }
 
     #[test]
@@ -5209,7 +5555,7 @@ mod tests {
         cluster.upsert_member(2, MEMBER_ALIVE, 3, b"10.0.0.2:9000");
         cluster.emit_event(2, MEMBER_DEAD, 5, None);
 
-        let gossip = cluster.take_swim_gossip(8);
+        let gossip = cluster.take_swim_gossip(3, 8);
         assert!(
             gossip.iter().any(|&(n, session, s, i)| n == 2
                 && session.is_none()
@@ -5328,7 +5674,7 @@ mod tests {
         assert_eq!(cluster.local_incarnation(), new_inc);
 
         // The refutation is queued as an ALIVE-about-self gossip event.
-        let gossip = cluster.take_swim_gossip(8);
+        let gossip = cluster.take_swim_gossip(3, 8);
         assert!(
             gossip
                 .iter()

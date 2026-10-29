@@ -88,9 +88,13 @@ fn route_slot_for_identity(mgr: &HewConnMgr, node_id: NodeId) -> Option<u16> {
     }
 }
 
-fn collect_swim_gossip(mgr: &HewConnMgr, cluster: &HewCluster) -> Vec<SwimGossipEntry> {
+fn collect_swim_gossip(
+    mgr: &HewConnMgr,
+    cluster: &HewCluster,
+    peer_node: u16,
+) -> Vec<SwimGossipEntry> {
     let mut gossip: Vec<SwimGossipEntry> = cluster
-        .take_swim_gossip(cluster.max_gossip_per_msg())
+        .take_swim_gossip(peer_node, cluster.max_gossip_per_msg())
         .into_iter()
         .filter_map(|(route_slot, session, state, incarnation)| {
             Some(SwimGossipEntry {
@@ -145,11 +149,13 @@ fn collect_swim_gossip(mgr: &HewConnMgr, cluster: &HewCluster) -> Vec<SwimGossip
     gossip
 }
 
-/// Build a SWIM frame of `msg_type` to `target_node`, stamped with the local
-/// node's identity and incarnation, carrying a fresh piggybacked gossip batch.
+/// Build a SWIM frame of `msg_type` for `peer_node` naming `target_node`,
+/// stamped with the local node's identity and incarnation, carrying a fresh
+/// piggybacked gossip batch.
 fn build_swim_frame(
     mgr: &HewConnMgr,
     cluster: &HewCluster,
+    peer_node: u16,
     msg_type: i32,
     target_node: u16,
 ) -> Option<Vec<u8>> {
@@ -162,16 +168,17 @@ fn build_swim_frame(
         } else {
             Some(node_session_for_route(mgr, cluster, target_node)?)
         },
-        gossip: collect_swim_gossip(mgr, cluster),
+        gossip: collect_swim_gossip(mgr, cluster, peer_node),
     };
     encode_swim_control(&payload)
 }
 
 /// Send a single SWIM protocol message to a specific peer node.
 ///
-/// Used by the SWIM driver to issue direct PINGs and by the indirect-probe
-/// path (C4) to relay `PING` / `PING_REQ`. `target_node` is the
-/// indirect-probe subject for `PING_REQ` frames; `0` for direct PING / ACK.
+/// Used by the SWIM driver to issue direct PINGs and `PING_REQ`s, and by the
+/// receiver to send the replies [`HewCluster::receive_swim`] returns.
+/// `target_node` is the probed member a `PING_REQ` asks for or a forwarded
+/// `ACK` vouches for; `0` for a direct PING / ACK.
 ///
 /// Returns `0` on a successful send, `-1` if no active gossip-capable
 /// connection to `peer_node_id` exists or the send failed.
@@ -206,7 +213,8 @@ pub(crate) unsafe fn hew_connmgr_send_swim(
 
     // SAFETY: cluster pointer is owned by the live manager.
     let cluster = unsafe { &*mgr_ref.cluster };
-    let Some(bytes) = build_swim_frame(mgr_ref, cluster, msg_type, target_node) else {
+    let Some(bytes) = build_swim_frame(mgr_ref, cluster, peer_node_id, msg_type, target_node)
+    else {
         return -1;
     };
     if send_claim.send(&bytes) == 0 {
@@ -260,9 +268,9 @@ pub(crate) unsafe fn hew_connmgr_active_swim_peers(mgr: *const HewConnMgr) -> Ve
 ///    handshake-authenticated identity of the connection it arrived on.
 /// 3. Apply piggybacked membership gossip (C6 import) and run incarnation
 ///    self-refutation (C5).
-/// 4. Run the SWIM state machine via `process_message`.
-/// 5. Respond per message type: PING -> ACK; `PING_REQ` -> forward a real PING
-///    to the indirect-probe target (C4); ACK -> no response.
+/// 4. Run the SWIM state machine via [`HewCluster::receive_swim`] and send the
+///    replies it returns: PING -> ACK; `PING_REQ` -> PING to the probed member
+///    (C4); the probed member's ACK -> ACK naming it to each requester.
 pub(super) fn handle_swim_control_frame(
     mgr: *mut HewConnMgr,
     peer_feature_flags: u32,
@@ -357,7 +365,7 @@ pub(super) fn handle_swim_control_frame(
 
     // SAFETY: cluster pointer is owned by the live node/manager and remains
     // valid while the reader thread is running. All driven methods
-    // (apply_swim_gossip / refute_if_suspected / process_message) take &self
+    // (apply_swim_gossip / refute_if_suspected / receive_swim) take &self
     // and synchronize internally via Mutex/Atomic, so a shared reference is
     // sound even with the SWIM driver thread concurrently calling tick().
     // C6: fold piggybacked membership gossip into our view.
@@ -366,48 +374,23 @@ pub(super) fn handle_swim_control_frame(
     // SAFETY: manager is live for this call.
     unsafe { refute_claims_about_self(mgr, cluster, &gossip) };
 
-    // Run the SWIM state machine for this message. The authenticated peer ID
-    // is supplied as the source-connection identity so the cluster's
-    // source-mismatch guard validates the claim.
-    cluster.process_message(
+    for reply in cluster.receive_swim(
         payload.msg_type,
         authenticated,
         payload.incarnation,
-        authenticated,
-    );
-
-    // Respond per message type.
-    match payload.msg_type {
-        crate::cluster::SWIM_MSG_PING => {
-            // Direct probe: ACK the sender.
-            // SAFETY: manager is live for this call.
-            let _ = unsafe {
-                hew_connmgr_send_swim(mgr, authenticated, crate::cluster::SWIM_MSG_ACK, 0)
-            };
-        }
-        crate::cluster::SWIM_MSG_PING_REQ
-            if target_node != 0 && target_node != mgr_ref.local_node_id =>
-        {
-            // C4 indirect probing: forward a real PING to the probe target so
-            // the relay actually exercises the target's liveness, then the
-            // target's ACK propagates membership back via gossip. A no-op if
-            // we have no active connection to the target.
-            // SAFETY: manager is live for this call.
-            let _ = unsafe {
-                hew_connmgr_send_swim(mgr, target_node, crate::cluster::SWIM_MSG_PING, 0)
-            };
-        }
-        _ => {
-            // ACK (and any other type) requires no response; state already
-            // updated via process_message above.
-        }
+        target_node,
+    ) {
+        // SAFETY: manager is live for this call. A reply with no active
+        // connection to its peer is dropped like any lost frame.
+        let _ = unsafe { hew_connmgr_send_swim(mgr, reply.to, reply.msg_type, reply.target) };
     }
 }
 
 /// C5: if any gossip suspects us, refute by bumping our incarnation. The
 /// refutation rides out on our next PING/ACK as an ALIVE-about-self event.
-/// A peer that declared us dead also dropped our names, and the refutation
-/// readmits this session without a new admission flush, so they are sent again.
+/// A peer that declared us dead also dropped our names, and our return
+/// readmits this session without a new admission flush, so they are sent
+/// again, once per local incarnation.
 ///
 /// # Safety
 ///
@@ -417,12 +400,8 @@ unsafe fn refute_claims_about_self(
     cluster: &HewCluster,
     gossip: &[(u16, u32, i32, u64)],
 ) {
-    // SAFETY: caller guarantees manager pointer validity.
-    let local = unsafe { &*mgr }.local_node_id;
-    let buried = gossip
-        .iter()
-        .any(|&(slot, _, state, _)| slot == local && state == crate::cluster::MEMBER_DEAD);
-    if cluster.refute_if_suspected(gossip).is_some() && buried {
+    cluster.refute_if_suspected(gossip);
+    if cluster.claim_burial_answer(gossip) {
         // SAFETY: caller guarantees manager pointer validity.
         unsafe { reannounce_local_names(mgr) };
     }

@@ -410,7 +410,7 @@ impl Checker {
             self.current_module.clone_from(&alias.source_module);
             self.current_module_idx = alias.file_index;
             alias.target = self
-                .normalize_for_type_params(&alias.target, &alias.type_params)
+                .normalize_for_use(&alias.target)
                 .materialize_literal_defaults();
             resolved.insert(alias.declaration, alias);
         }

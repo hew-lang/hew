@@ -307,9 +307,7 @@ impl crate::value_class::ClassDeclarations for CheckerClassDeclarations<'_> {
 
         let mut members = Vec::with_capacity(member_tys.len());
         for ty in member_tys {
-            let ty = self
-                .checker
-                .normalize_for_type_params(&ty, &definition.type_params);
+            let ty = self.checker.normalize_for_use(&ty);
             let ty = self.checker.bind_associated_schema_type(&ty);
             // A member the boundary cannot render leaves the whole declaration
             // unclassifiable: an aggregate over the members that happened to

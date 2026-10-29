@@ -1416,16 +1416,8 @@ impl Checker {
         }
         let result = match method {
             "get" if runtime_method_declared => {
-                // Trait-routed `Index<i64>` accessor: `<Vec<T> as Index>::get
-                // -> Option<T>`. Dispatch is marked as the `Index` primitive
-                // trait impl and lowered to the element-agnostic
-                // `hew_vec_get_clone` intrinsic — the SINGLE fresh-owner choke
-                // point that writes a retained/cloned owner into the `Option`
-                // payload (drop-safe; `by-value-heap-params-are-borrows` P0).
-                // `get` is intentionally NOT in `collection_method_desc`: this
-                // explicit arm preserves the index-site widening ergonomic
-                // (i8/i16/i32 → i64) that the strict trait signature would
-                // otherwise reject.
+                // Vec.get uses the Index trait implementation, with the same
+                // signed index widening as indexing, set and remove.
                 self.check_arity(args, 1, "`Vec.get`", span);
                 if let Some(arg) = args.first() {
                     let (expr, sp) = arg.expr();
@@ -1442,9 +1434,8 @@ impl Checker {
                     }
                 }
                 let resolved_elem = self.subst.resolve(&elem_ty);
-                // A trait object stays refused: dispatching on a loaned `dyn`
-                // payload has no working lowering yet, so the consuming
-                // iterator remains the trait-object surface.
+                // Trait objects use owning removal or consuming iteration;
+                // get requires a semantic clone.
                 if matches!(resolved_elem, Ty::TraitObject { .. }) {
                     self.report_error(
                         TypeErrorKind::InvalidOperation,
@@ -1463,18 +1454,9 @@ impl Checker {
                         canonical_receiver: "Vec".to_string(),
                     },
                 );
-                // `get` copies the element out, so a concrete element with no
-                // copy operation refuses here exactly as it refuses at `v[i]`
-                // and at a range slice (#3395). An unbounded type parameter is
-                // not concrete: a generic body keeps the borrowed read every
-                // instantiation shares.
-                if !self.validate_vec_get_element_clone_type(&resolved_elem, span) {
-                    return Ty::Error;
-                }
-                // D432: an abstract element is read as a loan of the slot the
-                // vector still owns, so `Some` carries the loan and the owning
-                // removal stays the way to move an element out.
-                let Some(mode) = self.vec_iteration_element_mode(&resolved_elem, span) else {
+                // Validate the copy obligation once and retain its read mode
+                // for the resolved call and optional borrowed payload.
+                let Some(mode) = self.vec_get_element_mode(&resolved_elem, span) else {
                     return Ty::Error;
                 };
                 // Records the resolved call through the shared Vec authority.

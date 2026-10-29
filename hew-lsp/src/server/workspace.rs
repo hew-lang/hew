@@ -65,10 +65,7 @@ pub(super) fn build_code_lenses_with_seeds(
     }
     for declaration in tests {
         let selector = format!("{file}::{}", declaration.name);
-        let span = program
-            .expansions
-            .invocation_origin(&declaration.span)
-            .map_or(declaration.span, |(_, span)| span);
+        let span = authored_test_span(program, &declaration, Path::new(file));
         let range = span_to_range(source, lo, &span);
         lenses.push(CodeLens {
             range,
@@ -269,10 +266,7 @@ fn append_test_items(
         .unwrap_or(path);
     let file = relative.to_string_lossy().replace('\\', "/");
     for test in hew_analysis::test_discovery::discover_tests(program) {
-        let span = program
-            .expansions
-            .invocation_origin(&test.span)
-            .map_or(test.span, |(_, span)| span);
+        let span = authored_test_span(program, &test, path);
         inventory.push(serde_json::json!({
             "identity": format!("{file}::{}", test.name),
             "selector": format!("{}::{}", path.display(), test.name),
@@ -282,6 +276,26 @@ fn append_test_items(
             "real_time": test.real_time,
         }));
     }
+}
+
+fn authored_test_span(
+    program: &Program,
+    test: &hew_analysis::test_discovery::TestDeclaration,
+    source: &Path,
+) -> hew_parser::ast::Span {
+    let source = program
+        .module_graph
+        .as_ref()
+        .and_then(|graph| {
+            graph
+                .item_source(&graph.root, test.item_ordinal)
+                .or_else(|| graph.modules.get(&graph.root)?.source_paths.first())
+        })
+        .map_or(source, PathBuf::as_path);
+    program
+        .expansions
+        .invocation_origin(source, &test.span)
+        .map_or_else(|| test.span.clone(), |(_, span)| span)
 }
 
 #[expect(

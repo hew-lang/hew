@@ -44,7 +44,7 @@ fn selected_expansions(program: &Program, source: &Path, offset: usize) -> Optio
                 &expansion.invocation;
             let (file, span) = program
                 .expansions
-                .source_origin(span)
+                .source_origin(file, span)
                 .unwrap_or_else(|| (file.clone(), span.clone()));
             (file == source && span.contains(&offset)).then_some((span.len(), index))
         })
@@ -109,7 +109,7 @@ fn origins(program: &Program, source: &Path, offset: Option<usize>) -> Vec<Expan
         let (Origin::Caller { file, span } | Origin::Template { file, span }) = origin;
         let (file, span) = program
             .expansions
-            .source_origin(span)
+            .source_origin(file, span)
             .unwrap_or_else(|| (file.clone(), span.clone()));
         SourceOrigin { file, span }
     };

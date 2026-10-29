@@ -168,7 +168,7 @@ fn expand_item(
                 {
                     let mut error = error;
                     let path = if let Some((path, span)) =
-                        registry.borrow().map.source_origin(&error.span)
+                        registry.borrow().map.source_origin(source, &error.span)
                     {
                         error.span = span;
                         // Expansion origins can name a whole invocation, not
@@ -195,7 +195,7 @@ fn expand_item(
                     if let Err(error) = control.item(item, span) {
                         let (path, span) = registry
                             .map
-                            .source_origin(&error.span)
+                            .source_origin(source, &error.span)
                             .unwrap_or_else(|| (source.to_path_buf(), error.span));
                         return Err((
                             path,

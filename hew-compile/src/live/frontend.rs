@@ -786,6 +786,46 @@ mod tests {
     }
 
     #[test]
+    fn live_frontend_later_authored_input_keeps_its_source_after_macro_expansion() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut frontend =
+            LiveFrontend::new(directory.path().to_path_buf(), FrontendOptions::default());
+        let definition = format!(
+            "macro value {{ ($name:ident) => items {{ fn $name() -> string {{ \"{}\" }} }} }}",
+            "x".repeat(1024)
+        );
+        let prepared = frontend
+            .prepare(&compiler(), &definition, InputKind::Declarations)
+            .unwrap();
+        frontend.commit(prepared, &[]).unwrap();
+        let prepared = frontend
+            .prepare(&compiler(), "value!(generated)", InputKind::Declarations)
+            .unwrap();
+        let generated_start = prepared.program.expansions.expansions[0].synthetic.start;
+        frontend.commit(prepared, &[]).unwrap();
+        let input = format!("{}unknown_name", " ".repeat(generated_start));
+        let Error::Frontend(failure) = frontend
+            .prepare(&compiler(), &input, InputKind::Expression)
+            .unwrap_err()
+        else {
+            panic!("expected a source diagnostic");
+        };
+        let diagnostic = failure
+            .diagnostics
+            .iter()
+            .find(|diagnostic| matches!(diagnostic.kind, crate::FrontendDiagnosticKind::Type(_)))
+            .unwrap();
+        assert!(
+            diagnostic.source.as_deref() == Some(input.as_str()),
+            "diagnostic points outside the authored input"
+        );
+        let crate::FrontendDiagnosticKind::Type(error) = &diagnostic.kind else {
+            unreachable!();
+        };
+        assert_eq!(input.get(error.span.clone()), Some("unknown_name"));
+    }
+
+    #[test]
     fn live_frontend_clear_invalidates_prepared_inputs() {
         let directory = tempfile::tempdir().unwrap();
         let mut frontend =

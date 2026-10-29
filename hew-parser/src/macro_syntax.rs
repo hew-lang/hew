@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
-use std::path::PathBuf;
+use std::path::{Path as FilePath, PathBuf};
 
 use crate::ast::{
     Block, Expr, Ident, Path, Pattern, Span, Spanned, SyntaxContext, TypeExpr, Visibility,
@@ -411,33 +411,31 @@ pub struct ExpansionMap {
 }
 
 impl ExpansionMap {
-    /// Resolve a generated position to the source token that wrote it.
+    /// Resolve a generated position in its owning file to the token that wrote it.
     #[must_use]
-    pub fn source_origin(&self, span: &Span) -> Option<(PathBuf, Span)> {
-        let expansion = self
-            .expansions
-            .iter()
-            .find(|expansion| expansion.synthetic.contains(&span.start))?;
+    pub fn source_origin(&self, source: &FilePath, span: &Span) -> Option<(PathBuf, Span)> {
+        let expansion = self.expansions.iter().find(|expansion| {
+            expansion.file == source && expansion.synthetic.contains(&span.start)
+        })?;
         let origin = expansion
             .origins
             .iter()
             .find(|(generated, _)| generated.contains(&span.start))
             .map_or(&expansion.invocation, |(_, origin)| origin);
         let (Origin::Caller { file, span } | Origin::Template { file, span }) = origin;
-        self.source_origin(span)
+        self.source_origin(file, span)
             .or_else(|| Some((file.clone(), span.clone())))
     }
 
-    /// The outermost invocation containing generated syntax.
+    /// The outermost invocation containing generated syntax in its owning file.
     #[must_use]
-    pub fn invocation_origin(&self, span: &Span) -> Option<(PathBuf, Span)> {
-        let expansion = self
-            .expansions
-            .iter()
-            .find(|expansion| expansion.synthetic.contains(&span.start))?;
+    pub fn invocation_origin(&self, source: &FilePath, span: &Span) -> Option<(PathBuf, Span)> {
+        let expansion = self.expansions.iter().find(|expansion| {
+            expansion.file == source && expansion.synthetic.contains(&span.start)
+        })?;
         let (Origin::Caller { file, span } | Origin::Template { file, span }) =
             &expansion.invocation;
-        self.invocation_origin(span)
+        self.invocation_origin(file, span)
             .or_else(|| Some((file.clone(), span.clone())))
     }
 

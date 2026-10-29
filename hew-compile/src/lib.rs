@@ -2109,22 +2109,29 @@ fn build_module_source_map(
 
 fn macro_type_origin(
     program: &Program,
+    definitions: &hew_types::DefTable,
     mut diagnostic: hew_types::TypeError,
 ) -> hew_types::TypeError {
+    let original_file = diagnostic_source_file(definitions, diagnostic.source_module.as_deref());
     // Expansion attribution may fall back to the whole invocation. Such an
     // origin is useful for reporting, but is not an exact editable range.
     diagnostic.fixes.retain(|fix| {
         fix.edits.iter().all(|edit| {
-            program
-                .expansions
-                .source_origin(&(edit.span.start..edit.span.end))
+            original_file
+                .and_then(|file| {
+                    program
+                        .expansions
+                        .source_origin(file, &(edit.span.start..edit.span.end))
+                })
                 .is_none()
         })
     });
-    if let Some((path, span)) = program.expansions.source_origin(&diagnostic.span) {
+    if let Some((path, span)) =
+        original_file.and_then(|file| program.expansions.source_origin(file, &diagnostic.span))
+    {
         diagnostic.fixes.clear();
-        if let Some((invocation_path, invocation_span)) =
-            program.expansions.invocation_origin(&diagnostic.span)
+        if let Some((invocation_path, invocation_span)) = original_file
+            .and_then(|file| program.expansions.invocation_origin(file, &diagnostic.span))
         {
             diagnostic.notes.push((
                 invocation_span,
@@ -2136,12 +2143,30 @@ fn macro_type_origin(
         diagnostic.source_module = Some(path.display().to_string());
     }
     for (span, _, source) in &mut diagnostic.notes {
-        if let Some((path, original)) = program.expansions.source_origin(span) {
+        let file = source.as_deref().map_or(original_file, |source| {
+            diagnostic_source_file(definitions, Some(source))
+        });
+        if let Some((path, original)) =
+            file.and_then(|file| program.expansions.source_origin(file, span))
+        {
             *span = original;
             *source = Some(path.display().to_string());
         }
     }
     diagnostic
+}
+
+fn diagnostic_source_file<'a>(
+    definitions: &'a hew_types::DefTable,
+    origin: Option<&str>,
+) -> Option<&'a Path> {
+    let module = match origin {
+        Some(origin) => definitions
+            .module_for_source(Path::new(origin))
+            .or_else(|| definitions.module_for_path(origin)),
+        None => definitions.root_module(),
+    }?;
+    definitions.module_source(module)
 }
 
 fn type_diagnostic_to_frontend(
@@ -2354,11 +2379,17 @@ fn typecheck_program_with_dependency_cache(
         .iter()
         .cloned()
         .map(|diagnostic| {
-            type_diagnostic_to_frontend(macro_type_origin(program, diagnostic), &module_source_map)
+            type_diagnostic_to_frontend(
+                macro_type_origin(program, &tco.defs, diagnostic),
+                &module_source_map,
+            )
         })
         .collect::<Vec<_>>();
     diagnostics.extend(tco.warnings.iter().cloned().map(|diagnostic| {
-        type_diagnostic_to_frontend(macro_type_origin(program, diagnostic), &module_source_map)
+        type_diagnostic_to_frontend(
+            macro_type_origin(program, &tco.defs, diagnostic),
+            &module_source_map,
+        )
     }));
 
     let module_registry = checker.into_module_registry();

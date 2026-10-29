@@ -113,6 +113,7 @@ pub(crate) unsafe fn connmgr_new(
         seed_targets: PoisonSafe::new(Vec::new()),
         seed_identities: PoisonSafe::new(Vec::new()),
         reader_lifecycle: Arc::new(ReaderLifecycle::default()),
+        inbound_admissions: Arc::new(ReaderLifecycle::default()),
         next_publication_token: AtomicU64::new(1),
         gossip_in: AtomicU64::new(0),
         gossip_out: Arc::new(AtomicU64::new(0)),

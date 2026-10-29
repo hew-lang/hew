@@ -1317,3 +1317,88 @@ fn admitted_lifecycle_observes_peer_cleanup_and_revokes_only_future_setup() {
         assert_eq!(hew_node_stop(client.as_ptr()), 0);
     }
 }
+
+/// Read one length-prefixed frame, proving the node accepted the connection
+/// and entered its handshake.
+fn read_handshake_frame(stream: &mut std::net::TcpStream) {
+    use std::io::Read;
+    let mut header = [0_u8; 4];
+    stream
+        .read_exact(&mut header)
+        .expect("node sends its handshake to an accepted connection");
+    let mut frame = vec![0_u8; u32::from_le_bytes(header) as usize];
+    stream
+        .read_exact(&mut frame)
+        .expect("complete handshake frame");
+}
+
+#[test]
+fn silent_inbound_handshake_does_not_stall_other_admissions() {
+    use std::io::Read;
+    let _guard = crate::runtime_test_guard();
+    crate::registry::hew_registry_clear();
+    let budget = crate::transport::CONNECTION_ATTEMPT_TIMEOUT;
+
+    let (node1, _node1_port, node2, node2_port) = start_authorized_tcp_pair(331, 332);
+
+    // A dialer whose path died mid-handshake: connected, then silent.
+    let mut silent =
+        std::net::TcpStream::connect(("127.0.0.1", node2_port)).expect("connect silent peer");
+    silent
+        .set_read_timeout(Some(budget * 3))
+        .expect("set silent peer read timeout");
+    read_handshake_frame(&mut silent);
+    let silent_since = std::time::Instant::now();
+
+    // One attempt, no retry: it must be admitted while the silent one waits.
+    let target = CString::new(format!("127.0.0.1:{node2_port}")).expect("valid connect addr");
+    // SAFETY: node1 and the address remain valid for this call.
+    let rc = unsafe { hew_node_connect(node1.as_ptr(), target.as_ptr()) };
+    assert_eq!(
+        rc,
+        0,
+        "a redial is admitted beside a silent handshake: {:?}",
+        {
+            let error = crate::hew_last_error();
+            // SAFETY: a non-null `hew_last_error` is a live NUL-terminated string.
+            (!error.is_null()).then(|| unsafe { CStr::from_ptr(error) }.to_string_lossy())
+        }
+    );
+
+    // The silent handshake is closed once its attempt budget runs out.
+    let mut byte = [0_u8; 1];
+    let closed = silent.read(&mut byte);
+    assert!(
+        matches!(closed, Ok(0))
+            || closed
+                .as_ref()
+                .is_err_and(|error| error.kind() == std::io::ErrorKind::ConnectionReset),
+        "silent handshake is closed, not left open: {closed:?}"
+    );
+    assert!(
+        silent_since.elapsed() < budget * 2,
+        "silent handshake closed within its budget: {:?}",
+        silent_since.elapsed()
+    );
+
+    // Stopping a node joins an admission still waiting on a silent peer
+    // within the same budget.
+    let mut pending = std::net::TcpStream::connect(("127.0.0.1", node2_port))
+        .expect("connect second silent peer");
+    pending
+        .set_read_timeout(Some(budget * 3))
+        .expect("set second silent peer read timeout");
+    read_handshake_frame(&mut pending);
+    let stopping = std::time::Instant::now();
+    // SAFETY: both nodes remain owned by this test.
+    unsafe {
+        assert_eq!(hew_node_stop(node2.as_ptr()), 0);
+        assert_eq!(hew_node_stop(node1.as_ptr()), 0);
+    }
+    assert!(
+        stopping.elapsed() < budget * 2,
+        "node stop is not held by a silent admission: {:?}",
+        stopping.elapsed()
+    );
+    crate::registry::hew_registry_clear();
+}

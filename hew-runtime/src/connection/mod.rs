@@ -297,6 +297,8 @@ pub struct HewConnMgr {
     /// `hew_connmgr_free` waits on this lifecycle before the manager's owner
     /// frees routing/cluster state that reader cleanup may still touch.
     reader_lifecycle: Arc<ReaderLifecycle>,
+    /// Counts inbound admissions still authenticating on their own workers.
+    inbound_admissions: Arc<ReaderLifecycle>,
     /// Monotonic token generator for connection-lifecycle publications.
     next_publication_token: AtomicU64,
     gossip_in: AtomicU64,
@@ -403,8 +405,12 @@ impl ReaderLifecycle {
     }
 
     fn wait_for_idle(&self) {
+        self.wait_below(1);
+    }
+
+    fn wait_below(&self, limit: usize) {
         let mut active = self.active.lock_or_recover();
-        while *active > 0 {
+        while *active >= limit {
             active = self.idle.wait_or_recover(active);
         }
     }
@@ -420,9 +426,7 @@ impl Drop for ReaderLifecycleGuard {
         *active = active
             .checked_sub(1)
             .expect("reader lifecycle active count underflow");
-        if *active == 0 {
-            self.lifecycle.idle.notify_all();
-        }
+        self.lifecycle.idle.notify_all();
     }
 }
 

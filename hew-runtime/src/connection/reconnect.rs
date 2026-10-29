@@ -71,6 +71,27 @@ pub(super) fn collect_finished_reconnect_workers(mgr: &HewConnMgr) {
     });
 }
 
+/// Run `work` on a manager-tracked worker; `hew_connmgr_free` joins it.
+pub(super) fn track_worker(
+    manager: &HewConnMgr,
+    name: &str,
+    work: impl FnOnce() + Send + 'static,
+) -> bool {
+    collect_finished_reconnect_workers(manager);
+    match thread::Builder::new().name(name.into()).spawn(work) {
+        Ok(worker) => {
+            manager
+                .reconnect_workers
+                .access(|workers| workers.push(worker));
+            true
+        }
+        Err(error) => {
+            set_last_error(format!("{name} worker: {error}"));
+            false
+        }
+    }
+}
+
 /// Issue the next publication token, or `None` once the token space is
 /// exhausted.
 ///

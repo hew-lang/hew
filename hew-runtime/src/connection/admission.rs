@@ -9,6 +9,7 @@ use crate::node_identity::NodeId;
 use crate::peer_binding::{ClaimState, LiveClaim, Posture};
 use crate::routing::hew_routing_remove_route_if_conn;
 use crate::set_last_error;
+use crate::transport::with_connection_attempt_deadline;
 use crate::util::MutexExt;
 
 use super::channel::{
@@ -22,7 +23,7 @@ use super::identity_claim::{
     retire_identity_connection_publication, ClaimReservation,
 };
 use super::reader::reader_loop;
-use super::reconnect::next_publication_token;
+use super::reconnect::{next_publication_token, track_worker};
 use super::{
     ConnectionActor, ConnectionInstallError, ConnectionInstallPublication, HewConnMgr,
     ReconnectOwner, SendConnMgr, CONN_STATE_ACTIVE, CONN_STATE_CLOSED,
@@ -89,6 +90,40 @@ pub(super) fn install_connection_actor(
 pub unsafe extern "C" fn hew_connmgr_add(mgr: *mut HewConnMgr, conn_id: c_int) -> c_int {
     // SAFETY: the caller provides a live manager and an owned transport connection.
     unsafe { add_connection(mgr, conn_id, None) }
+}
+
+/// Inbound admissions that may authenticate at once. Each ends within the
+/// connection-attempt budget, so a full set holds the accept loop at most that.
+const MAX_INBOUND_ADMISSIONS: usize = 16;
+
+/// Admit an accepted connection on a tracked worker under the
+/// connection-attempt budget. A peer whose path dies mid-handshake can then
+/// neither hold the accept loop nor delay other peers' admissions.
+///
+/// # Safety
+///
+/// `mgr` must be a live manager that outlives the call; `conn_id` is owned by
+/// admission from entry.
+pub(crate) unsafe fn spawn_inbound_admission(mgr: *mut HewConnMgr, conn_id: c_int) {
+    // SAFETY: the caller pins a live manager; `hew_connmgr_free` joins the worker.
+    let manager = unsafe { &*mgr };
+    manager
+        .inbound_admissions
+        .wait_below(MAX_INBOUND_ADMISSIONS);
+    let admission = manager.inbound_admissions.register();
+    let send = SendConnMgr(mgr);
+    let spawned = track_worker(manager, "hew-inbound-admission", move || {
+        let _admission = admission;
+        let send = send;
+        with_connection_attempt_deadline(|| {
+            // SAFETY: the tracked worker pins the manager; admission owns `conn_id`.
+            unsafe { add_connection(send.0, conn_id, None) }
+        });
+    });
+    if !spawned {
+        // SAFETY: admission owns this unpublished transport handle.
+        unsafe { close_transport_conn(manager.transport, conn_id) };
+    }
 }
 
 pub(super) unsafe fn add_connection(

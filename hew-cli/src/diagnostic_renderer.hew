@@ -13,9 +13,13 @@ type Palette {
     reset: string;
 }
 
+/// One source location. The host supplies the containing line (with its
+/// terminating newline) and byte offsets relative to that line, so the cost of
+/// a label does not grow with the size of the file.
 type Label {
-    source: string;
     filename: string;
+    line: i64;
+    text: string;
     start: i64;
     end: i64;
     message: string;
@@ -85,39 +89,70 @@ fn locate(data: bytes, offset: i64, from: Position) -> Position {
     position
 }
 
+/// Longest run of a source line shown around the span; the rest becomes `...`.
+const WINDOW: i64 = 160;
+
+/// One-based column of `offset` in a line: scalars before it, ignoring the
+/// carriage return of a CRLF terminator.
+fn column(data: bytes, offset: i64) -> i64 {
+    var count = 1;
+    for index in 0..math.min(offset, data.len()) {
+        let byte = data[index];
+        if byte == 13 && index + 1 < data.len() && data[index + 1] == 10 {
+            continue;
+        } else if (byte as i64 & 192) != 128 {
+            count += 1;
+        }
+    }
+    count
+}
+
 fn render_label(label: Label, level: string, colour: string, palette: Palette) -> string {
-    let data = label.source.to_bytes();
-    let position = locate(data, label.start, Position { offset: 0, line: 1, column: 1, start: 0 });
-    let line = position.line;
-    let column = position.column;
-    let start = position.start;
-    let header = f"{palette.bold}{label.filename}:{line}:{column}:{palette.reset} {colour}{level}{palette.reset}{palette.bold}: {label.message}{palette.reset}\n";
+    let data = label.text.to_bytes();
+    let line = label.line;
+    let header = f"{palette.bold}{label.filename}:{line}:{column(data, label.start)}:{palette.reset} {colour}{level}{palette.reset}{palette.bold}: {label.message}{palette.reset}\n";
     let number = f"{line}";
     let padding = " ".repeat(number.len());
     // EOF receives a line marker and one caret, without an extra empty line
     // or source space.
-    if start == data.len() {
+    if data.len() == 0 {
         return f"{header} {palette.blue}{number} |{palette.reset}\n {padding} {palette.blue}|{palette.reset} {palette.red}^{palette.reset}\n";
     }
-    var end = start;
+    var end = 0;
     while end < data.len() && data[end] != 10 {
         end += 1;
     }
-    if end > start && data[end - 1] == 13 {
+    if end > 0 && data[end - 1] == 13 {
         end -= 1;
     }
-    let text = utf8.decode(data[start..end]).expect("source line is UTF-8");
-    let first = math.min(math.max(label.start, start), end);
-    let skip = if boundary(data, first) { scalars(data, start, first) } else { 0 };
+    let first = math.min(math.max(label.start, 0), end);
     let last = if label.start == label.end {
         math.min(first + 1, end)
     } else {
-        math.min(math.max(label.end, start), end)
+        math.min(math.max(label.end, 0), end)
     };
-    let stop = if boundary(data, last) { scalars(data, start, last) } else { skip + 1 };
+    var from = 0;
+    var to = end;
+    if end > WINDOW {
+        from = math.max(first - WINDOW / 2, 0);
+        to = math.min(from + WINDOW, end);
+        from = math.max(to - WINDOW, 0);
+        while !boundary(data, from) {
+            from += 1;
+        }
+        while !boundary(data, to) {
+            to -= 1;
+        }
+    }
+    let lead = if from > 0 { "..." } else { "" };
+    let trail = if to < end { "..." } else { "" };
+    let text = utf8.decode(data[from..to]).expect("source line is UTF-8");
+    let skip = if boundary(data, first) { scalars(data, from, first) } else { 0 };
+    let shown = math.min(last, to);
+    let stop = if boundary(data, shown) { scalars(data, from, shown) } else { skip + 1 };
     let carets = "^".repeat(math.max(stop - skip, 1));
-    let spaces = " ".repeat(skip);
-    f"{header} {palette.blue}{number} |{palette.reset} {text}\n {padding} {palette.blue}|{palette.reset} {spaces}{palette.red}{carets}{palette.reset}\n"
+    let spaces = " ".repeat(skip + lead.len());
+    f"{header} {palette.blue}{number} |{palette.reset} {lead}{text}{trail}\n {padding} {palette.blue}|{palette.reset} {spaces}{palette.red}{carets}{palette.reset}\n"
 }
 
 /// The generated synchronous export owns its returned text. JSON is the

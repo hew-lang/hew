@@ -303,6 +303,9 @@ pub struct CommonBuildArgs {
     /// Treat warnings as errors.
     #[arg(long = "Werror")]
     pub werror: bool,
+    /// Print at most N errors and N warnings; 0 prints them all.
+    #[arg(long, value_name = "N", default_value_t = crate::diagnostic::DEFAULT_ERROR_LIMIT)]
+    pub error_limit: usize,
     /// Skip type-checking phase.
     #[arg(long)]
     pub no_typecheck: bool,
@@ -338,6 +341,7 @@ impl CommonBuildArgs {
     /// crate::compile::CompileOptions { target: self.target.clone(), ..self.common.base_compile_options() }
     /// ```
     pub fn base_compile_options(&self) -> crate::compile::CompileOptions {
+        crate::diagnostic::set_error_limit(self.error_limit);
         let mut documents = hew_compile::SourceSet::new();
         for overlay in &self.source_overlay {
             documents.insert(overlay.path.clone(), overlay.source.clone());

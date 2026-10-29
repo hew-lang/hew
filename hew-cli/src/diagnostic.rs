@@ -7,10 +7,11 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::io::IsTerminal;
 use std::ops::Range;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 #[path = "diagnostic_renderer.rs"]
 mod renderer;
-pub(crate) use renderer::render_ownership;
+pub(crate) use renderer::{render_ownership, LineIndexScope};
 
 // ---------------------------------------------------------------------------
 // Thread-local diagnostic capture
@@ -22,6 +23,59 @@ pub(crate) use renderer::render_ownership;
 
 thread_local! {
     static DIAG_CAPTURE: RefCell<Option<String>> = const { RefCell::new(None) };
+}
+
+// ---------------------------------------------------------------------------
+// Error limit
+// ---------------------------------------------------------------------------
+
+/// Errors (and, separately, warnings) printed per run unless `--error-limit`
+/// says otherwise.
+pub(crate) const DEFAULT_ERROR_LIMIT: usize = 100;
+
+static ERROR_LIMIT: AtomicUsize = AtomicUsize::new(DEFAULT_ERROR_LIMIT);
+
+/// Set how many errors and warnings are printed; `0` prints them all.
+pub(crate) fn set_error_limit(limit: usize) {
+    ERROR_LIMIT.store(limit, Ordering::Relaxed);
+}
+
+/// The diagnostics to print: the first `limit` errors and the first `limit`
+/// warnings, in their original order. A note after the last one reports what
+/// was left out.
+pub(crate) fn limit_diagnostics<T>(items: &[T], is_error: impl Fn(&T) -> bool) -> Vec<&T> {
+    limit_diagnostics_at(ERROR_LIMIT.load(Ordering::Relaxed), items, is_error)
+}
+
+fn limit_diagnostics_at<T>(limit: usize, items: &[T], is_error: impl Fn(&T) -> bool) -> Vec<&T> {
+    if limit == 0 || items.len() <= limit {
+        return items.iter().collect();
+    }
+    let (mut errors, mut warnings) = (0usize, 0usize);
+    let (mut hidden_errors, mut hidden_warnings) = (0usize, 0usize);
+    let shown = items
+        .iter()
+        .filter(|item| {
+            let (seen, hidden) = if is_error(item) {
+                (&mut errors, &mut hidden_errors)
+            } else {
+                (&mut warnings, &mut hidden_warnings)
+            };
+            *seen += 1;
+            if *seen <= limit {
+                return true;
+            }
+            *hidden += 1;
+            false
+        })
+        .collect();
+    if hidden_errors + hidden_warnings > 0 {
+        diag_println(&format!(
+            "note: {hidden_errors} more errors and {hidden_warnings} more warnings not shown; \
+             `--error-limit 0` shows everything"
+        ));
+    }
+    shown
 }
 
 /// Activate per-thread diagnostic capture.
@@ -518,7 +572,8 @@ fn type_diagnostic_source<'a>(
 
 /// Render parser diagnostics using the shared CLI diagnostic layout.
 pub fn render_parse_diagnostics(source: &str, filename: &str, errors: &[hew_parser::ParseError]) {
-    for err in errors {
+    let _lines = LineIndexScope::new();
+    for err in limit_diagnostics(errors, |err| err.severity == hew_parser::Severity::Error) {
         let hints: Vec<String> = err.hint.iter().cloned().collect();
         match err.severity {
             hew_parser::Severity::Warning => {
@@ -545,7 +600,10 @@ pub(crate) fn render_type_diagnostics_with_sources(
     diagnostics: &[hew_types::TypeError],
     module_source_map: &ModuleSourceMap,
 ) {
-    for diagnostic in diagnostics {
+    let _lines = LineIndexScope::new();
+    for diagnostic in limit_diagnostics(diagnostics, |diagnostic| {
+        diagnostic.severity == hew_types::error::Severity::Error
+    }) {
         let (source, filename) =
             type_diagnostic_source(root_source, root_filename, diagnostic, module_source_map);
         let notes = diagnostic
@@ -876,6 +934,30 @@ mod tests {
         assert_eq!(
             hir_diagnostic_message(&constructor),
             "E_ENUM_VARIANT_CONSTRUCTOR: tuple-variant constructor called with the wrong number of arguments"
+        );
+    }
+
+    #[test]
+    fn error_limit_keeps_the_first_errors_and_warnings_in_order() {
+        start_diagnostic_capture();
+        // (is_error, id)
+        let items = [
+            (true, 1),
+            (false, 2),
+            (true, 3),
+            (true, 4),
+            (false, 5),
+            (false, 6),
+        ];
+        let shown: Vec<i32> = limit_diagnostics_at(2, &items, |item| item.0)
+            .into_iter()
+            .map(|item| item.1)
+            .collect();
+        let note = finish_diagnostic_capture();
+        assert_eq!(shown, [1, 2, 3, 5]);
+        assert!(
+            note.contains("1 more errors and 1 more warnings not shown"),
+            "{note}"
         );
     }
 

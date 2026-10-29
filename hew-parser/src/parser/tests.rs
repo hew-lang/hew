@@ -1539,6 +1539,28 @@ fn parse_deeply_nested_expr_produces_error() {
 }
 
 #[test]
+fn parse_nested_blocks_past_limit_terminates_with_bounded_errors() {
+    // Past MAX_DEPTH a statement-start block is refused without consuming
+    // input; the block loop must skip it rather than retry it forever.
+    let errors = std::thread::Builder::new()
+        .stack_size(64 * 1024 * 1024)
+        .spawn(|| {
+            let source = format!("fn main() {}", "{".repeat(400));
+            parse(&source).errors
+        })
+        .expect("failed to spawn thread")
+        .join()
+        .expect("thread panicked");
+    assert!(
+        errors
+            .iter()
+            .any(|e| e.message.contains("maximum nesting depth exceeded")),
+        "{errors:?}"
+    );
+    assert!(errors.len() < 2_000, "{} errors", errors.len());
+}
+
+#[test]
 fn expression_nesting_below_limit_still_parses() {
     let errors = std::thread::Builder::new()
         .stack_size(16 * 1024 * 1024)
@@ -6307,4 +6329,15 @@ fn init_without_parameter_list_is_refused_with_fix_it_and_no_cascade() {
     };
     assert!(actor.init.is_some());
     assert_eq!(actor.receive_fns.len(), 1);
+}
+
+#[test]
+fn legacy_path_separators_on_one_long_line_stay_linear() {
+    // Each `::` reports the line it sits on; the quoted context is bounded so
+    // a long line does not cost quadratic memory.
+    let source = format!("fn main() {{ {} }}", "::".repeat(20_000));
+    let errors = parse(&source).errors;
+    assert!(errors.len() >= 20_000, "{}", errors.len());
+    let quoted: usize = errors.iter().map(|e| e.message.len()).sum();
+    assert!(quoted < 20_000 * 600, "{quoted} bytes of messages");
 }

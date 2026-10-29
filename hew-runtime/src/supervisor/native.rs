@@ -257,9 +257,17 @@ pub unsafe extern "C" fn hew_supervisor_native_spawn_new(
 ) -> *mut HewSupervisorConstruction {
     // SAFETY: The caller transfers config and lends readable descriptors and a retained waker; this operation owns the private parent.
     unsafe {
-        // SAFETY: the caller retains its descriptor and array during this call.
+        // A zero-child supervisor may arrive from C as `(NULL, 0)`. Rust raw
+        // slices still require a non-null aligned pointer at length zero, so
+        // branch before constructing the borrowed slice.
         let waker = Arc::new(OwnedWaker::retain(&*waker));
-        let children = std::slice::from_raw_parts(children, child_count).to_vec();
+        let children = if child_count == 0 {
+            Vec::new()
+        } else {
+            // SAFETY: the caller retains its non-empty descriptor array during
+            // this call.
+            std::slice::from_raw_parts(children, child_count).to_vec()
+        };
         let mut op = Box::new(HewSupervisorConstruction {
             code: crate::code_owner::CodeRoot::acquire(code_owner),
             supervisor: ptr::null_mut(),
@@ -828,6 +836,34 @@ pub(crate) unsafe fn native_spawn_for_test(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn zero_child_supervisor_accepts_c_null_empty_array_without_ub() {
+        let _runtime = crate::runtime_test_guard();
+        let mut fault = ptr::null_mut();
+        // SAFETY: this exercises the conventional C representation of an
+        // empty array. The test owns the returned supervisor token and fault.
+        let token = unsafe {
+            native_spawn_for_test(
+                STRATEGY_ONE_FOR_ONE,
+                3,
+                5,
+                ptr::null_mut(),
+                None,
+                ptr::null(),
+                0,
+                0,
+                &raw mut fault,
+            )
+        };
+        assert!(fault.is_null());
+        let pin = local_handles::pin_current_supervisor(token)
+            .expect("zero-child supervisor should publish");
+        let supervisor = pin.supervisor();
+        drop(pin);
+        // SAFETY: this test owns the published supervisor token.
+        unsafe { hew_supervisor_stop(supervisor) };
+    }
 
     struct Config {
         destroyed: Arc<AtomicUsize>,

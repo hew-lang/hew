@@ -35,7 +35,7 @@ hew-types = { path = "../hew-types" }
 hew-pkg = { path = "../hew-pkg" }
 clap.workspace = true
 clap_complete.workspace = true
-pulldown-cmark = "0.13.4"
+pulldown-cmark = "0.13.5"
 rustyline = "18"
 tempfile.workspace = true
 toml.workspace = true

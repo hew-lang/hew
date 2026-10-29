@@ -749,13 +749,9 @@ pub(crate) struct QuicMeshTransport {
     resolver_slot: Arc<Semaphore>,
     mesh: Option<Mesh>,
     conns: Vec<std::sync::Mutex<Option<Arc<QuicMeshConn>>>>,
-    /// Per-peer connection LRU bookkeeping. Tracks occupancy + access recency
-    /// for the fixed-size [`QuicMeshTransport::conns`] slot vector. When the
-    /// slot vector is saturated, [`SlotLru::alloc`] selects the
-    /// least-recently-used slot for eviction so new inbound/outbound
-    /// connections can always be admitted instead of being silently dropped.
-    ///
-    slot_lru: std::sync::Mutex<SlotLru>,
+    /// Occupancy for the fixed-size [`QuicMeshTransport::conns`] slot vector.
+    /// A live handle is released only by [`Self::remove_conn`].
+    slot_table: std::sync::Mutex<SlotTable>,
     incoming_rx: std::sync::Mutex<Option<std::sync::mpsc::Receiver<QuicMeshConn>>>,
     /// Optional TLS override injected by tests or trusted callers before
     /// `listen` is invoked. When `Some`, `quic_mesh_listen` consumes this
@@ -791,7 +787,7 @@ impl QuicMeshTransport {
             ),
             mesh: None,
             conns,
-            slot_lru: std::sync::Mutex::new(SlotLru::new(MAX_CONNS)),
+            slot_table: std::sync::Mutex::new(SlotTable::new(MAX_CONNS)),
             incoming_rx: std::sync::Mutex::new(None),
             tls_override: std::sync::Mutex::new(None),
             identity: std::sync::Mutex::new(None),
@@ -864,36 +860,41 @@ impl QuicMeshTransport {
         Ok(tls)
     }
 
-    /// Install `conn` into a slot. If all slots are occupied, the LRU slot is
-    /// evicted (its peer connection is closed with a typed reason) and reused.
+    /// Install `conn` into an empty slot.
     ///
-    /// Returns the slot index as a `c_int` handle, or [`HEW_CONN_INVALID`] only
-    /// in the (impossible) case that `MAX_CONNS` exceeds `c_int::MAX`.
+    /// Live slots are never recycled. A connection manager retains the numeric
+    /// handle until it observes transport closure and removes the connection;
+    /// replacing that slot early would let a stale owner send to, or close, an
+    /// unrelated newly-admitted peer. Saturation therefore rejects the new
+    /// connection fail-closed instead of evicting an established one.
+    ///
+    /// Returns the slot index as a `c_int` handle, or [`HEW_CONN_INVALID`] when
+    /// the bounded table is full.
     fn store_conn(&self, conn: QuicMeshConn) -> c_int {
-        let alloc = {
-            let mut lru = self
-                .slot_lru
+        let Some(idx) = ({
+            let mut slots = self
+                .slot_table
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
-            lru.alloc()
-        };
-        let Some(idx) = self.conns.get(alloc.idx).map(|_| alloc.idx) else {
+            slots.alloc()
+        }) else {
+            conn.peer
+                .conn
+                .close(VarInt::from_u32(0), b"quic-mesh connection table full");
+            set_last_error("quic_mesh: connection table full; refusing new connection");
+            tracing::warn!(
+                capacity = MAX_CONNS,
+                "quic_mesh: connection table full; refusing new connection"
+            );
             return HEW_CONN_INVALID;
         };
-        let mut guard = self.conns[idx]
+        let Some(slot) = self.conns.get(idx) else {
+            return HEW_CONN_INVALID;
+        };
+        let mut guard = slot
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if alloc.evicted {
-            if let Some(old) = guard.take() {
-                old.peer
-                    .conn
-                    .close(VarInt::from_u32(0), b"quic-mesh conn evicted (LRU)");
-                tracing::warn!(
-                    slot = idx,
-                    "quic_mesh: connection cache full; evicted LRU peer to admit new connection"
-                );
-            }
-        }
+        debug_assert!(guard.is_none(), "allocated QUIC slot must be empty");
         *guard = Some(Arc::new(conn));
         c_int::try_from(idx).unwrap_or(HEW_CONN_INVALID)
     }
@@ -918,119 +919,56 @@ impl QuicMeshTransport {
                     .conn
                     .close(VarInt::from_u32(0), b"quic-mesh conn closed");
             }
-            self.slot_lru
+            self.slot_table
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .release(idx);
         }
     }
-
-    /// Mark slot `idx` as most-recently-used. Called on send/recv hot path.
-    fn touch_slot(&self, idx: usize) {
-        self.slot_lru
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .touch(idx);
-    }
 }
 
 // ---------------------------------------------------------------------------
-// SlotLru — per-peer connection cache LRU bookkeeping
+// SlotTable — stable per-peer connection handle bookkeeping
 // ---------------------------------------------------------------------------
 
-/// Outcome of a [`SlotLru::alloc`] call.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct SlotAlloc {
-    /// Slot index to install the new value into.
-    idx: usize,
-    /// `true` if the slot was previously occupied (caller must close/drop the
-    /// old value). `false` if the slot was empty.
-    evicted: bool,
-}
-
-/// Bounded LRU bookkeeping for a fixed-size slot array.
+/// Bounded occupancy bookkeeping for a fixed-size slot array.
 ///
-/// Tracks per-slot occupancy and access recency. [`SlotLru::alloc`] returns
-/// the first empty slot if one exists, else evicts the LRU slot. [`Self::touch`]
-/// promotes a slot to most-recently-used. [`Self::release`] marks a slot empty.
-///
-/// Recency is tracked with a monotonic `u64` counter: each slot stores its
-/// last-used sequence number (0 = empty). Eviction picks the slot with the
-/// smallest non-zero sequence number. O(N) per operation with N = capacity;
-/// for the runtime's `MAX_CONNS = 64` this is trivial.
+/// [`SlotTable::alloc`] returns the first empty slot if one exists and returns
+/// `None` at capacity. Live slots are never recycled because the connection
+/// manager may still hold their numeric handles. [`Self::release`] marks a slot
+/// empty. O(N) allocation with the runtime's `MAX_CONNS = 64` is trivial.
 #[derive(Debug)]
-struct SlotLru {
-    last_used: Vec<u64>,
-    counter: u64,
+struct SlotTable {
+    occupied: Vec<bool>,
 }
 
-impl SlotLru {
+impl SlotTable {
     fn new(capacity: usize) -> Self {
         Self {
-            last_used: vec![0; capacity],
-            counter: 0,
+            occupied: vec![false; capacity],
         }
     }
 
-    /// Allocate a slot. Prefers an empty slot; if none, evicts LRU.
+    /// Allocate an empty slot, returning `None` when every slot is occupied.
     ///
-    /// The returned slot is marked most-recently-used. If `evicted` is `true`,
-    /// the caller is responsible for closing/dropping the previous occupant.
-    ///
-    /// Panics if the LRU is constructed with `capacity == 0`. Production
+    /// Panics if the table is constructed with `capacity == 0`. Production
     /// construction always uses `MAX_CONNS > 0`.
-    fn alloc(&mut self) -> SlotAlloc {
+    fn alloc(&mut self) -> Option<usize> {
         assert!(
-            !self.last_used.is_empty(),
-            "SlotLru::alloc called on zero-capacity LRU"
+            !self.occupied.is_empty(),
+            "SlotTable::alloc called on zero-capacity table"
         );
-        self.counter = self.counter.wrapping_add(1);
-        if self.counter == 0 {
-            // u64 wrap guard: if we ever overflow back to 0 after ~5e8 years at
-            // 1 GHz of allocations, reset all sequence numbers monotonically.
-            self.counter = 1;
-            for s in &mut self.last_used {
-                if *s != 0 {
-                    *s = 1;
-                }
-            }
+        if let Some(idx) = self.occupied.iter().position(|&occupied| !occupied) {
+            self.occupied[idx] = true;
+            return Some(idx);
         }
-        if let Some(idx) = self.last_used.iter().position(|&s| s == 0) {
-            self.last_used[idx] = self.counter;
-            return SlotAlloc {
-                idx,
-                evicted: false,
-            };
-        }
-        // All occupied: pick the slot with the smallest sequence number.
-        let (idx, _) = self
-            .last_used
-            .iter()
-            .enumerate()
-            .min_by_key(|&(_, s)| s)
-            .expect("non-empty by assertion above");
-        self.last_used[idx] = self.counter;
-        SlotAlloc { idx, evicted: true }
-    }
-
-    /// Promote `idx` to most-recently-used. No-op if `idx` is out of range or
-    /// the slot is empty.
-    fn touch(&mut self, idx: usize) {
-        if let Some(slot) = self.last_used.get_mut(idx) {
-            if *slot != 0 {
-                self.counter = self.counter.wrapping_add(1);
-                if self.counter == 0 {
-                    self.counter = 1;
-                }
-                *slot = self.counter;
-            }
-        }
+        None
     }
 
     /// Mark `idx` empty. No-op if out of range.
     fn release(&mut self, idx: usize) {
-        if let Some(slot) = self.last_used.get_mut(idx) {
-            *slot = 0;
+        if let Some(occupied) = self.occupied.get_mut(idx) {
+            *occupied = false;
         }
     }
 }
@@ -1441,9 +1379,6 @@ unsafe extern "C" fn quic_mesh_send(
     };
     let result = framed_send_mesh(&qmt.rt, send, slice);
     drop(send_guard);
-    if let Ok(idx) = usize::try_from(conn) {
-        qmt.touch_slot(idx);
-    }
     result
 }
 
@@ -1484,9 +1419,6 @@ unsafe extern "C" fn quic_mesh_recv(
     };
     let result = framed_recv_mesh(&qmt.rt, recv, slice);
     drop(recv_guard);
-    if let Ok(idx) = usize::try_from(conn) {
-        qmt.touch_slot(idx);
-    }
     result
 }
 
@@ -2715,86 +2647,46 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // SlotLru — peer-connection cache LRU bookkeeping
+    // SlotTable — stable peer-connection handle bookkeeping
     // -----------------------------------------------------------------------
 
-    /// Empty LRU returns the first slot and reports `evicted=false`.
+    /// Empty LRU returns the first slot.
     #[test]
-    fn slot_lru_empty_alloc_uses_first_empty_slot() {
-        let mut lru = SlotLru::new(4);
-        let a = lru.alloc();
-        assert_eq!(a.idx, 0);
-        assert!(!a.evicted);
-        let b = lru.alloc();
-        assert_eq!(b.idx, 1);
-        assert!(!b.evicted);
+    fn slot_table_empty_alloc_uses_first_empty_slot() {
+        let mut slots = SlotTable::new(4);
+        assert_eq!(slots.alloc(), Some(0));
+        assert_eq!(slots.alloc(), Some(1));
     }
 
-    /// Filling to capacity uses each slot exactly once, never evicts.
+    /// Filling to capacity uses each slot exactly once.
     #[test]
-    fn slot_lru_fills_all_slots_without_evicting() {
-        let mut lru = SlotLru::new(4);
+    fn slot_table_fills_all_slots_without_recycling() {
+        let mut slots = SlotTable::new(4);
         for expected in 0..4 {
-            let a = lru.alloc();
-            assert_eq!(a.idx, expected);
-            assert!(!a.evicted, "slot {expected} alloc should not evict");
+            assert_eq!(slots.alloc(), Some(expected));
         }
     }
 
-    /// Once full, the next alloc evicts the oldest-touched slot.
+    /// Once full, allocation refuses to recycle any live handle.
     #[test]
-    fn slot_lru_evicts_oldest_when_full() {
-        let mut lru = SlotLru::new(3);
-        // Fill: alloc order 0, 1, 2 → slot 0 is LRU
+    fn slot_table_refuses_allocation_when_full() {
+        let mut slots = SlotTable::new(3);
         for _ in 0..3 {
-            let _ = lru.alloc();
+            let _ = slots.alloc();
         }
-        let evict = lru.alloc();
-        assert!(evict.evicted, "must evict when full");
-        assert_eq!(evict.idx, 0, "LRU eviction must pick the oldest slot");
-
-        // Next alloc evicts slot 1 (now the LRU since 0 was just touched).
-        let evict2 = lru.alloc();
-        assert!(evict2.evicted);
-        assert_eq!(evict2.idx, 1);
+        assert_eq!(slots.alloc(), None);
+        assert_eq!(slots.alloc(), None);
     }
 
-    /// Touching a slot promotes it to MRU, so the previously-second-oldest
-    /// becomes the next eviction victim.
+    /// Releasing a slot makes it available as an empty target.
     #[test]
-    fn slot_lru_touch_promotes_to_mru() {
-        let mut lru = SlotLru::new(3);
+    fn slot_table_release_frees_slot() {
+        let mut slots = SlotTable::new(3);
         for _ in 0..3 {
-            let _ = lru.alloc();
+            let _ = slots.alloc();
         }
-        // Touch slot 0 → now slot 1 is LRU.
-        lru.touch(0);
-        let evict = lru.alloc();
-        assert!(evict.evicted);
-        assert_eq!(evict.idx, 1, "touched slot must not be evicted next");
-    }
-
-    /// Releasing a slot makes it available as an empty (non-evicting) target.
-    #[test]
-    fn slot_lru_release_frees_slot() {
-        let mut lru = SlotLru::new(3);
-        for _ in 0..3 {
-            let _ = lru.alloc();
-        }
-        lru.release(1);
-        let a = lru.alloc();
-        assert!(!a.evicted, "released slot reuse must not be marked evicted");
-        assert_eq!(a.idx, 1);
-    }
-
-    /// Touch on an empty slot is a no-op (does not promote a phantom entry).
-    #[test]
-    fn slot_lru_touch_empty_slot_is_noop() {
-        let mut lru = SlotLru::new(2);
-        lru.touch(0); // empty, no-op
-        let a = lru.alloc();
-        assert_eq!(a.idx, 0);
-        assert!(!a.evicted);
+        slots.release(1);
+        assert_eq!(slots.alloc(), Some(1));
     }
 
     // -----------------------------------------------------------------------

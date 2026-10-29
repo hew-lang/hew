@@ -49,20 +49,27 @@ pub unsafe extern "C" fn hew_async_file_write(
     // SAFETY: the caller retains both loans through this submission.
     let result = match (unsafe { file.as_ref() }, unsafe { data.as_ref() }) {
         (Some(file), Some(data)) => {
-            let bytes = if data.len == 0 {
-                &[]
+            if data.len != 0 && data.ptr.is_null() {
+                Err(IoFailure::invalid(
+                    "bytes triple has a null data pointer with non-zero length",
+                ))
             } else {
-                // SAFETY: the caller lends data.len initialized bytes at offset.
-                unsafe {
-                    std::slice::from_raw_parts(
-                        data.ptr.add(data.offset as usize),
-                        data.len as usize,
-                    )
-                }
-            };
-            file.write(bytes)
-                .map(|()| IoValue::Count(0))
-                .map_err(|error| IoFailure::from_io("write file resource", &error))
+                let bytes = if data.len == 0 {
+                    &[]
+                } else {
+                    // SAFETY: the nonempty triple has a non-null data pointer and
+                    // the caller lends data.len initialized bytes at offset.
+                    unsafe {
+                        std::slice::from_raw_parts(
+                            data.ptr.add(data.offset as usize),
+                            data.len as usize,
+                        )
+                    }
+                };
+                file.write(bytes)
+                    .map(|()| IoValue::Count(0))
+                    .map_err(|error| IoFailure::from_io("write file resource", &error))
+            }
         }
         _ => Err(IoFailure::invalid(
             "closed write resource or null bytes triple",

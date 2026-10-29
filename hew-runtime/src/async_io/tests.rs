@@ -77,6 +77,25 @@ fn await_ready(signal: &ReadySignal) {
 }
 
 #[test]
+fn async_file_write_rejects_null_nonempty_bytes_before_pointer_arithmetic() {
+    let _runtime = crate::runtime_test_guard();
+    let signal = Arc::new(ReadySignal::default());
+    let malformed = crate::bytes::BytesTriple {
+        ptr: ptr::null_mut(),
+        offset: 0,
+        len: 1,
+    };
+    // SAFETY: the malformed triple is intentionally passed across the public
+    // boundary; the operation must reject it without inspecting file or data.
+    unsafe {
+        let operation =
+            file::hew_async_file_write(ptr::null(), &raw const malformed, &descriptor(&signal));
+        assert_eq!(hew_async_io_status(operation), AsyncIoStatus::Error as i32);
+        hew_async_io_free(operation);
+    }
+}
+
+#[test]
 fn resume_restores_owned_errors_and_clears_stale_success_errors() {
     // SAFETY: a null waker is permitted for a manually completed operation.
     let operation = unsafe { HewAsyncIo::new(ptr::null()) };

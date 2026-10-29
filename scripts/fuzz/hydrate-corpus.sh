@@ -52,7 +52,7 @@ corpus_nonempty_assert "fuzz-seed-corpus" "$seeds" || exit 1
 
 # Shapes that once ran the parser or the diagnostic path out of memory or time:
 # nesting past the recursion limit, and long runs of one token on a single
-# line. Each is a few kilobytes, so every target starts from them.
+# line. Each is under a few kilobytes, so every target starts from them.
 repeat_unit() {
     local unit="$1" count="$2" out="" i
     for ((i = 0; i < count; i++)); do out+="$unit"; done
@@ -92,7 +92,12 @@ printf 'state A;\nevent Tick;\non Tick: A -> A { A }\n' \
 printf '\0\1\2hew-v05-structured-seed' >"$corpus_root/fuzz_structured/structured-seed"
 
 # The wipe above also removes the few regression seeds tracked in the ignored
-# corpus directories; put them back.
-git -C "$repo_root" checkout -- hew-parser/fuzz/corpus
+# corpus directories; put those back. An export without a checkout has none.
+if git -C "$repo_root" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+    for target in "${all_targets[@]}"; do
+        git -C "$repo_root" ls-files -z -- "hew-parser/fuzz/corpus/$target" |
+            xargs -0 -r git -C "$repo_root" checkout --
+    done
+fi
 
 printf 'hydrated fuzz corpus in %s (%d source seeds)\n' "$corpus_root" "$seeds"

@@ -1335,7 +1335,7 @@ pub(crate) fn lower_function(
         }
     }
 
-    let cfg = hew_sir::build_cfg_index(function);
+    let cfg = certificate.cfg();
     let mut sites: BTreeMap<(BlockId, u32), u32> = BTreeMap::new();
     let blocks = function
         .blocks

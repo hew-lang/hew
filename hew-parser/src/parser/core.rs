@@ -7,6 +7,9 @@
 )]
 use super::*;
 
+/// Longest source line a legacy-syntax diagnostic quotes in full.
+const LEGACY_QUOTE_MAX: usize = 160;
+
 impl<'src> Parser<'src> {
     #[must_use]
     pub fn new(source: &'src str) -> Self {
@@ -30,6 +33,7 @@ impl<'src> Parser<'src> {
         let raw_tokens = hew_lexer::lex(source);
         let mut errors = Vec::new();
         let mut tokens = Vec::new();
+        let mut line_bounds = (0usize, 0usize);
         for (index, (mut t, s)) in raw_tokens.iter().cloned().enumerate() {
             let span = (s.start + offset)..(s.end + offset);
             if matches!(t, Token::Error) {
@@ -46,11 +50,27 @@ impl<'src> Parser<'src> {
 
             if matches!(t, Token::DoubleColon) {
                 let next = raw_tokens.get(index + 1).map(|(token, _)| token);
-                let line_start = source[..s.start].rfind('\n').map_or(0, |at| at + 1);
-                let line_end = source[s.end..]
-                    .find('\n')
-                    .map_or(source.len(), |at| s.end + at);
-                let line = source[line_start..line_end].trim();
+                if s.start >= line_bounds.1 {
+                    let line_start = source[..s.start].rfind('\n').map_or(0, |at| at + 1);
+                    let line_end = source[s.end..]
+                        .find('\n')
+                        .map_or(source.len(), |at| s.end + at);
+                    line_bounds = (line_start, line_end);
+                }
+                let (mut from, mut to) = line_bounds;
+                // Quote a bounded window of a long line: one diagnostic per `::`
+                // would otherwise copy the whole line each time.
+                if to - from > LEGACY_QUOTE_MAX {
+                    from = s.start.saturating_sub(LEGACY_QUOTE_MAX / 2).max(from);
+                    to = (s.end + LEGACY_QUOTE_MAX / 2).min(to);
+                    while !source.is_char_boundary(from) {
+                        from += 1;
+                    }
+                    while !source.is_char_boundary(to) {
+                        to -= 1;
+                    }
+                }
+                let line = source[from..to].trim();
                 let migrated = line
                     .replace("::*", ".{ Name }")
                     .replace("::<", "<")

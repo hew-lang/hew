@@ -6330,3 +6330,14 @@ fn init_without_parameter_list_is_refused_with_fix_it_and_no_cascade() {
     assert!(actor.init.is_some());
     assert_eq!(actor.receive_fns.len(), 1);
 }
+
+#[test]
+fn legacy_path_separators_on_one_long_line_stay_linear() {
+    // Each `::` reports the line it sits on; the quoted context is bounded so
+    // a long line does not cost quadratic memory.
+    let source = format!("fn main() {{ {} }}", "::".repeat(20_000));
+    let errors = parse(&source).errors;
+    assert!(errors.len() >= 20_000, "{}", errors.len());
+    let quoted: usize = errors.iter().map(|e| e.message.len()).sum();
+    assert!(quoted < 20_000 * 600, "{quoted} bytes of messages");
+}

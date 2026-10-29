@@ -266,9 +266,10 @@ fn stalled_member_is_suspected_then_declared_dead() {
     let config = make_config(0);
     let probe_cycle = (SLOTS.len() as u64 - 1) * PERIOD_MS;
     // The next round-robin probe of the stalled peer is at most one probe
-    // cycle away, and the first tick past its timeout finds it overdue.
+    // cycle away, and the first tick strictly past its timeout finds it
+    // overdue.
     let suspect_by =
-        STALL_AT + probe_cycle + u64::from(config.ping_timeout_ms).div_ceil(PERIOD_MS) * PERIOD_MS;
+        STALL_AT + probe_cycle + (u64::from(config.ping_timeout_ms) / PERIOD_MS + 1) * PERIOD_MS;
     // SUSPECT -> DEAD measures the suspect timeout from the last contact.
     let dead_by = STALL_AT + u64::from(config.suspect_timeout_ms) + PERIOD_MS;
 
@@ -322,4 +323,26 @@ fn healed_stall_settles_without_flapping() {
         "no fault after settling"
     );
     assert_eq!(mesh.incarnations(), settled, "no refutation after settling");
+}
+
+/// A pause shorter than the suspect timeout may draw a suspicion, but the
+/// member's next frame recovers it before anyone buries it.
+#[test]
+fn brief_pause_is_never_buried() {
+    const PAUSE_AT: u64 = 20_000;
+    let _guard = crate::runtime_test_guard();
+    let mut mesh = Mesh::new(ALIGNED_PHASES_MS);
+    mesh.run_until(PAUSE_AT);
+    mesh.stalled = Some(SLOTS[2]);
+    mesh.run_until(PAUSE_AT + 2_000);
+    mesh.stalled = None;
+    mesh.run_until(PAUSE_AT + 30_000);
+
+    let buried = mesh
+        .faults_since(0)
+        .into_iter()
+        .filter(|&(_, _, _, event)| event == HEW_MEMBERSHIP_EVENT_NODE_DEAD)
+        .collect::<Vec<_>>();
+    assert_eq!(buried, Vec::new(), "a brief pause is forgiven");
+    mesh.assert_all_alive();
 }

@@ -2567,7 +2567,9 @@ pub unsafe extern "C" fn hew_cluster_process_message(
 ///
 /// Should be called periodically (e.g., every `protocol_period_ms`).
 ///
-/// Returns the node ID of the next ping target (0 = none).
+/// Returns the node ID of the next ping target (0 = none). The target counts
+/// as probed from this call: the caller must send it a direct `PING`, or the
+/// unanswered probe will raise suspicion after `ping_timeout_ms`.
 ///
 /// # Safety
 ///

@@ -12,7 +12,7 @@ use std::time::{Duration, Instant};
 use clap::Parser;
 use hew_live::component::build::{self, Toolchain};
 use hew_live::component::host::{
-    Delivery, Event, Host, Observer, Prepared, ServiceCall, Services, Snapshot,
+    Delivery, Error, Event, Host, Observer, Prepared, ServiceCall, Services, Snapshot,
 };
 use hew_live::component::network::format_digest;
 use serde_json::{json, Value};
@@ -190,27 +190,55 @@ fn executable(name: &str) -> String {
     format!("{name}{}", std::env::consts::EXE_SUFFIX)
 }
 
-struct Providers;
+#[derive(Default)]
+struct Providers {
+    started: Arc<tokio::sync::Notify>,
+    release: Arc<tokio::sync::Notify>,
+    deliveries: Arc<Mutex<Option<Vec<Delivery>>>>,
+}
 impl Services for Providers {
     fn destination(&self, source: String) -> ServiceCall<Option<String>> {
+        let started = Arc::clone(&self.started);
+        let release = Arc::clone(&self.release);
         Box::pin(async move {
             tokio::task::yield_now().await;
+            if source == "held" {
+                started.notify_one();
+                release.notified().await;
+            }
+            if source == "denied" {
+                return Err("destination grant denied".into());
+            }
             Ok(Some(source))
         })
     }
-    fn emit(&self, _message: Delivery) -> ServiceCall<()> {
-        Box::pin(async {
+    fn emit(&self, message: Delivery) -> ServiceCall<()> {
+        let deliveries = Arc::clone(&self.deliveries);
+        Box::pin(async move {
             tokio::task::yield_now().await;
+            if let Some(deliveries) = deliveries.lock().expect("deliveries").as_mut() {
+                deliveries.push(message);
+            }
             Ok(())
         })
     }
 }
 
 #[derive(Default)]
-struct Pauses(Mutex<(Option<Instant>, Vec<f64>)>);
+struct Pauses {
+    samples: Mutex<(Option<Instant>, Vec<f64>)>,
+    waiting: tokio::sync::Notify,
+    events: Mutex<Option<Vec<hew_observe_protocol::LiveExecution>>>,
+}
 impl Observer for Pauses {
     fn record(&self, event: &hew_observe_protocol::LiveExecution) {
-        let mut state = self.0.lock().expect("pause measurements");
+        if let Some(events) = self.events.lock().expect("observations").as_mut() {
+            events.push(event.clone());
+        }
+        if event.phase == "waiting" {
+            self.waiting.notify_one();
+        }
+        let mut state = self.samples.lock().expect("pause measurements");
         if event.phase == "snapshot" {
             state.0 = Some(Instant::now());
         }
@@ -248,7 +276,7 @@ async fn runtime_loop(options: &Options, directory: &Path, timings: &mut Timings
     let start = Instant::now();
     let bytes = build::build(&source, &toolchain)?;
     timings.add("component_source_build", start);
-    let providers = Arc::new(Providers);
+    let providers = Arc::new(Providers::default());
     let pauses = Arc::new(Pauses::default());
     let host = Arc::new(Host::new(providers.clone())?.with_observer(pauses.clone()));
     let rss_before_prepare = resident_bytes();
@@ -256,22 +284,189 @@ async fn runtime_loop(options: &Options, directory: &Path, timings: &mut Timings
     let prepared = host.prepare(&bytes)?;
     timings.add("component_prepare", start);
     let rss_one_prepared = resident_bytes();
-    std::fs::write(&source, ROUTER.replace("skip0", "skip1"))?;
-    let start = Instant::now();
-    let changed_bytes = build::build(&source, &toolchain)?;
-    timings.add("component_source_build", start);
-    let start = Instant::now();
-    let changed = host.prepare(&changed_bytes)?;
-    timings.add("component_prepare", start);
-    drop(changed_bytes);
-    if prepared.digest() == changed.digest() {
-        return Err("edited source did not produce a distinct candidate".into());
-    }
+    let (changed, workload) = replacement_workload(
+        &source, &toolchain, &host, &prepared, &providers, &pauses, timings,
+    )
+    .await?;
     let generations = vec![prepared, changed];
     cached_calls(options, &host, &generations, &providers, &pauses, timings).await?;
     let memory = retained_memory(options, &source, &toolchain, &host, generations).await?;
     Ok(
-        json!({"component_bytes": bytes.len(), "component_sha256": format_digest(Sha256::digest(&bytes).into()), "rss_before_prepare": rss_before_prepare, "rss_one_prepared": rss_one_prepared, "retained_generations": memory}),
+        json!({"component_bytes": bytes.len(), "component_sha256": format_digest(Sha256::digest(&bytes).into()), "rss_before_prepare": rss_before_prepare, "rss_one_prepared": rss_one_prepared, "replacement_under_work": workload, "retained_generations": memory}),
+    )
+}
+
+async fn replacement_workload(
+    source: &Path,
+    toolchain: &Toolchain,
+    host: &Arc<Host>,
+    original: &Prepared,
+    providers: &Providers,
+    pauses: &Pauses,
+    timings: &mut Timings,
+) -> Result<(Prepared, Value)> {
+    eprintln!("Editing and replacing a service with admitted work retained.");
+    *providers.deliveries.lock().expect("deliveries") = Some(Vec::new());
+    *pauses.events.lock().expect("observations") = Some(Vec::new());
+    let deployment = Arc::new(
+        host.activate(original.clone(), Snapshot { accepted: 0 })
+            .await?,
+    );
+    if !deployment.route(event("before")).await? {
+        return Err("initial service call refused".into());
+    }
+    if !matches!(
+        deployment.route(event("denied")).await,
+        Err(Error::Guest(_))
+    ) {
+        return Err("denied service call did not report a guest failure".into());
+    }
+    let mut caller = {
+        let deployment = Arc::clone(&deployment);
+        tokio::spawn(async move { deployment.route(event("held")).await })
+    };
+    tokio::select! {
+        () = providers.started.notified() => {},
+        result = &mut caller => {
+            return Err(format!("held call ended before reaching its service: {result:?}").into());
+        }
+    }
+    caller.abort();
+    if !caller.await.is_err_and(|error| error.is_cancelled()) {
+        return Err("held caller did not cancel".into());
+    }
+
+    // The admitted call stays blocked in its service while source is edited,
+    // built and prepared. No activation work belongs to edit-to-ready latency.
+    let edit = Instant::now();
+    std::fs::write(source, ROUTER.replace("skip0", "skip1"))?;
+    let start = Instant::now();
+    let changed_bytes = build::build(source, toolchain)?;
+    timings.add("component_source_build", start);
+    let start = Instant::now();
+    let changed = host.prepare(&changed_bytes)?;
+    timings.add("component_prepare", start);
+    timings.add("component_edit_to_ready", edit);
+    if original.digest() == changed.digest() {
+        return Err("edited source did not produce a distinct candidate".into());
+    }
+
+    let epoch = deployment.epoch().await;
+    let start = Instant::now();
+    let mut replacement = {
+        let deployment = Arc::clone(&deployment);
+        let changed = changed.clone();
+        tokio::spawn(async move {
+            deployment
+                .replace(changed, epoch, Duration::from_secs(10))
+                .await
+        })
+    };
+    tokio::select! {
+        () = pauses.waiting.notified() => {},
+        result = &mut replacement => {
+            return Err(format!("replacement ended before reaching its admission fence: {result:?}").into());
+        }
+    }
+    // Replacement has reached the admission fence. Releasing the guest's
+    // service, rather than dropping its caller, permits drain and state capture.
+    providers.release.notify_one();
+    let committed = replacement.await??;
+    timings.add("prepared_replace_under_work_total", start);
+    if committed.snapshot.accepted != 2
+        || committed.digest != changed.digest()
+        || committed.epoch != epoch + 1
+    {
+        return Err("replacement lost cancelled caller work or selected the wrong code".into());
+    }
+    committed.retirement.await??;
+    if !deployment.route(event("skip0")).await? || deployment.route(event("skip1")).await? {
+        return Err("edited service did not apply its changed route policy".into());
+    }
+    let restored = deployment
+        .replace(original.clone(), epoch + 1, Duration::from_secs(10))
+        .await?;
+    if restored.snapshot.accepted != 3
+        || restored.digest != original.digest()
+        || restored.epoch != epoch + 2
+    {
+        return Err("subsequent replacement lost retained service state".into());
+    }
+    restored.retirement.await??;
+    Arc::try_unwrap(deployment)
+        .map_err(|_| "service deployment still borrowed")?
+        .dispose()
+        .await??;
+    let result = workload_observations(providers, pauses, timings)?;
+    Ok((changed, result))
+}
+
+fn event(source: &str) -> Event {
+    Event {
+        source: source.into(),
+        body: "retained work".into(),
+    }
+}
+
+fn workload_observations(
+    providers: &Providers,
+    pauses: &Pauses,
+    timings: &mut Timings,
+) -> Result<Value> {
+    let events = pauses
+        .events
+        .lock()
+        .expect("observations")
+        .take()
+        .ok_or("service workload observations were not retained")?;
+    for admitted in events.iter().filter(|event| event.phase == "admitted") {
+        let terminal: Vec<_> = events
+            .iter()
+            .filter(|event| {
+                event.deployment_id == admitted.deployment_id
+                    && event.invocation_id == admitted.invocation_id
+                    && matches!(event.phase.as_str(), "completed" | "faulted")
+            })
+            .collect();
+        if terminal.len() != 1
+            || terminal[0].code_id != admitted.code_id
+            || terminal[0].activation_epoch != admitted.activation_epoch
+        {
+            return Err("admitted work lost its terminal code identity".into());
+        }
+    }
+    let failed = events
+        .iter()
+        .filter(|event| event.phase == "faulted")
+        .count();
+    let completed = events
+        .iter()
+        .filter(|event| event.phase == "completed")
+        .count();
+    let destinations: Vec<_> = providers
+        .deliveries
+        .lock()
+        .expect("deliveries")
+        .take()
+        .ok_or("service workload deliveries were not retained")?
+        .into_iter()
+        .map(|delivery| delivery.destination)
+        .collect();
+    if failed != 1 || completed != 4 || destinations != ["before", "held", "skip0"] {
+        return Err("service work was lost, duplicated or performed after refusal".into());
+    }
+    let samples = std::mem::take(&mut pauses.samples.lock().expect("pause measurements").1);
+    if samples.len() != 2 {
+        return Err("service replacement pause observations were incomplete".into());
+    }
+    timings
+        .0
+        .insert("replacement_under_work_fenced_pause", vec![samples[0]]);
+    Ok(
+        json!({"admitted_calls": completed + failed, "completed_calls": completed,
+        "failed_calls": failed, "delivered_destinations": destinations,
+        "accepted_after_edit": 2, "accepted_after_following_call": 3,
+        "cancelled_caller_work_completed": true}),
     )
 }
 
@@ -364,7 +559,7 @@ async fn cached_calls(
         }
         committed.retirement.await??;
     }
-    let recorded = std::mem::take(&mut pauses.0.lock().expect("pause measurements").1);
+    let recorded = std::mem::take(&mut pauses.samples.lock().expect("pause measurements").1);
     if recorded.len() != usize::try_from(options.samples)? {
         return Err("replacement pause observations were incomplete".into());
     }

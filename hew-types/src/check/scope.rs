@@ -523,6 +523,11 @@ impl Scopes {
         self.used_imports.contains(&site)
     }
 
+    /// Take the completed lexical and provider import uses for publication.
+    pub(crate) fn take_used_imports(&mut self) -> std::collections::HashSet<ImportSite> {
+        std::mem::take(&mut self.used_imports)
+    }
+
     /// The prelude binding of `name`.
     #[must_use]
     pub fn prelude_binding(&self, name: Symbol) -> Option<Binding> {

@@ -1,13 +1,13 @@
 //! Immutable declaration snapshots and typed inputs for native live execution.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::fmt::{self, Write};
 use std::ops::Range;
 use std::path::PathBuf;
 use std::sync::Arc;
 
 use hew_parser::ast::{Item, Program, Visibility};
-use hew_types::{session::SessionContents, DefTable, TypeCheckOutput};
+use hew_types::{session::SessionContents, DefTable, ModuleId, ResolvedTy, TypeCheckOutput};
 
 use super::LiveSubmission;
 use crate::{FrontendFailure, FrontendOptions, Session, SessionError};
@@ -67,6 +67,13 @@ pub struct Binding {
     pub ty: hew_types::ResolvedTy,
     pub mutable: bool,
     pub contents: SessionContents,
+    declaration_modules: HashSet<ModuleId>,
+}
+
+struct DeclarationInput {
+    name: String,
+    path: PathBuf,
+    prefix_end: usize,
 }
 
 #[derive(Debug, Clone)]
@@ -74,7 +81,8 @@ struct State {
     options: FrontendOptions,
     definitions: Arc<DefTable>,
     visible: BTreeMap<String, String>,
-    snapshots: Vec<String>,
+    snapshots: HashMap<ModuleId, String>,
+    impl_snapshots: HashSet<ModuleId>,
     imports: BTreeSet<String>,
     bindings: Vec<Binding>,
     next_slot: u32,
@@ -87,7 +95,8 @@ impl State {
             options,
             definitions: Arc::new(DefTable::default()),
             visible: BTreeMap::new(),
-            snapshots: Vec::new(),
+            snapshots: HashMap::new(),
+            impl_snapshots: HashSet::new(),
             imports: BTreeSet::new(),
             bindings: Vec::new(),
             next_slot: 0,
@@ -182,17 +191,20 @@ impl LiveFrontend {
             .checked_add(1)
             .ok_or(Error::State("live input IDs exhausted"))?;
         let mut next = self.state.clone();
-        let body = if kind == InputKind::Declarations {
-            self.prepare_declarations(id, input, &mut next)?;
-            ""
-        } else {
-            input
-        };
+        let declarations = (kind == InputKind::Declarations)
+            .then(|| self.prepare_declarations(id, input, &mut next))
+            .transpose()?;
+        let body = if declarations.is_some() { "" } else { input };
         let path = self.directory.join(format!("__hew_live_input_{id}.hew"));
         if next.options.documents.is_file(&path) {
             return Err(Error::State("live input path is already in use"));
         }
-        let (source, input_span) = input_source(&next, body, kind);
+        let (source, input_span) = input_source(
+            &next,
+            body,
+            kind,
+            declarations.as_ref().map(|input| input.name.as_str()),
+        );
         next.views.insert(
             path.clone(),
             SourceView {
@@ -233,6 +245,9 @@ impl LiveFrontend {
             .typecheck_result
             .tco
             .ok_or(Error::State("live input requires type checking"))?;
+        if let Some(declarations) = declarations {
+            next.admit_declarations(declarations, &checked)?;
+        }
         let roots = Session::source_roots(&front.program, &checked)?;
         let [entry] = roots.as_slice() else {
             return Err(Error::State("live input requires one submission entry"));
@@ -253,19 +268,10 @@ impl LiveFrontend {
             .map_err(|error| {
                 diagnostics::lowering(error, &front.typecheck_result.sources, &next)
             })?;
-        next.definitions = checked.defs.clone();
-        next.next_slot = live.next_slot;
-        next.bindings = live
-            .bindings
-            .iter()
-            .map(|binding| Binding {
-                slot: binding.slot,
-                name: binding.binding.name.clone(),
-                ty: binding.binding.ty.clone(),
-                mutable: binding.binding.mutable,
-                contents: binding.contents.clone(),
-            })
-            .collect();
+        next.options
+            .documents
+            .retain_prepared_expansions(front.program.expansions.clone());
+        next.admit_bindings(&live, &checked, &front.program);
         Ok(PreparedInput {
             live,
             diagnostics: diagnostics::remap_all(front.diagnostics, &next.views),
@@ -319,13 +325,18 @@ impl LiveFrontend {
         Ok(retired)
     }
 
-    fn prepare_declarations(&self, id: u64, input: &str, next: &mut State) -> Result<(), Error> {
+    fn prepare_declarations(
+        &self,
+        id: u64,
+        input: &str,
+        next: &mut State,
+    ) -> Result<DeclarationInput, Error> {
         let name = format!("__hew_live_declarations_{id}");
         let path = self.directory.join(format!("{name}.hew"));
         if next.options.documents.is_file(&path) {
             return Err(Error::State("live declaration path is already in use"));
         }
-        let prefix = imports(next);
+        let prefix = imports(next, None);
         let source = format!("{prefix}{input}");
         next.views.insert(
             path.clone(),
@@ -338,6 +349,12 @@ impl LiveFrontend {
         let mut program = crate::parse_source(&source, &path.to_string_lossy())
             .map_err(|failure| diagnostics::remap(failure, &next.views))?;
         publish(&mut program);
+        let macros: Vec<_> = program
+            .items
+            .iter()
+            .filter(|(item, _)| matches!(item, Item::Macro(_)))
+            .cloned()
+            .collect();
         next.options
             .documents
             .insert_prepared(path.clone(), source.clone(), program);
@@ -346,6 +363,7 @@ impl LiveFrontend {
                 .map_err(|failure| diagnostics::remap(failure, &next.views))?
                 .program;
         expanded.module_graph = None;
+        expanded.items.extend(macros);
         for (item, span) in &expanded.items {
             if span.start >= prefix.len() && matches!(item, Item::Import(_)) {
                 next.imports
@@ -355,16 +373,111 @@ impl LiveFrontend {
         for exported in publish(&mut expanded) {
             next.visible.insert(exported, name.clone());
         }
-        next.snapshots.push(name);
         next.options
             .documents
             .insert_prepared(path.clone(), source, expanded);
+        Ok(DeclarationInput {
+            name,
+            path,
+            prefix_end: prefix.len(),
+        })
+    }
+}
+
+impl State {
+    fn admit_bindings(
+        &mut self,
+        live: &LiveSubmission,
+        checked: &TypeCheckOutput,
+        program: &Program,
+    ) {
+        self.definitions = checked.defs.clone();
+        self.next_slot = live.next_slot;
+        let mut prior_modules: BTreeMap<_, _> = self
+            .bindings
+            .drain(..)
+            .map(|binding| (binding.slot, binding.declaration_modules))
+            .collect();
+        self.bindings = live
+            .bindings
+            .iter()
+            .map(|binding| Binding {
+                slot: binding.slot,
+                name: binding.binding.name.clone(),
+                ty: binding.binding.ty.clone(),
+                mutable: binding.binding.mutable,
+                contents: binding.contents.clone(),
+                declaration_modules: prior_modules.remove(&binding.slot).unwrap_or_else(|| {
+                    retained_declaration_modules(
+                        &binding.binding.ty,
+                        checked,
+                        program,
+                        &self.snapshots,
+                    )
+                }),
+            })
+            .collect();
+    }
+
+    fn admit_declarations(
+        &mut self,
+        input: DeclarationInput,
+        checked: &TypeCheckOutput,
+    ) -> Result<(), Error> {
+        let module = checked
+            .defs
+            .module_for_source(&input.path)
+            .ok_or(Error::State(
+                "checked live declarations have no source module",
+            ))?;
+        let source = self
+            .options
+            .documents
+            .get(&input.path)
+            .ok_or(Error::State("live declaration source disappeared"))?
+            .to_owned();
+        let mut program = self
+            .options
+            .documents
+            .parse_document(&input.path, &source)
+            .program;
+        if program
+            .items
+            .iter()
+            .any(|(item, _)| matches!(item, Item::Impl(_)))
+        {
+            self.impl_snapshots.insert(module);
+        }
+        // Unexpanded macro tokens still own their original lexical scope.
+        // Other declarations carry the checker's completed import dependencies.
+        if !program
+            .items
+            .iter()
+            .any(|(item, _)| matches!(item, Item::Macro(_)))
+        {
+            program.items.retain(|(item, span)| {
+                !matches!(item, Item::Import(_))
+                    || span.start >= input.prefix_end
+                    || checked
+                        .used_imports
+                        .contains(&hew_types::check::scope::ImportSite::new(module, span))
+            });
+            self.options
+                .documents
+                .insert_prepared(input.path, source, program);
+        }
+        self.snapshots.insert(module, input.name);
         Ok(())
     }
 }
 
-fn input_source(state: &State, input: &str, kind: InputKind) -> (String, Range<usize>) {
-    let mut source = imports(state);
+fn input_source(
+    state: &State,
+    input: &str,
+    kind: InputKind,
+    declarations: Option<&str>,
+) -> (String, Range<usize>) {
+    let mut source = imports(state, declarations);
     source.push_str("pub fn __hew_live_submission(");
     for (index, binding) in state.bindings.iter().enumerate() {
         if index != 0 {
@@ -386,9 +499,17 @@ fn input_source(state: &State, input: &str, kind: InputKind) -> (String, Range<u
     (source, input_span)
 }
 
-fn imports(state: &State) -> String {
+fn imports(state: &State, declarations: Option<&str>) -> String {
     let mut source = state.imports.iter().cloned().collect::<String>();
-    for module in &state.snapshots {
+    let mut modules: BTreeSet<_> = state
+        .bindings
+        .iter()
+        .flat_map(|binding| &binding.declaration_modules)
+        .chain(&state.impl_snapshots)
+        .filter_map(|module| state.snapshots.get(module).map(String::as_str))
+        .collect();
+    modules.extend(declarations);
+    for module in modules {
         writeln!(source, "import {module};").expect("writing to a String cannot fail");
     }
     let mut selected: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
@@ -400,6 +521,88 @@ fn imports(state: &State) -> String {
             .expect("writing to a String cannot fail");
     }
     source
+}
+
+/// Keep declaration owners with the value that needs them. Anonymous producers
+/// retain their admitted source closure; their scoped span keys cannot be
+/// interpreted through a later compilation's graph.
+fn retained_declaration_modules(
+    ty: &ResolvedTy,
+    checked: &TypeCheckOutput,
+    program: &Program,
+    snapshots: &HashMap<ModuleId, String>,
+) -> HashSet<ModuleId> {
+    let mut modules = HashSet::new();
+    let mut pending = vec![ty.clone()];
+    let mut seen = BTreeSet::new();
+    let mut anonymous_producer = false;
+    while let Some(ty) = pending.pop() {
+        if !seen.insert(ty.clone()) {
+            continue;
+        }
+        let mut declarations = Vec::new();
+        if let Some(declaration) = ty.head().and_then(|head| head.declaration(&checked.defs)) {
+            declarations.push(declaration.declaration());
+        }
+        match &ty {
+            ResolvedTy::TypeParam { name } => declarations.push(name.id.owner),
+            ResolvedTy::TraitObject { traits } => {
+                for bound in traits {
+                    if let Some(declaration) = bound.trait_id {
+                        declarations.push(declaration);
+                    }
+                }
+            }
+            ResolvedTy::GenericCallable {
+                parameters,
+                callable,
+            } => {
+                pending.push((**callable).clone());
+                for parameter in parameters {
+                    declarations.push(parameter.parameter.id.owner);
+                    for bound in &parameter.bounds {
+                        if let Some(declaration) = bound.trait_id {
+                            declarations.push(declaration);
+                        }
+                        pending.extend(bound.args.iter().cloned());
+                        pending.extend(bound.assoc_bindings.iter().map(|(_, ty)| ty.clone()));
+                    }
+                }
+            }
+            ResolvedTy::Generator { producers, .. } => {
+                for producer in producers {
+                    match &producer.body {
+                        hew_types::ty::EffectBody::Declaration(declaration)
+                        | hew_types::ty::EffectBody::Generator(declaration) => {
+                            declarations.push(*declaration);
+                        }
+                        hew_types::ty::EffectBody::GeneratorBlock(_)
+                        | hew_types::ty::EffectBody::Closure(_) => anonymous_producer = true,
+                    }
+                }
+            }
+            _ => {}
+        }
+        modules.extend(
+            declarations
+                .into_iter()
+                .filter_map(|declaration| checked.defs.module(declaration)),
+        );
+        hew_types::push_type_components(&ty, &mut pending);
+    }
+    if anonymous_producer {
+        if let Some(graph) = &program.module_graph {
+            modules.extend(
+                graph
+                    .modules
+                    .values()
+                    .flat_map(|module| &module.source_paths)
+                    .filter_map(|path| checked.defs.module_for_source(path))
+                    .filter(|module| snapshots.contains_key(module)),
+            );
+        }
+    }
+    modules
 }
 
 fn publish(program: &mut Program) -> Vec<String> {
@@ -467,6 +670,36 @@ mod tests {
     }
 
     #[test]
+    fn live_frontend_replacing_a_function_does_not_import_its_history() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut frontend =
+            LiveFrontend::new(directory.path().to_path_buf(), FrontendOptions::default());
+        let mut first_graph_size = None;
+        for value in 0..3 {
+            let declaration = frontend
+                .prepare(
+                    &compiler(),
+                    &format!("fn answer() -> i64 {{ {value} }}"),
+                    InputKind::Declarations,
+                )
+                .unwrap();
+            frontend.commit(declaration, &[]).unwrap();
+            let invocation = frontend
+                .prepare(&compiler(), "answer()", InputKind::Expression)
+                .unwrap();
+            let graph_size = invocation
+                .program
+                .module_graph
+                .as_ref()
+                .unwrap()
+                .modules
+                .len();
+            assert_eq!(graph_size, *first_graph_size.get_or_insert(graph_size));
+            frontend.commit(invocation, &[]).unwrap();
+        }
+    }
+
+    #[test]
     fn live_frontend_retains_old_nominals_when_a_new_declaration_shadows_them() {
         let directory = tempfile::tempdir().unwrap();
         let mut frontend =
@@ -508,6 +741,88 @@ mod tests {
             .unwrap();
         assert_eq!(next.live.bindings[0].binding.ty, old_ty);
         assert_ne!(next.live.bindings[1].binding.ty, old_ty);
+    }
+
+    #[test]
+    fn live_frontend_macros_keep_definition_scope_through_rejection_and_clear() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut frontend =
+            LiveFrontend::new(directory.path().to_path_buf(), FrontendOptions::default());
+        for input in [
+            "fn base() -> i64 { 40 }",
+            "macro value { ($name:ident) => items { fn $name() -> i64 { base() + 2 } } }",
+            "value!(before)",
+            "fn base() -> string { \"new\" }",
+            "value!(after)",
+        ] {
+            let prepared = frontend
+                .prepare(&compiler(), input, InputKind::Declarations)
+                .unwrap();
+            frontend.commit(prepared, &[]).unwrap();
+        }
+        assert!(frontend
+            .prepare(
+                &compiler(),
+                "macro value { ($name:ident) => items { fn $name() -> i64 { missing() } } }",
+                InputKind::Declarations,
+            )
+            .is_err());
+        let prepared = frontend
+            .prepare(&compiler(), "value!(retained)", InputKind::Declarations)
+            .unwrap();
+        frontend.commit(prepared, &[]).unwrap();
+        frontend.clear().unwrap();
+        assert!(frontend
+            .prepare(&compiler(), "value!(forgotten)", InputKind::Declarations)
+            .is_err());
+        let prepared = frontend
+            .prepare(
+                &compiler(),
+                "macro value { ($name:ident) => items { fn $name() -> i64 { 7 } } } value!(fresh)",
+                InputKind::Declarations,
+            )
+            .unwrap();
+        frontend.commit(prepared, &[]).unwrap();
+    }
+
+    #[test]
+    fn live_frontend_later_authored_input_keeps_its_source_after_macro_expansion() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut frontend =
+            LiveFrontend::new(directory.path().to_path_buf(), FrontendOptions::default());
+        let definition = format!(
+            "macro value {{ ($name:ident) => items {{ fn $name() -> string {{ \"{}\" }} }} }}",
+            "x".repeat(1024)
+        );
+        let prepared = frontend
+            .prepare(&compiler(), &definition, InputKind::Declarations)
+            .unwrap();
+        frontend.commit(prepared, &[]).unwrap();
+        let prepared = frontend
+            .prepare(&compiler(), "value!(generated)", InputKind::Declarations)
+            .unwrap();
+        let generated_start = prepared.program.expansions.expansions[0].synthetic.start;
+        frontend.commit(prepared, &[]).unwrap();
+        let input = format!("{}unknown_name", " ".repeat(generated_start));
+        let Error::Frontend(failure) = frontend
+            .prepare(&compiler(), &input, InputKind::Expression)
+            .unwrap_err()
+        else {
+            panic!("expected a source diagnostic");
+        };
+        let diagnostic = failure
+            .diagnostics
+            .iter()
+            .find(|diagnostic| matches!(diagnostic.kind, crate::FrontendDiagnosticKind::Type(_)))
+            .unwrap();
+        assert!(
+            diagnostic.source.as_deref() == Some(input.as_str()),
+            "diagnostic points outside the authored input"
+        );
+        let crate::FrontendDiagnosticKind::Type(error) = &diagnostic.kind else {
+            unreachable!();
+        };
+        assert_eq!(input.get(error.span.clone()), Some("unknown_name"));
     }
 
     #[test]

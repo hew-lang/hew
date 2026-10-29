@@ -35,14 +35,44 @@ pub(crate) struct Registry {
     imports: BTreeMap<PathBuf, Vec<MacroImport>>,
     ordinary_names: BTreeSet<(ModulePath, String)>,
     pub(crate) map: ExpansionMap,
+    retained_templates: Vec<MacroTemplate>,
+    unchanged_sources: BTreeSet<PathBuf>,
     active: Vec<ExpansionId>,
     next_offset: usize,
     remaining_nodes: usize,
 }
 
 impl Registry {
-    pub(crate) fn new(graph: &ModuleGraph, sources: BTreeMap<PathBuf, String>) -> Self {
-        let next_offset = sources.values().map(String::len).max().unwrap_or(0) + 1;
+    pub(crate) fn new(
+        graph: &ModuleGraph,
+        sources: BTreeMap<PathBuf, String>,
+        mut map: ExpansionMap,
+    ) -> Self {
+        let unchanged_sources = sources
+            .iter()
+            .filter(|(path, source)| map.sources.get(*path) == Some(*source))
+            .map(|(path, _)| path.clone())
+            .collect();
+        let next_offset = sources
+            .values()
+            .map(String::len)
+            .chain(
+                map.expansions
+                    .iter()
+                    .map(|expansion| expansion.synthetic.end),
+            )
+            .chain(
+                map.templates
+                    .iter()
+                    .flat_map(|template| template.origins.iter().map(|(span, _)| span.end)),
+            )
+            .max()
+            .unwrap_or(0)
+            + 1;
+        // Frozen syntax keeps its context/expansion IDs. Collection publishes
+        // only templates still present in this graph, reusing unchanged rules.
+        let retained_templates = std::mem::take(&mut map.templates);
+        map.sources.extend(sources);
         let modules: BTreeMap<_, _> = graph
             .modules
             .values()
@@ -113,10 +143,9 @@ impl Registry {
             modules,
             imports,
             ordinary_names,
-            map: ExpansionMap {
-                sources,
-                ..ExpansionMap::default()
-            },
+            map,
+            retained_templates,
+            unchanged_sources,
             active: Vec::new(),
             next_offset,
             remaining_nodes: 0,
@@ -179,6 +208,15 @@ impl Registry {
                     .collect::<Result<Vec<_>, _>>()
                     .map_err(|error| (source.clone(), error.span, error.message))?;
                 for (pattern, rule) in patterns.iter().zip(&declaration.rules) {
+                    if let Some(template) = self.retained_templates.iter().find(|template| {
+                        template.source == *source
+                            && template.definition_span == rule.span
+                            && template.visibility == declaration.visibility
+                            && self.unchanged_sources.contains(source)
+                    }) {
+                        self.map.templates.push(template.clone());
+                        continue;
+                    }
                     let template = validate_template(
                         pattern,
                         rule,
@@ -187,6 +225,9 @@ impl Registry {
                         declaration.visibility,
                     )
                     .map_err(|error| (source.clone(), error.span, error.message))?;
+                    if let Some(end) = template.origins.iter().map(|(span, _)| span.end).max() {
+                        self.next_offset = self.next_offset.max(end + 1);
+                    }
                     self.map.templates.push(template);
                 }
                 self.definitions.insert(
@@ -904,6 +945,7 @@ fn validate_template(
     result
         .map(|body| MacroTemplate {
             source: source.to_path_buf(),
+            definition_span: rule.span.clone(),
             visibility,
             body,
             origins: map.expansions[0].origins.clone(),

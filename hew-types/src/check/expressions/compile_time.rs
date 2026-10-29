@@ -209,15 +209,17 @@ impl Checker {
                 "compilation inputs are unavailable".into(),
             )
         })?;
-        let original = self.expansions.invocation_origin(span);
-        let source = original.as_ref().map_or_else(
-            || {
-                self.current_item_source
-                    .as_deref()
-                    .unwrap_or_else(|| provider.root_source())
-            },
-            |(path, _)| path.as_path(),
-        );
+        let source = self
+            .current_item_source
+            .as_deref()
+            .or_else(|| {
+                self.defs
+                    .root_module()
+                    .and_then(|module| self.defs.module_source(module))
+            })
+            .unwrap_or_else(|| provider.root_source());
+        let original = self.expansions.invocation_origin(source, span);
+        let source = original.as_ref().map_or(source, |(path, _)| path.as_path());
         let span = original.as_ref().map_or(span, |(_, span)| span);
         let filename = source
             .file_name()

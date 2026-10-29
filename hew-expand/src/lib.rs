@@ -50,7 +50,11 @@ pub fn expand_program(
     let Some(graph) = program.module_graph.as_mut() else {
         return Ok(());
     };
-    let registry = Rc::new(RefCell::new(registry::Registry::new(graph, sources)));
+    let registry = Rc::new(RefCell::new(registry::Registry::new(
+        graph,
+        sources,
+        std::mem::take(&mut program.expansions),
+    )));
     registry
         .borrow_mut()
         .collect(graph)
@@ -97,7 +101,7 @@ pub fn expand_program(
     }
     program.items.clone_from(&graph.modules[&graph.root].items);
     program.expansions = std::mem::take(&mut registry.borrow_mut().map);
-    if program.expansions.expansions.is_empty() {
+    if program.expansions.expansions.is_empty() && program.expansions.templates.is_empty() {
         program.expansions.sources.clear();
     }
     Ok(())
@@ -164,7 +168,7 @@ fn expand_item(
                 {
                     let mut error = error;
                     let path = if let Some((path, span)) =
-                        registry.borrow().map.source_origin(&error.span)
+                        registry.borrow().map.source_origin(source, &error.span)
                     {
                         error.span = span;
                         // Expansion origins can name a whole invocation, not
@@ -191,7 +195,7 @@ fn expand_item(
                     if let Err(error) = control.item(item, span) {
                         let (path, span) = registry
                             .map
-                            .source_origin(&error.span)
+                            .source_origin(source, &error.span)
                             .unwrap_or_else(|| (source.to_path_buf(), error.span));
                         return Err((
                             path,

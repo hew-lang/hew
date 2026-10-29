@@ -45,7 +45,7 @@ pub(super) fn macro_definition_locations(
     let location = |origin: &Origin| -> Option<Location> {
         let (Origin::Caller { file, span } | Origin::Template { file, span }) = origin;
         let (file, span) = map
-            .source_origin(span)
+            .source_origin(file, span)
             .unwrap_or_else(|| (file.clone(), span.clone()));
         let target_uri = Url::from_checked_file_path(&file)?;
         let source = super::analysis::source_for_path(&file, documents)?;
@@ -93,7 +93,10 @@ pub(super) fn generated_expansion_at<'a>(
                 .resolutions
                 .iter()
                 .filter_map(|(key, resolution)| {
-                    let (file, span) = map.source_origin(&(key.start..key.end))?;
+                    let source =
+                        source_file_key(&source_uri_for_module_idx(uri, doc, key.module_idx)?);
+                    let source = source.to_checked_file_path()?;
+                    let (file, span) = map.source_origin(&source, &(key.start..key.end))?;
                     (span.contains(&offset)
                         && Url::from_checked_file_path(&file)
                             .is_some_and(|target| same_source_file(uri, &target)))
@@ -104,9 +107,10 @@ pub(super) fn generated_expansion_at<'a>(
         })?;
     let target = hew_analysis::identity::declaration_target(output, resolution)?;
     let span = target.occurrence.span();
+    let source = target.source.as_deref()?;
     map.expansions
         .iter()
-        .find(|expansion| expansion.synthetic.contains(&span.start))
+        .find(|expansion| expansion.file == source && expansion.synthetic.contains(&span.start))
 }
 
 fn checked_resolution_at(

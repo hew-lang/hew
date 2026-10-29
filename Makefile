@@ -490,11 +490,12 @@ live-sdk-release: live-release-artifacts wasm-runtime-release ## Release: stage 
 		RELEASE_PACKAGE_DEST="$(LIVE_RELEASE_SDK_DEST)"
 
 LIVE_BENCH_SDK ?= $(LIVE_SDK_DEST)
+LIVE_BENCH_PROFILE ?= dev
 LIVE_BENCH_SAMPLES ?= 20
 LIVE_BENCH_GENERATIONS ?= 4
 .PHONY: bench-live-loop
 bench-live-loop: require-host-cargo-target ## Measure: authoring and retained runtime loops against a matched live SDK
-	@HEW_LIVE_BENCH_REVISION="$$(git rev-parse HEAD)" cargo run -p hew-live --features component --example live_loop $(CARGO_TARGET_FLAG) -- \
+	@HEW_LIVE_BENCH_REVISION="$$(git rev-parse HEAD)" cargo run -p hew-live --features component --example live_loop --profile "$(LIVE_BENCH_PROFILE)" $(CARGO_TARGET_FLAG) -- \
 		--sdk "$(LIVE_BENCH_SDK)" --samples "$(LIVE_BENCH_SAMPLES)" --generations "$(LIVE_BENCH_GENERATIONS)"
 
 .PHONY: test-live-network

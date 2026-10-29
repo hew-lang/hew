@@ -371,6 +371,11 @@ HEW_WASI_SDK=/path/to/wasi-sdk make bench-live-loop \
   LIVE_BENCH_SDK=/path/to/live-sdk > live-loop.json
 ```
 
+For user-facing latency measurements, build with `make live-sdk-release` and
+select its matching optimized host with `LIVE_BENCH_PROFILE=release-lib`.
+The default `dev` host and debug SDK are useful for functional checks; their
+compiler and component-preparation costs include unoptimized implementation code.
+
 The JSON report contains machine and binary identities, every timing sample,
 median and nearest-rank p95, and an informative comparison with 250 ms. Defaults
 are 20 samples and four retained generations; set `LIVE_BENCH_SAMPLES` and
@@ -384,6 +389,18 @@ invocation and replacement consume prepared handles without compiling. The
 replacement samples alternate two distinct prepared code identities. The
 asynchronous comparison includes guest work and scheduling as well as service
 dispatch. Replacement pause covers snapshot through commit with no concurrent
-ingress. Linux RSS is recorded with prepared generations and active instances
+ingress.
+
+A separate source-edit workload retains an admitted service call while its
+caller is cancelled and the edited component is built and prepared. Service
+notifications hold that work until replacement reaches its admission fence.
+The report separates `component_edit_to_ready`, source build and preparation
+from `prepared_replace_under_work_total` and
+`replacement_under_work_fenced_pause`. It verifies a service failure, exactly
+one completion of the cancelled caller's admitted work, changed routing behaviour,
+preserved state and retirement of both replaced instances. This is one controlled
+edit under work; the configured sample count applies to the repeated cached loops.
+
+Linux RSS is recorded with prepared generations and active instances
 retained, then released; it includes engine and allocator retention and is not
 an allocation count or a leak diagnosis. Other platforms report no RSS value.

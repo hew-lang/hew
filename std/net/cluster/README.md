@@ -43,8 +43,9 @@ At most 64 subscriptions may be live on one node; additional watches fail with
 `wait_registered(name)` returns the current exact `Location` when the name is
 present. `wait_departed(member)` waits until that exact identity and session is
 absent, dead or left. A higher-session rejoin cannot conceal the predecessor's
-departure. Both helpers subscribe before checking and compose with ordinary
-scope cancellation. Locations are discovery metadata; obtain callable actor
+departure. A dropped or replaced connection is not a departure: the session stays
+present until it reconnects or the failure detector declares it dead. Both
+helpers subscribe before checking and compose with ordinary scope cancellation. Locations are discovery metadata; obtain callable actor
 values through authenticated service grants.
 
 A subscription remains bound to its original node instance across shutdown and

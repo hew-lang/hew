@@ -145,6 +145,14 @@ pub struct RegistryEvent {
 struct ConnectionTokens {
     current: HashMap<u16, u64>,
     visible: HashMap<u16, u64>,
+    /// Durable session whose admission observers have seen, keyed by peer.
+    ///
+    /// Observation and `wait_departed` follow the session, not one connection:
+    /// service grants are session-scoped and rebind to the next publication of
+    /// the same session, so a connection replacement or reconnect is not a
+    /// departure. A peer leaves the observable set only when it is buried
+    /// (DEAD/LEFT) or a newer session replaces it.
+    announced: HashMap<u16, u32>,
     /// Guarded transitions that have passed their guard but have not emitted
     /// yet, keyed by peer.
     ///
@@ -174,6 +182,16 @@ struct ConnectionTokens {
     /// retirement returns; the single transition drainer keeps the queued
     /// `TokenLost` demotion ordered behind that already-authorized step.
     in_flight_deliveries: HashMap<u16, InFlightGuardedDelivery>,
+}
+
+impl ConnectionTokens {
+    /// Record `publication_token` as the observed publication of `session`.
+    fn publish_visible(&mut self, node_id: u16, publication_token: u64, session: Option<u32>) {
+        self.visible.insert(node_id, publication_token);
+        if let Some(session) = session {
+            self.announced.insert(node_id, session);
+        }
+    }
 }
 
 /// A guarded delivery that has claimed its authorization and is mid-flight.
@@ -962,7 +980,12 @@ impl HewCluster {
     /// before this call, and no ALIVE is ever emitted, or finds the delivery
     /// registered and cancels whatever of it has not started yet. There is no
     /// interleaving in which it does neither.
-    fn claim_guarded_emission(&self, node_id: u16, publication_token: u64) -> bool {
+    fn claim_guarded_emission(
+        &self,
+        node_id: u16,
+        publication_token: u64,
+        session: Option<u32>,
+    ) -> bool {
         let mut tokens = self.connection_tokens.lock_or_recover();
         if !matches!(
             tokens.pending_emissions.get(&node_id),
@@ -977,7 +1000,7 @@ impl HewCluster {
         ) {
             return false;
         }
-        tokens.visible.insert(node_id, publication_token);
+        tokens.publish_visible(node_id, publication_token, session);
         tokens.in_flight_deliveries.insert(
             node_id,
             InFlightGuardedDelivery {
@@ -1125,7 +1148,11 @@ impl HewCluster {
                     if let Some(publication_token) =
                         tokens.current.get(&transition.node_id).copied()
                     {
-                        tokens.visible.insert(transition.node_id, publication_token);
+                        tokens.publish_visible(
+                            transition.node_id,
+                            publication_token,
+                            transition.session,
+                        );
                     }
                 }
                 true
@@ -1134,9 +1161,11 @@ impl HewCluster {
                 let mut tokens = self.connection_tokens.lock_or_recover();
                 match tokens.current.get(&transition.node_id) {
                     Some(current) if *current == *publication_token => {
-                        tokens
-                            .visible
-                            .insert(transition.node_id, *publication_token);
+                        tokens.publish_visible(
+                            transition.node_id,
+                            *publication_token,
+                            transition.session,
+                        );
                         true
                     }
                     _ => false,
@@ -1162,7 +1191,11 @@ impl HewCluster {
                 // where a refusal retires the token this transition was
                 // authorized against, so the authorization is re-taken here
                 // rather than assumed.
-                if !self.claim_guarded_emission(transition.node_id, *publication_token) {
+                if !self.claim_guarded_emission(
+                    transition.node_id,
+                    *publication_token,
+                    transition.session,
+                ) {
                     return;
                 }
                 // Phase 3 — DELIVER. The claim registered this delivery as in
@@ -1457,13 +1490,10 @@ impl HewCluster {
             .iter()
             .filter_map(|member| {
                 let session = sessions.get(&member.node_id).copied()?;
+                // A live session stays observable across connection loss and
+                // replacement; it departs only when buried or superseded.
                 if matches!(member.state, MEMBER_ALIVE | MEMBER_SUSPECT)
-                    && tokens.visible.get(&member.node_id) != tokens.current.get(&member.node_id)
-                {
-                    return None;
-                }
-                if matches!(member.state, MEMBER_ALIVE | MEMBER_SUSPECT)
-                    && !tokens.visible.contains_key(&member.node_id)
+                    && tokens.announced.get(&member.node_id) != Some(&session)
                 {
                     return None;
                 }
@@ -1984,7 +2014,11 @@ impl HewCluster {
                     if let Some(member) = members.iter_mut().find(|m| m.node_id == node_id) {
                         self.refresh_member_liveness(member);
                     }
-                    tokens.visible.insert(node_id, publication_token);
+                    tokens.publish_visible(
+                        node_id,
+                        publication_token,
+                        sessions.get(&node_id).copied(),
+                    );
                 } else {
                     // Locally-synthesized reconnect bump (token variant); cannot
                     // readmit a DEAD/LEFT node — gossip_announced=false.
@@ -2308,8 +2342,13 @@ impl HewCluster {
     pub fn refute_if_suspected(&self, entries: &[(u16, u32, i32, u64)]) -> Option<u64> {
         let local = self.config.local_node_id;
         let mut max_suspect_incarnation: Option<u64> = None;
+        let ours = self.local_incarnation.load(Ordering::SeqCst);
         for &(node_id, _session, state, incarnation) in entries {
-            if node_id == local && (state == MEMBER_SUSPECT || state == MEMBER_DEAD) {
+            // A claim below our incarnation is already refuted.
+            if node_id == local
+                && (state == MEMBER_SUSPECT || state == MEMBER_DEAD)
+                && incarnation >= ours
+            {
                 max_suspect_incarnation =
                     Some(max_suspect_incarnation.map_or(incarnation, |m| m.max(incarnation)));
             }
@@ -2816,7 +2855,7 @@ pub(crate) unsafe fn hew_cluster_notify_connection_established_for_token_if_not_
                 if let Some(member) = members.iter_mut().find(|m| m.node_id == node_id) {
                     cluster.refresh_member_liveness(member);
                 }
-                tokens.visible.insert(node_id, publication_token);
+                tokens.publish_visible(node_id, publication_token, Some(session));
             } else {
                 if matches!(state, MEMBER_DEAD | MEMBER_LEFT) {
                     tokens.current.remove(&node_id);
@@ -4396,6 +4435,71 @@ mod tests {
                     "lost should retire both current and visible token state"
                 );
             }
+
+            hew_cluster_free(cluster);
+        }
+    }
+
+    /// A half-open path or a mutual-dial loser drops the published connection
+    /// on one node only. The session is not buried and its service grants
+    /// rebind to the next publication, so observers must keep it (as Suspect)
+    /// instead of reporting a departure that the peer never sees.
+    #[test]
+    fn observation_keeps_live_session_across_connection_replacement() {
+        let config = make_config(1);
+        let sync = Arc::new(Mutex::new(()));
+        let observed = |cluster: *mut HewCluster| {
+            // SAFETY: the test owns the live cluster.
+            unsafe { &*cluster }
+                .observation_members()
+                .into_iter()
+                .filter(|(slot, _, _)| *slot == 2)
+                .map(|(_, session, state)| (session, state))
+                .collect::<Vec<_>>()
+        };
+        // SAFETY: test context; the cluster is freed at the end.
+        unsafe {
+            let cluster = hew_cluster_new(&raw const config);
+            let first = Arc::new(AtomicBool::new(false));
+            assert_ne!(
+                hew_cluster_notify_connection_established_for_token_if_not_removed(
+                    cluster, 2, 7, 1, &sync, &first,
+                ),
+                -1
+            );
+            assert_eq!(observed(cluster), vec![(7, MEMBER_ALIVE)]);
+
+            first.store(true, Ordering::Release);
+            hew_cluster_notify_connection_lost_if_current(cluster, 2, 1);
+            assert_eq!(
+                observed(cluster),
+                vec![(7, MEMBER_SUSPECT)],
+                "a dropped connection must not hide a live session"
+            );
+
+            let second = Arc::new(AtomicBool::new(false));
+            assert_ne!(
+                hew_cluster_notify_connection_established_for_token_if_not_removed(
+                    cluster, 2, 7, 2, &sync, &second,
+                ),
+                -1
+            );
+            assert_eq!(observed(cluster), vec![(7, MEMBER_ALIVE)]);
+
+            // A peer that never reconnects still departs: the failure detector
+            // buries the disconnected session after the suspect timeout.
+            second.store(true, Ordering::Release);
+            hew_cluster_notify_connection_lost_if_current(cluster, 2, 2);
+            assert_eq!(observed(cluster), vec![(7, MEMBER_SUSPECT)]);
+            let later = crate::clock::hew_now_ms()
+                + u64::from(config.ping_timeout_ms + config.suspect_timeout_ms)
+                + 1;
+            (&*cluster).tick(later);
+            assert_eq!(observed(cluster), vec![(7, MEMBER_DEAD)]);
+
+            // A newer session stays hidden until its own publication announces it.
+            (&*cluster).apply_swim_gossip(&[(2, 8, MEMBER_ALIVE, 1)]);
+            assert!(observed(cluster).is_empty());
 
             hew_cluster_free(cluster);
         }

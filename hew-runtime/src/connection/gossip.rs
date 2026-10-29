@@ -314,3 +314,35 @@ pub(crate) unsafe fn hew_connmgr_broadcast_registry_gossip(
     }
     success_count
 }
+
+/// Re-announce every local name to each authenticated peer.
+///
+/// A peer that declared this session dead dropped its names. The refutation
+/// readmits the session over the same connection, which never repeats the
+/// admission flush, so the names are sent again here. Each one goes through
+/// the ordinary broadcast and so queues behind any parked flush.
+///
+/// # Safety
+///
+/// `mgr` must be a valid connection manager pointer for the duration of the
+/// call.
+pub(super) unsafe fn reannounce_local_names(mgr: *mut HewConnMgr) {
+    // SAFETY: caller guarantees manager pointer validity.
+    let mgr_ref = unsafe { &*mgr };
+    // SAFETY: the node pins its registry through every manager owner.
+    let (Some(registry), Some(node_id), Some(session_incarnation)) = (
+        unsafe { mgr_ref.registry.as_ref() },
+        mgr_ref.local_identity,
+        mgr_ref.local_session_incarnation,
+    ) else {
+        return;
+    };
+    let session = crate::envelope::NodeSessionIdentity {
+        node_id,
+        session_incarnation,
+    };
+    for (name, location) in registry.local_names(session) {
+        // SAFETY: caller guarantees manager pointer validity.
+        unsafe { hew_connmgr_broadcast_registry_gossip(mgr, &name, location, true) };
+    }
+}

@@ -50,7 +50,11 @@ pub fn expand_program(
     let Some(graph) = program.module_graph.as_mut() else {
         return Ok(());
     };
-    let registry = Rc::new(RefCell::new(registry::Registry::new(graph, sources)));
+    let registry = Rc::new(RefCell::new(registry::Registry::new(
+        graph,
+        sources,
+        std::mem::take(&mut program.expansions),
+    )));
     registry
         .borrow_mut()
         .collect(graph)
@@ -97,7 +101,7 @@ pub fn expand_program(
     }
     program.items.clone_from(&graph.modules[&graph.root].items);
     program.expansions = std::mem::take(&mut registry.borrow_mut().map);
-    if program.expansions.expansions.is_empty() {
+    if program.expansions.expansions.is_empty() && program.expansions.templates.is_empty() {
         program.expansions.sources.clear();
     }
     Ok(())

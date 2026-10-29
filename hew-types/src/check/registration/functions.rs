@@ -2027,7 +2027,10 @@ impl Checker {
         // established row for it is that same method: resolve it rather than
         // mint a second identity. A genuinely duplicated impl method collides
         // on this path too, and impl registration reports that.
-        self.lookup_declaration(&path)
+        // Publish this occurrence as another route to the established row.
+        let established = self.lookup_declaration(&path)?;
+        let canonical = self.defs.path(established).to_owned();
+        self.defs.bind_redeclaration(occurrence, &canonical)
     }
 
     /// Rename method-level type parameter names in `ty` from the trait's

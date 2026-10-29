@@ -158,12 +158,21 @@ fn replacements_preserve_helper_closure_generator_and_impl_scope() {
         .write_all(
             br"
 fn base() -> i64 { 40 }
+macro constant { ($name:ident) => items { fn $name() -> i64 { 42 } } }
+constant!(from_constant)
+from_constant()
+macro based { ($name:ident) => items { fn $name() -> i64 { base() + 2 } } } based!(from_same_input)
+based!(from_separate_input)
 fn saved() -> i64 { base() + 2 }
 let previous = || base();
 fn base() -> i64 { 100 }
 saved()
 previous()
 base()
+from_same_input()
+from_separate_input()
+based!(after_shadow)
+after_shadow()
 type Number { value: i64; }
 impl Number { fn read(self) -> i64 { self.value } }
 let number = Number { value: 7 };
@@ -184,6 +193,6 @@ for value in alias { println(value); }
     assert!(stderr.is_empty(), "{stderr}");
     assert_eq!(
         String::from_utf8(output.stdout).unwrap(),
-        "42\n40\n100\n7\n42\n"
+        "42\n42\n40\n100\n42\n42\n42\n7\n42\n"
     );
 }

@@ -130,6 +130,8 @@ pub struct FrontendOptions {
 #[derive(Debug, Clone)]
 pub struct SourceSet {
     sources: BTreeMap<PathBuf, SourceContent>,
+    /// One context world for compiler-prepared syntax retained across live inputs.
+    prepared_expansions: Arc<hew_parser::macro_syntax::ExpansionMap>,
     filesystem: bool,
     reads: Arc<std::sync::Mutex<BTreeMap<PathBuf, Option<String>>>>,
     dependency_roots: Arc<std::sync::Mutex<HashSet<PathBuf>>>,
@@ -141,6 +143,7 @@ impl Default for SourceSet {
     fn default() -> Self {
         Self {
             sources: BTreeMap::new(),
+            prepared_expansions: Arc::default(),
             filesystem: true,
             reads: Arc::default(),
             dependency_roots: Arc::default(),
@@ -192,6 +195,7 @@ impl SourceSet {
     fn for_frontend(&self) -> Self {
         Self {
             sources: self.sources.clone(),
+            prepared_expansions: Arc::clone(&self.prepared_expansions),
             filesystem: self.filesystem,
             reads: Arc::default(),
             dependency_roots: Arc::default(),
@@ -450,7 +454,10 @@ impl SourceSet {
     /// Retain compiler-prepared syntax with its original diagnostic source.
     /// Session declaration snapshots keep expansion hygiene and source spans;
     /// rendering and reparsing their text would discard those identities.
-    pub(crate) fn insert_prepared(&mut self, path: PathBuf, source: String, program: Program) {
+    pub(crate) fn insert_prepared(&mut self, path: PathBuf, source: String, mut program: Program) {
+        if !program.expansions.templates.is_empty() || !program.expansions.expansions.is_empty() {
+            self.prepared_expansions = Arc::new(std::mem::take(&mut program.expansions));
+        }
         self.insert(path.clone(), source.clone());
         let content = SourceContent::Prepared {
             source: source.into(),
@@ -467,6 +474,10 @@ impl SourceSet {
             },
             content,
         );
+    }
+
+    fn retain_prepared_expansions(&mut self, expansions: hew_parser::macro_syntax::ExpansionMap) {
+        self.prepared_expansions = Arc::new(expansions);
     }
 
     fn parse_document(&self, path: &Path, source: &str) -> hew_parser::ParseResult {
@@ -1997,6 +2008,11 @@ fn resolve_imports_internal(
         }
     }
     sources.insert(input_canonical, source.to_string());
+    if !options.documents.prepared_expansions.templates.is_empty()
+        || !options.documents.prepared_expansions.expansions.is_empty()
+    {
+        program.expansions = (*options.documents.prepared_expansions).clone();
+    }
     if let Err((path, error)) = hew_expand::expand_program(program, sources) {
         let text = options
             .documents

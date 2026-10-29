@@ -384,6 +384,8 @@ pub enum TemplateBody {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct MacroTemplate {
     pub source: PathBuf,
+    /// The rule's original extent in its defining source.
+    pub definition_span: Span,
     pub visibility: Visibility,
     pub body: TemplateBody,
     pub origins: Vec<(Span, Origin)>,

@@ -268,6 +268,9 @@ impl LiveFrontend {
             .map_err(|error| {
                 diagnostics::lowering(error, &front.typecheck_result.sources, &next)
             })?;
+        next.options
+            .documents
+            .retain_prepared_expansions(front.program.expansions.clone());
         next.admit_bindings(&live, &checked, &front.program);
         Ok(PreparedInput {
             live,
@@ -346,6 +349,12 @@ impl LiveFrontend {
         let mut program = crate::parse_source(&source, &path.to_string_lossy())
             .map_err(|failure| diagnostics::remap(failure, &next.views))?;
         publish(&mut program);
+        let macros: Vec<_> = program
+            .items
+            .iter()
+            .filter(|(item, _)| matches!(item, Item::Macro(_)))
+            .cloned()
+            .collect();
         next.options
             .documents
             .insert_prepared(path.clone(), source.clone(), program);
@@ -354,6 +363,7 @@ impl LiveFrontend {
                 .map_err(|failure| diagnostics::remap(failure, &next.views))?
                 .program;
         expanded.module_graph = None;
+        expanded.items.extend(macros);
         for (item, span) in &expanded.items {
             if span.start >= prefix.len() && matches!(item, Item::Import(_)) {
                 next.imports
@@ -731,6 +741,48 @@ mod tests {
             .unwrap();
         assert_eq!(next.live.bindings[0].binding.ty, old_ty);
         assert_ne!(next.live.bindings[1].binding.ty, old_ty);
+    }
+
+    #[test]
+    fn live_frontend_macros_keep_definition_scope_through_rejection_and_clear() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut frontend =
+            LiveFrontend::new(directory.path().to_path_buf(), FrontendOptions::default());
+        for input in [
+            "fn base() -> i64 { 40 }",
+            "macro value { ($name:ident) => items { fn $name() -> i64 { base() + 2 } } }",
+            "value!(before)",
+            "fn base() -> string { \"new\" }",
+            "value!(after)",
+        ] {
+            let prepared = frontend
+                .prepare(&compiler(), input, InputKind::Declarations)
+                .unwrap();
+            frontend.commit(prepared, &[]).unwrap();
+        }
+        assert!(frontend
+            .prepare(
+                &compiler(),
+                "macro value { ($name:ident) => items { fn $name() -> i64 { missing() } } }",
+                InputKind::Declarations,
+            )
+            .is_err());
+        let prepared = frontend
+            .prepare(&compiler(), "value!(retained)", InputKind::Declarations)
+            .unwrap();
+        frontend.commit(prepared, &[]).unwrap();
+        frontend.clear().unwrap();
+        assert!(frontend
+            .prepare(&compiler(), "value!(forgotten)", InputKind::Declarations)
+            .is_err());
+        let prepared = frontend
+            .prepare(
+                &compiler(),
+                "macro value { ($name:ident) => items { fn $name() -> i64 { 7 } } } value!(fresh)",
+                InputKind::Declarations,
+            )
+            .unwrap();
+        frontend.commit(prepared, &[]).unwrap();
     }
 
     #[test]

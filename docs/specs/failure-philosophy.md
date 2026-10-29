@@ -35,21 +35,31 @@ retry a timed-out request or supply exactly-once business effects.
 
 ## Failure detector
 
-### Trigger: phi-accrual (Hayashibara et al., 2004)
+### Trigger: an unanswered probe, weighed by phi-accrual
 
-SWIM's ALIVE → SUSPECT trigger is the **phi-accrual failure detector**.
-For each peer we maintain a sliding window of heartbeat inter-arrival
-intervals and estimate the mean μ and standard deviation σ. On each
-tick we compute
+Silence alone never raises suspicion: with round-robin probing, contact
+with one peer is naturally a full probe cycle apart. Each protocol period
+the substrate probes one member directly and stamps when it did; a re-probe
+keeps the original stamp, so the deadline never slides. Any frame from the
+member answers the probe, and so does a relay's report that the member
+answered an indirect probe (see below). A member is suspected only when a
+probe stays unanswered for longer than `ping_timeout_ms`.
+
+Phi-accrual (Hayashibara et al., 2004) then decides whether the overdue
+probe is anomalous for that peer. For each peer we maintain a sliding
+window of heartbeat inter-arrival intervals and estimate the mean μ and
+standard deviation σ. On each tick we compute
 
 ```
 t   = now − last_heartbeat
 φ   = −log₁₀(P(interval > t | learned distribution))
 ```
 
-and suspect the peer when `φ > 8.0` (the production-SOTA threshold used
-by Akka, Cassandra, and Hashicorp memberlist — corresponding to roughly
-a 10⁻⁸ probability that the observed silence is benign jitter).
+and a warm detector suspects the peer only when its probe is overdue and
+`φ > 8.0` (the production-SOTA threshold used by Akka, Cassandra, and
+Hashicorp memberlist — corresponding to roughly a 10⁻⁸ probability that
+the observed silence is benign jitter). Phi only ever delays suspicion; it
+never raises it on its own.
 
 The math, including the closed-form normal-survival approximation, is
 documented in `hew-runtime/src/phi_accrual.rs`. The module is exposed as
@@ -71,9 +81,9 @@ wall-clock wait emerges from the data.
 ### Cold start (fail-closed)
 
 A detector that has seen fewer than 10 intervals (`PHI_MIN_SAMPLES`)
-returns `φ = 0`, i.e. it never raises suspicion on its own. In this
-state SWIM falls back to the legacy `ping_timeout_ms` so brand-new and
-quiet peers are not blind-spots. Once the window warms, phi takes over.
+returns `φ = 0`. In this state an overdue probe suspects on its own, so
+brand-new and quiet peers are not blind-spots. Once the window warms, an
+overdue probe must also exceed the phi threshold.
 
 This is a deliberate fail-closed choice (tenet 1): a fresh detector
 must not produce a high phi from a tiny sample (mean and stddev are
@@ -89,17 +99,54 @@ all future detections of real failures.
 
 ### SUSPECT → DEAD
 
-A peer that has been SUSPECT for longer than `suspect_timeout_ms` is
-declared DEAD; the per-peer detector is then pruned. This escalation
-uses a fixed timeout because the SUSPECT window already exists
-specifically to allow indirect-ping confirmation, and applying phi twice
+A SUSPECT peer is declared DEAD once `suspect_timeout_ms` has passed since
+the last contact with it, not since the suspicion was raised; the per-peer
+detector is then pruned. A peer that went quiet long before its probe came
+due is therefore buried no later than a peer suspected at once. This
+escalation uses a fixed timeout because the SUSPECT window already exists
+specifically to allow indirect-probe confirmation, and applying phi twice
 would not improve confirmation latency.
+
+### Indirect probes
+
+Each period the prober also sends `PING_REQ` naming the probed member to up
+to `indirect_ping_count` other connected peers. A relay pings the member
+and, when the member's ACK arrives within `ping_timeout_ms`, forwards an ACK
+naming the member to each requester, once. The requester counts that as
+contact with the member: it answers the overdue probe. A black hole between
+two live members is therefore bridged by any third member that reaches both,
+and neither side is suspected. The forwarded ACK carries the relay's
+incarnation, so it never readmits a buried member or re-stamps one.
+
+### Burial notices and refutation
+
+A member that sees itself suspected or declared dead at or above its own
+incarnation refutes the claim by advancing its incarnation; the new ALIVE
+wins everywhere. Gossip alone cannot guarantee the member hears the claim:
+each event rides a bounded number of frames, and a member whose frames were
+dropped rather than delayed can come back after every copy was lost. So
+every SWIM frame a node sends to a member it holds DEAD leads with that
+member's obituary, outside the gossip budget. A buried member that stays
+connected learns of its burial from the next frame it receives from any
+node that buried it — the ACK to its own PING, a relayed PING or a
+`PING_REQ` — and refutes. The obituary rides frames the protocol already
+sends, so a buried or flapping member never causes extra traffic.
+
+Every PING, ACK and `PING_REQ` carries the sender's own incarnation, and
+each counts as an ALIVE claim at it: a member that refuted its burial
+returns through whichever frame it sends first, even when its refuting
+gossip was lost. A claim at or below the buried incarnation is refused.
+
+Two members that hold each other DEAD with no third member in contact with
+both exchange no frames, since DEAD members are never probed; they stay
+apart until one of them reconnects with a higher durable session.
 
 ### ABI
 
 Phi-accrual governs **when** the substrate emits
 `HEW_MEMBERSHIP_EVENT_NODE_SUSPECT`; the membership-event ABI surface is
-fixed — no new wire messages and no new event variants. The threshold and
+fixed — no new wire messages and no new event variants. Forwarded ACKs and
+burial notices reuse the existing SWIM control payload. The threshold and
 window size live as module-level constants in `cluster.rs` and are
 deliberately not exposed through the `#[repr(C)] ClusterConfig` struct.
 

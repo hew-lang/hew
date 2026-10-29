@@ -664,12 +664,42 @@ for monitor observations.
 SWIM membership is keyed by `NodeId` and durable node session. SWIM's own
 incarnation orders membership updates within that node session.
 
-A DEAD or LEFT member is buried. Equal- or lower-session traffic cannot revive
-it. A strictly higher durable session can be admitted, clears quarantine, and
-then resumes registry and routing publication.
+SWIM control payloads (`SwimControl` in `node_controls.hew`) carry
+`msg_type`, the sender's session and incarnation, an optional `target`
+session and piggybacked gossip. A receiver accepts a frame only when `from`
+is the connection's authenticated peer and `target`, when present, is an
+admitted session:
 
-Quarantine blocks sends, asks, monitors, and links until a valid higher-session
-readmission.
+- `PING` (1) is answered with an `ACK` (2).
+- `PING_REQ` (3) names the probed member in `target`. The relay sends that
+  member a `PING` and, when the member's `ACK` arrives within
+  `ping_timeout_ms`, forwards an `ACK` to the requester with `target` set to
+  the member, once per request.
+- An `ACK` with `target` set is a forwarded `ACK`: the requester counts it
+  as contact with the target and as an ordinary `ACK` from the relay. Its
+  `incarnation` is the relay's and is never applied to the target.
+
+A node that predates forwarded ACKs never forwards, so a requester probing
+through it sees no indirect answer, as before. It validates `target` on a
+forwarded `ACK` like any other and treats the frame as a plain `ACK` from the
+relay. The payload schema is unchanged.
+
+A PING, ACK or `PING_REQ` is an ALIVE claim by its sender at its stated
+incarnation. A member suspected or declared DEAD at or above its own
+incarnation refutes by advancing its incarnation. Every SWIM frame sent to a
+member its sender holds DEAD leads its gossip with that member's DEAD entry,
+outside the gossip budget, so a buried member that stays connected learns of
+its burial and refutes it even when every gossiped copy was lost.
+
+A DEAD or LEFT member is buried. Within its durable session it returns only
+through its own SWIM traffic or gossip at a strictly higher incarnation; an
+equal-session reconnect, or any claim at or below the buried incarnation,
+cannot revive it. A strictly higher durable session can be admitted. Either
+readmission clears quarantine and then resumes registry and routing
+publication; a member returning from DEAD re-announces its registered names.
+
+Quarantine blocks sends, asks, monitors, and links until a valid readmission.
+SWIM frames are not blocked, so the protocol can reach a buried member.
 
 ## 12. Native-only target posture
 

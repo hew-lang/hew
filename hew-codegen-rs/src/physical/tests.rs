@@ -1692,3 +1692,61 @@ fn active_operation_root_uses_the_split_coroutine_owner_slot() {
         }
     }
 }
+
+/// A borrowed callable's carrier retains its defining code for the whole call,
+/// so calling it takes no code-root lease; a consuming call hands the carrier
+/// to the callee and leases the code for the call's duration.
+#[test]
+fn only_consuming_callable_calls_lease_their_code() {
+    use inkwell::values::AnyValue;
+
+    let semantic = lower_source(
+        r#"
+        fn apply_all(f: fn(i64) -> i64, count: i64) -> i64 {
+            var total = 0;
+            for r in 0..count {
+                total += f(r);
+            }
+            total
+        }
+        fn apply_once(consume f: fn[once](i64) -> i64) -> i64 {
+            f(1)
+        }
+        fn main() -> i64 {
+            let offset = 3;
+            let shift = |value: i64| -> i64 { value + offset };
+            apply_all(shift, 4) + apply_once(|value: i64| -> i64 { value * offset })
+        }
+        "#,
+    );
+    let triple = native_emission_triple();
+    let inventory = hew_mir::physical::physical_type_inventory(&semantic);
+    let target = physical_target_for_inventory(&triple, &inventory).unwrap();
+    let physical = hew_mir::lower_physical_module(&semantic, target).unwrap();
+    let ctx = Context::create();
+    let machine =
+        crate::llvm::target_machine_for_triple_with_opt_level(&triple, OptLevel::O0).unwrap();
+    let llvm = build_module(&ctx, physical.module(), "callable_code", &machine).unwrap();
+    llvm.verify().unwrap();
+    let leases = |name: &str| {
+        let symbol = physical
+            .module()
+            .callables
+            .iter()
+            .map(|callable| emitted_symbol(physical.module(), callable))
+            .find(|symbol| symbol.ends_with(name))
+            .expect("emitted callable");
+        llvm.get_functions()
+            .filter(|function| function.get_name().to_string_lossy().starts_with(&symbol))
+            .map(|function| {
+                function
+                    .print_to_string()
+                    .to_string()
+                    .matches("call ptr @hew_code_root_acquire(")
+                    .count()
+            })
+            .sum::<usize>()
+    };
+    assert_eq!(leases("_apply_all"), 0);
+    assert_eq!(leases("_apply_once"), 1);
+}

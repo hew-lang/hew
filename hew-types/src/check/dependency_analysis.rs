@@ -22,7 +22,7 @@ struct DependencyKey {
     program: Program,
     next_default_span: usize,
     sources: Vec<(String, std::sync::Arc<str>, String)>,
-    registry: (Vec<PathBuf>, Option<PathBuf>),
+    registry: Vec<PathBuf>,
     lint_levels: Vec<LintLevel>,
 }
 

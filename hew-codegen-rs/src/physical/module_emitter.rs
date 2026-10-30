@@ -80,11 +80,56 @@ pub(super) fn build_module_with_host<'ctx>(
         debug.finalize();
     }
     c_abi::seal_c_scalar_widening(&emitter.llvm)?;
-    emitter
-        .llvm
-        .verify()
-        .map_err(|error| CodegenError::LlvmVerify(error.to_string()))?;
+    verify_bounded(&emitter.llvm)?;
     Ok(emitter.llvm)
+}
+
+/// Longest verifier report a diagnostic carries. LLVM prints every offending
+/// instruction and metadata node in full; one bad debug type can repeat across
+/// thousands of locals.
+const VERIFY_REPORT_LIMIT: usize = 4096;
+
+/// Verify `module`, reporting a failure as a bounded diagnostic that names the
+/// failing functions. LLVM's own report is truncated to
+/// [`VERIFY_REPORT_LIMIT`] bytes so a malformed module never floods stderr.
+pub(crate) fn verify_bounded(module: &Module<'_>) -> CodegenResult<()> {
+    let Err(report) = module.verify() else {
+        return Ok(());
+    };
+    let report = report.to_string_lossy();
+    let failing: Vec<String> = module
+        .get_functions()
+        .filter(|function| function.count_basic_blocks() > 0 && !function.verify(false))
+        .take(4)
+        .map(|function| function.get_name().to_string_lossy().into_owned())
+        .collect();
+    let mut message = String::new();
+    if !failing.is_empty() {
+        message.push_str("in function ");
+        for (index, name) in failing.iter().enumerate() {
+            if index > 0 {
+                message.push_str(", ");
+            }
+            message.push('`');
+            message.push_str(name);
+            message.push('`');
+        }
+        message.push_str(": ");
+    }
+    if report.len() <= VERIFY_REPORT_LIMIT {
+        message.push_str(report.trim_end());
+    } else {
+        let mut cut = VERIFY_REPORT_LIMIT;
+        while !report.is_char_boundary(cut) {
+            cut -= 1;
+        }
+        message.push_str(&report[..cut]);
+        message.push_str(&format!(
+            "\n... ({} more bytes of verifier output omitted)",
+            report.len() - cut
+        ));
+    }
+    Err(CodegenError::LlvmVerify(message))
 }
 
 /// The module-private array of compiled `*HewRegex` handles. Native module
@@ -932,5 +977,123 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
             .build_return(Some(&status))
             .llvm_ctx("return the WASI process status")?;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod verify_tests {
+    use inkwell::debug_info::{
+        AsDIScope, DIFlags, DIFlagsConstants, DWARFEmissionKind, DWARFSourceLanguage,
+    };
+
+    use super::*;
+
+    /// One function whose local is described by an enumerator in place of a
+    /// type: the shape of the bad `DILocalVariable` a broken type lowering
+    /// produces.
+    fn add_malformed_function<'ctx>(
+        ctx: &'ctx Context,
+        module: &Module<'ctx>,
+        builder: &inkwell::debug_info::DebugInfoBuilder<'ctx>,
+        file: inkwell::debug_info::DIFile<'ctx>,
+        index: usize,
+    ) {
+        let function = module.add_function(
+            &format!("malformed_{index}"),
+            ctx.void_type().fn_type(&[], false),
+            None,
+        );
+        let routine = builder.create_subroutine_type(file, None, &[], DIFlags::ZERO);
+        let subprogram = builder.create_function(
+            file.as_debug_info_scope(),
+            &format!("malformed_{index}"),
+            None,
+            file,
+            1,
+            routine,
+            false,
+            true,
+            1,
+            DIFlags::ZERO,
+            false,
+        );
+        function.set_subprogram(subprogram);
+        let entry = ctx.append_basic_block(function, "entry");
+        let ir = ctx.create_builder();
+        ir.position_at_end(entry);
+        let slot = ir.build_alloca(ctx.i64_type(), "slot").unwrap();
+        let location =
+            builder.create_debug_location(ctx, 1, 1, subprogram.as_debug_info_scope(), None);
+        let not_a_type = builder.create_enumerator("NotAType", 0, false).as_type();
+        let variable = builder.create_auto_variable(
+            subprogram.as_debug_info_scope(),
+            "bad",
+            file,
+            1,
+            not_a_type,
+            true,
+            DIFlags::ZERO,
+            0,
+        );
+        builder.insert_declare_at_end(slot, Some(variable), None, location, entry);
+        ir.set_current_debug_location(location);
+        ir.build_return(None).unwrap();
+    }
+
+    #[test]
+    fn verify_bounded_reports_a_malformed_debug_module_within_the_limit() {
+        let ctx = Context::create();
+        let module = ctx.create_module("malformed");
+        module.add_basic_value_flag(
+            "Debug Info Version",
+            inkwell::module::FlagBehavior::Warning,
+            ctx.i32_type().const_int(3, false),
+        );
+        let (builder, unit) = module.create_debug_info_builder(
+            true,
+            DWARFSourceLanguage::Rust,
+            "malformed.hew",
+            ".",
+            "hew",
+            false,
+            "",
+            0,
+            "",
+            DWARFEmissionKind::Full,
+            0,
+            false,
+            false,
+            "",
+            "",
+        );
+        let file = unit.get_file();
+        // Enough bad locals that LLVM's full report would run far past the
+        // limit.
+        for index in 0..200 {
+            add_malformed_function(&ctx, &module, &builder, file, index);
+        }
+        builder.finalize();
+        let error = verify_bounded(&module).expect_err("a malformed debug type fails verification");
+        let CodegenError::LlvmVerify(message) = error else {
+            panic!("expected a verifier diagnostic, got {error:?}");
+        };
+        assert!(
+            message.len() <= VERIFY_REPORT_LIMIT + 256,
+            "diagnostic is {} bytes",
+            message.len()
+        );
+        assert!(message.contains("omitted"), "{message}");
+        assert!(message.contains("malformed_0"), "{message}");
+    }
+
+    #[test]
+    fn verify_bounded_accepts_a_valid_module() {
+        let ctx = Context::create();
+        let module = ctx.create_module("valid");
+        let function = module.add_function("ok", ctx.void_type().fn_type(&[], false), None);
+        let builder = ctx.create_builder();
+        builder.position_at_end(ctx.append_basic_block(function, "entry"));
+        builder.build_return(None).unwrap();
+        verify_bounded(&module).expect("a valid module verifies");
     }
 }

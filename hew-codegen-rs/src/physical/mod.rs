@@ -82,6 +82,7 @@ mod value_emitter;
 
 use c_abi::{get_or_declare_external, get_or_declare_external_widened, Widen};
 use helpers::*;
+pub(crate) use module_emitter::verify_bounded;
 use module_emitter::*;
 use value_emitter::*;
 

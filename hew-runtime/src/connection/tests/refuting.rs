@@ -348,16 +348,30 @@ impl BuriedPeer {
     }
 
     /// The next frame this node sent the peer, opened and decoded.
-    fn next_sent(&mut self) -> ControlFrame {
+    fn next_frame(&mut self) -> WireFrame {
         let index = self.read;
         let sealed = self.script.wait_until(|wire| wire.sent.get(index).cloned());
         self.read += 1;
-        let WireFrame::Control(control) =
-            decode_wire_frame(&open_sent_frame(&mut self.peer, &sealed)).expect("frame")
-        else {
-            panic!("the node sends the buried peer control frames only");
+        decode_wire_frame(&open_sent_frame(&mut self.peer, &sealed)).expect("frame")
+    }
+
+    /// The next control frame this node sent the peer.
+    fn next_sent(&mut self) -> ControlFrame {
+        let WireFrame::Control(control) = self.next_frame() else {
+            panic!("the node answers the buried peer's requests only with refusals");
         };
         control
+    }
+
+    /// The node's refusal of the peer's call `request_id`, sent unread.
+    fn expect_refused_call(&mut self, request_id: u64) {
+        let WireFrame::Envelope(reply) = self.next_frame() else {
+            panic!("the call is answered with an envelope");
+        };
+        assert_eq!(reply.message, EnvelopeMessage::NotAdmitted);
+        assert_eq!(reply.request_id, request_id);
+        assert_eq!(reply.payload, [crate::hew_node::refusal_reason_code()]);
+        assert!(reply.target.is_none() && reply.source.is_none());
     }
 
     fn next_swim(&mut self) -> SwimControlPayload {
@@ -477,10 +491,12 @@ fn buried_peer_refutes_over_swim_and_is_published() {
         "the opening PING leads with the obituary"
     );
 
-    // Ordinary traffic is dropped, and a PING at the buried incarnation is
-    // answered without readmitting the peer. The ACK fences what came before.
+    // Ordinary traffic is dropped, its call refused, and a PING at the
+    // buried incarnation is answered without readmitting the peer. The ACK
+    // fences what came before.
     node.deliver_ordinary_traffic();
     node.deliver_swim(SWIM_MSG_PING, BURIED_AT);
+    node.expect_refused_call(9);
     let ack = node.next_swim();
     assert_eq!(ack.msg_type, SWIM_MSG_ACK);
     assert!(
@@ -535,6 +551,62 @@ fn buried_peer_refutes_over_swim_and_is_published() {
         1,
         "the actor request is routed"
     );
+}
+
+/// Each request a buried peer sends before refuting is refused unread: its
+/// call with a `NotAdmitted` reply and its monitor setup with a refused
+/// result, so neither waits on a connection that stays open once the peer
+/// refutes. Counterfactual: both are dropped silently and a call without a
+/// deadline never resolves.
+#[test]
+fn buried_peer_requests_are_refused_before_it_refutes() {
+    let mut node = BuriedPeer::admit();
+    assert!(obituary(&node.next_swim()), "the opening PING");
+
+    let call = encode_envelope_frame(&EnvelopeFrame {
+        version: WIRE_VERSION,
+        target: Some(test_location(LOCAL, 0x10)),
+        source: Some(peer_name()),
+        message: EnvelopeMessage::Service {
+            handler: "tests.Peer.handle".to_owned(),
+            grant_id: 1,
+            kind: crate::request_state::RequestKind::CallWait,
+        },
+        payload: vec![1],
+        request_id: 9,
+        budget_ns: None,
+    })
+    .expect("call");
+    node.deliver(&call);
+    let monitor = crate::envelope::MonitorReqPayload {
+        grant_id: 1,
+        watcher: peer_name(),
+        ref_id: 4,
+        target: test_location(LOCAL, 0x10),
+        setup_id: 11,
+    };
+    let monitor = encode_control_frame(&ControlFrame {
+        version: WIRE_VERSION,
+        ctrl_kind: crate::envelope::CTRL_MONITOR_REQ,
+        payload: crate::envelope::encode_monitor_req_payload(&monitor).expect("monitor"),
+    })
+    .expect("monitor frame");
+    node.deliver(&monitor);
+
+    node.expect_refused_call(9);
+    let result = node.next_sent();
+    assert_eq!(result.ctrl_kind, crate::envelope::CTRL_MONITOR_SETUP_RESULT);
+    let result =
+        crate::envelope::decode_setup_result_payload(&result.payload).expect("setup result");
+    assert_eq!(
+        (result.setup_id, result.ref_id, result.status),
+        (11, 4, crate::envelope::SETUP_STATUS_REFUSED)
+    );
+    assert_eq!(ROUTED.load(Ordering::SeqCst), 0, "nothing is routed");
+    assert!(matches!(
+        node.claim_state(),
+        Some(ClaimState::Refuting { .. })
+    ));
 }
 
 /// Whether user traffic to the peer has a published connection to take.

@@ -12,7 +12,7 @@ use super::admission::hew_connmgr_remove;
 use super::channel::ChannelProtection;
 use super::control::{
     authenticated_peer_identity, handle_control_frame, location_matches_local_session,
-    location_matches_node_session,
+    location_matches_node_session, refuse_unadmitted_request,
 };
 use super::gossip::retry_pending_registry_flush;
 use super::identity_claim::DeferredLoser;
@@ -226,9 +226,15 @@ pub(super) fn reader_loop(
                         refuting = None;
                     }
                 }
-                _ => set_last_error(format!(
-                    "connection reader dropped a non-SWIM frame from buried peer on conn {conn_id}"
-                )),
+                frame => {
+                    set_last_error(format!(
+                        "connection reader dropped a non-SWIM frame from buried peer on conn {conn_id}"
+                    ));
+                    if !mgr.is_null() {
+                        // SAFETY: reader_loop owns a live manager pointer for this connection.
+                        refuse_unadmitted_request(unsafe { &*mgr }, conn_id, claim_token, &frame);
+                    }
+                }
             }
             continue;
         }

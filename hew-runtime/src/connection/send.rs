@@ -231,6 +231,23 @@ pub(crate) fn claim_send_to_route(
     (claim.route_slot == route_slot).then_some(claim)
 }
 
+/// Send `bytes` on `conn_id` while its claim holds the connection, refuting
+/// or published: a buried peer's refused requests are answered on it.
+pub(super) fn send_on_held_connection(
+    manager: &HewConnMgr,
+    conn_id: c_int,
+    publication_token: u64,
+    bytes: &[u8],
+) -> c_int {
+    claim_send_admitted(
+        manager,
+        conn_id,
+        Some(publication_token),
+        ClaimState::holds_connection,
+    )
+    .map_or(-1, |claim| claim.send(bytes))
+}
+
 /// A send claim for SWIM to `route_slot`. SWIM also reaches a buried peer
 /// over its refuting connection, so the peer can learn of its burial.
 pub(super) fn claim_swim_send_to_route(manager: &HewConnMgr, route_slot: u16) -> Option<SendClaim> {

@@ -10,9 +10,10 @@ use crate::envelope::{
     ControlFrame, RegistryGossipPayload, SetupResultPayload, CTRL_DEMONITOR, CTRL_LINK_DOWN,
     CTRL_LINK_REQ, CTRL_LINK_SETUP_RESULT, CTRL_MONITOR_DOWN, CTRL_MONITOR_REQ,
     CTRL_MONITOR_SETUP_RESULT, CTRL_REGISTRY_GOSSIP, CTRL_SWIM, CTRL_UNLINK,
-    REGISTRY_GOSSIP_OP_ADD, REGISTRY_GOSSIP_OP_REMOVE, SETUP_STATUS_ACCEPTED,
+    REGISTRY_GOSSIP_OP_ADD, REGISTRY_GOSSIP_OP_REMOVE, SETUP_STATUS_ACCEPTED, SETUP_STATUS_REFUSED,
     SETUP_STATUS_TARGET_GONE, WIRE_VERSION,
 };
+use crate::envelope::{encode_envelope_frame, EnvelopeFrame, EnvelopeMessage, WireFrame};
 use crate::node_identity::Location;
 use crate::peer_binding::ClaimState;
 use crate::set_last_error;
@@ -20,7 +21,7 @@ use crate::util::MutexExt;
 
 use super::handshake::supports_gossip;
 use super::peer::wait_admitted_peer_node_id_for_conn;
-use super::send::hew_connmgr_send_preencoded_claimed;
+use super::send::{hew_connmgr_send_preencoded_claimed, send_on_held_connection};
 use super::swim::handle_swim_control_frame;
 use super::{HewConnMgr, CONN_STATE_ACTIVE};
 
@@ -344,20 +345,14 @@ fn send_empty_role_terminal(
     SETUP_STATUS_ACCEPTED
 }
 
-fn send_setup_result_frame(
-    mgr: *mut HewConnMgr,
-    conn_id: c_int,
-    claim_token: u64,
-    ctrl_kind: u64,
-    result: &SetupResultPayload,
-) {
+fn encode_setup_result_frame(ctrl_kind: u64, result: &SetupResultPayload) -> Option<Vec<u8>> {
     let payload = match encode_setup_result_payload(result) {
         Ok(payload) => payload,
         Err(err) => {
             set_last_error(format!(
                 "connection reader setup result payload encode failure: {err}"
             ));
-            return;
+            return None;
         }
     };
     let frame = ControlFrame {
@@ -365,14 +360,26 @@ fn send_setup_result_frame(
         ctrl_kind,
         payload,
     };
-    let bytes = match encode_control_frame(&frame) {
-        Ok(bytes) => bytes,
+    match encode_control_frame(&frame) {
+        Ok(bytes) => Some(bytes),
         Err(err) => {
             set_last_error(format!(
                 "connection reader setup result frame encode failure: {err}"
             ));
-            return;
+            None
         }
+    }
+}
+
+fn send_setup_result_frame(
+    mgr: *mut HewConnMgr,
+    conn_id: c_int,
+    claim_token: u64,
+    ctrl_kind: u64,
+    result: &SetupResultPayload,
+) {
+    let Some(bytes) = encode_setup_result_frame(ctrl_kind, result) else {
+        return;
     };
     // SAFETY: the reader owns this exact manager/connection publication claim;
     // the send copies the encoded frame before returning.
@@ -898,4 +905,86 @@ fn handle_service_frame(
         crate::envelope::CTRL_SERVICE_OFFER_RESULT,
         &result,
     );
+}
+
+/// Refuse a request a buried peer sent on its refuting connection, which the
+/// reader drops unread. A call, monitor, link or service offer waits on its
+/// answer and the connection stays open once the peer refutes, so the peer's
+/// caller is told the request was refused rather than left waiting for good.
+pub(super) fn refuse_unadmitted_request(
+    mgr: &HewConnMgr,
+    conn_id: c_int,
+    claim_token: u64,
+    frame: &WireFrame,
+) {
+    let refused = |ctrl_kind, setup_id, ref_id, target| {
+        encode_setup_result_frame(
+            ctrl_kind,
+            &SetupResultPayload {
+                setup_id,
+                ref_id,
+                target,
+                status: SETUP_STATUS_REFUSED,
+            },
+        )
+    };
+    let bytes = match frame {
+        WireFrame::Envelope(request)
+            if request.request_id > 0
+                && request.target.is_some()
+                && matches!(request.message, EnvelopeMessage::Service { .. }) =>
+        {
+            encode_envelope_frame(&EnvelopeFrame {
+                version: WIRE_VERSION,
+                target: None,
+                source: None,
+                message: EnvelopeMessage::NotAdmitted,
+                payload: vec![crate::hew_node::refusal_reason_code()],
+                request_id: request.request_id,
+                budget_ns: None,
+            })
+            .ok()
+        }
+        WireFrame::Control(control) => match control.ctrl_kind {
+            CTRL_MONITOR_REQ => decode_monitor_req_payload(&control.payload)
+                .ok()
+                .filter(|request| request.setup_id != 0)
+                .and_then(|request| {
+                    refused(
+                        CTRL_MONITOR_SETUP_RESULT,
+                        request.setup_id,
+                        request.ref_id,
+                        request.target,
+                    )
+                }),
+            CTRL_LINK_REQ => decode_link_req_payload(&control.payload)
+                .ok()
+                .filter(|request| request.setup_id != 0)
+                .and_then(|request| {
+                    refused(
+                        CTRL_LINK_SETUP_RESULT,
+                        request.setup_id,
+                        request.ref_id,
+                        request.target,
+                    )
+                }),
+            crate::envelope::CTRL_SERVICE_OFFER => {
+                crate::envelope::decode_service_offer_payload(&control.payload)
+                    .ok()
+                    .and_then(|offer| {
+                        refused(
+                            crate::envelope::CTRL_SERVICE_OFFER_RESULT,
+                            offer.request_id,
+                            offer.grant_id,
+                            offer.target,
+                        )
+                    })
+            }
+            _ => None,
+        },
+        WireFrame::Envelope(_) => None,
+    };
+    if let Some(bytes) = bytes {
+        let _ = send_on_held_connection(mgr, conn_id, claim_token, &bytes);
+    }
 }

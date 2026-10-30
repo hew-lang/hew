@@ -3834,6 +3834,56 @@ fn resolve_module_candidate(
 
 /// A positioned resolver diagnostic on the import at `span`, or a plain one
 /// when the importing file can no longer be read.
+/// The package root `canonical` lies outside, when the importer belongs to a
+/// package (spec 3.5.3): the directory holding the manifest, compared by real
+/// path, so a link that leads out of the package leaves it.
+fn outside_package(
+    anchor: &hew_types::module_registry::ModuleAnchor,
+    canonical: &Path,
+) -> Option<PathBuf> {
+    let hew_types::module_registry::ModuleAnchor::Package { dir, .. } = anchor else {
+        return None;
+    };
+    let root = dir
+        .canonicalize()
+        .unwrap_or_else(|_| compile_time::normalize(dir));
+    (!canonical.starts_with(&root)).then_some(root)
+}
+
+/// `E_IMPORT_OUTSIDE_PACKAGE`: an import that reaches a file outside the
+/// importing package without naming a declared dependency.
+fn import_escape(
+    ctx: &ImportResolutionContext<'_>,
+    source_file: &Path,
+    span: &Range<usize>,
+    spelling: &str,
+    canonical: &Path,
+    root: &Path,
+) -> FrontendFailure {
+    let help = "declare that code as a dependency in hew.toml \
+                (`[dependencies] name = { path = \"...\" }`) and import it by its package name";
+    let mut failure = import_failure(
+        ctx,
+        source_file,
+        span,
+        "E_IMPORT_OUTSIDE_PACKAGE",
+        format!(
+            "import {spelling} reaches `{}`, outside the package at `{}`",
+            display_path(canonical),
+            display_path(root),
+        ),
+    );
+    if let Some(FrontendDiagnosticKind::Message(diagnostic)) =
+        failure.diagnostics.first_mut().map(|d| &mut d.kind)
+    {
+        diagnostic.help.push(help.into());
+    } else {
+        failure.message.push_str("\n  help: ");
+        failure.message.push_str(help);
+    }
+    failure
+}
+
 fn import_failure(
     ctx: &ImportResolutionContext<'_>,
     source_file: &Path,
@@ -3956,6 +4006,16 @@ fn resolve_file_imports_internal(
                 let file_path = decl.file_path.as_ref().expect("checked above");
                 let resolved = source_dir.join(file_path);
                 if let Some(canonical) = resolve_candidate(ctx.documents, &resolved) {
+                    if let Some(root) = outside_package(&anchor, &canonical) {
+                        return Err(import_escape(
+                            ctx,
+                            source_file,
+                            &items[*idx].1,
+                            &format!("\"{file_path}\""),
+                            &canonical,
+                            &root,
+                        ));
+                    }
                     canonical
                 } else {
                     return Err(FrontendFailure::message_only(format!(
@@ -4017,6 +4077,22 @@ fn resolve_file_imports_internal(
 
                 if let Some((canonical, form, origin)) = resolved.into_iter().next() {
                     use hew_types::module_registry::{MembershipRole, ModuleAnchor};
+                    // Only a declared dependency or the standard library may
+                    // lie outside the package; a module beside the importer
+                    // or under the package name that a link carries out of
+                    // the package is refused.
+                    if matches!(origin, CandidateRoot::Package | CandidateRoot::Relative) {
+                        if let Some(root) = outside_package(&anchor, &canonical) {
+                            return Err(import_escape(
+                                ctx,
+                                source_file,
+                                &items[*idx].1,
+                                &source_module,
+                                &canonical,
+                                &root,
+                            ));
+                        }
+                    }
                     let membership = membership_of(&canonical, &std_roots, ctx.documents)?;
                     if origin == CandidateRoot::Dependency {
                         if let (
@@ -10440,5 +10516,141 @@ mod source_anchor_tests {
                 ModuleAnchor::Loose
             ));
         }
+    }
+
+    /// A package `app` under `root/pkg` beside `root/outside`, which holds a
+    /// module `x` and a package `dep`. Returns the root and the package dir.
+    fn escape_fixture() -> (tempfile::TempDir, PathBuf) {
+        let root = tempfile::tempdir().expect("create escape fixture");
+        let pkg = root.path().join("pkg");
+        let outside = root.path().join("outside");
+        std::fs::create_dir_all(pkg.join("inner")).unwrap();
+        std::fs::create_dir_all(outside.join("dep")).unwrap();
+        std::fs::write(outside.join("x.hew"), "pub fn x() -> i64 { 1 }\n").unwrap();
+        std::fs::write(
+            outside.join("dep/hew.toml"),
+            "[package]\nname = \"dep\"\nversion = \"0.1.0\"\n",
+        )
+        .unwrap();
+        std::fs::write(outside.join("dep/dep.hew"), "pub fn d() -> i64 { 2 }\n").unwrap();
+        std::fs::write(pkg.join("inner/x.hew"), "pub fn x() -> i64 { 3 }\n").unwrap();
+        (root, pkg)
+    }
+
+    fn check_app(pkg: &Path, manifest_extra: &str, main: &str) -> Result<(), String> {
+        std::fs::write(
+            pkg.join("hew.toml"),
+            format!("[package]\nname = \"app\"\nversion = \"0.1.0\"\n{manifest_extra}"),
+        )
+        .unwrap();
+        let input = pkg.join("app.hew");
+        std::fs::write(&input, main).unwrap();
+        let input = input.display().to_string();
+        match check_file(&input, &FrontendOptions::default()) {
+            Ok(_) => Ok(()),
+            Err(failure) => Err(failure
+                .diagnostics
+                .iter()
+                .find_map(|d| match &d.kind {
+                    FrontendDiagnosticKind::Message(m) => Some(m.code.clone()),
+                    _ => None,
+                })
+                .unwrap_or(failure.message)),
+        }
+    }
+
+    #[test]
+    fn quoted_imports_that_leave_the_package_are_refused() {
+        let (root, pkg) = escape_fixture();
+        let absolute = root.path().join("outside/x.hew");
+        for spelling in [
+            "../outside/x.hew".to_string(),
+            "./inner/../../outside/x.hew".to_string(),
+            absolute.display().to_string(),
+        ] {
+            let main = format!("import \"{spelling}\";\nfn main() {{ println(x()); }}\n");
+            assert_eq!(
+                check_app(&pkg, "", &main),
+                Err("E_IMPORT_OUTSIDE_PACKAGE".to_string()),
+                "{spelling}"
+            );
+        }
+        // A quoted path inside the package, however it is spelled, stays.
+        let main = "import \"./inner/../inner/x.hew\";\nfn main() { println(x()); }\n";
+        assert_eq!(check_app(&pkg, "", main), Ok(()));
+    }
+
+    #[test]
+    fn a_backslash_path_never_reaches_outside_the_package() {
+        // On Windows `\` separates components and the escape check refuses
+        // the path; elsewhere it is part of one file name that does not exist.
+        let (_root, pkg) = escape_fixture();
+        let main = "import \"..\\\\outside\\\\x.hew\";\nfn main() { println(x()); }\n";
+        assert!(check_app(&pkg, "", main).is_err());
+    }
+
+    #[test]
+    fn a_case_variant_spelling_does_not_leave_the_package() {
+        // On a case-insensitive file system the variant names the real
+        // directory and is refused; elsewhere it names nothing.
+        let (_root, pkg) = escape_fixture();
+        let main = "import \"../OUTSIDE/x.hew\";\nfn main() { println(x()); }\n";
+        assert!(check_app(&pkg, "", main).is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn links_are_followed_inside_the_package_only() {
+        let (root, pkg) = escape_fixture();
+        std::os::unix::fs::symlink(root.path().join("outside"), pkg.join("out")).unwrap();
+        std::os::unix::fs::symlink(pkg.join("inner"), pkg.join("alias")).unwrap();
+        for main in [
+            "import out.x;\nfn main() { println(x.x()); }\n",
+            "import \"out/x.hew\";\nfn main() { println(x()); }\n",
+        ] {
+            assert_eq!(
+                check_app(&pkg, "", main),
+                Err("E_IMPORT_OUTSIDE_PACKAGE".to_string()),
+                "{main}"
+            );
+        }
+        let main = "import alias.x;\nfn main() { println(x.x()); }\n";
+        assert_eq!(check_app(&pkg, "", main), Ok(()));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_declared_dependency_outside_the_package_is_imported_by_name() {
+        let (root, pkg) = escape_fixture();
+        std::fs::create_dir_all(pkg.join(".hew/packages")).unwrap();
+        std::os::unix::fs::symlink(
+            root.path().join("outside/dep"),
+            pkg.join(".hew/packages/dep"),
+        )
+        .unwrap();
+        let main = "import dep;\nfn main() { println(dep.d()); }\n";
+        assert_eq!(
+            check_app(
+                &pkg,
+                "[dependencies]\ndep = { path = \"../outside/dep\" }\n",
+                main
+            ),
+            Ok(())
+        );
+    }
+
+    #[test]
+    fn a_loose_file_may_import_beside_its_directory() {
+        let (root, _pkg) = escape_fixture();
+        let loose = root.path().join("loose");
+        std::fs::create_dir_all(&loose).unwrap();
+        let input = loose.join("main.hew");
+        std::fs::write(
+            &input,
+            "import \"../outside/x.hew\";\nfn main() { println(x()); }\n",
+        )
+        .unwrap();
+        let input = input.display().to_string();
+        assert!(check_file(&input, &FrontendOptions::default()).is_ok());
     }
 }

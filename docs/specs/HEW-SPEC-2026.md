@@ -1923,7 +1923,13 @@ unqualified in the importing file, under the same collision rules as a
 selective import, and its private items stay private to it. A `fn main` in an
 imported file is one of those private items; only the root file's `main` is the
 program entry. The file is also reachable as a module named by its file stem
-(`helpers.name`).
+(`helpers.name`). Inside a package, the file must lie inside the package:
+the directory holding its `hew.toml` and everything below it, judged by the
+file's real path after `.`, `..` and links are resolved. A quoted path that
+leaves the package, by `..`, an absolute path or a link that leads out, is
+refused with `E_IMPORT_OUTSIDE_PACKAGE`; code outside the package is reached
+only as a declared dependency (§3.5.3). A file that belongs to no package may
+name any file.
 
 An aliased quoted import (`import "codecs/huffman.hew" as huffman;`) binds the
 file only as the module `huffman`, like `import path as alias;`; none of its
@@ -2148,7 +2154,11 @@ answer one import, it is refused as ambiguous. Inside a package, an import
 that resolves from the standard library, from the package's own name, from the
 package root or beside the importing file needs no `[dependencies]` entry;
 anything else must be a
-declared dependency.
+declared dependency. The package is the directory holding its `hew.toml`;
+places 2 and 3 resolve only to files whose real path lies inside it, so a
+directory link is followed while it stays in the package and an import it
+carries out of the package is refused with `E_IMPORT_OUTSIDE_PACKAGE`. A
+declared dependency is the one way out of the package.
 
 #### 3.5.4 Per-module type namespacing
 

@@ -248,3 +248,180 @@ fn alive_node_is_not_falsely_killed_by_driven_swim() {
     }
     crate::registry::hew_registry_clear();
 }
+
+/// Advance simulated time one protocol period at a time until `done` holds,
+/// failing after far more simulated periods than any retention window needs.
+fn advance_periods_until(mut done: impl FnMut() -> bool) {
+    poll_until(|period| {
+        if done() {
+            return true;
+        }
+        assert!(
+            period < 1_000,
+            "condition not reached in 1000 protocol periods"
+        );
+        crate::deterministic::hew_simtime_advance_ms(SWIM_TEST_PERIOD_MS.cast_signed());
+        thread::sleep(Duration::from_millis(2));
+        false
+    });
+}
+
+/// The SWIM driver thread applies a node's membership effects in the runtime
+/// that started the node. A published peer buried by the detector is
+/// quarantined there, and a disconnected buried peer retired after its window
+/// takes its quarantine entry with it. Counterfactual: the ticker thread
+/// resolves the process default runtime, so the insert lands in another
+/// runtime's set and the retired peer's entry stays blocking its slot.
+#[test]
+fn swim_driver_quarantines_and_retires_in_its_nodes_runtime() {
+    const NODE: u16 = 360;
+    const BURIED: u16 = 361;
+    const RETIRED: u16 = 362;
+    let _guard = crate::runtime_test_guard();
+    let _swim_env = SwimTimingEnv::fast();
+    let runtime = Box::new(crate::runtime::RuntimeInner::new(
+        crate::scheduler::worker_less_scheduler(),
+    ));
+    // SAFETY: `runtime` outlives the entered scope, which ends after the node
+    // and its driver are stopped and freed.
+    let entered = unsafe { crate::runtime::enter(&runtime) };
+    let bind = CString::new("127.0.0.1:0").expect("bind address");
+    // SAFETY: the test owns this node until the free below.
+    let node = unsafe { hew_node_new(NODE, bind.as_ptr()) };
+    // SAFETY: the node is new and stopped.
+    unsafe {
+        install_test_auth(node, NODE);
+        assert_eq!(hew_node_start(node), 0);
+    }
+    // SAFETY: the running node owns its cluster.
+    let cluster = unsafe { &*(*node).cluster };
+
+    // A published peer the detector will bury.
+    assert!(cluster.admit_authenticated_session(BURIED, 4));
+    let sync = Arc::new(Mutex::new(()));
+    let removed = Arc::new(AtomicBool::new(false));
+    // SAFETY: the live cluster and publication guards outlive the call.
+    let published = unsafe {
+        crate::cluster::hew_cluster_notify_connection_established_for_token_if_not_removed(
+            (*node).cluster,
+            BURIED,
+            4,
+            77,
+            &sync,
+            &removed,
+        )
+    };
+    assert_eq!(published, 1);
+    cluster.seed_member_for_test(BURIED, crate::cluster::MEMBER_SUSPECT, 1);
+
+    // A disconnected peer already buried and quarantined here.
+    cluster.apply_swim_gossip(&[(RETIRED, 2, crate::cluster::MEMBER_DEAD, 3)]);
+    quarantine_insert(RETIRED, Some(2), 3);
+
+    advance_periods_until(|| quarantine_is_blocked(BURIED, Some(4), 1));
+    assert_eq!(
+        cluster.member_state(BURIED),
+        crate::cluster::MEMBER_DEAD,
+        "a buried peer whose connection is published is retained"
+    );
+    advance_periods_until(|| cluster.member_state(RETIRED) == -1);
+    assert!(!quarantine_is_blocked(RETIRED, Some(2), 1));
+
+    // SAFETY: the node was started above and is freed exactly once.
+    unsafe {
+        assert_eq!(hew_node_stop(node), 0);
+        hew_node_free(node);
+    }
+    drop(entered);
+}
+
+/// A reconnect worker for a peer this node buried is refused at the same
+/// session while the burial is retained, and after both nodes retire each
+/// other the same worker's next attempt is admitted as a fresh member through
+/// the full authenticated admission. Counterfactual: the retired claim
+/// leaves the retry no predecessor to match, so it is refused for good.
+#[test]
+fn reconnect_after_retirement_is_admitted_end_to_end() {
+    const NODE_A: u16 = 370;
+    const NODE_B: u16 = 371;
+    let _guard = crate::runtime_test_guard();
+    let _swim_env = SwimTimingEnv::fast();
+    crate::registry::hew_registry_clear();
+    let (node_a, _, node_b, port_b) = start_authorized_tcp_pair(NODE_A, NODE_B);
+    let addr_b = format!("127.0.0.1:{port_b}");
+    let connect_addr = CString::new(addr_b.as_str()).unwrap();
+    // SAFETY: both nodes run until the stops below.
+    unsafe {
+        connect_with_retry(node_a.as_ptr(), &connect_addr);
+        wait_for_handshake(node_a.as_ptr(), node_b.as_ptr());
+    }
+    // SAFETY: the running nodes own their managers and clusters.
+    let (mgr_a, cluster_a, cluster_b) = unsafe {
+        (
+            (*node_a.as_ptr()).conn_mgr,
+            &*(*node_a.as_ptr()).cluster,
+            &*(*node_b.as_ptr()).cluster,
+        )
+    };
+    // SAFETY: node A is live.
+    let identity_b = unsafe { identity_for_route_slot(&*node_a.as_ptr(), NODE_B) }.expect("B");
+    let owner = || {
+        // SAFETY: A's manager is live.
+        unsafe { &*mgr_a }
+            .claims
+            .0
+            .lock_or_recover()
+            .get(&identity_b)
+            .map(|claim| {
+                (
+                    claim.state,
+                    claim.session_incarnation,
+                    claim.publication_token,
+                )
+            })
+    };
+    let (_, session, token) = owner().expect("B's claim");
+
+    // Drop the connection, then bury B at its session.
+    // SAFETY: A's manager is live.
+    let conn = unsafe { connection::first_active_connection_for_test(mgr_a, NODE_B) };
+    // SAFETY: A owns this connection.
+    assert_eq!(unsafe { connection::hew_connmgr_remove(mgr_a, conn) }, 0);
+    poll_until(|_| {
+        thread::sleep(Duration::from_millis(2));
+        owner().is_some_and(|(state, ..)| state == crate::peer_binding::ClaimState::Retired)
+    });
+    let incarnation = cluster_a.member_incarnation(NODE_B).expect("B");
+    cluster_a.apply_swim_gossip(&[(
+        NODE_B,
+        session,
+        crate::cluster::MEMBER_DEAD,
+        incarnation + 1,
+    )]);
+    assert_eq!(cluster_a.member_state(NODE_B), crate::cluster::MEMBER_DEAD);
+
+    assert!(
+        !connection::reconnect_successor_for_test(mgr_a, identity_b, session, token, &addr_b),
+        "an equal-session reconnect cannot revive a retained burial"
+    );
+
+    advance_periods_until(|| {
+        owner().is_none()
+            && cluster_a.member_state(NODE_B) == -1
+            && cluster_b.member_state(NODE_A) == -1
+    });
+    assert!(connection::reconnect_successor_for_test(
+        mgr_a, identity_b, session, token, &addr_b
+    ));
+    assert!(owner().is_some_and(|(state, current, _)| {
+        state == crate::peer_binding::ClaimState::Published && current == session
+    }));
+    assert_eq!(cluster_a.member_state(NODE_B), crate::cluster::MEMBER_ALIVE);
+
+    // SAFETY: both nodes were started by the pair helper.
+    unsafe {
+        assert_eq!(hew_node_stop(node_a.as_ptr()), 0);
+        assert_eq!(hew_node_stop(node_b.as_ptr()), 0);
+    }
+    crate::registry::hew_registry_clear();
+}

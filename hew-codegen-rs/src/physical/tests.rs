@@ -1539,6 +1539,7 @@ fn scalar_and_vector_loop_chunks_preserve_the_shared_budget_across_serial_calls(
 
 #[test]
 fn loop_chunk_bodies_keep_a_local_symbol_in_the_object() {
+    use object::{Object, ObjectSymbol};
     // Profilers and debuggers attribute samples by symbol; a chunk emitted
     // under an assembler-private label has machine code but no name.
     let semantic = lower_source(
@@ -1577,11 +1578,17 @@ fn loop_chunk_bodies_keep_a_local_symbol_in_the_object() {
         .expect("emit loop chunk object");
         let object = std::fs::read(artefacts.native_obj_path.expect("native object"))
             .expect("read loop chunk object");
-        let name = b".loop.";
-        assert!(
-            object.windows(name.len()).any(|window| window == name),
-            "{opt_level:?}: loop chunk body has no symbol"
-        );
+        let object = object::File::parse(&*object).expect("parse loop chunk object");
+        // A private label still reaches Mach-O and COFF symbol tables under an
+        // assembler-temporary prefix (`l`, `.L`), which tools do not name.
+        let named = object.symbols().any(|symbol| {
+            let name = symbol.name().unwrap_or_default();
+            symbol.kind() == object::SymbolKind::Text
+                && name.contains(".loop.")
+                && !name.starts_with(".L")
+                && !name.starts_with('l')
+        });
+        assert!(named, "{opt_level:?}: loop chunk body has no symbol");
     }
 }
 

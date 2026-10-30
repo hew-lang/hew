@@ -10,7 +10,7 @@ mod support;
 
 use support::{hew_command, require_codegen, run_bounded_command};
 
-const MAX_ALLOCATIONS_PER_REQUEST: u64 = 25;
+const MAX_ALLOCATIONS_PER_REQUEST: u64 = 24;
 
 const SOURCE: &str = r#"
 actor Counter {

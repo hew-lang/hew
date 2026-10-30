@@ -177,8 +177,9 @@ def _run_binary(
     timeout_s: float,
     output_cap: int,
     hew_std: Optional[str],
+    args: tuple[str, ...] = (),
 ) -> tuple[int, str, str, bool, bool]:
-    """Execute the binary directly (NOT `hew run`).
+    """Execute the binary directly (NOT `hew run`), followed by `args`.
 
     Returns (returncode, stdout_text, stderr_text, timed_out, output_capped).
 
@@ -193,7 +194,7 @@ def _run_binary(
 
     try:
         proc = subprocess.Popen(
-            [str(bin_path)],
+            [str(bin_path), *args],
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             start_new_session=True,

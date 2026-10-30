@@ -67,6 +67,7 @@
 #   make hew-fmt-check — check that std/ and examples/ .hew files are formatted (part of lint)
 #   make hew-fmt-fidelity — prove every .hew file reprints faithfully through hew fmt (part of lint)
 #   make fuzz-corpus    — regenerate ignored cargo-fuzz corpora from current fixtures/examples
+#   make fuzz-parity    — native/WASI/sandbox-VM differential over generated programs
 #   make clean        — remove generated build and test artifacts
 # ============================================================================
 
@@ -77,7 +78,7 @@
 .PHONY: clean install uninstall test-cabi-surface cabi-surface cabi-surface-check
 .PHONY: assemble assemble-release stage-release-package dev-dist pre-release windows-release-candidate build-docs-reference
 .PHONY: coverage coverage-runtime
-.PHONY: fuzz-corpus fuzz-oracle fuzz-oracle-selftest fuzz-smoke fuzz-smoke-bootstrap-install
+.PHONY: fuzz-corpus fuzz-oracle fuzz-oracle-selftest fuzz-parity fuzz-smoke fuzz-smoke-bootstrap-install
 .PHONY: perf-verify-linear
 .PHONY: bench-calibration bench-calibration-smoke test-bench-calibration
 .PHONY: compile-determinism-verify compile-determinism-verify-build compile-determinism-selftest compile-determinism-selftest-build ir-size-verify
@@ -945,6 +946,22 @@ fuzz-oracle: hew-native
 
 fuzz-oracle-selftest:
 	$(PYTHON) scripts/fuzz/test_run_oracle.py
+
+# Differential execution of generated programs: native O0 and O2, WASI under
+# wasmtime and the sandbox VM must agree with each other and with the
+# generator's model. Seeds name the same programs on every host; a libFuzzer
+# corpus of fuzz_parity_gen inputs replays with FUZZ_PARITY_SOURCE="--corpus DIR".
+# Without wasmtime, drop wasi from FUZZ_PARITY_ENGINES.
+FUZZ_PARITY_SEEDS ?= 0..1000
+FUZZ_PARITY_SOURCE ?= --seeds $(FUZZ_PARITY_SEEDS)
+FUZZ_PARITY_ENGINES ?= native-O0,native-O2,wasi,vm
+FUZZ_PARITY_ARGS ?=
+FUZZ_PARITY_GEN_DIR := $(CARGO_TARGET_ROOT)/fuzz-parity-gen
+fuzz-parity: hew-native sandbox-vm-deps $(if $(findstring wasi,$(FUZZ_PARITY_ENGINES)),wasm-runtime) $(if $(strip $(HEW_WASM_MODULE)),,wasm)
+	npm --prefix hew-sandbox-vm run build
+	cargo build --manifest-path hew-parser/fuzz/Cargo.toml --release --bin parity_gen --target-dir "$(FUZZ_PARITY_GEN_DIR)"
+	$(PYTHON) scripts/fuzz/run-parity.py --hew "$(DEBUG_HEW)" --generator "$(FUZZ_PARITY_GEN_DIR)/release/parity_gen" \
+		$(FUZZ_PARITY_SOURCE) --engines $(FUZZ_PARITY_ENGINES) $(FUZZ_PARITY_ARGS)
 
 # Bounded libFuzzer smoke: nightly-only (see .github/workflows/nightly-sanitizers.yml).
 # A per-PR fuzz run is nondeterministic (a corpus mutation can trip one run

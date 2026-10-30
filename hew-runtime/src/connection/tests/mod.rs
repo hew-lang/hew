@@ -36,6 +36,7 @@ mod handshake;
 mod publication;
 mod reconnect;
 mod refusal_race;
+mod refuting;
 mod registry_flush;
 mod removal;
 mod route_refusal;

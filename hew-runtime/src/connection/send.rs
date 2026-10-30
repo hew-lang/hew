@@ -131,6 +131,19 @@ pub(crate) fn claim_send(
     conn_id: c_int,
     expected_publication: Option<u64>,
 ) -> Option<SendClaim> {
+    claim_send_admitted(manager, conn_id, expected_publication, |state| {
+        state == ClaimState::Published
+    })
+}
+
+/// As [`claim_send`], for a connection whose claim is in any state `admits`
+/// accepts.
+fn claim_send_admitted(
+    manager: &HewConnMgr,
+    conn_id: c_int,
+    expected_publication: Option<u64>,
+    admits: impl Fn(ClaimState) -> bool,
+) -> Option<SendClaim> {
     let (claim, publication_token, credential) = manager.connections.access(|connections| {
         let connection = connections.iter().find(|connection| {
             connection.conn_id == conn_id
@@ -163,7 +176,7 @@ pub(crate) fn claim_send(
         .lock_or_recover()
         .get(&claim.identity)
         .is_some_and(|owner| {
-            owner.state == ClaimState::Published
+            admits(owner.state)
                 && owner.conn_id == conn_id
                 && owner.publication_token == publication_token
                 && owner.route_slot == claim.route_slot
@@ -215,6 +228,23 @@ pub(crate) fn claim_send_to_route(
         })?
         .conn_id;
     let claim = claim_send(manager, conn_id, publication)?;
+    (claim.route_slot == route_slot).then_some(claim)
+}
+
+/// A send claim for SWIM to `route_slot`. SWIM also reaches a buried peer
+/// over its refuting connection, so the peer can learn of its burial.
+pub(super) fn claim_swim_send_to_route(manager: &HewConnMgr, route_slot: u16) -> Option<SendClaim> {
+    if route_slot == 0 {
+        return None;
+    }
+    let conn_id = manager
+        .claims
+        .0
+        .lock_or_recover()
+        .values()
+        .find(|owner| owner.state.holds_connection() && owner.route_slot == route_slot)?
+        .conn_id;
+    let claim = claim_send_admitted(manager, conn_id, None, ClaimState::holds_connection)?;
     (claim.route_slot == route_slot).then_some(claim)
 }
 

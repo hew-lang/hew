@@ -195,11 +195,30 @@ pub enum PeerAuthz {
 pub enum ClaimState {
     /// An admission is in flight for this `NodeId`; a concurrent admission waits.
     Reserved,
+    /// The peer reconnected at the session this node buried. Its connection
+    /// carries SWIM alone, so the peer can learn of its burial and refute it;
+    /// no route, membership, name or service is published for it. A
+    /// refutation readmits the member and publishes the claim; otherwise the
+    /// connection closes at `expires_ms` (manager clock).
+    Refuting {
+        /// When the connection closes if the peer has not refuted.
+        expires_ms: u64,
+    },
     /// The connection is established and owns this `NodeId`'s routes/tokens.
     Published,
     /// The last live connection retired; the durable session remains as a replay
     /// fence for later admissions.
     Retired,
+}
+
+impl ClaimState {
+    /// Whether the claim holds a live connection to its peer: a published
+    /// claim, or a buried peer's claim awaiting its refutation, whose
+    /// connection carries SWIM alone.
+    #[must_use]
+    pub fn holds_connection(self) -> bool {
+        matches!(self, Self::Published | Self::Refuting { .. })
+    }
 }
 
 /// The live owner of a `NodeId` on one connection manager.

@@ -133,10 +133,25 @@ pub(crate) fn local_location_for_actor(mgr: &HewConnMgr, actor_id: u64) -> Optio
 /// same `conn_id` and adopt that successor's authority. The publication token
 /// is unique per admission (`next_publication_token`), so a stale reader's
 /// gate resolves to deny the moment its own claim is gone.
+#[cfg(test)]
 pub(crate) fn wait_authenticated_peer_node_id_for_conn(
     mgr: &HewConnMgr,
     conn_id: c_int,
     claim_token: u64,
+) -> u16 {
+    wait_admitted_peer_node_id_for_conn(mgr, conn_id, claim_token, |state| {
+        state == ClaimState::Published
+    })
+}
+
+/// As [`wait_authenticated_peer_node_id_for_conn`], granting authority to a
+/// settled claim in any state `admits` accepts. SWIM admits a buried peer's
+/// refuting claim too, so the peer can learn of its burial and refute it.
+pub(crate) fn wait_admitted_peer_node_id_for_conn(
+    mgr: &HewConnMgr,
+    conn_id: c_int,
+    claim_token: u64,
+    admits: impl Fn(ClaimState) -> bool,
 ) -> u16 {
     let deadline = std::time::Instant::now() + Duration::from_millis(CLAIM_RESERVE_WAIT_MS);
     let (lock, condvar) = &mgr.claims;
@@ -147,7 +162,7 @@ pub(crate) fn wait_authenticated_peer_node_id_for_conn(
             .find(|(_, claim)| claim.conn_id == conn_id && claim.publication_token == claim_token)
             .map(|(node_id, claim)| (*node_id, claim.route_slot, claim.state));
         match own_claim {
-            Some((claimed, route_slot, ClaimState::Published)) => {
+            Some((claimed, route_slot, state)) if admits(state) => {
                 // Our admission published. Publication happens strictly after
                 // the connections-list install, so the entry is present; bind
                 // it by the same publication token (never bare `conn_id`) and
@@ -180,8 +195,9 @@ pub(crate) fn wait_authenticated_peer_node_id_for_conn(
                 guard = next_guard;
             }
             // No claim owned by this admission: superseded, aborted, or a
-            // claimless (node_id 0) connection — no authority, deny now.
-            Some((_, _, ClaimState::Retired)) | None => return 0,
+            // claimless (node_id 0) connection — no authority, deny now. A
+            // settled claim `admits` refuses carries none either.
+            Some(_) | None => return 0,
         }
     }
 }

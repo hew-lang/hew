@@ -303,7 +303,7 @@ fn stale_reconnect_cannot_replace_newer_publication() {
 
         // A failed attempt restores the retired predecessor so retry remains
         // possible; shutdown cancels that otherwise valid retry before connect.
-        let ClaimReservation::Reserved { superseded } = reserve_identity_claim(
+        let ClaimReservation::Reserved { superseded, .. } = reserve_identity_claim(
             mgr,
             identity,
             20,
@@ -360,6 +360,7 @@ fn stale_reconnect_cannot_replace_newer_publication() {
             &publication.removed,
             superseded,
             None,
+            false,
         ));
         assert_eq!(
             reconnect_attempt(mgr_ptr, &plan, 10, 2),

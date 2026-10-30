@@ -56,6 +56,7 @@ mod control;
 mod gossip;
 mod handshake;
 mod identity_claim;
+pub(crate) use identity_claim::expire_refuting_claims;
 mod manager;
 mod peer;
 mod reader;
@@ -239,6 +240,9 @@ struct ConnectionActor {
     /// The connection this one superseded as the responder of a
     /// responder-commit pair, closed once the initiator confirms its switch.
     deferred_loser: Arc<Mutex<identity_claim::DeferredLoser>>,
+    /// The highest local incarnation at which this connection's peer was
+    /// answered for burying this node (see `swim::claim_burial_answer`).
+    burial_answered: AtomicU64,
     /// Optional reconnect settings for this connection.
     reconnect: Option<ReconnectSettings>,
     /// Transport pointer for defense-in-depth close in `Drop`.
@@ -632,6 +636,7 @@ impl ConnectionActor {
             reader_stop: Arc::new(AtomicI32::new(0)),
             superseded_claim: Mutex::new(None),
             deferred_loser: Arc::default(),
+            burial_answered: AtomicU64::new(0),
             reconnect: None,
             transport: ConnectionTransport::borrowed(std::ptr::null_mut()),
             transport_close: Arc::new(TransportClose::default()),

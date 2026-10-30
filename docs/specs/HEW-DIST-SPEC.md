@@ -299,11 +299,13 @@ The receiver MUST reject:
 - a missing, forged or foreign-authority enrolment, or one for a different
   proved transport credential;
 - a lower-session replay;
-- an equal-session attempt to revive a buried member.
+- an equal-session attempt to revive a member that left.
 
-An equal-session reconnect is valid only for a live, non-buried member. A
-strictly higher durable session can replace an earlier connection and readmit a
-buried member.
+An equal-session reconnect is admitted for a live member. For a member buried
+DEAD at that session it is admitted to refute: the connection carries SWIM
+alone and publishes nothing for the peer (see section 11). A strictly higher
+durable session can replace an earlier connection and readmit a buried
+member.
 
 ### 4.1 One connection per peer
 
@@ -753,11 +755,26 @@ becomes DEAD at the first period strictly past `suspect_timeout_ms` after its
 last contact, and never in the period that suspected it.
 
 A DEAD or LEFT member is buried. Within its durable session it returns only
-through its own SWIM traffic or gossip at a strictly higher incarnation; an
-equal-session reconnect, or any claim at or below the buried incarnation,
-cannot revive it. A strictly higher durable session can be admitted. Either
-readmission clears quarantine and then resumes registry and routing
-publication; a member returning from DEAD re-announces its registered names.
+through its own SWIM traffic or gossip at a strictly higher incarnation; a
+reconnect, or any claim at or below the buried incarnation, cannot revive it.
+A strictly higher durable session can be admitted. Either readmission clears
+quarantine and then resumes registry and routing publication.
+
+A member buried DEAD while it was still running does not know it was buried.
+When it reconnects at the same session, the burying node admits the
+connection to refute: it carries SWIM frames alone, with no route, membership,
+name, service or actor traffic published in either direction, and every other
+frame the member sends is dropped. The burying node opens it with a `PING`,
+since a member that buried it in turn never probes it. The member learns of
+its burial from the obituary, refutes, and its refuting frame readmits it and
+publishes the connection. A refuting connection closes when it carries more
+than 1024 frames or a frame larger than 64 KiB, when the member is not
+readmitted within `suspect_timeout_ms`, or when the burial is retired.
+
+A member told by a peer that it is DEAD answers once per local incarnation on
+that connection: a SWIM frame carrying its refutation, then its registered
+names, which the peer dropped. The refutation goes first, so the peer has
+readmitted the member before the names arrive.
 
 Quarantine blocks sends, asks, monitors, and links until a valid readmission.
 SWIM frames are not blocked, so the protocol can reach a buried member.

@@ -298,7 +298,7 @@ fn remove_before_publication_restores_superseded_claim() {
             // the published claim, and installs — but is removed before
             // `publish_connection_established` runs.
             let superseded = match reserve_claim(&*mgr, 13, None, 96, 500) {
-                ClaimReservation::Reserved { superseded } => {
+                ClaimReservation::Reserved { superseded, .. } => {
                     superseded.expect("reconnect must supersede the published claim")
                 }
                 ClaimReservation::Yielded(_) => panic!("no crossing dial in this test"),

@@ -14,11 +14,12 @@ use crate::envelope::{
     SETUP_STATUS_TARGET_GONE, WIRE_VERSION,
 };
 use crate::node_identity::Location;
+use crate::peer_binding::ClaimState;
 use crate::set_last_error;
 use crate::util::MutexExt;
 
 use super::handshake::supports_gossip;
-use super::peer::wait_authenticated_peer_node_id_for_conn;
+use super::peer::wait_admitted_peer_node_id_for_conn;
 use super::send::hew_connmgr_send_preencoded_claimed;
 use super::swim::handle_swim_control_frame;
 use super::{HewConnMgr, CONN_STATE_ACTIVE};
@@ -186,7 +187,7 @@ fn handle_registry_gossip(
     if let Some(registry) = unsafe { mgr_ref.registry.as_ref() } {
         let claims = mgr_ref.claims.0.lock_or_recover();
         let exact_origin = claims.get(&peer_identity.node_id).is_some_and(|claim| {
-            claim.state == crate::peer_binding::ClaimState::Published
+            claim.state == ClaimState::Published
                 && claim.conn_id == conn_id
                 && claim.publication_token == claim_token
                 && claim.session_incarnation == peer_identity.session_incarnation
@@ -213,6 +214,7 @@ fn authenticated_peer_node_id(
     conn_id: c_int,
     claim_token: u64,
     context: &str,
+    admits: impl Fn(ClaimState) -> bool,
 ) -> Option<u16> {
     if mgr.is_null() {
         set_last_error(format!("connection reader {context}: missing manager"));
@@ -224,7 +226,7 @@ fn authenticated_peer_node_id(
     // Reserved → Published publication (the reader thread starts before
     // `publish_connection_established`); one-shot frames like the peer's
     // registry-gossip flush must not be dropped inside that window.
-    let authenticated = wait_authenticated_peer_node_id_for_conn(mgr_ref, conn_id, claim_token);
+    let authenticated = wait_admitted_peer_node_id_for_conn(mgr_ref, conn_id, claim_token, admits);
     if authenticated == 0 {
         set_last_error(format!(
             "connection reader {context}: missing authenticated peer for conn {conn_id} \
@@ -241,7 +243,21 @@ pub(super) fn authenticated_peer_identity(
     claim_token: u64,
     context: &str,
 ) -> Option<(u16, crate::envelope::NodeSessionIdentity)> {
-    let route_slot = authenticated_peer_node_id(mgr, conn_id, claim_token, context)?;
+    admitted_peer_identity(mgr, conn_id, claim_token, context, |state| {
+        state == ClaimState::Published
+    })
+}
+
+/// As [`authenticated_peer_identity`], for a frame whose authority a settled
+/// claim in any state `admits` accepts carries.
+pub(super) fn admitted_peer_identity(
+    mgr: *mut HewConnMgr,
+    conn_id: c_int,
+    claim_token: u64,
+    context: &str,
+    admits: impl Fn(ClaimState) -> bool,
+) -> Option<(u16, crate::envelope::NodeSessionIdentity)> {
+    let route_slot = authenticated_peer_node_id(mgr, conn_id, claim_token, context, admits)?;
     // SAFETY: `authenticated_peer_node_id` verified the live manager.
     let mgr = unsafe { &*mgr };
     let identity = mgr.connections.access(|connections| {

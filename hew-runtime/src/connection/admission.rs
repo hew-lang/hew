@@ -438,7 +438,7 @@ pub(super) unsafe fn add_connection_on_transport(
         ));
         return None;
     };
-    let superseded_claim: Option<LiveClaim> = match reserve_identity_claim(
+    let (superseded_claim, buried): (Option<LiveClaim>, bool) = match reserve_identity_claim(
         mgr,
         peer_hs.node_id,
         requested_route_slot,
@@ -450,7 +450,7 @@ pub(super) unsafe fn add_connection_on_transport(
         admission,
         commit,
     ) {
-        ClaimReservation::Reserved { superseded } => superseded,
+        ClaimReservation::Reserved { superseded, buried } => (superseded, buried),
         ClaimReservation::Yielded(winner) => {
             // SAFETY: admission still owns this unpublished transport handle.
             unsafe { close_transport_conn(transport_ptr, conn_id) };
@@ -560,6 +560,7 @@ pub(super) unsafe fn add_connection_on_transport(
                 peer_feature_flags,
                 channel,
                 confirm,
+                buried,
             );
         });
 
@@ -611,6 +612,7 @@ pub(super) unsafe fn add_connection_on_transport(
         &publication_removed,
         superseded_claim,
         deferred_loser.as_deref(),
+        buried,
     ) {
         // A same-session connection that took the claim while this one was
         // publishing keeps the peer connected: report it, as a crossing dial
@@ -663,7 +665,7 @@ fn resolve_admission_claim_before_join(
                     condvar.notify_all();
                     None
                 }
-                ClaimState::Published => stashed_superseded,
+                ClaimState::Published | ClaimState::Refuting { .. } => stashed_superseded,
                 ClaimState::Retired => None,
             }
         }

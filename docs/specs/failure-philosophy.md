@@ -167,8 +167,11 @@ returns through whichever frame it sends first, even when its refuting
 gossip was lost. A claim at or below the buried incarnation is refused.
 
 Two members that hold each other DEAD with no third member in contact with
-both exchange no frames, since DEAD members are never probed; they stay
-apart until one of them reconnects with a higher durable session.
+both exchange no frames over a connection they already hold, since DEAD
+members are never probed. When one of them reconnects at the same durable
+session, the node admitting the buried member's connection opens it with a
+PING that carries the obituary, so each learns of its burial, refutes and
+readmits the other; a higher durable session is admitted afresh.
 
 ### ABI
 

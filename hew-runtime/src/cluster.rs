@@ -440,9 +440,6 @@ pub struct HewCluster {
     /// connection reader thread (on receiving SUSPECT-about-self) while the
     /// SWIM driver thread reads it to stamp outbound PING/ACK frames.
     local_incarnation: AtomicU64,
-    /// Local incarnation at which this node last answered a claim that it is
-    /// DEAD; see [`Self::claim_burial_answer`].
-    burial_answered_incarnation: AtomicU64,
     /// Membership change callback.
     callback: Option<MemberChangeCallback>,
     /// Membership event callback binding.
@@ -789,7 +786,6 @@ impl HewCluster {
             requested_probes: Mutex::new(Vec::new()),
             registry_events: Mutex::new(VecDeque::with_capacity(MAX_GOSSIP_EVENTS)),
             local_incarnation: AtomicU64::new(1),
-            burial_answered_incarnation: AtomicU64::new(0),
             callback: None,
             membership_callback_binding: Mutex::new(MembershipCallbackBinding::default()),
             registry_callback: None,
@@ -2421,6 +2417,13 @@ impl HewCluster {
         u64::from(self.config.protocol_period_ms.max(1))
     }
 
+    /// Configured time a suspected member has to refute before it is buried,
+    /// in milliseconds.
+    #[must_use]
+    pub(crate) fn suspect_timeout_ms(&self) -> u64 {
+        u64::from(self.config.suspect_timeout_ms)
+    }
+
     /// Configured number of indirect-ping relays (K in SWIM).
     #[must_use]
     pub fn indirect_ping_count(&self) -> usize {
@@ -2662,32 +2665,6 @@ impl HewCluster {
                 Err(observed) => current = observed,
             }
         }
-    }
-}
-
-impl HewCluster {
-    /// Whether `entries` tell this node it was declared DEAD and it has not
-    /// yet answered a burial at its current incarnation.
-    ///
-    /// A peer that buried this node dropped its names, and a same-session
-    /// readmission repeats no admission flush, so the caller re-announces
-    /// them. The claim may sit below the local incarnation when this node
-    /// already refuted a suspicion the burying peer never heard; the names are
-    /// still gone there. Answering once per local incarnation bounds the cost:
-    /// every frame from a burying peer carries the obituary until it readmits
-    /// this node.
-    pub(crate) fn claim_burial_answer(&self, entries: &[(u16, u32, i32, u64)]) -> bool {
-        let local = self.config.local_node_id;
-        if !entries
-            .iter()
-            .any(|&(node_id, _, state, _)| node_id == local && state == MEMBER_DEAD)
-        {
-            return false;
-        }
-        let current = self.local_incarnation();
-        self.burial_answered_incarnation
-            .fetch_max(current, Ordering::SeqCst)
-            < current
     }
 }
 
@@ -5511,28 +5488,6 @@ mod tests {
         cluster.receive_swim_at(SWIM_MSG_ACK, 3, 9, 5, 1_200);
         assert_eq!(cluster.member_state(5), MEMBER_DEAD);
         assert_eq!(cluster.member_incarnation(5), Some(5));
-    }
-
-    #[test]
-    fn burial_is_answered_once_per_local_incarnation() {
-        let cluster = HewCluster::new(make_config(1));
-        let suspected = [(1, 1, MEMBER_SUSPECT, 1)];
-        assert!(!cluster.claim_burial_answer(&suspected));
-        cluster.refute_if_suspected(&suspected);
-        assert_eq!(cluster.local_incarnation(), 2);
-
-        // A burial below the refuted incarnation still cost this node its
-        // names at the burying peer.
-        let stale = [(1, 1, MEMBER_DEAD, 1)];
-        assert_eq!(cluster.refute_if_suspected(&stale), None);
-        assert!(cluster.claim_burial_answer(&stale));
-        assert!(!cluster.claim_burial_answer(&stale), "answered already");
-
-        let current = [(1, 1, MEMBER_DEAD, 2)];
-        assert_eq!(cluster.refute_if_suspected(&current), Some(3));
-        assert!(cluster.claim_burial_answer(&current));
-        assert!(!cluster.claim_burial_answer(&current));
-        assert!(!cluster.claim_burial_answer(&[(2, 1, MEMBER_DEAD, 9)]));
     }
 
     /// A relay's ACK naming a member is accepted only as the answer to a

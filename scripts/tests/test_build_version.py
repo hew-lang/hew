@@ -135,7 +135,7 @@ class SharedTargetVersion(unittest.TestCase):
             # Both source trees predate the first compilation. Reuse the same
             # target when moving back to the older checkout, then forward.
             # Force the CLI source body to rebuild independently of metadata.
-            os.utime(first / "hew-cli/src/lib.rs", None)
+            os.utime(first / "hew-cli/src/main.rs", None)
             probe(first, "0.6.1|first")
             probe(second, f"0.6.1-dev.1+{second_sha}|second")
             git(second, "pack-refs", "--all", "--prune")

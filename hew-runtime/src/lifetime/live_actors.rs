@@ -26,6 +26,7 @@
 //! 16-shard `LiveActors` reduces hot-path contention.
 
 use rustc_hash::FxHashMap;
+#[cfg(not(target_arch = "wasm32"))]
 use std::collections::HashMap;
 use std::sync::atomic::Ordering;
 

@@ -499,9 +499,9 @@ pub mod profiler {
     }
     /// No-op: profiler feature is disabled.
     pub fn maybe_start() {}
-    /// No per-actor profile consumer exists without the profiler feature.
+    /// No profile consumer exists without the profiler feature.
     #[must_use]
-    pub fn turn_timing_enabled() -> bool {
+    pub fn consumer_configured() -> bool {
         false
     }
     /// No-op: profiler feature is disabled.

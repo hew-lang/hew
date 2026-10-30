@@ -7,6 +7,8 @@ enum Paint3 { Red; Shade3; }
 enum Paint4 { Red; Shade4; }
 enum Paint5 { Red; Shade5; }
 
+type Square { a: f64; b: f64; c: f64; d: f64; e: f64; f: f64; }
+
 #[resource]
 type Handle {
     fd: i64;
@@ -22,4 +24,5 @@ fn main() {
     println(keyed_2.len());
     println(keyed_3.len());
     let _colour = Red;
+    let _square = Square { a: 1.0 };
 }

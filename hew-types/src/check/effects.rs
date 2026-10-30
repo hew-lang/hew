@@ -7,7 +7,7 @@
 //! spelled `fn[suspends]`; a closure or named function flowing into a written
 //! type that never suspends is an obligation checked once every body is known.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 
 use hew_parser::ast::{Expr, Span, Spanned};
 
@@ -62,8 +62,9 @@ pub struct SuspensionEffects {
     /// Checked iterables whose `for` protocol invokes source methods.
     pub iteration_operations: HashMap<SpanKey, Ty>,
     pub unresolved_calls: HashMap<SpanKey, EffectBody>,
-    /// Boundaries whose transitive external effects must be confined.
-    pub confined: HashSet<crate::DefId>,
+    /// Boundaries whose transitive external effects must be confined, in
+    /// declaration order: admission walks them first to last.
+    pub confined: BTreeSet<crate::DefId>,
     /// Required source-visible release effects, including captured values.
     pub releases: Vec<super::cleanup_effects::CleanupEffect>,
     /// Existing actor-field binding identities, shared by every callback.
@@ -173,7 +174,7 @@ pub(super) struct EffectGraph {
     rendering_operations: HashMap<SpanKey, Ty>,
     iteration_operations: HashMap<SpanKey, Ty>,
     pub constructed_bodies: HashMap<EffectBody, Vec<EffectBody>>,
-    pub confined: HashSet<crate::DefId>,
+    pub confined: BTreeSet<crate::DefId>,
     /// Bodies and whether a construct inside them suspends on its own.
     pub bodies: HashMap<EffectBody, bool>,
     /// The construct or call that first made each body suspend.

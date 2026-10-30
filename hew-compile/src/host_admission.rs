@@ -1609,7 +1609,9 @@ fn confined_roots(
         .flatten()
         .filter_map(|call| target_declaration(&call.target))
         .collect();
-    output
+    // Effect bodies are a hash table; the walk below charges each refusal to
+    // the first boundary that reaches it, so roots go in declaration order.
+    let mut roots: Vec<DefId> = output
         .suspension_effects
         .bodies
         .keys()
@@ -1633,7 +1635,9 @@ fn confined_roots(
             }
             Some(*id)
         })
-        .collect()
+        .collect();
+    roots.sort_unstable();
+    roots
 }
 
 /// Trusted primitive summaries are owned by the runtime row or stdlib declaration.
@@ -3005,6 +3009,45 @@ mod tests {
         };
         let failure = check_file(path.to_str().unwrap(), &options).unwrap_err();
         assert!(failure.diagnostics.iter().any(|diagnostic| matches!(&diagnostic.kind, FrontendDiagnosticKind::Message(message) if message.code == "E_GENERATE_TYPECHECK_REQUIRED")));
+    }
+
+    #[test]
+    fn confined_refusals_follow_declaration_order() {
+        // Every confined root reaches the same acquisition; each refusal is
+        // charged to its own root, in the order the roots are declared.
+        let names: Vec<String> = (0..12).map(|index| format!("boundary_{index}")).collect();
+        let roots: Vec<String> = names
+            .iter()
+            .map(|name| format!("#[confined]\nfn {name}() {{ acquire(); }}"))
+            .collect();
+        let roots = roots.join("\n");
+        let source = format!(
+            "import std.fs;\nfn acquire() {{ let _ = fs.open_read(\"ungranted.txt\"); }}\n{roots}\nfn main() {{}}\n"
+        );
+        let directory = tempfile::tempdir().expect("temporary source directory");
+        let path = directory.path().join("confined.hew");
+        std::fs::write(&path, source).expect("write source");
+        let failure = check_file(
+            path.to_str().expect("UTF-8 path"),
+            &FrontendOptions::default(),
+        )
+        .expect_err("confined roots reach ambient authority");
+        let reported: Vec<&str> = failure
+            .diagnostics
+            .iter()
+            .filter_map(|diagnostic| match &diagnostic.kind {
+                FrontendDiagnosticKind::Message(message)
+                    if message.code == "E_CONFINED_AUTHORITY" =>
+                {
+                    names
+                        .iter()
+                        .find(|name| message.message.contains(&format!("`{name}`")))
+                        .map(String::as_str)
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(reported, names);
     }
 
     fn check_source(source: &str, admission: HostAdmission) -> Result<(), String> {

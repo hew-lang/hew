@@ -1237,8 +1237,12 @@ mod tests {
             drop(pin);
             crate::supervisor::teardown::CONSTRUCTION_CANCELLED_HOOK.set(Some(Box::new(
                 move || {
+                    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
                     while crate::exit_status::supervised_fault_is_open(record) {
-                        ready.wait();
+                        assert!(
+                            ready.wait_until(deadline),
+                            "the supervisor never ruled on the declined restart"
+                        );
                     }
                     // Only the root's own stop unregisters it; a competing stop
                     // already took it. Fail before the stop touches the parent.

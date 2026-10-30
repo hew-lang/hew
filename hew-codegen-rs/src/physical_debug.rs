@@ -255,11 +255,13 @@ impl<'ctx> DebugEmitter<'ctx> {
             subroutine,
             /* is_local_to_unit */ false,
             /* is_definition */ true,
-            // No scope line: LLVM gives the argument spills the scope line
-            // and ends the prologue on the first of them, before the
-            // parameters reach their slots. With none, the prologue ends on
-            // the branch into the first statement.
-            0,
+            // The declaration line is the scope line, so the function's first
+            // row is its declaration, as in a compiled C function, and the
+            // argument spills sit on it. gdb, which analyses the frame setup
+            // itself for a producer it does not know, then skips to the next
+            // line row and stops with the parameters stored. LLVM ends the
+            // prologue on the first spill, so lldb stops there too.
+            line,
             flags,
             self.optimized,
         );

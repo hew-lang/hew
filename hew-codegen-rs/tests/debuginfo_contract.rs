@@ -472,6 +472,20 @@ fn each_line_starts_one_statement_and_prologue_ends_on_the_body() {
         "the ramp of `fact` ends its prologue on its first statement"
     );
 
+    // Every subprogram states its declaration line as its scope line, so the
+    // first row of a function is its declaration and gdb, which skips to the
+    // next line row after the frame setup, stops with the parameters stored.
+    // LLVM then puts prologue_end on the first argument spill; the rule here
+    // is only that a function's prologue ends on a real line of its own.
+    for part in unit.subprograms.iter().filter(|part| !part.artificial) {
+        let first = unit.rows_in(part).first().expect("a first row").line;
+        assert_eq!(
+            first, part.decl_line,
+            "`{}` starts on its declaration",
+            part.name
+        );
+    }
+
     let length = unit.named("length");
     assert_eq!(length.len(), 1, "`length` is not split");
     let rows = unit.rows_in(length[0]);

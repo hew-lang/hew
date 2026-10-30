@@ -477,7 +477,7 @@ fn registry_names_require_the_exact_authenticated_origin_session_and_publication
                 token,
                 None,
                 TEST_ADMISSION,
-                Commit::Unordered
+                Commit::Initiator(0)
             ),
             ClaimReservation::Reserved { .. }
         ));

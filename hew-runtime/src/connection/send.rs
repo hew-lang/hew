@@ -170,10 +170,6 @@ pub(crate) fn claim_send(
                 && owner.session_incarnation == claim.session_incarnation
                 && owner.credential == credential
         });
-    // A held loser still carries the peer's exchanges that began on it.
-    let published = published
-        || super::identity_claim::held_loser_authority(manager, conn_id, publication_token)
-            == Some(claim.route_slot);
     (published && !claim.publication_removed.load(Ordering::Acquire)).then_some(claim)
 }
 
@@ -207,7 +203,7 @@ pub(crate) fn claim_send_to_route(
     }
     // A predecessor may remain active while its successor publishes. Select
     // the authoritative claim, then revalidate it after releasing this lock.
-    let owner = manager
+    let conn_id = manager
         .claims
         .0
         .lock_or_recover()
@@ -216,19 +212,8 @@ pub(crate) fn claim_send_to_route(
             owner.state == ClaimState::Published
                 && owner.route_slot == route_slot
                 && publication.is_none_or(|token| owner.publication_token == token)
-        })
-        .map(|owner| owner.conn_id);
-    // A reply to a request that arrived on a held loser goes back on it.
-    let conn_id = match (owner, publication) {
-        (Some(conn_id), _) => conn_id,
-        (None, Some(token)) => manager.connections.access(|connections| {
-            connections
-                .iter()
-                .find(|connection| connection.publication_token == token)
-                .map(|connection| connection.conn_id)
-        })?,
-        (None, None) => return None,
-    };
+        })?
+        .conn_id;
     let claim = claim_send(manager, conn_id, publication)?;
     (claim.route_slot == route_slot).then_some(claim)
 }

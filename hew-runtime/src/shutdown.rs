@@ -709,23 +709,13 @@ fn shutdown_orchestrate_mode(drain_timeout: Duration, cancel_parked_waits: bool)
 
     // Drain converged — all workers are parked.  The join below is instant.
 
-    // Stop registered supervisors in reverse order (bottom-up).
-    // Extract the supervisor list to avoid holding the mutex while stopping them.
-    // This prevents deadlock when hew_supervisor_stop calls hew_shutdown_unregister_supervisor.
-    let supervisors_to_stop = with_supervisor_roots(|sups| {
-        // Reverse: last registered (innermost) first.
-        sups.reverse();
-        std::mem::take(sups) // Extract all supervisors, leaving empty vec
-    });
-
-    // Stop supervisors without holding the mutex.
-    for s in &supervisors_to_stop {
-        if !s.0.is_null() {
-            // SAFETY: supervisor was registered, drain converged so no worker
-            // is actively dispatching into supervisor-owned actors, and the
-            // pointer remains valid until this call frees it.
-            unsafe { crate::supervisor::hew_supervisor_stop(s.0) };
-        }
+    // Stop registered supervisors in reverse order (bottom-up: last
+    // registered first), outside the roots lock their stops re-enter.
+    for root in crate::supervisor::roots::take_supervisor_roots()
+        .into_iter()
+        .rev()
+    {
+        root.stop();
     }
 
     // State and queued-payload destructors may suspend. They must finish before
@@ -775,13 +765,8 @@ mod tests {
         );
         ingress.0.store(0, Ordering::Release);
 
-        let to_stop = with_supervisor_roots(std::mem::take);
-        for supervisor in to_stop {
-            if !supervisor.0.is_null() {
-                // SAFETY: tests only store pointers returned by hew_supervisor_new
-                // and this cleanup runs after each test has finished using them.
-                unsafe { crate::supervisor::hew_supervisor_stop(supervisor.0) };
-            }
+        for root in crate::supervisor::roots::take_supervisor_roots() {
+            root.stop();
         }
     }
 

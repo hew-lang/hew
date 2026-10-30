@@ -253,7 +253,11 @@ pub(crate) unsafe fn supervisor_sys_dispatch_impl(
                         // SAFETY: the successful claim is passed explicitly;
                         // this stop path must not race the claim a second time.
                         unsafe {
-                            stop_supervisor_with_teardown_authority(child_sup, teardown, true);
+                            stop_supervisor_with_teardown_authority(
+                                child_sup,
+                                teardown,
+                                crate::lifetime::local_handles::TeardownClaim::Won,
+                            );
                         };
                     }
                 }
@@ -826,27 +830,37 @@ impl QueuedSupervisorStop {
     }
 }
 
+/// Stop `sup` according to the outcome of its teardown claim.
+///
+/// The caller claims before cancelling: cancellation can complete a pending
+/// restart construction as declined, and the declined restart starts a
+/// token-owned root's own stop; claiming first leaves that stop nothing to win.
+///
+/// # Safety
+///
+/// `sup` must have been live when `claim` was taken. Only a won claim lets
+/// this function touch it.
 pub(crate) unsafe fn stop_supervisor_with_teardown_authority(
     sup: *mut HewSupervisor,
     teardown: crate::lifetime::local_handles::SupervisorTeardownLease,
-    preclaimed: bool,
+    claim: crate::lifetime::local_handles::TeardownClaim,
 ) {
-    // Claim before cancelling. Cancellation can complete a pending restart
-    // construction as declined, and the declined restart starts a token-owned
-    // root's own stop; claiming first leaves that stop nothing to win.
-    if !preclaimed && !claim_supervisor_teardown(sup) {
-        // Another owner holds teardown. One that handed the allocation back
-        // to canonical cleanup keeps its claim, and the caller may have taken
-        // it from the root set to get here: restore the root, or nothing
-        // reclaims it and the final actor sweep frees the self actor's
-        // borrowed state as its own.
-        // SAFETY: the caller guarantees a live allocation.
-        if unsafe { (*sup).parent.is_null() } {
-            // SAFETY: the claimed allocation stays live until canonical
-            // cleanup consumes the restored root.
+    use crate::lifetime::local_handles::TeardownClaim;
+    match claim {
+        TeardownClaim::Won => {}
+        // A live owner may free the allocation at any moment; leave it alone.
+        TeardownClaim::Held => return,
+        TeardownClaim::HandedBack => {
+            // The owner gave the live top-level allocation back to canonical
+            // cleanup and keeps its claim; the caller may have taken it from
+            // the root set to get here. Restore the root, or nothing reclaims
+            // it and the final actor sweep frees the self actor's borrowed
+            // state as its own. Registration only records the pointer.
+            // SAFETY: canonical cleanup owns the live allocation until it
+            // consumes the restored root.
             unsafe { roots::hew_shutdown_register_supervisor(sup) };
+            return;
         }
-        return;
     }
     request_supervisor_shutdown(sup);
     // Retire the public route before the teardown handoff, while leaving pin
@@ -876,9 +890,11 @@ pub unsafe extern "C" fn hew_supervisor_stop(sup: *mut HewSupervisor) {
         return;
     };
 
-    // SAFETY: the public raw-pointer contract guarantees a live supervisor;
-    // the acquired lease remains visible to cleanup through final reclamation.
-    unsafe { stop_supervisor_with_teardown_authority(sup, teardown, false) };
+    let claim = claim_supervisor_teardown(sup);
+    // SAFETY: the public raw-pointer contract guarantees a live supervisor at
+    // the claim; the acquired lease remains visible to cleanup through final
+    // reclamation.
+    unsafe { stop_supervisor_with_teardown_authority(sup, teardown, claim) };
 }
 
 /// Return the stable direct identity for one supervisor allocation.
@@ -977,7 +993,7 @@ pub(crate) fn stop_local_supervisor(
     if won_close {
         run_supervisor_close_hook_for_test();
     }
-    if !claim_supervisor_teardown(sup) {
+    if claim_supervisor_teardown(sup) != crate::lifetime::local_handles::TeardownClaim::Won {
         drop(pin);
         return 1;
     }
@@ -2501,7 +2517,10 @@ mod tests {
         unsafe { roots::hew_shutdown_register_supervisor(sup) };
         // SAFETY: `sup` is a live supervisor in the current runtime.
         let teardown = unsafe { begin_supervisor_teardown(sup) }.expect("teardown lease");
-        assert!(claim_supervisor_teardown(sup));
+        assert_eq!(
+            claim_supervisor_teardown(sup),
+            crate::lifetime::local_handles::TeardownClaim::Won
+        );
         // SAFETY: the teardown owner now holds the allocation exclusively.
         unsafe { roots::hew_shutdown_unregister_supervisor(sup) };
 
@@ -2529,14 +2548,18 @@ mod tests {
         assert!(!sup.is_null());
         // A teardown owner that ran out of time hands the allocation back to
         // canonical cleanup as a root and keeps its claim.
-        assert!(claim_supervisor_teardown(sup));
+        assert_eq!(
+            claim_supervisor_teardown(sup),
+            crate::lifetime::local_handles::TeardownClaim::Won
+        );
         // SAFETY: the claimed allocation stays live through this handback.
-        unsafe { roots::hew_shutdown_register_supervisor(sup) };
+        unsafe { return_supervisor_to_runtime_cleanup(sup) };
         // Shutdown takes each root before stopping it; the claim refuses.
-        // SAFETY: as above.
-        unsafe {
-            roots::hew_shutdown_unregister_supervisor(sup);
-            hew_supervisor_stop(sup);
+        let taken = roots::take_supervisor_roots();
+        assert_eq!(taken.len(), 1);
+        assert!(!crate::shutdown::is_supervisor_registered_for_test(sup));
+        for root in taken {
+            root.stop();
         }
         assert!(
             crate::shutdown::is_supervisor_registered_for_test(sup),
@@ -5402,6 +5425,123 @@ mod tests {
             // Registering the drop callback lets actor cleanup release its
             // shared payload; the cloned spec releases its distinct payload.
             hew_supervisor_stop(sup);
+        }
+    }
+
+    /// Park a token stop that has claimed teardown and taken the root, just
+    /// before it frees the supervisor. Returns the join handle and the sender
+    /// that releases it.
+    fn park_claimed_token_stop(
+        token: crate::lifetime::local_handles::HewLocalPidId,
+    ) -> (
+        std::thread::JoinHandle<c_int>,
+        std::sync::mpsc::Sender<()>,
+        SupervisorTestHookGuard,
+    ) {
+        const HANDSHAKE: Duration = Duration::from_secs(10);
+        let (entered_tx, entered_rx) = std::sync::mpsc::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
+        let release_rx = Mutex::new(release_rx);
+        let hook = install_supervisor_teardown_hook_for_test(Arc::new(move || {
+            entered_tx.send(()).expect("test waits for the parked stop");
+            release_rx
+                .lock_or_recover()
+                .recv_timeout(HANDSHAKE)
+                .expect("test releases the parked stop");
+        }));
+        let stop = std::thread::spawn(move || hew_local_pid_supervisor_stop(token));
+        entered_rx
+            .recv_timeout(HANDSHAKE)
+            .expect("token stop reaches its teardown");
+        (stop, release_tx, hook)
+    }
+
+    /// A raw stop that loses the claim to a live token stop (as a budget
+    /// escalation starts) must not touch the supervisor: restoring its root
+    /// would leave cleanup a pointer the winner frees.
+    #[test]
+    fn raw_stop_losing_to_a_live_token_stop_leaves_its_root_alone() {
+        let _rt = crate::runtime_test_guard();
+        // SAFETY: this test owns the fresh tree until the token stop frees it;
+        // the raw stop runs while the parked winner keeps it allocated.
+        unsafe {
+            let (sup, _child, _self_actor) = make_supervisor_with_child();
+            assert!(crate::shutdown::is_supervisor_registered_for_test(sup));
+            let token = (*sup).local_pid_id;
+            // Shutdown's root sweep took the root before the token stop claimed.
+            roots::hew_shutdown_unregister_supervisor(sup);
+            let (stop, release, hook) = park_claimed_token_stop(token);
+            hew_supervisor_stop(sup);
+            let restored_while_owned = crate::shutdown::is_supervisor_registered_for_test(sup);
+            release.send(()).unwrap();
+            let rc = stop.join().unwrap();
+            drop(hook);
+            let dangling = crate::shutdown::is_supervisor_registered_for_test(sup);
+            if dangling {
+                // Keep cleanup off the freed allocation before failing.
+                roots::hew_shutdown_unregister_supervisor(sup);
+            }
+            assert_eq!(rc, 0, "the token stop owns and completes teardown");
+            assert!(
+                !restored_while_owned && !dangling,
+                "the losing raw stop restored a root its winner freed"
+            );
+        }
+    }
+
+    /// The shutdown sweep takes a root that a token stop then claims and
+    /// frees before the sweep reaches it. Stopping the taken root must not
+    /// read the freed allocation or restore it.
+    #[test]
+    fn swept_root_freed_by_a_token_stop_is_not_touched() {
+        let _rt = crate::runtime_test_guard();
+        // SAFETY: this test owns the fresh tree until the token stop frees it.
+        unsafe {
+            let (sup, _child, _self_actor) = make_supervisor_with_child();
+            let token = (*sup).local_pid_id;
+            let swept = roots::take_supervisor_roots();
+            assert_eq!(swept.len(), 1);
+            assert_eq!(hew_local_pid_supervisor_stop(token), 0);
+            for root in swept {
+                root.stop();
+            }
+            let dangling = crate::shutdown::is_supervisor_registered_for_test(sup);
+            if dangling {
+                // Keep cleanup off the freed allocation before failing.
+                roots::hew_shutdown_unregister_supervisor(sup);
+            }
+            assert!(!dangling, "the sweep restored a root a token stop freed");
+        }
+    }
+
+    /// A sweep that takes a root while its token stop is still tearing it
+    /// down leaves the allocation to that stop.
+    #[test]
+    fn swept_root_with_a_live_token_stop_is_left_to_its_owner() {
+        let _rt = crate::runtime_test_guard();
+        // SAFETY: the parked token stop keeps the allocation live until it is
+        // released; the sweep only touches it through its claim outcome.
+        unsafe {
+            let (sup, _child, _self_actor) = make_supervisor_with_child();
+            let token = (*sup).local_pid_id;
+            let swept = roots::take_supervisor_roots();
+            let (stop, release, hook) = park_claimed_token_stop(token);
+            for root in swept {
+                root.stop();
+            }
+            let restored_while_owned = crate::shutdown::is_supervisor_registered_for_test(sup);
+            release.send(()).unwrap();
+            let rc = stop.join().unwrap();
+            drop(hook);
+            let dangling = crate::shutdown::is_supervisor_registered_for_test(sup);
+            if dangling {
+                roots::hew_shutdown_unregister_supervisor(sup);
+            }
+            assert_eq!(rc, 0);
+            assert!(
+                !restored_while_owned && !dangling,
+                "the sweep restored a root its live owner freed"
+            );
         }
     }
 }

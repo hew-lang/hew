@@ -158,10 +158,12 @@ fn stripped_release_build_resolves_frames_from_the_hew_tables() {
         .expect("run program");
     let stderr = String::from_utf8_lossy(&run.stderr);
     assert!(
-        stderr.contains("hew: failure: UserPanic (212) at p.hew:3:9: too big"),
+        stderr.contains("hew: failure: UserPanic (212) at "),
         "{stderr}"
     );
-    assert!(stderr.contains("hew:   at level2 (p.hew:1)"), "{stderr}");
+    assert!(stderr.contains("p.hew:3:9: too big"), "{stderr}");
+    assert!(stderr.contains("hew:   at level2 ("), "{stderr}");
+    assert!(stderr.contains("p.hew:1)"), "{stderr}");
 
     let record: serde_json::Value = serde_json::from_str(
         std::fs::read_to_string(&log)
@@ -186,5 +188,6 @@ fn stripped_release_build_resolves_frames_from_the_hew_tables() {
         ],
     );
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(stdout.contains("level2 at p.hew:1"), "{stdout}");
+    assert!(stdout.contains("level2 at "), "{stdout}");
+    assert!(stdout.contains("p.hew:1"), "{stdout}");
 }

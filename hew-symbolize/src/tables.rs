@@ -70,9 +70,14 @@ fn find<'data>(file: &object::File<'data>, kind: TableKind) -> Option<(u64, Tabl
     let magic = TABLE_MAGIC.to_le_bytes();
     file.sections()
         .filter(|section| {
+            // A linker may merge the tables into a string-merging `.rodata`
+            // or place the relocated symtab in `.data.rel.ro`.
             matches!(
                 section.kind(),
-                SectionKind::ReadOnlyData | SectionKind::Data
+                SectionKind::ReadOnlyData
+                    | SectionKind::ReadOnlyDataWithRel
+                    | SectionKind::ReadOnlyString
+                    | SectionKind::Data
             )
         })
         .find_map(|section| {

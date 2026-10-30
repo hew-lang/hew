@@ -19,7 +19,10 @@ use super::{
     hew_connmgr_free, hew_connmgr_new, ConnectionActor, HewConnMgr, HewHandshake,
     CONN_STATE_ACTIVE, HEW_FEATURE_SUPPORTS_GOSSIP, NOISE_STATIC_PUBKEY_LEN,
 };
-use crate::cluster::{hew_cluster_free, hew_cluster_join, hew_cluster_new, HewCluster};
+use crate::cluster::{
+    hew_cluster_free, hew_cluster_new,
+    hew_cluster_notify_connection_established_for_token_if_not_removed, HewCluster,
+};
 use crate::envelope::{decode_wire_frame, NodeSessionIdentity, WireFrame};
 use crate::peer_binding::Posture;
 use crate::transport::{HewTransport, HewTransportOps};
@@ -40,6 +43,7 @@ pub const HARNESS_PEERS: usize = PEERS.len();
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Member {
     pub slot: u16,
+    pub session: Option<u32>,
     pub state: i32,
     pub incarnation: Option<u64>,
 }
@@ -118,18 +122,31 @@ impl ControlHarness {
 
         let mut tokens = [0; HARNESS_PEERS];
         for (token, &(slot, conn_id, posture)) in tokens.iter_mut().zip(&PEERS) {
-            let address =
-                std::ffi::CString::new(format!("10.0.0.{slot}:9000")).expect("address has no NUL");
-            // SAFETY: cluster is live; address is a valid C string.
-            unsafe { hew_cluster_join(cluster, slot, address.as_ptr()) };
             let mut actor = ConnectionActor::new(conn_id, shared_channel());
             actor.peer_node_id = slot;
             actor.peer_feature_flags = HEW_FEATURE_SUPPORTS_GOSSIP;
             actor.posture = posture;
             actor.state.store(CONN_STATE_ACTIVE, Ordering::Release);
+            let publication_sync = Arc::clone(&actor.publication_sync);
+            let publication_removed = Arc::clone(&actor.publication_removed);
             mgr_mut.connections.access(|conns| conns.push(actor));
             if posture == Posture::Strict {
+                // Admission publishes the claim, then the session to the
+                // cluster; an `Unverified` peer gets neither.
                 *token = test_publish_claim(mgr_mut, slot, conn_id);
+                // SAFETY: cluster is live; the publication guards belong to
+                // the installed connection.
+                let published = unsafe {
+                    hew_cluster_notify_connection_established_for_token_if_not_removed(
+                        cluster,
+                        slot,
+                        1,
+                        *token,
+                        &publication_sync,
+                        &publication_removed,
+                    )
+                };
+                assert!(published >= 0, "fuzz peer {slot} publishes");
             }
         }
         Self {
@@ -205,6 +222,7 @@ impl ControlHarness {
             .into_iter()
             .map(|slot| Member {
                 slot,
+                session: cluster.member_session(slot),
                 state: cluster.member_state(slot),
                 incarnation: cluster.member_incarnation(slot),
             })

@@ -3,7 +3,7 @@
 //! The input is a sequence of `(peer, frame)` deliveries to an in-process node
 //! with two authenticated peers and one delivery-only peer. After every
 //! delivery the node must hold a bounded member table, no incarnation may move
-//! backwards, and the frame may provoke only a bounded number of sends.
+//! backwards within a session, and the frame may provoke only a bounded number of sends.
 #![no_main]
 
 mod support;
@@ -48,11 +48,15 @@ fuzz_target!(|data: &[u8]| {
     }
 });
 
+/// A member's `(session, incarnation)` never moves backwards: a newer
+/// session starts a fresh incarnation domain, so only the pair is ordered.
 fn check_incarnation(old: &Member, new: &Member) {
-    if let (Some(was), Some(now)) = (old.incarnation, new.incarnation) {
+    let was = (old.session, old.incarnation);
+    let now = (new.session, new.incarnation);
+    if old.session.is_some() && old.incarnation.is_some() {
         assert!(
             now >= was,
-            "slot {} incarnation fell from {was} to {now} ({old:?} -> {new:?})",
+            "slot {} (session, incarnation) fell from {was:?} to {now:?} ({old:?} -> {new:?})",
             old.slot
         );
     }

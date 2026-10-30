@@ -153,7 +153,27 @@ pub(crate) fn register_reset_hooks() {
 /// scheduler startup. If `HEW_PPROF` is not set, this is a no-op.
 ///
 /// Distributed endpoints read the current node through its lifetime guard.
+/// Whether a per-actor profile consumer (the `HEW_PPROF` server or the
+/// `HEW_PROF_OUTPUT` exit report) is configured, so dispatch times each turn.
+static TURN_TIMING: AtomicBool = AtomicBool::new(false);
+
+/// Per-actor turn timing reads the clock twice per message; only time turns
+/// when something will read the result.
+#[must_use]
+pub fn turn_timing_enabled() -> bool {
+    TURN_TIMING.load(Ordering::Relaxed)
+}
+
+fn configure_turn_timing() {
+    let requested = |name| std::env::var_os(name).is_some_and(|value| !value.is_empty());
+    TURN_TIMING.store(
+        requested("HEW_PPROF") || requested("HEW_PROF_OUTPUT"),
+        Ordering::Relaxed,
+    );
+}
+
 pub fn maybe_start() {
+    configure_turn_timing();
     let env_val = match std::env::var("HEW_PPROF") {
         Ok(val) if !val.is_empty() => val,
         _ => return,

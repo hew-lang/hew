@@ -15,7 +15,35 @@ struct TransferWalk {
     destination: Option<ValueOwner>,
     binding: Option<DestinationBinding>,
     waker: Option<crate::wake::OwnedWaker>,
-    seen: HashSet<usize>,
+    seen: SeenStorage,
+}
+
+/// Storage identities already visited in one phase. Most transfers reach a
+/// single backing block, so the first identity is kept inline and the set
+/// allocates only for a value with shared or several blocks.
+#[derive(Debug, Default)]
+struct SeenStorage {
+    first: Option<usize>,
+    rest: HashSet<usize>,
+}
+
+impl SeenStorage {
+    fn clear(&mut self) {
+        self.first = None;
+        self.rest.clear();
+    }
+
+    /// Record `identity`; false when this phase already visited it.
+    fn insert(&mut self, identity: usize) -> bool {
+        match self.first {
+            None => {
+                self.first = Some(identity);
+                true
+            }
+            Some(first) if first == identity => false,
+            Some(_) => self.rest.insert(identity),
+        }
+    }
 }
 
 /// Execution ownership already retained by the destination incarnation.
@@ -193,7 +221,7 @@ impl ValueTransfer {
                 binding: destination.as_ref().and_then(ValueOwner::execution_binding),
                 destination,
                 waker: None,
-                seen: HashSet::new(),
+                seen: SeenStorage::default(),
             }),
             layout,
             slot,

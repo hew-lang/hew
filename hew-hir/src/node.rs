@@ -44,6 +44,10 @@ pub struct HirModule {
     /// item id. Diagnostics emitted while verifying one of these items inherit
     /// the same dotted module key used by `HirDiagnostic::source_module`.
     pub diagnostic_source_modules: HashMap<ItemId, String>,
+    /// The file span index (`hew_parser::module::FileSpanIndices`) each item
+    /// with a body was lowered from: 0 for the root file. Every site and scope
+    /// inside the item indexes that file.
+    pub item_files: HashMap<ItemId, u32>,
     /// `ItemId`s of function items whose bodies PROVABLY index the root
     /// compilation unit's source text: functions lowered natively from the
     /// root file (module index 0), EXCLUDING generated trait default-method

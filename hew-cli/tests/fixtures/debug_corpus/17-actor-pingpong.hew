@@ -1,0 +1,26 @@
+// Two actors, one asking the other.
+actor Doubler {
+    receive fn double(x: i64) -> i64 {
+        x * 2
+    }
+}
+
+actor Relay {
+    var target: Doubler;
+
+    receive fn run(x: i64) -> i64 {
+        match target.double(x) {
+            .Ok(v) => v + 1,
+            .Err(_) => -1,
+        }
+    }
+}
+
+fn main() {
+    let d = spawn Doubler;
+    let r = spawn Relay { target: d };
+    match r.run(20) {
+        .Ok(v) => println(v),
+        .Err(_) => println("failed"),
+    }
+}

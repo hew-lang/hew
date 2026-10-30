@@ -1236,6 +1236,7 @@ fn physical_emit_option_instruments_generated_code_with_asan() {
             debug_source: None,
             link_freestanding_wasm: false,
             build_info: None,
+            debug_script_dir: None,
         },
     )
     .expect("emit ASan-instrumented physical module");
@@ -1362,6 +1363,7 @@ fn build_info_record_survives_optimization_only_when_requested() {
                     debug_source: None,
                     link_freestanding_wasm: false,
                     build_info,
+                    debug_script_dir: None,
                 },
             )
             .expect("emit build info object");

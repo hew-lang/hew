@@ -1,0 +1,27 @@
+// Records, nested records and functional update.
+type Point {
+    x: i64;
+    y: i64;
+}
+
+type Segment {
+    from: Point;
+    to: Point;
+    label: string;
+}
+
+fn length_sq(s: Segment) -> i64 {
+    let dx = s.to.x - s.from.x;
+    let dy = s.to.y - s.from.y;
+    dx * dx + dy * dy
+}
+
+fn main() {
+    let a = Point { x: 1, y: 2 };
+    let b = Point { y: 10, ..a };
+    let s = Segment { from: a, to: b, label: "diag" };
+    println(b.x);
+    println(b.y);
+    println(s.label);
+    println(length_sq(s));
+}

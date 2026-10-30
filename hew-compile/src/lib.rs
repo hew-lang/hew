@@ -877,11 +877,40 @@ impl Session {
             sir = hew_sir::VerifiedModule::new(lowered)
                 .map_err(SessionError::from_semantic_diagnostics)?;
         }
+        let sources = source_files(&tco.file_span_indices, &sir.lowered().module);
         Ok(SessionOutput {
             sir,
             compiled_roots,
+            sources,
         })
     }
+}
+
+/// Measure every source file a lowered body indexes, by file span index. A
+/// file that cannot be read (an in-memory root) is left out; its bodies keep
+/// their sites but carry no lines.
+fn source_files(
+    indices: &hew_parser::module::FileSpanIndices,
+    module: &hew_sir::SemModule,
+) -> std::collections::BTreeMap<u32, hew_mir::physical::PhysicalSourceFile> {
+    let files: std::collections::BTreeSet<u32> = module
+        .functions
+        .iter()
+        .filter_map(|function| module.debug.item_file(function.id))
+        .collect();
+    files
+        .into_iter()
+        .filter_map(|file| {
+            let path = indices.file_path(file)?;
+            let text = std::fs::read_to_string(path).ok()?;
+            let display = display_source_path(path).to_string_lossy().into_owned();
+            let canonical = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+            Some((
+                file,
+                hew_mir::physical::PhysicalSourceFile::new(canonical, display, &text),
+            ))
+        })
+        .collect()
 }
 
 /// Verified semantic compilation result, independent of the execution host.
@@ -889,6 +918,8 @@ impl Session {
 pub struct SessionOutput {
     sir: hew_sir::VerifiedModule,
     compiled_roots: Vec<hew_sir::CallableId>,
+    /// Source files the lowered bodies index, for the image's file table.
+    sources: std::collections::BTreeMap<u32, hew_mir::physical::PhysicalSourceFile>,
 }
 
 impl SessionOutput {
@@ -913,7 +944,7 @@ impl SessionOutput {
     /// Prepare one physical type inventory tied to this checked semantic input.
     #[must_use]
     pub fn physical_plan(&self) -> hew_mir::physical::PhysicalPlan<'_> {
-        hew_mir::physical::PhysicalPlan::new(self.sir.checked())
+        hew_mir::physical::PhysicalPlan::new(self.sir.checked()).with_sources(self.sources.clone())
     }
 
     /// Realize verified semantics using the backend's measured target layouts.
@@ -5159,6 +5190,78 @@ mod tests {
     use std::fs::{self, File};
     use std::io::Write;
     use std::path::Path;
+
+    /// Lower `input` through the shared session and report, for each named
+    /// function, the source file its body's sites index.
+    fn body_files(input: &str, names: &[&str]) -> Vec<Option<std::path::PathBuf>> {
+        let state = run_document_frontend(input, &FrontendOptions::default());
+        assert!(state.stopped.is_none(), "{:?}", state.diagnostics);
+        let tco = state
+            .typecheck_result
+            .as_ref()
+            .and_then(|result| result.tco.as_ref())
+            .unwrap();
+        let output = Session::new(SessionTarget::native(), DiagnosticPolicy::default())
+            .lower_program(&state.program, tco)
+            .expect("the program lowers");
+        let module = &output.semantics().module;
+        let display = hew_mir::physical::debug_names::display_names(module);
+        names
+            .iter()
+            .map(|name| {
+                let function = module.functions.iter().find(|function| {
+                    display
+                        .get(&function.callable)
+                        .is_some_and(|display| display.text == *name)
+                });
+                let Some(function) = function else {
+                    let known: Vec<_> = display.values().map(|name| &name.text).collect();
+                    panic!("no body named {name}; bodies: {known:?}");
+                };
+                let file = module.debug.item_file(function.id)?;
+                Some(output.sources.get(&file)?.path.clone())
+            })
+            .collect()
+    }
+
+    #[test]
+    fn imported_bodies_index_their_own_source_file() {
+        let dir = tempfile::tempdir().unwrap();
+        write_source(
+            dir.path(),
+            "util.hew",
+            "pub fn triple(n: i64) -> i64 {\n    n * 3\n}\n",
+        );
+        let input = write_source(
+            dir.path(),
+            "main.hew",
+            "import \"util.hew\";\nfn main() {\n    println(util.triple(2));\n}\n",
+        );
+        let files = body_files(&input, &["main", "util.triple"]);
+        let root = dir.path().canonicalize().unwrap();
+        assert_eq!(files[0].as_deref(), Some(root.join("main.hew").as_path()));
+        assert_eq!(files[1].as_deref(), Some(root.join("util.hew").as_path()));
+    }
+
+    #[test]
+    fn directory_module_peers_keep_distinct_source_files() {
+        let example = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../examples/multifile/02_geometry")
+            .canonicalize()
+            .unwrap();
+        let files = body_files(
+            &example.join("main.hew").display().to_string(),
+            &["geo.distance.abs_int", "geo.area.bounding_area"],
+        );
+        assert_eq!(
+            files[0].as_deref(),
+            Some(example.join("geo/distance.hew").as_path())
+        );
+        assert_eq!(
+            files[1].as_deref(),
+            Some(example.join("geo/area.hew").as_path())
+        );
+    }
 
     #[test]
     fn embedded_prelude_lowers_vector_get_and_println_once() {

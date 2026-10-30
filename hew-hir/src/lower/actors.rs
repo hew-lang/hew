@@ -224,7 +224,7 @@ impl LowerCtx<'_> {
             owner,
             startup_order,
             interceptor,
-            id: self.ids.item(),
+            id: self.mint_body_item(),
             node: self.ids.node(),
             declaration,
             bootstrap_declaration,
@@ -563,7 +563,7 @@ impl LowerCtx<'_> {
         };
 
         Some(HirActorDecl {
-            id: self.ids.item(),
+            id: self.mint_body_item(),
             node: self.ids.node(),
             declaration,
             name: self.defs.linkage_name(declaration, decl.name.name.as_str()),

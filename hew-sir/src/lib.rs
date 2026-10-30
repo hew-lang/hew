@@ -48,7 +48,7 @@ pub use capability::{
     value_capability_callees, SemValueMethodPlan,
 };
 pub use coverage::{CoverageCounter, CoveragePlan};
-pub use debug::{SemDebugFacts, SemDebugScope};
+pub use debug::{SemDebugFacts, SemDebugScope, SemSourceSite, ROOT_FILE};
 pub use dump::{dump_lowering, dump_sir};
 pub use lifetime::{CleanupMode, LeafContents, PlaceLifetimes};
 pub use lower::{

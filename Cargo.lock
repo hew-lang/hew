@@ -2137,6 +2137,7 @@ dependencies = [
  "hew-cabi",
  "hew-codec",
  "hew-compile",
+ "hew-debug-abi",
  "hew-hir",
  "hew-live",
  "hew-mir",
@@ -2168,6 +2169,10 @@ dependencies = [
  "tempfile",
  "toml",
 ]
+
+[[package]]
+name = "hew-debug-abi"
+version = "0.10.0-rc1"
 
 [[package]]
 name = "hew-expand"
@@ -2251,10 +2256,12 @@ dependencies = [
 name = "hew-mir"
 version = "0.10.0-rc1"
 dependencies = [
+ "hew-debug-abi",
  "hew-hir",
  "hew-parser",
  "hew-sir",
  "hew-types",
+ "md-5",
 ]
 
 [[package]]
@@ -3287,6 +3294,16 @@ name = "maybe-owned"
 version = "0.3.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4facc753ae494aeb6e3c22f839b158aebd4f9270f55cd3c79906c45476c47ab4"
+
+[[package]]
+name = "md-5"
+version = "0.11.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "69b6441f590336821bb897fb28fc622898ccceb1d6cea3fde5ea86b090c4de98"
+dependencies = [
+ "cfg-if",
+ "digest 0.11.3",
+]
 
 [[package]]
 name = "memchr"

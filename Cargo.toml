@@ -2,6 +2,7 @@
 members = [
   "hew-cabi",
   "hew-codec",
+  "hew-debug-abi",
   "hew-calendar",
   "hew-expand",
   "hew-std",

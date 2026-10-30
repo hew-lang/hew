@@ -11,7 +11,9 @@ keywords = ["hew", "compiler", "mir"]
 categories = ["compilers"]
 
 [dependencies]
+hew-debug-abi = { path = "../hew-debug-abi" }
 hew-sir = { path = "../hew-sir" }
+md-5 = "0.11"
 hew-parser = { path = "../hew-parser" }
 hew-types = { path = "../hew-types" }
 

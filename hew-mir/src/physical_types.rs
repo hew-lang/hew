@@ -1589,22 +1589,77 @@ impl PhysicalModule {
     }
 }
 
-pub use hew_sir::SemDebugScope;
+pub use hew_sir::{SemDebugScope, SemSourceSite};
 
-/// Source attribution carried for native debug metadata.
+/// Source attribution carried for native debug metadata and the always-emitted
+/// source, site and function tables.
 ///
 /// Every fact here is projected from SIR during lowering: codegen reads it and
-/// decides nothing about naming or attribution. Only root-unit bodies appear —
-/// a foreign module's spans belong to another file's coordinate space.
+/// decides nothing about naming or attribution. Each body, scope and site
+/// names the file it indexes, a key of [`Self::files`].
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct PhysicalDebug {
-    /// Lexical blocks of the root compilation unit, in HIR scope order.
+    /// Every source file a body indexes, by file span index. The sole source
+    /// of `DIFile` records and of the image's `__hew_file_table`.
+    pub files: BTreeMap<u32, PhysicalSourceFile>,
+    /// Every distinct terminator site of an attributed body, sorted. A site's
+    /// position here is the id `hew_fault_set_site` receives and the index of
+    /// its `__hew_site_table` entry.
+    pub fault_sites: Vec<hew_sir::SemSourceSite>,
+    /// Lexical blocks of every attributed file, in HIR scope order.
     pub scopes: Vec<hew_sir::SemDebugScope>,
     pub functions: BTreeMap<CallableId, PhysicalDebugFunction>,
+    /// The display name of every callable, from [`super::debug_names`].
+    pub names: BTreeMap<CallableId, super::debug_names::DisplayName>,
     /// Source field names of each concrete record, in declaration order.
     pub records: BTreeMap<ResolvedTy, Vec<PhysicalDebugField>>,
     /// Source variant names of each concrete enum, in declaration (tag) order.
     pub enums: BTreeMap<ResolvedTy, Vec<PhysicalDebugVariant>>,
+}
+
+impl PhysicalDebug {
+    /// The site id of `site`, when it is a fault site of this module.
+    #[must_use]
+    pub fn fault_site_id(&self, site: hew_sir::SemSourceSite) -> Option<u32> {
+        self.fault_sites
+            .binary_search(&site)
+            .ok()
+            .and_then(|index| u32::try_from(index).ok())
+    }
+}
+
+/// One source file as debuggers and the runtime see it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PhysicalSourceFile {
+    /// Canonical absolute path, for the `DIFile` directory and name.
+    pub path: std::path::PathBuf,
+    /// The spelling shown to people and stored in the image's file table: the
+    /// trimmed path under `--trim-paths`, otherwise the path as given.
+    pub display: String,
+    /// MD5 of the file's bytes, the `DIFile` checksum.
+    pub md5: [u8; 16],
+    /// Byte offset of every line start, the first being 0.
+    pub line_starts: Vec<u32>,
+}
+
+impl PhysicalSourceFile {
+    /// Measure `text`, the bytes of the file at `path`.
+    #[must_use]
+    pub fn new(path: std::path::PathBuf, display: String, text: &str) -> Self {
+        use md5::Digest;
+        Self {
+            path,
+            display,
+            md5: md5::Md5::digest(text.as_bytes()).into(),
+            line_starts: hew_debug_abi::line_starts(text),
+        }
+    }
+
+    /// One-based line of `offset`.
+    #[must_use]
+    pub fn line(&self, offset: u32) -> u32 {
+        hew_debug_abi::line_of(&self.line_starts, offset)
+    }
 }
 
 /// One aggregate or variant-payload field as the source spells it.
@@ -1640,6 +1695,9 @@ pub(crate) fn debug_variant_field(field: &hew_sir::SemVariantField) -> PhysicalD
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct PhysicalDebugFunction {
     pub name: String,
+    /// The file `decl`, `end`, `sites` and every local's `decl` index: a key
+    /// of [`PhysicalDebug::files`].
+    pub file: u32,
     /// Byte offset where the declaration begins.
     pub decl: u32,
     /// Byte offset just past the declaration, bounding the body's scopes.
@@ -1703,3 +1761,41 @@ impl std::fmt::Display for PhysicalError {
 }
 
 impl std::error::Error for PhysicalError {}
+
+#[cfg(test)]
+mod debug_table_tests {
+    use super::*;
+
+    #[test]
+    fn source_file_measures_lines_and_checksum() {
+        let file = PhysicalSourceFile::new(
+            std::path::PathBuf::from("/src/app/main.hew"),
+            "main.hew".to_owned(),
+            "fn main() {\n    println(1);\n}\n",
+        );
+        assert_eq!(file.line_starts, [0, 12, 28, 30]);
+        assert_eq!(file.line(0), 1);
+        assert_eq!(file.line(16), 2);
+        assert_eq!(file.line(28), 3);
+        // MD5 of the exact bytes, as `md5sum` reports it.
+        assert_eq!(
+            file.md5,
+            [
+                0x00, 0x34, 0x6f, 0x88, 0xac, 0x7a, 0x8d, 0x18, 0x20, 0xe9, 0xa8, 0x22, 0x0e, 0x78,
+                0x05, 0x69
+            ]
+        );
+    }
+
+    #[test]
+    fn fault_site_ids_index_the_sorted_site_table() {
+        let site = |file, offset| SemSourceSite { file, offset };
+        let debug = PhysicalDebug {
+            fault_sites: vec![site(0, 4), site(0, 90), site(3, 4)],
+            ..PhysicalDebug::default()
+        };
+        assert_eq!(debug.fault_site_id(site(0, 4)), Some(0));
+        assert_eq!(debug.fault_site_id(site(3, 4)), Some(2));
+        assert_eq!(debug.fault_site_id(site(1, 4)), None);
+    }
+}

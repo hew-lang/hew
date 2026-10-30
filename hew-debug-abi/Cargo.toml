@@ -1,0 +1,13 @@
+[package]
+name = "hew-debug-abi"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Layout of the source, fault-site and function tables every native Hew image carries"
+repository = "https://github.com/hew-lang/hew"
+publish = false
+
+[dependencies]
+
+[lints]
+workspace = true

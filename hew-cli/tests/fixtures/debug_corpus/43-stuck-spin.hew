@@ -1,0 +1,22 @@
+// STUCK: a handler spins without yielding; main waits. Good for gdb interrupt + backtrace.
+actor Spinner {
+    receive fn spin() -> i64 {
+        var n: i64 = 0;
+        loop {
+            n = n + 1;
+            if n < 0 {
+                break;
+            }
+        }
+        n
+    }
+}
+
+fn main() {
+    let s = spawn Spinner;
+    println("main: asking");
+    match s.spin() {
+        .Ok(v) => println(v),
+        .Err(_) => println("failed"),
+    }
+}

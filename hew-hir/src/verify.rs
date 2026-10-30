@@ -2,7 +2,7 @@ use std::collections::{HashMap, HashSet};
 use std::ops::Range;
 
 use crate::diagnostic::{HirDiagnostic, HirDiagnosticKind};
-use crate::ids::{BindingId, HirNodeId, ResolvedRef, ScopeId, SiteId};
+use crate::ids::{BindingId, HirNodeId, ItemId, ResolvedRef, ScopeId, SiteId};
 use crate::node::{
     HirBlock, HirExpr, HirExprKind, HirItem, HirLiteral, HirMatchArmPredicate, HirModule,
     HirStmtKind, HirVarSelfMethodTarget,
@@ -63,12 +63,16 @@ impl<'a> HirAnalysis<'a> {
 pub struct HirSourceFacts {
     pub sites: HashMap<SiteId, HirSiteSource>,
     pub scopes: HashMap<ScopeId, HirScopeExtent>,
+    /// The file span index each item with a body was lowered from.
+    pub item_files: HashMap<crate::ids::ItemId, u32>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HirSiteSource {
     pub span: Range<usize>,
     pub source_module: Option<String>,
+    /// The file span index `span` indexes, when the enclosing item recorded one.
+    pub file: Option<u32>,
 }
 
 /// One lexical block scope: its source extent and the scope enclosing it.
@@ -77,6 +81,8 @@ pub struct HirScopeExtent {
     pub span: Range<usize>,
     pub parent: Option<ScopeId>,
     pub source_module: Option<String>,
+    /// The file span index `span` indexes, when the enclosing item recorded one.
+    pub file: Option<u32>,
 }
 
 /// Analyze structural contracts and collect source attribution together.
@@ -115,6 +121,7 @@ pub fn analyze_hir(module: &HirModule) -> HirAnalysis<'_> {
         source_facts: HirSourceFacts {
             sites: verifier.site_spans,
             scopes: verifier.scope_extents,
+            item_files: module.item_files.clone(),
         },
         site_parents: verifier.site_parents,
     }
@@ -127,6 +134,7 @@ struct Verifier {
     nodes: HashSet<HirNodeId>,
     diagnostics: Vec<HirDiagnostic>,
     current_source_module: Option<String>,
+    current_source_file: Option<u32>,
     site_spans: HashMap<SiteId, HirSiteSource>,
     current_expr_parent: Option<SiteId>,
     site_parents: HashMap<SiteId, Option<SiteId>>,
@@ -175,7 +183,7 @@ impl Verifier {
 
     fn module(&mut self, module: &HirModule) {
         for item in &module.items {
-            self.current_source_module = Self::item_source_module(module, item);
+            self.enter_item(module, item);
             match item {
                 HirItem::Function(func) => self.function(func),
                 HirItem::TypeDecl(decl) => {
@@ -300,7 +308,7 @@ impl Verifier {
                     self.expr(&c.value);
                 }
             }
-            self.current_source_module = None;
+            self.leave_item();
         }
     }
 
@@ -358,6 +366,7 @@ impl Verifier {
                 span: block.span.clone(),
                 parent: enclosing,
                 source_module: self.current_source_module.clone(),
+                file: self.current_source_file,
             });
         self.block_body(block);
         self.current_scope = enclosing;
@@ -1269,6 +1278,7 @@ impl Verifier {
         self.site_spans.entry(id).or_insert_with(|| HirSiteSource {
             span: span.clone(),
             source_module: self.current_source_module.clone(),
+            file: self.current_source_file,
         });
         if !self.sites.insert(id) {
             self.diagnostics.push(self.diagnostic(
@@ -1289,8 +1299,26 @@ impl Verifier {
         }
     }
 
+    /// Attribute the item's diagnostics and source facts to its module and file.
+    fn enter_item(&mut self, module: &HirModule, item: &HirItem) {
+        self.current_source_module = Self::item_source_module(module, item);
+        self.current_source_file = module.item_files.get(&Self::item_id(item)).copied();
+    }
+
+    fn leave_item(&mut self) {
+        self.current_source_module = None;
+        self.current_source_file = None;
+    }
+
     fn item_source_module(module: &HirModule, item: &HirItem) -> Option<String> {
-        let id = match item {
+        module
+            .diagnostic_source_modules
+            .get(&Self::item_id(item))
+            .cloned()
+    }
+
+    fn item_id(item: &HirItem) -> ItemId {
+        match item {
             HirItem::Function(item) => item.id,
             HirItem::TypeDecl(item) => item.id,
             HirItem::Record(item) => item.id,
@@ -1299,8 +1327,7 @@ impl Verifier {
             HirItem::Impl(item) => item.id,
             HirItem::ExternFn(item) => item.id,
             HirItem::Const(item) => item.id,
-        };
-        module.diagnostic_source_modules.get(&id).cloned()
+        }
     }
 }
 
@@ -1378,6 +1405,7 @@ mod tests {
             test_entry_plans: Vec::new(),
             items,
             diagnostic_source_modules: HashMap::new(),
+            item_files: HashMap::new(),
             root_item_ids: HashSet::default(),
             trait_object_layouts: Arc::default(),
             structural_witnesses: Vec::new(),

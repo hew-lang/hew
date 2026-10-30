@@ -476,6 +476,14 @@ fn emit_module_with_triple(
             },
             link_freestanding_wasm,
             build_info: Some(hew_compile::VERSION),
+            debug_script_dir: debug
+                .then(|| find_debug_script("hew-gdb.py"))
+                .flatten()
+                .and_then(|script| {
+                    std::path::Path::new(&script)
+                        .parent()
+                        .map(Path::to_path_buf)
+                }),
         },
     )
     .map_err(|error| {

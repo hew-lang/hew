@@ -126,8 +126,11 @@ pub(crate) fn run_module_pipeline(
     // SAFETY: the shim only updates debug records and their pointer storage in
     // this live module, after coroutine splitting has selected frame addresses.
     unsafe { hewLLVMStabilizeDebugFrameLocations(module.as_mut_ptr()) };
-    module.verify().map_err(|error| {
-        CodegenError::LlvmVerify(format!("module rejected after optimization: {error}"))
+    crate::physical::verify_bounded(module).map_err(|error| match error {
+        CodegenError::LlvmVerify(message) => {
+            CodegenError::LlvmVerify(format!("module rejected after optimization: {message}"))
+        }
+        other => other,
     })
 }
 /// Link a freestanding `wasm32-unknown-unknown` object into a `.wasm` module.

@@ -32,6 +32,25 @@ pub enum ObjectFormat {
     Wasm,
 }
 
+/// Where a `-g` link leaves the program's debug info, and so which debugger
+/// path the target supports.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DebugInfoLayout {
+    /// DWARF inside the ELF executable, found through its build-id;
+    /// `--split-debug` moves it to `<out>.debug` behind a `.gnu_debuglink`.
+    ElfDwarf,
+    /// DWARF left in the objects and gathered by `dsymutil` into
+    /// `<out>.dSYM`, matched to the executable by its UUID.
+    DarwinDsym,
+    /// `CodeView` written by the linker to `<out>.pdb` beside the `.exe`
+    /// (windows-msvc), read by cdb, `WinDbg` and Visual Studio.
+    WindowsPdb,
+    /// No supported debugger path: windows-gnu's PE/COFF with embedded DWARF
+    /// is emitted but no debugger is verified against it, and wasm modules
+    /// are not debugged natively.
+    Unsupported,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ExecutionTargetKind {
     Native,
@@ -64,12 +83,6 @@ pub struct ExecutionTarget {
 /// Host-side concerns (which linker binary to invoke, whether lld is installed,
 /// whether `dsymutil` is available) are intentionally *not* captured here —
 /// those remain runtime checks in `link.rs`.
-#[allow(
-    clippy::struct_excessive_bools,
-    reason = "each needs_* bool is an independent, named, target-keyed linker \
-              decision (SDK anchoring, CRT fixup, dsymutil pass, PDB emission); \
-              this is a plan-of-record, not a god-struct conflating unrelated state"
-)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NativeLinkPlan {
     /// Dead-code-elimination flags passed to the linker unconditionally.
@@ -80,8 +93,17 @@ pub struct NativeLinkPlan {
 
     /// Strip flags applied only for release (non-debug) builds.
     ///
-    /// Darwin: `["-Wl,-x"]`; Linux/ELF: `["-Wl,--strip-all"]`; Windows: `[]`.
+    /// Darwin: `["-Wl,-x", "-Wl,-S"]` (local symbols and the debug map, so a
+    /// release binary names no object paths); Linux/ELF:
+    /// `["-Wl,--strip-all"]`; Windows: `[]`.
     pub strip_flags: &'static [&'static str],
+
+    /// Flags that give every executable a stable identity, debug or not.
+    ///
+    /// ELF: `["-Wl,--build-id"]`, which split debug files, debuginfod-style
+    /// lookup and `hew --version --verbose` key on (lld does not add one by
+    /// default). Mach-O always carries `LC_UUID` and a PDB link its GUID.
+    pub build_id_flags: &'static [&'static str],
 
     /// System libraries required by the Hew runtime on this target.
     pub platform_libs: &'static [&'static str],
@@ -103,24 +125,9 @@ pub struct NativeLinkPlan {
     /// /DEFAULTLIB:msvcrt`) is required to match the Rust runtime's CRT.
     pub needs_windows_crt_fixup: bool,
 
-    /// `true` when a `dsymutil` pass should follow a successful debug link.
-    ///
-    /// Set for Darwin targets; whether the tool is actually present on the
-    /// host is checked at link time — the step is skipped if unavailable.
-    pub needs_dsymutil: bool,
-
-    /// `true` when a debug (`-g`) link must emit a separate PDB via the
-    /// MSVC-style `/DEBUG:FULL` + `/PDB:<output>.pdb` linker flags.
-    ///
-    /// Set for Windows targets. Unlike ELF/Mach-O (where `-g` carries debug
-    /// info inside the object/executable), the Windows `CodeView` channel is
-    /// written to a standalone `.pdb` next to the `.exe`; without `/DEBUG` the
-    /// linker discards the `CodeView` records and no PDB is produced, so a
-    /// `-g` build silently under-delivers on Windows. `/DEBUG:FULL` (not the
-    /// `/DEBUG:GHASH` fast-link variant) writes complete line+local info that
-    /// cdb/WinDbg/Visual Studio read. The flags only attach on a debug build;
-    /// a release Windows link sets nothing here.
-    pub needs_pdb_debug: bool,
+    /// Where a `-g` link leaves debug info: the step after the link (a
+    /// `dsymutil` pass, a `--split-debug` copy) and the PDB flags follow it.
+    pub debug_layout: DebugInfoLayout,
 }
 
 impl TargetSpec {
@@ -196,7 +203,8 @@ impl TargetSpec {
         match self.os {
             TargetOs::Darwin => NativeLinkPlan {
                 gc_flags: &["-Wl,-dead_strip"],
-                strip_flags: &["-Wl,-x"],
+                strip_flags: &["-Wl,-x", "-Wl,-S"],
+                build_id_flags: &[],
                 // CoreFoundation and Security are pulled in by the Hew runtime.
                 // `-lpthread` and `-lm` satisfy runtime math and threading
                 // references; clang implicitly links libc++ for C++ TLS support.
@@ -211,30 +219,29 @@ impl TargetSpec {
                 cxx_runtime_libs: &["-lc++"],
                 needs_darwin_sdk: true,
                 needs_windows_crt_fixup: false,
-                needs_dsymutil: true,
-                needs_pdb_debug: false,
+                debug_layout: DebugInfoLayout::DarwinDsym,
             },
             TargetOs::Linux => NativeLinkPlan {
                 gc_flags: &["-Wl,--gc-sections"],
                 strip_flags: &["-Wl,--strip-all"],
+                build_id_flags: &["-Wl,--build-id"],
                 platform_libs: &["-lpthread", "-lm", "-ldl", "-lrt"],
                 cxx_runtime_libs: &["-lstdc++"],
                 needs_darwin_sdk: false,
                 needs_windows_crt_fixup: false,
-                needs_dsymutil: false,
-                needs_pdb_debug: false,
+                debug_layout: DebugInfoLayout::ElfDwarf,
             },
             TargetOs::FreeBsd => NativeLinkPlan {
                 gc_flags: &["-Wl,--gc-sections"],
                 strip_flags: &["-Wl,--strip-all"],
+                build_id_flags: &["-Wl,--build-id"],
                 // FreeBSD provides dlopen and clock_gettime from libc, so the
                 // Hew runtime only needs explicit threading and math libs here.
                 platform_libs: &["-lpthread", "-lm"],
                 cxx_runtime_libs: &["-lc++"],
                 needs_darwin_sdk: false,
                 needs_windows_crt_fixup: false,
-                needs_dsymutil: false,
-                needs_pdb_debug: false,
+                debug_layout: DebugInfoLayout::ElfDwarf,
             },
             TargetOs::Windows => NativeLinkPlan {
                 // The Windows linker (lld-link) does not accept ELF-style -Wl
@@ -242,6 +249,7 @@ impl TargetSpec {
                 // /OPT:REF.
                 gc_flags: &[],
                 strip_flags: &[],
+                build_id_flags: &[],
                 platform_libs: &[
                     // The Rust runtime references `printf` via __declspec(dllimport),
                     // but the UCRT inlines printf; the legacy definitions library
@@ -261,20 +269,24 @@ impl TargetSpec {
                 // Clang defaults to the static CRT (libcmt) but the Rust-compiled
                 // runtime uses the DLL CRT (msvcrt).  The CRT linkage must match.
                 needs_windows_crt_fixup: true,
-                needs_dsymutil: false,
-                // A `-g` Windows link must request the PDB explicitly so lld-link
-                // writes the CodeView records to a `.pdb` next to the `.exe`.
-                needs_pdb_debug: self.env.as_deref() == Some("msvc"),
+                // windows-msvc is the supported Windows debugging path: cdb or
+                // WinDbg with the linker's PDB. windows-gnu emits DWARF in
+                // PE/COFF that no debugger is verified against.
+                debug_layout: if self.env.as_deref() == Some("msvc") {
+                    DebugInfoLayout::WindowsPdb
+                } else {
+                    DebugInfoLayout::Unsupported
+                },
             },
             TargetOs::Wasi | TargetOs::WasmFreestanding => NativeLinkPlan {
                 gc_flags: &[],
                 strip_flags: &[],
+                build_id_flags: &[],
                 platform_libs: &[],
                 cxx_runtime_libs: &[],
                 needs_darwin_sdk: false,
                 needs_windows_crt_fixup: false,
-                needs_dsymutil: false,
-                needs_pdb_debug: false,
+                debug_layout: DebugInfoLayout::Unsupported,
             },
         }
     }
@@ -657,7 +669,7 @@ impl ExecutionTarget {
 mod tests {
     use std::sync::Mutex;
 
-    use super::{ExecutionTarget, ObjectFormat, TargetOs, TargetSpec};
+    use super::{DebugInfoLayout, ExecutionTarget, ObjectFormat, TargetOs, TargetSpec};
 
     // Serialize env-var–mutating tests: `std::env::set_var` / `remove_var` are
     // not thread-safe when multiple tests share the same process.
@@ -904,7 +916,8 @@ mod tests {
         let spec = TargetSpec::from_requested(Some("aarch64-apple-darwin")).expect("target");
         let plan = spec.native_link_plan();
         assert_eq!(plan.gc_flags, &["-Wl,-dead_strip"]);
-        assert_eq!(plan.strip_flags, &["-Wl,-x"]);
+        assert_eq!(plan.strip_flags, &["-Wl,-x", "-Wl,-S"]);
+        assert!(plan.build_id_flags.is_empty(), "Mach-O always has LC_UUID");
     }
 
     #[test]
@@ -928,9 +941,8 @@ mod tests {
         let spec = TargetSpec::from_requested(Some("x86_64-apple-darwin")).expect("target");
         let plan = spec.native_link_plan();
         assert!(plan.needs_darwin_sdk, "Darwin must request SDK anchoring");
-        assert!(plan.needs_dsymutil, "Darwin must request dsymutil pass");
+        assert_eq!(plan.debug_layout, DebugInfoLayout::DarwinDsym);
         assert!(!plan.needs_windows_crt_fixup);
-        assert!(!plan.needs_pdb_debug, "Darwin carries DWARF, not a PDB");
     }
 
     #[test]
@@ -939,6 +951,7 @@ mod tests {
         let plan = spec.native_link_plan();
         assert_eq!(plan.gc_flags, &["-Wl,--gc-sections"]);
         assert_eq!(plan.strip_flags, &["-Wl,--strip-all"]);
+        assert_eq!(plan.build_id_flags, &["-Wl,--build-id"]);
     }
 
     #[test]
@@ -957,9 +970,8 @@ mod tests {
         let spec = TargetSpec::from_requested(Some("x86_64-unknown-linux-gnu")).expect("target");
         let plan = spec.native_link_plan();
         assert!(!plan.needs_darwin_sdk);
-        assert!(!plan.needs_dsymutil);
         assert!(!plan.needs_windows_crt_fixup);
-        assert!(!plan.needs_pdb_debug, "Linux carries DWARF, not a PDB");
+        assert_eq!(plan.debug_layout, DebugInfoLayout::ElfDwarf);
     }
 
     #[test]
@@ -979,10 +991,10 @@ mod tests {
         let plan = spec.native_link_plan();
         assert_eq!(plan.gc_flags, &["-Wl,--gc-sections"]);
         assert_eq!(plan.strip_flags, &["-Wl,--strip-all"]);
+        assert_eq!(plan.build_id_flags, &["-Wl,--build-id"]);
         assert!(!plan.needs_darwin_sdk);
-        assert!(!plan.needs_dsymutil);
         assert!(!plan.needs_windows_crt_fixup);
-        assert!(!plan.needs_pdb_debug, "FreeBSD carries DWARF, not a PDB");
+        assert_eq!(plan.debug_layout, DebugInfoLayout::ElfDwarf);
     }
 
     #[test]
@@ -1015,10 +1027,10 @@ mod tests {
         let plan = spec.native_link_plan();
         assert!(plan.needs_windows_crt_fixup, "Windows needs DLL CRT fixup");
         assert!(!plan.needs_darwin_sdk);
-        assert!(!plan.needs_dsymutil);
-        assert!(
-            !plan.needs_pdb_debug,
-            "windows-gnu does not emit CodeView PDBs"
+        assert_eq!(
+            plan.debug_layout,
+            DebugInfoLayout::Unsupported,
+            "windows-gnu has no verified debugger path"
         );
     }
 
@@ -1026,13 +1038,11 @@ mod tests {
     fn windows_link_plan_requests_pdb_debug() {
         let spec = TargetSpec::from_requested(Some("x86_64-pc-windows-msvc")).expect("target");
         let plan = spec.native_link_plan();
-        assert!(
-            plan.needs_pdb_debug,
-            "Windows must request a PDB on a -g link so CodeView records reach a .pdb"
+        assert_eq!(
+            plan.debug_layout,
+            DebugInfoLayout::WindowsPdb,
+            "windows-msvc must request a PDB on a -g link so CodeView records reach a .pdb"
         );
-        // The other targets carry their CodeView channel inside the object, so
-        // none of them request a standalone PDB — assert the field is Windows-only.
-        assert!(!plan.needs_dsymutil);
     }
 
     #[test]
@@ -1043,9 +1053,8 @@ mod tests {
         assert!(plan.strip_flags.is_empty());
         assert!(plan.platform_libs.is_empty());
         assert!(!plan.needs_darwin_sdk);
-        assert!(!plan.needs_dsymutil);
         assert!(!plan.needs_windows_crt_fixup);
-        assert!(!plan.needs_pdb_debug);
+        assert_eq!(plan.debug_layout, DebugInfoLayout::Unsupported);
     }
 
     // ── wasm32-unknown-unknown (bare wasm / WasmFreestanding) ──────────
@@ -1087,7 +1096,7 @@ mod tests {
         assert!(plan.strip_flags.is_empty());
         assert!(plan.platform_libs.is_empty());
         assert!(!plan.needs_darwin_sdk);
-        assert!(!plan.needs_dsymutil);
         assert!(!plan.needs_windows_crt_fixup);
+        assert_eq!(plan.debug_layout, DebugInfoLayout::Unsupported);
     }
 }

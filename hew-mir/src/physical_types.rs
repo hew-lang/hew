@@ -1621,6 +1621,9 @@ pub struct PhysicalDebugField {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PhysicalDebugVariant {
     pub name: String,
+    /// Whether the payload is positional, named or absent: a tuple variant's
+    /// field names are synthesized positions.
+    pub kind: hew_sir::SemVariantKind,
     pub fields: Vec<PhysicalDebugField>,
 }
 

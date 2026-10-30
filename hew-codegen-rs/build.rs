@@ -20,12 +20,12 @@ fn main() {
         llvm_config_output(llvm_config, "--bindir")
     );
 
-    // The variant-part shim calls LLVM's C++ `DIBuilder` directly, so it must
+    // The debug shim calls LLVM's C++ IR API directly, so it must
     // see the headers and the ABI flags of the very install llvm-sys links —
     // `DEP_LLVM_22_CONFIG_PATH` is that install, and `--cxxflags` carries the
     // `LLVM_ENABLE_ABI_BREAKING_CHECKS` and RTTI settings its libraries were
     // built with. A mismatch is a silent struct-layout corruption inside
-    // `DIBuilder`, not a link error. `cc` compiles this into a static archive
+    // LLVM, not a link error. `cc` compiles this into a static archive
     // the crate links, so the `hew` binary gains no dynamic LLVM dependency.
     cc::Build::new()
         .cpp(true)

@@ -94,21 +94,30 @@ pub(super) fn build_module_with_host<'ctx>(
         debug.finalize();
     }
     c_abi::seal_c_scalar_widening(&emitter.llvm)?;
-    keep_frame_pointers(&emitter.llvm);
+    keep_frames_walkable(&emitter.llvm);
     verify_bounded(&emitter.llvm)?;
     Ok(emitter.llvm)
 }
 
-/// Keep a frame-pointer chain through every function the module defines, at
-/// every optimization level, so sampling profilers, crash backtraces and
-/// debuggers can walk Hew frames without unwind tables. Bodies LLVM later
-/// splits out of these (coroutine resume and destroy parts) inherit it.
-fn keep_frame_pointers(module: &Module<'_>) {
+/// Keep a frame-pointer chain and asynchronous unwind tables through every
+/// function the module defines, at every optimization level, so sampling
+/// profilers, crash backtraces and debuggers can walk Hew frames either way.
+/// Unwind tables do not depend on `-g`: LLVM would otherwise emit them only
+/// for the functions debug information describes, and a `-g` image would lay
+/// out its code at other addresses. Bodies LLVM later splits out of these
+/// (coroutine resume and destroy parts) inherit both.
+fn keep_frames_walkable(module: &Module<'_>) {
     let ctx = module.get_context();
-    let attribute = ctx.create_string_attribute("frame-pointer", "all");
+    let frame_pointer = ctx.create_string_attribute("frame-pointer", "all");
+    // 2 is `uwtable(async)`: tables valid at every instruction.
+    let unwind_table = ctx.create_enum_attribute(
+        inkwell::attributes::Attribute::get_named_enum_kind_id("uwtable"),
+        2,
+    );
     for function in module.get_functions() {
         if function.count_basic_blocks() > 0 {
-            function.add_attribute(inkwell::attributes::AttributeLoc::Function, attribute);
+            function.add_attribute(inkwell::attributes::AttributeLoc::Function, frame_pointer);
+            function.add_attribute(inkwell::attributes::AttributeLoc::Function, unwind_table);
         }
     }
 }

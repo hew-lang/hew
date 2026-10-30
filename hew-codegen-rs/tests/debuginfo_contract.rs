@@ -515,11 +515,23 @@ fn the_unit_is_dwarf5_with_an_absolute_checksummed_source() {
 }
 
 fn text_of(object: &Path) -> Vec<u8> {
+    sections_of(object, |section| {
+        section.kind() == object::SectionKind::Text
+    })
+}
+
+/// The unwind tables, which the linker places before the code: a `-g`
+/// object with more of them would move every code address in the image.
+fn unwind_of(object: &Path) -> Vec<u8> {
+    sections_of(object, |section| section.name() == Ok(".eh_frame"))
+}
+
+fn sections_of(object: &Path, wanted: impl Fn(&object::Section<'_, '_>) -> bool) -> Vec<u8> {
     let bytes = std::fs::read(object).expect("read object");
     let file = object::File::parse(&*bytes).expect("parse object");
     file.sections()
-        .filter(|section| section.kind() == object::SectionKind::Text)
-        .flat_map(|section| section.data().expect("text data").to_vec())
+        .filter(|section| wanted(section))
+        .flat_map(|section| section.data().expect("section data").to_vec())
         .collect()
 }
 
@@ -555,9 +567,16 @@ fn debug_information_leaves_optimized_code_unchanged() {
     for (name, program) in shapes {
         let plain = tempfile::tempdir().expect("temp dir");
         let debug = tempfile::tempdir().expect("temp dir");
-        let without = text_of(&emit_source(plain.path(), program, OptLevel::O2, false));
-        let with = text_of(&emit_source(debug.path(), program, OptLevel::O2, true));
-        assert!(!without.is_empty(), "{name} has code");
-        assert!(without == with, "-g changes optimized code of {name}");
+        let without = emit_source(plain.path(), program, OptLevel::O2, false);
+        let with = emit_source(debug.path(), program, OptLevel::O2, true);
+        assert!(!text_of(&without).is_empty(), "{name} has code");
+        assert!(
+            text_of(&without) == text_of(&with),
+            "-g changes optimized code of {name}"
+        );
+        assert!(
+            unwind_of(&without) == unwind_of(&with),
+            "-g changes the unwind tables of {name}"
+        );
     }
 }

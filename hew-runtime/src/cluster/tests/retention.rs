@@ -60,6 +60,14 @@ fn dead_member_is_retired_after_its_window() {
     );
     assert!(cluster.retire_buried(start + DEAD_WINDOW_MS - 1).is_empty());
     assert_eq!(cluster.member_state(2), MEMBER_DEAD);
+    // Open indirect probes that name slot 2 as target or as peer, and one
+    // between live members.
+    let probe_time = start + DEAD_WINDOW_MS;
+    cluster.await_indirect_ack(2, 5, probe_time);
+    cluster.await_indirect_ack(5, 2, probe_time);
+    cluster.note_ping_req_sent_at(2, 6, probe_time);
+    cluster.note_ping_req_sent_at(6, 2, probe_time);
+    cluster.note_ping_req_sent_at(6, 5, probe_time);
 
     assert_eq!(
         cluster.retire_buried(start + DEAD_WINDOW_MS),
@@ -72,6 +80,11 @@ fn dead_member_is_retired_after_its_window() {
     assert_eq!(cluster.member_session(2), None);
     assert!(cluster.detectors.lock_or_recover().is_empty());
     assert!(cluster.events.lock_or_recover().is_empty());
+    assert!(cluster.relayed_probes.lock_or_recover().is_empty());
+    let requested = cluster.requested_probes.lock_or_recover();
+    assert_eq!(requested.len(), 1);
+    assert_eq!((requested[0].target, requested[0].peer), (5, 6));
+    drop(requested);
     let tokens = cluster.connection_tokens.lock_or_recover();
     assert!(tokens.announced.is_empty() && tokens.visible.is_empty());
 }
@@ -177,6 +190,52 @@ fn left_peer_redial_is_refused_in_grace_then_admitted_as_new() {
     assert_eq!(publish(&cluster, 2, 7, 22), 1);
     assert_eq!(cluster.member_state(2), MEMBER_ALIVE);
     assert_eq!(cluster.member_incarnation(2), Some(1));
+}
+
+/// Retention clocks are per node, so A may retire B and readmit it at
+/// incarnation 1 while C still holds B DEAD at a higher incarnation. When C's
+/// gossip reaches A, A buries B again, its next frame tells B, B refutes past
+/// the burial, and B's own frame readmits it at A; C accepts A's gossip of
+/// the refutation. The membership converges on B ALIVE above every burial.
+#[test]
+fn early_retirement_converges_with_a_peer_still_holding_the_burial() {
+    const B: u16 = 2;
+    const SESSION: u32 = 7;
+    let a = HewCluster::new(make_config(1));
+    let b = HewCluster::new(make_config(B));
+    let c = HewCluster::new(make_config(3));
+    bury(&a, B, SESSION, MEMBER_DEAD, 3);
+    bury(&c, B, SESSION, MEMBER_DEAD, 5);
+    a.retire_buried(0);
+    assert_eq!(a.retire_buried(DEAD_WINDOW_MS).len(), 1);
+
+    // B reconnects to A only: a new member at A, still DEAD at C.
+    assert_eq!(publish(&a, B, SESSION, 40), 1);
+    assert_eq!(a.member_incarnation(B), Some(1));
+    // C's obituary for B reaches A as gossip and buries B there again.
+    let from_c = c.take_swim_gossip(1, 8);
+    assert!(from_c.contains(&(B, Some(SESSION), MEMBER_DEAD, 5)));
+    a.apply_swim_gossip(&[(B, SESSION, MEMBER_DEAD, 5)]);
+    assert_eq!(a.member_state(B), MEMBER_DEAD);
+
+    // A's next frame to B leads with the obituary; B refutes past it.
+    let to_b = a.take_swim_gossip(B, 8);
+    assert_eq!(to_b.first(), Some(&(B, Some(SESSION), MEMBER_DEAD, 5)));
+    let refuted = b
+        .refute_if_suspected(&[(B, SESSION, MEMBER_DEAD, 5)])
+        .expect("B refutes its burial");
+    assert!(refuted > 5);
+
+    // B's next frame readmits it at A, and A's gossip readmits it at C.
+    a.receive_swim_at(SWIM_MSG_PING, B, refuted, 0, 1);
+    assert_eq!(a.member_state(B), MEMBER_ALIVE);
+    assert_eq!(a.member_incarnation(B), Some(refuted));
+    assert!(a
+        .take_swim_gossip(3, 8)
+        .contains(&(B, Some(SESSION), MEMBER_ALIVE, refuted)));
+    c.apply_swim_gossip(&[(B, SESSION, MEMBER_ALIVE, refuted)]);
+    assert_eq!(c.member_state(B), MEMBER_ALIVE);
+    assert_eq!(c.member_incarnation(B), Some(refuted));
 }
 
 extern "C" fn record(node_id: u16, event: u8, user_data: *mut c_void) {
@@ -311,7 +370,8 @@ fn soak_three_clusters_with_2000_departing_ids_stays_flat() {
         assert!(cluster.sessions.lock_or_recover().len() <= MAX_BURIED_MEMBERS);
         assert!(cluster.detectors.lock_or_recover().len() <= MAX_BURIED_MEMBERS);
         assert!(cluster.events.lock_or_recover().len() <= MAX_GOSSIP_EVENTS);
-        assert!(cluster.indirect_probes.lock_or_recover().is_empty());
+        assert!(cluster.relayed_probes.lock_or_recover().is_empty());
+        assert!(cluster.requested_probes.lock_or_recover().is_empty());
         let tokens = cluster.connection_tokens.lock_or_recover();
         assert!(tokens.announced.len() <= MAX_BURIED_MEMBERS);
         assert!(tokens.visible.len() <= MAX_BURIED_MEMBERS);

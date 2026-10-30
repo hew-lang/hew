@@ -1152,4 +1152,106 @@ mod tests {
             }
         }
     }
+
+    /// Counterfactual: the stop cancelled the pending restart before claiming
+    /// teardown, so the declined restart started the root's own token stop,
+    /// which won the claim. The losing stop then restored a cleanup root that
+    /// the winner freed.
+    #[test]
+    fn supervisor_stop_keeps_teardown_over_the_restart_its_cancellation_declines() {
+        struct Scheduler;
+        impl Drop for Scheduler {
+            fn drop(&mut self) {
+                crate::scheduler::hew_sched_shutdown();
+                crate::scheduler::hew_runtime_cleanup();
+            }
+        }
+        let _runtime = crate::runtime_test_guard();
+        crate::scheduler::init_real_scheduler_for_test();
+        let _scheduler = Scheduler;
+        let destroyed = Arc::new(AtomicUsize::new(0));
+        let dropped = Arc::new(AtomicUsize::new(0));
+        let (_, waker) = crate::wake::blocking::Readiness::new();
+        let child = HewNativeChildSpec {
+            restart_policy: RESTART_PERMANENT,
+            role_kind: ROLE_KIND_ACTOR,
+            spawn: begin_child,
+            name: ptr::null(),
+            stop_ns: 0,
+            startup_rank: 0,
+            dispatch: None,
+        };
+        // SAFETY: this test owns initial invocation, then transfers the
+        // published parent to its ordinary restart and teardown owners.
+        unsafe {
+            let config = crate::mem::buf_try_alloc(std::mem::size_of::<Config>()).cast::<Config>();
+            config.write(Config {
+                destroyed: Arc::clone(&destroyed),
+                dropped: Arc::clone(&dropped),
+                ignore_cancellation: false,
+                cancel_on_resume: false,
+                expected_cancellation: crate::fault::HEW_FAULT_CANCELLED,
+            });
+            let op = hew_supervisor_native_spawn_new(
+                STRATEGY_ONE_FOR_ONE,
+                3,
+                5,
+                config.cast(),
+                Some(drop_config),
+                &raw const child,
+                1,
+                0,
+                0,
+                0,
+                0,
+                waker.descriptor(),
+                ptr::null(),
+            );
+            assert_eq!(hew_supervisor_native_spawn_poll(op, 0), 0);
+            assert_eq!(hew_supervisor_native_spawn_poll(op, 0), 1);
+            let mut fault = ptr::null_mut();
+            let token = hew_supervisor_native_spawn_take(op, &raw mut fault);
+            hew_supervisor_native_spawn_free(op);
+            assert!(fault.is_null());
+            let pin = local_handles::pin_current_supervisor(token).unwrap();
+            let parent = pin.supervisor();
+            let identity = (*parent).roster.lock_or_recover().child_specs[0].identity;
+            destroyed.store(0, Ordering::Release);
+            let record = crate::exit_status::open_supervised_fault();
+            assert_eq!(
+                restart::restart_children_for_strategy(
+                    parent,
+                    STRATEGY_ONE_FOR_ONE,
+                    RestartChildRole::Actor(identity),
+                    record
+                ),
+                FaultRuling::ArmedForRestart
+            );
+            // Hold the stop between cancelling the constructor and settling
+            // the group until the supervisor's own dispatch has ruled on the
+            // declined restart. The hook registers nothing on the parent:
+            // when the race is lost, another owner may already be freeing it.
+            let (ready, restart_waker) = crate::wake::blocking::Readiness::new();
+            let restart_waker = Arc::new(restart_waker);
+            (*parent).native_restart_wakers.register(&restart_waker);
+            drop(pin);
+            crate::supervisor::teardown::CONSTRUCTION_CANCELLED_HOOK.set(Some(Box::new(
+                move || {
+                    while crate::exit_status::supervised_fault_is_open(record) {
+                        ready.wait();
+                    }
+                    // Only the root's own stop unregisters it; a competing stop
+                    // already took it. Fail before the stop touches the parent.
+                    assert!(
+                        crate::shutdown::is_supervisor_registered_for_test(parent),
+                        "the declined restart must not take the stop's teardown"
+                    );
+                },
+            )));
+            hew_supervisor_stop(parent);
+            assert!(!crate::shutdown::is_supervisor_registered_for_test(parent));
+            assert_eq!(destroyed.load(Ordering::Acquire), 1);
+            assert_eq!(dropped.load(Ordering::Acquire), 1);
+        }
+    }
 }

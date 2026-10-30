@@ -1537,7 +1537,6 @@ non-declarable = [
   "hew_coro_sleep_until_new",
   "hew_coro_state_cancel",
   "hew_coro_state_cancel_code",
-  "hew_coro_state_init_child",
   "hew_coro_state_cleanup_child",
   "hew_coro_state_set_cleanup_fault",
   "hew_coro_state_sender",

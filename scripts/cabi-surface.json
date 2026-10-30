@@ -5436,21 +5436,6 @@
         "native",
         "wasm32-wasip1"
       ],
-      "classification": "non-declarable",
-      "extent": "no-in-signature-extent",
-      "nul": "not-applicable",
-      "ownership": "unmeasured",
-      "signature": {
-        "native": "fn hew_coro_state_init_child( *mut HewCoroState, *const HewCoroState, )",
-        "wasm32-wasip1": "fn hew_coro_state_init_child( *mut HewCoroState, *const HewCoroState, )"
-      },
-      "symbol": "hew_coro_state_init_child"
-    },
-    {
-      "availability": [
-        "native",
-        "wasm32-wasip1"
-      ],
       "classification": "unclassified-stdlib",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",

@@ -166,7 +166,7 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
         args.push(fault.into());
         let child = frame
             .as_ref()
-            .map(|frame| frame.init_child(self.ctx, &self.llvm, &builder))
+            .map(|frame| frame.init_child(self.ctx, &builder))
             .transpose()?;
         if let Some(child) = child {
             args.push(child.into());
@@ -419,7 +419,7 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
         }
         arguments.push(function.get_nth_param(fault_index).unwrap().into());
         let status = if let Some(frame) = &frame {
-            let child = frame.init_child(self.ctx, &self.llvm, &builder)?;
+            let child = frame.init_child(self.ctx, &builder)?;
             arguments.push(child.into());
             let child_frame = suspend::call_value(&builder, target, &arguments, "dyn.slot.frame")?
                 .into_pointer_value();
@@ -713,7 +713,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
                     "resumable dynamic dispatch requires a resumable caller".into(),
                 )
             })?;
-            let child = frame.init_child(self.ctx, self.llvm, &self.builder)?;
+            let child = frame.init_child(self.ctx, &self.builder)?;
             arguments.push(child.into());
             Some((frame, child))
         } else {

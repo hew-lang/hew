@@ -289,16 +289,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
                     .llvm_ctx("drain next constructor wave")?;
                 self.builder.position_at_end(done);
             }
-            let finish = get_or_declare_external(
-                self.llvm,
-                "hew_coro_state_finish",
-                self.ctx
-                    .i32_type()
-                    .fn_type(&[pointer.into(), self.ctx.i32_type().into()], false),
-            )?;
-            self.builder
-                .build_call(finish, &[frame.completion_state.into(), status.into()], "")
-                .llvm_ctx("publish checked coroutine outcome")?;
+            coro::publish_outcome(self.ctx, &self.builder, frame.completion_state, status)?;
             self.builder
                 .build_unconditional_branch(frame.finish)
                 .llvm_ctx("finish checked coroutine")?;
@@ -617,7 +608,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
                 "hew_coro_state_init_construction",
             )?
         } else {
-            frame.init_child(self.ctx, self.llvm, &self.builder)?
+            frame.init_child(self.ctx, &self.builder)?
         };
         let mut args = args.to_vec();
         args.push(child.into());
@@ -738,7 +729,7 @@ pub(super) fn invoke_child<'ctx>(
     callee: FunctionValue<'ctx>,
     args: &[BasicMetadataValueEnum<'ctx>],
 ) -> CodegenResult<IntValue<'ctx>> {
-    let child = frame.init_child(ctx, llvm, builder)?;
+    let child = frame.init_child(ctx, builder)?;
     let mut args = args.to_vec();
     args.push(child.into());
     let child_frame =

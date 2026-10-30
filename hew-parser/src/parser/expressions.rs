@@ -321,7 +321,7 @@ impl Parser<'_> {
             // unary precedence so `clone a + b` is `(clone a) + b` and
             // `clone x.field` / `clone foo()` clone the whole postfix chain.
             self.advance()?; // consume `clone`
-            let operand = self.parse_expr_bp(CLONE_PREFIX_BP)?;
+            let operand = self.parse_expr_bp(UNARY_BP)?;
             let end = self.peek_span().start;
             (Expr::Clone(Box::new(operand)), start..end)
         } else if let Some(rbp) = self.peek().and_then(prefix_bp) {
@@ -427,7 +427,7 @@ impl Parser<'_> {
                     continue;
                 }
                 Some(Token::Question) => {
-                    if min_bp > 25 {
+                    if min_bp > UNARY_BP {
                         break;
                     }
                     self.advance();
@@ -440,6 +440,11 @@ impl Parser<'_> {
                     continue;
                 }
                 Some(Token::As) => {
+                    // `as` binds looser than a prefix operator and tighter
+                    // than any binary operator (§12.2).
+                    if min_bp > CAST_BP {
+                        break;
+                    }
                     self.advance();
                     let ty = self.parse_type()?;
                     let end = ty.1.end;
@@ -1596,7 +1601,7 @@ impl Parser<'_> {
                     }
                 } else {
                     Expr::ForkChild {
-                        expr: Box::new(self.parse_expr_bp(26)?),
+                        expr: Box::new(self.parse_expr_bp(TASK_PREFIX_BP)?),
                     }
                 }
             }

@@ -49,8 +49,8 @@ pub use fragments::{
 // `use super::*` (the Pratt parser in `expressions` and the clone-prefix probe
 // in `core` call them as bare names).
 pub(crate) use precedence::{
-    infix_bp, prefix_bp, token_begins_clone_operand, token_to_binop, CLONE_PREFIX_BP,
-    CONDITION_OPERAND_BP,
+    infix_bp, prefix_bp, token_begins_clone_operand, token_to_binop, CAST_BP, CONDITION_OPERAND_BP,
+    TASK_PREFIX_BP, UNARY_BP,
 };
 
 // `break`'s statement-vs-expression terminator selector lives in `statements`

@@ -19,6 +19,7 @@ members = [
   "hew-types",
   "hew-observe",
   "hew-observe-protocol",
+  "hew-symbolize",
   "hew-wasm",
   "hew-analysis",
   "hew-compile",

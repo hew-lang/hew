@@ -110,6 +110,8 @@ pub enum Command {
     Env,
     /// Inspect running actors, messages and crashes in the terminal.
     Observe(ObserveArgs),
+    /// Name the function and source line of addresses in a built binary.
+    Symbolize(crate::symbolize::SymbolizeArgs),
     /// Serve the Language Server Protocol over stdin/stdout.
     Lsp(LspArgs),
     #[command(flatten)]

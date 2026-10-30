@@ -57,6 +57,7 @@ mod run_temp;
 #[cfg(unix)]
 mod signal;
 mod source_paths;
+mod symbolize;
 mod target;
 mod test_runner;
 mod util;

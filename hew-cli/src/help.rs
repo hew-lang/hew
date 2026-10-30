@@ -75,6 +75,7 @@ const COMMAND_GROUPS: &[(&str, &[&str])] = &[
             "tool",
             "lsp",
             "observe",
+            "symbolize",
             "completions",
             "version",
             "env",

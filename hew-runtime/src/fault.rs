@@ -69,6 +69,10 @@ impl FaultDiagnostic {
     /// Inlined, with the raise as its last call on a heap record, so the
     /// optimizer can make it a tail call: a debugger stopped in
     /// `hew_fault_raise` then sees the failing Hew function as its caller.
+    #[allow(
+        clippy::inline_always,
+        reason = "the raise must stay in the caller so hew_fault_raise is a tail call"
+    )]
     #[inline(always)]
     fn raise(&self) {
         let Some(record) = &self.record else {
@@ -718,6 +722,7 @@ fn policy() -> &'static Policy {
 }
 
 /// Read the failure policy and image facts before any failure needs them.
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn configure_from_env() {
     let _ = policy();
     crate::debug_accessors::retain();
@@ -746,6 +751,10 @@ fn origin_record(code: i32) -> Box<FailureRecord> {
 ///
 /// # Safety
 /// `record` points at a record live for this call.
+#[allow(
+    clippy::inline_always,
+    reason = "the raise must stay in the caller so hew_fault_raise is a tail call"
+)]
 #[inline(always)]
 pub(crate) unsafe fn raise_record(record: *const FailureRecord) {
     // SAFETY: forwarded caller contract.
@@ -987,15 +996,14 @@ pub unsafe extern "C-unwind" fn hew_fault_trap(code: i32, fault: *mut HewFault) 
 /// [`hew_fault_report`]. Both print the one line HEW-SPEC-2026 5.8 promises,
 /// from this one formatter, so the text does not depend on which path failed.
 pub(crate) fn report_trap_code(code: i32) {
-    let record = match take_crash_cause(code) {
-        Some((record, _)) => record,
-        None => {
-            let mut record = origin_record(code);
-            crate::failure_record::name_frames(&mut record);
-            // SAFETY: the record is live for the call.
-            unsafe { raise_record(&raw const *record) };
-            *record
-        }
+    let record = if let Some((record, _)) = take_crash_cause(code) {
+        record
+    } else {
+        let mut record = origin_record(code);
+        crate::failure_record::name_frames(&mut record);
+        // SAFETY: the record is live for the call.
+        unsafe { raise_record(&raw const *record) };
+        *record
     };
     crate::test_report::note_terminal_failure(&record, None, None);
     print_record(&record, None);

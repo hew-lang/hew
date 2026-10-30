@@ -242,7 +242,7 @@ impl FailureRecord {
     /// Copy `message`, truncated to [`MESSAGE_CAPACITY`] at a character boundary.
     pub fn set_message(&mut self, message: &str) {
         let len = copy_truncated(&mut self.message, message);
-        self.message_len = u32::try_from(len).expect("message capacity fits u32");
+        self.message_len = u32::try_from(len).unwrap_or(u32::MAX);
     }
 
     /// The captured frames.
@@ -529,6 +529,10 @@ pub fn format_into(record: &FailureRecord, buffer: &mut [u8]) -> usize {
 
 /// [`format_into`] with an explicit backtrace level. `secondary` labels a
 /// cleanup failure reported after the primary one.
+#[allow(
+    clippy::too_many_lines,
+    reason = "one straight-line rendering of the record, section by section"
+)]
 pub fn format_with(
     record: &FailureRecord,
     backtrace: Backtrace,
@@ -864,7 +868,7 @@ pub fn walk_frame_pointers(
     let word = std::mem::size_of::<usize>();
     let mut count = 0;
     while count < out.len() {
-        let valid = fp % word == 0
+        let valid = fp.is_multiple_of(word)
             && fp >= stack.0
             && fp.checked_add(2 * word).is_some_and(|end| end <= stack.1);
         if !valid {
@@ -940,6 +944,10 @@ mod image {
 
     const NT_GNU_BUILD_ID: u32 = 3;
 
+    #[allow(
+        clippy::cast_possible_truncation,
+        reason = "ELF addresses and sizes of a loaded image fit the native pointer width"
+    )]
     unsafe extern "C" fn first_image(
         info: *mut libc::dl_phdr_info,
         _size: libc::size_t,
@@ -1451,8 +1459,8 @@ mod tests {
             (1u32, &b"XYZ\0"[..], &[9u8, 9][..]),
             (3, b"GNU\0", &[1, 2, 3, 4, 5]),
         ] {
-            notes.extend_from_slice(&(name.len() as u32).to_ne_bytes());
-            notes.extend_from_slice(&(desc.len() as u32).to_ne_bytes());
+            notes.extend_from_slice(&(u32::try_from(name.len()).unwrap()).to_ne_bytes());
+            notes.extend_from_slice(&(u32::try_from(desc.len()).unwrap()).to_ne_bytes());
             notes.extend_from_slice(&kind.to_ne_bytes());
             notes.extend_from_slice(name);
             notes.extend_from_slice(desc);

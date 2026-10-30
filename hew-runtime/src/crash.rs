@@ -94,12 +94,12 @@ const MAX_CRASH_LOG_SIZE: usize = 64;
 /// supervisor gave up on.
 static UNRECOVERED_CRASHES: AtomicU64 = AtomicU64::new(0);
 
-fn push_crash_to(log: &PoisonSafe<VecDeque<FailureRecord>>, record: FailureRecord) {
+fn push_crash_to(log: &PoisonSafe<VecDeque<FailureRecord>>, record: &FailureRecord) {
     log.access(|crashes| {
         while crashes.len() >= MAX_CRASH_LOG_SIZE {
             crashes.pop_front();
         }
-        crashes.push_back(record);
+        crashes.push_back(*record);
     });
 }
 
@@ -161,10 +161,15 @@ fn describe_actor(record: &mut FailureRecord, id: u64, msg_type: i32, dispatch: 
 }
 
 /// The last incarnation seen failing in each supervisor child slot.
-static INCARNATIONS: PoisonSafe<Vec<((usize, i32), (u64, u64))>> = PoisonSafe::new(Vec::new());
+/// `(supervisor, child index)` to `(actor id, spawn serial)`.
+#[cfg(not(target_arch = "wasm32"))]
+type Incarnations = Vec<((usize, i32), (u64, u64))>;
+#[cfg(not(target_arch = "wasm32"))]
+static INCARNATIONS: PoisonSafe<Incarnations> = PoisonSafe::new(Vec::new());
 
 /// Link a failing actor to the incarnation its supervisor slot held before,
 /// then remember it as that slot's latest.
+#[cfg(not(target_arch = "wasm32"))]
 fn note_incarnation(record: &mut FailureRecord, supervisor: usize, child_index: i32) {
     let slot = (supervisor, child_index);
     let current = (record.actor.id, record.actor.spawn_serial);
@@ -223,7 +228,7 @@ pub(crate) fn record_logical_crash(
         record.kind_name(),
         crate::failure_record::padded_str(&record.actor.actor_type),
     );
-    push_crash_to(&RECENT_CRASHES, record);
+    push_crash_to(&RECENT_CRASHES, &record);
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -250,7 +255,7 @@ pub(crate) fn record_injected_crash(actor_id: u64) {
     record.actor.id = actor_id;
     record.wall_time_ns = crate::failure_record::wall_time_ns();
     crate::observe::record_actor_crash(record.kind_name(), "");
-    push_crash_to(&RECENT_CRASHES, record);
+    push_crash_to(&RECENT_CRASHES, &record);
 }
 
 /// A supervisor gave up on a child: its crash is now unrecovered.
@@ -503,7 +508,7 @@ mod tests {
     fn ring_keeps_the_newest_sixty_four() {
         let log = PoisonSafe::new(VecDeque::new());
         for id in 1..=70 {
-            push_crash_to(&log, crash(id, 202));
+            push_crash_to(&log, &crash(id, 202));
         }
         assert_eq!(crash_count_of(&log), 64);
         log.access(|crashes| {
@@ -520,7 +525,7 @@ mod tests {
             log.access(|_| panic!("intentional poison"));
         }));
         assert!(log.is_poisoned_for_test());
-        push_crash_to(&log, crash(99, 7));
+        push_crash_to(&log, &crash(99, 7));
         assert_eq!(crash_count_of(&log), 1);
         log.access(|crashes| assert_eq!(crashes.back().unwrap().actor.id, 99));
     }
@@ -551,8 +556,8 @@ mod tests {
 
         // The ring still holds the predecessor's record after the restart.
         let log = PoisonSafe::new(VecDeque::new());
-        push_crash_to(&log, first);
-        push_crash_to(&log, successor);
+        push_crash_to(&log, &first);
+        push_crash_to(&log, &successor);
         log.access(|crashes| {
             assert_eq!(crashes[0].actor.id, 10);
             assert_eq!(crashes[1].actor.previous_id, 10);

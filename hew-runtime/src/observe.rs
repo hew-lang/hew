@@ -569,6 +569,7 @@ pub(crate) fn current_worker_id() -> u32 {
 }
 
 /// One worker shard's turn in progress.
+#[cfg(not(target_arch = "wasm32"))]
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct BusyWorker {
     /// Worker index plus one; zero for threads off the pool.
@@ -579,6 +580,7 @@ pub(crate) struct BusyWorker {
 }
 
 /// What every worker shard is dispatching now.
+#[cfg(not(target_arch = "wasm32"))]
 #[must_use]
 pub(crate) fn busy_workers() -> Vec<BusyWorker> {
     (0..SHARD_COUNT)

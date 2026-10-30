@@ -224,8 +224,10 @@ impl Parser<'_> {
                 };
                 self.error(format!("unexpected {found} in block"));
             }
+            // A `}` closes an enclosing construct: consume only the one the
+            // expression could not use.
             if let Some((failed, _)) = self.advance() {
-                while self.peek() == Some(&failed) {
+                while failed != Token::RightBrace && self.peek() == Some(&failed) {
                     self.advance();
                 }
             }

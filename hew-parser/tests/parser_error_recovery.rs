@@ -449,3 +449,23 @@ fn a_run_of_stray_tokens_in_a_block_is_one_error() {
         assert!(errors.len() <= 3, "{} errors: {errors:?}", errors.len());
     }
 }
+
+/// Recovery from a failed expression consumes only the `}` it failed at, so
+/// the following members report no cascade.
+#[test]
+fn recovery_keeps_the_closing_brace_of_the_block() {
+    let source = "actor A {\n    receive fn go() {\n        1 +\n    }}\n    receive fn stop() {}\n}\nfn bad( {}\n";
+    let failed_at = source.find("}}").unwrap();
+    let bad_at = source.find("fn bad").unwrap();
+    let errors = hew_parser::parse(source).errors;
+    assert!(
+        errors.iter().any(|e| e.span.start == failed_at),
+        "{errors:?}"
+    );
+    assert!(
+        errors
+            .iter()
+            .all(|e| e.span.start == failed_at || e.span.start >= bad_at),
+        "{errors:?}"
+    );
+}

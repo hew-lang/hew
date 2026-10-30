@@ -155,19 +155,47 @@ impl DeadlineTcp {
     }
 }
 
+/// The part of `configured` still left `started` ago; an error once it is gone.
+fn remaining(configured: Option<Duration>, started: Instant) -> io::Result<Option<Duration>> {
+    let Some(limit) = configured else {
+        return Ok(None);
+    };
+    let left = limit.saturating_sub(started.elapsed());
+    if left.is_zero() {
+        return Err(io::ErrorKind::TimedOut.into());
+    }
+    Ok(Some(left))
+}
+
+// A socket call that has a timeout is not restarted after a stop signal such
+// as SIGCONT: it returns `Interrupted` with nothing transferred. Retry it with
+// what is left of the same budget, so a signal neither fails the operation nor
+// stretches its clock.
 impl Read for DeadlineTcp {
     fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
-        self.socket
-            .set_read_timeout(self.timeout(self.read_timeout)?)?;
-        self.socket.read(buffer)
+        let started = Instant::now();
+        loop {
+            let budget = remaining(self.read_timeout, started)?;
+            self.socket.set_read_timeout(self.timeout(budget)?)?;
+            match self.socket.read(buffer) {
+                Err(err) if err.kind() == io::ErrorKind::Interrupted => {}
+                result => return result,
+            }
+        }
     }
 }
 
 impl Write for DeadlineTcp {
     fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
-        self.socket
-            .set_write_timeout(self.timeout(self.write_timeout)?)?;
-        self.socket.write(bytes)
+        let started = Instant::now();
+        loop {
+            let budget = remaining(self.write_timeout, started)?;
+            self.socket.set_write_timeout(self.timeout(budget)?)?;
+            match self.socket.write(bytes) {
+                Err(err) if err.kind() == io::ErrorKind::Interrupted => {}
+                result => return result,
+            }
+        }
     }
 
     fn flush(&mut self) -> io::Result<()> {
@@ -652,16 +680,6 @@ fn is_timeout_error(err: &tungstenite::Error) -> bool {
     )
 }
 
-/// A read that ended without data and may simply be retried: its deadline
-/// passed, or a signal (such as SIGCONT after a stop) interrupted the syscall.
-fn is_retryable_read_error(err: &tungstenite::Error) -> bool {
-    is_timeout_error(err)
-        || matches!(
-            err,
-            tungstenite::Error::Io(io_err) if io_err.kind() == io::ErrorKind::Interrupted
-        )
-}
-
 fn spawn_attach_reader(conn: &HewWsConn, delivery: ActorDelivery) -> Result<(), String> {
     // Hold this guard through validation, spawn, and store. Two concurrent
     // callers must not both observe an empty slot and start competing readers.
@@ -730,7 +748,7 @@ fn spawn_attach_reader(conn: &HewWsConn, delivery: ActorDelivery) -> Result<(), 
                 }
                 Ok(_) => {}
                 Err(err) => {
-                    if !is_retryable_read_error(&err) {
+                    if !is_timeout_error(&err) {
                         eprintln!("[attach-reader] read failed: {err}; exiting");
                         notify_close = true;
                         break;
@@ -793,7 +811,7 @@ fn receive(inner: &Arc<HewWsConnInner>, deadline: Option<Instant>) -> Received {
                 return Received::Closed;
             }
             Ok(Message::Ping(_) | Message::Pong(_) | Message::Frame(_)) => {}
-            Err(err) if is_retryable_read_error(&err) => {}
+            Err(err) if is_timeout_error(&err) => {}
             Err(_) if inner.closed.load(Ordering::Acquire) => return Received::Closed,
             Err(err) => return Received::Failed(err),
         }
@@ -4014,19 +4032,61 @@ mod tests {
         drop(listener);
     }
 
+    #[cfg(unix)]
     #[test]
-    fn interrupted_and_timed_out_reads_are_retried_but_other_errors_are_not() {
-        let io = |kind| tungstenite::Error::Io(io::Error::from(kind));
-        assert!(is_retryable_read_error(&io(io::ErrorKind::Interrupted)));
-        assert!(is_retryable_read_error(&io(io::ErrorKind::TimedOut)));
-        assert!(is_retryable_read_error(&io(io::ErrorKind::WouldBlock)));
-        assert!(!is_retryable_read_error(&io(
-            io::ErrorKind::ConnectionReset
-        )));
-        assert!(!is_retryable_read_error(
-            &tungstenite::Error::ConnectionClosed
-        ));
-        // A send interrupted by a signal is a failure, not a timeout.
-        assert!(!is_timeout_error(&io(io::ErrorKind::Interrupted)));
+    fn deadline_tcp_retries_a_syscall_interrupted_by_a_signal() {
+        use std::os::unix::thread::JoinHandleExt;
+
+        extern "C" fn noop(_signal: libc::c_int) {}
+        // SAFETY: installs a no-op handler without SA_RESTART, so a blocking
+        // socket call with a timeout returns EINTR when the signal arrives.
+        unsafe {
+            let mut action: libc::sigaction = std::mem::zeroed();
+            action.sa_sigaction = noop as extern "C" fn(libc::c_int) as usize;
+            action.sa_flags = 0;
+            libc::sigemptyset(&raw mut action.sa_mask);
+            assert_eq!(
+                libc::sigaction(libc::SIGUSR2, &raw const action, std::ptr::null_mut()),
+                0
+            );
+        }
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+        let client = TcpStream::connect(listener.local_addr().expect("addr")).expect("connect");
+        let (mut server, _) = listener.accept().expect("accept");
+        let mut tcp = DeadlineTcp::new(client).expect("socket timeouts");
+        tcp.set_read_timeout(Some(Duration::from_secs(10)))
+            .expect("read timeout");
+        let reader = std::thread::spawn(move || {
+            let mut byte = [0u8; 1];
+            tcp.read(&mut byte).map(|n| (n, byte[0]))
+        });
+        std::thread::sleep(Duration::from_millis(150));
+        // SAFETY: the thread is alive; it is only joined below.
+        assert_eq!(
+            unsafe { libc::pthread_kill(reader.as_pthread_t(), libc::SIGUSR2) },
+            0
+        );
+        std::thread::sleep(Duration::from_millis(150));
+        server.write_all(b"x").expect("write");
+        assert_eq!(reader.join().expect("reader").expect("read"), (1, b'x'));
+    }
+
+    #[test]
+    fn remaining_budget_shrinks_and_expires() {
+        let started = Instant::now();
+        assert_eq!(remaining(None, started).expect("unbounded"), None);
+        let left = remaining(Some(Duration::from_mins(1)), started)
+            .expect("time left")
+            .expect("bounded");
+        assert!(left <= Duration::from_mins(1) && left > Duration::from_secs(50));
+        let long_ago = Instant::now()
+            .checked_sub(Duration::from_secs(5))
+            .expect("instant");
+        assert_eq!(
+            remaining(Some(Duration::from_secs(1)), long_ago)
+                .expect_err("expired")
+                .kind(),
+            io::ErrorKind::TimedOut
+        );
     }
 }

@@ -14,8 +14,9 @@ type Reader = gimli::EndianArcSlice<gimli::RunTimeEndian>;
 
 /// A symbol file named by an executable that carries no DWARF itself.
 pub(crate) enum Sidecar {
-    /// A split ELF `.debug` file or the DWARF file of a `.dSYM` bundle.
-    Object(PathBuf),
+    /// A split ELF `.debug` file or the DWARF file of a `.dSYM` bundle, with
+    /// the CRC-32 of the whole file that `.gnu_debuglink` records.
+    Object { path: PathBuf, crc: Option<u32> },
     /// A Windows program database.
     Pdb(PathBuf),
 }
@@ -88,7 +89,10 @@ impl ObjectSymbols {
 
     pub(crate) fn sidecar(&self) -> Option<Sidecar> {
         match &self.sidecar {
-            Some(Sidecar::Object(path)) => Some(Sidecar::Object(path.clone())),
+            Some(Sidecar::Object { path, crc }) => Some(Sidecar::Object {
+                path: path.clone(),
+                crc: *crc,
+            }),
             Some(Sidecar::Pdb(path)) => Some(Sidecar::Pdb(path.clone())),
             None => None,
         }
@@ -259,12 +263,15 @@ pub(crate) fn codeview_build_id(guid: [u8; 16], age: u32) -> BuildId {
 /// The symbol file an image names, when it exists on disk.
 fn sidecar(path: &Path, file: &object::File<'_>) -> Option<Sidecar> {
     let dir = path.parent().unwrap_or_else(|| Path::new("."));
-    if let Ok(Some((name, _crc))) = file.gnu_debuglink() {
+    if let Ok(Some((name, crc))) = file.gnu_debuglink() {
         let name = std::str::from_utf8(name).ok()?;
         return [dir.join(name), dir.join(".debug").join(name)]
             .into_iter()
             .find(|candidate| candidate.is_file() && candidate != path)
-            .map(Sidecar::Object);
+            .map(|path| Sidecar::Object {
+                path,
+                crc: Some(crc),
+            });
     }
     if file.format() == object::BinaryFormat::MachO {
         let name = path.file_name()?;
@@ -273,7 +280,10 @@ fn sidecar(path: &Path, file: &object::File<'_>) -> Option<Sidecar> {
         let dwarf = PathBuf::from(bundle)
             .join("Contents/Resources/DWARF")
             .join(name);
-        return dwarf.is_file().then_some(Sidecar::Object(dwarf));
+        return dwarf.is_file().then_some(Sidecar::Object {
+            path: dwarf,
+            crc: None,
+        });
     }
     if let Ok(Some(codeview)) = file.pdb_info() {
         let recorded = Path::new(std::str::from_utf8(codeview.path()).ok()?);

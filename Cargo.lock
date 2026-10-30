@@ -2441,12 +2441,11 @@ name = "hew-symbolize"
 version = "0.10.0-rc1"
 dependencies = [
  "addr2line",
+ "crc32fast",
  "gimli",
  "object 0.40.0",
  "pdb",
  "rustc-demangle",
- "serde",
- "serde_json",
  "tempfile",
 ]
 

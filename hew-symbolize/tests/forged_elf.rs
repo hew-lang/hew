@@ -6,7 +6,7 @@ use std::path::Path;
 use gimli::write::{
     Address, AttributeValue, DwarfUnit, EndianVec, LineProgram, LineString, Sections,
 };
-use hew_symbolize::{BuildId, Error, FailureRecordJson, Frame, Location, Symbolizer};
+use hew_symbolize::{BuildId, Error, Frame, Location, Symbolizer};
 use object::write::{Object, StandardSection, Symbol, SymbolSection};
 use object::{Architecture, BinaryFormat, Endianness, SectionKind, SymbolFlags, SymbolKind};
 
@@ -22,6 +22,8 @@ struct Image<'a> {
     dwarf: bool,
     symbols: bool,
     debuglink: Option<&'a str>,
+    /// The CRC-32 the debuglink records for the file it names.
+    debuglink_crc: u32,
 }
 
 fn forge(image: Image<'_>) -> Vec<u8> {
@@ -51,26 +53,16 @@ fn forge(image: Image<'_>) -> Vec<u8> {
         }
     }
 
-    let note = object.add_section(
-        Vec::new(),
-        b".note.gnu.build-id".to_vec(),
-        SectionKind::Note,
-    );
-    let mut desc = Vec::new();
-    desc.extend_from_slice(&4u32.to_le_bytes());
-    desc.extend_from_slice(&u32::try_from(image.build_id.len()).unwrap().to_le_bytes());
-    desc.extend_from_slice(&3u32.to_le_bytes());
-    desc.extend_from_slice(b"GNU\0");
-    desc.extend_from_slice(image.build_id);
-    desc.resize(desc.len().next_multiple_of(4), 0);
-    object.set_section_data(note, desc, 4);
+    if !image.build_id.is_empty() {
+        add_build_id(&mut object, image.build_id);
+    }
 
     if let Some(name) = image.debuglink {
         let link = object.add_section(Vec::new(), b".gnu_debuglink".to_vec(), SectionKind::Other);
         let mut data = name.as_bytes().to_vec();
         data.push(0);
         data.resize(data.len().next_multiple_of(4), 0);
-        data.extend_from_slice(&0u32.to_le_bytes());
+        data.extend_from_slice(&image.debuglink_crc.to_le_bytes());
         object.set_section_data(link, data, 4);
     }
 
@@ -92,6 +84,22 @@ fn forge(image: Image<'_>) -> Vec<u8> {
             .unwrap();
     }
     object.write().unwrap()
+}
+
+fn add_build_id(object: &mut Object<'_>, build_id: &[u8]) {
+    let note = object.add_section(
+        Vec::new(),
+        b".note.gnu.build-id".to_vec(),
+        SectionKind::Note,
+    );
+    let mut desc = Vec::new();
+    desc.extend_from_slice(&4u32.to_le_bytes());
+    desc.extend_from_slice(&u32::try_from(build_id.len()).unwrap().to_le_bytes());
+    desc.extend_from_slice(&3u32.to_le_bytes());
+    desc.extend_from_slice(b"GNU\0");
+    desc.extend_from_slice(build_id);
+    desc.resize(desc.len().next_multiple_of(4), 0);
+    object.set_section_data(note, desc, 4);
 }
 
 /// One compile unit with `level3` declared under its display name and linked
@@ -191,6 +199,7 @@ const FULL: Image<'static> = Image {
     dwarf: true,
     symbols: true,
     debuglink: None,
+    debuglink_crc: 0,
 };
 
 #[test]
@@ -328,90 +337,96 @@ fn addresses_past_every_symbol_collapse() {
         .is_empty());
 }
 
-/// A record as the runtime writes it, with every frame left unnamed.
-fn unnamed_record() -> String {
-    format!(
-        concat!(
-            r#"{{"version":1,"kind":"UserPanic","code":212,"message":"level3 refuses n > 2","#,
-            r#""site":{{"file":null,"module_id":0,"line":null,"col":null,"offset":17}},"#,
-            r#""frames":[{{"pc":"{:#x}","hew_fn":null,"file":null,"line":null}},"#,
-            r#"{{"pc":"{:#x}","hew_fn":null,"file":null,"line":null}},"#,
-            r#"{{"pc":"{:#x}","hew_fn":null,"file":null,"line":null}}],"#,
-            r#""thread":"main","worker_id":null,"actor":null,"supervisor":null,"wall_time_ns":7,"#,
-            r#""build":{{"image_base":"{:#x}","build_id":"{}","has_debug_info":false,"hew_version":"0.10.0"}}}}"#
-        ),
-        LOAD_BASE + RAISE + 4,
-        LOAD_BASE + LEVEL3 + 0x11,
-        LOAD_BASE + 0x9000,
-        LOAD_BASE,
-        BuildId::new(BUILD.to_vec()),
-    )
+/// A stripped image with no build id that names `fail.debug` with `crc`.
+const UNIDENTIFIED_STRIPPED: Image<'static> = Image {
+    build_id: &[],
+    dwarf: false,
+    symbols: false,
+    debuglink: Some("fail.debug"),
+    debuglink_crc: 0,
+};
+
+fn unidentified_frame(offset: u64) -> Frame {
+    Frame {
+        build_id: None,
+        ..frame(offset, true)
+    }
 }
 
 #[test]
-fn record_without_runtime_names_is_filled_from_symbols() {
+fn split_debug_file_without_build_id_is_matched_by_debuglink_crc() {
     let dir = tempfile::tempdir().unwrap();
-    let symbols = Symbolizer::open(write(dir.path(), "fail", FULL)).unwrap();
-    let mut record = FailureRecordJson::parse(&unnamed_record()).unwrap();
-    assert_eq!(symbols.symbolize_record(&mut record).unwrap(), 2);
-
-    let [raise, level3, foreign] = &record.frames[..] else {
-        panic!("three frames");
-    };
-    assert_eq!(raise.name(), Some("hew_fault_raise"));
-    assert_eq!(raise.file, None);
-    assert_eq!(level3.name(), Some("level3"));
-    assert_eq!(
-        (level3.file.as_deref(), level3.line, level3.col),
-        (Some(SOURCE), Some(4), Some(15))
-    );
-    assert_eq!(foreign.name(), None);
-
-    // Fields the reader does not name survive the rewrite.
-    let rewritten: serde_json::Value = serde_json::from_str(&record.to_line().unwrap()).unwrap();
-    assert_eq!(rewritten["thread"], "main");
-    assert_eq!(rewritten["site"]["offset"], 17);
-    assert_eq!(rewritten["build"]["has_debug_info"], false);
-    assert_eq!(rewritten["frames"][1]["function"], "level3");
-    assert_eq!(rewritten["frames"][1]["col"], 15);
-}
-
-#[test]
-fn runtime_resolved_names_are_kept() {
-    let dir = tempfile::tempdir().unwrap();
-    let symbols = Symbolizer::open(write(dir.path(), "fail", FULL)).unwrap();
-    let line = unnamed_record().replacen(
-        r#""hew_fn":null,"file":null,"line":null},{"pc""#,
-        r#""hew_fn":"hew_fault_raise","file":"runtime.rs","line":9},{"pc""#,
-        1,
-    );
-    let line = line.replacen(
-        r#""hew_fn":null,"file":null,"line":null},{"pc""#,
-        r#""hew_fn":"main.level3","file":"/src/fail.hew","line":4},{"pc""#,
-        1,
-    );
-    let mut record = FailureRecordJson::parse(&line).unwrap();
-    let original = record.clone();
-    assert_eq!(symbols.symbolize_record(&mut record).unwrap(), 0);
-    assert_eq!(record, original);
-    assert_eq!(record.frames[1].name(), Some("main.level3"));
-}
-
-#[test]
-fn record_from_another_build_is_refused() {
-    let dir = tempfile::tempdir().unwrap();
-    let debug = write(
+    let debug = forge(Image {
+        build_id: &[],
+        ..FULL
+    });
+    std::fs::write(dir.path().join("fail.debug"), &debug).unwrap();
+    let stripped = write(
         dir.path(),
-        "other.debug",
+        "fail",
         Image {
-            build_id: OTHER_BUILD,
-            ..FULL
+            debuglink_crc: crc32fast::hash(&debug),
+            ..UNIDENTIFIED_STRIPPED
         },
     );
-    let symbols = Symbolizer::open(debug).unwrap();
-    let mut record = FailureRecordJson::parse(&unnamed_record()).unwrap();
-    assert!(matches!(
-        symbols.symbolize_record(&mut record),
-        Err(Error::BuildIdMismatch { .. })
-    ));
+    let symbols = Symbolizer::open(stripped).unwrap();
+    assert_eq!(symbols.build_id(), None);
+    assert_eq!(
+        symbols
+            .symbolize(&unidentified_frame(LEVEL3 + 0x11))
+            .unwrap(),
+        vec![level3_at_panic()]
+    );
+}
+
+#[test]
+fn split_debug_file_without_build_id_from_another_build_is_refused() {
+    let dir = tempfile::tempdir().unwrap();
+    let ours = forge(Image {
+        build_id: &[],
+        ..FULL
+    });
+    // Another build's debug file under the name the executable records.
+    let theirs = forge(Image {
+        build_id: &[],
+        symbols: false,
+        ..FULL
+    });
+    std::fs::write(dir.path().join("fail.debug"), &theirs).unwrap();
+    let stripped = write(
+        dir.path(),
+        "fail",
+        Image {
+            debuglink_crc: crc32fast::hash(&ours),
+            ..UNIDENTIFIED_STRIPPED
+        },
+    );
+    let error = Symbolizer::open(stripped).unwrap_err();
+    assert!(
+        matches!(&error, Error::ChecksumMismatch { expected, found, .. }
+            if *expected == crc32fast::hash(&ours) && *found == crc32fast::hash(&theirs)),
+        "{error}"
+    );
+}
+
+#[test]
+fn executables_naming_each_other_do_not_loop() {
+    let dir = tempfile::tempdir().unwrap();
+    for (name, other) in [("a", "b"), ("b", "a")] {
+        write(
+            dir.path(),
+            name,
+            Image {
+                dwarf: false,
+                symbols: false,
+                debuglink: Some(other),
+                ..FULL
+            },
+        );
+    }
+    let symbols = Symbolizer::open(dir.path().join("a")).unwrap();
+    assert!(symbols
+        .symbolize(&frame(LEVEL3 + 0x11, true))
+        .unwrap()
+        .is_empty());
 }

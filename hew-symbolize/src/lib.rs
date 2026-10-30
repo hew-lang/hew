@@ -23,9 +23,6 @@
 
 mod dwarf;
 mod pdb_file;
-mod record;
-
-pub use record::{BuildJson, FailureRecordJson, FrameJson, SiteJson};
 
 use std::fmt;
 use std::path::{Path, PathBuf};
@@ -125,6 +122,16 @@ pub enum Error {
         expected: BuildId,
         found: Option<BuildId>,
     },
+    /// A split debug file whose CRC-32 differs from the one the executable's
+    /// `.gnu_debuglink` records.
+    ChecksumMismatch {
+        path: PathBuf,
+        expected: u32,
+        found: u32,
+    },
+    /// A symbol file found beside an executable that records neither a build
+    /// id nor a debuglink checksum, so the pairing cannot be checked.
+    Unverifiable { path: PathBuf },
 }
 
 impl fmt::Display for Error {
@@ -148,6 +155,22 @@ impl fmt::Display for Error {
             } => write!(
                 f,
                 "{} has no build id, so it cannot be matched to build {expected}",
+                path.display()
+            ),
+            Self::ChecksumMismatch {
+                path,
+                expected,
+                found,
+            } => write!(
+                f,
+                "{} is from a different build: its CRC-32 is {found:08x}, the executable's \
+                 debuglink expects {expected:08x}",
+                path.display()
+            ),
+            Self::Unverifiable { path } => write!(
+                f,
+                "{} cannot be matched to its executable: the executable records neither a \
+                 build id nor a debuglink checksum",
                 path.display()
             ),
         }
@@ -209,28 +232,45 @@ impl Symbolizer {
         let path = path.as_ref();
         let file = dsym_dwarf_file(path)?.unwrap_or_else(|| path.to_path_buf());
         let data = read_file(&file)?;
+        if pdb_file::is_pdb(&data) {
+            return Self::from_data(path, &file, data);
+        }
+        let image = dwarf::ObjectSymbols::parse(&file, &data)?;
+        let build_id = image.build_id().cloned();
+        let source = match image.sidecar() {
+            Some(dwarf::Sidecar::Object { path: sidecar, crc }) if !image.has_dwarf() => {
+                let sidecar_data = read_file(&sidecar)?;
+                let symbols = Self::from_data(&sidecar, &sidecar, sidecar_data.clone())?;
+                check_sidecar(&symbols, build_id.as_ref(), crc, &sidecar_data)?;
+                let Source::Object(debug) = symbols.source else {
+                    return Err(format_error(&sidecar, "is not an object file"));
+                };
+                Source::Object(image.with_debug(debug))
+            }
+            Some(dwarf::Sidecar::Pdb(sidecar)) if !image.has_dwarf() => {
+                let symbols = Self::from_data(&sidecar, &sidecar, read_file(&sidecar)?)?;
+                check_sidecar(&symbols, build_id.as_ref(), None, &[])?;
+                symbols.source
+            }
+            _ => Source::Object(image),
+        };
+        Ok(Self {
+            path: path.to_path_buf(),
+            build_id,
+            source,
+        })
+    }
+
+    /// Symbols from one file alone, without following the symbol file it
+    /// names: a split debug file never names a further one, and following
+    /// its link would loop on a pair of files that name each other.
+    fn from_data(path: &Path, file: &Path, data: Vec<u8>) -> Result<Self> {
         let (build_id, source) = if pdb_file::is_pdb(&data) {
-            let symbols = pdb_file::PdbSymbols::parse(&file, data)?;
+            let symbols = pdb_file::PdbSymbols::parse(file, data)?;
             (Some(symbols.build_id().clone()), Source::Pdb(symbols))
         } else {
-            let image = dwarf::ObjectSymbols::parse(&file, &data)?;
-            let build_id = image.build_id().cloned();
-            match image.sidecar() {
-                Some(dwarf::Sidecar::Object(sidecar)) if !image.has_dwarf() => {
-                    let symbols = Self::open(&sidecar)?;
-                    check_identity(&symbols, build_id.as_ref())?;
-                    let Source::Object(debug) = symbols.source else {
-                        return Err(format_error(&sidecar, "is not an object file"));
-                    };
-                    (build_id, Source::Object(image.with_debug(debug)))
-                }
-                Some(dwarf::Sidecar::Pdb(sidecar)) if !image.has_dwarf() => {
-                    let symbols = Self::open(&sidecar)?;
-                    check_identity(&symbols, build_id.as_ref())?;
-                    (build_id, symbols.source)
-                }
-                _ => (build_id, Source::Object(image)),
-            }
+            let image = dwarf::ObjectSymbols::parse(file, &data)?;
+            (image.build_id().cloned(), Source::Object(image))
         };
         Ok(Self {
             path: path.to_path_buf(),
@@ -278,17 +318,40 @@ impl Symbolizer {
     }
 }
 
-fn check_identity(symbols: &Symbolizer, expected: Option<&BuildId>) -> Result<()> {
-    match expected {
-        Some(expected) if symbols.build_id.as_ref() != Some(expected) => {
-            Err(Error::BuildIdMismatch {
+/// Accept a symbol file found beside an executable only when it provably
+/// belongs to the same build: by build id when the executable has one,
+/// otherwise by the CRC-32 its `.gnu_debuglink` records. With neither, the
+/// pairing cannot be checked and the symbol file is refused.
+fn check_sidecar(
+    symbols: &Symbolizer,
+    image_build_id: Option<&BuildId>,
+    debuglink_crc: Option<u32>,
+    sidecar_data: &[u8],
+) -> Result<()> {
+    if let Some(expected) = image_build_id {
+        if symbols.build_id.as_ref() != Some(expected) {
+            return Err(Error::BuildIdMismatch {
                 path: symbols.path.clone(),
                 expected: expected.clone(),
                 found: symbols.build_id.clone(),
-            })
+            });
         }
-        _ => Ok(()),
+        return Ok(());
     }
+    let Some(expected) = debuglink_crc else {
+        return Err(Error::Unverifiable {
+            path: symbols.path.clone(),
+        });
+    };
+    let found = crc32fast::hash(sidecar_data);
+    if found != expected {
+        return Err(Error::ChecksumMismatch {
+            path: symbols.path.clone(),
+            expected,
+            found,
+        });
+    }
+    Ok(())
 }
 
 /// The DWARF file inside a `.dSYM` bundle, or `None` for any other path.

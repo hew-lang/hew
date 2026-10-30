@@ -324,8 +324,11 @@ fn swim_driver_quarantines_and_retires_in_its_nodes_runtime() {
         crate::cluster::MEMBER_DEAD,
         "a buried peer whose connection is published is retained"
     );
-    advance_periods_until(|| cluster.member_state(RETIRED) == -1);
-    assert!(!quarantine_is_blocked(RETIRED, Some(2), 1));
+    // Retirement removes the member before it drops the quarantine entry, so
+    // wait for both rather than reading the second the moment the first lands.
+    advance_periods_until(|| {
+        cluster.member_state(RETIRED) == -1 && !quarantine_is_blocked(RETIRED, Some(2), 1)
+    });
 
     // SAFETY: the node was started above and is freed exactly once.
     unsafe {

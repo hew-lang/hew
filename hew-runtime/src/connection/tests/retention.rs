@@ -63,6 +63,9 @@ impl Harness {
                 conn_id: i32::from(slot),
                 publication_token: token,
                 state: ClaimState::Retired,
+                origin: ConnectionOrigin::Dialled,
+                published_at: 0,
+                commit_order: 0,
             },
         );
         // SAFETY: the harness owns the live routing table.
@@ -213,6 +216,8 @@ fn reconnect_after_retirement_is_a_fresh_admission() {
             30,
             token,
             Some(&predecessor),
+            AdmissionStart::now(harness.mgr(), ConnectionOrigin::Dialled),
+            Commit::Unordered,
         )
     };
     assert!(matches!(

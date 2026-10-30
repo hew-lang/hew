@@ -1377,6 +1377,139 @@ fn build_info_record_survives_optimization_only_when_requested() {
 }
 
 #[test]
+fn scalar_push_appends_inline_and_reaches_runtime_only_to_grow_or_detach() {
+    use std::cell::Cell;
+    thread_local! {
+        static RUNTIME_PUSHES: Cell<u32> = const { Cell::new(0) };
+        static BUDGET: Cell<u32> = const { Cell::new(0) };
+        static POLLS: Cell<u32> = const { Cell::new(0) };
+        static CANCELLING: Cell<bool> = const { Cell::new(false) };
+        static VECTOR_RELEASES: Cell<u32> = const { Cell::new(0) };
+    }
+    unsafe extern "C" fn counted_push(
+        vector: *mut hew_runtime::vec::HewVec,
+        data: *const std::ffi::c_void,
+        moved: u32,
+        state: *const hew_runtime::coro_state::HewCoroState,
+    ) -> i32 {
+        RUNTIME_PUSHES.set(RUNTIME_PUSHES.get() + 1);
+        // SAFETY: forwards the generated call's live operands unchanged.
+        unsafe { hew_runtime::vec::hew_vec_push_managed(vector, data, moved, state) }
+    }
+    unsafe extern "C" fn countdown(_: *mut std::ffi::c_void, _: u32) -> *mut u32 {
+        BUDGET.with(Cell::as_ptr)
+    }
+    unsafe extern "C" fn poll(state: *mut std::ffi::c_void, budget: u32) -> i32 {
+        BUDGET.set(budget);
+        POLLS.set(POLLS.get() + 1);
+        if !CANCELLING.get() {
+            return 0;
+        }
+        // SAFETY: generated polling borrows the live invocation state; its
+        // execution owner retains the token throughout this call.
+        unsafe {
+            let token = hew_runtime::coro_state::hew_coro_state_token(state.cast());
+            hew_runtime::cancel_token::hew_cancel_token_cancel(
+                token,
+                hew_runtime::fault::HEW_FAULT_CANCELLED,
+            );
+        }
+        2
+    }
+    unsafe extern "C-unwind" fn release_vector(vector: *mut std::ffi::c_void) {
+        VECTOR_RELEASES.set(VECTOR_RELEASES.get() + 1);
+        // SAFETY: vector cleanup transfers one live owner to the walk.
+        unsafe { hew_runtime::vec::hew_vec_free_owned_walk(vector.cast()) };
+    }
+    // The append loop runs as a physical chunk; the copy appends outside it.
+    let semantic = lower_source(
+        r"
+        fn main() -> i64 {
+            var values: Vec<i64> = Vec.new();
+            for i in 0..10 { values.push(i); }
+            var copy = clone values;
+            copy.push(100);
+            var sum: i64 = 0;
+            for i in 0..values.len() { sum += values[i]; }
+            values.len() * 1000 + copy.len() * 100 + copy[10] + sum
+        }
+        ",
+    );
+    let triple = native_emission_triple();
+    let target = physical_target_for_inventory(
+        &triple,
+        &hew_mir::physical::physical_type_inventory(&semantic),
+    )
+    .unwrap();
+    let verified = hew_mir::lower_physical_module(&semantic, target).unwrap();
+    for opt in [OptLevel::O0, OptLevel::O2] {
+        let ctx = Context::create();
+        let machine = crate::llvm::target_machine_for_triple_with_opt_level(&triple, opt).unwrap();
+        let llvm = build_module(&ctx, verified.module(), "inline_scalar_push", &machine).unwrap();
+        crate::llvm::run_module_pipeline(&llvm, &machine, opt).unwrap();
+        let engine = llvm
+            .create_jit_execution_engine(inkwell::OptimizationLevel::None)
+            .unwrap();
+        super::test_runtime::bind_runtime(&llvm, &engine);
+        for (name, address) in [
+            ("hew_vec_push_managed", counted_push as *const () as usize),
+            ("hew_coro_safepoint_budget", countdown as *const () as usize),
+            ("hew_coro_safepoint", poll as *const () as usize),
+            (
+                "hew_vec_free_owned_walk",
+                release_vector as *const () as usize,
+            ),
+        ] {
+            engine.add_global_mapping(
+                &llvm
+                    .get_function(name)
+                    .unwrap_or_else(|| panic!("missing runtime boundary {name}")),
+                address,
+            );
+        }
+        type Main = unsafe extern "C" fn(*mut i64, *mut *mut hew_runtime::fault::HewFault) -> i32;
+        // SAFETY: the generated main wrapper has the physical result/fault ABI.
+        let main = unsafe { engine.get_function::<Main>("__hew_main_body").unwrap() };
+        // A spent budget inside the append loop returns to the coroutine to
+        // poll, then resumes the same vector.
+        for initial in [4000, 5] {
+            BUDGET.set(initial);
+            POLLS.set(0);
+            RUNTIME_PUSHES.set(0);
+            VECTOR_RELEASES.set(0);
+            let mut result = 0;
+            let mut fault = std::ptr::null_mut();
+            // SAFETY: output carriers remain live through the synchronous root.
+            assert_eq!(unsafe { main.call(&raw mut result, &raw mut fault) }, 0);
+            assert!(fault.is_null());
+            // The shared copy detaches; the original keeps its ten elements.
+            assert_eq!(result, 10_000 + 1_100 + 100 + 45, "{opt:?} {initial}");
+            // Growth at lengths 0, 4 and 8, then the shared buffer's detachment.
+            assert_eq!(RUNTIME_PUSHES.get(), 4, "{opt:?} {initial}");
+            assert_eq!(POLLS.get(), u32::from(initial == 5), "{opt:?} {initial}");
+            assert_eq!(VECTOR_RELEASES.get(), 2, "{opt:?} {initial}");
+        }
+        // Cancellation at a poll inside the append loop releases the partly
+        // built vector exactly once.
+        BUDGET.set(5);
+        VECTOR_RELEASES.set(0);
+        CANCELLING.set(true);
+        let mut result = -77;
+        let mut fault = std::ptr::null_mut();
+        // SAFETY: output carriers remain live through the synchronous root.
+        assert_eq!(
+            unsafe { main.call(&raw mut result, &raw mut fault) },
+            hew_runtime::fault::HEW_FAULT_CANCELLED
+        );
+        assert_eq!(result, -77);
+        assert_eq!(VECTOR_RELEASES.get(), 1, "{opt:?}");
+        // SAFETY: the cancelled call published one owned fault.
+        unsafe { hew_runtime::fault::hew_fault_drop(fault) };
+        CANCELLING.set(false);
+    }
+}
+
+#[test]
 fn scalar_and_vector_loop_chunks_preserve_the_shared_budget_across_serial_calls() {
     use std::cell::Cell;
     thread_local! {

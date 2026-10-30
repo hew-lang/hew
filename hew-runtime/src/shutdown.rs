@@ -531,7 +531,7 @@ fn drain_until_idle(timeout: Duration) -> bool {
     if timeout.is_zero() {
         return true;
     }
-    let deadline = crate::clock::RuntimeDeadline::after(timeout);
+    let mut deadline = crate::clock::RuntimeDeadline::after(timeout);
     let mut idle_polls = 0;
     while !deadline.remaining().is_zero() {
         // Sample scheduler idleness on both sides of the reactor probe. A
@@ -552,7 +552,11 @@ fn drain_until_idle(timeout: Duration) -> bool {
         if remaining.is_zero() {
             break;
         }
-        crate::driver::drain_poll(DRAIN_POLL_INTERVAL.min(remaining), idle);
+        let interval = DRAIN_POLL_INTERVAL.min(remaining);
+        crate::driver::drain_poll(interval, idle);
+        if !idle {
+            deadline.polled(interval);
+        }
     }
     // Covers the case where the deadline expired while sleeping but the runtime
     // became idle before the final observation.
@@ -569,7 +573,7 @@ pub(crate) fn drain_native_actor_cleanup(timeout: Duration) -> bool {
     runtime.shutdown_ingress.close();
     crate::timer_periodic::quiesce_periodic_timers();
     reactor::close_listener_admission();
-    let deadline = crate::clock::RuntimeDeadline::after(timeout);
+    let mut deadline = crate::clock::RuntimeDeadline::after(timeout);
     let mut requested = std::collections::HashSet::new();
     let mut completions = Vec::new();
     let mut idle_polls = 0;
@@ -631,7 +635,11 @@ pub(crate) fn drain_native_actor_cleanup(timeout: Duration) -> bool {
             shutdown_phase_store(PHASE_FAILED, Ordering::Release);
             return false;
         }
-        crate::driver::drain_poll(DRAIN_POLL_INTERVAL.min(remaining), settled);
+        let interval = DRAIN_POLL_INTERVAL.min(remaining);
+        crate::driver::drain_poll(interval, settled);
+        if !settled {
+            deadline.polled(interval);
+        }
     }
 }
 

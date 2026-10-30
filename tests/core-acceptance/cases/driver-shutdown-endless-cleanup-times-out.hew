@@ -1,0 +1,22 @@
+// Each stop hook spawns a successor, so the cleanup drain never converges.
+// Under the driver its polls still use up the window and shutdown fails.
+actor Link {
+    var n: i64 = 0;
+
+    receive fn set(k: i64) { n = k; }
+
+    #[on(stop)]
+    fn finish() {
+        if n % 100 == 0 {
+            println(f"stop {n} at {instant.now().duration_since(instant.now()).millis()}");
+        }
+        let c = spawn Link;
+        let _ = mailbox(c, on_full: .Wait).set(n + 1);
+    }
+}
+
+fn main() {
+    let p = spawn Link;
+    let _ = p.set(1);
+    println("main done");
+}

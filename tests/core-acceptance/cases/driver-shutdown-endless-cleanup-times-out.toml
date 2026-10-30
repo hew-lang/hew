@@ -1,0 +1,13 @@
+[[case]]
+id = "driver-shutdown-endless-cleanup-times-out"
+intent = "Under the deterministic driver, a cleanup drain whose stop hooks keep spawning work without moving the virtual clock still exhausts its window and fails shutdown instead of spinning."
+source = "cases/driver-shutdown-endless-cleanup-times-out.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.env]
+HEW_DETERMINISTIC = ""
+
+[case.expected]
+stdout = "main done\nstop 100 at 0\nstop 200 at 0\nstop 300 at 0\nstop 400 at 0\nstop 500 at 0\n"
+exit = 1

@@ -284,7 +284,26 @@ extern "C" void hewLLVMMarkCoroutineDestroyParts(LLVMModuleRef module) {
         // Only a ramp stores its own parts: the part's subprogram is the
         // ramp's, cloned by the split.
         DISubprogram *ramp = function.getSubprogram();
-        if (offset != layout.getPointerSize() || !ramp)
+        if (!ramp)
+          continue;
+        if (offset == 0) {
+          // The resume part runs the source, so it keeps its lines and
+          // variables, but it is not the function a person asks for by name:
+          // a breakpoint on the name belongs to the ramp alone, one location
+          // per call instead of one more per resumption.
+          if (auto *resume = dyn_cast<Function>(store->getValueOperand()))
+            if (DISubprogram *cloned = resume->getSubprogram())
+              if (cloned != ramp &&
+                  cloned->getRawFile() == ramp->getRawFile() &&
+                  cloned->getLine() == ramp->getLine() &&
+                  cloned->getRawType() == ramp->getRawType() &&
+                  !cloned->getName().ends_with(".resume"))
+                cloned->replaceOperandWith(
+                    2, MDString::get(resume->getContext(),
+                                     (cloned->getName() + ".resume").str()));
+          continue;
+        }
+        if (offset != layout.getPointerSize())
           continue;
         auto same = [&](Value *candidate) {
           auto *part = dyn_cast<Function>(candidate);

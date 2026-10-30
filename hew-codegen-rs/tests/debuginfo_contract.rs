@@ -326,6 +326,13 @@ fn subprograms_carry_display_names_and_prototyped_parameters() {
             assert_eq!(part.parameters, parameters, "`{name}` keeps its parameters");
         }
     }
+    // A name belongs to one function: a breakpoint on `fact` has one location
+    // per call. The resume part of a split body runs the same source under
+    // its own name.
+    assert_eq!(unit.named("fact").len(), 1, "`fact` names its ramp alone");
+    let resume = unit.named("fact.resume");
+    assert_eq!(resume.len(), 1, "`fact` resumes in one part");
+    assert_eq!(resume[0].parameters, ["n"], "the resume part keeps `n`");
     assert!(!unit.named("main").is_empty(), "the Hew entry is `main`");
     for part in unit.subprograms.iter().filter(|part| !part.artificial) {
         assert!(part.prototyped, "`{}` is prototyped", part.name);
@@ -411,13 +418,10 @@ fn each_line_starts_one_statement_and_prologue_ends_on_the_body() {
         // too. Both halves of a split body are exempt; every body that is not
         // split must start each line once.
         let split = subprogram.linkage_name.is_some()
-            || unit.subprograms.iter().any(|part| {
-                part.name == subprogram.name
-                    && part
-                        .linkage_name
-                        .as_deref()
-                        .is_some_and(|linkage| linkage.ends_with(".resume"))
-            });
+            || unit
+                .subprograms
+                .iter()
+                .any(|part| part.name == format!("{}.resume", subprogram.name));
         // The row at the entry address carries the scope line, which is the
         // first statement; the prologue ends on that statement's own row.
         let mut starts: BTreeMap<u64, Vec<u64>> = BTreeMap::new();

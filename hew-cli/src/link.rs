@@ -373,16 +373,30 @@ pub(crate) fn link_executable_with_hew_lib(
         return Err("linking failed".into());
     }
 
-    // ── dSYM for Darwin debug builds ──────────────────────────────────
-    // The Darwin linker leaves DWARF in the objects and writes a debug map
-    // (OSO stabs) naming them. dsymutil gathers it into a .dSYM beside the
-    // binary while the object still exists, then the stabs are stripped so a
-    // moved binary names no build paths and lldb matches the dSYM by UUID.
-    if debug && plan.debug_layout == DebugInfoLayout::DarwinDsym {
-        build_darwin_dsym(&safe_output);
+    if debug {
+        finish_linked_debug_info(plan.debug_layout, &compiler, &safe_output);
     }
 
     Ok(())
+}
+
+/// Post-link work on a debug link's DWARF.
+fn finish_linked_debug_info(layout: DebugInfoLayout, compiler: &NativeCompiler, binary: &str) {
+    match layout {
+        DebugInfoLayout::ElfDwarf => {
+            if let DwarfShrink::Refused(reason) = shrink_elf_dwarf(compiler, binary) {
+                eprintln!("warning: {reason}; debug info left as linked");
+            }
+        }
+        // ── dSYM for Darwin debug builds ──────────────────────────────
+        // The Darwin linker leaves DWARF in the objects and writes a debug
+        // map (OSO stabs) naming them. dsymutil gathers it into a .dSYM
+        // beside the binary while the object still exists, then the stabs
+        // are stripped so a moved binary names no build paths and lldb
+        // matches the dSYM by UUID.
+        DebugInfoLayout::DarwinDsym => build_darwin_dsym(binary),
+        DebugInfoLayout::WindowsPdb | DebugInfoLayout::Unsupported => {}
+    }
 }
 
 /// The linker flags that decide where a link's debug info goes.
@@ -421,6 +435,144 @@ fn add_debug_info_flags(
         }
         DebugInfoLayout::ElfDwarf | DebugInfoLayout::DarwinDsym | DebugInfoLayout::Unsupported => {}
     }
+}
+
+/// A runtime function every program's entry calls (it drops the entry's
+/// fault slot), so its line lookup shows whether a DWARF rewrite kept the
+/// runtime's line tables readable.
+const DWARF_PROBE_SYMBOL: &str = "hew_fault_drop";
+
+/// What [`shrink_elf_dwarf`] did to a linked binary.
+#[derive(Debug, PartialEq, Eq)]
+enum DwarfShrink {
+    /// The binary now carries only the DWARF of code the link kept.
+    Shrunk,
+    /// The LLVM tools are absent, or the linked binary has no line lookup
+    /// for [`DWARF_PROBE_SYMBOL`] that a rewrite could be checked against.
+    Skipped,
+    /// The rewrite failed or lost the probe's line; the binary is unchanged.
+    Refused(String),
+}
+
+/// Drop the DWARF of code the link discarded, then recompress what remains.
+///
+/// `--gc-sections` drops unused runtime code but the linker still copies its
+/// debug info; `llvm-dwarfutil --garbage-collection` removes it, roughly
+/// halving a `-g` binary. The rewrite replaces the binary only when
+/// `llvm-symbolizer` maps [`DWARF_PROBE_SYMBOL`] to a source line both before
+/// and after it.
+fn shrink_elf_dwarf(compiler: &NativeCompiler, binary: &str) -> DwarfShrink {
+    let Some(tools) = dwarf_rewrite_tools() else {
+        return DwarfShrink::Skipped;
+    };
+    if !resolves_probe_line(tools.symbolizer, std::path::Path::new(binary)) {
+        return DwarfShrink::Skipped;
+    }
+    let dir = std::path::Path::new(binary)
+        .parent()
+        .filter(|dir| !dir.as_os_str().is_empty())
+        .unwrap_or(std::path::Path::new("."));
+    let shrunk = match tempfile::NamedTempFile::new_in(dir) {
+        Ok(file) => file.into_temp_path(),
+        Err(error) => {
+            return DwarfShrink::Refused(format!("cannot create a file beside {binary}: {error}"))
+        }
+    };
+    let mut gc = std::process::Command::new(tools.dwarfutil);
+    gc.arg("--garbage-collection").arg(binary).arg(&shrunk);
+    let mut steps = vec![gc];
+    if compressed_debug_sections(compiler) {
+        let mut compress = std::process::Command::new(tools.objcopy);
+        compress.arg("--compress-debug-sections=zstd").arg(&shrunk);
+        steps.push(compress);
+    }
+    for mut step in steps {
+        let program = step.get_program().to_string_lossy().into_owned();
+        match step.output() {
+            Ok(output) if output.status.success() => {}
+            Ok(output) => {
+                return DwarfShrink::Refused(format!("{program} exited with {}", output.status));
+            }
+            Err(error) => return DwarfShrink::Refused(format!("cannot run {program}: {error}")),
+        }
+    }
+    if !resolves_probe_line(tools.symbolizer, &shrunk) {
+        return DwarfShrink::Refused(format!(
+            "{} lost the line table of {DWARF_PROBE_SYMBOL}",
+            tools.dwarfutil
+        ));
+    }
+    match shrunk.persist(binary) {
+        Ok(()) => DwarfShrink::Shrunk,
+        Err(error) => DwarfShrink::Refused(format!("cannot replace {binary}: {error}")),
+    }
+}
+
+/// The LLVM tools a DWARF rewrite needs, found once per process.
+struct DwarfRewriteTools {
+    dwarfutil: &'static str,
+    objcopy: &'static str,
+    symbolizer: &'static str,
+}
+
+fn dwarf_rewrite_tools() -> Option<&'static DwarfRewriteTools> {
+    static TOOLS: std::sync::OnceLock<Option<DwarfRewriteTools>> = std::sync::OnceLock::new();
+    TOOLS
+        .get_or_init(|| {
+            // A versioned name covers distributions that install LLVM only
+            // with a suffix; 17 is the oldest dwarfutil that reads DWARF 5.
+            const DWARFUTIL: &[&str] = &[
+                "llvm-dwarfutil",
+                "llvm-dwarfutil-22",
+                "llvm-dwarfutil-21",
+                "llvm-dwarfutil-20",
+                "llvm-dwarfutil-19",
+                "llvm-dwarfutil-18",
+                "llvm-dwarfutil-17",
+            ];
+            const OBJCOPY: &[&str] = &[
+                "llvm-objcopy",
+                "llvm-objcopy-22",
+                "llvm-objcopy-21",
+                "llvm-objcopy-20",
+                "llvm-objcopy-19",
+                "llvm-objcopy-18",
+                "llvm-objcopy-17",
+            ];
+            const SYMBOLIZER: &[&str] = &[
+                "llvm-symbolizer",
+                "llvm-symbolizer-22",
+                "llvm-symbolizer-21",
+                "llvm-symbolizer-20",
+                "llvm-symbolizer-19",
+                "llvm-symbolizer-18",
+                "llvm-symbolizer-17",
+            ];
+            let first = |names: &[&'static str]| names.iter().copied().find(|name| has_tool(name));
+            Some(DwarfRewriteTools {
+                dwarfutil: first(DWARFUTIL)?,
+                objcopy: first(OBJCOPY)?,
+                symbolizer: first(SYMBOLIZER)?,
+            })
+        })
+        .as_ref()
+}
+
+/// Whether `llvm-symbolizer` maps [`DWARF_PROBE_SYMBOL`] to a source line.
+fn resolves_probe_line(symbolizer: &str, binary: &std::path::Path) -> bool {
+    std::process::Command::new(symbolizer)
+        .args(["--no-inlines", "--functions=none", "--obj"])
+        .arg(binary)
+        .arg(DWARF_PROBE_SYMBOL)
+        .stderr(std::process::Stdio::null())
+        .output()
+        .is_ok_and(|output| {
+            // `file:line:column` on success, `??:0:0` when the lookup fails.
+            String::from_utf8_lossy(&output.stdout)
+                .lines()
+                .next()
+                .is_some_and(|line| !line.starts_with("??"))
+        })
 }
 
 /// The zstd DWARF compression flag for an ELF debug link.
@@ -1999,6 +2151,100 @@ mod tests {
         let info = debug.section_by_name(".debug_info").expect(".debug_info");
         assert_ne!(info.kind(), SectionKind::UninitializedData);
         assert!(info.size() > 0);
+    }
+
+    /// A `-g` link drops the DWARF of a function `--gc-sections` discarded,
+    /// keeps the probe's line lookup, and stays a runnable executable.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn dwarf_shrink_drops_discarded_code_and_keeps_line_lookup() {
+        use object::{Object, ObjectSection};
+        use std::os::unix::fs::PermissionsExt;
+        if dwarf_rewrite_tools().is_none() {
+            eprintln!("skipped: llvm-dwarfutil, llvm-objcopy or llvm-symbolizer not found");
+            return;
+        }
+        let dir = tempfile::tempdir().expect("tempdir");
+        let source = dir.path().join("main.c");
+        std::fs::write(
+            &source,
+            "int hew_fault_drop(int x) { return x - 1; }\n\
+             int discarded_by_the_link(int x) { return x * 7; }\n\
+             int main(void) { return hew_fault_drop(1); }\n",
+        )
+        .expect("source");
+        let binary = dir.path().join("app");
+        let target = TargetSpec::from_requested(None).expect("host target");
+        let compiler = select_native_compiler(&target).expect("C driver");
+        let status = std::process::Command::new(&compiler.program)
+            .args(["-g", "-ffunction-sections", "-Wl,--gc-sections"])
+            .arg(&source)
+            .arg("-o")
+            .arg(&binary)
+            .status()
+            .expect("link");
+        assert!(status.success(), "-g link failed");
+        let debug_names = |path: &Path| {
+            let bytes = std::fs::read(path).expect("binary");
+            let file = object::File::parse(&*bytes).expect("parse");
+            let strings = file.section_by_name(".debug_str").expect(".debug_str");
+            String::from_utf8_lossy(&strings.uncompressed_data().expect("debug strings"))
+                .into_owned()
+        };
+        assert!(debug_names(&binary).contains("discarded_by_the_link"));
+
+        assert_eq!(
+            shrink_elf_dwarf(&compiler, binary.to_str().expect("utf-8 path")),
+            DwarfShrink::Shrunk
+        );
+
+        assert!(!debug_names(&binary).contains("discarded_by_the_link"));
+        let tools = dwarf_rewrite_tools().expect("tools");
+        assert!(resolves_probe_line(tools.symbolizer, &binary));
+        let mode = std::fs::metadata(&binary)
+            .expect("metadata")
+            .permissions()
+            .mode();
+        assert_eq!(mode & 0o111, 0o111, "the rewrite must stay executable");
+        let status = std::process::Command::new(&binary).status().expect("run");
+        assert_eq!(status.code(), Some(0));
+    }
+
+    /// A binary without the probe's line lookup has nothing to check a
+    /// rewrite against, so it stays byte-for-byte as linked.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn dwarf_shrink_leaves_a_binary_without_the_probe_untouched() {
+        if dwarf_rewrite_tools().is_none() {
+            eprintln!("skipped: llvm-dwarfutil, llvm-objcopy or llvm-symbolizer not found");
+            return;
+        }
+        let dir = tempfile::tempdir().expect("tempdir");
+        let source = dir.path().join("main.c");
+        std::fs::write(
+            &source,
+            "int discarded_by_the_link(int x) { return x * 7; }\n\
+             int main(void) { return 0; }\n",
+        )
+        .expect("source");
+        let binary = dir.path().join("app");
+        let target = TargetSpec::from_requested(None).expect("host target");
+        let compiler = select_native_compiler(&target).expect("C driver");
+        let status = std::process::Command::new(&compiler.program)
+            .args(["-g", "-ffunction-sections", "-Wl,--gc-sections"])
+            .arg(&source)
+            .arg("-o")
+            .arg(&binary)
+            .status()
+            .expect("link");
+        assert!(status.success(), "-g link failed");
+        let linked = std::fs::read(&binary).expect("binary");
+
+        assert_eq!(
+            shrink_elf_dwarf(&compiler, binary.to_str().expect("utf-8 path")),
+            DwarfShrink::Skipped
+        );
+        assert_eq!(std::fs::read(&binary).expect("binary"), linked);
     }
 
     #[test]

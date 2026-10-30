@@ -405,8 +405,8 @@ mod tests {
     #[test]
     fn stack_overflow_and_guard_violations_classify_alike() {
         let bounds = StackBounds {
-            low: 0x10_0000,
-            high: 0x20_0000,
+            low: 0x7_0000_0000,
+            high: 0x7_0010_0000,
             guard: 0,
         };
         assert_eq!(
@@ -414,7 +414,7 @@ mod tests {
             FaultKind::StackOverflow
         );
         assert_eq!(
-            classify(EXCEPTION_ACCESS_VIOLATION, 0x10_0000 - 8, bounds),
+            classify(EXCEPTION_ACCESS_VIOLATION, 0x7_0000_0000 - 8, bounds),
             FaultKind::StackOverflow
         );
         assert_eq!(

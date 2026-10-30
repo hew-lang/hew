@@ -1,6 +1,6 @@
 [[case]]
 id = "supervisor-restart-backoff-default-maximum"
-intent = "An omitted backoff maximum caps the doubling delay at 30 seconds, or holds it at an initial delay longer than that."
+intent = "An omitted backoff maximum caps the doubling delay at 30 seconds, or holds it at an initial delay longer than that, while a written maximum below the initial delay is still refused."
 source = "cases/supervisor-restart-backoff-default-maximum.hew"
 suites = ["acceptance", "safety"]
 timeout_seconds = 10
@@ -9,5 +9,5 @@ timeout_seconds = 10
 HEW_DETERMINISTIC = ""
 
 [case.expected]
-stdout = "20000\n30000\n30000\n60000\n60000\n"
+stdout = "true\n20000\n30000\n30000\n60000\n60000\n"
 exit = 0

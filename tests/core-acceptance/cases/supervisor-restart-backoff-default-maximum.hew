@@ -18,7 +18,22 @@ supervisor Long {
     child worker: Worker;
 }
 
+fn refused(maximum: duration) -> bool {
+    scope {
+        let _ = restart.exponential(initial: 1ms, maximum: maximum);
+        false
+    } handle failure {
+        match failure {
+            .Fault { message } => true,
+            .Deadline { message } => panic(message),
+        }
+    }
+}
+
 fn main() {
+    // A written maximum is checked as written, including a computed zero.
+    println(refused(0ns) && refused(0ns - 2ns) && !refused(1ms));
+
     let short = spawn Short;
     for _ in 0..3 {
         let started = instant.now();

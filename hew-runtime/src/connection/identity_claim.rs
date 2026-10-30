@@ -328,10 +328,13 @@ pub(super) fn reserve_identity_claim(
             }
         }
         // Same-credential reconnect, a higher durable session, or the winning
-        // side of a crossing dial. The connection replaced keeps carrying the
-        // peer's traffic until this reservation settles.
+        // side of a crossing dial. A connection replaced at the same session
+        // keeps carrying the peer's traffic until this reservation settles; one
+        // from an earlier session belongs to an incarnation that has gone.
         let claim = LiveClaim {
-            superseding: existing.carrier(),
+            superseding: existing
+                .carrier()
+                .filter(|_| existing.session_incarnation == session_incarnation),
             ..claim
         };
         let superseded = map.insert(node_id, claim);

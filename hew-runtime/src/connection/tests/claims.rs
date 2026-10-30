@@ -730,3 +730,69 @@ fn initiator_keeps_the_last_responder_commit() {
     assert_eq!((kept.conn_id, kept.commit_order), (300, 30));
     free_claim_test_mgr(mgr_ptr, transport);
 }
+
+/// A reservation from a peer that restarted at a later session takes all
+/// authority from the earlier session's connection at once, inbound and
+/// outbound alike: that incarnation has gone, so it carries nothing while the
+/// new connection settles.
+#[test]
+fn reservation_for_a_later_session_takes_the_old_connection_authority_at_once() {
+    let ops = Box::new(crate::transport::HewTransportOps {
+        connect: None,
+        listen: None,
+        accept: None,
+        send: None,
+        recv: None,
+        close_conn: None,
+        destroy: None,
+    });
+    let transport_ptr = Box::into_raw(Box::new(HewTransport {
+        ops: &raw const *ops,
+        r#impl: std::ptr::null_mut(),
+    }));
+    let cfg = crate::cluster::ClusterConfig {
+        local_node_id: 1,
+        ..crate::cluster::ClusterConfig::default()
+    };
+    // SAFETY: cfg valid for the call.
+    let cluster = unsafe { crate::cluster::hew_cluster_new(&raw const cfg) };
+    // SAFETY: test-owned pointers remain valid until the explicit cleanup.
+    unsafe {
+        let mgr = hew_connmgr_new(transport_ptr, None, std::ptr::null_mut(), cluster, 1);
+        let mut old = test_actor(20);
+        old.peer_node_id = 3;
+        old.posture = crate::peer_binding::Posture::Strict;
+        old.state.store(CONN_STATE_ACTIVE, Ordering::Release);
+        (&*mgr).connections.access(|conns| conns.push(old));
+        let old_token = test_publish_claim(&*mgr, 3, 20);
+        let identity = test_node_identity(3);
+        // A restarted peer (session 2) reserves conn 21.
+        let new_token = next_publication_token(&*mgr).unwrap();
+        let reserved = reserve_identity_claim(
+            &*mgr,
+            identity,
+            3,
+            2,
+            None,
+            21,
+            new_token,
+            None,
+            TEST_ADMISSION,
+            Commit::Responder,
+        );
+        assert!(matches!(reserved, ClaimReservation::Reserved { .. }));
+        let inbound = authenticated_peer_node_id_for_conn(&*mgr, 20);
+        let inbound_wait = wait_authenticated_peer_node_id_for_conn(&*mgr, 20, old_token);
+        let outbound = claim_send(&*mgr, 20, None).is_some();
+        let by_identity = claim_send_by_identity(&*mgr, identity, None).is_some();
+        assert_eq!(
+            (inbound, inbound_wait, outbound, by_identity),
+            (0, 0, false, false),
+            "the restarted peer's earlier connection carries nothing"
+        );
+        hew_connmgr_free(mgr);
+        crate::cluster::hew_cluster_free(cluster);
+        drop(Box::from_raw(transport_ptr));
+    }
+    drop(ops);
+}

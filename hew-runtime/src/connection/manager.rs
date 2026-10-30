@@ -375,6 +375,25 @@ pub unsafe extern "C" fn hew_connmgr_configure_reconnect(
         None
     };
 
+    apply_reconnect(
+        mgr,
+        |conn| conn.conn_id == conn_id,
+        target_owned,
+        max_retries,
+        u16::try_from(expected_node_id).ok().filter(|&v| v != 0),
+    )
+}
+
+/// Set or clear reconnect on the one installed connection `selects` picks;
+/// `target_addr` is `None` to disable it. Returns 0, or -1 when no connection
+/// is selected.
+pub(super) fn apply_reconnect(
+    mgr: &HewConnMgr,
+    selects: impl Fn(&super::ConnectionActor) -> bool,
+    target_addr: Option<String>,
+    max_retries: c_int,
+    expected_node_id: Option<u16>,
+) -> c_int {
     let retries = if max_retries > 0 {
         normalize_max_retries(max_retries)
     } else {
@@ -382,26 +401,21 @@ pub unsafe extern "C" fn hew_connmgr_configure_reconnect(
     };
 
     mgr.connections.access(|conns| {
-        let Some(conn) = conns.iter_mut().find(|c| c.conn_id == conn_id) else {
-            set_last_error(format!(
-                "hew_connmgr_configure_reconnect: connection {conn_id} not found"
-            ));
+        let Some(conn) = conns.iter_mut().find(|c| selects(c)) else {
+            set_last_error("hew_connmgr_configure_reconnect: connection not found");
             return -1;
         };
-        if enabled == 0
-            || mgr.seed_targets.access(|seeds| {
-                seeds
-                    .iter()
-                    .any(|seed| Some(&seed.target_addr) == target_owned.as_ref())
-            })
-        {
+        let Some(target_addr) = target_addr.filter(|target| {
+            !mgr.seed_targets
+                .access(|seeds| seeds.iter().any(|seed| &seed.target_addr == target))
+        }) else {
             conn.reconnect = None;
             return 0;
-        }
+        };
         conn.reconnect = Some(ReconnectSettings {
-            target_addr: target_owned.clone().unwrap_or_default(),
+            target_addr,
             max_retries: retries,
-            expected_node_id: u16::try_from(expected_node_id).ok().filter(|&v| v != 0),
+            expected_node_id,
         });
         0
     })

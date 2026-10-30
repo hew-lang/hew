@@ -223,6 +223,9 @@ pub struct LiveClaim {
     /// The manager's admission order when this claim published; zero until it
     /// does. Admissions that began at or before it overlapped this one.
     pub published_at: u64,
+    /// The order the responder committed this connection in, under the
+    /// responder-commit step; zero when the pair did not negotiate it.
+    pub commit_order: u64,
 }
 
 /// Which end opened a claimed connection.

@@ -10,14 +10,75 @@ use crate::node_identity::NodeId;
 use crate::set_last_error;
 use crate::transport::HewTransport;
 
+use super::channel::ChannelProtection;
 use super::{
     HewHandshake, FNV1A32_OFFSET_BASIS, FNV1A32_PRIME, HEW_FEATURE_SUPPORTS_GOSSIP,
     MAX_HANDSHAKE_BYTES, NOISE_STATIC_PUBKEY_LEN,
 };
-use super::{HEW_FEATURE_SUPPORTS_ENCRYPTION, NOISE_MAX_MSG_SIZE, NOISE_PATTERN};
+use super::{
+    HEW_FEATURE_RESPONDER_COMMIT, HEW_FEATURE_SUPPORTS_ENCRYPTION, NOISE_MAX_MSG_SIZE,
+    NOISE_PATTERN,
+};
 
 fn local_feature_flags() -> u32 {
-    HEW_FEATURE_SUPPORTS_ENCRYPTION | HEW_FEATURE_SUPPORTS_GOSSIP
+    HEW_FEATURE_SUPPORTS_ENCRYPTION | HEW_FEATURE_SUPPORTS_GOSSIP | HEW_FEATURE_RESPONDER_COMMIT
+}
+
+/// Whether both records advertise the responder-commit step. The records are
+/// bound into the channel's handshake transcript, so neither end can be talked
+/// out of it.
+pub(super) fn negotiates_responder_commit(local: &HewHandshake, peer: &HewHandshake) -> bool {
+    local.feature_flags & peer.feature_flags & HEW_FEATURE_RESPONDER_COMMIT != 0
+}
+
+/// Send the responder's commit: the first frame on the protected channel,
+/// carrying the order in which the responder reserved this connection.
+///
+/// # Safety
+///
+/// `transport` is live and `conn_id` names the connection `channel` protects.
+pub(super) unsafe fn send_commit(
+    channel: &ChannelProtection,
+    transport: *mut HewTransport,
+    conn_id: c_int,
+    order: u64,
+) -> bool {
+    // SAFETY: forwarded caller contract.
+    unsafe { channel.send_prepared(transport, conn_id, || Some(order.to_be_bytes())) }.is_ok()
+}
+
+/// Receive the responder's commit, or `None` when the responder closed the
+/// connection instead (it yielded or refused) or sent anything else.
+///
+/// # Safety
+///
+/// `transport` is live and `conn_id` names the connection `channel` protects;
+/// no reader has started on it.
+pub(super) unsafe fn recv_commit(
+    channel: &ChannelProtection,
+    transport: *mut HewTransport,
+    conn_id: c_int,
+) -> Option<u64> {
+    // SAFETY: forwarded caller contract.
+    let transport = unsafe { transport.as_ref() }?;
+    // SAFETY: a live transport owns its operations table.
+    let recv = unsafe { transport.ops.as_ref() }?.recv?;
+    let mut message = vec![0u8; NOISE_MAX_MSG_SIZE];
+    // SAFETY: the buffer is writable for its advertised capacity.
+    let length = unsafe {
+        recv(
+            transport.r#impl,
+            conn_id,
+            message.as_mut_ptr().cast(),
+            message.len(),
+        )
+    };
+    let length = usize::try_from(length)
+        .ok()
+        .filter(|&length| length > 0 && length <= message.len())?;
+    let opened = channel.open(&mut message[..length]).ok()?;
+    let order = u64::from_be_bytes(message[..opened].try_into().ok()?);
+    (order != 0).then_some(order)
 }
 
 pub(crate) fn supports_gossip(flags: u32) -> bool {
@@ -320,4 +381,39 @@ pub(super) unsafe fn upgrade_noise(
     remote_pubkey.copy_from_slice(remote_static);
     let transport = handshake.into_stateless_transport_mode().ok()?;
     Some((transport, remote_pubkey))
+}
+
+/// Managers that withhold the responder-commit bit, so a test can pair a node
+/// with one that predates the step.
+#[cfg(test)]
+pub(crate) mod withheld_commit {
+    use std::collections::HashSet;
+    use std::sync::{LazyLock, Mutex};
+
+    use crate::util::MutexExt;
+
+    use super::super::HewConnMgr;
+
+    static WITHHELD: LazyLock<Mutex<HashSet<usize>>> = LazyLock::new(Mutex::default);
+
+    /// Withholds the bit until dropped, so a later manager at a reused
+    /// address advertises it again.
+    pub(crate) struct Withheld(usize);
+
+    pub(crate) fn withhold(mgr: *const HewConnMgr) -> Withheld {
+        WITHHELD.lock_or_recover().insert(mgr as usize);
+        Withheld(mgr as usize)
+    }
+
+    impl Drop for Withheld {
+        fn drop(&mut self) {
+            WITHHELD.lock_or_recover().remove(&self.0);
+        }
+    }
+
+    pub(in crate::connection) fn applies(mgr: &HewConnMgr) -> bool {
+        WITHHELD
+            .lock_or_recover()
+            .contains(&(std::ptr::from_ref(mgr) as usize))
+    }
 }

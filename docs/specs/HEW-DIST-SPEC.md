@@ -305,6 +305,53 @@ An equal-session reconnect is valid only for a live, non-buried member. A
 strictly higher durable session can replace an earlier connection and readmit a
 buried member.
 
+### 4.1 One connection per peer
+
+Two nodes can dial each other at once. Both ends MUST keep the same connection
+and close the other, and neither may lose the other's member while they switch.
+The node whose `NodeId` sorts lower (bytewise) is the pair's *initiator*, as it
+is for Noise; the other is the *responder*. In a crossing, the connection the
+initiator dialled is kept.
+
+The responder settles a same-session admission against the peer's published
+connection by this crossing rule: if the two were opened from opposite ends
+and their admissions overlapped on the responder, the initiator's dial is
+kept; otherwise the newer connection replaces the older, so a redial still
+replaces a half-open connection. A relayed circuit is not a crossing. Only one
+end applies the rule: each end's overlap is measured on its own clock, and two
+ends measuring separately can each keep the connection the other closed.
+
+Feature bit `4` (responder commit) settles the pair through the responder. When
+both records set it:
+
+1. Once the channel is established and the peer authenticated, the responder
+   reserves the peer's claim by the crossing rule and §4. If it yields or
+   refuses, it closes the connection without sending a frame. Otherwise its first channel
+   frame is its commit: an 8-byte big-endian, non-zero commit order that
+   increases with each reservation the responder makes. It then publishes
+   without waiting on the initiator.
+2. The initiator reserves nothing until the commit arrives, and closes the
+   connection if it does not. Of its same-session connections to the
+   responder, it keeps the one with the highest commit order, in whatever order
+   the commits arrive; a lower one yields. Once its claim has moved to the
+   connection, its first channel frame echoes the commit order. It then
+   publishes and closes the connection it superseded.
+3. The responder closes a connection that a committed one superseded only when
+   the echo arrives on the winner, or when the winner closes first. Any other
+   first frame from the initiator ends the connection.
+
+So the initiator switches only after the responder has, and the responder
+closes the loser only after the initiator has switched. The step costs half a
+round trip on the initiator's admission.
+
+When either record lacks bit `4`, as with a node that predates it during a
+rolling upgrade, neither end applies the crossing rule: each keeps the newer
+same-session connection and closes the one it superseded when it publishes, as
+a node without the step does. Two dials that cross can then leave the ends
+keeping different connections until a redial. The records are bound into the
+channel transcript, so the bit cannot be removed without failing the
+handshake. Feature bits `2` and `3` are reserved.
+
 ## 5. Wire framing and schema
 
 Transport framing carries CBOR wire frames defined by

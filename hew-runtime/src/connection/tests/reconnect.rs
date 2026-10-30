@@ -313,6 +313,7 @@ fn stale_reconnect_cannot_replace_newer_publication() {
             101,
             Some(&plan.predecessor),
             TEST_ADMISSION,
+            Commit::Unordered,
         ) else {
             panic!("current retired predecessor must permit reconnect");
         };
@@ -358,6 +359,7 @@ fn stale_reconnect_cannot_replace_newer_publication() {
             &publication.sync,
             &publication.removed,
             superseded,
+            None,
         ));
         assert_eq!(
             reconnect_attempt(mgr_ptr, &plan, 10, 2),
@@ -377,6 +379,7 @@ fn stale_reconnect_cannot_replace_newer_publication() {
                 103,
                 Some(&plan.predecessor),
                 TEST_ADMISSION,
+                Commit::Unordered,
             ),
             ClaimReservation::Rejected(_)
         ));
@@ -522,6 +525,7 @@ fn configured_seed_follows_successor_but_never_arms_transient_reconnect() {
                 state: ClaimState::Published,
                 origin: ConnectionOrigin::Dialled,
                 published_at: 0,
+                commit_order: 0,
             },
         );
         assert!(super::super::reconnect::seed_predecessor(manager, &old).is_none());

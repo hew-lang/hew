@@ -16,7 +16,7 @@ use crate::transport::HEW_CONN_INVALID;
 use super::admission::{add_connection, Admitted};
 use super::handshake::close_transport_conn;
 use super::identity_claim::AdmissionStart;
-use super::manager::{hew_connmgr_configure_reconnect, hew_connmgr_expect_peer};
+use super::manager::{apply_reconnect, hew_connmgr_expect_peer};
 use super::{
     HewConnMgr, ReconnectOwner, ReconnectPlan, SendConnMgr, RECONNECT_DEFAULT_MAX_RETRIES,
     RECONNECT_INITIAL_BACKOFF_MS, RECONNECT_JITTER_MAX_PERCENT, RECONNECT_JITTER_MIN_PERCENT,
@@ -307,25 +307,114 @@ fn reconnect_attempt_inner(
             ReconnectAttemptOutcome::Cancelled
         };
     };
-    if let Admitted::Yielded(_) = admitted {
+    let owner = match admitted {
+        Admitted::Installed(owner) => owner,
         // The peer's own dial won a crossing: it owns the connection and its
         // redial, and this worker's dial is already closed.
-        return ReconnectAttemptOutcome::Cancelled;
-    }
-
-    let retries = i32::try_from(plan.max_retries).unwrap_or(i32::MAX);
-    // SAFETY: manager and conn_id are valid after successful add.
-    let _ = unsafe {
-        hew_connmgr_configure_reconnect(
-            mgr_ptr,
-            new_conn_id,
-            target_addr.as_ptr(),
-            1,
-            retries,
-            plan.expected_node_id.map_or(0, i32::from),
-        )
+        Admitted::Yielded(_) => return ReconnectAttemptOutcome::Cancelled,
     };
+    let _ = configure_owner_reconnect(
+        mgr,
+        &owner,
+        &plan.target_addr,
+        i32::try_from(plan.max_retries).unwrap_or(i32::MAX),
+        plan.expected_node_id,
+    );
     ReconnectAttemptOutcome::Installed
+}
+
+/// Arm reconnect on the exact admitted connection `owner` names. Admission may
+/// close the connection it was handed (a crossing dial that yielded) and the
+/// transport may then reissue that id, so the id never names the admitted
+/// connection once admission returns.
+fn configure_owner_reconnect(
+    mgr: &HewConnMgr,
+    owner: &ReconnectOwner,
+    target_addr: &str,
+    max_retries: c_int,
+    expected_node_id: Option<u16>,
+) -> c_int {
+    apply_reconnect(
+        mgr,
+        |conn| {
+            conn.peer_identity == Some(owner.node_id)
+                && conn.publication_token == owner.publication_token
+        },
+        Some(target_addr.to_owned()),
+        max_retries,
+        expected_node_id,
+    )
+}
+
+/// Admit a connection the node API dialled to `target_addr` and arm reconnect
+/// on the connection that admission kept: this one, or the peer's crossing
+/// dial it yielded to. Returns 0 once the peer is connected, or -1 when the
+/// dial was refused; admission owns `conn_id` on every path.
+///
+/// # Safety
+///
+/// `mgr` is a live manager and `conn_id` a connection its transport opened.
+pub(crate) unsafe fn add_dialled_connection(
+    mgr: *mut HewConnMgr,
+    conn_id: c_int,
+    target_addr: &CStr,
+    expected_node_id: Option<u16>,
+) -> c_int {
+    // SAFETY: the caller provides a live manager.
+    let Some(manager) = (unsafe { mgr.as_ref() }) else {
+        set_last_error("hew_connmgr_add: manager is null");
+        return -1;
+    };
+    let admission = AdmissionStart::now(manager, ConnectionOrigin::Dialled);
+    // SAFETY: the caller provides a live manager and an owned connection.
+    let Some(admitted) = (unsafe { add_connection(mgr, conn_id, None, admission) }) else {
+        return -1;
+    };
+    #[cfg(test)]
+    super::admission_script::reach(
+        manager,
+        super::admission_script::Point::Admitted(conn_id),
+        ConnectionOrigin::Dialled,
+    );
+    let _ = configure_owner_reconnect(
+        manager,
+        &admitted.owner(),
+        &target_addr.to_string_lossy(),
+        0,
+        expected_node_id,
+    );
+    0
+}
+
+/// Install a stand-in connection under `conn_id`, as a transport that reissued
+/// a closed connection's id would.
+#[cfg(test)]
+pub(crate) fn install_stand_in_for_test(mgr: &HewConnMgr, conn_id: c_int) {
+    let channel = Arc::new(super::channel::ChannelProtection::test_noise_pair().0);
+    let mut actor = super::ConnectionActor::new(conn_id, channel);
+    actor.transport = super::ConnectionTransport::borrowed(std::ptr::null_mut());
+    mgr.connections
+        .access(|connections| connections.push(actor));
+}
+
+/// Each installed connection's id, publication token and reconnect target.
+#[cfg(test)]
+pub(crate) fn reconnect_targets_for_test(mgr: &HewConnMgr) -> Vec<(c_int, u64, Option<String>)> {
+    mgr.connections.access(|connections| {
+        connections
+            .iter()
+            .map(|connection| {
+                (
+                    connection.conn_id,
+                    connection.publication_token,
+                    connection
+                        .reconnect
+                        .as_ref()
+                        .map(|reconnect| reconnect.target_addr.clone()),
+                )
+            })
+            .collect()
+    })
 }
 
 #[expect(

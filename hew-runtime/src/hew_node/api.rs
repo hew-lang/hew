@@ -26,7 +26,8 @@ use std::sync::{Arc, Mutex};
 unsafe fn parse_connect_target(addr: *const c_char) -> Option<(Option<u16>, CString)> {
     // SAFETY: caller validates non-null and C-string.
     let c_addr = unsafe { CStr::from_ptr(addr) };
-    let addr_text = c_addr.to_string_lossy();
+    // A reconnect re-dials this text, so it must be UTF-8.
+    let addr_text = c_addr.to_str().ok()?;
     if addr_text.contains('@') {
         return None;
     }
@@ -133,9 +134,18 @@ unsafe fn node_connect_inner(node: *mut HewNode, addr: *const c_char) -> c_int {
         }
     }
 
-    // SAFETY: conn_mgr pointer is valid and owned by this node.
-    if unsafe { connection::hew_connmgr_add(node.conn_mgr, conn_id) } != 0 {
-        // hew_connmgr_add owns conn_id cleanup on failure; no close needed here.
+    // SAFETY: conn_mgr pointer is valid and owned by this node; admission owns
+    // conn_id from here and arms reconnect on the connection it keeps.
+    if unsafe {
+        connection::add_dialled_connection(
+            node.conn_mgr,
+            conn_id,
+            &target_addr,
+            expected_peer_node_id,
+        )
+    } != 0
+    {
+        // Admission closed conn_id on failure; no close needed here.
         let detail = {
             let error = crate::hew_last_error();
             if error.is_null() {
@@ -155,17 +165,6 @@ unsafe fn node_connect_inner(node: *mut HewNode, addr: *const c_char) -> c_int {
         ));
         return NodeFailure::Refused as c_int;
     }
-    // SAFETY: conn_mgr and conn_id are valid on successful add.
-    let _ = unsafe {
-        connection::hew_connmgr_configure_reconnect(
-            node.conn_mgr,
-            conn_id,
-            target_addr.as_ptr(),
-            1,
-            0,
-            expected_peer_node_id.map_or(0, i32::from),
-        )
-    };
 
     0
 }

@@ -16,11 +16,13 @@ use super::channel::{
     channel_kind, establish as establish_channel, local_channel_key, ChannelRefusal,
 };
 use super::handshake::{
-    close_transport_conn, handshake_exchange, local_handshake, peer_identity_compatible,
+    close_transport_conn, handshake_exchange, local_handshake, negotiates_responder_commit,
+    peer_identity_compatible, recv_commit, send_commit,
 };
 use super::identity_claim::{
-    abort_identity_claim, publish_identity_connection_established, reserve_identity_claim,
-    retire_identity_connection_publication, AdmissionStart, ClaimReservation,
+    abort_identity_claim, publish_identity_connection_established, replacing_owner,
+    reserve_identity_claim, retire_identity_connection_publication, AdmissionStart,
+    ClaimReservation, Commit,
 };
 use super::reader::reader_loop;
 use super::reconnect::{next_publication_token, track_worker};
@@ -273,6 +275,10 @@ pub(super) unsafe fn add_connection_on_transport(
     if let Some(admission) = mgr.auth.admission() {
         local_hs.enrollment = admission.bundle().to_vec();
     }
+    #[cfg(test)]
+    if super::handshake::withheld_commit::applies(mgr) {
+        local_hs.feature_flags &= !super::HEW_FEATURE_RESPONDER_COMMIT;
+    }
     // SAFETY: transport_ptr and conn_id are valid per caller contract; local_hs is stack-local.
     let Some(peer_hs) = (unsafe { handshake_exchange(transport_ptr, conn_id, &local_hs) }) else {
         // SAFETY: transport_ptr and conn_id are valid per caller contract of hew_connmgr_add.
@@ -377,6 +383,44 @@ pub(super) unsafe fn add_connection_on_transport(
         ));
         return None;
     }
+    #[cfg(test)]
+    admission_script::reach(
+        mgr,
+        admission_script::Point::Authenticated,
+        admission.origin,
+    );
+    // Under the responder-commit step the initiator settles nothing until the
+    // responder has reserved this connection and said so; the responder never
+    // waits on the initiator, so neither end can stall the other. A responder
+    // that yields or refuses closes the connection instead.
+    let commit = match Commit::negotiate(
+        negotiates_responder_commit(&local_hs, &peer_hs),
+        local_identity,
+        peer_hs.node_id,
+    ) {
+        Commit::Initiator(_) => {
+            #[cfg(test)]
+            admission_script::reach(
+                mgr,
+                admission_script::Point::AwaitingCommit,
+                admission.origin,
+            );
+            // SAFETY: admission owns the connection and no reader has started.
+            let Some(order) = (unsafe { recv_commit(&protection, transport_ptr, conn_id) }) else {
+                // SAFETY: admission still owns this unpublished transport handle.
+                unsafe { close_transport_conn(transport_ptr, conn_id) };
+                set_last_error(format!(
+                    "hew_connmgr_add: peer {} did not commit conn {conn_id}",
+                    peer_hs.node_id
+                ));
+                return None;
+            };
+            #[cfg(test)]
+            admission_script::reach(mgr, admission_script::Point::Committed, admission.origin);
+            Commit::Initiator(order)
+        }
+        commit => commit,
+    };
     let requested_route_slot = if cfg!(test) {
         mgr.auth
             .route_slot_for_credential(&peer_credential)
@@ -394,8 +438,6 @@ pub(super) unsafe fn add_connection_on_transport(
         ));
         return None;
     };
-    #[cfg(test)]
-    crossing_fence::arrive(mgr);
     let superseded_claim: Option<LiveClaim> = match reserve_identity_claim(
         mgr,
         peer_hs.node_id,
@@ -406,6 +448,7 @@ pub(super) unsafe fn add_connection_on_transport(
         claim_token,
         predecessor,
         admission,
+        commit,
     ) {
         ClaimReservation::Reserved { superseded } => superseded,
         ClaimReservation::Yielded(winner) => {
@@ -421,14 +464,14 @@ pub(super) unsafe fn add_connection_on_transport(
         }
     };
 
-    let reserved_route_slot = mgr
+    let reserved = mgr
         .claims
         .0
         .lock_or_recover()
         .get(&peer_hs.node_id)
         .filter(|claim| claim.conn_id == conn_id && claim.publication_token == claim_token)
-        .map(|claim| claim.route_slot);
-    let Some(peer_route_slot) = reserved_route_slot else {
+        .map(|claim| (claim.route_slot, claim.commit_order));
+    let Some((peer_route_slot, commit_order)) = reserved else {
         abort_identity_claim(mgr, peer_hs.node_id, conn_id, claim_token, superseded_claim);
         // SAFETY: this failed admission still owns its unpublished handle.
         unsafe { close_transport_conn(transport_ptr, conn_id) };
@@ -440,6 +483,24 @@ pub(super) unsafe fn add_connection_on_transport(
         // SAFETY: admission owns the unpublished transport handle.
         unsafe { close_transport_conn(transport_ptr, conn_id) };
         set_last_error("hew_connmgr_add: peer route slot does not match selected target");
+        return None;
+    }
+    // The reservation can no longer abort before publication. The responder
+    // commits it so the initiator settles on the same connection; the
+    // initiator echoes the order once its own claim has moved to it, which
+    // releases the responder to close the connection it superseded. Either is
+    // the channel's first frame from its end, ahead of anything the reader or
+    // a publication sends.
+    if commit != Commit::Unordered
+        // SAFETY: admission owns the connection and no reader has started.
+        && !unsafe { send_commit(&protection, transport_ptr, conn_id, commit_order) }
+    {
+        abort_identity_claim(mgr, peer_hs.node_id, conn_id, claim_token, superseded_claim);
+        // SAFETY: admission owns the unpublished transport handle.
+        unsafe { close_transport_conn(transport_ptr, conn_id) };
+        set_last_error(format!(
+            "hew_connmgr_add: could not commit conn {conn_id} to the peer"
+        ));
         return None;
     }
 
@@ -479,6 +540,10 @@ pub(super) unsafe fn add_connection_on_transport(
     let peer_feature_flags = actor.peer_feature_flags;
     let reader_lifecycle_guard = mgr.reader_lifecycle.register();
     let channel = Arc::clone(&actor.channel);
+    let deferred_loser = (commit == Commit::Responder).then(|| Arc::clone(&actor.deferred_loser));
+    let confirm = deferred_loser
+        .as_ref()
+        .map(|deferred| (commit_order, Arc::clone(deferred)));
 
     let handle = thread::Builder::new()
         .name(format!("hew-conn-{conn_id}"))
@@ -494,6 +559,7 @@ pub(super) unsafe fn add_connection_on_transport(
                 router,
                 peer_feature_flags,
                 channel,
+                confirm,
             );
         });
 
@@ -544,8 +610,18 @@ pub(super) unsafe fn add_connection_on_transport(
         &publication_sync,
         &publication_removed,
         superseded_claim,
+        deferred_loser.as_deref(),
     ) {
-        return None;
+        // A same-session connection that took the claim while this one was
+        // publishing keeps the peer connected: report it, as a crossing dial
+        // that lost at reservation would.
+        return replacing_owner(
+            mgr,
+            peer_hs.node_id,
+            peer_hs.session_incarnation,
+            publication_token,
+        )
+        .map(Admitted::Yielded);
     }
 
     Some(Admitted::Installed(ReconnectOwner {
@@ -819,6 +895,7 @@ pub(super) fn remove_connection(
         mgr.pending_registry_flush_count
             .store(map.len(), Ordering::Release);
     });
+    let deferred_loser = Arc::clone(&conn.deferred_loser);
     // Drop joins the reader thread after transport close.
     drop(conn);
     // Full publication retirement: re-removes route (idempotent) and fires the
@@ -834,6 +911,9 @@ pub(super) fn remove_connection(
         publication_token,
         &publication_sync,
     );
+    // A loser this connection superseded as a responder-commit responder
+    // closes now; its confirmation can no longer arrive.
+    deferred_loser.lock_or_recover().release(mgr);
 
     // Suppressed-publication restore (see the pre-join comment above): with our
     // claim retired, hand the node's authority back to the superseded prior
@@ -865,60 +945,70 @@ pub(super) fn remove_connection(
     0
 }
 
-/// Test fence that holds a manager's admissions just before reservation until
-/// both connections of a crossing dial have authenticated, so their admissions
-/// overlap whatever the scheduler does.
+/// Test hooks that run at fixed points of a manager's admissions, so a test
+/// can order two nodes' crossing admissions however it needs.
 #[cfg(test)]
-pub(crate) mod crossing_fence {
+pub(crate) mod admission_script {
     use std::collections::HashMap;
-    use std::sync::{Condvar, LazyLock, Mutex};
-    use std::time::{Duration, Instant};
+    use std::sync::{Arc, LazyLock, Mutex};
 
-    use crate::util::{CondvarExt, MutexExt};
+    use crate::peer_binding::ConnectionOrigin;
+    use crate::util::MutexExt;
 
     use super::HewConnMgr;
 
-    /// Admissions arrived per enrolled manager address.
-    static FENCE: LazyLock<(Mutex<HashMap<usize, usize>>, Condvar)> =
-        LazyLock::new(|| (Mutex::new(HashMap::new()), Condvar::new()));
-
-    /// Managers held at the fence until this is dropped, even by a panic,
-    /// so a later manager at a reused address is never fenced.
-    pub(crate) struct Enrolment(Vec<usize>);
-
-    pub(crate) fn enrol(managers: &[*const HewConnMgr]) -> Enrolment {
-        let keys: Vec<usize> = managers.iter().map(|&mgr| mgr as usize).collect();
-        let mut arrived = FENCE.0.lock_or_recover();
-        for &key in &keys {
-            arrived.insert(key, 0);
-        }
-        Enrolment(keys)
+    /// Where an admission has reached.
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    pub(crate) enum Point {
+        /// The channel is established and the peer authenticated; nothing is
+        /// reserved or committed yet.
+        Authenticated,
+        /// The initiator is about to wait for the responder's commit.
+        AwaitingCommit,
+        /// The initiator has the responder's commit and has not reserved.
+        Committed,
+        /// A node-API dial on this transport id was admitted, before its
+        /// reconnect is armed.
+        Admitted(std::ffi::c_int),
     }
 
-    impl Drop for Enrolment {
+    pub(crate) type Hook = Arc<dyn Fn(Point, ConnectionOrigin) + Send + Sync>;
+
+    static HOOKS: LazyLock<Mutex<HashMap<usize, Hook>>> = LazyLock::new(Mutex::default);
+
+    /// Hooks installed until this is dropped, even by a panic, so a later
+    /// manager at a reused address runs none.
+    pub(crate) struct Script(Vec<usize>);
+
+    pub(crate) fn install(hooks: &[(*const HewConnMgr, Hook)]) -> Script {
+        let mut installed = HOOKS.lock_or_recover();
+        Script(
+            hooks
+                .iter()
+                .map(|(mgr, hook)| {
+                    installed.insert(*mgr as usize, Arc::clone(hook));
+                    *mgr as usize
+                })
+                .collect(),
+        )
+    }
+
+    impl Drop for Script {
         fn drop(&mut self) {
-            let mut arrived = FENCE.0.lock_or_recover();
+            let mut installed = HOOKS.lock_or_recover();
             for key in &self.0 {
-                arrived.remove(key);
+                installed.remove(key);
             }
         }
     }
 
-    pub(super) fn arrive(mgr: &HewConnMgr) {
-        let key = std::ptr::from_ref(mgr) as usize;
-        let (lock, condvar) = &*FENCE;
-        let mut arrived = lock.lock_or_recover();
-        let Some(count) = arrived.get_mut(&key) else {
-            return;
-        };
-        *count += 1;
-        condvar.notify_all();
-        let deadline = Instant::now() + Duration::from_secs(5);
-        while arrived.get(&key).is_some_and(|count| *count < 2) {
-            let Some(left) = deadline.checked_duration_since(Instant::now()) else {
-                return;
-            };
-            arrived = condvar.wait_timeout_or_recover(arrived, left).0;
+    pub(in crate::connection) fn reach(mgr: &HewConnMgr, point: Point, origin: ConnectionOrigin) {
+        let hook = HOOKS
+            .lock_or_recover()
+            .get(&(std::ptr::from_ref(mgr) as usize))
+            .cloned();
+        if let Some(hook) = hook {
+            hook(point, origin);
         }
     }
 }

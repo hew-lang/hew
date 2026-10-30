@@ -132,35 +132,78 @@ fn retired_identity_claim_rejects_lower_session_and_allows_reconnect() {
     let identity = test_node_identity(42);
 
     assert!(matches!(
-        reserve_identity_claim(mgr, identity, 42, 7, None, 100, 1, None, TEST_ADMISSION),
+        reserve_identity_claim(
+            mgr,
+            identity,
+            42,
+            7,
+            None,
+            100,
+            1,
+            None,
+            TEST_ADMISSION,
+            Commit::Unordered
+        ),
         ClaimReservation::Reserved { superseded: None }
     ));
     assert!(publish_identity_claim(mgr, identity, 100, 1));
     assert!(retire_identity_claim(mgr, identity, 100, 1));
 
     assert!(matches!(
-        reserve_identity_claim(mgr, identity, 42, 6, None, 200, 2, None, TEST_ADMISSION),
+        reserve_identity_claim(
+            mgr,
+            identity,
+            42,
+            6,
+            None,
+            200,
+            2,
+            None,
+            TEST_ADMISSION,
+            Commit::Unordered
+        ),
         ClaimReservation::Rejected(_)
     ));
 
-    let equal_superseded =
-        match reserve_identity_claim(mgr, identity, 42, 7, None, 200, 2, None, TEST_ADMISSION) {
-            ClaimReservation::Reserved {
-                superseded: Some(retired),
-            } => retired,
-            ClaimReservation::Reserved { superseded: None } => {
-                panic!("equal-session reconnect must retain the retired fence")
-            }
-            ClaimReservation::Yielded(_) => panic!("no crossing dial in this test"),
-            ClaimReservation::Rejected(detail) => {
-                panic!("equal-session reconnect must be admitted: {detail}")
-            }
-        };
+    let equal_superseded = match reserve_identity_claim(
+        mgr,
+        identity,
+        42,
+        7,
+        None,
+        200,
+        2,
+        None,
+        TEST_ADMISSION,
+        Commit::Unordered,
+    ) {
+        ClaimReservation::Reserved {
+            superseded: Some(retired),
+        } => retired,
+        ClaimReservation::Reserved { superseded: None } => {
+            panic!("equal-session reconnect must retain the retired fence")
+        }
+        ClaimReservation::Yielded(_) => panic!("no crossing dial in this test"),
+        ClaimReservation::Rejected(detail) => {
+            panic!("equal-session reconnect must be admitted: {detail}")
+        }
+    };
     assert_eq!(equal_superseded.state, ClaimState::Retired);
     abort_identity_claim(mgr, identity, 200, 2, Some(equal_superseded));
 
     assert!(matches!(
-        reserve_identity_claim(mgr, identity, 42, 8, None, 300, 3, None, TEST_ADMISSION),
+        reserve_identity_claim(
+            mgr,
+            identity,
+            42,
+            8,
+            None,
+            300,
+            3,
+            None,
+            TEST_ADMISSION,
+            Commit::Unordered
+        ),
         ClaimReservation::Reserved {
             superseded: Some(LiveClaim {
                 state: ClaimState::Retired,
@@ -358,6 +401,7 @@ fn claim_reserve_waits_on_reserved_then_checks_predecessor() {
                 200,
                 Some(&predecessor),
                 TEST_ADMISSION,
+                Commit::Unordered,
             );
             returned_thread.store(true, Ordering::Release);
             matches!(outcome, ClaimReservation::Reserved { .. })
@@ -459,6 +503,7 @@ fn route_alias_allocation_preserves_retired_identities_and_refuses_exhaustion() 
                 state: crate::peer_binding::ClaimState::Retired,
                 origin: ConnectionOrigin::Dialled,
                 published_at: 0,
+                commit_order: 0,
             },
         );
     }
@@ -489,6 +534,7 @@ fn reserve_crossing_claim(
         token,
         None,
         AdmissionStart::now(mgr, origin),
+        Commit::Responder,
     )
 }
 
@@ -505,8 +551,9 @@ fn publish_crossing_claim(mgr: &HewConnMgr, origin: ConnectionOrigin, conn_id: c
     ));
 }
 
-/// Both ends of a crossing keep the connection the lower `NodeId` dialled.
-/// The test manager's `NodeId` sorts below the peer's, so its own dial wins:
+/// The deciding end of a crossing keeps the connection the lower `NodeId`
+/// dialled. The test manager's `NodeId` sorts below the peer's, so its own
+/// dial wins:
 /// an accepted dial in flight when ours published yields to it, and our dial
 /// in flight when the peer's published replaces that, whatever the reconnect
 /// predecessor it carries.
@@ -523,7 +570,18 @@ fn crossing_dial_keeps_the_lower_node_dial() {
 
     let accepted = AdmissionStart::now(mgr, ConnectionOrigin::Accepted);
     publish_crossing_claim(mgr, ConnectionOrigin::Dialled, 100, 5);
-    match reserve_identity_claim(mgr, identity, 42, 1, None, 200, 6, None, accepted) {
+    match reserve_identity_claim(
+        mgr,
+        identity,
+        42,
+        1,
+        None,
+        200,
+        6,
+        None,
+        accepted,
+        Commit::Responder,
+    ) {
         ClaimReservation::Yielded(winner) => assert_eq!(winner.publication_token, 5),
         ClaimReservation::Reserved { .. } => panic!("the peer's crossing dial replaced ours"),
         ClaimReservation::Rejected(detail) => panic!("crossing dial rejected: {detail}"),
@@ -545,7 +603,18 @@ fn crossing_dial_keeps_the_lower_node_dial() {
     ));
     let dialled = AdmissionStart::now(mgr, ConnectionOrigin::Dialled);
     assert!(publish_identity_claim(mgr, identity, 300, 7));
-    match reserve_identity_claim(mgr, identity, 42, 1, None, 400, 8, Some(&stale), dialled) {
+    match reserve_identity_claim(
+        mgr,
+        identity,
+        42,
+        1,
+        None,
+        400,
+        8,
+        Some(&stale),
+        dialled,
+        Commit::Responder,
+    ) {
         ClaimReservation::Reserved { superseded } => {
             assert_eq!(superseded.map(|claim| claim.conn_id), Some(300));
         }
@@ -578,12 +647,122 @@ fn crossing_dial_tie_break_is_bounded_to_overlapping_admissions() {
     assert!(retire_identity_claim(mgr, identity, 200, 6));
     let higher = AdmissionStart::now(mgr, ConnectionOrigin::Accepted);
     publish_crossing_claim(mgr, ConnectionOrigin::Dialled, 300, 7);
-    match reserve_identity_claim(mgr, identity, 42, 2, None, 400, 8, None, higher) {
+    match reserve_identity_claim(
+        mgr,
+        identity,
+        42,
+        2,
+        None,
+        400,
+        8,
+        None,
+        higher,
+        Commit::Responder,
+    ) {
         ClaimReservation::Reserved { superseded } => {
             assert_eq!(superseded.map(|claim| claim.conn_id), Some(300));
         }
         ClaimReservation::Yielded(_) => panic!("a higher session yielded to an old one"),
         ClaimReservation::Rejected(detail) => panic!("higher session rejected: {detail}"),
+    }
+    free_claim_test_mgr(mgr_ptr, transport);
+}
+
+/// Under the responder-commit step the initiator keeps whichever connection
+/// the responder committed last, in whatever order the commits arrive and
+/// whichever end dialled it, so both ends keep the same one.
+#[test]
+fn initiator_keeps_the_last_responder_commit() {
+    let (mgr_ptr, transport) = claim_test_mgr();
+    // SAFETY: mgr_ptr is live until free below.
+    let mgr = unsafe { &*mgr_ptr };
+    let identity = test_node_identity(42);
+    let reserve = |origin, conn_id, token, order| {
+        reserve_identity_claim(
+            mgr,
+            identity,
+            42,
+            1,
+            None,
+            conn_id,
+            token,
+            None,
+            AdmissionStart::now(mgr, origin),
+            Commit::Initiator(order),
+        )
+    };
+
+    // The later commit arrives first: the earlier one yields to it, even
+    // though the earlier one was this node's own dial.
+    assert!(matches!(
+        reserve(ConnectionOrigin::Accepted, 100, 5, 20),
+        ClaimReservation::Reserved { superseded: None }
+    ));
+    assert!(publish_identity_claim(mgr, identity, 100, 5));
+    match reserve(ConnectionOrigin::Dialled, 200, 6, 10) {
+        ClaimReservation::Yielded(winner) => assert_eq!(winner.publication_token, 5),
+        ClaimReservation::Reserved { .. } => panic!("an earlier commit replaced a later one"),
+        ClaimReservation::Rejected(detail) => panic!("earlier commit rejected: {detail}"),
+    }
+
+    // A later commit replaces the kept connection, even one this node
+    // accepted before its own dial began.
+    match reserve(ConnectionOrigin::Dialled, 300, 7, 30) {
+        ClaimReservation::Reserved { superseded } => {
+            assert_eq!(superseded.map(|claim| claim.conn_id), Some(100));
+        }
+        ClaimReservation::Yielded(_) => panic!("a later commit yielded"),
+        ClaimReservation::Rejected(detail) => panic!("later commit rejected: {detail}"),
+    }
+    assert!(publish_identity_claim(mgr, identity, 300, 7));
+    let kept = claim_snapshot(mgr, 42).expect("the last commit holds the claim");
+    assert_eq!((kept.conn_id, kept.commit_order), (300, 30));
+    free_claim_test_mgr(mgr_ptr, transport);
+}
+
+/// Without the responder-commit step neither end decides a crossing by its
+/// own clock: the newer same-session connection replaces the older, even one
+/// published while the newcomer was in flight.
+#[test]
+fn unordered_pair_keeps_the_newer_connection() {
+    let (mgr_ptr, transport) = claim_test_mgr();
+    // SAFETY: mgr_ptr is live until free below.
+    let mgr = unsafe { &*mgr_ptr };
+    let identity = test_node_identity(42);
+    let accepted = AdmissionStart::now(mgr, ConnectionOrigin::Accepted);
+    assert!(matches!(
+        reserve_identity_claim(
+            mgr,
+            identity,
+            42,
+            1,
+            None,
+            100,
+            5,
+            None,
+            TEST_ADMISSION,
+            Commit::Unordered
+        ),
+        ClaimReservation::Reserved { .. }
+    ));
+    assert!(publish_identity_claim(mgr, identity, 100, 5));
+    match reserve_identity_claim(
+        mgr,
+        identity,
+        42,
+        1,
+        None,
+        200,
+        6,
+        None,
+        accepted,
+        Commit::Unordered,
+    ) {
+        ClaimReservation::Reserved { superseded } => {
+            assert_eq!(superseded.map(|claim| claim.conn_id), Some(100));
+        }
+        ClaimReservation::Yielded(_) => panic!("an unordered pair decided a crossing locally"),
+        ClaimReservation::Rejected(detail) => panic!("newer connection rejected: {detail}"),
     }
     free_claim_test_mgr(mgr_ptr, transport);
 }

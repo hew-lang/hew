@@ -3,12 +3,8 @@
 //! Hew logical failures use typed Rust/C-unwind propagation through generated
 //! LLVM cleanup landing pads. A synchronous hardware fault can interrupt an
 //! arbitrary ownership operation, so resuming it—especially with longjmp—is
-//! unsound. Stack exhaustion in Hew code is a recoverable `StackOverflow`
-//! failure raised by the generated entry check (`stack_limit`) before the
-//! guard page is reached. This boundary is the backstop for what that check
-//! cannot see, such as a runtime or foreign frame that runs through the
-//! reserve: there no isolation can be guaranteed, so it stays process-fatal.
-//! Every thread that runs Hew code registers its stack bounds; the
+//! unsound, and every such fault is process-fatal (§5.7), stack exhaustion
+//! included. Every thread that runs Hew code registers its stack bounds; the
 //! fault handler classifies a fault in the stack guard as `StackOverflow`,
 //! writes one allocation-free record, and lets the process die by the original
 //! signal or exception, so the operating system's crash artefacts (cores,

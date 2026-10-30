@@ -6676,6 +6676,10 @@ Synchronous hardware faults (SEGV, SIGBUS, SIGFPE, and SIGILL) are process-fatal
 Signal handlers run on an alternate signal stack, record the terminal cause
 using async-signal-safe operations, and terminate; the runtime never jumps out
 of an arbitrary instruction or resumes a potentially corrupted process.
+Stack exhaustion is such a fault: a fault in a thread's stack guard is reported
+as `StackOverflow`, and the process then dies by the original signal or
+exception, so the operating system's crash artefacts (cores, crash reports,
+dumps) are still produced.
 
 A `panic()` outside an actor unwinds the same way. The generated entry runs
 beneath a runtime-owned catch boundary, so the same LLVM cleanup pads discharge

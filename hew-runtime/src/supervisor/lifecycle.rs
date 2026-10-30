@@ -5437,12 +5437,12 @@ fn supervisor_label(sup: *mut HewSupervisor) -> String {
 }
 
 /// The role path of a supervised child, outermost supervisor first:
-/// `App#1/Workers#3/worker`. Never blocks: a roster held elsewhere names the
-/// child by its index.
+/// `App#1/Workers#3/worker`.
 pub(crate) fn role_path(sup: *mut HewSupervisor, child_index: i32) -> String {
     let child = usize::try_from(child_index).ok().and_then(|index| {
-        // SAFETY: the running child's supervisor is live while it runs.
-        let roster = unsafe { &(*sup).roster }.try_lock().ok()?;
+        // SAFETY: the running child's supervisor is live while it runs; the
+        // roster is held only for short bookkeeping, never across a turn.
+        let roster = unsafe { &(*sup).roster }.lock_or_recover();
         let spec = roster.child_specs.get(index)?;
         Some(child_name(spec.name, &format!("child[{index}]")))
     });

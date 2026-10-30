@@ -1125,34 +1125,29 @@ pub fn tracer_attached() -> bool {
                 .is_some_and(|pid| pid.trim() != "0")
         })
     }
-    #[cfg(any(target_os = "macos", target_os = "freebsd"))]
+    #[cfg(target_os = "freebsd")]
     {
-        let mut mib = [
-            libc::CTL_KERN,
-            libc::KERN_PROC,
-            libc::KERN_PROC_PID,
-            // SAFETY: getpid has no preconditions.
-            unsafe { libc::getpid() },
-        ];
-        // SAFETY: kinfo_proc is plain data; sysctl fills at most `size` bytes.
-        let mut info: libc::kinfo_proc = unsafe { std::mem::zeroed() };
-        let mut size = std::mem::size_of::<libc::kinfo_proc>();
-        // SAFETY: `mib`, `info` and `size` are live locals of the stated sizes.
-        let status = unsafe {
-            libc::sysctl(
-                mib.as_mut_ptr(),
-                4,
-                (&raw mut info).cast(),
-                &raw mut size,
-                std::ptr::null_mut(),
-                0,
-            )
-        };
-        #[cfg(target_os = "macos")]
-        let flags = info.kp_proc.p_flag;
-        #[cfg(target_os = "freebsd")]
-        let flags = info.ki_flag;
-        status == 0 && i64::from(flags) & i64::from(libc::P_TRACED) != 0
+        let mut info: libc::kinfo_proc = unsafe_zeroed_kinfo();
+        kern_proc_self(&raw mut info, std::mem::size_of::<libc::kinfo_proc>())
+            && info.ki_flag & i64::from(libc::P_TRACED) != 0
+    }
+    #[cfg(target_os = "macos")]
+    {
+        // The libc crate does not describe Darwin's `struct kinfo_proc`
+        // (648 bytes); `kp_proc.p_flag` is the int at byte 32 and
+        // `P_TRACED` is 0x800 (<sys/proc.h>).
+        const KINFO_PROC_SIZE: usize = 648;
+        const P_FLAG_OFFSET: usize = 32;
+        const P_TRACED: i32 = 0x800;
+        let mut info = [0u8; KINFO_PROC_SIZE];
+        kern_proc_self(info.as_mut_ptr().cast(), KINFO_PROC_SIZE) && {
+            let flag = i32::from_ne_bytes(
+                info[P_FLAG_OFFSET..P_FLAG_OFFSET + 4]
+                    .try_into()
+                    .expect("four bytes"),
+            );
+            flag & P_TRACED != 0
+        }
     }
     #[cfg(windows)]
     {
@@ -1169,6 +1164,38 @@ pub fn tracer_attached() -> bool {
     {
         false
     }
+}
+
+/// Fill `size` bytes at `info` with this process's `KERN_PROC_PID` record.
+#[cfg(any(target_os = "macos", target_os = "freebsd"))]
+fn kern_proc_self<T>(info: *mut T, size: usize) -> bool {
+    let mut mib = [
+        libc::CTL_KERN,
+        libc::KERN_PROC,
+        libc::KERN_PROC_PID,
+        // SAFETY: getpid has no preconditions.
+        unsafe { libc::getpid() },
+    ];
+    let mut len = size;
+    // SAFETY: `info` is writable for `size` bytes and sysctl writes at most
+    // `len` of them; `mib` and `len` are live locals.
+    let status = unsafe {
+        libc::sysctl(
+            mib.as_mut_ptr(),
+            4,
+            info.cast(),
+            &raw mut len,
+            std::ptr::null_mut(),
+            0,
+        )
+    };
+    status == 0
+}
+
+#[cfg(target_os = "freebsd")]
+fn unsafe_zeroed_kinfo() -> libc::kinfo_proc {
+    // SAFETY: kinfo_proc is plain data, valid when zeroed.
+    unsafe { std::mem::zeroed() }
 }
 
 #[cfg(test)]

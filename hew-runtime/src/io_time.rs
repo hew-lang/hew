@@ -1020,7 +1020,10 @@ mod platform {
 pub(crate) use platform::AfdPoll;
 pub(crate) use platform::Poller;
 
-#[cfg(test)]
+#[cfg(all(
+    test,
+    any(target_os = "linux", target_os = "freebsd", target_os = "macos")
+))]
 impl Poller {
     pub(crate) fn wait(&self, timeout_ms: c_int, out: &mut Vec<Event>) -> std::io::Result<()> {
         self.wait_for(

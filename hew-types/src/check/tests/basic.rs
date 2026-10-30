@@ -1180,6 +1180,9 @@ fn negating_an_unsigned_value_is_rejected() {
         "fn main() { let a: u32 = 5; println(-a); }",
         "fn main() { println(-1.5 as u32); }",
         "fn main() { let a: u8 = 5; let b: u8 = -(a + 1); println(b); }",
+        // The operand settles unsigned only after the negation is checked.
+        "fn main() { let a = 5; let b = -a; let c: u32 = b; println(c); }",
+        "fn id(x: u64) -> u64 { x }\nfn main() { let a = 7; println(-a); println(id(a)); }",
     ] {
         let output = check_source(source);
         assert!(
@@ -1194,6 +1197,22 @@ fn negating_an_unsigned_value_is_rejected() {
     }
     let signed = check_source("fn main() { let a: i8 = 5; let b: i8 = -(a + 1); println(-b); }");
     assert!(signed.errors.is_empty(), "{:#?}", signed.errors);
+}
+
+#[test]
+fn negated_float_takes_the_contextual_width() {
+    // A parenthesised literal is checked at the binding's width rather than
+    // defaulting to `f64` underneath an `f32` negation.
+    let source = "fn main() { let g: f32 = -(1.0); println(g); }";
+    let output = check_source(source);
+    assert!(output.errors.is_empty(), "{:#?}", output.errors);
+    for needle in ["-(1.0)", "1.0"] {
+        assert_eq!(
+            output.expr_types.get(&span_key_for(source, needle)),
+            Some(&Ty::F32),
+            "`{needle}` should take the contextual f32 width"
+        );
+    }
 }
 
 #[test]

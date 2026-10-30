@@ -784,6 +784,8 @@ impl Checker {
                         span,
                         format!("cannot negate type `{}`", resolved.user_facing()),
                     );
+                } else if ty.has_inference_var() {
+                    self.record_deferred_negate_check(span, &ty);
                 }
                 ty
             }

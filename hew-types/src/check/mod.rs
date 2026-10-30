@@ -101,9 +101,10 @@ mod visibility;
 pub use self::types::FnSigFixture;
 use self::types::{
     ActorFieldInfo, ConstValue, DeferredBoundCheck, DeferredCastCheck, DeferredHashMapAdmission,
-    DeferredHashSetAdmission, DeferredInferenceHole, DeferredMonomorphicSite, DeferredVecAdmission,
-    ImplAliasEntry, ImplAliasScope, IndexContext, IntegerTypeInfo, PendingLoweringFact,
-    SourceExternDeclaration, TraitAssociatedTypeInfo, TraitImplArgs, TraitInfo, TraitProofKind,
+    DeferredHashSetAdmission, DeferredInferenceHole, DeferredMonomorphicSite, DeferredNegateCheck,
+    DeferredVecAdmission, ImplAliasEntry, ImplAliasScope, IndexContext, IntegerTypeInfo,
+    PendingLoweringFact, SourceExternDeclaration, TraitAssociatedTypeInfo, TraitImplArgs,
+    TraitInfo, TraitProofKind,
 };
 pub use self::types::{
     ActorMethodKind, ActorStateGuard, AllocationClass, ArmResolution, AssignTargetKind,
@@ -3166,6 +3167,7 @@ impl Checker {
             fn_sig_inference_holes: self.fn_sig_inference_holes.clone(),
             deferred_inference_holes: self.deferred_inference_holes.clone(),
             deferred_cast_checks: self.deferred_cast_checks.clone(),
+            deferred_negate_checks: self.deferred_negate_checks.clone(),
             deferred_is_checks: self.deferred_is_checks.clone(),
             deferred_monomorphic_sites: self.deferred_monomorphic_sites.clone(),
             fn_def_spans: self.fn_def_spans.clone(),

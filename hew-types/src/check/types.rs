@@ -3178,6 +3178,16 @@ pub(super) struct DeferredInferenceHole {
     pub(super) source_module: Option<String>,
 }
 
+/// A negation whose operand type was still an inference variable when the
+/// expression was checked; an unsigned resolution is refused after inference.
+#[derive(Debug, Clone)]
+pub(super) struct DeferredNegateCheck {
+    pub(super) span: Span,
+    pub(super) operand: Ty,
+    /// Diagnostic routing token captured while the source item was active.
+    pub(super) source_module: Option<String>,
+}
+
 #[derive(Debug, Clone)]
 pub(super) struct DeferredCastCheck {
     pub(super) span: Span,
@@ -3576,6 +3586,7 @@ pub struct Checker {
     pub(super) fn_sig_inference_holes: HashMap<String, Vec<TypeVar>>,
     pub(super) deferred_inference_holes: Vec<DeferredInferenceHole>,
     pub(super) deferred_cast_checks: Vec<DeferredCastCheck>,
+    pub(super) deferred_negate_checks: Vec<DeferredNegateCheck>,
     /// `is` obligations recorded while an operand type was still an
     /// inference variable, keyed by the `is` expression so a body checked more
     /// than once records one obligation.
@@ -4559,6 +4570,7 @@ impl Checker {
             fn_sig_inference_holes: HashMap::new(),
             deferred_inference_holes: Vec::new(),
             deferred_cast_checks: Vec::new(),
+            deferred_negate_checks: Vec::new(),
             deferred_is_checks: HashMap::new(),
             deferred_monomorphic_sites: Vec::new(),
             fn_def_spans: HashMap::new(),

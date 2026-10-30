@@ -25,6 +25,7 @@
 //! `cargo bench -p hew-runtime` becomes available, re-evaluate whether
 //! 16-shard `LiveActors` reduces hot-path contention.
 
+use rustc_hash::FxHashMap;
 use std::collections::HashMap;
 use std::sync::atomic::Ordering;
 
@@ -101,7 +102,7 @@ fn retire_actor_route(actor: *mut HewActor, actor_id: u64) {
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) struct LiveActors {
     /// Map of live actor id → pointer. Single shard (see module doc).
-    map: PoisonSafe<Option<HashMap<u64, LiveActor>>>,
+    map: PoisonSafe<Option<FxHashMap<u64, LiveActor>>>,
     /// Background teardown threads (deferred actor frees and deferred supervisor
     /// stops) that hold raw actor/supervisor pointers while they run. They MUST
     /// be joined before any global sweep (`cleanup_all_actors`) frees the actors
@@ -129,11 +130,11 @@ impl LiveActors {
 /// there is no cross-thread contention; the `PoisonSafe` wrapper keeps the
 /// access path identical to native.
 #[cfg(target_arch = "wasm32")]
-static LIVE_ACTORS_WASM: PoisonSafe<Option<HashMap<u64, LiveActor>>> = PoisonSafe::new(None);
+static LIVE_ACTORS_WASM: PoisonSafe<Option<FxHashMap<u64, LiveActor>>> = PoisonSafe::new(None);
 
 /// Run `f` with mutable access to the current runtime's live-actor map.
 #[cfg(not(target_arch = "wasm32"))]
-fn with_live_actors<R>(f: impl FnOnce(&mut Option<HashMap<u64, LiveActor>>) -> R) -> R {
+fn with_live_actors<R>(f: impl FnOnce(&mut Option<FxHashMap<u64, LiveActor>>) -> R) -> R {
     rt_current().live_actors.map.access(f)
 }
 
@@ -147,7 +148,9 @@ fn with_live_actors<R>(f: impl FnOnce(&mut Option<HashMap<u64, LiveActor>>) -> R
 /// default while registration/removal paths continue to fail closed through
 /// [`with_live_actors`].
 #[cfg(not(target_arch = "wasm32"))]
-fn with_live_actors_opt<R>(f: impl FnOnce(&mut Option<HashMap<u64, LiveActor>>) -> R) -> Option<R> {
+fn with_live_actors_opt<R>(
+    f: impl FnOnce(&mut Option<FxHashMap<u64, LiveActor>>) -> R,
+) -> Option<R> {
     rt_current_opt().map(|rt| rt.live_actors.map.access(f))
 }
 
@@ -156,13 +159,15 @@ fn with_live_actors_opt<R>(f: impl FnOnce(&mut Option<HashMap<u64, LiveActor>>) 
 /// WASM still uses a module-private static, so the optional native resolver is
 /// always present there.
 #[cfg(target_arch = "wasm32")]
-fn with_live_actors_opt<R>(f: impl FnOnce(&mut Option<HashMap<u64, LiveActor>>) -> R) -> Option<R> {
+fn with_live_actors_opt<R>(
+    f: impl FnOnce(&mut Option<FxHashMap<u64, LiveActor>>) -> R,
+) -> Option<R> {
     Some(with_live_actors(f))
 }
 
 /// Run `f` with mutable access to the WASM runtime's live-actor map.
 #[cfg(target_arch = "wasm32")]
-fn with_live_actors<R>(f: impl FnOnce(&mut Option<HashMap<u64, LiveActor>>) -> R) -> R {
+fn with_live_actors<R>(f: impl FnOnce(&mut Option<FxHashMap<u64, LiveActor>>) -> R) -> R {
     LIVE_ACTORS_WASM.access(f)
 }
 
@@ -179,15 +184,17 @@ fn with_live_actors<R>(f: impl FnOnce(&mut Option<HashMap<u64, LiveActor>>) -> R
 pub(crate) unsafe fn track_actor(actor: *mut HewActor) -> bool {
     // SAFETY: caller guarantees `actor` is valid and initialised.
     let id = unsafe { (*actor).id };
-    with_live_actors(|map| match map.get_or_insert_with(HashMap::new).entry(id) {
-        std::collections::hash_map::Entry::Vacant(entry) => {
-            entry.insert(LiveActor {
-                actor: ActorPtr(actor),
-            });
-            true
-        }
-        std::collections::hash_map::Entry::Occupied(_) => false,
-    })
+    with_live_actors(
+        |map| match map.get_or_insert_with(FxHashMap::default).entry(id) {
+            std::collections::hash_map::Entry::Vacant(entry) => {
+                entry.insert(LiveActor {
+                    actor: ActorPtr(actor),
+                });
+                true
+            }
+            std::collections::hash_map::Entry::Occupied(_) => false,
+        },
+    )
 }
 
 #[cfg(test)]
@@ -229,7 +236,7 @@ pub(crate) fn take_actor_by_id(actor_id: u64, expected: *mut HewActor) -> Option
         if tracked.actor.0 == expected {
             Some(tracked.actor.0)
         } else {
-            map.get_or_insert_with(HashMap::new)
+            map.get_or_insert_with(FxHashMap::default)
                 .insert(actor_id, tracked);
             None
         }
@@ -753,7 +760,7 @@ pub(crate) fn snapshot_live_actor_ids() -> Vec<u64> {
 pub(crate) fn drain_all_for_cleanup() -> HashMap<u64, ActorPtr> {
     let drained = with_live_actors_opt(|map| match map.as_mut() {
         Some(m) => std::mem::take(m),
-        None => HashMap::new(),
+        None => FxHashMap::default(),
     })
     .unwrap_or_default();
     // The LIVE_ACTORS lock is released before route retirement. Resolvers that

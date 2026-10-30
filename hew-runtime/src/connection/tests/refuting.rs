@@ -369,8 +369,18 @@ impl BuriedPeer {
         decode_swim_payload(&control.payload).expect("SWIM payload")
     }
 
-    fn wait_closed(&self) {
-        self.script.wait_until(|wire| wire.closed.then_some(()));
+    /// Wait until the connection is removed: its claim retires last.
+    fn wait_removed(&self) {
+        let (lock, retired) = &self.manager().claims;
+        let mut claims = lock.lock_or_recover();
+        while claims
+            .get(&test_node_identity(BURIED))
+            .is_none_or(|claim| claim.state != ClaimState::Retired)
+        {
+            claims = retired
+                .wait(claims)
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+        }
     }
 }
 
@@ -541,7 +551,7 @@ fn buried_peer_past_the_frame_cap_is_closed() {
     for _ in 0..=1024 {
         node.deliver(&name);
     }
-    node.wait_closed();
+    node.wait_removed();
     assert_eq!(node.claim_state(), Some(ClaimState::Retired));
     assert!(!node.installed());
     assert_eq!(
@@ -557,7 +567,7 @@ fn buried_peer_past_the_frame_cap_is_closed() {
 fn buried_peer_oversized_frame_is_closed() {
     let node = BuriedPeer::admit();
     node.script.push(Inbound::Oversized(64 * 1024 + 1));
-    node.wait_closed();
+    node.wait_removed();
     assert_eq!(node.claim_state(), Some(ClaimState::Retired));
     assert!(!node.installed());
     assert_eq!(node.member_state(), MEMBER_DEAD);
@@ -579,7 +589,7 @@ fn buried_peer_is_closed_at_its_refutation_deadline() {
     ));
 
     expire_refuting_claims(node.manager(), expires_ms);
-    node.wait_closed();
+    node.wait_removed();
     assert_eq!(node.claim_state(), Some(ClaimState::Retired));
     assert!(!node.installed());
     assert_eq!(node.member_state(), MEMBER_DEAD);

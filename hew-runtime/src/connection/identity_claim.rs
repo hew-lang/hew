@@ -999,14 +999,10 @@ fn refutation_deadline(mgr: &HewConnMgr) -> u64 {
 /// Publish the refuting claim of `conn_id`'s admission once the membership
 /// table has readmitted its peer: the peer refuted its burial at a higher
 /// incarnation, so the connection now carries everything a published one
-/// does. Returns whether this call published it.
-pub(super) fn publish_refuted_claim(
-    mgr: &HewConnMgr,
-    conn_id: c_int,
-    publication_token: u64,
-) -> bool {
+/// does.
+pub(super) fn publish_refuted_claim(mgr: &HewConnMgr, conn_id: c_int, publication_token: u64) {
     if mgr.cluster.is_null() {
-        return false;
+        return;
     }
     let admission = mgr.connections.access(|connections| {
         connections
@@ -1026,7 +1022,7 @@ pub(super) fn publish_refuted_claim(
             })
     });
     let Some((identity, route_slot, session, feature_flags, sync, removed)) = admission else {
-        return false;
+        return;
     };
     // SAFETY: cluster is owned by the live manager.
     if unsafe { &*mgr.cluster }.member_state(route_slot) != crate::cluster::MEMBER_ALIVE
@@ -1040,7 +1036,7 @@ pub(super) fn publish_refuted_claim(
             ClaimState::Published,
         )
     {
-        return false;
+        return;
     }
     expose_publication(
         mgr,
@@ -1052,7 +1048,7 @@ pub(super) fn publish_refuted_claim(
         publication_token,
         &sync,
         &removed,
-    )
+    );
 }
 
 /// Close each refuting connection whose peer has not refuted by its deadline,

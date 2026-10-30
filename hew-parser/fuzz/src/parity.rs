@@ -79,11 +79,14 @@ fn case(u: &mut Unstructured<'_>, index: usize, failing: bool) -> Result<Case> {
         case.trap = Some(failing_case(u, index, &mut out, &mut case.items)?);
         return Ok(case);
     }
-    match u.int_in_range(0..=13u8)? {
+    match u.int_in_range(0..=16u8)? {
         0 | 1 => integers(u, &mut out, 4)?,
         11 => floats(u, &mut out)?,
         12 => results(u, index, &mut out, &mut case.items)?,
         13 => copies(u, index, &mut out, &mut case.items)?,
+        14 => control(u, index, &mut out, &mut case.items)?,
+        15 => traits(u, index, &mut out, &mut case.items)?,
+        16 => sequences(u, &mut out)?,
         2 => strings(u, &mut out)?,
         3 => collections(u, &mut out)?,
         4 => records(u, index, &mut out, &mut case.items)?,
@@ -734,6 +737,182 @@ fn copies(
                 format!("{id} {}", tags.len()),
             );
         }
+    }
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Control flow, traits and sequences
+// ---------------------------------------------------------------------------
+
+fn control(
+    u: &mut Unstructured<'_>,
+    index: usize,
+    out: &mut Out<'_>,
+    items: &mut String,
+) -> Result<()> {
+    let skip = u.int_in_range(2..=5i64)?;
+    let stop = u.int_in_range(0..=30i64)?;
+    let _ = write!(
+        items,
+        "fn depth{index}(n: i64) -> i64 {{\n    if n <= 0 {{ 0 }} else {{ 1 + depth{index}(n - 1) }}\n}}\n\n\
+         fn even{index}(n: i64) -> bool {{\n    if n == 0 {{ true }} else {{ odd{index}(n - 1) }}\n}}\n\n\
+         fn odd{index}(n: i64) -> bool {{\n    if n == 0 {{ false }} else {{ even{index}(n - 1) }}\n}}\n\n\
+         fn loops{index}() -> i64 {{\n    var i = 0;\n    var acc = 0;\n    loop {{\n        i = i + 1;\n        \
+         if i % {skip} == 0 {{ continue; }}\n        if i > {stop} {{ break; }}\n        acc = acc * 3 % 1000003 + i;\n    }}\n    acc\n}}\n\n"
+    );
+    let mut acc: i64 = 0;
+    let mut i = 0;
+    loop {
+        i += 1;
+        if i % skip == 0 {
+            continue;
+        }
+        if i > stop {
+            break;
+        }
+        acc = acc * 3 % 1_000_003 + i;
+    }
+    out.print(&format!("loops{index}()"), acc);
+    for _ in 0..u.int_in_range(1..=3usize)? {
+        let n = u.int_in_range(0..=2000i64)?;
+        if u.arbitrary()? {
+            out.print(&format!("depth{index}({n})"), n);
+        } else {
+            out.print(&format!("even{index}({n})"), n % 2 == 0);
+        }
+    }
+    let pair = (u.int_in_range(-9..=9i64)?, (*u.choose(&WORDS)?).to_string());
+    out.stmt(&format!(
+        "let (pn, ps) = ({}, {});",
+        IntTy::I64.literal(pair.0.into()),
+        quote(&pair.1)
+    ));
+    out.print(
+        "match pn { 0 | 1 => \"low\", -1 | -2 => \"negative\", _ => ps }",
+        match pair.0 {
+            0 | 1 => "low".to_string(),
+            -1 | -2 => "negative".to_string(),
+            _ => pair.1.clone(),
+        },
+    );
+    let words = u.int_in_range(1..=3usize)?;
+    out.stmt("defer println(\"defer outer\");");
+    for w in 0..words {
+        let _ = writeln!(
+            out.body,
+            "    {{\n        defer println(\"defer {w}\");\n        println(\"body {w}\");\n    }}"
+        );
+        let _ = writeln!(out.stdout, "body {w}\ndefer {w}");
+    }
+    // `defer outer` runs when the case returns, after every line above.
+    out.stdout.push_str("defer outer\n");
+    Ok(())
+}
+
+fn traits(
+    u: &mut Unstructured<'_>,
+    index: usize,
+    out: &mut Out<'_>,
+    items: &mut String,
+) -> Result<()> {
+    let _ = write!(
+        items,
+        "trait Area{index} {{\n    fn area(self) -> i64;\n    fn name(self) -> string {{ \"shape\" }}\n}}\n\n\
+         type Square{index} {{\n    side: i64;\n}}\n\ntype Rect{index} {{\n    w: i64;\n    h: i64;\n}}\n\n\
+         impl Area{index} for Square{index} {{\n    fn area(self) -> i64 {{ self.side * self.side }}\n    \
+         fn name(self) -> string {{ \"square\" }}\n}}\n\n\
+         impl Area{index} for Rect{index} {{\n    fn area(self) -> i64 {{ self.w * self.h }}\n}}\n\n\
+         fn describe{index}(s: dyn Area{index}) -> string {{\n    f\"{{s.name()}}={{s.area()}}\"\n}}\n\n\
+         fn larger{index}<T: Ord>(a: T, b: T) -> T {{\n    if a > b {{ a }} else {{ b }}\n}}\n\n"
+    );
+    out.stmt(&format!("var shapes: Vec<dyn Area{index}> = Vec.new();"));
+    let mut model = Vec::new();
+    for _ in 0..u.int_in_range(1..=4usize)? {
+        if u.arbitrary()? {
+            let side = u.int_in_range(-20..=20i64)?;
+            out.stmt(&format!(
+                "shapes.push(Square{index} {{ side: {} }});",
+                IntTy::I64.literal(side.into())
+            ));
+            model.push(format!("square={}", side * side));
+        } else {
+            let (w, h) = (u.int_in_range(0..=30i64)?, u.int_in_range(-5..=30i64)?);
+            out.stmt(&format!(
+                "shapes.push(Rect{index} {{ w: {w}, h: {} }});",
+                IntTy::I64.literal(h.into())
+            ));
+            model.push(format!("shape={}", w * h));
+        }
+    }
+    out.stmt(&format!(
+        "for s in shapes.into_iter() {{ println(describe{index}(s)); }}"
+    ));
+    for line in model {
+        let _ = writeln!(out.stdout, "{line}");
+    }
+    let (a, b) = (u.int_in_range(-50..=50i64)?, u.int_in_range(-50..=50i64)?);
+    out.print(
+        &format!(
+            "larger{index}({}, {})",
+            IntTy::I64.literal(a.into()),
+            IntTy::I64.literal(b.into())
+        ),
+        a.max(b),
+    );
+    let (x, y) = (*u.choose(&WORDS)?, *u.choose(&WORDS)?);
+    out.print(
+        &format!("larger{index}({}, {})", quote(x), quote(y)),
+        if x > y { x } else { y },
+    );
+    Ok(())
+}
+
+fn sequences(u: &mut Unstructured<'_>, out: &mut Out<'_>) -> Result<()> {
+    let word = *u.choose(&WORDS)?;
+    out.stmt(&format!(
+        "for c in {} {{ println(f\"({{c}})\"); }}",
+        quote(word)
+    ));
+    for c in word.chars() {
+        let _ = writeln!(out.stdout, "({c})");
+    }
+    let mut model: Vec<i64> = Vec::new();
+    let mut elements = Vec::new();
+    for _ in 0..u.int_in_range(1..=8usize)? {
+        let n = u.int_in_range(-20..=20i64)?;
+        elements.push(IntTy::I64.literal(n.into()));
+        model.push(n);
+    }
+    out.stmt(&format!("var xs: Vec<i64> = [{}];", elements.join(", ")));
+    if u.arbitrary()? {
+        let at = u.int_in_range(0..=model.len() - 1)?;
+        out.print(&format!("xs.remove({at})"), model.remove(at));
+    }
+    let modulus = u.int_in_range(2..=4i64)?;
+    let factor = u.int_in_range(-3..=3i64)?;
+    out.stmt(&format!(
+        "let picked = xs.clone().into_iter().filter(|n: i64| n % {modulus} == 0).map(|n: i64| n * {}).collect();",
+        IntTy::I64.literal(factor.into())
+    ));
+    let picked: Vec<i64> = model
+        .iter()
+        .filter(|n| *n % modulus == 0)
+        .map(|n| n * factor)
+        .collect();
+    out.print("picked.len()", picked.len());
+    out.stmt("var text: Vec<string> = Vec.new();");
+    out.stmt("for x in xs { text.push(f\"{x}\"); }");
+    out.print(
+        "text.join(\",\")",
+        model
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+            .join(","),
+    );
+    for (at, n) in picked.iter().enumerate().take(2) {
+        out.print(&format!("picked[{at}]"), n);
     }
     Ok(())
 }

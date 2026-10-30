@@ -715,7 +715,12 @@ pub(crate) unsafe fn normalize_dispatch_completion(
 ) -> Option<Box<HewFault>> {
     if fault.code() != crate::fault::HEW_FAULT_REFUSED {
         // SAFETY: this activation owns its actor and fault.
-        return unsafe { normalize_stopped_turn((*ctx).actor, fault) };
+        let fault = unsafe { normalize_stopped_turn((*ctx).actor, fault) };
+        if fault.is_none() {
+            // SAFETY: the context retains its current reply sender.
+            unsafe { publish_unreplied_cancellation(ctx) };
+        }
+        return fault;
     }
     if let Some(fault) = fault.without_primary() {
         // SAFETY: this activation owns the remaining cleanup failure.
@@ -736,6 +741,24 @@ pub(crate) unsafe fn normalize_dispatch_completion(
         }
     }
     None
+}
+
+/// Resolve the caller of a turn that a stop or shutdown cancelled before it
+/// replied. A turn cancelled while parked has its reply retired on resume; one
+/// cancelled without parking, such as an accept refused because shutdown had
+/// already closed listener admission, completes here, and its ordinary return
+/// would otherwise leave the caller waiting on a reply that never comes.
+///
+/// # Safety
+/// `ctx` is the exclusively owned current activation context.
+unsafe fn publish_unreplied_cancellation(ctx: *mut HewExecutionContext) {
+    // SAFETY: the context retains its current reply sender until publication.
+    let channel: *mut crate::reply_channel::HewReplyChannel =
+        unsafe { (*ctx).reply_channel.cast() };
+    if !channel.is_null() && !crate::activation::current_reply_channel_consumed_on(ctx) {
+        // SAFETY: the turn never published; this retires its one sender reference.
+        unsafe { crate::reply_channel::hew_reply_channel_publish_cancelled(channel) };
+    }
 }
 
 /// Remove an expected stop's cancellation after its checked source cleanup,
@@ -1009,6 +1032,80 @@ mod tests {
             assert_eq!(
                 crate::reply_channel::hew_reply_channel_await_status(channel),
                 crate::await_cancel::AwaitCancelStatus::Completed as i32
+            );
+            crate::reply_channel::hew_reply_channel_free(channel);
+            crate::mailbox::hew_mailbox_free(mailbox);
+        }
+        assert_eq!(crate::reply_channel::active_channel_count(), baseline);
+        assert!(crate::execution_context::current_context().is_null());
+    }
+
+    unsafe extern "C-unwind" fn cancelled_by_shutdown_before_reply(
+        ctx: *mut HewExecutionContext,
+        _state: *mut c_void,
+        _message: i32,
+        _data: *mut c_void,
+        _size: usize,
+        _borrow_mode: i32,
+    ) -> *mut c_void {
+        // A wait refused because shutdown already began: the turn takes its
+        // cancellation edge without parking and never reaches its reply.
+        // SAFETY: the fixture supplies a live dispatch context.
+        unsafe {
+            hew_actor_dispatch_set_fault(
+                ctx,
+                crate::fault::hew_fault_new(crate::fault::HEW_FAULT_CANCELLED),
+            );
+        }
+        ptr::null_mut()
+    }
+
+    /// Counterfactual: the normalized stop cancellation completed the turn as
+    /// an ordinary return, which drops an unconsumed reply, so the caller of a
+    /// handler cancelled before it parked waited forever.
+    #[test]
+    fn shutdown_cancellation_before_park_resolves_its_caller() {
+        let _guard = crate::runtime_test_guard();
+        let _scheduler = crate::scheduler::NoWorkerSchedulerForTest::install();
+        crate::runtime::rt_current()
+            .shutdown_phase
+            .store(crate::shutdown::PHASE_DRAIN, Ordering::Release);
+        let baseline = crate::reply_channel::active_channel_count();
+        let channel = crate::reply_channel::hew_reply_channel_new();
+        assert!(!channel.is_null());
+        let mut state = 3_i64;
+        let mut actor = crate::test_actor::stub_actor();
+        actor.state = (&raw mut state).cast();
+        actor.state_size = std::mem::size_of::<i64>();
+        actor.dispatch = Some(cancelled_by_shutdown_before_reply);
+        // SAFETY: all allocations and both reply references remain live until
+        // this single synchronous scheduler activation finishes.
+        unsafe {
+            let mailbox = crate::mailbox::hew_mailbox_new();
+            assert!(!mailbox.is_null());
+            actor.mailbox = mailbox.cast();
+            crate::reply_channel::hew_reply_channel_retain(channel);
+            assert_eq!(
+                crate::mailbox::hew_mailbox_send_with_reply(
+                    mailbox.cast(),
+                    1,
+                    ptr::null_mut(),
+                    0,
+                    channel.cast(),
+                ),
+                0
+            );
+            crate::scheduler::activate_actor_for_test(&raw mut actor);
+            assert_ne!(
+                actor.actor_state.load(Ordering::Acquire),
+                crate::internal::types::HewActorState::Crashed as i32,
+                "an expected shutdown cancellation is not a crash"
+            );
+            assert_eq!(crate::reply_channel::ref_count_for_test(channel), 1);
+            assert!(crate::reply_channel::hew_reply_channel_is_ready(channel));
+            assert_eq!(
+                crate::reply_channel::hew_reply_channel_failure_kind(channel),
+                crate::internal::types::HEW_REPLY_FAIL_CANCELLED
             );
             crate::reply_channel::hew_reply_channel_free(channel);
             crate::mailbox::hew_mailbox_free(mailbox);

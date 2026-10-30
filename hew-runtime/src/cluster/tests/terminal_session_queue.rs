@@ -155,7 +155,7 @@ fn terminal_transition_result(
         );
     }
 
-    let gossip = cluster.take_swim_gossip(8);
+    let gossip = cluster.take_swim_gossip(3, 8);
     (events, gossip)
 }
 

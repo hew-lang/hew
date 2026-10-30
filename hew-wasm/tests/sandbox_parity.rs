@@ -1142,6 +1142,33 @@ fn actor_completion_ring_reports_failure_without_deadlocking() {
     }
 }
 
+/// Unbounded recursion fails with `StackOverflow` on both engines: an actor
+/// is restarted by its supervisor, and in `main` the process exits 1 after its
+/// cleanup. The floor depth succeeds in main, a handler and a task.
+#[cfg(unix)]
+#[test]
+fn stack_overflow_matches_native() {
+    set_test_hewpath();
+    ensure_native_toolchain();
+    ensure_parity_runner_built();
+    for case in [
+        ParityCase {
+            test_name: "stack_overflow_supervised_restart",
+            source_rel: "tests/core-acceptance/cases/stack-overflow-supervised-restart.hew",
+        },
+        ParityCase {
+            test_name: "stack_overflow_unsupervised_root",
+            source_rel: "tests/core-acceptance/cases/stack-overflow-unsupervised-root.hew",
+        },
+        ParityCase {
+            test_name: "stack_overflow_callback",
+            source_rel: "tests/core-acceptance/cases/stack-overflow-callback.hew",
+        },
+    ] {
+        assert_case(&case, "");
+    }
+}
+
 #[cfg(unix)]
 #[test]
 fn authored_error_sources_match_native() {

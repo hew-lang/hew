@@ -8326,16 +8326,25 @@
       "type": "string"
     },
     "TrapName": {
-      "enum": [
-        "heap_exceeded",
-        "integer_overflow",
-        "divide_by_zero",
-        "signed_min_div_neg_one",
-        "shift_out_of_range",
-        "vector_bounds",
-        "actor_refused"
-      ],
-      "type": "string"
+      "oneOf": [
+        {
+          "enum": [
+            "heap_exceeded",
+            "integer_overflow",
+            "divide_by_zero",
+            "signed_min_div_neg_one",
+            "shift_out_of_range",
+            "vector_bounds",
+            "actor_refused"
+          ],
+          "type": "string"
+        },
+        {
+          "const": "stack_overflow",
+          "description": "Raised by a function's entry safepoint when its activation is deeper\nthan the VM's frame limit, never named by an emitted package.",
+          "type": "string"
+        }
+      ]
     },
     "ValueCapabilityPlan": {
       "description": "The checker's selection for one `(type, capability)` pair.\n\n`callable` names a user implementation; its absence is the derived\nstructural operation, which the VM performs over its own value\nrepresentation.",
@@ -8620,6 +8629,12 @@
               "type": "integer"
             },
             "CrashKindPartitionDetected": {
+              "format": "uint32",
+              "maximum": 4294967295,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "CrashKindStackOverflow": {
               "format": "uint32",
               "maximum": 4294967295,
               "minimum": 0,

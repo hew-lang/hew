@@ -244,6 +244,7 @@ process exit statuses native execution uses:
 | `SignedMinDivNegOne` | `signed_min_div_neg_one` | 203  |
 | `ShiftOutOfRange`    | `shift_out_of_range`     | 204  |
 | `IndexOutOfBounds`   | `vector_bounds`          | 205  |
+| —                    | `stack_overflow`         | 215  |
 
 A panic is `panic` / 101.
 
@@ -254,7 +255,11 @@ exits 1 for every fault and prints its logical code in the message, so the
 parity harness compares the null against that 1.
 
 The VM adds no trap kind of its own for a SIR fault: a SIR fault with no
-mapping here is an emitter gap to fix, not a kind to invent.
+mapping here is an emitter gap to fix, not a kind to invent. The one kind no
+package names is `stack_overflow`: a function's entry `Safepoint` raises it
+through the suspension's `cancel` edge when the activation is more than
+`MAX_FRAME_DEPTH` (20,000) frames below its task's root, matching native's
+entry stack check (HEW-SPEC-2026 §2.2).
 
 ## Suspension
 

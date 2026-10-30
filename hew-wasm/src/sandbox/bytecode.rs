@@ -277,6 +277,10 @@ pub enum TrapName {
     VectorBounds,
     #[serde(rename = "actor_refused")]
     ActorRefused,
+    /// Raised by a function's entry safepoint when its activation is deeper
+    /// than the VM's frame limit, never named by an emitted package.
+    #[serde(rename = "stack_overflow")]
+    StackOverflow,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema, TS)]

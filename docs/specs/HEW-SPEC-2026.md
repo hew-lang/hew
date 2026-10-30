@@ -897,7 +897,7 @@ function:
   1 MiB linear-memory stack, where every checked frame occupies at least 16
   bytes so that recursion always reaches the limit. `hew run` lets the engine
   use up to 48 MiB of native stack, so the module's own check fails first.
-- **Sandbox VM.** A call more than 100,000 frames below its task's root fails.
+- **Sandbox VM.** A call more than 20,000 frames below its task's root fails.
 
 Code in foreign functions is not checked. Exhausting the stack inside an
 `extern` call remains a hardware fault (§5.7).

@@ -54,6 +54,8 @@ struct Mesh {
     /// Black-holed links: frames between the pair are lost while both stay
     /// connected.
     cut: Vec<[u16; 2]>,
+    /// Whether each period also sends `PING_REQ` through the other peers.
+    indirect: bool,
 }
 
 impl Mesh {
@@ -95,6 +97,7 @@ impl Mesh {
             sent: 0,
             stalled: None,
             cut: Vec::new(),
+            indirect: true,
         }
     }
 
@@ -172,9 +175,13 @@ impl Mesh {
             return;
         };
         self.send(now, slot, target, SWIM_MSG_PING, 0);
+        if !self.indirect {
+            return;
+        }
         for relay in SLOTS {
             if relay != slot && relay != target {
                 self.send(now, slot, relay, SWIM_MSG_PING_REQ, target);
+                self.node(slot).note_ping_req_sent_at(relay, target, now);
             }
         }
     }

@@ -217,11 +217,13 @@ pub(crate) unsafe fn hew_connmgr_send_swim(
     else {
         return -1;
     };
-    if send_claim.send(&bytes) == 0 {
-        0
-    } else {
-        -1
+    if send_claim.send(&bytes) != 0 {
+        return -1;
     }
+    if msg_type == crate::cluster::SWIM_MSG_PING_REQ {
+        cluster.note_ping_req_sent(peer_node_id, target_node);
+    }
+    0
 }
 
 /// Return the node IDs of all active gossip-capable peer connections.

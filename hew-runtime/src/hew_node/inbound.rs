@@ -525,8 +525,9 @@ pub(super) fn accept_loop(transport: SendTransport, conn_mgr: SendConnMgr, stop:
         };
 
         if conn_id != HEW_CONN_INVALID {
-            // SAFETY: pointers are held by HewNode for the loop lifetime.
-            let _ = unsafe { connection::hew_connmgr_add(conn_mgr.0, conn_id) };
+            // SAFETY: the node frees the manager, joining admission workers,
+            // only after this loop has stopped.
+            unsafe { connection::spawn_inbound_admission(conn_mgr.0, conn_id) };
         }
     }
 }

@@ -86,7 +86,11 @@ pub(crate) fn authenticated_peer_node_id_for_conn(mgr: &HewConnMgr, conn_id: c_i
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     match guard.get(&identity) {
-        Some(claim) if claim.state == ClaimState::Published && claim.conn_id == conn_id => {
+        Some(claim)
+            if claim
+                .carrier()
+                .is_some_and(|(carrier, _)| carrier == conn_id) =>
+        {
             route_slot
         }
         _ => 0,
@@ -179,9 +183,34 @@ pub(crate) fn wait_authenticated_peer_node_id_for_conn(
                 let (next_guard, _timeout) = condvar.wait_timeout_or_recover(guard, remaining);
                 guard = next_guard;
             }
-            // No claim owned by this admission: superseded, aborted, or a
-            // claimless (node_id 0) connection — no authority, deny now.
-            Some((_, _, ClaimState::Retired)) | None => return 0,
+            Some((_, _, ClaimState::Retired)) => return 0,
+            None => {
+                // A published connection that a reservation is replacing
+                // carries the peer's traffic until that settles; otherwise
+                // this one was superseded, aborted, or is claimless (node_id
+                // 0) — no authority, deny now.
+                let Some((carried, route_slot)) = guard
+                    .iter()
+                    .find(|(_, claim)| claim.carrier() == Some((conn_id, claim_token)))
+                    .map(|(node_id, claim)| (*node_id, claim.route_slot))
+                else {
+                    return 0;
+                };
+                drop(guard);
+                return mgr.connections.access(|conns| {
+                    conns
+                        .iter()
+                        .find(|c| {
+                            c.conn_id == conn_id
+                                && c.publication_token == claim_token
+                                && c.state.load(Ordering::Acquire) == CONN_STATE_ACTIVE
+                                && c.posture == Posture::Strict
+                                && c.peer_identity == Some(carried)
+                                && c.peer_node_id == route_slot
+                        })
+                        .map_or(0, |c| c.peer_node_id)
+                });
+            }
         }
     }
 }

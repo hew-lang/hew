@@ -23,6 +23,7 @@ fn remove_after_suppressed_publication_restores_superseded_claim() {
                 ClaimReservation::Reserved { superseded } => {
                     superseded.expect("reconnect must supersede the published claim")
                 }
+                ClaimReservation::Yielded(_) => panic!("no crossing dial in this test"),
                 ClaimReservation::Rejected(detail) => {
                     panic!("same-credential reconnect must reserve: {detail}")
                 }
@@ -68,6 +69,7 @@ fn remove_after_completed_publication_restores_nothing() {
                 ClaimReservation::Reserved { superseded } => {
                     superseded.expect("reconnect must supersede the published claim")
                 }
+                ClaimReservation::Yielded(_) => panic!("no crossing dial in this test"),
                 ClaimReservation::Rejected(detail) => {
                     panic!("same-credential reconnect must reserve: {detail}")
                 }
@@ -128,6 +130,10 @@ fn stale_publisher_cannot_clear_reused_conn_successor_stash() {
             conn_id: 95,
             publication_token: 900,
             state: ClaimState::Published,
+            origin: ConnectionOrigin::Dialled,
+            published_at: 0,
+            commit_order: 0,
+            superseding: None,
         };
         mgr.connections.access(|connections| {
             let successor = connections

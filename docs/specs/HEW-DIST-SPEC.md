@@ -305,6 +305,58 @@ An equal-session reconnect is valid only for a live, non-buried member. A
 strictly higher durable session can replace an earlier connection and readmit a
 buried member.
 
+### 4.1 One connection per peer
+
+Two nodes can dial each other at once. Both ends MUST keep the same connection
+and close the other, and neither may lose the other's member while they switch.
+The node whose `NodeId` sorts lower (bytewise) is the pair's *initiator*, as it
+is for Noise; the other is the *responder*. In a crossing, the connection the
+initiator dialled is kept.
+
+The responder settles a same-session admission against the peer's published
+connection by this crossing rule: if the two were opened from opposite ends
+and their admissions overlapped on the responder, the initiator's dial is
+kept; otherwise the newer connection replaces the older, so a redial still
+replaces a half-open connection. A relayed circuit is not a crossing. Only one
+end applies the rule: each end's overlap is measured on its own clock, and two
+ends measuring separately can each keep the connection the other closed.
+
+Feature bit `4` (responder commit) settles the pair through the responder. It
+is the minimum cluster protocol: a node MUST refuse a peer whose record lacks
+it, closing the connection once the records are exchanged and reporting that
+the peer requires cluster protocol feature 4. Both ends see both records, so
+both refuse, and neither keeps a connection or a claim for the other. Cluster
+members are upgraded together: a node that predates the bit cannot join a
+cluster of nodes that require it. Between two nodes that set it:
+
+1. Once the channel is established and the peer authenticated, the responder
+   reserves the peer's claim by the crossing rule and §4. If it yields or
+   refuses, it closes the connection without sending a frame. Otherwise its
+   first channel frame is its commit: an 8-byte big-endian, non-zero commit
+   order that increases with each reservation the responder makes.
+2. The initiator reserves nothing until the commit arrives, and closes the
+   connection if it does not. Of its same-session connections to the
+   responder, it keeps the one with the highest commit order, in whatever order
+   the commits arrive; a lower one yields. Once its claim has moved to the
+   connection, its first channel frame echoes the commit order. It then
+   publishes and closes the connection it superseded.
+3. The commit is provisional until the echo arrives. The responder publishes
+   the connection, and closes the one it superseded, only after the echo. If
+   the connection ends first, or its first frame is anything else, the
+   initiator never switched: the responder abandons the reservation and keeps
+   the connection it would have superseded. Until the reservation settles,
+   that connection keeps carrying the peer's traffic at both ends.
+
+So the responder switches before the initiator settles, and the initiator
+switches before the responder closes anything; neither end closes a
+connection the other still owns. The initiator never waits on the network
+while holding a reservation, so the two ends cannot wait on each other. The
+step costs the initiator half a round trip and the responder a round trip.
+
+The records are bound into the channel transcript, so the bit cannot be
+removed without failing the handshake. Feature bit `2` is reserved; bit `3` is
+retired and is not reused.
+
 ## 5. Wire framing and schema
 
 Transport framing carries CBOR wire frames defined by

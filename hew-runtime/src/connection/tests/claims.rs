@@ -101,6 +101,7 @@ fn claim_reserve_publish_retire_exact_owner_lifecycle() {
 
     match reserve_claim(mgr, 42, cred.as_ref(), 100, 1) {
         ClaimReservation::Reserved { superseded } => assert!(superseded.is_none()),
+        ClaimReservation::Yielded(_) => panic!("no crossing dial in this test"),
         ClaimReservation::Rejected(d) => panic!("fresh reserve rejected: {d}"),
     }
     let reserved = claim_snapshot(mgr, 42).expect("claim should exist after reserve");
@@ -131,24 +132,58 @@ fn retired_identity_claim_rejects_lower_session_and_allows_reconnect() {
     let identity = test_node_identity(42);
 
     assert!(matches!(
-        reserve_identity_claim(mgr, identity, 42, 7, None, 100, 1, None),
+        reserve_identity_claim(
+            mgr,
+            identity,
+            42,
+            7,
+            None,
+            100,
+            1,
+            None,
+            TEST_ADMISSION,
+            Commit::Initiator(0)
+        ),
         ClaimReservation::Reserved { superseded: None }
     ));
     assert!(publish_identity_claim(mgr, identity, 100, 1));
     assert!(retire_identity_claim(mgr, identity, 100, 1));
 
     assert!(matches!(
-        reserve_identity_claim(mgr, identity, 42, 6, None, 200, 2, None),
+        reserve_identity_claim(
+            mgr,
+            identity,
+            42,
+            6,
+            None,
+            200,
+            2,
+            None,
+            TEST_ADMISSION,
+            Commit::Initiator(0)
+        ),
         ClaimReservation::Rejected(_)
     ));
 
-    let equal_superseded = match reserve_identity_claim(mgr, identity, 42, 7, None, 200, 2, None) {
+    let equal_superseded = match reserve_identity_claim(
+        mgr,
+        identity,
+        42,
+        7,
+        None,
+        200,
+        2,
+        None,
+        TEST_ADMISSION,
+        Commit::Initiator(0),
+    ) {
         ClaimReservation::Reserved {
             superseded: Some(retired),
         } => retired,
         ClaimReservation::Reserved { superseded: None } => {
             panic!("equal-session reconnect must retain the retired fence")
         }
+        ClaimReservation::Yielded(_) => panic!("no crossing dial in this test"),
         ClaimReservation::Rejected(detail) => {
             panic!("equal-session reconnect must be admitted: {detail}")
         }
@@ -157,7 +192,18 @@ fn retired_identity_claim_rejects_lower_session_and_allows_reconnect() {
     abort_identity_claim(mgr, identity, 200, 2, Some(equal_superseded));
 
     assert!(matches!(
-        reserve_identity_claim(mgr, identity, 42, 8, None, 300, 3, None),
+        reserve_identity_claim(
+            mgr,
+            identity,
+            42,
+            8,
+            None,
+            300,
+            3,
+            None,
+            TEST_ADMISSION,
+            Commit::Initiator(0)
+        ),
         ClaimReservation::Reserved {
             superseded: Some(LiveClaim {
                 state: ClaimState::Retired,
@@ -186,6 +232,7 @@ fn claim_reserve_rejects_different_credential_over_published() {
 
     // B presents a different credential for the same NodeId ⇒ reject.
     match reserve_claim(mgr, 42, cred_b.as_ref(), 200, 2) {
+        ClaimReservation::Yielded(_) => panic!("no crossing dial in this test"),
         ClaimReservation::Rejected(detail) => {
             assert!(detail.contains("another credential"), "detail: {detail}");
         }
@@ -220,6 +267,7 @@ fn claim_reserve_supersedes_same_credential_and_abort_restores_it() {
         ClaimReservation::Reserved { superseded } => {
             superseded.expect("same-credential reconnect supersedes the old claim")
         }
+        ClaimReservation::Yielded(_) => panic!("no crossing dial in this test"),
         ClaimReservation::Rejected(d) => panic!("same-credential reconnect rejected: {d}"),
     };
     assert_eq!(superseded.conn_id, 100);
@@ -352,6 +400,8 @@ fn claim_reserve_waits_on_reserved_then_checks_predecessor() {
                 200,
                 200,
                 Some(&predecessor),
+                TEST_ADMISSION,
+                Commit::Initiator(0),
             );
             returned_thread.store(true, Ordering::Release);
             matches!(outcome, ClaimReservation::Reserved { .. })
@@ -408,6 +458,7 @@ fn claim_concurrent_reserve_publish_yields_exactly_one_owner() {
                         winners.lock_or_recover().push(conn_id);
                     }
                 }
+                ClaimReservation::Yielded(_) => panic!("no crossing dial in this test"),
                 ClaimReservation::Rejected(_) => {}
             }
         }));
@@ -450,6 +501,10 @@ fn route_alias_allocation_preserves_retired_identities_and_refuses_exhaustion() 
                 conn_id: -1,
                 publication_token: 1,
                 state: crate::peer_binding::ClaimState::Retired,
+                origin: ConnectionOrigin::Dialled,
+                published_at: 0,
+                commit_order: 0,
+                superseding: None,
             },
         );
     }
@@ -461,4 +516,273 @@ fn route_alias_allocation_preserves_retired_identities_and_refuses_exhaustion() 
     );
     claims.remove(&test_node_identity(42));
     assert_eq!(select_route_alias(&claims, 1, newcomer, 0), Some(42));
+}
+
+/// Reserve the peer's session-1 claim as an admission from `origin`.
+fn reserve_crossing_claim(
+    mgr: &HewConnMgr,
+    origin: ConnectionOrigin,
+    conn_id: c_int,
+    token: u64,
+) -> ClaimReservation {
+    reserve_identity_claim(
+        mgr,
+        test_node_identity(42),
+        42,
+        1,
+        None,
+        conn_id,
+        token,
+        None,
+        AdmissionStart::now(mgr, origin),
+        Commit::Responder,
+    )
+}
+
+fn publish_crossing_claim(mgr: &HewConnMgr, origin: ConnectionOrigin, conn_id: c_int, token: u64) {
+    assert!(matches!(
+        reserve_crossing_claim(mgr, origin, conn_id, token),
+        ClaimReservation::Reserved { .. }
+    ));
+    assert!(publish_identity_claim(
+        mgr,
+        test_node_identity(42),
+        conn_id,
+        token
+    ));
+}
+
+/// The deciding end of a crossing keeps the connection the lower `NodeId`
+/// dialled. The test manager's `NodeId` sorts below the peer's, so its own
+/// dial wins:
+/// an accepted dial in flight when ours published yields to it, and our dial
+/// in flight when the peer's published replaces that, whatever the reconnect
+/// predecessor it carries.
+#[test]
+fn crossing_dial_keeps_the_lower_node_dial() {
+    let (mgr_ptr, transport) = claim_test_mgr();
+    // SAFETY: mgr_ptr is live until free below.
+    let mgr = unsafe { &*mgr_ptr };
+    let identity = test_node_identity(42);
+    assert!(local_dials_first(
+        mgr.local_identity.expect("test manager identity"),
+        identity
+    ));
+
+    let accepted = AdmissionStart::now(mgr, ConnectionOrigin::Accepted);
+    publish_crossing_claim(mgr, ConnectionOrigin::Dialled, 100, 5);
+    match reserve_identity_claim(
+        mgr,
+        identity,
+        42,
+        1,
+        None,
+        200,
+        6,
+        None,
+        accepted,
+        Commit::Responder,
+    ) {
+        ClaimReservation::Yielded(winner) => assert_eq!(winner.publication_token, 5),
+        ClaimReservation::Reserved { .. } => panic!("the peer's crossing dial replaced ours"),
+        ClaimReservation::Rejected(detail) => panic!("crossing dial rejected: {detail}"),
+    }
+    let kept = claim_snapshot(mgr, 42).expect("our dial keeps the claim");
+    assert_eq!((kept.conn_id, kept.state), (100, ClaimState::Published));
+
+    assert!(retire_identity_claim(mgr, identity, 100, 5));
+    let stale = ReconnectOwner {
+        node_id: identity,
+        session_incarnation: 1,
+        publication_token: 5,
+    };
+    // The peer's dial reserved before ours began but published after: still a
+    // crossing.
+    assert!(matches!(
+        reserve_crossing_claim(mgr, ConnectionOrigin::Accepted, 300, 7),
+        ClaimReservation::Reserved { .. }
+    ));
+    let dialled = AdmissionStart::now(mgr, ConnectionOrigin::Dialled);
+    assert!(publish_identity_claim(mgr, identity, 300, 7));
+    match reserve_identity_claim(
+        mgr,
+        identity,
+        42,
+        1,
+        None,
+        400,
+        8,
+        Some(&stale),
+        dialled,
+        Commit::Responder,
+    ) {
+        ClaimReservation::Reserved { superseded } => {
+            assert_eq!(superseded.map(|claim| claim.conn_id), Some(300));
+        }
+        ClaimReservation::Yielded(_) => panic!("our crossing dial yielded to the peer's"),
+        ClaimReservation::Rejected(detail) => panic!("our crossing dial rejected: {detail}"),
+    }
+    free_claim_test_mgr(mgr_ptr, transport);
+}
+
+/// The tie-break never pins a connection published before an admission began:
+/// a later redial from the other end still replaces it, as it must replace a
+/// half-open connection. A higher session always replaces, overlap or not.
+#[test]
+fn crossing_dial_tie_break_is_bounded_to_overlapping_admissions() {
+    let (mgr_ptr, transport) = claim_test_mgr();
+    // SAFETY: mgr_ptr is live until free below.
+    let mgr = unsafe { &*mgr_ptr };
+    let identity = test_node_identity(42);
+
+    publish_crossing_claim(mgr, ConnectionOrigin::Dialled, 100, 5);
+    match reserve_crossing_claim(mgr, ConnectionOrigin::Accepted, 200, 6) {
+        ClaimReservation::Reserved { superseded } => {
+            assert_eq!(superseded.map(|claim| claim.conn_id), Some(100));
+        }
+        ClaimReservation::Yielded(_) => panic!("a later redial was pinned out"),
+        ClaimReservation::Rejected(detail) => panic!("later redial rejected: {detail}"),
+    }
+    assert!(publish_identity_claim(mgr, identity, 200, 6));
+
+    assert!(retire_identity_claim(mgr, identity, 200, 6));
+    let higher = AdmissionStart::now(mgr, ConnectionOrigin::Accepted);
+    publish_crossing_claim(mgr, ConnectionOrigin::Dialled, 300, 7);
+    match reserve_identity_claim(
+        mgr,
+        identity,
+        42,
+        2,
+        None,
+        400,
+        8,
+        None,
+        higher,
+        Commit::Responder,
+    ) {
+        ClaimReservation::Reserved { superseded } => {
+            assert_eq!(superseded.map(|claim| claim.conn_id), Some(300));
+        }
+        ClaimReservation::Yielded(_) => panic!("a higher session yielded to an old one"),
+        ClaimReservation::Rejected(detail) => panic!("higher session rejected: {detail}"),
+    }
+    free_claim_test_mgr(mgr_ptr, transport);
+}
+
+/// Under the responder-commit step the initiator keeps whichever connection
+/// the responder committed last, in whatever order the commits arrive and
+/// whichever end dialled it, so both ends keep the same one.
+#[test]
+fn initiator_keeps_the_last_responder_commit() {
+    let (mgr_ptr, transport) = claim_test_mgr();
+    // SAFETY: mgr_ptr is live until free below.
+    let mgr = unsafe { &*mgr_ptr };
+    let identity = test_node_identity(42);
+    let reserve = |origin, conn_id, token, order| {
+        reserve_identity_claim(
+            mgr,
+            identity,
+            42,
+            1,
+            None,
+            conn_id,
+            token,
+            None,
+            AdmissionStart::now(mgr, origin),
+            Commit::Initiator(order),
+        )
+    };
+
+    // The later commit arrives first: the earlier one yields to it, even
+    // though the earlier one was this node's own dial.
+    assert!(matches!(
+        reserve(ConnectionOrigin::Accepted, 100, 5, 20),
+        ClaimReservation::Reserved { superseded: None }
+    ));
+    assert!(publish_identity_claim(mgr, identity, 100, 5));
+    match reserve(ConnectionOrigin::Dialled, 200, 6, 10) {
+        ClaimReservation::Yielded(winner) => assert_eq!(winner.publication_token, 5),
+        ClaimReservation::Reserved { .. } => panic!("an earlier commit replaced a later one"),
+        ClaimReservation::Rejected(detail) => panic!("earlier commit rejected: {detail}"),
+    }
+
+    // A later commit replaces the kept connection, even one this node
+    // accepted before its own dial began.
+    match reserve(ConnectionOrigin::Dialled, 300, 7, 30) {
+        ClaimReservation::Reserved { superseded } => {
+            assert_eq!(superseded.map(|claim| claim.conn_id), Some(100));
+        }
+        ClaimReservation::Yielded(_) => panic!("a later commit yielded"),
+        ClaimReservation::Rejected(detail) => panic!("later commit rejected: {detail}"),
+    }
+    assert!(publish_identity_claim(mgr, identity, 300, 7));
+    let kept = claim_snapshot(mgr, 42).expect("the last commit holds the claim");
+    assert_eq!((kept.conn_id, kept.commit_order), (300, 30));
+    free_claim_test_mgr(mgr_ptr, transport);
+}
+
+/// A reservation from a peer that restarted at a later session takes all
+/// authority from the earlier session's connection at once, inbound and
+/// outbound alike: that incarnation has gone, so it carries nothing while the
+/// new connection settles.
+#[test]
+fn reservation_for_a_later_session_takes_the_old_connection_authority_at_once() {
+    let ops = Box::new(crate::transport::HewTransportOps {
+        connect: None,
+        listen: None,
+        accept: None,
+        send: None,
+        recv: None,
+        close_conn: None,
+        destroy: None,
+    });
+    let transport_ptr = Box::into_raw(Box::new(HewTransport {
+        ops: &raw const *ops,
+        r#impl: std::ptr::null_mut(),
+    }));
+    let cfg = crate::cluster::ClusterConfig {
+        local_node_id: 1,
+        ..crate::cluster::ClusterConfig::default()
+    };
+    // SAFETY: cfg valid for the call.
+    let cluster = unsafe { crate::cluster::hew_cluster_new(&raw const cfg) };
+    // SAFETY: test-owned pointers remain valid until the explicit cleanup.
+    unsafe {
+        let mgr = hew_connmgr_new(transport_ptr, None, std::ptr::null_mut(), cluster, 1);
+        let mut old = test_actor(20);
+        old.peer_node_id = 3;
+        old.posture = crate::peer_binding::Posture::Strict;
+        old.state.store(CONN_STATE_ACTIVE, Ordering::Release);
+        (&*mgr).connections.access(|conns| conns.push(old));
+        let old_token = test_publish_claim(&*mgr, 3, 20);
+        let identity = test_node_identity(3);
+        // A restarted peer (session 2) reserves conn 21.
+        let new_token = next_publication_token(&*mgr).unwrap();
+        let reserved = reserve_identity_claim(
+            &*mgr,
+            identity,
+            3,
+            2,
+            None,
+            21,
+            new_token,
+            None,
+            TEST_ADMISSION,
+            Commit::Responder,
+        );
+        assert!(matches!(reserved, ClaimReservation::Reserved { .. }));
+        let inbound = authenticated_peer_node_id_for_conn(&*mgr, 20);
+        let inbound_wait = wait_authenticated_peer_node_id_for_conn(&*mgr, 20, old_token);
+        let outbound = claim_send(&*mgr, 20, None).is_some();
+        let by_identity = claim_send_by_identity(&*mgr, identity, None).is_some();
+        assert_eq!(
+            (inbound, inbound_wait, outbound, by_identity),
+            (0, 0, false, false),
+            "the restarted peer's earlier connection carries nothing"
+        );
+        hew_connmgr_free(mgr);
+        crate::cluster::hew_cluster_free(cluster);
+        drop(Box::from_raw(transport_ptr));
+    }
+    drop(ops);
 }

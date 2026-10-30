@@ -4,14 +4,15 @@ use std::time::Duration;
 
 use super::control::{handle_control_frame, handle_link_down_frame};
 use super::identity_claim::{
-    abort_claim, publish_claim, publish_connection_established, reserve_claim,
+    abort_claim, local_dials_first, publish_claim, publish_connection_established, reserve_claim,
     reserve_unverified_identity_claim, retire_claim, retire_connection_publication,
-    test_node_identity, test_publish_claim, test_reserve_unverified,
+    test_node_identity, test_publish_claim, test_reserve_unverified, TEST_ADMISSION,
 };
 use super::identity_claim::{
     abort_identity_claim, clear_superseded_claim_if_current, publish_identity_claim,
     publish_identity_connection_established, refuse_established_publication,
-    reserve_identity_claim, retire_identity_claim, ClaimReservation, CLAIM_RESERVE_WAIT_MS,
+    reserve_identity_claim, retire_identity_claim, AdmissionStart, ClaimReservation, Commit,
+    CLAIM_RESERVE_WAIT_MS,
 };
 use super::reader::reader_cleanup;
 use super::reconnect::{
@@ -25,7 +26,7 @@ use crate::envelope::{
     CTRL_UNLINK, REGISTRY_GOSSIP_OP_ADD, REGISTRY_GOSSIP_OP_REMOVE, WIRE_VERSION,
 };
 use crate::node_identity::{HewLocation, Location};
-use crate::peer_binding::ClaimState;
+use crate::peer_binding::{ClaimState, ConnectionOrigin};
 
 mod claim_wait;
 mod claims;
@@ -246,6 +247,7 @@ fn snapshot_connections_json_emits_expected_array() {
         seed_targets: PoisonSafe::new(Vec::new()),
         seed_identities: PoisonSafe::new(Vec::new()),
         reader_lifecycle: Arc::new(ReaderLifecycle::default()),
+        inbound_admissions: Arc::new(ReaderLifecycle::default()),
         next_publication_token: AtomicU64::new(1),
         gossip_in: AtomicU64::new(0),
         gossip_out: Arc::new(AtomicU64::new(0)),

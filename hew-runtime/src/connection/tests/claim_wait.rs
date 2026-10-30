@@ -301,6 +301,7 @@ fn remove_before_publication_restores_superseded_claim() {
                 ClaimReservation::Reserved { superseded } => {
                     superseded.expect("reconnect must supersede the published claim")
                 }
+                ClaimReservation::Yielded(_) => panic!("no crossing dial in this test"),
                 ClaimReservation::Rejected(detail) => {
                     panic!("same-credential reconnect must reserve: {detail}")
                 }

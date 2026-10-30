@@ -218,6 +218,43 @@ pub struct LiveClaim {
     pub publication_token: u64,
     /// Reserved (mid-admission) vs Published (established).
     pub state: ClaimState,
+    /// Which end opened the connection; decides crossing dials.
+    pub origin: ConnectionOrigin,
+    /// The manager's admission order when this claim published; zero until it
+    /// does. Admissions that began at or before it overlapped this one.
+    pub published_at: u64,
+    /// The order the responder committed this connection in, under the
+    /// responder-commit step; zero when the pair did not negotiate it.
+    pub commit_order: u64,
+    /// While `Reserved`, the published connection this admission is replacing,
+    /// as `(conn_id, publication_token)`: it carries the peer's traffic until
+    /// the reservation publishes or aborts.
+    pub superseding: Option<(c_int, u64)>,
+}
+
+impl LiveClaim {
+    /// The connection the peer's traffic takes under this claim, as
+    /// `(conn_id, publication_token)`: the published one, or the one a
+    /// reservation is replacing.
+    #[must_use]
+    pub fn carrier(&self) -> Option<(c_int, u64)> {
+        match self.state {
+            ClaimState::Published => Some((self.conn_id, self.publication_token)),
+            ClaimState::Reserved => self.superseding,
+            ClaimState::Retired => None,
+        }
+    }
+}
+
+/// Which end opened a claimed connection.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ConnectionOrigin {
+    /// This node dialled the peer.
+    Dialled,
+    /// The peer dialled this node.
+    Accepted,
+    /// A relayed circuit: neither end dialled the other directly.
+    Relayed,
 }
 
 /// A node's stable Noise static keypair (TCP transport identity).

@@ -425,3 +425,70 @@ fn reconnect_after_retirement_is_admitted_end_to_end() {
     }
     crate::registry::hew_registry_clear();
 }
+
+/// Freeing a runtime joins the SWIM ticker of a node it started, even when the
+/// program never stopped the node, as `hew_runtime_cleanup` does. The ticker
+/// runs with that runtime entered, so it must not outlive it. Counterfactual:
+/// the ticker keeps running and its next retirement reads the freed runtime
+/// (an invalid read under valgrind in `retire_member_quarantine`).
+#[test]
+fn freeing_a_runtime_joins_its_running_nodes_ticker() {
+    const CHILD: &str = "HEW_SWIM_RUNTIME_FREED_CHILD";
+    const NODE: u16 = 380;
+    const RETIRED: u16 = 381;
+    if std::env::var_os(CHILD).is_none() {
+        // The node is leaked running, so isolate it from other cases.
+        let output = std::process::Command::new(std::env::current_exe().expect("test binary"))
+            .args([
+                "hew_node::tests::swim::freeing_a_runtime_joins_its_running_nodes_ticker",
+                "--exact",
+                "--nocapture",
+                "--test-threads=1",
+            ])
+            .env(CHILD, "1")
+            .output()
+            .expect("isolated runtime-free case");
+        assert!(
+            output.status.success(),
+            "runtime-free case failed:\n{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        return;
+    }
+
+    let _guard = crate::runtime_test_guard();
+    let _swim_env = SwimTimingEnv::fast();
+    let runtime = Box::new(crate::runtime::RuntimeInner::new(
+        crate::scheduler::worker_less_scheduler(),
+    ));
+    // SAFETY: the entered scope ends before the runtime is dropped.
+    let entered = unsafe { crate::runtime::enter(&runtime) };
+    let bind = CString::new("127.0.0.1:0").expect("bind address");
+    // SAFETY: the node is new; it is deliberately left running.
+    let node = unsafe { hew_node_new(NODE, bind.as_ptr()) };
+    // SAFETY: the node is new and stopped.
+    unsafe {
+        install_test_auth(node, NODE);
+        assert_eq!(hew_node_start(node), 0);
+    }
+    // SAFETY: the running node owns its cluster.
+    let cluster = unsafe { &*(*node).cluster };
+    cluster.apply_swim_gossip(&[(RETIRED, 2, crate::cluster::MEMBER_DEAD, 3)]);
+    drop(entered);
+    assert!(crate::swim_driver::driver_running_for_test(node));
+
+    drop(runtime);
+    assert!(!crate::swim_driver::driver_running_for_test(node));
+    for _ in 0..100 {
+        crate::deterministic::hew_simtime_advance_ms(SWIM_TEST_PERIOD_MS.cast_signed());
+    }
+    thread::sleep(Duration::from_millis(20));
+    assert_eq!(
+        cluster.member_state(RETIRED),
+        crate::cluster::MEMBER_DEAD,
+        "no ticker runs against the freed runtime"
+    );
+    // Stopping the node would consult a runtime's node slot; it is leaked.
+    std::process::exit(0);
+}

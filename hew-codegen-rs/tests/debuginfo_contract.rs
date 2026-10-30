@@ -68,7 +68,8 @@ fn verified(source: &str) -> hew_mir::VerifiedPhysicalModule {
     hew_mir::lower_physical_module(&semantic, target).expect("verified physical module")
 }
 
-/// Emit `PROGRAM` from `dir` and return the native object.
+/// Emit `PROGRAM` from `dir` and return the native object; the textual IR
+/// sits beside it.
 fn emit(dir: &Path, opt_level: OptLevel, debug: bool) -> PathBuf {
     let source = dir.join("contract.hew");
     std::fs::write(&source, PROGRAM).expect("write fixture source");
@@ -79,7 +80,7 @@ fn emit(dir: &Path, opt_level: OptLevel, debug: bool) -> PathBuf {
             out_dir: dir,
             target_triple: None,
             opt_level,
-            emit_llvm: false,
+            emit_llvm: true,
             address_sanitizer: false,
             debug_source: debug.then_some(DebugSource {
                 path: &source,
@@ -144,7 +145,6 @@ struct Subprogram {
     name: String,
     linkage_name: Option<String>,
     artificial: bool,
-    prototyped: bool,
     decl_line: u64,
     low: u64,
     high: u64,
@@ -200,7 +200,7 @@ fn read_unit(object: &Path) -> Unit {
     let mut current: Option<isize> = None;
     let mut entries = unit.entries();
     while let Some(entry) = entries.next_dfs().expect("walk DIEs") {
-        let depth = isize::try_from(entry.depth()).expect("DIE depth");
+        let depth = entry.depth();
         if current.is_some_and(|level| depth <= level) {
             current = None;
         }
@@ -220,7 +220,6 @@ fn read_unit(object: &Path) -> Unit {
                         subprogram.linkage_name = Some(attr_string(attribute.value()));
                     }
                     constants::DW_AT_artificial => subprogram.artificial = true,
-                    constants::DW_AT_prototyped => subprogram.prototyped = true,
                     constants::DW_AT_decl_line => {
                         subprogram.decl_line = attribute.udata_value().unwrap_or(0);
                     }
@@ -303,8 +302,9 @@ impl Unit {
 }
 
 /// A subprogram is named for a person, carries no mangled linkage name a
-/// debugger would index it by instead, and has a prototyped signature that
-/// lists its source parameters, in every part that runs source.
+/// debugger would index it by instead, and lists its source parameters in
+/// every part that runs source. Its subroutine type is prototyped; LLVM
+/// writes `DW_AT_prototyped` only for C-family units, so the IR shows it.
 #[test]
 fn subprograms_carry_display_names_and_prototyped_parameters() {
     let dir = tempfile::tempdir().expect("temp dir");
@@ -318,19 +318,36 @@ fn subprograms_carry_display_names_and_prototyped_parameters() {
         );
         for part in parts {
             assert!(!part.artificial, "`{name}` runs source");
-            assert!(part.prototyped, "`{name}` has a prototyped signature");
             assert_eq!(part.parameters, parameters, "`{name}` keeps its parameters");
         }
     }
     assert!(!unit.named("main").is_empty(), "the Hew entry is `main`");
-    for subprogram in &unit.subprograms {
+    let ir = std::fs::read_to_string(dir.path().join("contract.ll")).expect("textual IR");
+    let signatures: Vec<&str> = ir
+        .lines()
+        .filter(|line| line.contains("DISubroutineType("))
+        .collect();
+    assert!(!signatures.is_empty(), "subprograms have subroutine types");
+    for signature in signatures {
         assert!(
-            subprogram.linkage_name.is_none(),
-            "{} carries no linkage name",
-            subprogram.name
+            signature.contains("DIFlagPrototyped"),
+            "{signature} is prototyped"
+        );
+    }
+    for subprogram in &unit.subprograms {
+        // LLVM's coroutine split names the clone it makes of a body after the
+        // clone's symbol; we write no linkage name ourselves.
+        assert!(
+            subprogram
+                .linkage_name
+                .as_deref()
+                .is_none_or(|linkage| linkage.ends_with(".resume")),
+            "{} carries linkage name {:?}",
+            subprogram.name,
+            subprogram.linkage_name
         );
         assert!(
-            !subprogram.name.starts_with("__hew_fn_"),
+            subprogram.artificial || !subprogram.name.starts_with("__hew_fn_"),
             "{} is not named by its symbol",
             subprogram.name
         );
@@ -391,13 +408,18 @@ fn each_line_starts_one_statement_and_prologue_ends_on_the_body() {
         .iter()
         .filter(|subprogram| !subprogram.artificial)
     {
+        // LLVM's coroutine split re-lays a resume part's blocks, and it marks
+        // the first row of a re-entered block as a statement on its own.
+        let split = subprogram.linkage_name.is_some();
+        // The row at the entry address carries the scope line, which is the
+        // first statement; the prologue ends on that statement's own row.
         let mut starts: BTreeMap<u64, Vec<u64>> = BTreeMap::new();
         for row in unit.rows_in(subprogram) {
-            if row.is_stmt && row.line != 0 && row.line != subprogram.decl_line {
+            if row.is_stmt && row.line != 0 && row.address != subprogram.low {
                 starts.entry(row.line).or_default().push(row.address);
             }
         }
-        for (line, addresses) in starts {
+        for (line, addresses) in starts.into_iter().filter(|_| !split) {
             assert_eq!(
                 addresses.len(),
                 1,

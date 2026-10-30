@@ -243,7 +243,11 @@ impl<'ctx> DebugEmitter<'ctx> {
             subroutine,
             /* is_local_to_unit */ false,
             /* is_definition */ true,
-            line,
+            // No scope line: LLVM gives the argument spills the scope line
+            // and ends the prologue on the first of them, before the
+            // parameters reach their slots. With none, the prologue ends on
+            // the branch into the first statement.
+            0,
             flags,
             self.optimized,
         );
@@ -365,6 +369,11 @@ impl<'ctx> DebugEmitter<'ctx> {
             scope,
             None,
         )
+    }
+
+    /// Whether the unit describes optimized code.
+    pub(super) fn optimized(&self) -> bool {
+        self.optimized
     }
 
     /// A debug location at an exact scope and line.

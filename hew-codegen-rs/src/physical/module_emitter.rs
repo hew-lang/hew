@@ -93,7 +93,7 @@ pub(super) fn build_module_with_host<'ctx>(
 /// Every defined body keeps its frame pointer, with or without `-g`, so the
 /// crash reporter and debuggers can walk Hew frames at every optimization
 /// level and the `.text` of `--release` and `--release -g` stays identical.
-fn keep_frame_pointers(module: &inkwell::modules::Module<'_>) {
+fn keep_frame_pointers(module: &inkwell::module::Module<'_>) {
     for function in module.get_functions() {
         if function.count_basic_blocks() > 0 {
             let context = module.get_context();

@@ -254,6 +254,103 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
             Vec::new()
         };
         for block in &self.function.blocks {
+            let tail = self.value.get_last_basic_block();
+            self.emit_block(block, &chunks)?;
+            self.keep_with_block(block, tail);
+        }
+        self.group_by_line();
+        Ok(())
+    }
+
+    /// Lay the blocks of an unoptimized debug build out line by line.
+    ///
+    /// Physical blocks follow block ids, and a source line's code (checked
+    /// arithmetic's fault landings, join and exit blocks) lands in several of
+    /// them, so a line would resume after later lines and start a second
+    /// statement. Grouping blocks by the line they open with, in order of
+    /// first appearance, keeps each line's code contiguous. A block with no
+    /// line of its own stays with the block before it. The optimizer lays out
+    /// optimized builds itself, so those are left alone.
+    fn group_by_line(&self) {
+        let Some((emitter, ..)) = &self.debug else {
+            return;
+        };
+        if emitter.optimized() {
+            return;
+        }
+        let mut groups: Vec<(u32, Vec<BasicBlock<'ctx>>)> = Vec::new();
+        let mut current = 0;
+        let mut blocks = self.value.get_basic_blocks().into_iter();
+        let Some(entry) = blocks.next() else {
+            return;
+        };
+        for block in blocks {
+            let line = block
+                .get_instructions()
+                .filter_map(|instruction| instruction.get_debug_location())
+                .map(|location| location.get_line())
+                .find(|line| *line != 0);
+            if let Some(line) = line {
+                current = line;
+            }
+            match groups.iter_mut().find(|(key, _)| *key == current) {
+                Some((_, members)) => members.push(block),
+                None => groups.push((current, vec![block])),
+            }
+        }
+        let mut anchor = entry;
+        for block in groups.into_iter().flat_map(|(_, members)| members) {
+            if block.move_after(anchor).is_ok() {
+                anchor = block;
+            }
+        }
+    }
+
+    /// Lay the LLVM blocks a physical block's emission created (checked
+    /// arithmetic's fault and continuation arms, call status dispatch)
+    /// directly after it, in creation order, with the fault landings it
+    /// branches to. A source line's code then stays
+    /// contiguous, so it starts one statement, instead of resuming after
+    /// whichever physical blocks the function's tail happened to hold.
+    fn keep_with_block(&self, block: &PhysicalBlock, tail: Option<BasicBlock<'ctx>>) {
+        let mut created = Vec::new();
+        let mut next = tail.and_then(|tail| tail.get_next_basic_block());
+        while let Some(current) = next {
+            created.push(current);
+            next = current.get_next_basic_block();
+        }
+        let mut anchor = self.blocks[&block.id];
+        while let Some(last) = anchor
+            .get_next_basic_block()
+            .filter(|candidate| created.first() == Some(candidate))
+        {
+            anchor = last;
+            created.remove(0);
+        }
+        for moved in created {
+            moved.move_after(anchor).ok();
+            anchor = moved;
+        }
+        // A checked operation's fault landing runs on the operation's own
+        // line, so it follows the operation instead of reopening that line
+        // after later code.
+        if let PhysicalTerminator::CheckedBinary { failures, .. } = &block.terminator {
+            for failure in failures {
+                if let Some(landing) = self.blocks.get(&failure.edge.target) {
+                    if *landing != anchor && landing.move_after(anchor).is_ok() {
+                        anchor = *landing;
+                    }
+                }
+            }
+        }
+    }
+
+    fn emit_block(
+        &self,
+        block: &PhysicalBlock,
+        chunks: &[hew_mir::physical::PhysicalLoopChunk],
+    ) -> CodegenResult<()> {
+        {
             self.builder.position_at_end(self.blocks[&block.id]);
             if let Some(chunk) = chunks.iter().find(|chunk| chunk.blocks.contains(&block.id)) {
                 if block.id == chunk.header {
@@ -263,7 +360,7 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                         .build_unreachable()
                         .llvm_ctx("omit outlined loop block")?;
                 }
-                continue;
+                return Ok(());
             }
             // Blocks are emitted in id order, not execution order, so a block
             // opens on its own first source point rather than inheriting the
@@ -313,7 +410,14 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
             .sites
             .range((block, 0)..=(block, u32::MAX))
             .next()
-            .map(|(_, offset)| *offset);
+            .map(|(_, offset)| *offset)
+            // The entry's own jump to the first statement is that statement's
+            // first instruction, where `prologue_end` lands.
+            .or_else(|| {
+                (block == self.function.entry)
+                    .then(|| debug::first_site_from(self.function, attribution, block))
+                    .flatten()
+            });
         let location = first.map_or_else(
             || emitter.unattributed_location(self.ctx, function_debug),
             |offset| emitter.location(self.ctx, function_debug, offset),

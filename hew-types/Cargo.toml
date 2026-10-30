@@ -33,6 +33,9 @@ hew-lexer = { path = "../hew-lexer" }
 serde.workspace = true
 serde_json.workspace = true
 stacker.workspace = true
+# Insertion-ordered maps: iteration order reaches diagnostics, so it must
+# not depend on per-process hash seeds.
+indexmap.workspace = true
 # `EnumIter` derive: makes `all_runtime_call_families()` compiler-complete.
 # A new `RuntimeCallFamily` variant is enumerated automatically, so a
 # pre-staged family can no longer be silently omitted from the catalog.

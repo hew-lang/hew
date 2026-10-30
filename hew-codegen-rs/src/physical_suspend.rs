@@ -672,40 +672,11 @@ pub(super) fn await_child<'ctx>(
             .llvm_ctx("restore current child state")?;
         coro::invocation_outcome(ctx, builder, state.into_pointer_value(), private)
     };
-    let free_handle = |name: &str, slot: PointerValue<'ctx>| -> CodegenResult<()> {
+    let frame_operation = |intrinsic: &str| -> CodegenResult<()> {
         let handle = builder
-            .build_load(pointer, slot, "call.child.handle")
+            .build_load(pointer, frame_slot, "call.child.handle")
             .llvm_ctx("restore current child handle")?;
-        match name {
-            "hew_cont_resume" => {
-                return coro::handle_operation(
-                    ctx,
-                    llvm,
-                    builder,
-                    handle.into_pointer_value(),
-                    "llvm.coro.resume",
-                )
-            }
-            "hew_cont_destroy" => {
-                return coro::handle_operation(
-                    ctx,
-                    llvm,
-                    builder,
-                    handle.into_pointer_value(),
-                    "llvm.coro.destroy",
-                )
-            }
-            _ => {}
-        }
-        let function = get_or_declare_external(
-            llvm,
-            name,
-            ctx.void_type().fn_type(&[pointer.into()], false),
-        )?;
-        builder
-            .build_call(function, &[handle.into()], "")
-            .llvm_ctx("release child frame state")?;
-        Ok(())
+        coro::handle_operation(ctx, llvm, builder, handle.into_pointer_value(), intrinsic)
     };
     let poll = ctx.append_basic_block(function, "call.child.poll");
     let wait = ctx.append_basic_block(function, "call.child.wait");
@@ -732,23 +703,26 @@ pub(super) fn await_child<'ctx>(
     builder.position_at_end(wait);
     frame.suspend(ctx, builder, resume, destroy)?;
     builder.position_at_end(resume);
-    free_handle("hew_cont_resume", frame_slot)?;
+    frame_operation("llvm.coro.resume")?;
     builder
         .build_unconditional_branch(poll)
         .llvm_ctx("poll resumed child")?;
     builder.position_at_end(destroy);
-    free_handle("hew_cont_destroy", frame_slot)?;
+    frame_operation("llvm.coro.destroy")?;
     builder
         .build_unconditional_branch(outcome)
         .llvm_ctx("finish cancelled child")?;
     builder.position_at_end(done);
-    free_handle("hew_cont_destroy", frame_slot)?;
+    frame_operation("llvm.coro.destroy")?;
     builder
         .build_unconditional_branch(outcome)
         .llvm_ctx("finish completed child")?;
     builder.position_at_end(outcome);
     let status = state_value(true)?;
-    free_handle("hew_coro_state_free", state_slot)?;
+    let state = builder
+        .build_load(pointer, state_slot, "call.child.handle")
+        .llvm_ctx("restore current child handle")?;
+    coro::release_invocation(ctx, llvm, builder, state.into_pointer_value())?;
     builder
         .build_store(state_slot, pointer.const_null())
         .llvm_ctx("clear completed child root")?;

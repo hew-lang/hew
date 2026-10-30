@@ -34,7 +34,10 @@ cp "${REPO_DIR}/hew-cabi/include/hew.h" "${REPO_DIR}/hew-cabi/include/hew_host.h
 # Standard library sources (all .hew files, including subdirectories)
 cp -r "${REPO_DIR}/std/." "${STAGING}/std/"
 mkdir -p "${STAGING}/share/hew"
-cp "${REPO_DIR}/scripts/debug/hew-gdb.py" "${REPO_DIR}/scripts/debug/hew_lldb.py" "${STAGING}/share/hew/"
+for helper in "${REPO_DIR}"/scripts/debug/*; do
+    [[ -f "${helper}" ]] || continue
+    cp "${helper}" "${STAGING}/share/hew/"
+done
 hew_count=$(find "${STAGING}/std" -name "*.hew" | wc -l)
 echo "    stdlib sources:    ${hew_count} .hew files"
 

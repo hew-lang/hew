@@ -674,7 +674,9 @@ wasm-runtime-debug:
 	$(WASM_UNINSTRUMENTED_ENV) cargo build -p hew-runtime -p hew-std --target wasm32-wasip1 --no-default-features
 
 wasm-runtime-release:
-	$(WASM_UNINSTRUMENTED_ENV) cargo build -p hew-runtime -p hew-std --target wasm32-wasip1 --no-default-features --release
+	@# The release profile's line tables serve the native compiler; the
+	@# portable WASI archives have no debugger path and ship without them.
+	$(WASM_UNINSTRUMENTED_ENV) CARGO_PROFILE_RELEASE_DEBUG=0 cargo build -p hew-runtime -p hew-std --target wasm32-wasip1 --no-default-features --release
 
 # Stage the platform-independent release libraries for packaging/CI transfer.
 # Make owns product membership; callers choose only the destination.

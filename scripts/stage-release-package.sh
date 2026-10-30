@@ -1,8 +1,10 @@
 #!/bin/sh
 # Assemble the common contents of a Hew release archive.
 #
-# Platform jobs own stripping, signing, archive formats, and smoke tests. This
-# script owns the tree they all ship and refuses to publish a partial stage.
+# Platform jobs own signing, archive formats, and smoke tests. This script owns
+# the tree they all ship and refuses to publish a partial stage. With
+# --debug-symbols DIR it also moves the compiler's debug info out of the staged
+# binary into DIR (see scripts/split-debug-symbols.sh for the layout).
 set -eu
 
 usage() {
@@ -11,7 +13,7 @@ usage: scripts/stage-release-package.sh \
   --source-dir DIR --bin-dir DIR [--bin-suffix SUFFIX] \
   --native-lib FILE --native-triple TRIPLE --native-lib-name NAME \
   --wasi-lib-dir DIR [--optional-wasi] [--live-runtime FILE] \
-  --destination DIR --completion-shells "SHELL ..."
+  --destination DIR --completion-shells "SHELL ..." [--debug-symbols DIR]
 EOF
 }
 
@@ -31,13 +33,14 @@ destination=
 completion_shells=
 optional_wasi=false
 live_runtime=
+debug_symbols=
 
 while [ "$#" -gt 0 ]; do
     option=$1
     case "$option" in
     --source-dir | --bin-dir | --bin-suffix | --native-lib | \
         --native-triple | --native-lib-name | --wasi-lib-dir | \
-        --destination | --completion-shells | --live-runtime)
+        --destination | --completion-shells | --live-runtime | --debug-symbols)
         [ "$#" -ge 2 ] || die "$option requires a value"
         value=$2
         shift 2
@@ -68,6 +71,7 @@ while [ "$#" -gt 0 ]; do
     --destination) destination=$value ;;
     --completion-shells) completion_shells=$value ;;
     --live-runtime) live_runtime=$value ;;
+    --debug-symbols) debug_symbols=$value ;;
     esac
 done
 
@@ -121,6 +125,12 @@ if [ -n "$live_runtime" ]; then
     [ -f "$source_dir/hew-live/README.md" ] || die "missing live SDK documentation"
 fi
 
+if [ -n "$debug_symbols" ]; then
+    if [ -e "$debug_symbols" ] || [ -L "$debug_symbols" ]; then
+        die "debug symbols destination already exists: $debug_symbols"
+    fi
+fi
+
 destination_parent=$(dirname "$destination")
 mkdir -p "$destination_parent"
 if [ -e "$destination" ] || [ -L "$destination" ]; then
@@ -150,8 +160,11 @@ if [ "$include_wasi" = true ]; then
     done
 fi
 cp -R "$source_dir/std/." "$package_root/std/"
-cp "$source_dir/scripts/debug/hew-gdb.py" "$source_dir/scripts/debug/hew_lldb.py" \
-    "$package_root/share/hew/"
+# Every debugger helper: gdb and lldb scripts, the init files and the natvis.
+for helper in "$source_dir"/scripts/debug/*; do
+    [ -f "$helper" ] || continue
+    cp "$helper" "$package_root/share/hew/"
+done
 cp "$source_dir/hew-cabi/include/hew.h" "$source_dir/hew-cabi/include/hew_host.h" \
     "$package_root/include/"
 
@@ -190,5 +203,17 @@ if [ -n "$live_runtime" ]; then
         die "live transport preparation failed"
 fi
 
+if [ -n "$debug_symbols" ]; then
+    symbols_root=$stage_dir/symbols
+    sh "$source_dir/scripts/split-debug-symbols.sh" --triple "$native_triple" \
+        --built-dir "$bin_dir" --binary "$package_root/bin/hew$bin_suffix" \
+        --destination "$symbols_root" || die "debug symbol split failed"
+fi
+
 mv "$package_root" "$destination"
 printf 'Staged Hew release package at %s\n' "$destination"
+if [ -n "$debug_symbols" ]; then
+    mkdir -p "$(dirname "$debug_symbols")"
+    mv "$symbols_root" "$debug_symbols"
+    printf 'Staged Hew debug symbols at %s\n' "$debug_symbols"
+fi

@@ -417,8 +417,12 @@ pub(crate) fn safepoint_tick() {
 }
 
 /// Move the clock to the earliest pending timer and fire what is due there.
-/// Returns false when no timer is pending.
+/// Returns false when no timer is pending, or when the clock cannot move: a
+/// generator's clock reads zero throughout, so none of its timers can come due.
 fn advance_to_next_timer() -> bool {
+    if crate::generator::enabled() {
+        return false;
+    }
     let wheel = global_wheel();
     // SAFETY: the live process-owned wheel; the query takes its own lock.
     let Some(deadline) = (unsafe { crate::timer_wheel::timer_wheel_next_deadline(wheel) }) else {
@@ -593,11 +597,16 @@ pub extern "C" fn hew_guest_resume() {
 /// Shutdown waits measure their windows on the runtime clock. While that clock
 /// is simulated, the poll's wait passes in simulated time: a poll with nothing
 /// else to advance the clock moves it by `interval`, so a drain that cannot
-/// converge reaches its deadline instead of spinning on a frozen clock.
-pub(crate) fn drain_poll(interval: std::time::Duration) {
+/// converge reaches its deadline instead of spinning on a frozen clock. A
+/// caller whose last sample was already idle is only confirming quiescence;
+/// its poll leaves a simulated clock where it is, so a drain that converges
+/// adds no virtual time that the program could observe.
+pub(crate) fn drain_poll(interval: std::time::Duration, idle: bool) {
     if !active() {
         if crate::deterministic::simtime_now().is_some() {
-            advance_simulated_clock(interval);
+            if !idle {
+                advance_simulated_clock(interval);
+            }
             std::thread::yield_now();
         } else {
             std::thread::sleep(interval);
@@ -611,7 +620,7 @@ pub(crate) fn drain_poll(interval: std::time::Duration) {
     if host_work_in_flight() {
         #[cfg(not(target_arch = "wasm32"))]
         wait_for_host();
-    } else if active_config().virtual_clock {
+    } else if !idle && active_config().virtual_clock {
         advance_simulated_clock(interval);
     }
 }

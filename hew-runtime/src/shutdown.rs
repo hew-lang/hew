@@ -552,7 +552,7 @@ fn drain_until_idle(timeout: Duration) -> bool {
         if remaining.is_zero() {
             break;
         }
-        crate::driver::drain_poll(DRAIN_POLL_INTERVAL.min(remaining));
+        crate::driver::drain_poll(DRAIN_POLL_INTERVAL.min(remaining), idle);
     }
     // Covers the case where the deadline expired while sleeping but the runtime
     // became idle before the final observation.
@@ -631,7 +631,7 @@ pub(crate) fn drain_native_actor_cleanup(timeout: Duration) -> bool {
             shutdown_phase_store(PHASE_FAILED, Ordering::Release);
             return false;
         }
-        crate::driver::drain_poll(DRAIN_POLL_INTERVAL.min(remaining));
+        crate::driver::drain_poll(DRAIN_POLL_INTERVAL.min(remaining), settled);
     }
 }
 
@@ -1361,6 +1361,9 @@ mod tests {
         unsafe { hew_shutdown_register_supervisor(sup) };
         shutdown_phase_store(PHASE_QUIESCE, Ordering::Release);
 
+        let _simtime = crate::deterministic::TEST_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         crate::deterministic::hew_simtime_enable(1_000);
         let clock = SimulatedClock;
         // Keep the drain loop from ever converging.

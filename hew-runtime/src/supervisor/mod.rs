@@ -698,7 +698,7 @@ impl ConstructionReadiness {
 
     fn wait(&self, deadline: Instant) {
         if crate::driver::active() {
-            crate::driver::drain_poll(Duration::ZERO);
+            crate::driver::drain_poll(Duration::ZERO, false);
         } else {
             let ready = self.ready.lock_or_recover();
             if !*ready {

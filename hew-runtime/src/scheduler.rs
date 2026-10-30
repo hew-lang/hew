@@ -918,7 +918,7 @@ fn quiesce_until(timeout: Duration, settled: impl Fn() -> bool) {
         if deadline.remaining().is_zero() {
             return;
         }
-        crate::driver::drain_poll(SHUTDOWN_QUIESCE_POLL);
+        crate::driver::drain_poll(SHUTDOWN_QUIESCE_POLL, false);
     }
 }
 

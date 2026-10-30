@@ -346,11 +346,13 @@ both records set it:
 The initiator does not close the connection it superseded: it holds it until
 the responder shows which of the two it kept. The responder's first frame on
 the newer connection shows it kept that one, and the held connection is
-closed. If the responder closes the newer connection instead, the held one is
-published again. A held connection keeps the peer's authority: requests that
+closed. If the responder closes the newer connection instead, the held one
+takes its place before the newer one is retired, so the peer's member is never
+lost. A held connection keeps the peer's authority: requests that
 arrive on it are served, and their replies return on it. So neither end
 closes a connection the other still owns, and the connection the pair shares
-stays usable at both ends until the switch. No end waits on the network while
+stays usable at both ends until the switch; exchanges begun on a connection
+the responder then closes fail as on any lost connection. No end waits on the network while
 holding a reservation, so the two ends cannot wait on each other. The step
 costs the initiator half a round trip and the responder a round trip.
 

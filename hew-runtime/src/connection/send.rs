@@ -185,7 +185,7 @@ fn claim_send_admitted(
         });
     // A held loser still carries the peer's exchanges that began on it.
     let published = published
-        || super::identity_claim::held_loser_authority(manager, conn_id, Some(publication_token))
+        || super::identity_claim::held_loser_authority(manager, conn_id, publication_token)
             == Some(claim.route_slot);
     (published && !claim.publication_removed.load(Ordering::Acquire)).then_some(claim)
 }

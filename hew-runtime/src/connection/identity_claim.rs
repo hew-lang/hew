@@ -1136,7 +1136,7 @@ impl HeldLoser {
     }
 }
 
-/// The peer's route slot when `conn_id` (as `claim_token`, if given) is the
+/// The peer's route slot when `conn_id` as `claim_token` is the
 /// loser held by the connection that owns its peer's published claim, else 0;
 /// `None` while that claim is reserved by an admission still in flight.
 /// The peer may still be sending on a held loser: it is the one the peer
@@ -1145,14 +1145,15 @@ impl HeldLoser {
 pub(super) fn held_loser_authority(
     mgr: &HewConnMgr,
     conn_id: c_int,
-    claim_token: Option<u64>,
+    claim_token: u64,
 ) -> Option<u16> {
     let held = mgr.connections.access(|connections| {
         connections
             .iter()
             .find(|connection| {
                 connection.conn_id == conn_id
-                    && claim_token.is_none_or(|token| connection.publication_token == token)
+                    && connection.publication_token == claim_token
+                    && !connection.publication_removed.load(Ordering::Acquire)
                     && connection.state.load(Ordering::Acquire) == super::CONN_STATE_ACTIVE
                     && connection.posture == crate::peer_binding::Posture::Strict
                     && connection.peer_node_id != 0
@@ -1213,22 +1214,23 @@ pub(super) fn held_loser_peer_closed(held: &Mutex<HeldLoser>) {
 }
 
 /// Settle the loser held by the connection `conn_id` as `publication_token`,
-/// now removed: publish the loser again when the peer closed the holder and
-/// the claim the holder left is still vacant, and otherwise close it, so a
-/// held connection never outlives its holder.
+/// being removed: publish the loser in its place when the peer closed the
+/// holder and the holder still has the claim, and otherwise close it, so a
+/// held connection never outlives its holder. Returns whether the loser took
+/// the claim.
 pub(super) fn settle_held_loser(
     mgr: &HewConnMgr,
     node_id: Option<NodeId>,
     conn_id: c_int,
     publication_token: u64,
     held: &Mutex<HeldLoser>,
-) {
+) -> bool {
     let (loser, peer_closed) = {
         let mut held = held.lock_or_recover();
         (held.loser.take(), held.peer_closed)
     };
     let Some(loser) = loser else {
-        return;
+        return false;
     };
     let restored = peer_closed
         && node_id.is_some_and(|node_id| {
@@ -1237,6 +1239,7 @@ pub(super) fn settle_held_loser(
     if !restored {
         close_superseded_connection_once(mgr, loser.conn_id, loser.publication_token);
     }
+    restored
 }
 
 /// Publish `loser` again in place of the connection `conn_id` as
@@ -1281,8 +1284,10 @@ fn restore_held_loser(
     let prior = {
         let (lock, condvar) = &mgr.claims;
         let mut map = lock.lock_or_recover();
+        // The holder's claim, still published while the holder is removed,
+        // passes straight to the loser, so the peer is never lost meanwhile.
         let vacated = map.get(&node_id).is_none_or(|claim| {
-            claim.state == ClaimState::Retired
+            claim.state != ClaimState::Reserved
                 && claim.conn_id == conn_id
                 && claim.publication_token == publication_token
         });

@@ -12,7 +12,7 @@ use super::identity_claim::{
     abort_identity_claim, clear_superseded_claim_if_current, publish_identity_claim,
     publish_identity_connection_established, refuse_established_publication,
     reserve_identity_claim, retire_identity_claim, AdmissionStart, ClaimReservation, Commit,
-    CLAIM_RESERVE_WAIT_MS,
+    Switch, CLAIM_RESERVE_WAIT_MS,
 };
 use super::identity_claim::{held_loser_peer_closed, settle_held_loser, HeldLoser};
 use super::reader::reader_cleanup;

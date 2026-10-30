@@ -260,7 +260,7 @@ impl BuriedPeer {
             &sync,
             &removed,
             None,
-            None,
+            Switch::Close,
             true,
         ));
         Self {
@@ -718,7 +718,7 @@ fn held_refuting_connection_is_restored_refuting() {
         &Arc::default(),
         &Arc::default(),
         Some(loser),
-        Some(&held),
+        Switch::Hold(&held),
         true,
     ));
     assert_eq!(

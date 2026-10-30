@@ -415,7 +415,7 @@ fn publication_refuses_peer_the_cluster_rejects() {
             &established_sync,
             &established_removed,
             superseded,
-            None,
+            Switch::Close,
             false,
         );
         assert_eq!(
@@ -469,7 +469,7 @@ fn publication_refuses_peer_the_cluster_rejects() {
             &refused_sync,
             &refused_removed,
             refused_superseded,
-            None,
+            Switch::Close,
             false,
         );
 

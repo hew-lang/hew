@@ -22,7 +22,7 @@ use super::handshake::{
 use super::identity_claim::{
     abort_identity_claim, publish_identity_connection_established, replacing_owner,
     reserve_identity_claim, retire_identity_connection_publication, settle_held_loser,
-    AdmissionStart, ClaimReservation, Commit, HeldLoser,
+    AdmissionStart, ClaimReservation, Commit, HeldLoser, Switch,
 };
 use super::reader::reader_loop;
 use super::reconnect::{next_publication_token, track_worker};
@@ -631,7 +631,7 @@ pub(super) unsafe fn add_connection_on_transport(
         &publication_sync,
         &publication_removed,
         superseded_claim,
-        held_loser.as_deref(),
+        held_loser.as_deref().map_or(Switch::Close, Switch::Hold),
         buried,
     ) {
         // A same-session connection that took the claim while this one was
@@ -926,7 +926,7 @@ pub(super) fn remove_connection(
     // A connection that held the one it superseded for the peer's choice:
     // the loser takes the claim if the peer closed this one, before this
     // one's retirement could report the peer lost; otherwise it closes.
-    let restored = held_loser.is_some_and(|held| {
+    let held_a_loser = held_loser.is_some_and(|held| {
         settle_held_loser(mgr, peer_identity, conn_id, publication_token, &held)
     });
     // Full publication retirement: re-removes route (idempotent) and fires the
@@ -942,9 +942,22 @@ pub(super) fn remove_connection(
         publication_token,
         &publication_sync,
     );
-    // The loser took the claim, so retirement settled nothing for this
-    // publication: its own monitors and links are still lost.
-    if let (true, Some(peer_identity)) = (restored, peer_identity) {
+    // Retirement settles nothing for this publication once the loser has taken
+    // the claim, or a failed restore has left it with neither: report this
+    // publication lost by its own token either way. Both steps are guarded by
+    // the token, so they do nothing a completed retirement or the loser's
+    // current publication has already covered.
+    if let (true, Some(peer_identity)) = (held_a_loser, peer_identity) {
+        if !mgr.cluster.is_null() {
+            // SAFETY: the cluster is owned by the live manager.
+            let _ = unsafe {
+                crate::cluster::hew_cluster_notify_connection_lost_if_current(
+                    mgr.cluster,
+                    peer_node_id,
+                    publication_token,
+                )
+            };
+        }
         crate::hew_node::fan_out_monitor_lost_for_publication(
             peer_identity,
             peer_session_incarnation,

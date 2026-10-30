@@ -447,13 +447,16 @@ pub(super) fn publish_identity_claim(
         publication_token,
         |state| state == ClaimState::Reserved,
         ClaimState::Published,
+        false,
     )
 }
 
 /// Move this admission's claim to `to`, iff it still holds it in a state
 /// `from` accepts. Leaving `Reserved` stamps the admission order the claim
 /// settled at; entering `Published` clears the names a predecessor taught
-/// this node first.
+/// this node first, unless `keep_names`: a switch between two of the peer's
+/// connections at one session that the peer has not settled, so the peer will
+/// not announce its names again.
 fn settle_identity_claim(
     mgr: &HewConnMgr,
     node_id: NodeId,
@@ -461,6 +464,7 @@ fn settle_identity_claim(
     publication_token: u64,
     from: impl Fn(ClaimState) -> bool,
     to: ClaimState,
+    keep_names: bool,
 ) -> bool {
     let (lock, condvar) = &mgr.claims;
     let mut map = lock.lock_or_recover();
@@ -476,6 +480,7 @@ fn settle_identity_claim(
     let registry = unsafe { mgr.registry.as_ref() };
     let names_changed = still_ours
         && to == ClaimState::Published
+        && !keep_names
         && registry.is_some_and(|registry| registry.forget_origin_names(node_id));
     if still_ours {
         let published_at = (held == Some(ClaimState::Reserved))
@@ -767,7 +772,7 @@ pub(super) fn publish_identity_connection_established(
     publication_sync: &Arc<Mutex<()>>,
     publication_removed: &Arc<AtomicBool>,
     superseded: Option<LiveClaim>,
-    held_loser: Option<&Mutex<HeldLoser>>,
+    switch: Switch<'_>,
     buried: bool,
 ) -> bool {
     if publication_removed.load(Ordering::Acquire) {
@@ -775,6 +780,20 @@ pub(super) fn publish_identity_connection_established(
         return false;
     }
 
+    let held_loser = match switch {
+        Switch::Hold(held) => Some(held),
+        Switch::Close | Switch::Restore => None,
+    };
+    // A switch the peer has not settled keeps the peer's names: the peer
+    // announces them again only on a connection it publishes anew.
+    let keep_names = match switch {
+        Switch::Restore => true,
+        Switch::Hold(_) => superseded.as_ref().is_some_and(|previous| {
+            previous.state.holds_connection()
+                && previous.session_incarnation == peer_session_incarnation
+        }),
+        Switch::Close => false,
+    };
     // Transition our reservation Reserved → Published (issue #2652, D3 step 3),
     // or to Refuting for a buried peer, which publishes nothing until it
     // refutes. A superseding admission arriving in the reserve window ⇒ we are
@@ -794,6 +813,7 @@ pub(super) fn publish_identity_connection_established(
         publication_token,
         |state| state == ClaimState::Reserved,
         settled,
+        keep_names,
     ) {
         set_last_error("connection publication no longer owns the peer claim");
         return false;
@@ -1051,6 +1071,7 @@ pub(super) fn publish_refuted_claim(mgr: &HewConnMgr, conn_id: c_int, publicatio
             publication_token,
             |state| matches!(state, ClaimState::Refuting { .. }),
             ClaimState::Published,
+            false,
         )
     {
         return;
@@ -1100,10 +1121,22 @@ pub(crate) fn expire_refuting_claims(mgr: &HewConnMgr, now_ms: u64) {
             publication_token,
             |state| matches!(state, ClaimState::Refuting { .. }),
             ClaimState::Retired,
+            false,
         ) {
             let _ = remove_connection(mgr, conn_id, Some(publication_token));
         }
     }
+}
+
+/// What a publication does with the connection it supersedes.
+#[derive(Clone, Copy)]
+pub(super) enum Switch<'a> {
+    /// Close it: this end settles the pair.
+    Close,
+    /// Hold it until the peer shows which of the two it kept.
+    Hold(&'a Mutex<HeldLoser>),
+    /// This is a held connection taking the claim back from its holder.
+    Restore,
 }
 
 /// The published connection a newer one superseded at an end whose peer
@@ -1216,8 +1249,8 @@ pub(super) fn held_loser_peer_closed(held: &Mutex<HeldLoser>) {
 /// Settle the loser held by the connection `conn_id` as `publication_token`,
 /// being removed: publish the loser in its place when the peer closed the
 /// holder and the holder still has the claim, and otherwise close it, so a
-/// held connection never outlives its holder. Returns whether the loser took
-/// the claim.
+/// held connection never outlives its holder. Returns whether the holder held
+/// a loser.
 pub(super) fn settle_held_loser(
     mgr: &HewConnMgr,
     node_id: Option<NodeId>,
@@ -1239,7 +1272,7 @@ pub(super) fn settle_held_loser(
     if !restored {
         close_superseded_connection_once(mgr, loser.conn_id, loser.publication_token);
     }
-    restored
+    true
 }
 
 /// Publish `loser` again in place of the connection `conn_id` as
@@ -1325,13 +1358,33 @@ fn restore_held_loser(
         &sync,
         &removed,
         None,
-        None,
+        Switch::Restore,
         // A buried peer's held connection returns to refuting, as its reader
         // still does.
         refuting,
     );
     if !published {
-        abort_identity_claim(mgr, node_id, loser_conn, loser_token, prior);
+        // Hand the claim back to the holder, whose retirement follows, even
+        // when the loser's own removal has already withdrawn the reservation.
+        let (lock, condvar) = &mgr.claims;
+        let mut map = lock.lock_or_recover();
+        let withdrawn = map.get(&node_id).is_none_or(|claim| {
+            claim.state == ClaimState::Reserved
+                && claim.conn_id == loser_conn
+                && claim.publication_token == loser_token
+        });
+        if withdrawn {
+            match prior {
+                Some(prior) => {
+                    map.insert(node_id, prior);
+                }
+                None => {
+                    map.remove(&node_id);
+                }
+            }
+        }
+        drop(map);
+        condvar.notify_all();
     }
     published
 }
@@ -1448,7 +1501,7 @@ pub(super) fn publish_connection_established(
         publication_sync,
         publication_removed,
         superseded,
-        None,
+        Switch::Close,
         false,
     );
 }

@@ -359,7 +359,7 @@ fn stale_reconnect_cannot_replace_newer_publication() {
             &publication.sync,
             &publication.removed,
             superseded,
-            None,
+            Switch::Close,
             false,
         ));
         assert_eq!(

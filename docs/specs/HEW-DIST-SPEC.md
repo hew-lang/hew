@@ -364,7 +364,9 @@ to the newer connection, but holds the superseded one as an initiator does. A
 node without the bit can send on a connection before it supersedes that one,
 so only a close shows its choice: when it closes the held connection, it kept
 the newer one; when it closes the newer one, the held one is published again.
-Either way both ends converge on one connection. A held connection outlives
+Either way both ends converge on one connection, except
+that a dial abandoned at its attempt budget after the node without the bit
+published it can leave the pair to redial. A held connection outlives
 neither the connection holding it nor a local close of the peer. The records
 are bound into the channel transcript, so the bit cannot be removed without
 failing the handshake. Feature bit `2` is reserved; bit `3` is retired and is

@@ -910,7 +910,11 @@ pub(super) fn publish_identity_connection_established(
     if let Some(superseded) = superseded {
         if superseded.state == ClaimState::Published && superseded.conn_id != conn_id {
             match held_loser {
-                Some(held) => held.lock_or_recover().loser = Some(superseded),
+                Some(held) => {
+                    let mut held = held.lock_or_recover();
+                    held.peer = Some(peer_identity);
+                    held.loser = Some(superseded);
+                }
                 None => close_superseded_connection_once(
                     mgr,
                     superseded.conn_id,
@@ -940,6 +944,8 @@ pub(super) enum Switch<'a> {
 /// open.
 #[derive(Debug)]
 pub(super) struct HeldLoser {
+    /// The peer, and the connection to it this one superseded.
+    peer: Option<NodeId>,
     loser: Option<LiveClaim>,
     /// The responder sends nothing on a committed connection until it has
     /// published it and is closing the other, so its first frame there
@@ -954,6 +960,7 @@ impl HeldLoser {
     pub(super) fn new(commit: Commit) -> Option<Self> {
         match commit {
             Commit::Follow | Commit::Initiator(_) => Some(Self {
+                peer: None,
                 loser: None,
                 release_on_frame: matches!(commit, Commit::Initiator(_)),
                 peer_closed: false,
@@ -1023,16 +1030,32 @@ pub(super) fn held_loser_authority(
 
 /// The peer sent a frame on the connection holding `held`.
 pub(super) fn held_loser_frame(mgr: &HewConnMgr, held: &Mutex<HeldLoser>) {
-    let loser = {
+    let (peer, loser) = {
         let mut held = held.lock_or_recover();
         if !held.release_on_frame {
             return;
         }
-        held.loser.take()
+        (held.peer, held.loser.take())
     };
-    if let Some(loser) = loser {
-        close_superseded_connection_once(mgr, loser.conn_id, loser.publication_token);
+    let Some(loser) = loser else {
+        return;
+    };
+    // The responder's first frame here follows the names it announced on
+    // publishing this connection. Names it withdrew on the released one may
+    // never be read there, so forget the peer's names before this frame and
+    // learn them again from that announcement.
+    if let Some(peer) = peer {
+        let registry = {
+            let _claims = mgr.claims.0.lock_or_recover();
+            // SAFETY: the node retains its canonical registry through all
+            // manager users.
+            unsafe { mgr.registry.as_ref() }.filter(|registry| registry.forget_origin_names(peer))
+        };
+        if let Some(registry) = registry {
+            registry.notify_names();
+        }
     }
+    close_superseded_connection_once(mgr, loser.conn_id, loser.publication_token);
 }
 
 /// The peer closed the connection holding `held`.

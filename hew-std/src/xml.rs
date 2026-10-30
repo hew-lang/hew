@@ -281,8 +281,10 @@ fn parse_xml(xml: &str) -> Result<XmlNodeKind, ParseXmlError> {
                 };
                 push_node(&mut stack, &mut top_level, node);
             }
+            // Literal line breaks read as XML 1.0 defines them: CRLF and a
+            // lone CR become LF. A `&#13;` reference keeps its CR.
             Ok(Event::Text(ref e)) => {
-                text_buf.push_str(e.as_ref());
+                text_buf.push_str(&e.xml_content(quick_xml::XmlVersion::Implicit1_0));
             }
             Ok(Event::GeneralRef(ref e)) => match &**e {
                 "lt" => text_buf.push('<'),
@@ -302,7 +304,9 @@ fn parse_xml(xml: &str) -> Result<XmlNodeKind, ParseXmlError> {
             },
             Ok(Event::CData(ref e)) => {
                 flush_text(&mut text_buf, &mut stack, &mut top_level);
-                let text = e.as_ref().to_string();
+                let text = e
+                    .xml_content(quick_xml::XmlVersion::Implicit1_0)
+                    .into_owned();
                 if !text.is_empty() {
                     push_node(&mut stack, &mut top_level, XmlNodeKind::Text(text));
                 }
@@ -751,6 +755,25 @@ mod tests {
             assert_eq!(read_and_free_string(hew_xml_to_string(reparsed)), printed);
             hew_xml_free(reparsed);
             hew_xml_free(node);
+        }
+    }
+
+    #[test]
+    fn literal_line_breaks_read_as_line_feeds() {
+        // XML 1.0 reads a literal CRLF or lone CR as LF, in text and CDATA
+        // alike, so a Windows-line-ending file writes back without `&#13;`.
+        for (source, text, printed) in [
+            ("<r>a\r\nb\rc</r>", "a\nb\nc", "<r>a\nb\nc</r>"),
+            ("<r><![CDATA[a\r\nb\rc]]></r>", "a\nb\nc", "<r>a\nb\nc</r>"),
+        ] {
+            let node = parse(source);
+            assert!(!node.is_null(), "{source:?}");
+            // SAFETY: node is a live tree until freed below.
+            unsafe {
+                assert_eq!(read_and_free_string(hew_xml_get_text(node)), text);
+                assert_eq!(read_and_free_string(hew_xml_to_string(node)), printed);
+                hew_xml_free(node);
+            }
         }
     }
 

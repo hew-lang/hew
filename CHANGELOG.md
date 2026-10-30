@@ -3,8 +3,8 @@
 ## [Unreleased]
 
 - Escape tab, newline and carriage-return in XML attribute values and text so
-  they read back unchanged, and refuse element and attribute names XML does not
-  allow.
+  they read back unchanged, read literal CRLF and CR in text as LF, and refuse
+  element and attribute names XML does not allow.
 - Refuse YAML whose aliases expand it past about a million nodes instead of
   counting anchors and aliases; the 200-anchor and 1,024-alias limits
   are gone.

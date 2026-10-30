@@ -361,6 +361,7 @@ pub unsafe extern "C" fn hew_supervisor_new(
         parent: ptr::null_mut(),
         index_in_parent: 0,
         running: AtomicI32::new(0),
+        token_owned: false,
         constructing: AtomicBool::new(false),
         cancelled: AtomicBool::new(false),
         restart_timers: Arc::new(RestartTimerControl::new()),

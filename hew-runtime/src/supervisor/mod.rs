@@ -1175,6 +1175,10 @@ pub struct HewSupervisor {
     window_secs: c_int,
 
     running: AtomicI32,
+    /// Only the stable token reaches the program: the native construction
+    /// owns this allocation, so a spent root may retire itself. A raw-ABI
+    /// caller holds the pointer and keeps teardown authority.
+    token_owned: bool,
     /// Private native construction permits calls through already started roles.
     /// This does not make the supervisor running for lifecycle observations.
     constructing: AtomicBool,
@@ -2573,12 +2577,16 @@ fn stop_and_maybe_escalate(sup: *mut HewSupervisor, record: FaultRecord) -> Faul
     notify_restart(sup);
     // SAFETY: callers keep the supervisor allocation live through escalation.
     if unsafe { (*sup).parent.is_null() } {
-        // A root has no parent to retire it, so it starts its own teardown,
-        // as `stop(sup)` would. Otherwise nothing closes the tree before
-        // process shutdown, and `stopped(sup)` and the final drain wait on
-        // each other.
-        // SAFETY: callers keep the allocation live for this scalar read.
-        let _ = stop_local_supervisor(unsafe { (*sup).local_pid_id }, true);
+        // A token-owned root has no parent to retire it, so it starts its own
+        // teardown, as `stop(sup)` would. Otherwise nothing closes the tree
+        // before process shutdown, and `stopped(sup)` and the final drain
+        // wait on each other. A raw-ABI owner still holds the pointer and
+        // releases it with `hew_supervisor_stop`.
+        // SAFETY: callers keep the allocation live for these scalar reads.
+        let (token_owned, token) = unsafe { ((*sup).token_owned, (*sup).local_pid_id) };
+        if token_owned {
+            let _ = stop_local_supervisor(token, true);
+        }
         return FaultRuling::Unrecovered;
     }
     if escalate_to_parent(sup, record) {

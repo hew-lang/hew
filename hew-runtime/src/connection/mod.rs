@@ -77,7 +77,9 @@ pub(crate) use channel::ChannelRefusal;
 pub(crate) use gossip::*;
 pub(crate) use handshake::*;
 #[cfg(test)]
-pub(crate) use identity_claim::{commit_order_for_test, peer_connection_view, PeerConnectionView};
+pub(crate) use identity_claim::{
+    commit_order_for_test, held_loser_for_test, peer_connection_view, PeerConnectionView,
+};
 pub use manager::*;
 pub(crate) use peer::*;
 pub use send::*;
@@ -238,10 +240,9 @@ struct ConnectionActor {
     /// remove-side abort is guarded by the exact `(conn_id, token, Reserved)`
     /// owner check, so a published or superseded claim never restores from it.
     superseded_claim: Mutex<Option<LiveClaim>>,
-    /// The published connection this one superseded while following a peer
-    /// without the responder-commit step, held open until the peer shows which
-    /// connection it kept.
-    followed_loser: Arc<Mutex<Option<LiveClaim>>>,
+    /// The published connection this one superseded, held open until the
+    /// peer shows which of the two it kept; `None` where this end decides.
+    held_loser: Option<Arc<Mutex<identity_claim::HeldLoser>>>,
     /// Optional reconnect settings for this connection.
     reconnect: Option<ReconnectSettings>,
     /// Transport pointer for defense-in-depth close in `Drop`.
@@ -634,7 +635,7 @@ impl ConnectionActor {
             reader_handle: None,
             reader_stop: Arc::new(AtomicI32::new(0)),
             superseded_claim: Mutex::new(None),
-            followed_loser: Arc::default(),
+            held_loser: None,
             reconnect: None,
             transport: ConnectionTransport::borrowed(std::ptr::null_mut()),
             transport_close: Arc::new(TransportClose::default()),

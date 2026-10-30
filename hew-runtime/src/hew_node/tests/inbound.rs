@@ -1739,36 +1739,6 @@ fn opposite_admission_orders_converge_with_a_node_without_responder_commit() {
             let lacking = if lower_lacks { lower } else { higher };
             let _withheld =
                 connection::withheld_commit::withhold((*lacking.as_ptr()).conn_mgr.cast_const());
-            // Each node admits the peer's dial only once its own published.
-            let own_dial_first = |node: &TestNode,
-                                  peer: &TestNode|
-             -> connection::admission_script::Hook {
-                let (node, peer) = (node.as_ptr() as usize, peer.as_ptr() as usize);
-                Arc::new(move |point, origin| {
-                    if point != connection::admission_script::Point::Authenticated
-                        || origin != ConnectionOrigin::Accepted
-                    {
-                        return;
-                    }
-                    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-                    // The nodes outlive their admissions.
-                    while {
-                        connection::peer_connection_view(
-                            &*(*(node as *mut HewNode)).conn_mgr,
-                            (*(peer as *mut HewNode))
-                                .auth
-                                .node_identity()
-                                .expect("peer identity"),
-                        )
-                    }
-                    .owner
-                        != Some((ClaimState::Published, ConnectionOrigin::Dialled))
-                        && std::time::Instant::now() < deadline
-                    {
-                        std::thread::sleep(std::time::Duration::from_millis(1));
-                    }
-                })
-            };
             let script = connection::admission_script::install(&[
                 (
                     (*lower.as_ptr()).conn_mgr.cast_const(),
@@ -1792,6 +1762,302 @@ fn opposite_admission_orders_converge_with_a_node_without_responder_commit() {
                 higher,
                 &format!("lower lacks the step: {lower_lacks}; dials {dials:?}"),
             );
+            assert_eq!(hew_node_stop(b.as_ptr()), 0);
+            assert_eq!(hew_node_stop(a.as_ptr()), 0);
+        }
+    }
+    crate::registry::hew_registry_clear();
+}
+
+/// Each node admits the peer's dial only once its own dial has published.
+fn own_dial_first(node: &TestNode, peer: &TestNode) -> connection::admission_script::Hook {
+    let (node, peer) = (node.as_ptr() as usize, peer.as_ptr() as usize);
+    Arc::new(move |point, origin| {
+        if point == connection::admission_script::Point::Authenticated
+            && origin == ConnectionOrigin::Accepted
+        {
+            // SAFETY: the nodes outlive their admissions.
+            unsafe { await_owner(node, peer, ConnectionOrigin::Dialled) };
+        }
+    })
+}
+
+/// Wait until `node` holds `peer`'s published claim on a connection of
+/// `origin`.
+///
+/// # Safety
+/// Both pointers name started nodes.
+unsafe fn await_owner(node: usize, peer: usize, origin: ConnectionOrigin) {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    // SAFETY: the caller keeps both nodes started.
+    while unsafe {
+        connection::peer_connection_view(
+            &*(*(node as *mut HewNode)).conn_mgr,
+            (*(peer as *mut HewNode))
+                .auth
+                .node_identity()
+                .expect("peer identity"),
+        )
+    }
+    .owner
+        != Some((ClaimState::Published, origin))
+        && std::time::Instant::now() < deadline
+    {
+        std::thread::sleep(std::time::Duration::from_millis(1));
+    }
+}
+
+/// A node without the responder-commit step can send on a connection before
+/// it supersedes that one. The follower does not take such a frame for the
+/// peer's choice: the pair still ends sharing one connection.
+#[test]
+fn follower_waits_for_a_close_before_settling_a_crossing() {
+    let _guard = crate::runtime_test_guard();
+    crate::registry::hew_registry_clear();
+    for lower_lacks in [true, false] {
+        let (a, port_a, b, port_b) = start_authorized_tcp_pair(361, 362);
+        // SAFETY: both nodes stay started until the stops below.
+        unsafe {
+            let ((lower, lower_port), (higher, higher_port)) =
+                if kept_origin(&a, &b) == ConnectionOrigin::Dialled {
+                    ((&a, port_a), (&b, port_b))
+                } else {
+                    ((&b, port_b), (&a, port_a))
+                };
+            let (old, follower) = if lower_lacks {
+                (lower, higher)
+            } else {
+                (higher, lower)
+            };
+            let _withheld =
+                connection::withheld_commit::withhold((*old.as_ptr()).conn_mgr.cast_const());
+            // The old node publishes its own dial, waits until the follower has
+            // superseded its own dial with it, sends on it, and only then
+            // admits the follower's dial.
+            let old_hook: connection::admission_script::Hook = {
+                let (old, follower) = (old.as_ptr() as usize, follower.as_ptr() as usize);
+                Arc::new(move |point, origin| {
+                    if point != connection::admission_script::Point::Authenticated
+                        || origin != ConnectionOrigin::Accepted
+                    {
+                        return;
+                    }
+                    // The nodes outlive their admissions.
+                    await_owner(old, follower, ConnectionOrigin::Dialled);
+                    await_owner(follower, old, ConnectionOrigin::Accepted);
+                    let follower_identity = (*(follower as *mut HewNode))
+                        .auth
+                        .node_identity()
+                        .expect("follower identity");
+                    let claim = connection::claim_send_by_identity(
+                        &*(*(old as *mut HewNode)).conn_mgr,
+                        follower_identity,
+                        None,
+                    )
+                    .expect("the old node's dial is published");
+                    assert_eq!(claim.send(b"x"), 0, "the old node sends on its dial");
+                })
+            };
+            let script = connection::admission_script::install(&[
+                ((*old.as_ptr()).conn_mgr.cast_const(), old_hook),
+                (
+                    (*follower.as_ptr()).conn_mgr.cast_const(),
+                    own_dial_first(follower, old),
+                ),
+            ]);
+            let barrier = Arc::new(std::sync::Barrier::new(2));
+            let lower_dial = spawn_dial(lower, higher_port, &barrier, None);
+            let higher_dial = spawn_dial(higher, lower_port, &barrier, None);
+            let dials = (
+                lower_dial.join().expect("lower dial"),
+                higher_dial.join().expect("higher dial"),
+            );
+            drop(script);
+            await_one_shared_connection(
+                lower,
+                higher,
+                &format!("lower lacks the step: {lower_lacks}; dials {dials:?}"),
+            );
+            assert_eq!(hew_node_stop(b.as_ptr()), 0);
+            assert_eq!(hew_node_stop(a.as_ptr()), 0);
+        }
+    }
+    crate::registry::hew_registry_clear();
+}
+
+/// A held connection that closes while it is being published again withdraws
+/// its reservation, so the peer can connect afresh.
+#[test]
+fn held_connection_closed_during_its_restore_leaves_the_peer_admissible() {
+    let _guard = crate::runtime_test_guard();
+    crate::registry::hew_registry_clear();
+    for lower_lacks in [true, false] {
+        let (a, port_a, b, port_b) = start_authorized_tcp_pair(365, 366);
+        // SAFETY: both nodes stay started until the stops below.
+        unsafe {
+            let ((lower, lower_port), (higher, higher_port)) =
+                if kept_origin(&a, &b) == ConnectionOrigin::Dialled {
+                    ((&a, port_a), (&b, port_b))
+                } else {
+                    ((&b, port_b), (&a, port_a))
+                };
+            let (old, old_port, follower) = if lower_lacks {
+                (lower, lower_port, higher)
+            } else {
+                (higher, higher_port, lower)
+            };
+            let _withheld =
+                connection::withheld_commit::withhold((*old.as_ptr()).conn_mgr.cast_const());
+            let restoring = Arc::new(std::sync::atomic::AtomicBool::new(false));
+            let follower_hook: connection::admission_script::Hook = {
+                let own_first = own_dial_first(follower, old);
+                let restoring = Arc::clone(&restoring);
+                let mgr = (*follower.as_ptr()).conn_mgr as usize;
+                Arc::new(move |point, origin| {
+                    if let connection::admission_script::Point::RestoringLoser(loser) = point {
+                        restoring.store(true, std::sync::atomic::Ordering::Release);
+                        // The peer drops the held connection as well.
+                        // SAFETY: the manager outlives its admissions.
+                        let _ = connection::hew_connmgr_remove(
+                            mgr as *mut connection::HewConnMgr,
+                            loser,
+                        );
+                    } else {
+                        own_first(point, origin);
+                    }
+                })
+            };
+            let script = connection::admission_script::install(&[
+                (
+                    (*old.as_ptr()).conn_mgr.cast_const(),
+                    own_dial_first(old, follower),
+                ),
+                ((*follower.as_ptr()).conn_mgr.cast_const(), follower_hook),
+            ]);
+            let barrier = Arc::new(std::sync::Barrier::new(2));
+            let lower_dial = spawn_dial(lower, higher_port, &barrier, None);
+            let higher_dial = spawn_dial(higher, lower_port, &barrier, None);
+            let dials = (
+                lower_dial.join().expect("lower dial"),
+                higher_dial.join().expect("higher dial"),
+            );
+            // Both connections close; the follower ends with no live claim.
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+            while !(restoring.load(std::sync::atomic::Ordering::Acquire)
+                && peer_view(follower, old).installed == 0
+                && peer_view(follower, old)
+                    .owner
+                    .is_none_or(|(state, _)| state == ClaimState::Retired))
+            {
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "lower lacks the step: {lower_lacks}; dials {dials:?}: the restore \
+                     did not settle: {:?}",
+                    peer_view(follower, old)
+                );
+                std::thread::sleep(std::time::Duration::from_millis(1));
+            }
+            drop(script);
+            let old_address = CString::new(format!("127.0.0.1:{old_port}")).unwrap();
+            assert_eq!(
+                hew_node_connect(follower.as_ptr(), old_address.as_ptr()),
+                0,
+                "lower lacks the step: {lower_lacks}: the peer is admissible again"
+            );
+            await_one_shared_connection(lower, higher, "after the fresh dial");
+            assert_eq!(hew_node_stop(b.as_ptr()), 0);
+            assert_eq!(hew_node_stop(a.as_ptr()), 0);
+        }
+    }
+    crate::registry::hew_registry_clear();
+}
+
+/// Disconnecting the peer locally closes the connection the follower holds
+/// too: a held connection never outlives its holder, nor is it published
+/// again by a close the peer did not make.
+#[test]
+fn local_disconnect_closes_the_held_connection() {
+    let _guard = crate::runtime_test_guard();
+    crate::registry::hew_registry_clear();
+    for lower_lacks in [true, false] {
+        let (a, port_a, b, port_b) = start_authorized_tcp_pair(367, 368);
+        // SAFETY: both nodes stay started until the stops below.
+        unsafe {
+            let ((lower, lower_port), (higher, higher_port)) =
+                if kept_origin(&a, &b) == ConnectionOrigin::Dialled {
+                    ((&a, port_a), (&b, port_b))
+                } else {
+                    ((&b, port_b), (&a, port_a))
+                };
+            let (old, follower) = if lower_lacks {
+                (lower, higher)
+            } else {
+                (higher, lower)
+            };
+            let _withheld =
+                connection::withheld_commit::withhold((*old.as_ptr()).conn_mgr.cast_const());
+            // The old node admits the follower's dial only once released, so
+            // the follower holds its own dial meanwhile.
+            let (release, released) = std::sync::mpsc::channel::<()>();
+            let released = Mutex::new(released);
+            let old_hook: connection::admission_script::Hook = Arc::new(move |point, origin| {
+                if point == connection::admission_script::Point::Authenticated
+                    && origin == ConnectionOrigin::Accepted
+                {
+                    let _ = released
+                        .lock_or_recover()
+                        .recv_timeout(std::time::Duration::from_secs(5));
+                }
+            });
+            let script = connection::admission_script::install(&[
+                ((*old.as_ptr()).conn_mgr.cast_const(), old_hook),
+                (
+                    (*follower.as_ptr()).conn_mgr.cast_const(),
+                    own_dial_first(follower, old),
+                ),
+            ]);
+            let barrier = Arc::new(std::sync::Barrier::new(2));
+            let lower_dial = spawn_dial(lower, higher_port, &barrier, None);
+            let higher_dial = spawn_dial(higher, lower_port, &barrier, None);
+            let old_identity = (*old.as_ptr()).auth.node_identity().expect("old identity");
+            let follower_mgr = (*follower.as_ptr()).conn_mgr;
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+            while connection::held_loser_for_test(&*follower_mgr, old_identity).is_none() {
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "lower lacks the step: {lower_lacks}: the follower never held its dial"
+                );
+                std::thread::sleep(std::time::Duration::from_millis(1));
+            }
+            let owner = connection::claim_send_by_identity(&*follower_mgr, old_identity, None)
+                .expect("the follower's claim is published")
+                .connection_id();
+            assert_eq!(connection::hew_connmgr_remove(follower_mgr, owner), 0);
+            let _ = release.send(());
+            let dials = (
+                lower_dial.join().expect("lower dial"),
+                higher_dial.join().expect("higher dial"),
+            );
+            drop(script);
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+            loop {
+                let view = peer_view(follower, old);
+                if view.installed == 0 {
+                    assert_ne!(
+                        view.owner.map(|(state, _)| state),
+                        Some(ClaimState::Published),
+                        "lower lacks the step: {lower_lacks}; dials {dials:?}: the held \
+                         connection was published again"
+                    );
+                    break;
+                }
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "lower lacks the step: {lower_lacks}; dials {dials:?}: the held \
+                     connection outlived its holder: {view:?}"
+                );
+                std::thread::sleep(std::time::Duration::from_millis(1));
+            }
             assert_eq!(hew_node_stop(b.as_ptr()), 0);
             assert_eq!(hew_node_stop(a.as_ptr()), 0);
         }
@@ -2051,11 +2317,9 @@ fn skewed_crossing(
     }
 }
 
-/// The responder's commit is provisional until the initiator echoes it. A
-/// redial whose initiator gives up after the responder committed it leaves
-/// both ends on the connection they already shared. (The shared connection's
-/// frames wait while the commit is pending, so a stall this long can briefly
-/// suspect the peer; it never loses the connection.)
+/// The responder touches nothing until the initiator echoes its commit. A
+/// redial whose initiator gives up after the commit leaves both ends on the
+/// connection they already shared.
 #[test]
 fn initiator_that_gives_up_after_the_commit_keeps_the_shared_connection() {
     let _guard = crate::runtime_test_guard();
@@ -2071,13 +2335,7 @@ fn initiator_that_gives_up_after_the_commit_keeps_the_shared_connection() {
         let higher_address = CString::new(format!("127.0.0.1:{higher_port}")).unwrap();
         assert_eq!(hew_node_connect(lower.as_ptr(), higher_address.as_ptr()), 0);
         await_one_shared_connection(lower, higher, "first dial");
-        let order = connection::commit_order_for_test(
-            &*(*lower.as_ptr()).conn_mgr,
-            (*higher.as_ptr())
-                .auth
-                .node_identity()
-                .expect("higher identity"),
-        );
+        let order = shared_commit_order(lower, higher);
         // Hold the redial past its attempt budget once it is waiting for the
         // commit, so it gives up after the responder has committed.
         let lower_hook: connection::admission_script::Hook = Arc::new(|point, origin| {
@@ -2102,13 +2360,7 @@ fn initiator_that_gives_up_after_the_commit_keeps_the_shared_connection() {
         drop(script);
         await_one_shared_connection(lower, higher, "after the abandoned redial");
         assert_eq!(
-            connection::commit_order_for_test(
-                &*(*lower.as_ptr()).conn_mgr,
-                (*higher.as_ptr())
-                    .auth
-                    .node_identity()
-                    .expect("higher identity"),
-            ),
+            shared_commit_order(lower, higher),
             order,
             "the pair kept the connection it shared"
         );
@@ -2118,50 +2370,193 @@ fn initiator_that_gives_up_after_the_commit_keeps_the_shared_connection() {
     crate::registry::hew_registry_clear();
 }
 
-/// A redial that reaches the responder late and is held there still leaves
-/// the pair sharing one connection, whichever connection that turns out to be.
+/// An echo that reaches the responder after its attempt budget finds the
+/// redial closed. The initiator, which had already moved to the redial, holds
+/// the connection the pair shared and returns to it.
 #[test]
-fn late_redial_through_a_slow_path_keeps_one_shared_connection() {
+fn late_echo_returns_both_ends_to_the_shared_connection() {
     let _guard = crate::runtime_test_guard();
     crate::registry::hew_registry_clear();
-    for round in 0..3 {
-        let (a, port_a, b, port_b) = start_authorized_tcp_pair(355, 356);
-        // SAFETY: both nodes stay started until the stops below.
-        unsafe {
-            let (lower, higher, higher_port) = if kept_origin(&a, &b) == ConnectionOrigin::Dialled {
-                (&a, &b, port_b)
-            } else {
-                (&b, &a, port_a)
-            };
-            let higher_address = CString::new(format!("127.0.0.1:{higher_port}")).unwrap();
-            assert_eq!(hew_node_connect(lower.as_ptr(), higher_address.as_ptr()), 0);
-            await_one_shared_connection(lower, higher, "first dial");
-            let held = Arc::new(std::sync::atomic::AtomicBool::new(false));
-            let higher_hook: connection::admission_script::Hook = {
-                let held = Arc::clone(&held);
-                Arc::new(move |point, origin| {
-                    if point == connection::admission_script::Point::Authenticated
-                        && origin == ConnectionOrigin::Accepted
-                        && !held.swap(true, std::sync::atomic::Ordering::AcqRel)
-                    {
-                        std::thread::sleep(std::time::Duration::from_millis(300));
-                    }
-                })
-            };
-            let script = connection::admission_script::install(&[(
-                (*higher.as_ptr()).conn_mgr.cast_const(),
-                higher_hook,
-            )]);
-            let proxy = delayed_proxy(higher_port, std::time::Duration::from_millis(1500));
-            let target = CString::new(format!("127.0.0.1:{proxy}")).unwrap();
-            let rc = hew_node_connect(lower.as_ptr(), target.as_ptr());
-            drop(script);
-            await_one_shared_connection(lower, higher, &format!("round {round}: redial rc {rc}"));
-            assert_eq!(hew_node_stop(b.as_ptr()), 0);
-            assert_eq!(hew_node_stop(a.as_ptr()), 0);
-        }
+    let (a, port_a, b, port_b) = start_authorized_tcp_pair(355, 356);
+    // SAFETY: both nodes stay started until the stops below.
+    unsafe {
+        let (lower, higher, higher_port) = if kept_origin(&a, &b) == ConnectionOrigin::Dialled {
+            (&a, &b, port_b)
+        } else {
+            (&b, &a, port_a)
+        };
+        let higher_address = CString::new(format!("127.0.0.1:{higher_port}")).unwrap();
+        assert_eq!(hew_node_connect(lower.as_ptr(), higher_address.as_ptr()), 0);
+        await_one_shared_connection(lower, higher, "first dial");
+        let order = shared_commit_order(lower, higher);
+        let lower_hook: connection::admission_script::Hook = Arc::new(|point, origin| {
+            if point == connection::admission_script::Point::Echoing
+                && origin == ConnectionOrigin::Dialled
+            {
+                std::thread::sleep(
+                    crate::transport::CONNECTION_ATTEMPT_TIMEOUT
+                        + std::time::Duration::from_millis(100),
+                );
+            }
+        });
+        let script = connection::admission_script::install(&[(
+            (*lower.as_ptr()).conn_mgr.cast_const(),
+            lower_hook,
+        )]);
+        let rc = hew_node_connect(lower.as_ptr(), higher_address.as_ptr());
+        drop(script);
+        await_one_shared_connection(lower, higher, &format!("late echo, redial rc {rc}"));
+        assert_eq!(
+            shared_commit_order(lower, higher),
+            order,
+            "the pair returned to the connection it shared"
+        );
+        assert_eq!(hew_node_stop(b.as_ptr()), 0);
+        assert_eq!(hew_node_stop(a.as_ptr()), 0);
     }
     crate::registry::hew_registry_clear();
+}
+
+/// While a redial settles, the connection the pair shares stays usable at
+/// both ends: the responder can still send on it, and the initiator, which
+/// has already moved to the redial, serves the peer on it and replies there.
+#[test]
+fn held_connection_serves_the_peer_until_the_switch() {
+    let _guard = crate::runtime_test_guard();
+    crate::registry::hew_registry_clear();
+    let (a, port_a, b, port_b) = start_authorized_tcp_pair(363, 364);
+    // SAFETY: both nodes stay started until the stops below.
+    unsafe {
+        let (lower, higher, higher_port) = if kept_origin(&a, &b) == ConnectionOrigin::Dialled {
+            (&a, &b, port_b)
+        } else {
+            (&b, &a, port_a)
+        };
+        let higher_address = CString::new(format!("127.0.0.1:{higher_port}")).unwrap();
+        assert_eq!(hew_node_connect(lower.as_ptr(), higher_address.as_ptr()), 0);
+        await_one_shared_connection(lower, higher, "first dial");
+        let (lower_mgr, higher_mgr) = ((*lower.as_ptr()).conn_mgr, (*higher.as_ptr()).conn_mgr);
+        let lower_identity = (*lower.as_ptr())
+            .auth
+            .node_identity()
+            .expect("lower identity");
+        let higher_identity = (*higher.as_ptr())
+            .auth
+            .node_identity()
+            .expect("higher identity");
+
+        // Hold the responder between the echo and its reservation.
+        let (echoed, at_echo) = std::sync::mpsc::channel();
+        let (release, released) = std::sync::mpsc::channel::<()>();
+        let released = Mutex::new(released);
+        let higher_hook: connection::admission_script::Hook = Arc::new(move |point, _| {
+            if point == connection::admission_script::Point::Echoed {
+                let _ = echoed.send(());
+                let _ = released
+                    .lock_or_recover()
+                    .recv_timeout(std::time::Duration::from_secs(5));
+            }
+        });
+        let script =
+            connection::admission_script::install(&[(higher_mgr.cast_const(), higher_hook)]);
+        let lower_pointer = lower.as_ptr() as usize;
+        let redial = thread::spawn(move || {
+            // The test keeps the lower node started until this joins.
+            hew_node_connect(lower_pointer as *mut HewNode, higher_address.as_ptr())
+        });
+        let observed = (|| -> Result<_, String> {
+            at_echo
+                .recv_timeout(std::time::Duration::from_secs(5))
+                .map_err(|_| "the responder never got the echo")?;
+            // The initiator publishes the redial and holds the shared connection.
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+            let held = loop {
+                if let Some(held) = connection::held_loser_for_test(&*lower_mgr, higher_identity) {
+                    break held;
+                }
+                if std::time::Instant::now() >= deadline {
+                    return Err("the initiator never held the shared connection".into());
+                }
+                std::thread::sleep(std::time::Duration::from_millis(1));
+            };
+            let shared = connection::claim_send_by_identity(&*higher_mgr, lower_identity, None)
+                .ok_or("the responder cannot send on the shared connection")?;
+            let route_slot = connection::authenticated_peer_node_id_for_conn(&*lower_mgr, held.0);
+            if route_slot == 0 {
+                return Err("the held connection lost the peer's authority".into());
+            }
+            let (request, reply) = reply_table().register_with_waker(
+                ConnectionKey::new(higher_mgr, shared.connection_id()),
+                None,
+                PendingReplyKind::Ask(shared.publication_token),
+            );
+            drop(shared);
+            send_reply_envelope(
+                route_slot,
+                request,
+                held.1,
+                b"held",
+                lower_mgr,
+                &AtomicBool::new(false),
+            );
+            let (outcome, _) = reply
+                .cond
+                .wait_timeout_while(
+                    reply.outcome.lock().unwrap(),
+                    Duration::from_secs(5),
+                    |outcome| outcome.is_none(),
+                )
+                .unwrap();
+            let outcome = outcome
+                .as_ref()
+                .map(|outcome| (outcome.status, outcome.data.clone()));
+            reply_table().remove(request);
+            Ok(outcome)
+        })();
+        let _ = release.send(());
+        let rc = redial.join().expect("redial");
+        drop(script);
+        assert_eq!(
+            observed,
+            Ok(Some((ReplyStatus::Success, b"held".to_vec()))),
+            "the reply returned on the held connection"
+        );
+        assert_eq!(rc, 0, "the redial connected");
+        await_one_shared_connection(lower, higher, "after the redial");
+        assert_eq!(hew_node_stop(b.as_ptr()), 0);
+        assert_eq!(hew_node_stop(a.as_ptr()), 0);
+    }
+    crate::registry::hew_registry_clear();
+}
+
+/// The commit order of the connection that holds `peer`'s claim at `node`,
+/// asserted equal at both ends.
+///
+/// # Safety
+/// Both nodes are started and live.
+unsafe fn shared_commit_order(lower: &TestNode, higher: &TestNode) -> Option<u64> {
+    // SAFETY: the caller keeps both nodes started.
+    unsafe {
+        let lower_order = connection::commit_order_for_test(
+            &*(*lower.as_ptr()).conn_mgr,
+            (*higher.as_ptr())
+                .auth
+                .node_identity()
+                .expect("higher identity"),
+        );
+        let higher_order = connection::commit_order_for_test(
+            &*(*higher.as_ptr()).conn_mgr,
+            (*lower.as_ptr())
+                .auth
+                .node_identity()
+                .expect("lower identity"),
+        );
+        assert_eq!(
+            lower_order, higher_order,
+            "both ends keep the same connection"
+        );
+        lower_order
+    }
 }
 
 /// Wait until each node holds exactly one published connection to the other,

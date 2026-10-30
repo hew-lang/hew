@@ -21,8 +21,8 @@ use super::handshake::{
 };
 use super::identity_claim::{
     abort_identity_claim, publish_identity_connection_established, replacing_owner,
-    reserve_identity_claim, restore_followed_loser, retire_identity_connection_publication,
-    AdmissionStart, ClaimReservation, Commit,
+    reserve_identity_claim, retire_identity_connection_publication, settle_held_loser,
+    AdmissionStart, ClaimReservation, Commit, HeldLoser,
 };
 use super::reader::reader_loop;
 use super::reconnect::{next_publication_token, track_worker};
@@ -389,10 +389,13 @@ pub(super) unsafe fn add_connection_on_transport(
         admission_script::Point::Authenticated,
         admission.origin,
     );
-    // Under the responder-commit step the initiator settles nothing until the
-    // responder has reserved this connection and said so; the responder never
-    // waits on the initiator, so neither end can stall the other. A responder
-    // that yields or refuses closes the connection instead.
+    // Under the responder-commit step the responder decides which connection
+    // the pair keeps. It commits this connection and waits for the
+    // initiator's echo before it touches its own claim, so the connection the
+    // pair shares stays published and sendable throughout; the initiator
+    // echoes once its claim has moved here and keeps the connection it
+    // superseded until the responder closes one of the two. Neither end waits
+    // on the network holding a reservation.
     let commit = match Commit::negotiate(
         offers_responder_commit(&local_hs),
         negotiates_responder_commit(&local_hs, &peer_hs),
@@ -417,6 +420,26 @@ pub(super) unsafe fn add_connection_on_transport(
                 return None;
             };
             Commit::Initiator(order)
+        }
+        Commit::Responder(_) => {
+            let order = next_publication_token(mgr).unwrap_or(u64::MAX);
+            // SAFETY: admission owns the connection and no reader has started.
+            let echoed = unsafe {
+                send_commit(&protection, transport_ptr, conn_id, order)
+                    && recv_commit(&protection, transport_ptr, conn_id) == Some(order)
+            };
+            if !echoed {
+                // SAFETY: admission still owns this unpublished transport handle.
+                unsafe { close_transport_conn(transport_ptr, conn_id) };
+                set_last_error(format!(
+                    "hew_connmgr_add: peer {} did not settle conn {conn_id}",
+                    peer_hs.node_id
+                ));
+                return None;
+            }
+            #[cfg(test)]
+            admission_script::reach(mgr, admission_script::Point::Echoed, admission.origin);
+            Commit::Responder(order)
         }
         commit => commit,
     };
@@ -469,8 +492,8 @@ pub(super) unsafe fn add_connection_on_transport(
         .lock_or_recover()
         .get(&peer_hs.node_id)
         .filter(|claim| claim.conn_id == conn_id && claim.publication_token == claim_token)
-        .map(|claim| (claim.route_slot, claim.commit_order));
-    let Some((peer_route_slot, commit_order)) = reserved else {
+        .map(|claim| claim.route_slot);
+    let Some(peer_route_slot) = reserved else {
         abort_identity_claim(mgr, peer_hs.node_id, conn_id, claim_token, superseded_claim);
         // SAFETY: this failed admission still owns its unpublished handle.
         unsafe { close_transport_conn(transport_ptr, conn_id) };
@@ -484,35 +507,22 @@ pub(super) unsafe fn add_connection_on_transport(
         set_last_error("hew_connmgr_add: peer route slot does not match selected target");
         return None;
     }
-    // The reservation can no longer abort before publication. The responder
-    // commits it so the initiator settles on the same connection; the
-    // initiator echoes the order once its own claim has moved to it. Either is
-    // the channel's first frame from its end. The commit is provisional until
-    // the echo: a responder that does not get it aborts the reservation, which
-    // restores the connection it would have superseded, so an initiator that
-    // gave up keeps the connection it still owns. The initiator never waits on
-    // the network holding a reservation, so the two waits cannot form a cycle.
-    let settled = match commit {
-        Commit::Unordered | Commit::Follow => true,
+    // The initiator echoes the responder's commit once its claim has moved to
+    // this connection.
+    if let Commit::Initiator(order) = commit {
+        #[cfg(test)]
+        admission_script::reach(mgr, admission_script::Point::Echoing, admission.origin);
         // SAFETY: admission owns the connection and no reader has started.
-        Commit::Initiator(_) => unsafe {
-            send_commit(&protection, transport_ptr, conn_id, commit_order)
-        },
-        // SAFETY: as above.
-        Commit::Responder => unsafe {
-            send_commit(&protection, transport_ptr, conn_id, commit_order)
-                && recv_commit(&protection, transport_ptr, conn_id) == Some(commit_order)
-        },
-    };
-    if !settled {
-        abort_identity_claim(mgr, peer_hs.node_id, conn_id, claim_token, superseded_claim);
-        // SAFETY: admission owns the unpublished transport handle.
-        unsafe { close_transport_conn(transport_ptr, conn_id) };
-        set_last_error(format!(
-            "hew_connmgr_add: peer {} did not settle conn {conn_id}",
-            peer_hs.node_id
-        ));
-        return None;
+        if !unsafe { send_commit(&protection, transport_ptr, conn_id, order) } {
+            abort_identity_claim(mgr, peer_hs.node_id, conn_id, claim_token, superseded_claim);
+            // SAFETY: admission owns the unpublished transport handle.
+            unsafe { close_transport_conn(transport_ptr, conn_id) };
+            set_last_error(format!(
+                "hew_connmgr_add: could not echo peer {}'s commit on conn {conn_id}",
+                peer_hs.node_id
+            ));
+            return None;
+        }
     }
 
     let mut actor = ConnectionActor::new(conn_id, Arc::new(protection));
@@ -551,8 +561,9 @@ pub(super) unsafe fn add_connection_on_transport(
     let peer_feature_flags = actor.peer_feature_flags;
     let reader_lifecycle_guard = mgr.reader_lifecycle.register();
     let channel = Arc::clone(&actor.channel);
-    let followed_loser = (commit == Commit::Follow).then(|| Arc::clone(&actor.followed_loser));
-    let reader_followed_loser = followed_loser.clone();
+    actor.held_loser = HeldLoser::new(commit).map(|held| Arc::new(std::sync::Mutex::new(held)));
+    let held_loser = actor.held_loser.clone();
+    let reader_held_loser = held_loser.clone();
 
     let handle = thread::Builder::new()
         .name(format!("hew-conn-{conn_id}"))
@@ -568,7 +579,7 @@ pub(super) unsafe fn add_connection_on_transport(
                 router,
                 peer_feature_flags,
                 channel,
-                reader_followed_loser,
+                reader_held_loser,
             );
         });
 
@@ -619,7 +630,7 @@ pub(super) unsafe fn add_connection_on_transport(
         &publication_sync,
         &publication_removed,
         superseded_claim,
-        followed_loser.as_deref(),
+        held_loser.as_deref(),
     ) {
         // A same-session connection that took the claim while this one was
         // publishing keeps the peer connected: report it, as a crossing dial
@@ -885,7 +896,7 @@ pub(super) fn remove_connection(
     // past the retirement below and restore it there, so a same-credential
     // reconnect removed mid-publication hands authority back to the prior
     // connection instead of orphaning it claimless.
-    let followed_loser = conn.followed_loser.lock_or_recover().take();
+    let held_loser = conn.held_loser.clone();
     let restore_after_retire = resolve_admission_claim_before_join(
         mgr,
         peer_identity,
@@ -920,11 +931,10 @@ pub(super) fn remove_connection(
         publication_token,
         &publication_sync,
     );
-    // A connection that followed a peer without the responder-commit step
-    // and closed before the peer confirmed it: the peer kept the connection
-    // this one superseded, so publish that one again.
-    if let (Some(loser), Some(peer_identity)) = (followed_loser, peer_identity) {
-        restore_followed_loser(mgr, peer_identity, conn_id, publication_token, loser);
+    // A connection that held the one it superseded for the peer's choice:
+    // publish that one again if the peer closed this one, else close it.
+    if let Some(held) = held_loser {
+        settle_held_loser(mgr, peer_identity, conn_id, publication_token, &held);
     }
 
     // Suppressed-publication restore (see the pre-join comment above): with our
@@ -977,6 +987,14 @@ pub(crate) mod admission_script {
         Authenticated,
         /// The initiator is about to wait for the responder's commit.
         AwaitingCommit,
+        /// The initiator has reserved the committed connection and is about to
+        /// echo the commit.
+        Echoing,
+        /// The responder has the initiator's echo and is about to reserve.
+        Echoed,
+        /// A held loser on this transport id has its claim reserved again and
+        /// is about to publish.
+        RestoringLoser(std::ffi::c_int),
         /// A node-API dial on this transport id was admitted, before its
         /// reconnect is armed.
         Admitted(std::ffi::c_int),

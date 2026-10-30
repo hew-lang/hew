@@ -14,11 +14,10 @@ use super::control::{
     location_matches_node_session,
 };
 use super::gossip::retry_pending_registry_flush;
-use super::identity_claim::close_followed_loser;
+use super::identity_claim::{held_loser_frame, held_loser_peer_closed, HeldLoser};
 use super::peer::deposit_reply_envelope;
 use super::reconnect::{reconnect_plan, spawn_reconnect_worker};
 use super::{ConnectionTransport, HewConnMgr, InboundRouter, SendConnMgr};
-use crate::peer_binding::LiveClaim;
 
 // ── Reader thread ──────────────────────────────────────────────────────
 
@@ -74,7 +73,7 @@ pub(super) fn reader_loop(
     router: Option<InboundRouter>,
     peer_feature_flags: u32,
     channel: Arc<ChannelProtection>,
-    followed_loser: Option<Arc<Mutex<Option<LiveClaim>>>>,
+    held_loser: Option<Arc<Mutex<HeldLoser>>>,
 ) {
     let mgr = mgr.0;
     let transport_ptr = transport.as_ptr();
@@ -97,6 +96,11 @@ pub(super) fn reader_loop(
         };
 
         if bytes_read <= 0 {
+            if let Some(held) = held_loser.as_deref() {
+                if stop_flag.load(Ordering::Acquire) == 0 {
+                    held_loser_peer_closed(held);
+                }
+            }
             reader_cleanup(mgr, conn_id, &stop_flag);
             break;
         }
@@ -127,12 +131,10 @@ pub(super) fn reader_loop(
         };
         let payload_ptr = buf.as_mut_ptr();
 
-        // The peer sends only on the connection it kept: a loser this one
-        // superseded while following the peer can close now.
-        if let Some(held) = &followed_loser {
+        if let Some(held) = held_loser.as_deref() {
             if !mgr.is_null() {
                 // SAFETY: reader_loop owns a live manager pointer for this connection.
-                close_followed_loser(unsafe { &*mgr }, held);
+                held_loser_frame(unsafe { &*mgr }, held);
             }
         }
 

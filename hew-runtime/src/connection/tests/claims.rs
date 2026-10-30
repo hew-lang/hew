@@ -534,7 +534,7 @@ fn reserve_crossing_claim(
         token,
         None,
         AdmissionStart::now(mgr, origin),
-        Commit::Responder,
+        Commit::Responder(0),
     )
 }
 
@@ -580,7 +580,7 @@ fn crossing_dial_keeps_the_lower_node_dial() {
         6,
         None,
         accepted,
-        Commit::Responder,
+        Commit::Responder(0),
     ) {
         ClaimReservation::Yielded(winner) => assert_eq!(winner.publication_token, 5),
         ClaimReservation::Reserved { .. } => panic!("the peer's crossing dial replaced ours"),
@@ -613,7 +613,7 @@ fn crossing_dial_keeps_the_lower_node_dial() {
         8,
         Some(&stale),
         dialled,
-        Commit::Responder,
+        Commit::Responder(0),
     ) {
         ClaimReservation::Reserved { superseded } => {
             assert_eq!(superseded.map(|claim| claim.conn_id), Some(300));
@@ -657,7 +657,7 @@ fn crossing_dial_tie_break_is_bounded_to_overlapping_admissions() {
         8,
         None,
         higher,
-        Commit::Responder,
+        Commit::Responder(0),
     ) {
         ClaimReservation::Reserved { superseded } => {
             assert_eq!(superseded.map(|claim| claim.conn_id), Some(300));

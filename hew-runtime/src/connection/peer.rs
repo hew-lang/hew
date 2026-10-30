@@ -9,7 +9,7 @@ use crate::node_identity::{Location, NodeId};
 use crate::peer_binding::{ClaimState, Posture};
 use crate::util::{CondvarExt, MutexExt};
 
-use super::identity_claim::CLAIM_RESERVE_WAIT_MS;
+use super::identity_claim::{held_loser_authority, CLAIM_RESERVE_WAIT_MS};
 use super::{HewConnMgr, CONN_STATE_ACTIVE};
 
 /// Project a receiver-local alias from the canonical identity claims. Retired
@@ -89,7 +89,10 @@ pub(crate) fn authenticated_peer_node_id_for_conn(mgr: &HewConnMgr, conn_id: c_i
         Some(claim) if claim.state == ClaimState::Published && claim.conn_id == conn_id => {
             route_slot
         }
-        _ => 0,
+        _ => {
+            drop(guard);
+            held_loser_authority(mgr, conn_id, None).unwrap_or(0)
+        }
     }
 }
 
@@ -180,8 +183,22 @@ pub(crate) fn wait_authenticated_peer_node_id_for_conn(
                 guard = next_guard;
             }
             // No claim owned by this admission: superseded, aborted, or a
-            // claimless (node_id 0) connection — no authority, deny now.
-            Some((_, _, ClaimState::Retired)) | None => return 0,
+            // claimless (node_id 0) connection — no authority, deny now,
+            // unless the claim's owner holds this one for the peer's choice.
+            Some((_, _, ClaimState::Retired)) | None => {
+                drop(guard);
+                if let Some(authority) = held_loser_authority(mgr, conn_id, Some(claim_token)) {
+                    return authority;
+                }
+                // A successor's admission is in flight: wait for it to settle.
+                let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+                if remaining.is_zero() {
+                    return 0;
+                }
+                guard = condvar
+                    .wait_timeout_or_recover(lock.lock_or_recover(), remaining)
+                    .0;
+            }
         }
     }
 }

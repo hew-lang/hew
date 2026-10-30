@@ -69,15 +69,16 @@ pub(super) enum Commit {
     /// same-session connection and closes the one it superseded.
     Unordered,
     /// This end has the step and the peer does not. It keeps the newer
-    /// connection too, but follows the peer's choice: it leaves the superseded
-    /// connection for the peer to close, closes it once the peer sends on the
-    /// newer one, and returns to it if the peer closes the newer one instead.
+    /// connection too, but follows the peer's choice (see [`HeldLoser`]): it
+    /// leaves the superseded connection for the peer to close, and returns to
+    /// it if the peer closes the newer one instead.
     Follow,
-    /// This end is the responder: it settles the pair, and a reservation
-    /// draws the order it commits the connection in.
-    Responder,
-    /// This end is the initiator: it keeps whichever connection the responder
-    /// committed last, given this connection's commit order.
+    /// This end is the responder: it decides which connection the pair keeps,
+    /// once the initiator has echoed the order it committed this one in.
+    Responder(u64),
+    /// This end is the initiator: it moves to the connection the responder
+    /// committed last, given this connection's commit order, and follows the
+    /// responder's choice as a follower does.
     Initiator(u64),
 }
 
@@ -93,7 +94,8 @@ impl Commit {
         match (local_offers, peer_offers, local_dials_first(local, peer)) {
             (false, _, _) => Self::Unordered,
             (true, false, _) => Self::Follow,
-            (true, true, false) => Self::Responder,
+            // The responder draws its order as it commits.
+            (true, true, false) => Self::Responder(0),
             // The order arrives with the responder's commit.
             (true, true, true) => Self::Initiator(0),
         }
@@ -112,7 +114,8 @@ enum CrossingDial {
 /// Decide a crossing dial under the responder-commit step. The responder
 /// decides: two direct, same-session connections opened from opposite ends
 /// whose admissions overlapped on the responder keep the one dialled by the
-/// lower `NodeId`. The initiator keeps whichever the responder committed last.
+/// lower `NodeId`. The initiator moves to whichever the responder committed
+/// last, and follows the responder's closes.
 ///
 /// The overlap is structural: the existing claim published after this
 /// admission began, both drawn from the manager's one admission order. A
@@ -127,8 +130,11 @@ fn crossing_dial(
     admission: AdmissionStart,
     commit: Commit,
 ) -> Option<CrossingDial> {
-    // The initiator follows the responder's commits: the later one is the
-    // connection the responder kept, whatever order they arrive in here.
+    // The initiator moves to the latest commit it has seen, whatever order
+    // they arrive in here, and never echoes an earlier one after it: the
+    // responder keeps only echoed connections. Should the responder keep the
+    // connection the initiator moved from, it closes the newer one, and the
+    // initiator returns to the held loser (see [`HeldLoser`]).
     if let Commit::Initiator(order) = commit {
         if existing.commit_order != 0 {
             if order > existing.commit_order {
@@ -143,7 +149,7 @@ fn crossing_dial(
     // follow. Two ends deciding by their own clocks can disagree about
     // whether the admissions overlapped and each close the other's keeper, so
     // a pair without the step keeps the newer connection at each end.
-    if commit != Commit::Responder {
+    if !matches!(commit, Commit::Responder(_)) {
         return None;
     }
     let local = mgr.local_identity?;
@@ -268,9 +274,7 @@ pub(super) fn reserve_identity_claim(
             published_at: 0,
             commit_order: match commit {
                 Commit::Unordered | Commit::Follow => 0,
-                // Drawn under the claims lock, so it orders the reservations.
-                Commit::Responder => next_publication_token(mgr).unwrap_or(u64::MAX),
-                Commit::Initiator(order) => order,
+                Commit::Responder(order) | Commit::Initiator(order) => order,
             },
         };
         let Some(existing) = map.get(&node_id) else {
@@ -722,7 +726,7 @@ pub(super) fn publish_identity_connection_established(
     publication_sync: &Arc<Mutex<()>>,
     publication_removed: &Arc<AtomicBool>,
     superseded: Option<LiveClaim>,
-    followed_loser: Option<&Mutex<Option<LiveClaim>>>,
+    held_loser: Option<&Mutex<HeldLoser>>,
 ) -> bool {
     if publication_removed.load(Ordering::Acquire) {
         set_last_error("connection publication cancelled before establishment");
@@ -871,13 +875,13 @@ pub(super) fn publish_identity_connection_established(
     // live Published claim from the same peer credential. The superseded
     // connection already lost its authority at the map overwrite (D9 owner
     // check); close its transport so it can no longer emit SWIM/gossip/control
-    // frames. Its actor tears down via the normal reader-exit path. Following
-    // a peer without the responder-commit step, the peer decides which
-    // connection the pair keeps: hold the superseded one open until it shows.
+    // frames. Its actor tears down via the normal reader-exit path. An end the
+    // peer decides for holds the superseded connection instead, until the peer
+    // closes one of the two.
     if let Some(superseded) = superseded {
         if superseded.state == ClaimState::Published && superseded.conn_id != conn_id {
-            match followed_loser {
-                Some(held) => *held.lock_or_recover() = Some(superseded),
+            match held_loser {
+                Some(held) => held.lock_or_recover().loser = Some(superseded),
                 None => close_superseded_connection_once(
                     mgr,
                     superseded.conn_id,
@@ -889,20 +893,152 @@ pub(super) fn publish_identity_connection_established(
     true
 }
 
-/// Publish `loser` again after the connection that superseded it, `conn_id` as
-/// `publication_token`, closed while following a peer without the
-/// responder-commit step: the peer kept `loser`. Does nothing when the loser
-/// has closed too, another admission holds the claim, or the manager is
-/// shutting down.
-pub(super) fn restore_followed_loser(
+/// The published connection a newer one superseded at an end whose peer
+/// decides which of the two the pair keeps: a follower of a peer without the
+/// responder-commit step, or the initiator under it. The peer closes the one
+/// it drops, so the end closes neither on its own account while both are
+/// open.
+#[derive(Debug)]
+pub(super) struct HeldLoser {
+    loser: Option<LiveClaim>,
+    /// The responder sends nothing on a committed connection until it has
+    /// published it and is closing the other, so its first frame there
+    /// releases the loser. A peer without the step can send on a connection
+    /// before it supersedes that one, so a follower waits for a close.
+    release_on_frame: bool,
+    /// The peer closed the connection holding the loser: it kept the loser.
+    peer_closed: bool,
+}
+
+impl HeldLoser {
+    pub(super) fn new(commit: Commit) -> Option<Self> {
+        match commit {
+            Commit::Follow | Commit::Initiator(_) => Some(Self {
+                loser: None,
+                release_on_frame: matches!(commit, Commit::Initiator(_)),
+                peer_closed: false,
+            }),
+            Commit::Unordered | Commit::Responder(_) => None,
+        }
+    }
+}
+
+/// The peer's route slot when `conn_id` (as `claim_token`, if given) is the
+/// loser held by the connection that owns its peer's published claim, else 0;
+/// `None` while that claim is reserved by an admission still in flight.
+/// The peer may still be sending on a held loser: it is the one the peer
+/// keeps if it closes the newer one, so it carries the peer's authority until
+/// it is released.
+pub(super) fn held_loser_authority(
+    mgr: &HewConnMgr,
+    conn_id: c_int,
+    claim_token: Option<u64>,
+) -> Option<u16> {
+    let held = mgr.connections.access(|connections| {
+        connections
+            .iter()
+            .find(|connection| {
+                connection.conn_id == conn_id
+                    && claim_token.is_none_or(|token| connection.publication_token == token)
+                    && connection.state.load(Ordering::Acquire) == super::CONN_STATE_ACTIVE
+                    && connection.posture == crate::peer_binding::Posture::Strict
+                    && connection.peer_node_id != 0
+            })
+            .and_then(|connection| {
+                Some((
+                    connection.peer_identity?,
+                    connection.peer_node_id,
+                    connection.publication_token,
+                ))
+            })
+    });
+    let Some((identity, route_slot, token)) = held else {
+        return Some(0);
+    };
+    let owner = mgr
+        .claims
+        .0
+        .lock_or_recover()
+        .get(&identity)
+        .map(|claim| (claim.state, claim.conn_id, claim.publication_token));
+    let (owner_conn, owner_token) = match owner {
+        Some((ClaimState::Published, conn, token)) => (conn, token),
+        Some((ClaimState::Reserved, ..)) => return None,
+        _ => return Some(0),
+    };
+    let holds = mgr.connections.access(|connections| {
+        connections.iter().any(|connection| {
+            connection.conn_id == owner_conn
+                && connection.publication_token == owner_token
+                && connection.held_loser.as_deref().is_some_and(|held| {
+                    held.lock_or_recover().loser.as_ref().is_some_and(|loser| {
+                        loser.conn_id == conn_id && loser.publication_token == token
+                    })
+                })
+        })
+    });
+    Some(if holds { route_slot } else { 0 })
+}
+
+/// The peer sent a frame on the connection holding `held`.
+pub(super) fn held_loser_frame(mgr: &HewConnMgr, held: &Mutex<HeldLoser>) {
+    let loser = {
+        let mut held = held.lock_or_recover();
+        if !held.release_on_frame {
+            return;
+        }
+        held.loser.take()
+    };
+    if let Some(loser) = loser {
+        close_superseded_connection_once(mgr, loser.conn_id, loser.publication_token);
+    }
+}
+
+/// The peer closed the connection holding `held`.
+pub(super) fn held_loser_peer_closed(held: &Mutex<HeldLoser>) {
+    held.lock_or_recover().peer_closed = true;
+}
+
+/// Settle the loser held by the connection `conn_id` as `publication_token`,
+/// now removed: publish the loser again when the peer closed the holder and
+/// the claim the holder left is still vacant, and otherwise close it, so a
+/// held connection never outlives its holder.
+pub(super) fn settle_held_loser(
+    mgr: &HewConnMgr,
+    node_id: Option<NodeId>,
+    conn_id: c_int,
+    publication_token: u64,
+    held: &Mutex<HeldLoser>,
+) {
+    let (loser, peer_closed) = {
+        let mut held = held.lock_or_recover();
+        (held.loser.take(), held.peer_closed)
+    };
+    let Some(loser) = loser else {
+        return;
+    };
+    let restored = peer_closed
+        && node_id.is_some_and(|node_id| {
+            restore_held_loser(mgr, node_id, conn_id, publication_token, loser.clone())
+        });
+    if !restored {
+        close_superseded_connection_once(mgr, loser.conn_id, loser.publication_token);
+    }
+}
+
+/// Publish `loser` again in place of the connection `conn_id` as
+/// `publication_token` that superseded it. Returns whether it published:
+/// not when the loser has closed too, another admission holds the claim, or
+/// the manager is shutting down.
+fn restore_held_loser(
     mgr: &HewConnMgr,
     node_id: NodeId,
     conn_id: c_int,
     publication_token: u64,
     loser: LiveClaim,
-) {
+) -> bool {
     if mgr.reconnect_shutdown.load(Ordering::Acquire) {
-        return;
+        return false;
     }
     let installed = mgr.connections.access(|connections| {
         connections
@@ -920,7 +1056,7 @@ pub(super) fn restore_followed_loser(
             })
     });
     let Some((flags, sync, removed)) = installed else {
-        return;
+        return false;
     };
     let (route_slot, session, loser_conn, loser_token) = (
         loser.route_slot,
@@ -928,7 +1064,7 @@ pub(super) fn restore_followed_loser(
         loser.conn_id,
         loser.publication_token,
     );
-    {
+    let prior = {
         let (lock, condvar) = &mgr.claims;
         let mut map = lock.lock_or_recover();
         let vacated = map.get(&node_id).is_none_or(|claim| {
@@ -937,9 +1073,9 @@ pub(super) fn restore_followed_loser(
                 && claim.publication_token == publication_token
         });
         if !vacated {
-            return;
+            return false;
         }
-        map.insert(
+        let prior = map.insert(
             node_id,
             LiveClaim {
                 state: ClaimState::Reserved,
@@ -948,8 +1084,18 @@ pub(super) fn restore_followed_loser(
         );
         drop(map);
         condvar.notify_all();
-    }
-    publish_identity_connection_established(
+        prior
+    };
+    #[cfg(test)]
+    super::admission::admission_script::reach(
+        mgr,
+        super::admission::admission_script::Point::RestoringLoser(loser_conn),
+        loser.origin,
+    );
+    // A removal of the loser that began before the reservation has already
+    // resolved its claim, and its publication refuses at once: withdraw the
+    // reservation, which would otherwise outlive both connections.
+    let published = publish_identity_connection_established(
         mgr,
         node_id,
         route_slot,
@@ -962,14 +1108,10 @@ pub(super) fn restore_followed_loser(
         None,
         None,
     );
-}
-
-/// The peer sent on a connection that holds a followed loser, so the peer
-/// kept this connection: close the loser.
-pub(super) fn close_followed_loser(mgr: &HewConnMgr, held: &Mutex<Option<LiveClaim>>) {
-    if let Some(loser) = held.lock_or_recover().take() {
-        close_superseded_connection_once(mgr, loser.conn_id, loser.publication_token);
+    if !published {
+        abort_identity_claim(mgr, node_id, loser_conn, loser_token, prior);
     }
+    published
 }
 
 /// Clear the restorable predecessor claim only from the exact admission whose
@@ -1172,6 +1314,31 @@ pub(crate) fn commit_order_for_test(mgr: &HewConnMgr, peer: NodeId) -> Option<u6
         .lock_or_recover()
         .get(&peer)
         .map(|claim| claim.commit_order)
+}
+
+/// The connection, as `(conn_id, publication_token)`, held by the one that
+/// owns `peer`'s claim.
+#[cfg(test)]
+pub(crate) fn held_loser_for_test(mgr: &HewConnMgr, peer: NodeId) -> Option<(c_int, u64)> {
+    let (owner_conn, owner_token) = mgr
+        .claims
+        .0
+        .lock_or_recover()
+        .get(&peer)
+        .map(|claim| (claim.conn_id, claim.publication_token))?;
+    mgr.connections.access(|connections| {
+        connections
+            .iter()
+            .find(|connection| {
+                connection.conn_id == owner_conn && connection.publication_token == owner_token
+            })?
+            .held_loser
+            .as_deref()?
+            .lock_or_recover()
+            .loser
+            .as_ref()
+            .map(|loser| (loser.conn_id, loser.publication_token))
+    })
 }
 
 /// A test's view of one peer on this manager.

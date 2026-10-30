@@ -115,12 +115,13 @@ fn shard_sum(counter: impl Fn(&CumulativeCounters) -> &AtomicU64) -> u64 {
         })
 }
 
-/// Live bytes from the cumulative totals. Freed bytes are read first: a block
-/// freed on another shard after this read cannot make the result wrap, and a
-/// transiently early free saturates at zero.
+/// Live bytes from the cumulative totals. Allocated bytes are read before
+/// freed bytes, and both only grow, so the result never exceeds the bytes live
+/// when the allocated sum was complete. Churn between the two reads can only
+/// lower it, saturating at zero.
 fn bytes_live() -> u64 {
-    let freed = shard_sum(|c| &c.bytes_freed);
-    shard_sum(|c| &c.bytes_allocated).saturating_sub(freed)
+    let allocated = shard_sum(|c| &c.bytes_allocated);
+    allocated.saturating_sub(shard_sum(|c| &c.bytes_freed))
 }
 
 /// Fold the current live bytes into the peak and return them.
@@ -388,6 +389,56 @@ mod tests {
         );
         assert_eq!(after.bytes_live, before.bytes_live);
         assert!(after.peak_bytes_live >= before.bytes_live + burst.size() as u64);
+    }
+
+    #[test]
+    fn concurrent_reads_never_overstate_peak_under_churn() {
+        let _guard = crate::runtime_test_guard();
+        let before = snapshot();
+        let workers = 8;
+        let block = Layout::from_size_align(64 * 1024, 16).unwrap();
+        let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let readers = (0..8)
+            .map(|_| {
+                let stop = stop.clone();
+                std::thread::spawn(move || {
+                    while !stop.load(Ordering::Relaxed) {
+                        std::hint::black_box(hew_memory_peak_bytes());
+                    }
+                })
+            })
+            .collect::<Vec<_>>();
+        let churners = (0..workers)
+            .map(|worker| {
+                std::thread::spawn(move || {
+                    crate::observe::set_current_worker_shard(worker);
+                    for _ in 0..50_000 {
+                        // SAFETY: block is a valid layout, freed at once.
+                        unsafe {
+                            let ptr = ProfilingAllocator.alloc(block);
+                            assert!(!ptr.is_null());
+                            ProfilingAllocator.dealloc(ptr, block);
+                        }
+                    }
+                })
+            })
+            .collect::<Vec<_>>();
+        for thread in churners {
+            thread.join().unwrap();
+        }
+        stop.store(true, Ordering::Relaxed);
+        for thread in readers {
+            thread.join().unwrap();
+        }
+        let bound = before
+            .peak_bytes_live
+            .max(before.bytes_live + (workers * block.size()) as u64);
+        let after = snapshot();
+        assert!(
+            after.peak_bytes_live <= bound,
+            "peak {} exceeds the true high-water mark {bound}",
+            after.peak_bytes_live
+        );
     }
 
     #[test]

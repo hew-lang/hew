@@ -163,12 +163,15 @@ for (const format of ['json', 'yaml', 'toml']) {
   });
 }
 
+// `c` holds `refs` copies of `b`, which holds `refs` copies of the `items`-element anchor `a`.
+const yamlFanOut = (items, refs) =>
+  `a: &a [${Array(items).fill('x').join(', ')}]\nb: &b [${Array(refs).fill('*a').join(', ')}]\nc: [${Array(refs).fill('*b').join(', ')}]\n`;
+
 test('YAML Value Wasm parsing preserves native input guards', () => {
   const parse = text => JSON.parse(compiler.executeCodec(JSON.stringify({encoding_value: {format: 'Yaml', operation: 'parse', text}})));
   for (const [text, reason] of [
     ['a'.repeat(2 * 1024 * 1024), 'size limit'],
-    [Array.from({length: 201}, (_, i) => `k${i}: &a${i} value`).join('\n'), 'anchor limit'],
-    ['a: &a 1\nb: [' + Array(1025).fill('*a').join(',') + ']\n', 'alias limit'],
+    [yamlFanOut(400, 400), 'alias expansion limit'],
   ]) assert.match(parse(text).error, new RegExp(reason));
   assert.ok(parse('title: "AT&T"\nurl: "https://example.com?a=1&b=2"').value);
 });

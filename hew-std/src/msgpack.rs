@@ -13,10 +13,8 @@ use hew_cabi::string::{string_as_str, string_from_str, HewString};
 use hew_runtime::bytes::{hew_bytes_from_static, BytesTriple};
 use std::ffi::{c_char, CStr};
 
-/// The deepest nesting `to_json` converts: the most `json.parse` reads back.
-/// `serde_json` refuses a 128th nested container, so a document nested 128 deep
-/// converted to JSON that no JSON reader in the standard library accepts.
-const MAX_MSGPACK_DEPTH: usize = 127;
+/// The deepest nesting `to_json` converts, shared with `json.parse` and the wire codec.
+const MAX_MSGPACK_DEPTH: usize = hew_codec::MAX_DEPTH;
 const MALFORMED_MSGPACK_ERROR: &str = "msgpack: malformed input during depth pre-scan";
 
 std::thread_local! {
@@ -693,6 +691,48 @@ mod tests {
                 assert!(!value.is_null(), "json.parse refuses depth {depth}");
                 crate::json::hew_json_free(value);
             }
+        }
+    }
+
+    #[test]
+    fn nesting_cap_is_one_constant_across_json_msgpack_and_codec() {
+        use hew_codec::{Format, Source, MAX_DEPTH};
+
+        assert_eq!(MAX_MSGPACK_DEPTH, MAX_DEPTH);
+        for depth in [MAX_DEPTH, MAX_DEPTH + 1] {
+            let accepted = depth == MAX_DEPTH;
+            let json = format!("{}1{}", "[".repeat(depth), "]".repeat(depth));
+            let mut msgpack = vec![0x91; depth];
+            msgpack.push(0x01);
+
+            let doc = crate::test_string::ManagedString::new(&json);
+            // SAFETY: doc is a live managed string; the result is released once.
+            let parsed = unsafe { crate::json::hew_json_parse(doc.as_ptr()) };
+            assert_eq!(!parsed.is_null(), accepted, "json.parse at depth {depth}");
+            if !parsed.is_null() {
+                // SAFETY: parsed came from hew_json_parse.
+                unsafe { crate::json::hew_json_free(parsed) };
+            }
+
+            // SAFETY: msgpack is a valid buffer; the result is released once.
+            unsafe {
+                let out = hew_msgpack_to_json(msgpack.as_ptr(), msgpack.len());
+                assert_eq!(!out.is_null(), accepted, "msgpack.to_json at depth {depth}");
+                if !out.is_null() {
+                    hew_cabi::cabi::free_cstring(out);
+                }
+            }
+
+            assert_eq!(
+                Source::new(Format::Json, json.as_bytes()).is_ok(),
+                accepted,
+                "codec json at depth {depth}"
+            );
+            assert_eq!(
+                Source::new(Format::Msgpack, &msgpack).is_ok(),
+                accepted,
+                "codec msgpack at depth {depth}"
+            );
         }
     }
 

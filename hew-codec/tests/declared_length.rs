@@ -66,3 +66,21 @@ fn nested_declared_lengths_do_not_reserve_heap() {
         );
     }
 }
+
+#[test]
+fn bare_declared_lengths_do_not_reserve_heap() {
+    // 120 map headers each declaring 57,054 entries, then nothing; the same
+    // for CBOR maps declaring 65,535 entries.
+    let msgpack = vec![0xde; 360];
+    let cbor: Vec<u8> = std::iter::repeat_n([0xb9, 0xff, 0xff], 120)
+        .flatten()
+        .collect();
+    for (format, input) in [(Format::Msgpack, &msgpack), (Format::Cbor, &cbor)] {
+        let peak = parse_peak(format, input);
+        assert!(
+            peak < 1 << 20,
+            "{format:?}: {peak} bytes for {} input bytes",
+            input.len()
+        );
+    }
+}

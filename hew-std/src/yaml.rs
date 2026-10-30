@@ -1149,7 +1149,7 @@ pub extern "C" fn hew_yaml_from_null() -> *mut HewYamlValue {
 mod tests {
     use super::*;
     use crate::test_string::ManagedString;
-    use hew_codec::yaml_value::{YAML_PARSE_ALIAS_LIMIT, YAML_PARSE_SIZE_LIMIT_BYTES};
+    use hew_codec::yaml_value::YAML_PARSE_SIZE_LIMIT_BYTES;
     use hew_runtime::bytes::hew_bytes_drop;
     use std::fmt::Write as _;
 
@@ -2193,7 +2193,7 @@ mod tests {
         unsafe { hew_yaml_free(ok) };
     }
 
-    fn billion_laughs_alias_limit_yaml() -> String {
+    fn billion_laughs_yaml() -> String {
         let mut yaml = String::from("a: &a [\"x\"]\n");
         let mut previous = String::from("a");
 
@@ -2212,7 +2212,7 @@ mod tests {
         }
 
         yaml.push_str("boom: [");
-        for alias_idx in 0..=YAML_PARSE_ALIAS_LIMIT {
+        for alias_idx in 0..64 {
             if alias_idx > 0 {
                 yaml.push_str(", ");
             }
@@ -2225,13 +2225,13 @@ mod tests {
 
     #[test]
     fn parse_rejects_alias_bomb_before_deserialization() {
-        let yaml = billion_laughs_alias_limit_yaml();
+        let yaml = billion_laughs_yaml();
         let val = parse(&yaml);
         assert!(val.is_null());
 
         // SAFETY: hew_yaml_last_error returns a managed string owner.
         let err = unsafe { read_and_free_string(hew_yaml_last_error()) };
-        assert!(err.contains("alias limit"));
+        assert!(err.contains("alias expansion limit"), "got: {err}");
     }
 
     #[test]
@@ -2375,8 +2375,7 @@ description: a language runtime
     #[test]
     fn parse_accepts_unquoted_att_style_scalar_repeats() {
         // 60 mapping entries of the form `company_N: AT&T`.
-        // The `&T` byte pair satisfies the name-byte check so each is counted.
-        // 60 < 200 so the new limit accepts all of them.
+        // `&T` inside a plain scalar is text, not an anchor.
         let mut yaml = String::new();
         for i in 0..60 {
             writeln!(yaml, "company_{i}: AT&T").unwrap();
@@ -2384,7 +2383,7 @@ description: a language runtime
         let val = parse(&yaml);
         assert!(
             !val.is_null(),
-            "60 unquoted AT&T entries should be accepted (60 < 200)"
+            "60 unquoted AT&T entries should be accepted"
         );
 
         // SAFETY: val is a valid HewYamlValue pointer.
@@ -2392,29 +2391,6 @@ description: a language runtime
 
         let err = get_parse_last_error();
         assert!(err.is_empty(), "expected no error, got: {err}");
-    }
-
-    #[test]
-    fn parse_rejects_real_anchor_bomb_still_blocked() {
-        // Build a YAML document with 201 distinct anchors — one more than the
-        // revised YAML_PARSE_ANCHOR_LIMIT of 200. The pre-parse guard must
-        // still reject this before serde_yaml ever sees the input.
-        let mut yaml = String::new();
-        for i in 0..=200usize {
-            // Each entry is a valid YAML mapping key with an anchor.
-            writeln!(yaml, "key_{i}: &anchor_{i} value_{i}").unwrap();
-        }
-        let val = parse(&yaml);
-        assert!(
-            val.is_null(),
-            "YAML with 201 anchors must be rejected by the anchor-limit guard"
-        );
-
-        let err = get_parse_last_error();
-        assert!(
-            err.contains("anchor limit"),
-            "expected 'anchor limit' in error, got: {err}"
-        );
     }
 
     #[test]

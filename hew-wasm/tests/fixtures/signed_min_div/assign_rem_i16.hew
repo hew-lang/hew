@@ -1,0 +1,7 @@
+fn main() {
+    var a: i16 = (-32768);
+    let b: i16 = -1;
+    println("start");
+    a %= b;
+    println(a);
+}

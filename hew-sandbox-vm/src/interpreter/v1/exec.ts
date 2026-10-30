@@ -7433,15 +7433,19 @@ function faultInfo(fault: Fault): [number, string] {
     if (fault.deadline) return [-2, "Deadline"];
     return [212, "UserPanic"];
   }
-  return {
-    integer_overflow: [201, "IntegerOverflow"],
-    divide_by_zero: [202, "DivideByZero"],
-    shift_out_of_range: [204, "ShiftOutOfRange"],
-    vector_bounds: [205, "IndexOutOfBounds"],
-    actor_refused: [-4, "Refused"],
-    heap_exceeded: [200, "HeapExceeded"],
-  }[fault.trap] as [number, string];
+  return TRAP_FAULTS[fault.trap];
 }
+
+/// The native exit reason each package trap reports, as code and name.
+const TRAP_FAULTS = {
+  integer_overflow: [201, "IntegerOverflow"],
+  divide_by_zero: [202, "DivideByZero"],
+  signed_min_div_neg_one: [203, "SignedMinDivNegOne"],
+  shift_out_of_range: [204, "ShiftOutOfRange"],
+  vector_bounds: [205, "IndexOutOfBounds"],
+  actor_refused: [-4, "Refused"],
+  heap_exceeded: [200, "HeapExceeded"],
+} satisfies Record<TrapName, [number, string]>;
 
 function faultApplicationMessage(fault: Fault): string | undefined {
   return fault.kind === "panic" &&
@@ -7711,6 +7715,8 @@ function trapMessage(trap: TrapName): string {
       return "integer overflow";
     case "divide_by_zero":
       return "divide by zero";
+    case "signed_min_div_neg_one":
+      return "signed minimum divided by -1";
     case "shift_out_of_range":
       return "shift amount out of range";
     case "vector_bounds":
@@ -7785,8 +7791,17 @@ function checkedFailure(
     return null;
   }
   const scalar = intTy(ty);
-  if ((op === "Divide" || op === "Modulo") && rhs.value === 0n) {
-    return "divide_by_zero";
+  if (op === "Divide" || op === "Modulo") {
+    if (rhs.value === 0n) return "divide_by_zero";
+    // Both the quotient and the remainder of the signed minimum by -1 trap,
+    // although the remainder alone would be representable.
+    if (
+      scalar.signed &&
+      rhs.value === -1n &&
+      lhs.value === -(1n << (scalar.bits - 1n))
+    ) {
+      return "signed_min_div_neg_one";
+    }
   }
   if (
     (op === "Shl" || op === "Shr") &&

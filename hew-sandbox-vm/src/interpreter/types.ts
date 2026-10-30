@@ -8,18 +8,15 @@ export type JsonValue =
 
 export type SandboxBytecodePackage = import("./v1/package.js").PackageV1;
 
+/// A runtime failure's kind: every trap the package names, plus the VM's own
+/// faults that have no package edge.
 export type TrapKind =
-  | "heap_exceeded"
-  | "actor_refused"
-  | "integer_overflow"
-  | "shift_out_of_range"
-  | "divide_by_zero"
+  | import("./v1/package.js").TrapName
   | "invalid_local"
   | "invalid_block"
   | "invalid_call"
   | "invalid_enum_tag"
   | "invalid_record_field"
-  | "vector_bounds"
   | "string_bounds"
   | "regex_compile"
   | "capability_missing"

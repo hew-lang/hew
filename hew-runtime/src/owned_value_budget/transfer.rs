@@ -185,8 +185,9 @@ pub(crate) unsafe fn is_inert(
 ) -> bool {
     source.is_none()
         && destination.is_none()
-        // SAFETY: the caller retains the layout and its descriptor.
+        // SAFETY: the caller retains the layout.
         && unsafe { layout.as_ref() }
+            // SAFETY: a live layout retains its managed descriptor.
             .and_then(|layout| unsafe { layout.managed.as_ref() })
             .is_some_and(|managed| managed.visit.is_none())
 }

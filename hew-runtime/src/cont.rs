@@ -186,6 +186,10 @@ unsafe fn release_spare_snapshot(registry: &mut CrashCleanupRegistry) {
 }
 
 /// Take this thread's spare registry, or a new one.
+#[expect(
+    clippy::unnecessary_box_returns,
+    reason = "the registry is published by address to the dispatch scope stack"
+)]
 fn take_dispatch_registry() -> Box<CrashCleanupRegistry> {
     let spare = SPARE_DISPATCH_REGISTRY
         .try_with(|slot| slot.0.replace(ptr::null_mut()))

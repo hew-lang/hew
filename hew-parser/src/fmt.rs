@@ -4224,7 +4224,7 @@ impl<'a> Formatter<'a> {
     ///
     /// Postfix operators bind at the highest precedence in the Pratt loop.  Any
     /// expression at a strictly lower precedence level — binary ops, prefix unary
-    /// ops, range, `is`, `await`, `clone` — must be wrapped in parens so that
+    /// ops, `as` casts, range, `is`, `await`, `clone` — must be wrapped in parens so that
     /// re-parsing produces the same AST.  Delimited forms (literals, identifiers,
     /// tuples, arrays, blocks, calls, other postfix) are already unambiguous.
     ///
@@ -4247,6 +4247,7 @@ impl<'a> Formatter<'a> {
                 | Expr::Range { .. }
                 | Expr::Is { .. }
                 | Expr::Await(_)
+                | Expr::Cast { .. }
                 | Expr::StructInit { .. }
         )
     }
@@ -4272,8 +4273,10 @@ impl<'a> Formatter<'a> {
     /// A prefix operator binds tighter than the cast (§12.2), so `-x as u8`
     /// needs none; binary forms bind looser and keep their parentheses.
     fn needs_cast_operand_parens(expr: &Expr) -> bool {
-        !matches!(expr, Expr::Unary { .. } | Expr::Clone(_) | Expr::Await(_))
-            && Self::needs_receiver_parens(expr)
+        !matches!(
+            expr,
+            Expr::Unary { .. } | Expr::Clone(_) | Expr::Await(_) | Expr::Cast { .. }
+        ) && Self::needs_receiver_parens(expr)
     }
 
     /// Format an expression that appears as the object/receiver of a postfix

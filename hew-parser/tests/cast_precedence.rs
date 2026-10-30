@@ -123,6 +123,10 @@ fn fmt_parenthesises_exactly_where_the_tree_needs() {
         ("(a * b) as T", "(a * b) as T"),
         ("a * (b as T)", "a * b as T"),
         ("((-x) as T) as U", "-x as T as U"),
+        ("(-x as T).m()", "(-x as T).m()"),
+        ("(x as T)?", "(x as T)?"),
+        ("-((x as T)?)", "-(x as T)?"),
+        ("(clone x as T).m()", "(clone x as T).m()"),
     ] {
         let parsed = hew_parser::parse(&format!("fn f() {{ {source} }}"));
         assert!(parsed.errors.is_empty(), "{source}: {:?}", parsed.errors);

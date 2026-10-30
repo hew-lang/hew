@@ -13,10 +13,13 @@ pub type Backoff {
     maximum: duration;
 }
 
-/// Construct a bounded exponential restart delay. `maximum` defaults to 30
-/// seconds.
-pub fn exponential(initial: duration, maximum: duration = 30s) -> Backoff {
+/// Construct a bounded exponential restart delay. An omitted `maximum` (or
+/// `0ns`) caps the delay at 30 seconds, or at `initial` when that is longer.
+pub fn exponential(initial: duration, maximum: duration = 0ns) -> Backoff {
     assert(initial > 0ns, "restart backoff initial delay must be positive");
-    assert(maximum >= initial, "restart backoff maximum must be at least initial");
-    Backoff { initial: initial, maximum: maximum }
+    let cap = if maximum != 0ns {
+        maximum
+    } else if initial > 30s { initial } else { 30s };
+    assert(cap >= initial, "restart backoff maximum must be at least initial");
+    Backoff { initial: initial, maximum: cap }
 }

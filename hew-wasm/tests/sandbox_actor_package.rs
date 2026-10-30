@@ -309,6 +309,12 @@ fn supervisor_backoff_uses_the_same_virtual_delays_and_role_semantics() {
             include_str!("../../tests/core-acceptance/cases/supervisor-restart-immediate.hew"),
             "true\n",
         ),
+        (
+            include_str!(
+                "../../tests/core-acceptance/cases/supervisor-restart-backoff-default-maximum.hew"
+            ),
+            "20000\n30000\n30000\n60000\n60000\n",
+        ),
     ] {
         let trace = execute_options(source, "ok", options, hew_compile::SourceSet::in_memory());
         assert_eq!(stdout(&trace), expected);

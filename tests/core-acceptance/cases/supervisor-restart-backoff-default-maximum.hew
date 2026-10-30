@@ -1,0 +1,41 @@
+import std.restart;
+
+actor Worker {
+    receive fn fail() {
+        panic("restart with default maximum");
+    }
+}
+
+supervisor Short {
+    intensity: 10 within 1h;
+    backoff: restart.exponential(initial: 20s);
+    child worker: Worker;
+}
+
+supervisor Long {
+    intensity: 10 within 1h;
+    backoff: restart.exponential(initial: 1m);
+    child worker: Worker;
+}
+
+fn main() {
+    let short = spawn Short;
+    for _ in 0..3 {
+        let started = instant.now();
+        let _ = short.worker.fail();
+        restarted(short.worker);
+        println(started.elapsed().millis());
+    }
+    stop(short);
+    stopped(short);
+
+    let long = spawn Long;
+    for _ in 0..2 {
+        let started = instant.now();
+        let _ = long.worker.fail();
+        restarted(long.worker);
+        println(started.elapsed().millis());
+    }
+    stop(long);
+    stopped(long);
+}

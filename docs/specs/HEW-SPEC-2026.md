@@ -6461,8 +6461,8 @@ fn main() {
   within the rolling `<duration>` window. The window is a duration literal
   (`60s`, `5m`, `1h`), not a bare integer. Default `10 within 5s`.
 - `backoff: <expression>`: an optional `std.restart.Backoff`, usually
-  `restart.exponential(initial: 100ms, maximum: 5s)`; `maximum` defaults to
-  `30s`. The expression runs once during supervisor construction and can use
+  `restart.exponential(initial: 100ms, maximum: 5s)`; an omitted `maximum`
+  is the larger of `initial` and `30s`. The expression runs once during supervisor construction and can use
   its configuration parameters. Without `backoff`, a crashed child restarts
   immediately.
 
@@ -6545,7 +6545,8 @@ The supervisor's `intensity: N within <window>` budget caps restarts; exceeding 
 
 An optional `backoff` delays crash recovery per stable child role, including
 nested supervisors and individual pool members. Its first delay is `initial`;
-later failures double it up to `maximum`, which defaults to 30 seconds. Both
+later failures double it up to `maximum`, which defaults to the larger of
+`initial` and 30 seconds. Both
 values are durations, `initial` must be positive, and `maximum` must be at
 least `initial`. Invalid policies
 fail supervisor construction before any child starts.

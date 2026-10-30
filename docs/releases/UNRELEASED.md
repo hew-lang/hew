@@ -8,5 +8,5 @@ candidate commit belong here.
 A supervisor without `backoff` now restarts a crashed child immediately. The
 previous implicit delay of 100 milliseconds, doubling to 30 seconds from the
 second crash, stalled tight restart loops. Declare
-`backoff: restart.exponential(initial: 100ms)` to keep a delay; `maximum` now
-defaults to 30 seconds.
+`backoff: restart.exponential(initial: 100ms)` to keep a delay; an omitted
+`maximum` is the larger of `initial` and 30 seconds.

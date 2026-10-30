@@ -1,0 +1,28 @@
+// Negation at each signed width, including widths settled after the
+// negation by later use, and float negation at the contextual width.
+
+fn widen(x: i16) -> i64 {
+    x as i64
+}
+
+fn main() {
+    let a: i8 = 100;
+    let b: i32 = -2147483647;
+    let c: i64 = 9;
+    println(-a);
+    println(-b);
+    println(-(c + 1));
+
+    // `n` is i16 only once `widen` uses it.
+    let n = 300;
+    let m = -n;
+    println(widen(m));
+    let g: f32 = -(1.5);
+    let h: f64 = -(0.25 + 0.5);
+    println(g);
+    println(h);
+
+    // A cast binds tighter than unary minus: negate first, then cast.
+    let d: i32 = 7;
+    println((-d) as i64);
+}

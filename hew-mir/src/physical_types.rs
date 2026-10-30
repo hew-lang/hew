@@ -1709,9 +1709,21 @@ pub struct PhysicalDebugFunction {
     pub locals: BTreeMap<StorageId, PhysicalDebugLocal>,
     /// Frame-backed source storage initialized on every incoming path.
     pub available: PhysicalDebugAvailability,
+    /// The locals that start or stop holding a value after an op, by block and
+    /// index within the block. Sparse: only an op that changes the set.
+    pub changes: BTreeMap<(BlockId, u32), PhysicalDebugChange>,
     /// Source byte of each physical op, by block and index within the block.
     /// Sparse: an op lowered from a synthesized operation has no source point.
     pub sites: BTreeMap<(BlockId, u32), u32>,
+}
+
+/// Source storage that gains or loses its value across one op.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct PhysicalDebugChange {
+    /// Certified initialized on every path after the op, and not before.
+    pub bound: Vec<StorageId>,
+    /// Initialized before the op on every path, and not after.
+    pub ended: Vec<StorageId>,
 }
 
 /// Frame-backed source storage certified initialized at each reachable block's entry.

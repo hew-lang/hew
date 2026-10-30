@@ -66,6 +66,7 @@ fn emit_with_ir(dir: &Path, name: &str, text: &str) -> (PathBuf, PathBuf) {
             }),
             link_freestanding_wasm: false,
             build_info: None,
+            debug_script_dir: None,
         },
     )
     .expect("emit physical object");

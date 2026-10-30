@@ -28,18 +28,22 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
         builder.position_at_end(prologue);
         // A body with debug info keeps a current location for every
         // instruction it builds: LLVM requires one on each inlinable call.
-        let mut debug = match (
+        let debug = match (
             &module.debug,
             module.module.debug.functions.get(&callable.id),
         ) {
             (Some(emitter), Some(attribution)) => {
-                let function_debug = emitter.function(value, &callable.symbol, attribution);
-                builder.set_current_debug_location(emitter.declaration_location(
-                    ctx,
-                    &function_debug,
-                    attribution.decl,
-                ));
-                debug::pin_for_inspection(ctx, value);
+                let function_debug =
+                    emitter.function(value, callable, attribution, &module.module.target);
+                // A ramp starts on its declaration, the way a compiled C
+                // function does, so a debugger that skips to the next line
+                // after the frame setup lands past the argument homes.
+                let start = if callable.is_resumable {
+                    emitter.location(ctx, &function_debug, attribution.decl)
+                } else {
+                    emitter.unattributed_location(ctx, &function_debug)
+                };
+                builder.set_current_debug_location(start);
                 Some((emitter, function_debug, attribution))
             }
             _ => None,
@@ -63,8 +67,27 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
             } else {
                 state
             };
+            // The frame allocation is the first call of a ramp, and LLVM ends
+            // the prologue at the first instruction under a source line that
+            // precedes no call. Put it under the first statement's line so a
+            // breakpoint on the function stops there, with the parameters
+            // already homed, instead of at the first instruction.
+            if let Some((emitter, function_debug, attribution)) = &debug {
+                if let Some(offset) = debug::first_site_from(function, attribution, function.entry)
+                {
+                    builder.set_current_debug_location(emitter.location(
+                        ctx,
+                        function_debug,
+                        offset,
+                    ));
+                }
+            }
             let mut frame =
                 coro::begin(ctx, target_data, &module.llvm, &builder, value, execution)?;
+            if let Some((emitter, function_debug, _)) = &debug {
+                builder
+                    .set_current_debug_location(emitter.unattributed_location(ctx, function_debug));
+            }
             frame.completion_state = state;
             if callable.is_authored_close {
                 frame.bind_cleanup_execution(ctx, &module.llvm, &builder)?;
@@ -74,18 +97,20 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
             None
         };
         let slots = partial::allocate_storage(module, function, callable, value, &builder)?;
-        if let Some((emitter, function_debug, attribution)) = &mut debug {
+        if let Some((emitter, function_debug, attribution)) = &debug {
             debug::declare_locals(
                 ctx,
                 emitter,
                 function_debug,
-                attribution,
-                function,
-                &module.module.target,
-                &slots,
-                prologue,
-                frame.as_ref(),
-            )?;
+                &debug::BodyLocals {
+                    attribution,
+                    function,
+                    target: &module.module.target,
+                    slots: &slots,
+                    prologue,
+                    resumable: frame.is_some(),
+                },
+            );
         }
         let place_flags = partial::allocate_flags(module, function, &builder, &slots)?;
         let active_fault = coro::entry_storage(
@@ -176,16 +201,16 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                 )?,
             };
             values.store_value(slots[storage_id.0 as usize], &physical_param.layout, loaded)?;
-            if let Some((emitter, function_debug, _)) = &debug {
-                // Resumable parameter stores execute after coroutine initialization.
-                emitter.local_value(
-                    function_debug,
-                    *storage_id,
-                    loaded,
-                    builder
-                        .get_insert_block()
-                        .expect("parameter store has a block"),
-                )?;
+            if frame.is_some() && !parameter.is_struct_value() && !parameter.is_array_value() {
+                if let Some((emitter, function_debug, _)) = &debug {
+                    emitter.bind_argument(
+                        function_debug,
+                        *storage_id,
+                        parameter,
+                        physical_param.carrier == ParamCarrier::Indirect,
+                        prologue,
+                    );
+                }
             }
             param_index += 1;
         }
@@ -224,6 +249,14 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                 &task_scopes,
             )?;
         }
+        // The branch into the body is the first instruction of the first
+        // statement, so `prologue_end` lands on it, after every parameter
+        // store, and a function breakpoint sees the arguments.
+        if let Some((emitter, function_debug, attribution)) = &debug {
+            if let Some(offset) = debug::first_site_from(function, attribution, function.entry) {
+                builder.set_current_debug_location(emitter.location(ctx, function_debug, offset));
+            }
+        }
         builder
             .build_unconditional_branch(blocks[&function.entry])
             .llvm_ctx("branch to physical entry")?;
@@ -254,14 +287,109 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
     }
 
     pub(super) fn emit(self) -> CodegenResult<()> {
-        let inspectable = self.debug.is_some();
-        let value = self.value;
-        let chunks = if self.frame.is_some() && !inspectable && self.module.coverage.is_empty() {
+        let chunks = if self.frame.is_some() && self.module.coverage.is_empty() {
             self.function.loop_chunks(self.module)
         } else {
             Vec::new()
         };
         for block in &self.function.blocks {
+            let tail = self.value.get_last_basic_block();
+            self.emit_block(block, &chunks)?;
+            self.keep_with_block(block, tail);
+        }
+        self.group_by_line();
+        Ok(())
+    }
+
+    /// Lay the blocks of an unoptimized debug build out line by line.
+    ///
+    /// Physical blocks follow block ids, and a source line's code (checked
+    /// arithmetic's fault landings, join and exit blocks) lands in several of
+    /// them, so a line would resume after later lines and start a second
+    /// statement. Grouping blocks by the line they open with, in order of
+    /// first appearance, keeps each line's code contiguous. A block with no
+    /// line of its own stays with the block before it. The optimizer lays out
+    /// optimized builds itself, so those are left alone.
+    fn group_by_line(&self) {
+        let Some((emitter, ..)) = &self.debug else {
+            return;
+        };
+        if emitter.optimized() {
+            return;
+        }
+        let mut groups: Vec<(u32, Vec<BasicBlock<'ctx>>)> = Vec::new();
+        let mut current = 0;
+        let mut blocks = self.value.get_basic_blocks().into_iter();
+        let Some(entry) = blocks.next() else {
+            return;
+        };
+        for block in blocks {
+            let line = block
+                .get_instructions()
+                .filter_map(|instruction| instruction.get_debug_location())
+                .map(|location| location.get_line())
+                .find(|line| *line != 0);
+            if let Some(line) = line {
+                current = line;
+            }
+            match groups.iter_mut().find(|(key, _)| *key == current) {
+                Some((_, members)) => members.push(block),
+                None => groups.push((current, vec![block])),
+            }
+        }
+        let mut anchor = entry;
+        for block in groups.into_iter().flat_map(|(_, members)| members) {
+            if block.move_after(anchor).is_ok() {
+                anchor = block;
+            }
+        }
+    }
+
+    /// Lay the LLVM blocks a physical block's emission created (checked
+    /// arithmetic's fault and continuation arms, call status dispatch)
+    /// directly after it, in creation order, with the fault landings it
+    /// branches to. A source line's code then stays
+    /// contiguous, so it starts one statement, instead of resuming after
+    /// whichever physical blocks the function's tail happened to hold.
+    fn keep_with_block(&self, block: &PhysicalBlock, tail: Option<BasicBlock<'ctx>>) {
+        let mut created = Vec::new();
+        let mut next = tail.and_then(|tail| tail.get_next_basic_block());
+        while let Some(current) = next {
+            created.push(current);
+            next = current.get_next_basic_block();
+        }
+        let mut anchor = self.blocks[&block.id];
+        while let Some(last) = anchor
+            .get_next_basic_block()
+            .filter(|candidate| created.first() == Some(candidate))
+        {
+            anchor = last;
+            created.remove(0);
+        }
+        for moved in created {
+            moved.move_after(anchor).ok();
+            anchor = moved;
+        }
+        // A checked operation's fault landing runs on the operation's own
+        // line, so it follows the operation instead of reopening that line
+        // after later code.
+        if let PhysicalTerminator::CheckedBinary { failures, .. } = &block.terminator {
+            for failure in failures {
+                if let Some(landing) = self.blocks.get(&failure.edge.target) {
+                    if *landing != anchor && landing.move_after(anchor).is_ok() {
+                        anchor = *landing;
+                    }
+                }
+            }
+        }
+    }
+
+    fn emit_block(
+        &self,
+        block: &PhysicalBlock,
+        chunks: &[hew_mir::physical::PhysicalLoopChunk],
+    ) -> CodegenResult<()> {
+        {
             self.builder.position_at_end(self.blocks[&block.id]);
             if let Some(chunk) = chunks.iter().find(|chunk| chunk.blocks.contains(&block.id)) {
                 if block.id == chunk.header {
@@ -271,7 +399,7 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                         .build_unreachable()
                         .llvm_ctx("omit outlined loop block")?;
                 }
-                continue;
+                return Ok(());
             }
             // Blocks are emitted in id order, not execution order, so a block
             // opens on its own first source point rather than inheriting the
@@ -304,40 +432,47 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
             for (index, operation) in block.ops.iter().enumerate() {
                 self.locate(block.id, index);
                 self.emit_op(operation)?;
+                self.debug_changes(block.id, index);
             }
-            self.locate(block.id, block.ops.len());
+            self.locate_terminator(block);
             self.emit_terminator(block)?;
-        }
-        if inspectable {
-            debug::order_blocks_for_inspection(value);
         }
         Ok(())
     }
 
     /// Open a block at the earliest source point anything in it names, or at
-    /// the body's declaration when it names none.
+    /// line 0 when it names none: such a block is cleanup or fault plumbing.
     fn enter_block(&self, block: BlockId) -> CodegenResult<()> {
         let Some((emitter, function_debug, attribution)) = &self.debug else {
             return Ok(());
         };
-        if self.frame.is_some() {
-            self.builder.unset_current_debug_location();
-            if let Some(available) = attribution.available.get(&block) {
-                for id in available {
-                    self.load(*id, "debug.local.restore")?;
-                }
-            }
-        }
         let first = attribution
             .sites
             .range((block, 0)..=(block, u32::MAX))
             .next()
-            .map(|(_, offset)| *offset);
+            .map(|(_, offset)| *offset)
+            // The entry's own jump to the first statement is that statement's
+            // first instruction, where `prologue_end` lands.
+            .or_else(|| {
+                (block == self.function.entry)
+                    .then(|| debug::first_site_from(self.function, attribution, block))
+                    .flatten()
+            });
         let location = first.map_or_else(
-            || emitter.declaration_location(self.ctx, function_debug, attribution.decl),
+            || emitter.unattributed_location(self.ctx, function_debug),
             |offset| emitter.location(self.ctx, function_debug, offset),
         );
         self.builder.set_current_debug_location(location);
+        // Unoptimized value ranges follow the order blocks are laid out, not
+        // the order they run, so each block states which locals hold a value
+        // on entry. A debugger then never carries one block's reading into
+        // another.
+        if self.frame.is_some() {
+            let held = attribution.available.get(&block);
+            for id in attribution.locals.keys() {
+                self.debug_local(*id, held.is_some_and(|held| held.contains(id)));
+            }
+        }
         Ok(())
     }
 
@@ -361,31 +496,38 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
         ));
     }
 
+    /// Point the builder at the source a terminator lowered from.
+    ///
+    /// A safepoint has no source of its own: it polls the scheduler on the
+    /// way into the code it resumes. It takes that code's first source point,
+    /// so the entry poll belongs to the first statement (where `prologue_end`
+    /// lands, after every parameter is stored) and a loop's back-edge poll to
+    /// the loop header, instead of opening a line of its own.
+    fn locate_terminator(&self, block: &PhysicalBlock) {
+        let Some((emitter, function_debug, attribution)) = &self.debug else {
+            return;
+        };
+        let index = u32::try_from(block.ops.len())
+            .expect("verified physical operation count fits a u32 index");
+        if attribution.sites.contains_key(&(block.id, index)) {
+            self.locate(block.id, block.ops.len());
+            return;
+        }
+        let PhysicalTerminator::Safepoint { normal, .. } = &block.terminator else {
+            return;
+        };
+        if let Some(offset) = debug::first_site_from(self.function, attribution, normal.target) {
+            self.builder.set_current_debug_location(emitter.location(
+                self.ctx,
+                function_debug,
+                offset,
+            ));
+        }
+    }
+
     pub(super) fn load(&self, id: StorageId, name: &str) -> CodegenResult<BasicValueEnum<'ctx>> {
-        let value = self.value_emitter().load_value(
-            self.slots[id.0 as usize],
-            &self.storage(id)?.layout,
-            name,
-        )?;
-        self.debug_value(id, value)?;
-        Ok(value)
-    }
-
-    fn debug_value(&self, id: StorageId, value: BasicValueEnum<'ctx>) -> CodegenResult<()> {
-        if let Some((emitter, function_debug, _)) = &self.debug {
-            if let Some(block) = self.builder.get_insert_block() {
-                emitter.local_value(function_debug, id, value, block)?;
-            }
-        }
-        Ok(())
-    }
-
-    pub(super) fn debug_unavailable(&self, id: StorageId) {
-        if let Some((emitter, function_debug, _)) = &self.debug {
-            if let Some(block) = self.builder.get_insert_block() {
-                emitter.local_unavailable(function_debug, id, block);
-            }
-        }
+        self.value_emitter()
+            .load_value(self.slots[id.0 as usize], &self.storage(id)?.layout, name)
     }
 
     pub(super) fn storage(&self, id: StorageId) -> CodegenResult<&PhysicalStorage> {
@@ -403,9 +545,7 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
             value,
         )?;
         self.set_capture_initialized(id, true)?;
-        self.set_place_initialized(id, true)?;
-        self.debug_value(id, value)?;
-        Ok(())
+        self.set_place_initialized(id, true)
     }
 
     /// Loop snapshots restore scalar values and invariant borrowed vector
@@ -420,14 +560,45 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
             self.slots[id.0 as usize],
             &self.storage(id)?.layout,
             value,
-        )?;
-        self.debug_value(id, value)
+        )
+    }
+
+    /// Apply what the verifier proved about which locals hold a value after
+    /// operation `index` of `block`.
+    fn debug_changes(&self, block: BlockId, index: usize) {
+        let Some((_, _, attribution)) = &self.debug else {
+            return;
+        };
+        let Some(change) = u32::try_from(index)
+            .ok()
+            .and_then(|index| attribution.changes.get(&(block, index)))
+        else {
+            return;
+        };
+        for id in &change.ended {
+            self.debug_local(*id, false);
+        }
+        for id in &change.bound {
+            self.debug_local(*id, true);
+        }
+    }
+
+    /// Tell a debugger whether `id` holds a value from here on. Only a
+    /// coroutine body describes its locals this way.
+    fn debug_local(&self, id: StorageId, holds_value: bool) {
+        let (Some((emitter, function_debug, _)), Some(block)) =
+            (&self.debug, self.builder.get_insert_block())
+        else {
+            return;
+        };
+        if holds_value {
+            emitter.bind_local(function_debug, id, block);
+        } else {
+            emitter.kill_local(self.ctx, function_debug, id, block);
+        }
     }
 
     pub(super) fn clear_owned(&self, id: StorageId) -> CodegenResult<()> {
-        if self.storage(id)?.own == OwnKind::Owned {
-            self.debug_unavailable(id);
-        }
         self.set_capture_initialized(id, false)?;
         self.set_place_initialized(id, false)?;
         // A local aggregate leaf records its transfer in this frame's
@@ -817,14 +988,8 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                 let value = self.load(*source, "borrow")?;
                 self.store(*dest, value)
             }
-            PhysicalOp::EndBorrow { source } => {
-                self.debug_unavailable(*source);
-                Ok(())
-            }
-            PhysicalOp::StorageLive { storage } => {
-                self.debug_unavailable(*storage);
-                self.set_place_initialized(*storage, false)
-            }
+            PhysicalOp::EndBorrow { .. } => Ok(()),
+            PhysicalOp::StorageLive { storage } => self.set_place_initialized(*storage, false),
             PhysicalOp::Assign {
                 dest,
                 source,
@@ -843,7 +1008,6 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                 destroy,
                 cleanup,
             } => {
-                self.debug_unavailable(*storage);
                 if self.destroy_certified_contents(*storage, cleanup)? {
                     return Ok(());
                 }
@@ -882,9 +1046,6 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
             .map(|field| self.load(*field, "variant.make.field"))
             .collect::<CodegenResult<Vec<_>>>()?;
         self.write_variant_value(self.slots[dest.0 as usize], variant, &values, glue_id)?;
-        if self.debug.is_some() {
-            self.load(dest, "variant.debug.value")?;
-        }
         for field in fields {
             self.clear_owned(*field)?;
         }
@@ -1239,7 +1400,6 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
             return Ok(());
         }
         let value = self.load(source, "destroy.source")?;
-        self.debug_unavailable(source);
         self.clear_owned(source)?;
         self.release_loaded(value, &self.storage(source)?.layout, action)
     }
@@ -1256,7 +1416,6 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
             return Ok(());
         }
         let value = self.load(source, "destroy.source")?;
-        self.debug_unavailable(source);
         self.clear_owned(source)?;
         self.release_loaded(value, &self.storage(source)?.layout, action)
     }

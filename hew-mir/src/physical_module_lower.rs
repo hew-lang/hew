@@ -1514,6 +1514,7 @@ pub(crate) fn function_attribution(
         end: u32::try_from(function.span.end).unwrap_or(u32::MAX),
         locals,
         available: BTreeMap::new(),
+        changes: BTreeMap::new(),
         sites,
     }
 }

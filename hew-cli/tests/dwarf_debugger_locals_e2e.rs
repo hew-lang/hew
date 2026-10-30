@@ -701,6 +701,9 @@ fn two_stop_sleep_cmd(dbg: &str, src: &str, bin: &str) -> Command {
             &format!("break {src}:7"),
             "-ex",
             "run",
+            // `n` is a formal parameter, which gdb lists under `info args`.
+            "-ex",
+            "info args",
             "-ex",
             "info locals",
             "-ex",
@@ -709,6 +712,8 @@ fn two_stop_sleep_cmd(dbg: &str, src: &str, bin: &str) -> Command {
             "disable 1",
             "-ex",
             "continue",
+            "-ex",
+            "info args",
             "-ex",
             "info locals",
             bin,
@@ -756,8 +761,13 @@ fn s_value_reads(section: &str) -> Vec<&str> {
     section
         .lines()
         .filter(|line| {
+            // lldb prefixes a read with the variable's type: `(string) s = ...`.
             let line = line.trim_start();
-            line.starts_with("s = ") || line.starts_with("(hew_string *) s = ")
+            let line = match line.strip_prefix('(') {
+                Some(typed) => typed.split_once(") ").map_or(line, |(_, rest)| rest),
+                None => line,
+            };
+            line.starts_with("s = ")
         })
         .collect()
 }

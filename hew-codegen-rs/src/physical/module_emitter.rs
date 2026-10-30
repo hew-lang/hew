@@ -39,8 +39,10 @@ pub(super) fn build_module_with_host<'ctx>(
     let llvm = ctx.create_module(name);
     llvm.set_triple(&triple);
     llvm.set_data_layout(&data_layout);
-    let debug = debug_source
-        .map(|source| debug::DebugEmitter::new(ctx, &llvm, &triple_text, source, &physical.debug));
+    let debug = debug_source.map(|source| {
+        let optimized = debug::optimizes(machine);
+        debug::DebugEmitter::new(ctx, &llvm, &triple_text, source, &physical.debug, optimized)
+    });
     let mut emitter = ModuleEmitter {
         ctx,
         module: physical,
@@ -808,6 +810,13 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
         self.emit_selected_entry_body(&builder, wrapper, entry_id, plan.action.clone())?;
         if self.module.target.triple.starts_with("wasm32") {
             self.emit_wasi_entry_adapter(wrapper)?;
+        }
+        if let Some(debug) = &self.debug {
+            debug.shim(
+                self.ctx,
+                wrapper,
+                hew_mir::physical::debug_names::C_ENTRY_DEBUG_NAME,
+            );
         }
         Ok(())
     }

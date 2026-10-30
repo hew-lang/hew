@@ -258,20 +258,19 @@ impl<'ctx> DebugEmitter<'ctx> {
         };
         let (value_size, value_align) =
             value.map_or((0, 1), |(layout, _)| (layout.size, layout.align));
-        // The runtime's own slot layout places each member; a map whose slot
-        // cannot be laid out is never constructed, so it has nothing to show.
-        let (key_offset, value_offset, stride, _) = hew_runtime::hashmap::compute_slot_layout(
-            host_size(key_layout.size),
-            host_size(u64::from(key_layout.align)),
-            host_size(value_size),
-            host_size(u64::from(value_align)),
-        )?;
+        let (key_offset, value_offset, stride, entries_align) =
+            hew_runtime::hashmap::compute_slot_layout(
+                convert(key_layout.size)?,
+                convert(key_layout.align)?,
+                convert(value_size)?,
+                convert(value_align)?,
+            )?;
         let (key_offset, value_offset, stride) = (
-            target_size(key_offset),
-            target_size(value_offset),
-            target_size(stride),
+            convert::<_, u64>(key_offset)?,
+            convert::<_, u64>(value_offset)?,
+            convert::<_, u64>(stride)?,
         );
-        let entries_align = key_layout.align.max(value_align);
+        let entries_align = convert::<_, u32>(entries_align)?;
 
         let state = self.slot_state();
         let mut slot = vec![self.member_bits("state", state, 8, 8, 0)];
@@ -820,17 +819,6 @@ fn unsigned_base(bits: u64) -> Option<&'static str> {
     })
 }
 
-/// A target byte count as the host computes with it. The compiler runs on a
-/// 64-bit host, where every target size fits.
-fn host_size(bytes: u64) -> usize {
-    usize::try_from(bytes).unwrap_or_else(|_| unreachable!("a target size fits a host usize"))
-}
-
-fn target_size(bytes: usize) -> u64 {
-    u64::try_from(bytes).unwrap_or_else(|_| unreachable!("a host usize fits u64"))
-}
-
-/// The source spelling of a type, from the type checker's own renderer.
 /// The source spelling of a type, from the type checker's own renderer.
 fn type_name(ty: &ResolvedTy) -> String {
     ty.user_facing().to_string()
@@ -871,4 +859,10 @@ fn field_offsets(fields: &[PhysicalLayout]) -> Vec<u64> {
             at
         })
         .collect()
+}
+
+/// A layout number in another width; `None` when it does not fit, which leaves
+/// the type undescribed instead of described wrongly.
+fn convert<From, To: TryFrom<From>>(value: From) -> Option<To> {
+    To::try_from(value).ok()
 }

@@ -2768,9 +2768,11 @@ impl HewCluster {
         self.events
             .lock_or_recover()
             .retain(|event| !gone(event.node_id));
-        self.indirect_probes
-            .lock_or_recover()
-            .retain(|probe| !gone(probe.target) && !gone(probe.requester));
+        for probes in [&self.relayed_probes, &self.requested_probes] {
+            probes
+                .lock_or_recover()
+                .retain(|probe| !gone(probe.target) && !gone(probe.peer));
+        }
         for member in &retired {
             crate::hew_node::retire_member_quarantine(member.route_slot, member.session);
         }

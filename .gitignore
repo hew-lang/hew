@@ -35,6 +35,8 @@ __pycache__/
 # Fuzz artifacts
 hew-parser/fuzz/corpus/
 hew-parser/fuzz/artifacts/
+hew-runtime/fuzz/corpus/
+hew-runtime/fuzz/artifacts/
 node_modules/
 /.bin
 /.cache

@@ -29,7 +29,7 @@ members = [
   "hew-testutil",
   "xtask",
 ]
-exclude = ["hew-parser/fuzz"]
+exclude = ["hew-parser/fuzz", "hew-runtime/fuzz"]
 resolver = "2"
 
 [workspace.package]

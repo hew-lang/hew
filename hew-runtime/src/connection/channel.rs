@@ -260,7 +260,7 @@ impl ChannelProtection {
     /// A connected Noise pair for tests that record or inject frames: the
     /// first half protects the connection under test and the second half is
     /// the peer's, used to read what the connection sent.
-    #[cfg(test)]
+    #[cfg(any(test, feature = "fuzzing"))]
     pub(super) fn test_noise_pair() -> (Self, snow::TransportState) {
         let pattern: snow::params::NoiseParams = super::NOISE_PATTERN.parse().expect("pattern");
         let initiator_key = snow::Builder::new(pattern.clone())

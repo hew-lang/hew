@@ -6796,6 +6796,13 @@ including the peer calls they make, finish within a bounded window (5s);
 *terminate* stops supervisors bottom-up and joins the workers. Returning from
 `main` drains without closing root admission, since the root has finished.
 
+The drain window is measured on the runtime clock. Under the deterministic
+driver that is virtual time: a drain poll with nothing ready and no timer due
+advances the clock by its poll interval, and a pending timer moves it to that
+timer's deadline. A drain whose remaining work waits on a timer due after the
+window therefore ends as a failed shutdown at once, rather than running the
+timer; on the threaded scheduler the same drain fails when the window elapses.
+
 Once quiesce closes root admission, the destination actor is still alive, so a
 refused call never reports `Dead`. A bare or `.Wait` completion call reports
 `ActorError.NodeNotRunning`: it holds no request to return. A

@@ -531,9 +531,9 @@ fn drain_until_idle(timeout: Duration) -> bool {
     if timeout.is_zero() {
         return true;
     }
-    let deadline = Instant::now() + timeout;
+    let deadline = crate::clock::RuntimeDeadline::after(timeout);
     let mut idle_polls = 0;
-    while Instant::now() < deadline {
+    while !deadline.remaining().is_zero() {
         // Sample scheduler idleness on both sides of the reactor probe. A
         // readiness delivery can remove its registration and enqueue a resume
         // between observations; the second scheduler sample closes that window.
@@ -548,7 +548,7 @@ fn drain_until_idle(timeout: Duration) -> bool {
             idle_polls = 0;
         }
 
-        let remaining = deadline.saturating_duration_since(Instant::now());
+        let remaining = deadline.remaining();
         if remaining.is_zero() {
             break;
         }
@@ -569,7 +569,7 @@ pub(crate) fn drain_native_actor_cleanup(timeout: Duration) -> bool {
     runtime.shutdown_ingress.close();
     crate::timer_periodic::quiesce_periodic_timers();
     reactor::close_listener_admission();
-    let deadline = Instant::now() + timeout;
+    let deadline = crate::clock::RuntimeDeadline::after(timeout);
     let mut requested = std::collections::HashSet::new();
     let mut completions = Vec::new();
     let mut idle_polls = 0;
@@ -623,7 +623,7 @@ pub(crate) fn drain_native_actor_cleanup(timeout: Duration) -> bool {
         } else {
             idle_polls = 0;
         }
-        let remaining = deadline.saturating_duration_since(Instant::now());
+        let remaining = deadline.remaining();
         if remaining.is_zero() {
             eprintln!("hew: actor cleanup timed out after {timeout:?}; retaining live runtime");
             crate::set_last_error("actor cleanup did not complete before scheduler shutdown");
@@ -1335,12 +1335,21 @@ mod tests {
     /// `shutdown_orchestrate` must publish `PHASE_FAILED` and skip the join and
     /// every post-drain stage rather than claim success or block on the worker.
     ///
-    /// `ACTIVE_WORKERS` is held at 1 so the drain cannot converge. A
-    /// one-nanosecond window has expired by the first observation however the
-    /// test thread is scheduled, so the outcome depends on no host timing; a
-    /// registered root left in place shows the supervisor sweep was skipped.
+    /// `ACTIVE_WORKERS` is held at 1 so the drain cannot converge. The window is
+    /// measured on the simulated clock, which each drain poll advances instead
+    /// of sleeping, so the drain gives up after exactly its window of simulated
+    /// time with no host wait. A registered root left in place shows the
+    /// supervisor sweep was skipped.
     #[test]
     fn shutdown_orchestrate_reports_failure_on_drain_timeout() {
+        struct SimulatedClock;
+        impl Drop for SimulatedClock {
+            fn drop(&mut self) {
+                crate::deterministic::hew_simtime_disable();
+            }
+        }
+        const WINDOW_MS: i64 = 50;
+
         let _guard = shutdown_test_guard();
         reset_shutdown_state();
         // SAFETY: the test owns this fresh supervisor until the reset below.
@@ -1352,11 +1361,15 @@ mod tests {
         unsafe { hew_shutdown_register_supervisor(sup) };
         shutdown_phase_store(PHASE_QUIESCE, Ordering::Release);
 
+        crate::deterministic::hew_simtime_enable(1_000);
+        let clock = SimulatedClock;
         // Keep the drain loop from ever converging.
         scheduler::ACTIVE_WORKERS.fetch_add(1, Ordering::Release);
-        shutdown_orchestrate(Duration::from_nanos(1));
+        shutdown_orchestrate(Duration::from_millis(WINDOW_MS.cast_unsigned()));
         // Release the artificial worker count so later teardown is clean.
         scheduler::ACTIVE_WORKERS.fetch_sub(1, Ordering::Release);
+        let elapsed_ms = crate::deterministic::hew_simtime_now_ms() - 1_000;
+        drop(clock);
 
         assert_eq!(
             shutdown_phase_load(Ordering::Acquire),
@@ -1367,6 +1380,10 @@ mod tests {
             hew_shutdown_wait(),
             -2,
             "a timed-out drain must be observable through the shutdown ABI"
+        );
+        assert_eq!(
+            elapsed_ms, WINDOW_MS,
+            "the drain gives up once its window has passed on the runtime clock"
         );
         assert!(
             is_supervisor_registered_for_test(sup),

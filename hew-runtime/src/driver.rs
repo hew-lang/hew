@@ -589,15 +589,39 @@ pub extern "C" fn hew_guest_resume() {
 /// The shutdown drain's poll: where the threaded runtime sleeps while workers
 /// finish, the driver runs the work itself, moving the clock to the next timer
 /// once nothing is ready so cleanup that sleeps still completes.
+///
+/// Shutdown waits measure their windows on the runtime clock. While that clock
+/// is simulated, the poll's wait passes in simulated time: a poll with nothing
+/// else to advance the clock moves it by `interval`, so a drain that cannot
+/// converge reaches its deadline instead of spinning on a frozen clock.
 pub(crate) fn drain_poll(interval: std::time::Duration) {
     if !active() {
-        std::thread::sleep(interval);
+        if crate::deterministic::simtime_now().is_some() {
+            advance_simulated_clock(interval);
+            std::thread::yield_now();
+        } else {
+            std::thread::sleep(interval);
+        }
         return;
     }
     run_to_quiescence();
-    if !advance_to_next_timer() && host_work_in_flight() {
+    if advance_to_next_timer() {
+        return;
+    }
+    if host_work_in_flight() {
         #[cfg(not(target_arch = "wasm32"))]
         wait_for_host();
+    } else if active_config().virtual_clock {
+        advance_simulated_clock(interval);
+    }
+}
+
+/// The simulated clock counts milliseconds; round up so a sub-millisecond
+/// remainder still reaches its deadline.
+fn advance_simulated_clock(interval: std::time::Duration) {
+    let millis = i64::try_from(interval.as_nanos().div_ceil(1_000_000)).unwrap_or(i64::MAX);
+    if millis > 0 {
+        let _ = crate::deterministic::hew_simtime_advance_ms(millis);
     }
 }
 

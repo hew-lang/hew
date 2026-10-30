@@ -910,12 +910,12 @@ const SHUTDOWN_QUIESCE_POLL: Duration = Duration::from_millis(1);
 /// Wait, bounded, until `settled` holds. The one wait loop every termination
 /// path runs; what each waits FOR is the only thing that differs.
 fn quiesce_until(timeout: Duration, settled: impl Fn() -> bool) {
-    let deadline = std::time::Instant::now() + timeout;
+    let deadline = crate::clock::RuntimeDeadline::after(timeout);
     loop {
         if settled() {
             return;
         }
-        if std::time::Instant::now() >= deadline {
+        if deadline.remaining().is_zero() {
             return;
         }
         crate::driver::drain_poll(SHUTDOWN_QUIESCE_POLL);

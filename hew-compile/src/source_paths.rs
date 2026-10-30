@@ -5,10 +5,30 @@ use std::path::{Path, PathBuf};
 #[derive(Debug, Clone, Default)]
 pub struct SourcePathPolicy {
     prefixes: Vec<(PathBuf, PathBuf)>,
+    /// The trimmed rules the image's file table records paths with, when
+    /// they differ from `prefixes`: the table never names a host path,
+    /// whether or not diagnostics and debug info trim theirs.
+    table: Option<Box<SourcePathPolicy>>,
 }
 
 impl SourcePathPolicy {
+    /// Record file-table paths with `table` instead of these rules.
+    #[must_use]
+    pub fn with_table(mut self, table: SourcePathPolicy) -> Self {
+        self.table = Some(Box::new(table));
+        self
+    }
+
+    /// The spelling the image's file table records for `path`.
+    #[must_use]
+    pub fn table_display(&self, path: &Path) -> PathBuf {
+        self.table.as_deref().unwrap_or(self).display(path)
+    }
+
     pub fn insert(&mut self, source: &Path, display: &Path) {
+        if let Some(table) = &mut self.table {
+            table.insert(source, display);
+        }
         // Missing inputs cannot be canonicalized, so diagnostics can retain the
         // invocation spelling even when its parent resolves through a symlink.
         for source in [lexical_absolute_path(source), absolute_path(source)] {
@@ -120,6 +140,12 @@ pub fn register_source_path(source: &Path, display: &Path) {
 #[must_use]
 pub fn display_source_path(path: &Path) -> PathBuf {
     ACTIVE.with(|active| active.borrow().display(path))
+}
+
+/// The spelling the image's file table records for `path`.
+#[must_use]
+pub fn table_source_path(path: &Path) -> PathBuf {
+    ACTIVE.with(|active| active.borrow().table_display(path))
 }
 
 #[cfg(test)]

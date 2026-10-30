@@ -22,8 +22,8 @@ mod host;
 pub mod live;
 mod source_paths;
 pub use source_paths::{
-    display_source_path, register_source_path, source_path_policy, SourcePathPolicy,
-    SourcePathScope,
+    display_source_path, register_source_path, source_path_policy, table_source_path,
+    SourcePathPolicy, SourcePathScope,
 };
 
 /// Source entries checked against their host-operation admission profile.
@@ -903,7 +903,7 @@ fn source_files(
         .filter_map(|file| {
             let path = indices.file_path(file)?;
             let text = std::fs::read_to_string(path).ok()?;
-            let display = display_source_path(path).to_string_lossy().into_owned();
+            let display = table_source_path(path).to_string_lossy().into_owned();
             let canonical = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
             Some((
                 file,

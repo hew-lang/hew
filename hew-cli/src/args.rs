@@ -669,16 +669,26 @@ impl BuildArgs {
 
     /// The source-path presentation this build compiles and reports with:
     /// the trimmed prefixes, then each `--remap-path-prefix` on top.
+    ///
+    /// The image's file table always records trimmed paths, so a debug and
+    /// a release build lay out the same read-only data.
     pub fn source_path_policy(&self) -> hew_compile::SourcePathPolicy {
-        let mut policy = crate::source_paths::build_policy(
-            self.input.as_deref(),
-            self.common.project_dir.as_deref(),
-            self.trims_paths(),
-        );
-        for remap in &self.remap_path_prefix {
-            policy.insert(&remap.from, &remap.to);
+        let policy = |trim| {
+            let mut policy = crate::source_paths::build_policy(
+                self.input.as_deref(),
+                self.common.project_dir.as_deref(),
+                trim,
+            );
+            for remap in &self.remap_path_prefix {
+                policy.insert(&remap.from, &remap.to);
+            }
+            policy
+        };
+        if self.trims_paths() {
+            policy(true)
+        } else {
+            policy(false).with_table(policy(true))
         }
-        policy
     }
 }
 

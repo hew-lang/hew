@@ -401,6 +401,10 @@ mod platform {
             let spec = timeout.map(|duration| libc::timespec {
                 tv_sec: libc::time_t::try_from(duration.as_secs()).unwrap_or(libc::time_t::MAX),
                 // Duration fractions are below 1e9 and fit a 32-bit c_long.
+                #[allow(
+                    clippy::cast_lossless,
+                    reason = "c_long is 32-bit on 32-bit FreeBSD, where From<u32> does not exist"
+                )]
                 tv_nsec: duration.subsec_nanos() as libc::c_long,
             });
             let timeout = spec.as_ref().map_or(std::ptr::null(), std::ptr::from_ref);

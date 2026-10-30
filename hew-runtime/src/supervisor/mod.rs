@@ -1752,6 +1752,12 @@ impl RestartBackoff {
         self.published = false;
     }
 
+    /// Whether a replacement was published after the pending delay was armed,
+    /// as a group restart of this role's siblings does.
+    const fn replaced_since_armed(&self) -> bool {
+        self.published
+    }
+
     fn published(&mut self) {
         if self.selected() {
             self.next_restart_time_ns = monotonic_time_ns();

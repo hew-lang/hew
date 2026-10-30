@@ -269,7 +269,12 @@ interface SupervisorInstance {
   recovering: Set<number>;
   restartBusy: boolean;
   constructor: FrameContext | null;
-  pendingRestarts: Array<{ child: number; debts: number[] }>;
+  /// Crashes queued behind a busy restart, with the incarnation that crashed.
+  pendingRestarts: Array<{
+    child: number;
+    debts: number[];
+    incarnation: VmValue | null;
+  }>;
   spent: Set<number>;
   completed: boolean;
   supervisor?: { owner: SupervisorInstance; child: number };
@@ -6965,7 +6970,11 @@ class ExecutorV1 {
       return;
     }
     if (owner.restartBusy) {
-      owner.pendingRestarts.push({ child, debts });
+      owner.pendingRestarts.push({
+        child,
+        debts,
+        incarnation: owner.children[child] ?? null,
+      });
       return;
     }
     const now = this.trace.virtualTimeMs;
@@ -6988,6 +6997,14 @@ class ExecutorV1 {
         child,
         this.scheduler.after(delay, () => {
           owner.restartTimers.delete(child);
+          // A group restart that already replaced this role recovered its
+          // fault; restarting again would tear down a healthy group and
+          // charge the budget twice.
+          if (owner.restartDelays.get(child)?.publishedAt != null) {
+            for (const debt of debts) this.faultDebts.delete(debt);
+            this.wakeRoles();
+            return;
+          }
           this.restartChild(owner, child, debts, true);
         }),
       );
@@ -7040,13 +7057,17 @@ class ExecutorV1 {
       const index = starting.shift();
       if (index === undefined) {
         for (const debt of debts) this.faultDebts.delete(debt);
-        for (const pending of owner.pendingRestarts.filter((pending) =>
-          affected.includes(pending.child),
-        )) {
+        // This group replaced a queued crash's incarnation, which recovers it.
+        // A replacement that crashed after its own publication still needs
+        // its restart.
+        const replaced = (pending: (typeof owner.pendingRestarts)[number]) =>
+          affected.includes(pending.child) &&
+          owner.children[pending.child] !== pending.incarnation;
+        for (const pending of owner.pendingRestarts.filter(replaced)) {
           for (const debt of pending.debts) this.faultDebts.delete(debt);
         }
         owner.pendingRestarts = owner.pendingRestarts.filter(
-          (pending) => !affected.includes(pending.child),
+          (pending) => !replaced(pending),
         );
         owner.restartBusy = false;
         this.wakeRoles();
@@ -7060,6 +7081,11 @@ class ExecutorV1 {
         () => {
           const delay = owner.restartDelays.get(index);
           if (delay) delay.publishedAt = this.trace.virtualTimeMs;
+          // The crashed role's replacement is the recovery that settles its
+          // fault, as natively; a later sibling's cancelled start does not
+          // reopen it.
+          if (index === child)
+            for (const debt of debts) this.faultDebts.delete(debt);
           start();
         },
         () => {

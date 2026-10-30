@@ -6562,6 +6562,9 @@ child without one inherits it. The supervisor's expression runs first, then
 each child's in declaration order, each once per construction. Every member of
 a pool carries its declaration's policy. Under `one_for_all` and
 `rest_for_one`, the crashing child's policy delays the group restart. A
+group restart that replaces a role whose own delayed restart is still pending
+recovers that role's fault and cancels the pending restart, so the group is
+restarted and the budget charged once. A
 `temporary` child never restarts, so a `backoff:` clause on it is a compile
 error; a `transient` child's applies to its restarts after `Terminated` or
 `Crashed`. A child inheriting the supervisor's policy is unaffected by its

@@ -37,18 +37,19 @@ impl<'src> Parser<'src> {
         for (index, (mut t, s)) in raw_tokens.iter().cloned().enumerate() {
             let span = (s.start + offset)..(s.end + offset);
             if matches!(t, Token::Error) {
-                errors.push(ParseError {
-                    fixes: Vec::new(),
-                    message: "unexpected character".to_string(),
-                    span,
-                    hint: None,
-                    severity: Severity::Error,
-                    kind: ParseDiagnosticKind::InvalidLiteral,
-                });
+                push_rejected_character(&mut errors, span);
                 continue;
             }
 
-            if matches!(t, Token::DoubleColon) {
+            if matches!(t, Token::DoubleColon)
+                && extend_legacy_separator_run(
+                    &mut errors,
+                    raw_tokens.get(index + 1).map(|(token, _)| token),
+                    &span,
+                )
+            {
+                t = Token::Dot;
+            } else if matches!(t, Token::DoubleColon) {
                 let next = raw_tokens.get(index + 1).map(|(token, _)| token);
                 if s.start >= line_bounds.1 {
                     let line_start = source[..s.start].rfind('\n').map_or(0, |at| at + 1);
@@ -57,57 +58,13 @@ impl<'src> Parser<'src> {
                         .map_or(source.len(), |at| s.end + at);
                     line_bounds = (line_start, line_end);
                 }
-                let (mut from, mut to) = line_bounds;
-                // Quote a bounded window of a long line: one diagnostic per `::`
-                // would otherwise copy the whole line each time.
-                if to - from > LEGACY_QUOTE_MAX {
-                    from = s.start.saturating_sub(LEGACY_QUOTE_MAX / 2).max(from);
-                    to = (s.end + LEGACY_QUOTE_MAX / 2).min(to);
-                    while !source.is_char_boundary(from) {
-                        from += 1;
-                    }
-                    while !source.is_char_boundary(to) {
-                        to -= 1;
-                    }
-                }
-                let line = source[from..to].trim();
-                let migrated = line
-                    .replace("::*", ".{ Name }")
-                    .replace("::<", "<")
-                    .replace("::", ".");
-                let (kind, message, hint) = if matches!(next, Some(Token::Less)) {
-                    (
-                        ParseDiagnosticKind::LegacyTurbofish,
-                        format!(
-                            "E_LEGACY_TURBOFISH: Rust-style `::<...>` has been removed; use Hew generic application: `{migrated}`"
-                        ),
-                        format!("use the migrated spelling `{migrated}`"),
-                    )
-                } else if matches!(next, Some(Token::Star)) {
-                    (
-                        ParseDiagnosticKind::ImportGlobRemoved,
-                        format!(
-                            "E_IMPORT_GLOB_REMOVED: glob imports have been removed; import explicit names: `{migrated}`"
-                        ),
-                        format!("replace the glob with an explicit selection such as `{migrated}`"),
-                    )
-                } else {
-                    (
-                        ParseDiagnosticKind::LegacyPathSeparator,
-                        format!(
-                            "E_PATH_LEGACY_SEPARATOR: `::` path separators have been removed; use dotted paths: `{migrated}`"
-                        ),
-                        format!("use the migrated spelling `{migrated}`"),
-                    )
-                };
-                errors.push(ParseError {
-                    fixes: Vec::new(),
-                    message,
-                    span: span.clone(),
-                    hint: Some(hint),
-                    severity: Severity::Error,
-                    kind,
-                });
+                errors.push(legacy_separator_error(
+                    source,
+                    line_bounds,
+                    &(s.start..s.end),
+                    next,
+                    &span,
+                ));
 
                 // Preserve parser recovery without retaining a successful legacy production:
                 // `::<` disappears before generic application, while ordinary separators become
@@ -125,6 +82,7 @@ impl<'src> Parser<'src> {
             pos: 0,
             errors,
             depth: Rc::new(Cell::new(0)),
+            depth_error: None,
             angle_mutations: Vec::new(),
             allow_implicit_self_params: false,
             struct_literal_rule: Rc::new(Cell::new(StructLiteralRule::Allowed)),
@@ -509,8 +467,23 @@ impl<'src> Parser<'src> {
         self.error_at(message, span);
     }
 
+    /// Record `error`, unless the parser is at the end of input and has
+    /// already reported there: every construct still open then fails at the
+    /// same place, and the first report says it.
+    pub(crate) fn push_error(&mut self, error: ParseError) {
+        if self.at_end()
+            && self
+                .errors
+                .last()
+                .is_some_and(|last| last.span == error.span)
+        {
+            return;
+        }
+        self.errors.push(error);
+    }
+
     pub(crate) fn error_at(&mut self, message: String, span: Span) {
-        self.errors.push(ParseError {
+        self.push_error(ParseError {
             fixes: Vec::new(),
             message,
             span,
@@ -531,7 +504,7 @@ impl<'src> Parser<'src> {
         span: Span,
         hint: impl Into<String>,
     ) {
-        self.errors.push(ParseError {
+        self.push_error(ParseError {
             fixes: Vec::new(),
             message,
             span,
@@ -576,7 +549,7 @@ impl<'src> Parser<'src> {
                 DiagnosticFix::replace(title, span.clone(), text, Applicability::MachineApplicable)
             })
             .collect();
-        self.errors.push(ParseError {
+        self.push_error(ParseError {
             fixes,
             message,
             span,
@@ -592,7 +565,7 @@ impl<'src> Parser<'src> {
         span: Span,
         hint: impl Into<String>,
     ) {
-        self.errors.push(ParseError {
+        self.push_error(ParseError {
             fixes: Vec::new(),
             message: message.into(),
             span,
@@ -621,7 +594,7 @@ impl<'src> Parser<'src> {
         let expected = expected.into();
         let got = got.into();
         let message = format!("expected {expected}, found {got}");
-        self.errors.push(ParseError {
+        self.push_error(ParseError {
             fixes: Vec::new(),
             message,
             span,
@@ -641,7 +614,7 @@ impl<'src> Parser<'src> {
         let expected = expected.into();
         let got = got.into();
         let message = format!("expected {expected}, found {got}");
-        self.errors.push(ParseError {
+        self.push_error(ParseError {
             fixes: Vec::new(),
             message,
             span,
@@ -653,7 +626,7 @@ impl<'src> Parser<'src> {
 
     pub(crate) fn error_unexpected_eof(&mut self, context: impl std::fmt::Display) {
         let span = self.peek_span();
-        self.errors.push(ParseError {
+        self.push_error(ParseError {
             fixes: Vec::new(),
             message: format!("unexpected end of input, expected {context}"),
             span,
@@ -665,7 +638,7 @@ impl<'src> Parser<'src> {
 
     pub(crate) fn error_invalid_literal(&mut self, message: String) {
         let span = self.peek_span();
-        self.errors.push(ParseError {
+        self.push_error(ParseError {
             fixes: Vec::new(),
             message,
             span,
@@ -678,7 +651,7 @@ impl<'src> Parser<'src> {
     pub(crate) fn error_missing_expression(&mut self, got: impl Into<String>) {
         let got = got.into();
         let span = self.peek_span();
-        self.errors.push(ParseError {
+        self.push_error(ParseError {
             fixes: Vec::new(),
             message: format!("expected expression, found {got}"),
             span,
@@ -714,7 +687,7 @@ impl<'src> Parser<'src> {
             ),
             None => (format!("expected pattern, found {got}"), None),
         };
-        self.errors.push(ParseError {
+        self.push_error(ParseError {
             fixes: Vec::new(),
             message,
             span,
@@ -730,7 +703,7 @@ impl<'src> Parser<'src> {
         hint: impl Into<String>,
     ) {
         let span = self.peek_span();
-        self.errors.push(ParseError {
+        self.push_error(ParseError {
             fixes: Vec::new(),
             message,
             span,
@@ -819,7 +792,7 @@ impl<'src> Parser<'src> {
     }
 
     pub(crate) fn warning_at(&mut self, message: String, span: Span) {
-        self.errors.push(ParseError {
+        self.push_error(ParseError {
             fixes: Vec::new(),
             message,
             span,
@@ -835,7 +808,10 @@ impl<'src> Parser<'src> {
         let d = self.depth.get() + 1;
         self.depth.set(d);
         if d > MAX_DEPTH {
-            self.error("maximum nesting depth exceeded".to_string());
+            if self.depth_error.is_none_or(|at| at >= self.errors.len()) {
+                self.depth_error = Some(self.errors.len());
+                self.error("maximum nesting depth exceeded".to_string());
+            }
             self.depth.set(d - 1);
             return None;
         }
@@ -1287,7 +1263,11 @@ impl<'src> Parser<'src> {
                 }
                 Some(Token::RightBrace) => {
                     if depth == 0 {
-                        self.advance(); // consume stray `}` and stop
+                        // Consume the run of stray `}` and stop: one
+                        // report covers the run.
+                        while self.peek() == Some(&Token::RightBrace) {
+                            self.advance();
+                        }
                         break;
                     }
                     depth -= 1;
@@ -1365,5 +1345,108 @@ impl<'src> Parser<'src> {
             Token::InnerDocComment(s) => Some(s),
             _ => None,
         })
+    }
+}
+
+/// Record a character the lexer rejects, extending the previous report when
+/// it covers the character just before: a run is one diagnostic.
+fn push_rejected_character(errors: &mut Vec<ParseError>, span: Span) {
+    if let Some(run) = errors.last_mut().filter(|e| {
+        matches!(e.kind, ParseDiagnosticKind::InvalidLiteral) && e.span.end == span.start
+    }) {
+        run.span.end = span.end;
+        return;
+    }
+    errors.push(ParseError {
+        fixes: Vec::new(),
+        message: "unexpected character".to_string(),
+        span,
+        hint: None,
+        severity: Severity::Error,
+        kind: ParseDiagnosticKind::InvalidLiteral,
+    });
+}
+
+/// Extend the previous legacy-separator report over an adjacent plain `::`:
+/// a run of separators is one diagnostic. `next` is the token after it.
+fn extend_legacy_separator_run(
+    errors: &mut [ParseError],
+    next: Option<&Token<'_>>,
+    span: &Span,
+) -> bool {
+    if matches!(next, Some(Token::Less | Token::Star)) {
+        return false;
+    }
+    match errors.last_mut() {
+        Some(run)
+            if matches!(run.kind, ParseDiagnosticKind::LegacyPathSeparator)
+                && run.span.end == span.start =>
+        {
+            run.span.end = span.end;
+            true
+        }
+        _ => false,
+    }
+}
+
+/// The diagnostic for a legacy `::` at `s` (source-relative) on the line
+/// `line_bounds`, quoting a bounded window of the line migrated to `.`.
+fn legacy_separator_error(
+    source: &str,
+    line_bounds: (usize, usize),
+    s: &std::ops::Range<usize>,
+    next: Option<&Token<'_>>,
+    span: &Span,
+) -> ParseError {
+    let (mut from, mut to) = line_bounds;
+    // Quote a bounded window of a long line: one diagnostic per `::`
+    // would otherwise copy the whole line each time.
+    if to - from > LEGACY_QUOTE_MAX {
+        from = s.start.saturating_sub(LEGACY_QUOTE_MAX / 2).max(from);
+        to = (s.end + LEGACY_QUOTE_MAX / 2).min(to);
+        while !source.is_char_boundary(from) {
+            from += 1;
+        }
+        while !source.is_char_boundary(to) {
+            to -= 1;
+        }
+    }
+    let line = source[from..to].trim();
+    let migrated = line
+        .replace("::*", ".{ Name }")
+        .replace("::<", "<")
+        .replace("::", ".");
+    let (kind, message, hint) = if matches!(next, Some(Token::Less)) {
+        (
+            ParseDiagnosticKind::LegacyTurbofish,
+            format!(
+                "E_LEGACY_TURBOFISH: Rust-style `::<...>` has been removed; use Hew generic application: `{migrated}`"
+            ),
+            format!("use the migrated spelling `{migrated}`"),
+        )
+    } else if matches!(next, Some(Token::Star)) {
+        (
+            ParseDiagnosticKind::ImportGlobRemoved,
+            format!(
+                "E_IMPORT_GLOB_REMOVED: glob imports have been removed; import explicit names: `{migrated}`"
+            ),
+            format!("replace the glob with an explicit selection such as `{migrated}`"),
+        )
+    } else {
+        (
+            ParseDiagnosticKind::LegacyPathSeparator,
+            format!(
+                "E_PATH_LEGACY_SEPARATOR: `::` path separators have been removed; use dotted paths: `{migrated}`"
+            ),
+            format!("use the migrated spelling `{migrated}`"),
+        )
+    };
+    ParseError {
+        fixes: Vec::new(),
+        message,
+        span: span.clone(),
+        hint: Some(hint),
+        severity: Severity::Error,
+        kind,
     }
 }

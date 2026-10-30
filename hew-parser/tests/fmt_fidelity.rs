@@ -726,6 +726,12 @@ fn mixed_line_endings_in_output_are_rejected() {
 }
 
 #[test]
+fn a_carriage_return_inside_a_comment_is_content() {
+    assert_faithful("// one\rtwo\nfn main() {\n    // three\r four\n}\n");
+    assert_faithful("// one\rtwo\r\nfn main() {\r\n    // three\r four\r\n}\r\n");
+}
+
+#[test]
 fn a_comment_moved_across_a_separator_is_rejected() {
     let source = "fn f(a: i64, b: i64) -> i64 {\n    a\n}\n\nfn main() {\n    let x = f(1 /* one */, 2);\n}\n";
     let moved = "fn f(a: i64, b: i64) -> i64 {\n    a\n}\n\nfn main() {\n    let x = f(1, /* one */ 2);\n}\n";
@@ -894,4 +900,49 @@ fn main() {
 }
 ",
     );
+}
+
+#[test]
+fn grouping_parentheses_around_a_pattern_stay() {
+    assert_faithful(
+        "fn main() {\n    let r: Option<i64> = .None;\n    let x = match r {\n        (.Some((v))) => v,\n        (.None) => 0,\n    };\n    println(x);\n}\n",
+    );
+}
+
+#[test]
+fn an_empty_machine_section_stays() {
+    assert_faithful(
+        "machine M {\n    events {}\n    emits {}\n    state Done;\n\n    on Tick: Done => Done;\n}\n\nfn main() {}\n",
+    );
+}
+
+#[test]
+fn a_block_arm_continued_by_a_postfix_takes_no_comma() {
+    assert_faithful(
+        "type P {\n    n: i64;\n}\n\nfn main() {\n    let x: Option<i64> = .None;\n    let y = match x {\n        .Some(v) => {\n            P { n: v }\n        }.n\n        other => 0,\n    };\n    println(y);\n}\n",
+    );
+}
+
+#[test]
+fn a_state_named_like_a_section_is_not_a_section() {
+    assert_faithful(
+        "machine Gate {\n    events {\n        Go;\n    }\n\n    state Idle;\n    state emits;\n\n    on Go: Idle => emits;\n    on Go: emits => Idle;\n}\n\nfn main() {}\n",
+    );
+    assert_faithful(
+        "machine Gate {\n    state events;\n    state Idle;\n\n    events {\n        Go;\n    }\n\n    on Go: Idle => events;\n    on Go: events => Idle;\n}\n\nfn main() {}\n",
+    );
+}
+
+#[test]
+fn a_lone_carriage_return_outside_a_comment_is_rejected() {
+    for source in [
+        "fn main() {\n    let x = 1;\n}\n",
+        "fn main() {\r\n    let x = 1;\r\n}\r\n",
+    ] {
+        let stray = source.replacen("1;", "1;\r", 1);
+        assert!(
+            matches!(check(source, &stray), Err(FidelityError::LineEnding { .. })),
+            "{stray:?}"
+        );
+    }
 }

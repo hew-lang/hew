@@ -2177,13 +2177,15 @@ impl<'a> Formatter<'a> {
         // Sections and members print in source order; a synthesized machine
         // keeps the canonical order the list is built in.
         let mut members: Vec<(usize, MachineMember<'_>)> = Vec::new();
-        if !decl.events.is_empty() {
-            let at = self.machine_section(span_start, span_end, "events");
-            members.push((at, MachineMember::Events));
+        // A section written empty (`events {}`) still prints: dropping it
+        // would change the source's tokens.
+        let events_at = self.machine_section(span_start, span_end, "events");
+        if !decl.events.is_empty() || events_at > 0 {
+            members.push((events_at, MachineMember::Events));
         }
-        if !decl.emits.is_empty() {
-            let at = self.machine_section(span_start, span_end, "emits");
-            members.push((at, MachineMember::Emits));
+        let emits_at = self.machine_section(span_start, span_end, "emits");
+        if !decl.emits.is_empty() || emits_at > 0 {
+            members.push((emits_at, MachineMember::Emits));
         }
         members.extend(
             decl.states
@@ -2256,17 +2258,27 @@ impl<'a> Formatter<'a> {
     }
 
     /// Start of the machine-body section keyword `word` (`events`, `emits`,
-    /// `default`) directly inside the machine's braces; 0 without source.
+    /// `default`) directly inside the machine's braces and opening a `{`
+    /// body, so a state of that name is not taken for it; 0 without source.
     fn machine_section(&self, start: usize, end: usize, word: &str) -> usize {
         let mut depth = 0usize;
-        for (token, span) in &self.tokens[self.token_at_or_after(start)..] {
+        let first = self.token_at_or_after(start);
+        for (index, (token, span)) in self.tokens.iter().enumerate().skip(first) {
             if span.start >= end {
                 break;
             }
             match token {
                 hew_lexer::Token::LeftBrace => depth += 1,
                 hew_lexer::Token::RightBrace => depth = depth.saturating_sub(1),
-                _ if depth == 1 && self.source[span.clone()] == *word => return span.start,
+                _ if depth == 1
+                    && self.source[span.clone()] == *word
+                    && matches!(
+                        self.tokens.get(index + 1),
+                        Some((hew_lexer::Token::LeftBrace, _))
+                    ) =>
+                {
+                    return span.start;
+                }
                 _ => {}
             }
         }
@@ -4165,8 +4177,11 @@ impl<'a> Formatter<'a> {
         }
     }
 
+    /// Whether an arm body ends at its opening block's `}` without a comma.
+    /// The parser decides from the body's first token, so a block that a
+    /// postfix or operator continues (`{ p }.n`) counts as well.
     fn is_block_arm_expr(&self, body: &Spanned<Expr>) -> bool {
-        if !crate::parser::Parser::is_block_expr(&body.0) {
+        if !crate::parser::Parser::is_block_expr(&leftmost_operand(body).0) {
             return false;
         }
         if self.source.is_empty() {
@@ -5217,8 +5232,21 @@ impl<'a> Formatter<'a> {
     // ------------------------------------------------------------------
 
     fn format_pattern(&mut self, pat: &Spanned<Pattern>) {
+        // Grouping parentheses around a pattern are dropped by the parser,
+        // as around an expression; read them back from the tokens.
+        let parens = self.source_parens(&pat.1);
+        for &(token, open, _) in &parens {
+            self.printed_parens.insert(token);
+            self.flush_inline_comments(open);
+            self.write("(");
+        }
         self.flush_inline_comments(pat.1.start);
         self.format_pattern_kind(pat);
+        for &(_, _, close) in parens.iter().rev() {
+            self.flush_inline_comments(close);
+            self.write(")");
+            self.prev_source_pos = self.prev_source_pos.max(close + 1);
+        }
         if pat.1.start < pat.1.end {
             self.prev_source_pos = self.prev_source_pos.max(pat.1.end);
         }
@@ -5823,6 +5851,29 @@ fn source_column(source: &str, pos: usize) -> usize {
         i -= 1;
     }
     end - i
+}
+
+/// The operand an expression's source begins with: the receiver of a postfix
+/// chain or the left side of an operator, followed while it starts where the
+/// whole expression does.
+fn leftmost_operand(expr: &Spanned<Expr>) -> &Spanned<Expr> {
+    let inner = match &expr.0 {
+        Expr::FieldAccess { object, .. } | Expr::Index { object, .. } => object,
+        Expr::MethodCall { receiver, .. } | Expr::OptionalChain { receiver, .. } => receiver,
+        Expr::Call { function, .. } => function,
+        Expr::Binary { left, .. } | Expr::Coalesce { left, .. } => left,
+        Expr::Cast { expr: inner, .. } | Expr::PostfixTry(inner) | Expr::Await(inner) => inner,
+        Expr::Is { lhs, .. } => lhs,
+        Expr::Range {
+            start: Some(start), ..
+        } => start,
+        _ => return expr,
+    };
+    if inner.1.start == expr.1.start {
+        leftmost_operand(inner)
+    } else {
+        expr
+    }
 }
 
 #[cfg(test)]

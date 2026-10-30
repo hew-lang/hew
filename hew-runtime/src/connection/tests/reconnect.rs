@@ -359,7 +359,6 @@ fn stale_reconnect_cannot_replace_newer_publication() {
             &publication.sync,
             &publication.removed,
             superseded,
-            None,
         ));
         assert_eq!(
             reconnect_attempt(mgr_ptr, &plan, 10, 2),

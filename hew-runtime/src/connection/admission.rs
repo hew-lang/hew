@@ -415,8 +415,6 @@ pub(super) unsafe fn add_connection_on_transport(
                 ));
                 return None;
             };
-            #[cfg(test)]
-            admission_script::reach(mgr, admission_script::Point::Committed, admission.origin);
             Commit::Initiator(order)
         }
         commit => commit,
@@ -487,19 +485,31 @@ pub(super) unsafe fn add_connection_on_transport(
     }
     // The reservation can no longer abort before publication. The responder
     // commits it so the initiator settles on the same connection; the
-    // initiator echoes the order once its own claim has moved to it, which
-    // releases the responder to close the connection it superseded. Either is
-    // the channel's first frame from its end, ahead of anything the reader or
-    // a publication sends.
-    if commit != Commit::Unordered
+    // initiator echoes the order once its own claim has moved to it. Either is
+    // the channel's first frame from its end. The commit is provisional until
+    // the echo: a responder that does not get it aborts the reservation, which
+    // restores the connection it would have superseded, so an initiator that
+    // gave up keeps the connection it still owns. The initiator never waits on
+    // the network holding a reservation, so the two waits cannot form a cycle.
+    let settled = match commit {
+        Commit::Unordered => true,
         // SAFETY: admission owns the connection and no reader has started.
-        && !unsafe { send_commit(&protection, transport_ptr, conn_id, commit_order) }
-    {
+        Commit::Initiator(_) => unsafe {
+            send_commit(&protection, transport_ptr, conn_id, commit_order)
+        },
+        // SAFETY: as above.
+        Commit::Responder => unsafe {
+            send_commit(&protection, transport_ptr, conn_id, commit_order)
+                && recv_commit(&protection, transport_ptr, conn_id) == Some(commit_order)
+        },
+    };
+    if !settled {
         abort_identity_claim(mgr, peer_hs.node_id, conn_id, claim_token, superseded_claim);
         // SAFETY: admission owns the unpublished transport handle.
         unsafe { close_transport_conn(transport_ptr, conn_id) };
         set_last_error(format!(
-            "hew_connmgr_add: could not commit conn {conn_id} to the peer"
+            "hew_connmgr_add: peer {} did not settle conn {conn_id}",
+            peer_hs.node_id
         ));
         return None;
     }
@@ -540,10 +550,6 @@ pub(super) unsafe fn add_connection_on_transport(
     let peer_feature_flags = actor.peer_feature_flags;
     let reader_lifecycle_guard = mgr.reader_lifecycle.register();
     let channel = Arc::clone(&actor.channel);
-    let deferred_loser = (commit == Commit::Responder).then(|| Arc::clone(&actor.deferred_loser));
-    let confirm = deferred_loser
-        .as_ref()
-        .map(|deferred| (commit_order, Arc::clone(deferred)));
 
     let handle = thread::Builder::new()
         .name(format!("hew-conn-{conn_id}"))
@@ -559,7 +565,6 @@ pub(super) unsafe fn add_connection_on_transport(
                 router,
                 peer_feature_flags,
                 channel,
-                confirm,
             );
         });
 
@@ -610,7 +615,6 @@ pub(super) unsafe fn add_connection_on_transport(
         &publication_sync,
         &publication_removed,
         superseded_claim,
-        deferred_loser.as_deref(),
     ) {
         // A same-session connection that took the claim while this one was
         // publishing keeps the peer connected: report it, as a crossing dial
@@ -895,7 +899,6 @@ pub(super) fn remove_connection(
         mgr.pending_registry_flush_count
             .store(map.len(), Ordering::Release);
     });
-    let deferred_loser = Arc::clone(&conn.deferred_loser);
     // Drop joins the reader thread after transport close.
     drop(conn);
     // Full publication retirement: re-removes route (idempotent) and fires the
@@ -911,9 +914,6 @@ pub(super) fn remove_connection(
         publication_token,
         &publication_sync,
     );
-    // A loser this connection superseded as a responder-commit responder
-    // closes now; its confirmation can no longer arrive.
-    deferred_loser.lock_or_recover().release(mgr);
 
     // Suppressed-publication restore (see the pre-join comment above): with our
     // claim retired, hand the node's authority back to the superseded prior
@@ -965,8 +965,6 @@ pub(crate) mod admission_script {
         Authenticated,
         /// The initiator is about to wait for the responder's commit.
         AwaitingCommit,
-        /// The initiator has the responder's commit and has not reserved.
-        Committed,
         /// A node-API dial on this transport id was admitted, before its
         /// reconnect is armed.
         Admitted(std::ffi::c_int),

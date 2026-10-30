@@ -2,11 +2,10 @@
 
 use std::ffi::c_int;
 use std::sync::atomic::{AtomicI32, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use crate::envelope::{decode_wire_frame, WireFrame};
 use crate::set_last_error;
-use crate::util::MutexExt;
 
 use super::admission::hew_connmgr_remove;
 use super::channel::ChannelProtection;
@@ -15,7 +14,6 @@ use super::control::{
     location_matches_node_session,
 };
 use super::gossip::retry_pending_registry_flush;
-use super::identity_claim::DeferredLoser;
 use super::peer::deposit_reply_envelope;
 use super::reconnect::{reconnect_plan, spawn_reconnect_worker};
 use super::{ConnectionTransport, HewConnMgr, InboundRouter, SendConnMgr};
@@ -74,7 +72,6 @@ pub(super) fn reader_loop(
     router: Option<InboundRouter>,
     peer_feature_flags: u32,
     channel: Arc<ChannelProtection>,
-    mut confirm: Option<(u64, Arc<Mutex<DeferredLoser>>)>,
 ) {
     let mgr = mgr.0;
     let transport_ptr = transport.as_ptr();
@@ -126,22 +123,6 @@ pub(super) fn reader_loop(
             }
         };
         let payload_ptr = buf.as_mut_ptr();
-
-        // A responder-commit responder's first frame from the initiator is
-        // its confirmation, echoing the commit order: it has switched to
-        // this connection, so the connection this one superseded can close.
-        if let Some((order, deferred)) = confirm.take() {
-            if buf[..payload_len] != order.to_be_bytes() {
-                set_last_error("connection reader: initiator did not confirm the commit");
-                reader_cleanup(mgr, conn_id, &stop_flag);
-                break;
-            }
-            if !mgr.is_null() {
-                // SAFETY: reader_loop owns a live manager pointer for this connection.
-                deferred.lock_or_recover().release(unsafe { &*mgr });
-            }
-            continue;
-        }
 
         // Update heartbeat.
         // SAFETY: hew_now_ms has no preconditions.

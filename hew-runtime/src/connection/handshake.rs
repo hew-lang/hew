@@ -31,8 +31,9 @@ pub(super) fn negotiates_responder_commit(local: &HewHandshake, peer: &HewHandsh
     local.feature_flags & peer.feature_flags & HEW_FEATURE_RESPONDER_COMMIT != 0
 }
 
-/// Send the responder's commit: the first frame on the protected channel,
-/// carrying the order in which the responder reserved this connection.
+/// Send the responder's commit, or the initiator's echo of it: the first
+/// frame from that end on the protected channel, carrying the order in which
+/// the responder reserved this connection.
 ///
 /// # Safety
 ///
@@ -47,8 +48,8 @@ pub(super) unsafe fn send_commit(
     unsafe { channel.send_prepared(transport, conn_id, || Some(order.to_be_bytes())) }.is_ok()
 }
 
-/// Receive the responder's commit, or `None` when the responder closed the
-/// connection instead (it yielded or refused) or sent anything else.
+/// Receive the peer's commit or echo, or `None` when the peer closed the
+/// connection instead (it yielded, refused or gave up) or sent anything else.
 ///
 /// # Safety
 ///

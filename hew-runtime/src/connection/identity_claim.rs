@@ -711,7 +711,6 @@ pub(super) fn publish_identity_connection_established(
     publication_sync: &Arc<Mutex<()>>,
     publication_removed: &Arc<AtomicBool>,
     superseded: Option<LiveClaim>,
-    deferred_loser: Option<&Mutex<DeferredLoser>>,
 ) -> bool {
     if publication_removed.load(Ordering::Acquire) {
         set_last_error("connection publication cancelled before establishment");
@@ -860,49 +859,13 @@ pub(super) fn publish_identity_connection_established(
     // live Published claim from the same peer credential. The superseded
     // connection already lost its authority at the map overwrite (D9 owner
     // check); close its transport so it can no longer emit SWIM/gossip/control
-    // frames. Its actor tears down via the normal reader-exit path. A
-    // responder-commit responder closes it only once the initiator confirms
-    // it has switched too, so the close never reaches the initiator while the
-    // superseded connection still owns its claim there.
+    // frames. Its actor tears down via the normal reader-exit path.
     if let Some(superseded) = superseded {
         if superseded.state == ClaimState::Published && superseded.conn_id != conn_id {
-            let loser = (superseded.conn_id, superseded.publication_token);
-            match deferred_loser {
-                Some(deferred) => deferred.lock_or_recover().defer(mgr, loser),
-                None => close_superseded_connection_once(mgr, loser.0, loser.1),
-            }
+            close_superseded_connection_once(mgr, superseded.conn_id, superseded.publication_token);
         }
     }
     true
-}
-
-/// The connection a responder's winner superseded, held open until the
-/// initiator confirms it has switched to the winner as well.
-#[derive(Debug, Default)]
-pub(super) struct DeferredLoser {
-    confirmed: bool,
-    loser: Option<(c_int, u64)>,
-}
-
-impl DeferredLoser {
-    /// Hold `loser` for the confirmation, or close it now if it came first.
-    fn defer(&mut self, mgr: &HewConnMgr, loser: (c_int, u64)) {
-        if self.confirmed {
-            close_superseded_connection_once(mgr, loser.0, loser.1);
-        } else {
-            self.loser = Some(loser);
-        }
-    }
-
-    /// Close the held loser, and any deferred later: the initiator confirmed
-    /// its switch, or the winner is going away and would otherwise leave the
-    /// loser open with no claim.
-    pub(super) fn release(&mut self, mgr: &HewConnMgr) {
-        self.confirmed = true;
-        if let Some((conn_id, token)) = self.loser.take() {
-            close_superseded_connection_once(mgr, conn_id, token);
-        }
-    }
 }
 
 /// Clear the restorable predecessor claim only from the exact admission whose
@@ -1017,7 +980,6 @@ pub(super) fn publish_connection_established(
         publication_sync,
         publication_removed,
         superseded,
-        None,
     );
 }
 
@@ -1097,15 +1059,14 @@ pub(super) fn retire_connection_publication(
     );
 }
 
-/// Whether a connection on this manager holds a superseded connection open
-/// for the initiator's confirmation.
+/// The commit order of the connection that holds `peer`'s claim.
 #[cfg(test)]
-pub(crate) fn holds_deferred_loser(mgr: &HewConnMgr) -> bool {
-    mgr.connections.access(|connections| {
-        connections
-            .iter()
-            .any(|connection| connection.deferred_loser.lock_or_recover().loser.is_some())
-    })
+pub(crate) fn commit_order_for_test(mgr: &HewConnMgr, peer: NodeId) -> Option<u64> {
+    mgr.claims
+        .0
+        .lock_or_recover()
+        .get(&peer)
+        .map(|claim| claim.commit_order)
 }
 
 /// A test's view of one peer on this manager.

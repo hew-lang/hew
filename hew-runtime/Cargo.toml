@@ -66,6 +66,11 @@ clone-failure-test = []
 # Never enabled by `default` or `full`.
 composition-test = []
 
+# libFuzzer entry points for the untrusted-input decoders and the control-frame
+# handler (hew-runtime/fuzz). Exposes `hew_runtime::fuzzing` only; never
+# enabled by `default` or `full`. Adds no dependencies.
+fuzzing = []
+
 [dependencies]
 rand = "0.10.1"
 # CBOR envelope framing (ciborium, RFC 8949); CDDL schema in schemas/envelope.cddl.

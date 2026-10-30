@@ -11,7 +11,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 #[path = "diagnostic_renderer.rs"]
 mod renderer;
-pub(crate) use renderer::{render_ownership, LineIndexScope};
+pub(crate) use renderer::{offset_to_line_col, render_ownership, source_hash, LineIndexScope};
 
 // ---------------------------------------------------------------------------
 // Thread-local diagnostic capture
@@ -727,32 +727,6 @@ pub(crate) fn render_hir_diagnostic(
     for (_, label) in &diagnostic.secondary_spans {
         emit_plain_diagnostic_line(&format!("  = note: {label}"));
     }
-}
-
-/// Convert a byte offset to a 1-based (line, column) pair.
-/// Handles both `\n` and `\r\n` line endings; `\r` before `\n` is not counted
-/// as a column so that the column number matches the displayed line content.
-pub(crate) fn offset_to_line_col(source: &str, offset: usize) -> (usize, usize) {
-    let offset = offset.min(source.len());
-    let mut line = 1;
-    let mut col = 1;
-    let bytes = source.as_bytes();
-
-    for (i, ch) in source.char_indices() {
-        if i >= offset {
-            break;
-        }
-        if ch == '\n' {
-            line += 1;
-            col = 1;
-        } else if ch == '\r' && bytes.get(i + 1) == Some(&b'\n') {
-            // Skip \r in a \r\n pair — the \n will advance the line.
-        } else {
-            col += 1;
-        }
-    }
-
-    (line, col)
 }
 
 #[cfg(test)]

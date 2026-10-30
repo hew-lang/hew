@@ -188,6 +188,7 @@ pub(crate) fn render_frontend_diagnostics(
             }
         })
         .max();
+    let _lines = crate::diagnostic::LineIndexScope::new();
     if crate::diagnostic_json::json_output_active() {
         push_frontend_diagnostics_json(diagnostics);
         return worst;
@@ -197,7 +198,6 @@ pub(crate) fn render_frontend_diagnostics(
         FrontendDiagnosticKind::Type(error) => error.severity == hew_types::error::Severity::Error,
         FrontendDiagnosticKind::Message(_) | FrontendDiagnosticKind::Hir(_) => true,
     };
-    let _lines = crate::diagnostic::LineIndexScope::new();
     for diagnostic in crate::diagnostic::limit_diagnostics(diagnostics, is_error) {
         match &diagnostic.kind {
             FrontendDiagnosticKind::Message(inner) => {

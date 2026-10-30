@@ -2,7 +2,7 @@
 
 use hew_cabi::host_error::{HewError, HewText};
 use serde::Serialize;
-use std::cell::RefCell;
+use std::cell::{OnceCell, RefCell};
 use std::collections::HashMap;
 
 use super::{DiagnosticNote, DiagnosticPalette};
@@ -35,32 +35,39 @@ pub(crate) fn render_ownership(input: &str) -> String {
 struct Label<'a> {
     filename: String,
     line: usize,
+    column: usize,
     text: &'a str,
     start: i64,
     end: i64,
     message: String,
 }
 
+/// Bytes of the span's line sent on each side of the span start. The
+/// component shows at most its `WINDOW` (160 bytes) of a line, so a larger
+/// excerpt renders exactly as the whole line would, while a diagnostic on a
+/// very long line costs a bounded amount instead of the line's length.
+const CONTEXT: usize = 256;
+
 /// Line tables by source identity (address and length).
-type LineTables = HashMap<(usize, usize), Vec<usize>>;
+type LineIndexes = HashMap<(usize, usize), LineIndex>;
 
 thread_local! {
     /// Line tables for the sources of the render loop in progress, keyed by
     /// the address and length of the borrowed source text.
-    static LINE_STARTS: RefCell<Option<LineTables>> = const { RefCell::new(None) };
+    static LINE_INDEXES: RefCell<Option<LineIndexes>> = const { RefCell::new(None) };
 }
 
 /// Builds each source's line table once while it is alive, so a loop that
 /// renders many diagnostics does not rescan the file from the start for each.
 /// The loop borrows its sources throughout, which keeps the address keys valid.
-/// Outside a scope each label builds a table of its own.
+/// Outside a scope each lookup builds a table of its own.
 pub(crate) struct LineIndexScope {
     owner: bool,
 }
 
 impl LineIndexScope {
     pub(crate) fn new() -> Self {
-        let owner = LINE_STARTS.with(|cell| {
+        let owner = LINE_INDEXES.with(|cell| {
             let mut cell = cell.borrow_mut();
             let owner = cell.is_none();
             if owner {
@@ -75,59 +82,155 @@ impl LineIndexScope {
 impl Drop for LineIndexScope {
     fn drop(&mut self) {
         if self.owner {
-            LINE_STARTS.with(|cell| *cell.borrow_mut() = None);
+            LINE_INDEXES.with(|cell| *cell.borrow_mut() = None);
         }
     }
 }
 
-/// Byte offset at which each line of `source` starts (a final empty line
-/// included when the source ends in a newline).
-fn line_starts(source: &str) -> Vec<usize> {
-    std::iter::once(0)
-        .chain(
-            source
-                .bytes()
-                .enumerate()
-                .filter_map(|(at, byte)| (byte == b'\n').then_some(at + 1)),
-        )
-        .collect()
+/// Bytes between samples of the running column count.
+const COLUMN_BLOCK: usize = 64;
+
+/// Where lines start and how many columns precede each block of a source, so
+/// both the line and the column of any offset cost a bounded amount, and the
+/// snapshot hash each machine-readable diagnostic carries.
+struct LineIndex {
+    /// Byte offset at which each line starts (a final empty line included
+    /// when the source ends in a newline).
+    starts: Vec<usize>,
+    /// Column-advancing bytes before each multiple of [`COLUMN_BLOCK`].
+    blocks: Vec<usize>,
+    hash: OnceCell<String>,
 }
 
-fn with_line_starts<R>(source: &str, use_starts: impl FnOnce(&[usize]) -> R) -> R {
-    LINE_STARTS.with(|cell| match cell.borrow_mut().as_mut() {
-        Some(tables) => {
-            let key = (source.as_ptr() as usize, source.len());
-            use_starts(tables.entry(key).or_insert_with(|| line_starts(source)))
+/// Whether the byte at `at` advances the column: it starts a scalar and is
+/// neither a newline nor the carriage return of a CRLF terminator.
+fn advances_column(bytes: &[u8], at: usize) -> bool {
+    match bytes[at] {
+        b'\n' => false,
+        b'\r' => bytes.get(at + 1) != Some(&b'\n'),
+        byte => byte & 0xC0 != 0x80,
+    }
+}
+
+impl LineIndex {
+    fn new(source: &str) -> Self {
+        let bytes = source.as_bytes();
+        let mut starts = vec![0];
+        let mut blocks = Vec::with_capacity(bytes.len() / COLUMN_BLOCK + 1);
+        let mut columns = 0;
+        for at in 0..bytes.len() {
+            if at.is_multiple_of(COLUMN_BLOCK) {
+                blocks.push(columns);
+            }
+            if bytes[at] == b'\n' {
+                starts.push(at + 1);
+            }
+            columns += usize::from(advances_column(bytes, at));
         }
-        None => use_starts(&line_starts(source)),
+        if bytes.len().is_multiple_of(COLUMN_BLOCK) {
+            blocks.push(columns);
+        }
+        Self {
+            starts,
+            blocks,
+            hash: OnceCell::new(),
+        }
+    }
+
+    /// Column-advancing bytes in `source[..offset]`.
+    fn columns_before(&self, source: &str, offset: usize) -> usize {
+        let block = offset / COLUMN_BLOCK;
+        let bytes = source.as_bytes();
+        self.blocks[block]
+            + (block * COLUMN_BLOCK..offset)
+                .filter(|&at| advances_column(bytes, at))
+                .count()
+    }
+
+    /// The one-based line holding `offset`, and that line's byte range with
+    /// its newline.
+    fn line(&self, source: &str, offset: usize) -> (usize, usize, usize) {
+        let line = self.starts.partition_point(|&start| start <= offset);
+        let end = self.starts.get(line).copied().unwrap_or(source.len());
+        (line, self.starts[line - 1], end)
+    }
+
+    /// One-based line and column of `offset`, clamped to the source. A CRLF
+    /// carriage return takes no column, matching the displayed line.
+    fn line_col(&self, source: &str, offset: usize) -> (usize, usize) {
+        let offset = offset.min(source.len());
+        let (line, start, _) = self.line(source, offset);
+        (
+            line,
+            1 + self.columns_before(source, offset) - self.columns_before(source, start),
+        )
+    }
+}
+
+fn with_line_index<R>(source: &str, use_index: impl FnOnce(&LineIndex) -> R) -> R {
+    LINE_INDEXES.with(|cell| match cell.borrow_mut().as_mut() {
+        Some(indexes) => {
+            let key = (source.as_ptr() as usize, source.len());
+            use_index(indexes.entry(key).or_insert_with(|| LineIndex::new(source)))
+        }
+        None => use_index(&LineIndex::new(source)),
     })
 }
 
-impl<'a> From<&DiagnosticNote<'a>> for Label<'a> {
-    fn from(note: &DiagnosticNote<'a>) -> Self {
+/// One-based line and column of a byte offset, through the active scope's
+/// line table when there is one.
+pub(crate) fn offset_to_line_col(source: &str, offset: usize) -> (usize, usize) {
+    with_line_index(source, |index| index.line_col(source, offset))
+}
+
+/// The SHA-256 identity of `source`, hashed once per source in a scope.
+pub(crate) fn source_hash(source: &str) -> String {
+    with_line_index(source, |index| {
+        index
+            .hash
+            .get_or_init(|| hew_analysis::code_actions::source_hash(source))
+            .clone()
+    })
+}
+
+impl<'a> Label<'a> {
+    /// The label for `note`, carrying at most `context` bytes of its line on
+    /// each side of the span start.
+    fn new(note: &DiagnosticNote<'a>, context: usize) -> Self {
         let source = note.source;
         let offset = note.span.start.min(source.len());
-        // The line holding the span start, newline included. Line starts
-        // follow ASCII newlines, so each slice lands on a character boundary.
-        let (line, line_start, line_end) = with_line_starts(source, |starts| {
-            let line = starts.partition_point(|&start| start <= offset);
-            (
-                line,
-                starts[line - 1],
-                starts.get(line).copied().unwrap_or(source.len()),
-            )
+        let ((line, column), line_start, line_end) = with_line_index(source, |index| {
+            let (_, start, end) = index.line(source, offset);
+            (index.line_col(source, offset), start, end)
         });
+        // The excerpt keeps the newline only when it reaches the line end.
+        // Line starts follow ASCII newlines, so they are character boundaries.
+        let mut from = offset.saturating_sub(context).max(line_start);
+        while !source.is_char_boundary(from) {
+            from -= 1;
+        }
+        let mut to = offset.saturating_add(context).min(line_end);
+        while !source.is_char_boundary(to) {
+            to += 1;
+        }
         let relative = |position: usize| {
-            i64::try_from(position).unwrap_or(i64::MAX) - i64::try_from(line_start).unwrap_or(0)
+            i64::try_from(position).unwrap_or(i64::MAX) - i64::try_from(from).unwrap_or(0)
         };
         Self {
             filename: super::display_filename(note.filename),
             line,
-            text: &source[line_start..line_end],
+            column,
+            text: &source[from..to],
             start: relative(note.span.start),
             end: relative(note.span.end),
             message: hew_compile::source_path_policy().display_text(note.message),
         }
+    }
+}
+
+impl<'a> From<&DiagnosticNote<'a>> for Label<'a> {
+    fn from(note: &DiagnosticNote<'a>) -> Self {
+        Self::new(note, CONTEXT)
     }
 }
 
@@ -251,6 +354,110 @@ mod tests {
         let under = carets.find('^').unwrap();
         assert_eq!(&shown[under..under + 3], "BAD", "{shown}\n{carets}");
         assert_eq!(carets.matches('^').count(), 3);
+    }
+
+    /// Renders `note` with `context` bytes of its line on each side of the
+    /// span start.
+    fn render_excerpt(note: &DiagnosticNote<'_>, context: usize) -> String {
+        let input = serde_json::to_string(&Presentation {
+            primary: Label::new(note, context),
+            level: "error",
+            notes: Vec::new(),
+            suggestions: &[],
+            palette: &super::super::diagnostic_palette(),
+        })
+        .unwrap();
+        // SAFETY: build.rs checks this generated export's borrowed-string contract.
+        unsafe { crate::host_text::call(&input, diagnostic_render_text) }
+    }
+
+    /// Long lines mixing multibyte scalars and carriage returns, ending in
+    /// CRLF, LF and EOF.
+    fn long_line_sources() -> Vec<String> {
+        let mixed = "aé🦫\rb".repeat(90);
+        vec![
+            format!("{}\r\nnext\n", "x".repeat(700)),
+            format!("{mixed}\r\n{mixed}\n"),
+            format!("{}\r{}", "y".repeat(400), "é".repeat(200)),
+        ]
+    }
+
+    #[test]
+    fn a_line_excerpt_renders_exactly_as_the_whole_line() {
+        for source in long_line_sources() {
+            for start in 0..=source.len() {
+                for width in [0, 1, 3, 300] {
+                    let span = start..(start + width).min(source.len());
+                    let note = DiagnosticNote {
+                        source: &source,
+                        filename: "<input>",
+                        span: &span,
+                        message: "wrong",
+                    };
+                    assert_eq!(
+                        render_excerpt(&note, CONTEXT),
+                        render_excerpt(&note, usize::MAX),
+                        "span {span:?} of {source:?}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn indexed_columns_count_scalars_and_skip_the_crlf_return() {
+        // One-based line and column by a scan from the start of the source.
+        fn scanned(source: &str, offset: usize) -> (usize, usize) {
+            let (mut line, mut column) = (1, 1);
+            let bytes = source.as_bytes();
+            for (at, ch) in source.char_indices() {
+                if at >= offset {
+                    break;
+                }
+                if ch == '\n' {
+                    line += 1;
+                    column = 1;
+                } else if !(ch == '\r' && bytes.get(at + 1) == Some(&b'\n')) {
+                    column += 1;
+                }
+            }
+            (line, column)
+        }
+        for source in long_line_sources()
+            .into_iter()
+            .chain([String::new(), "\n\r\n".into()])
+        {
+            let index = LineIndex::new(&source);
+            for offset in 0..=source.len() + 2 {
+                assert_eq!(
+                    index.line_col(&source, offset),
+                    scanned(&source, offset.min(source.len())),
+                    "offset {offset} of {source:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_label_on_a_long_line_carries_a_bounded_excerpt() {
+        let source = format!("{}BAD{}\n", "a".repeat(1 << 20), "b".repeat(1 << 20));
+        let span = (1 << 20)..(1 << 20) + 3;
+        let note = DiagnosticNote {
+            source: &source,
+            filename: "<input>",
+            span: &span,
+            message: "wrong",
+        };
+        let label = Label::from(&note);
+        assert!(
+            label.text.len() <= 2 * CONTEXT,
+            "{} bytes",
+            label.text.len()
+        );
+        assert_eq!((label.line, label.column), (1, (1 << 20) + 1));
+        let context = i64::try_from(CONTEXT).unwrap();
+        assert_eq!((label.start, label.end), (context, context + 3));
+        assert_eq!(&label.text[CONTEXT..CONTEXT + 3], "BAD");
     }
 
     #[test]

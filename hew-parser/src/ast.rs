@@ -2042,11 +2042,16 @@ pub struct ChildSpec {
     pub arg_labels: Vec<FieldLabel>,
     #[serde(default)]
     pub restart: Option<RestartPolicy>,
-    /// Declarative sibling wiring: maps init-param name → sibling child name.
-    /// Populated by `wired_to: { key: sibling, ... }` clauses. S-B validates
-    /// that each key matches a sibling name and the ref type is compatible.
+    /// Declarative sibling wiring: init-param name → sibling child name, in
+    /// source order. Populated by `wired_to: { key: sibling, ... }` clauses.
+    /// The checker validates that each key matches a sibling name and the ref
+    /// type is compatible.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub wired_to: Option<std::collections::HashMap<String, String>>,
+    pub wired_to: Option<Vec<(String, String)>>,
+    /// The suffix clauses in the order written. Clauses are order-independent,
+    /// so this is layout only: the formatter reprints them in this order.
+    #[serde(skip)]
+    pub clause_order: Vec<ChildClause>,
     /// True when declared with `pool name: Type` instead of `child name: Type`.
     /// Indicates a dynamic pool (`simple_one_for_one` strategy child).
     #[serde(default)]
@@ -2075,6 +2080,16 @@ pub struct ChildSpec {
     /// still carry a caret at the child declaration rather than a sentinel.
     #[serde(default)]
     pub span: Span,
+}
+
+/// One supervisor-child suffix clause, recorded for layout.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ChildClause {
+    Count,
+    Restart,
+    Backoff,
+    Stop,
+    WiredTo,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

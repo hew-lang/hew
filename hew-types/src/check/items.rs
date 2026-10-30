@@ -472,23 +472,31 @@ impl Checker {
         // `count: config.workers` expr resolves.
         self.check_supervisor_pool_count(sd, span);
         if let Some(backoff) = &sd.backoff {
-            let ty = self.synthesize(&backoff.0, &backoff.1);
-            let ty = self.subst.resolve(&ty);
-            if !is_canonical_lifecycle_source_type(&ty, "std.restart.Backoff") && ty != Ty::Error {
-                self.errors.push(TypeError::new(
-                    TypeErrorKind::SupervisorError { subkind: SupervisorErrorKind::BackoffType },
-                    backoff.1.clone(),
-                    "supervisor `backoff:` requires a std.restart.Backoff value; use restart.exponential(initial: 100ms, maximum: 5s)",
-                ));
-            }
+            self.check_supervisor_backoff(backoff);
         }
         for child in &sd.children {
             if let Some(duration) = &child.stop {
                 self.check_against(&duration.0, &duration.1, &Ty::Duration);
             }
+            if let Some(backoff) = &child.backoff {
+                self.check_supervisor_backoff(backoff);
+            }
         }
 
         self.env.pop_scope();
+    }
+
+    /// A supervisor or child `backoff:` clause is an ordinary `std.restart.Backoff`.
+    fn check_supervisor_backoff(&mut self, backoff: &Spanned<Expr>) {
+        let ty = self.synthesize(&backoff.0, &backoff.1);
+        let ty = self.subst.resolve(&ty);
+        if !is_canonical_lifecycle_source_type(&ty, "std.restart.Backoff") && ty != Ty::Error {
+            self.errors.push(TypeError::new(
+                TypeErrorKind::SupervisorError { subkind: SupervisorErrorKind::BackoffType },
+                backoff.1.clone(),
+                "`backoff:` requires a std.restart.Backoff value; use restart.exponential(initial: 100ms, maximum: 5s) or restart.immediate()",
+            ));
+        }
     }
 
     /// Bind explicit values and typed wiring operands through ordinary spawn rules.

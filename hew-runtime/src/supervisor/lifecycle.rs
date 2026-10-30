@@ -372,7 +372,6 @@ pub unsafe extern "C" fn hew_supervisor_new(
             child_count: 0,
             next_child_spec_identity: 1,
             native_startup_order: Vec::new(),
-            backoff: None,
             construction_events: Vec::new(),
             child_supervisors: Vec::new(),
             child_supervisor_tokens: Vec::new(),
@@ -4079,7 +4078,7 @@ mod tests {
                 // Restartable by policy with a declared delay, so the crash
                 // takes the DELAYED path rather than restarting in line.
                 spec.restart_policy = RESTART_PERMANENT;
-                spec.backoff = RestartBackoff::configured(Some((200_000_000, 200_000_000)));
+                spec.backoff = RestartBackoff::configured(200_000_000, 200_000_000);
             }
 
             actor::hew_actor_trap(child, 1);

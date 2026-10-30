@@ -44,6 +44,25 @@ fn supervisor_backoff_requires_the_stdlib_policy_identity() {
 }
 
 #[test]
+fn child_backoff_requires_the_stdlib_policy_identity() {
+    for value in ["5s", "Backoff { initial: 100ms, maximum: 1s }"] {
+        let output = check_source(&format!(
+            "type Backoff {{ initial: duration; maximum: duration; }}\nactor Worker {{}}\nsupervisor Team {{ child worker: Worker restart: permanent backoff: {value}; }}"
+        ));
+        assert!(
+            output.errors.iter().any(|error| matches!(
+                error.kind,
+                TypeErrorKind::SupervisorError {
+                    subkind: SupervisorErrorKind::BackoffType
+                }
+            )),
+            "{:#?}",
+            output.errors
+        );
+    }
+}
+
+#[test]
 fn nested_supervisor_remains_a_valid_child_target() {
     let output = check_source(
         "actor Worker {\n    receive fn ping() {}\n}\n\nsupervisor Inner {\n    child worker: Worker;\n}\n\nsupervisor Root {\n    child inner: Inner;\n}\n",

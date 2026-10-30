@@ -188,6 +188,10 @@ impl LowerCtx<'_> {
                         .stop
                         .as_ref()
                         .map(|duration| self.lower_expr(duration, IntentKind::Read)),
+                    backoff: child
+                        .backoff
+                        .as_ref()
+                        .map(|policy| self.lower_expr(policy, IntentKind::Read)),
                     // Real site for this child declaration, registered below
                     // by `verify.rs` so MIR diagnostics with no specific
                     // argument to blame (a missing required field) carry a

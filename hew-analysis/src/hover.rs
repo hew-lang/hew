@@ -2609,6 +2609,23 @@ mod tests {
     }
 
     #[test]
+    fn hover_resolves_a_call_in_a_child_backoff_clause() {
+        let source = concat!(
+            "type Policy { initial: duration; }\n",
+            "fn quick() -> Policy { Policy { initial: 0ns } }\n",
+            "actor Worker {}\n",
+            "supervisor Team {\n",
+            "    child worker: Worker restart: permanent backoff: quick();\n",
+            "}\n",
+        );
+        let pr = hew_parser::parse(source);
+        let tc = type_check(&pr);
+        let offset = source.rfind("quick").unwrap();
+        let result = hover(source, &pr, Some(&tc), offset).expect("hover on the policy call");
+        assert!(result.contents.contains("Policy"), "{}", result.contents);
+    }
+
+    #[test]
     fn hover_supervisor_name_does_not_panic() {
         // Hovering over a supervisor name must not panic and must return either
         // a valid hover result or None gracefully.  Supervisors hold no type_def

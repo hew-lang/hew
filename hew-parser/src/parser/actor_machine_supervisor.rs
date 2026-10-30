@@ -1434,11 +1434,13 @@ impl Parser<'_> {
                     // Per-child suffix clauses, accepted in any order:
                     //   restart: permanent | transient | temporary
                     //   stop: <duration>
+                    //   backoff: <std.restart.Backoff>
                     //   wired_to: { param: sibling, bare_sibling }
                     //   count: <expr>            (pool children only)
                     let mut restart: Option<RestartPolicy> = None;
                     let mut count: Option<Spanned<Expr>> = None;
                     let mut stop: Option<Spanned<Expr>> = None;
+                    let mut child_backoff: Option<Spanned<Expr>> = None;
                     let mut wired_to: Option<std::collections::HashMap<String, String>> = None;
                     let mut seen_wired_to = false;
                     loop {
@@ -1506,6 +1508,21 @@ impl Parser<'_> {
                                     );
                                 }
                                 stop = value;
+                            }
+                            // `backoff: <policy>` replaces the supervisor's
+                            // restart delay for this child alone.
+                            Some(Token::Identifier("backoff")) => {
+                                let clause_start = self.peek_span().start;
+                                self.advance();
+                                self.expect(&Token::Colon)?;
+                                let value = self.parse_expr()?;
+                                if child_backoff.is_some() {
+                                    self.error_at(
+                                        "duplicate supervisor child `backoff:` clause".to_string(),
+                                        clause_start..value.1.end,
+                                    );
+                                }
+                                child_backoff = Some(value);
                             }
                             // `wired_to: { key: sibling, bare_sibling }` clause.
                             Some(Token::Identifier(s)) if *s == "wired_to" => {
@@ -1606,6 +1623,7 @@ impl Parser<'_> {
                         wired_to,
                         is_pool,
                         stop,
+                        backoff: child_backoff,
                         count,
                         span: child_start..self.last_token_end,
                     });

@@ -2055,6 +2055,10 @@ pub struct ChildSpec {
     /// `None` means the supervisor default applies.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub stop: Option<Spanned<Expr>>,
+    /// Per-child restart delay, written `backoff: <std.restart.Backoff>`.
+    /// Replaces the supervisor's `backoff:` for this child; `None` inherits it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub backoff: Option<Spanned<Expr>>,
     /// Pool arity, written as the per-child clause `count: <expr>` after the
     /// key braces (`pool ws: Worker { value: 7 } count: 2;`). Arity
     /// lives in the child's clause namespace, never among the keys,

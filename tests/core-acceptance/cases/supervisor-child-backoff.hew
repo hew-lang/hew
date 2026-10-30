@@ -1,0 +1,76 @@
+import std.restart;
+
+type Config {
+    upstream: duration;
+}
+
+fn policy(label: string, initial: duration, maximum: duration) -> restart.Backoff {
+    println(label);
+    restart.exponential(initial: initial, maximum: maximum)
+}
+
+actor Worker {
+    let value: i64 = 7;
+    receive fn read() -> i64 {
+        value
+    }
+    receive fn fail() {
+        panic("per-child backoff");
+    }
+}
+
+supervisor Gateway(config: Config) {
+    strategy: one_for_one;
+    intensity: 50 within 2s;
+    backoff: policy("supervisor", 100ms, 400ms);
+    child upstream: Worker restart: permanent backoff: policy("upstream", config.upstream, 2s);
+    child cache: Worker restart: permanent backoff: restart.immediate();
+    child plain: Worker;
+}
+
+supervisor Pool {
+    strategy: simple_one_for_one;
+    intensity: 50 within 2s;
+    pool workers: Worker count: 2 backoff: restart.exponential(initial: 300ms, maximum: 600ms);
+}
+
+fn crash(role: Worker) -> i64 {
+    let started = instant.now();
+    let _ = role.fail();
+    restarted(role);
+    assert(role.read().expect("fresh worker") == 7);
+    started.elapsed().millis()
+}
+
+fn main() {
+    let gateway = spawn Gateway { config: Config { upstream: 1s } };
+    // `restart.immediate()` switches the supervisor's delay off for one child.
+    for _ in 0..5 {
+        assert(crash(gateway.cache) == 0);
+    }
+    // A child without its own clause inherits the supervisor's policy.
+    for expected in [100, 200, 400, 400] {
+        assert(crash(gateway.plain) == expected);
+    }
+    // A child's own policy replaces the supervisor's, with its own exponent.
+    for expected in [1000, 2000, 2000] {
+        assert(crash(gateway.upstream) == expected);
+    }
+    assert(crash(gateway.cache) == 0);
+    // Each child's delay resets after its own healthy restart window.
+    sleep(2s);
+    assert(crash(gateway.upstream) == 1000);
+    assert(crash(gateway.plain) == 100);
+    stop(gateway);
+    stopped(gateway);
+
+    // A pool member inherits its declaration's policy under a supervisor
+    // that declares none, and each member keeps its own delay.
+    let pool = spawn Pool;
+    assert(crash(pool.workers[0]) == 300);
+    assert(crash(pool.workers[0]) == 600);
+    assert(crash(pool.workers[1]) == 300);
+    stop(pool);
+    stopped(pool);
+    println("child backoff");
+}

@@ -12,18 +12,53 @@ supervisor Team(policy: restart.Backoff) {
     child worker: Worker;
 }
 
+supervisor Override(policy: restart.Backoff) {
+    backoff: restart.exponential(initial: 1s);
+    child worker: Worker backoff: policy;
+}
+
+fn refused(message: string) -> bool {
+    message == "supervisor backoff requires positive initial and maximum >= initial, or both zero"
+}
+
 fn main() {
-    for policy in [restart.Backoff { initial: 0ns, maximum: 0ns }, restart.Backoff { initial: 0ns - 1ns, maximum: 1s }, restart.Backoff { initial: 2s, maximum: 1s }] {
-        let refused = scope {
+    let invalid = [
+        restart.Backoff { initial: 0ns, maximum: 1s },
+        restart.Backoff { initial: 0ns - 1ns, maximum: 1s },
+        restart.Backoff { initial: 2s, maximum: 1s },
+    ];
+    for policy in invalid {
+        let declared = scope {
             let _ = spawn Team { policy: policy };
             false
         } handle failure {
             match failure {
-                .Fault { message } => message == "supervisor backoff requires positive initial and maximum >= initial",
+                .Fault { message } => refused(message),
                 .Deadline { message } => panic(message),
             }
         };
-        assert(refused);
+        assert(declared);
+        let child = scope {
+            let _ = spawn Override { policy: policy };
+            false
+        } handle failure {
+            match failure {
+                .Fault { message } => refused(message),
+                .Deadline { message } => panic(message),
+            }
+        };
+        assert(child);
     }
+    // Both zero is `restart.immediate()`: construction proceeds to the child.
+    let started = scope {
+        let _ = spawn Team { policy: restart.immediate() };
+        false
+    } handle failure {
+        match failure {
+            .Fault { message } => message == "invalid policy started a child",
+            .Deadline { message } => panic(message),
+        }
+    };
+    assert(started);
     println("invalid policies refused before construction");
 }

@@ -1124,7 +1124,6 @@ pub(crate) struct SupervisorChildSpec {
 /// unrepresentable and prevents a whole-`HewSupervisor` reference from
 /// aliasing concurrent raw roster updates.
 pub(crate) struct SupervisorRoster {
-    backoff: Option<(u64, u64)>,
     children: Vec<*mut HewActor>,
     child_specs: Vec<InternalChildSpec>,
     child_count: usize,
@@ -1709,8 +1708,8 @@ impl Drop for CircuitBreakerState {
 
 /// Per-role restart delay state, shared by actors, pools and nested supervisors.
 ///
-/// A role restarts without delay unless its supervisor declares `backoff`; the
-/// default state has a zero `initial_ns` and never arms a deadline.
+/// A role restarts without delay unless its own or its supervisor's `backoff`
+/// selects a positive initial delay; a zero `initial_ns` never arms a deadline.
 #[derive(Debug, Default)]
 struct RestartBackoff {
     initial_ns: u64,
@@ -1721,15 +1720,16 @@ struct RestartBackoff {
 }
 
 impl RestartBackoff {
-    fn configured(policy: Option<(u64, u64)>) -> Self {
-        policy.map_or_else(Self::default, |(initial_ns, maximum_ns)| Self {
+    /// A zero `initial_ns` restarts without delay.
+    fn configured(initial_ns: u64, maximum_ns: u64) -> Self {
+        Self {
             initial_ns,
             maximum_ns,
             ..Self::default()
-        })
+        }
     }
 
-    /// Whether the supervisor declared a delay policy for this role.
+    /// Whether this role delays its restarts.
     const fn selected(&self) -> bool {
         self.initial_ns > 0
     }

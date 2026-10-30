@@ -467,6 +467,8 @@ fn supervised_actor_lifecycle_runs_under_wasi() {
         "supervisor-wired-stop-during-reconstruction",
         "supervisor-stop-waits-for-stop-hooks",
         "supervisor-restart-backoff-cancel",
+        "supervisor-child-backoff",
+        "supervisor-restart-backoff-invalid",
         "actor-start-fault-contained",
         "actor-periodic-handlers",
     ]);

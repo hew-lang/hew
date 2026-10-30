@@ -6464,7 +6464,7 @@ fn main() {
   `restart.exponential(initial: 100ms, maximum: 5s)`; an omitted `maximum`
   is the larger of `initial` and `30s`. The expression runs once during supervisor construction and can use
   its configuration parameters. Without `backoff`, a crashed child restarts
-  immediately.
+  immediately. A child's own `backoff:` clause replaces it for that child.
 
 **Child specifications:**
 
@@ -6480,6 +6480,10 @@ fn main() {
   - `restart: permanent | transient | temporary` (optional, default
     `permanent`). This is the only restart spelling — bare `T permanent` and
     `with restart:` are not accepted.
+  - `backoff: <expression>` (optional) — this child's `std.restart.Backoff`,
+    replacing the supervisor's `backoff` for this child alone;
+    `restart.immediate()` restarts it without delay under a supervisor that
+    declares one. A child without the clause inherits the supervisor's policy.
   - `stop: <duration>` (optional) — the graceful-stop deadline (default
     `5s`). `stop: 0s` terminates immediately. A child still running when the
     deadline passes is terminated and its `#[on(stop)]` hook does not run.
@@ -6547,17 +6551,27 @@ An optional `backoff` delays crash recovery per stable child role, including
 nested supervisors and individual pool members. Its first delay is `initial`;
 later failures double it up to `maximum`, which defaults to the larger of
 `initial` and 30 seconds. Both
-values are durations, `initial` must be positive, and `maximum` must be at
-least `initial`. Invalid policies
-fail supervisor construction before any child starts.
+values are durations; `restart.exponential` requires a positive `initial` and
+a `maximum` of at least `initial`. `restart.immediate()` sets both to zero and
+selects no delay. Any other value fails supervisor construction before any
+child starts.
+
+A child's `backoff:` clause replaces the supervisor's policy for that child; a
+child without one inherits it. The supervisor's expression runs first, then
+each child's in declaration order, each once per construction. Every member of
+a pool carries its declaration's policy. Under `one_for_all` and
+`rest_for_one`, the crashing child's policy delays the group restart. A
+`temporary` child never restarts, so its policy has no effect; a `transient`
+child's applies to its restarts after `Terminated` or `Crashed`.
 
 After a replacement runs without failure for the supervisor's existing restart
 window, its next crash uses `initial` again. That healthy interval begins when
 the replacement is published; time spent waiting or constructing it does not
-count. This reset does not change the restart intensity budget. Stopping a
-supervisor cancels pending delays and waits for their cleanup. Omitting
-`backoff` restarts every crashed child immediately; the intensity budget alone
-bounds a crash loop.
+count. Each role resets on its own window. Delays never change the restart
+intensity budget, which stays one per supervisor and counts each restart when
+it is applied. Stopping a supervisor cancels pending delays and waits for their
+cleanup. A child with no effective `backoff` restarts immediately; the
+intensity budget alone bounds its crash loop.
 
 Circuit-breaker configuration remains outside the source restart contract;
 runtime support alone does not imply a source API.

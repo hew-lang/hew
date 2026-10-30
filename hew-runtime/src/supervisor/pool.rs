@@ -444,6 +444,26 @@ pub struct HewNativeChildSpec {
     /// Declared actor interface and codec key, independent of its occupant.
     /// Nested supervisor declarations carry no actor dispatch.
     pub dispatch: Option<HewDispatchFn>,
+    /// The child's effective restart delay in signed nanoseconds: its own
+    /// `backoff:` clause, otherwise its supervisor's. Both zero restarts
+    /// without delay.
+    pub backoff_initial_ns: i64,
+    pub backoff_maximum_ns: i64,
+}
+
+impl HewNativeChildSpec {
+    /// Both zero, or a positive initial delay no larger than the maximum.
+    pub(crate) const fn valid_backoff(&self) -> bool {
+        (self.backoff_initial_ns == 0 && self.backoff_maximum_ns == 0)
+            || (self.backoff_initial_ns > 0 && self.backoff_maximum_ns >= self.backoff_initial_ns)
+    }
+
+    fn backoff(&self) -> RestartBackoff {
+        RestartBackoff::configured(
+            self.backoff_initial_ns.cast_unsigned(),
+            self.backoff_maximum_ns.cast_unsigned(),
+        )
+    }
 }
 
 fn register_native_child(
@@ -471,14 +491,14 @@ fn register_native_child(
             restart_policy: child.restart_policy,
             stop_ns: child.stop_ns,
             spent: false,
-            backoff: RestartBackoff::configured(s.backoff),
+            backoff: child.backoff(),
         }));
         index
     } else {
         let index = s.children.len();
         let mut spec = InternalChildSpec::default();
         spec.identity = s.next_child_spec_identity;
-        spec.backoff = RestartBackoff::configured(s.backoff);
+        spec.backoff = child.backoff();
         spec.restart_policy = child.restart_policy;
         spec.stop_ns = child.stop_ns;
         spec.native_spawn = Some(child.spawn);
@@ -1138,6 +1158,8 @@ mod tests {
                     stop_ns: 0,
                     startup_rank: 1,
                     dispatch: Some(noop_child_dispatch),
+                    backoff_initial_ns: 0,
+                    backoff_maximum_ns: 0,
                 },
                 HewNativeChildSpec {
                     restart_policy: RESTART_PERMANENT,
@@ -1147,6 +1169,8 @@ mod tests {
                     stop_ns: 0,
                     startup_rank: 0,
                     dispatch: Some(noop_child_dispatch),
+                    backoff_initial_ns: 0,
+                    backoff_maximum_ns: 0,
                 },
             ];
             if malformed_order {
@@ -1232,6 +1256,8 @@ mod tests {
             stop_ns: 0,
             startup_rank: 0,
             dispatch: None,
+            backoff_initial_ns: 0,
+            backoff_maximum_ns: 0,
         };
         for (index, count) in [-1, 0, i64::from(i32::MAX) + 1, i64::MAX]
             .into_iter()

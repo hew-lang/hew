@@ -175,7 +175,10 @@ impl InstanceService<'_> {
                 id,
                 &source,
                 expression.as_ref().clone(),
-                CallableInstance::SupervisorBackoff { supervisor: id },
+                CallableInstance::SupervisorBackoff {
+                    supervisor: id,
+                    child: None,
+                },
                 "backoff",
                 &substitution,
             )?;
@@ -253,6 +256,25 @@ impl InstanceService<'_> {
                 } else {
                     None
                 },
+                backoff: child
+                    .backoff
+                    .as_ref()
+                    .map(|policy| {
+                        self.register_supervisor_expression(
+                            id,
+                            &source,
+                            policy.clone(),
+                            CallableInstance::SupervisorBackoff {
+                                supervisor: id,
+                                child: Some(u32::try_from(index).map_err(|_| {
+                                    SirLoweringError::from("supervisor child count exceeds u32")
+                                })?),
+                            },
+                            &format!("child_{index}_backoff"),
+                            &substitution,
+                        )
+                    })
+                    .transpose()?,
                 spawn,
             });
         }

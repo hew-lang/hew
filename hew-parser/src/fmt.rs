@@ -2995,6 +2995,10 @@ impl<'a> Formatter<'a> {
                 RestartPolicy::Temporary => self.write("temporary"),
             }
         }
+        if let Some(backoff) = &spec.backoff {
+            self.write(" backoff: ");
+            self.format_expr(backoff);
+        }
         if let Some(stop) = &spec.stop {
             self.write(" stop: ");
             if matches!(&stop.0, Expr::Literal(Literal::Duration(0))) {
@@ -7350,6 +7354,14 @@ impl<T> Vec<T> {
     fn supervisor_backoff_expression_roundtrips_in_source_order() {
         let source = "supervisor Team(config: Config) {\n    intensity: 5 within 60s;\n    backoff: restart.exponential(initial: config.initial, maximum: 5s);\n\n    child worker: Worker;\n}\n";
         assert_eq!(roundtrip(source), source);
+    }
+
+    #[test]
+    fn child_backoff_clause_prints_after_restart_in_either_source_order() {
+        let canonical = "supervisor Gateway {\n    backoff: restart.exponential(initial: 100ms, maximum: 5s);\n\n    child upstream: Client { url: url } restart: permanent backoff: restart.exponential(initial: 1s, maximum: 1m);\n    child cache: Cache restart: transient backoff: restart.immediate() stop: 5s;\n}\n";
+        assert_eq!(roundtrip(canonical), canonical);
+        let reordered = "supervisor Gateway {\n    backoff: restart.exponential(initial: 100ms, maximum: 5s);\n\n    child upstream: Client { url: url } backoff: restart.exponential(initial: 1s, maximum: 1m) restart: permanent;\n    child cache: Cache stop: 5s backoff: restart.immediate() restart: transient;\n}\n";
+        assert_eq!(roundtrip(reordered), canonical);
     }
 
     #[test]

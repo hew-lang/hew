@@ -5,6 +5,8 @@
 - Restart crashed supervised children immediately unless the supervisor
   declares `backoff`, and default the backoff maximum to the larger of its
   initial delay and 30 seconds.
+- Override a supervisor's restart delay per child with a `backoff:` clause, and
+  switch it off for one child with `restart.immediate()`.
 
 ## [0.10.0-rc1] - 2026-10-26
 

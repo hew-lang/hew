@@ -889,6 +889,8 @@ mod tests {
                 stop_ns: -1,
                 startup_rank: 0,
                 dispatch: None,
+                backoff_initial_ns: 0,
+                backoff_maximum_ns: 0,
             }];
             let parent = native_spawn_for_test(
                 0,

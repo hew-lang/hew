@@ -313,7 +313,7 @@ fn stale_reconnect_cannot_replace_newer_publication() {
             101,
             Some(&plan.predecessor),
             TEST_ADMISSION,
-            Commit::Unordered,
+            Commit::Initiator(0),
         ) else {
             panic!("current retired predecessor must permit reconnect");
         };
@@ -359,7 +359,6 @@ fn stale_reconnect_cannot_replace_newer_publication() {
             &publication.sync,
             &publication.removed,
             superseded,
-            Switch::Close,
             false,
         ));
         assert_eq!(
@@ -380,7 +379,7 @@ fn stale_reconnect_cannot_replace_newer_publication() {
                 103,
                 Some(&plan.predecessor),
                 TEST_ADMISSION,
-                Commit::Unordered,
+                Commit::Initiator(0),
             ),
             ClaimReservation::Rejected(_)
         ));

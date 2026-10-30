@@ -9,7 +9,7 @@ use crate::node_identity::{Location, NodeId};
 use crate::peer_binding::{ClaimState, Posture};
 use crate::util::{CondvarExt, MutexExt};
 
-use super::identity_claim::{held_loser_authority, CLAIM_RESERVE_WAIT_MS};
+use super::identity_claim::CLAIM_RESERVE_WAIT_MS;
 use super::{HewConnMgr, CONN_STATE_ACTIVE};
 
 /// Project a receiver-local alias from the canonical identity claims. Retired
@@ -196,24 +196,9 @@ pub(crate) fn wait_admitted_peer_node_id_for_conn(
             }
             // No claim owned by this admission: superseded, aborted, or a
             // No claim owned by this admission: superseded, aborted, or a
-            // claimless (node_id 0) connection — no authority, deny now,
-            // unless the claim's owner holds this one for the peer's choice.
-            // A settled claim `admits` refuses carries none either.
-            Some(_) => return 0,
-            None => {
-                drop(guard);
-                if let Some(authority) = held_loser_authority(mgr, conn_id, claim_token) {
-                    return authority;
-                }
-                // A successor's admission is in flight: wait for it to settle.
-                let remaining = deadline.saturating_duration_since(std::time::Instant::now());
-                if remaining.is_zero() {
-                    return 0;
-                }
-                guard = condvar
-                    .wait_timeout_or_recover(lock.lock_or_recover(), remaining)
-                    .0;
-            }
+            // claimless (node_id 0) connection — no authority, deny now. A
+            // settled claim `admits` refuses carries none either.
+            Some(_) | None => return 0,
         }
     }
 }

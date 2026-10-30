@@ -12,9 +12,8 @@ use super::identity_claim::{
     abort_identity_claim, clear_superseded_claim_if_current, publish_identity_claim,
     publish_identity_connection_established, refuse_established_publication,
     reserve_identity_claim, retire_identity_claim, AdmissionStart, ClaimReservation, Commit,
-    Switch, CLAIM_RESERVE_WAIT_MS,
+    CLAIM_RESERVE_WAIT_MS,
 };
-use super::identity_claim::{held_loser_peer_closed, settle_held_loser, HeldLoser};
 use super::reader::reader_cleanup;
 use super::reconnect::{
     collect_finished_reconnect_workers, next_publication_token, reconnect_attempt, reconnect_plan,

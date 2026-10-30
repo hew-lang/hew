@@ -236,7 +236,7 @@ impl BuriedPeer {
             token,
             None,
             TEST_ADMISSION,
-            Commit::Unordered,
+            Commit::Initiator(0),
         )
         else {
             panic!("a buried peer's same-session reconnect reserves to refute");
@@ -260,7 +260,6 @@ impl BuriedPeer {
             &sync,
             &removed,
             None,
-            Switch::Close,
             true,
         ));
         Self {
@@ -453,7 +452,6 @@ fn reading_actor(
             Some(count_routed),
             HEW_FEATURE_SUPPORTS_GOSSIP,
             channel,
-            None,
             true,
         );
     }));
@@ -673,69 +671,5 @@ fn buried_peer_is_closed_at_its_refutation_deadline() {
     node.wait_removed();
     assert_eq!(node.claim_state(), Some(ClaimState::Retired));
     assert!(!node.installed());
-    assert_eq!(node.member_state(), MEMBER_DEAD);
-}
-
-/// A refuting connection held for the peer's choice, which the peer returns
-/// to by closing the newer one, is restored still refuting: its burial is not
-/// lifted without a refutation. Counterfactual: it is published as if the
-/// peer had refuted, and the cluster refuses the buried member.
-#[test]
-fn held_refuting_connection_is_restored_refuting() {
-    const HOLDER: c_int = 21;
-    let mut node = BuriedPeer::admit();
-    assert!(obituary(&node.next_swim()), "the opening PING");
-    let manager = node.manager();
-    let identity = test_node_identity(BURIED);
-    let token = next_publication_token(manager).expect("publication token");
-    let ClaimReservation::Reserved {
-        superseded: Some(loser),
-        buried: true,
-    } = reserve_identity_claim(
-        manager,
-        identity,
-        BURIED,
-        SESSION,
-        None,
-        HOLDER,
-        token,
-        None,
-        TEST_ADMISSION,
-        Commit::Follow,
-    )
-    else {
-        panic!("a second same-session connection supersedes the refuting one");
-    };
-    let held = Mutex::new(HeldLoser::new(Commit::Follow).expect("a follower holds its loser"));
-    assert!(publish_identity_connection_established(
-        manager,
-        identity,
-        BURIED,
-        SESSION,
-        HOLDER,
-        HEW_FEATURE_SUPPORTS_GOSSIP,
-        token,
-        &Arc::default(),
-        &Arc::default(),
-        Some(loser),
-        Switch::Hold(&held),
-        true,
-    ));
-    assert_eq!(
-        node.claim_state(),
-        None,
-        "the newer connection holds the claim"
-    );
-
-    // The peer closes the newer connection: it kept the held one.
-    held_loser_peer_closed(&held);
-    assert!(retire_identity_claim(manager, identity, HOLDER, token));
-    settle_held_loser(manager, Some(identity), HOLDER, token, &held);
-    assert!(matches!(
-        node.claim_state(),
-        Some(ClaimState::Refuting { .. })
-    ));
-    assert!(node.installed());
-    assert!(!routable(node.manager()));
     assert_eq!(node.member_state(), MEMBER_DEAD);
 }

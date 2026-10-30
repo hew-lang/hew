@@ -323,54 +323,40 @@ replaces a half-open connection. A relayed circuit is not a crossing. Only one
 end applies the rule: each end's overlap is measured on its own clock, and two
 ends measuring separately can each keep the connection the other closed.
 
-Feature bit `4` (responder commit) settles the pair through the responder. When
-both records set it:
+Feature bit `4` (responder commit) settles the pair through the responder. It
+is the minimum cluster protocol: a node MUST refuse a peer whose record lacks
+it, closing the connection once the records are exchanged and reporting that
+the peer requires cluster protocol feature 4. Both ends see both records, so
+both refuse, and neither keeps a connection or a claim for the other. Cluster
+members are upgraded together: a node that predates the bit cannot join a
+cluster of nodes that require it. Between two nodes that set it:
 
-1. Once the channel is established and the peer authenticated, the
-   responder's first channel frame is its commit: an 8-byte big-endian,
-   non-zero commit order that increases with each commit the responder makes.
-   The responder leaves its claim, and the connection the pair shares,
-   untouched until the echo arrives. If the connection ends first, or its
-   first frame is anything else, the responder closes it.
+1. Once the channel is established and the peer authenticated, the responder
+   reserves the peer's claim by the crossing rule and §4. If it yields or
+   refuses, it closes the connection without sending a frame. Otherwise its
+   first channel frame is its commit: an 8-byte big-endian, non-zero commit
+   order that increases with each reservation the responder makes.
 2. The initiator reserves nothing until the commit arrives, and closes the
    connection if it does not. Of its same-session connections to the
-   responder, it moves to the one with the highest commit order, in whatever
-   order the commits arrive; a lower one yields without an echo. Once its
-   claim has moved to the connection, its first channel frame echoes the
-   commit order, and it publishes.
-3. With the echo, the responder reserves the peer's claim by the crossing
-   rule and §4. If the connection yields or is refused, the responder closes
-   it; otherwise it publishes it and closes the one it superseded. It sends
-   nothing on the connection before it publishes.
+   responder, it keeps the one with the highest commit order, in whatever order
+   the commits arrive; a lower one yields. Once its claim has moved to the
+   connection, its first channel frame echoes the commit order. It then
+   publishes and closes the connection it superseded.
+3. The commit is provisional until the echo arrives. The responder publishes
+   the connection, and closes the one it superseded, only after the echo. If
+   the connection ends first, or its first frame is anything else, the
+   initiator never switched: the responder abandons the reservation and keeps
+   the connection it would have superseded.
 
-The initiator does not close the connection it superseded: it holds it until
-the responder shows which of the two it kept. The responder's first frame on
-the newer connection shows it kept that one, and the held connection is
-closed. If the responder closes the newer connection instead, the held one
-takes its place before the newer one is retired, so the peer's member is never
-lost. A held connection keeps the peer's authority: requests that
-arrive on it are served, and their replies return on it. So neither end
-closes a connection the other still owns, and the connection the pair shares
-stays usable at both ends until the switch; exchanges begun on a connection
-the responder then closes fail as on any lost connection. No end waits on the network while
-holding a reservation, so the two ends cannot wait on each other. The step
-costs the initiator half a round trip and the responder a round trip.
+So the responder switches before the initiator settles, and the initiator
+switches before the responder closes anything; neither end closes a
+connection the other still owns. The initiator never waits on the network
+while holding a reservation, so the two ends cannot wait on each other. The
+step costs the initiator half a round trip and the responder a round trip.
 
-When neither record sets bit `4`, each end keeps the newer same-session
-connection and closes the one it superseded when it publishes. When only one
-record sets it, as during a rolling upgrade, the node without the bit does the
-same and the node with it follows that node's choice: it also moves its claim
-to the newer connection, but holds the superseded one as an initiator does. A
-node without the bit can send on a connection before it supersedes that one,
-so only a close shows its choice: when it closes the held connection, it kept
-the newer one; when it closes the newer one, the held one is published again.
-Either way both ends converge on one connection, except
-that a dial abandoned at its attempt budget after the node without the bit
-published it can leave the pair to redial. A held connection outlives
-neither the connection holding it nor a local close of the peer. The records
-are bound into the channel transcript, so the bit cannot be removed without
-failing the handshake. Feature bit `2` is reserved; bit `3` is retired and is
-not reused.
+The records are bound into the channel transcript, so the bit cannot be
+removed without failing the handshake. Feature bit `2` is reserved; bit `3` is
+retired and is not reused.
 
 ## 5. Wire framing and schema
 

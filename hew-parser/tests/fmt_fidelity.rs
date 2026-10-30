@@ -901,3 +901,24 @@ fn main() {
 ",
     );
 }
+
+#[test]
+fn grouping_parentheses_around_a_pattern_stay() {
+    assert_faithful(
+        "fn main() {\n    let r: Option<i64> = .None;\n    let x = match r {\n        (.Some((v))) => v,\n        (.None) => 0,\n    };\n    println(x);\n}\n",
+    );
+}
+
+#[test]
+fn an_empty_machine_section_stays() {
+    assert_faithful(
+        "machine M {\n    events {}\n    emits {}\n    state Done;\n\n    on Tick: Done => Done;\n}\n\nfn main() {}\n",
+    );
+}
+
+#[test]
+fn a_block_arm_continued_by_a_postfix_takes_no_comma() {
+    assert_faithful(
+        "type P {\n    n: i64;\n}\n\nfn main() {\n    let x: Option<i64> = .None;\n    let y = match x {\n        .Some(v) => {\n            P { n: v }\n        }.n\n        other => 0,\n    };\n    println(y);\n}\n",
+    );
+}

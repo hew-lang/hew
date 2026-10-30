@@ -1174,6 +1174,29 @@ fn negated_literal_on_an_unsigned_type_is_rejected() {
 }
 
 #[test]
+fn negating_an_unsigned_value_is_rejected() {
+    // `as` binds tighter than unary minus, so `-1.5 as u32` negates a `u32`.
+    for source in [
+        "fn main() { let a: u32 = 5; println(-a); }",
+        "fn main() { println(-1.5 as u32); }",
+        "fn main() { let a: u8 = 5; let b: u8 = -(a + 1); println(b); }",
+    ] {
+        let output = check_source(source);
+        assert!(
+            output
+                .errors
+                .iter()
+                .any(|err| matches!(err.kind, TypeErrorKind::InvalidOperation)
+                    && err.message.starts_with("cannot negate type `u")),
+            "{source}: {:#?}",
+            output.errors
+        );
+    }
+    let signed = check_source("fn main() { let a: i8 = 5; let b: i8 = -(a + 1); println(-b); }");
+    assert!(signed.errors.is_empty(), "{:#?}", signed.errors);
+}
+
+#[test]
 fn full_range_unsigned_match_predicate_is_admitted() {
     // Match predicates run through a separate range check from bindings.
     let output = check_source(

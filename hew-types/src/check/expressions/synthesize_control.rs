@@ -832,6 +832,13 @@ impl Checker {
                 let operand_ty = self.check_against(&operand.0, &operand.1, expected);
                 if matches!(operand_ty, Ty::Never | Ty::Error) {
                     operand_ty
+                } else if *op == UnaryOp::Negate && ty.is_unsigned() {
+                    self.report_error(
+                        TypeErrorKind::InvalidOperation,
+                        span,
+                        format!("cannot negate type `{}`", ty.user_facing()),
+                    );
+                    Ty::Error
                 } else {
                     self.record_type(span, expected);
                     expected.clone()

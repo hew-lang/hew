@@ -773,10 +773,11 @@ impl Checker {
             UnaryOp::Negate => {
                 let ty = self.synthesize(&operand.0, &operand.1);
                 let resolved = self.normalize_for_use(&ty);
-                if !resolved.is_numeric()
-                    && !resolved.is_duration()
-                    && !matches!(resolved, Ty::Var(_))
-                    && resolved != Ty::Error
+                if resolved.is_unsigned()
+                    || (!resolved.is_numeric()
+                        && !resolved.is_duration()
+                        && !matches!(resolved, Ty::Var(_))
+                        && resolved != Ty::Error)
                 {
                     self.report_error(
                         TypeErrorKind::InvalidOperation,

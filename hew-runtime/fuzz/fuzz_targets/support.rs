@@ -56,8 +56,10 @@ unsafe impl GlobalAlloc for Counting {
 }
 
 /// Live bytes a decoder may hold per input byte, plus a fixed allowance for
-/// tables and diagnostics.
-const BYTES_PER_INPUT_BYTE: usize = 64;
+/// tables and diagnostics. The TOML parser holds about 600 bytes per byte of
+/// malformed input; a reservation sized from a declared length holds tens of
+/// thousands.
+const BYTES_PER_INPUT_BYTE: usize = 1024;
 const FIXED_ALLOWANCE: usize = 1 << 20;
 
 /// Run `work` and fail if it held more live heap than `input_len` justifies.

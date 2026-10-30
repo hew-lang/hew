@@ -8,10 +8,10 @@ rustls and hyper stay out of the fuzz binaries.
 
 ## Targets
 
-| Target                 | Input                                                                            | Property                                                                                                    |
-| ---------------------- | -------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------- |
-| `fuzz_wire_frames`     | first byte picks a decoder from `fuzzing::DECODERS`; the rest is its input       | no panic; live heap bounded by input length; an accepted value is a fixed point of its encoder              |
-| `fuzz_control_handler` | sequence of `[peer u8][len u16 BE][wire frame]` deliveries to an in-process node | no panic; member table never grows; no incarnation moves backwards; at most `2 * peers + 2` sends per frame |
+| Target                 | Input                                                                            | Property                                                                                                       |
+| ---------------------- | -------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------- |
+| `fuzz_wire_frames`     | first byte picks a decoder from `fuzzing::DECODERS`; the rest is its input       | no panic; live heap at most 1 KiB per input byte plus 1 MiB; an accepted value is a fixed point of its encoder |
+| `fuzz_control_handler` | sequence of `[peer u8][len u16 BE][wire frame]` deliveries to an in-process node | no panic; member table never grows; no incarnation moves backwards; at most `2 * peers + 2` sends per frame    |
 
 The decoders cover `decode_wire_frame`, every control payload (SWIM, registry
 gossip, monitor, link, setup result, service offer), the node handshake, and

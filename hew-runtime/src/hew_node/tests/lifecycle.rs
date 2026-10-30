@@ -99,6 +99,30 @@ fn quarantine_insert_blocks_then_evict_clears() {
     );
 }
 
+/// A member retired after its burial takes its quarantine entry with it, so
+/// a rejoin admitted as a new member at incarnation 1 in the same session is
+/// sendable. Counterfactual: the entry at the buried incarnation blocks it.
+#[test]
+fn retired_member_leaves_no_quarantine_behind() {
+    let _guard = crate::runtime_test_guard();
+    let config = crate::cluster::ClusterConfig {
+        local_node_id: 1,
+        ..crate::cluster::ClusterConfig::default()
+    };
+    // SAFETY: the test owns the cluster until the matching free.
+    let cluster = unsafe { crate::cluster::hew_cluster_new(&raw const config) };
+    // SAFETY: allocated above and live until the free below.
+    let members = unsafe { &*cluster };
+    members.apply_swim_gossip(&[(7, 1, crate::cluster::MEMBER_DEAD, 5)]);
+    quarantine_insert(7, Some(1), 5);
+    members.retire_buried(0);
+    assert!(quarantine_is_blocked(7, Some(1), 1));
+    assert_eq!(members.retire_buried(1_000_000).len(), 1);
+    assert!(!quarantine_is_blocked(7, Some(1), 1));
+    // SAFETY: allocated above; nothing borrows it any more.
+    unsafe { crate::cluster::hew_cluster_free(cluster) };
+}
+
 #[test]
 fn registry_repoint_changes_future_lookup_without_rewriting_old_location() {
     let registry = HewRegistry::default();

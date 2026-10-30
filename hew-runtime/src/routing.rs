@@ -60,6 +60,13 @@ impl HewRoutingTable {
     pub(crate) fn route_count(&self) -> u64 {
         self.state.read_or_recover().by_node.len() as u64
     }
+
+    /// Identities this table keeps any record of, live or departed.
+    #[cfg(test)]
+    pub(crate) fn remembered_count(&self) -> usize {
+        let state = self.state.read_or_recover();
+        state.known_sessions.len() + state.retired_nodes.len()
+    }
 }
 
 /// Test-only handshake before a route-registration attempt.
@@ -242,6 +249,29 @@ pub(crate) unsafe fn hew_routing_remove_route_if_conn(
     state.by_node.remove(&node_id);
     state.by_slot.remove(&entry.route_slot);
     true
+}
+
+/// Forget a departed identity whose membership was retired.
+///
+/// Drops the admitted session and any slot-reuse tombstone, so a discovered
+/// peer that left for good resolves as `StaleRef` rather than `Partition`
+/// forever, and a configured one is again merely partitioned. A live route
+/// means the identity was readmitted; it is left untouched.
+///
+/// # Safety
+///
+/// `table` must be null or point to a live routing table.
+pub(crate) unsafe fn hew_routing_forget_node(table: *mut HewRoutingTable, node_id: NodeId) {
+    // SAFETY: caller guarantees `table` is null or live.
+    let Some(table) = (unsafe { table.as_ref() }) else {
+        return;
+    };
+    let mut state = table.state.write_or_recover();
+    if state.by_node.contains_key(&node_id) {
+        return;
+    }
+    state.known_sessions.remove(&node_id);
+    state.retired_nodes.remove(&node_id);
 }
 
 /// Resolve an exact carried location.

@@ -364,6 +364,11 @@ unsafe fn run_one_period(node: *mut HewNode) {
     //    Returns the next direct-probe target (0 = none).
     // SAFETY: cluster pointer is owned by the live node.
     let target = unsafe { cluster::hew_cluster_tick(cluster_ptr) };
+    // 1b. Retire buried members whose retention ended, with their claims and
+    //     routing sessions, so departed peers do not accumulate.
+    // SAFETY: conn_mgr is owned by the live node; hew_now_ms has no
+    // preconditions.
+    unsafe { connection::retire_departed_peers(&*conn_ptr, crate::clock::hew_now_ms()) };
     if target == 0 {
         return;
     }

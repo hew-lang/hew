@@ -100,14 +100,16 @@ pub(super) fn reserve_identity_claim(
         }
         // A provisional admission may abort and restore the exact retired
         // predecessor. Let it use the bounded wait below before deciding
-        // whether this retry lost its publication authority.
+        // whether this retry lost its publication authority. A predecessor
+        // whose claim is gone was retired with its member: the retry is a
+        // fresh admission.
         let reserved = map
             .get(&node_id)
             .is_some_and(|claim| claim.state == ClaimState::Reserved);
         if !reserved
             && predecessor.is_some_and(|owner| {
                 owner.node_id != node_id
-                    || !map.get(&node_id).is_some_and(|claim| owner.matches(claim))
+                    || map.get(&node_id).is_some_and(|claim| !owner.matches(claim))
             })
         {
             return ClaimReservation::Rejected(format!(

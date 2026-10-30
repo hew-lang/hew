@@ -37,6 +37,7 @@ mod reconnect;
 mod refusal_race;
 mod registry_flush;
 mod removal;
+mod retention;
 mod route_refusal;
 mod teardown;
 

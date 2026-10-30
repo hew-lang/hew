@@ -112,6 +112,7 @@ fn build_renderer(module_name: &str, source_path: &str, exports: &[(&str, &str)]
             debug_source: None,
             link_freestanding_wasm: false,
             build_info: None,
+            debug_script_dir: None,
         },
     )
     .expect("emit presentation renderer");

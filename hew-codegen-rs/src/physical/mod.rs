@@ -157,6 +157,10 @@ pub struct PhysicalEmitOptions<'a> {
     /// Compiler version to embed as a `HEW-BUILD-INFO` provenance string in
     /// native objects; `None` embeds nothing. Ignored on wasm32 triples.
     pub build_info: Option<&'a str>,
+    /// Directory holding `hew-gdb.py`. A `-g` ELF image names it in a
+    /// `.debug_gdb_scripts` entry so gdb loads the Hew extensions itself.
+    /// `None` emits no entry.
+    pub debug_script_dir: Option<std::path::PathBuf>,
 }
 
 /// Resolve primitive physical layouts from the exact LLVM target machine.

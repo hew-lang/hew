@@ -1,0 +1,11 @@
+// FAILURE: integer division by zero.
+fn ratio(a: i64, b: i64) -> i64 {
+    a / b
+}
+
+fn main() {
+    println(ratio(10, 2));
+    var zero = 0;
+    zero = zero + 0;
+    println(ratio(10, zero));
+}

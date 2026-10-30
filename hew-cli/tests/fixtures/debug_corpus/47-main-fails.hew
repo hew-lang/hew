@@ -1,0 +1,15 @@
+// FAILURE: a `?` propagates an error out of main, which declares `fails`.
+fn parse_digit(c: i64) -> Result<i64, string> {
+    if c >= 0 && c <= 9 {
+        .Ok(c)
+    } else {
+        .Err("not a digit")
+    }
+}
+
+fn main() fails string {
+    let a = parse_digit(4)?;
+    println(a);
+    let b = parse_digit(40)?;
+    println(b);
+}

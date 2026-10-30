@@ -2170,6 +2170,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "hew-debug-abi"
+version = "0.10.0-rc1"
+
+[[package]]
 name = "hew-expand"
 version = "0.10.0-rc1"
 dependencies = [

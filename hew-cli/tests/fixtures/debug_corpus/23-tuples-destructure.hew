@@ -1,0 +1,19 @@
+// Tuples, destructuring and let-else.
+fn min_max(a: i64, b: i64) -> (i64, i64) {
+    if a < b { (a, b) } else { (b, a) }
+}
+
+fn first_positive(v: i64) -> Option<i64> {
+    if v > 0 { .Some(v) } else { .None }
+}
+
+fn main() {
+    let (lo, hi) = min_max(9, 4);
+    println(lo);
+    println(hi);
+    let .Some(p) = first_positive(5) else {
+        println("none");
+        return;
+    };
+    println(p);
+}

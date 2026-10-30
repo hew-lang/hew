@@ -1,0 +1,20 @@
+// FAILURE: explicit panic from a nested call.
+fn level3(n: i64) -> i64 {
+    if n > 2 {
+        panic("level3 refuses n > 2");
+    }
+    n
+}
+
+fn level2(n: i64) -> i64 {
+    level3(n + 1) + 1
+}
+
+fn level1(n: i64) -> i64 {
+    level2(n + 1) + 1
+}
+
+fn main() {
+    println("start");
+    println(level1(2));
+}

@@ -1,0 +1,52 @@
+// STUCK: two actors ask each other from inside handlers; neither reply can ever be processed.
+actor Ping {
+    var peer: Option<Pong>;
+
+    receive fn link(p: Pong) {
+        peer = .Some(p);
+    }
+
+    receive fn go() -> i64 {
+        match peer {
+            .Some(p) => match p.back() {
+                .Ok(v) => v,
+                .Err(_) => -1,
+            }
+            .None => -3,
+        }
+    }
+
+    receive fn pong() -> i64 {
+        1
+    }
+}
+
+actor Pong {
+    var peer: Option<Ping>;
+
+    receive fn link(p: Ping) {
+        peer = .Some(p);
+    }
+
+    receive fn back() -> i64 {
+        match peer {
+            .Some(p) => match p.pong() {
+                .Ok(v) => v,
+                .Err(_) => -2,
+            }
+            .None => -4,
+        }
+    }
+}
+
+fn main() {
+    println("start");
+    let a = spawn Ping { peer: .None };
+    let b = spawn Pong { peer: .None };
+    let _ = a.link(b);
+    let _ = b.link(a);
+    match a.go() {
+        .Ok(v) => println(v),
+        .Err(_) => println("failed"),
+    }
+}

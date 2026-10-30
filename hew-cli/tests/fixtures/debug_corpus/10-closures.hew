@@ -1,0 +1,22 @@
+// Closures capturing values and a stateful counter.
+fn make_counter() -> fn[var]() -> i64 {
+    let count: i64 = 0;
+    || {
+        count = count + 1;
+        count
+    }
+}
+
+fn apply(f: fn(i64) -> i64, v: i64) -> i64 {
+    f(v)
+}
+
+fn main() {
+    let offset = 100;
+    let add = |x: i64| x + offset;
+    println(apply(add, 5));
+    var c = make_counter();
+    println(c());
+    println(c());
+    println(c());
+}

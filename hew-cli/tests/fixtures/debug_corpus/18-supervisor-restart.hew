@@ -1,0 +1,39 @@
+// Supervisor restarts a crashed child; the replacement re-runs declared init.
+actor Worker {
+    var value: i64;
+
+    receive fn get() -> i64 {
+        value
+    }
+
+    receive fn set(n: i64) {
+        value = n;
+    }
+
+    receive fn boom() {
+        panic("worker crash for restart");
+    }
+}
+
+supervisor App {
+    strategy: one_for_one;
+    intensity: 3 within 60s;
+
+    child w: Worker { value: 7 };
+}
+
+fn main() {
+    let sup = spawn App;
+    let w = sup.w;
+    let _ = w.set(99);
+    let _ = w.boom();
+    let w2 = {
+        let r = sup.w;
+        restarted(r);
+        r
+    };
+    match w2.get() {
+        .Ok(v) => println(v),
+        .Err(_) => println("child not live"),
+    }
+}

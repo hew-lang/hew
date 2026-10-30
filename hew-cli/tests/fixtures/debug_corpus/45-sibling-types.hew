@@ -1,0 +1,7 @@
+// Types and an impl method declared in the sibling file types.hew.
+import "types.hew";
+
+fn main() {
+    let p = Point { x: 3, y: 4 };
+    println(p.describe());
+}

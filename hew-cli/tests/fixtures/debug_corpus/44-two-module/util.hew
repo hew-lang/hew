@@ -1,0 +1,5 @@
+// Imported by main.hew: its functions live in a non-root file.
+pub fn triple(n: i64) -> i64 {
+    let tripled = n * 3;
+    tripled
+}

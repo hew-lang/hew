@@ -1,0 +1,24 @@
+// FAILURE: an unsupervised actor crashes while handling a message; the ask observes the failure.
+actor Fragile {
+    var n: i64;
+
+    receive fn ok() -> i64 {
+        n + 1
+    }
+
+    receive fn bad(divisor: i64) -> i64 {
+        100 / divisor
+    }
+}
+
+fn main() {
+    let f = spawn Fragile { n: 1 };
+    match f.ok() {
+        .Ok(v) => println(v),
+        .Err(_) => println("ok failed"),
+    }
+    match f.bad(0) {
+        .Ok(v) => println(v),
+        .Err(_) => println("bad failed (crash observed)"),
+    }
+}

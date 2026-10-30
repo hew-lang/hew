@@ -1,0 +1,34 @@
+// FAILURE then recovery: supervised child crashes on a trap (div by zero) and is restarted.
+actor Calc {
+    var base: i64;
+
+    receive fn get() -> i64 {
+        base
+    }
+
+    receive fn divide(d: i64) {
+        base = 100 / d;
+    }
+}
+
+supervisor Root {
+    strategy: one_for_one;
+    intensity: 5 within 60s;
+
+    child calc: Calc { base: 5 };
+}
+
+fn main() {
+    let sup = spawn Root;
+    let c = sup.calc;
+    let _ = c.divide(0);
+    let c2 = {
+        let r = sup.calc;
+        restarted(r);
+        r
+    };
+    match c2.get() {
+        .Ok(v) => println(v),
+        .Err(_) => println("child not live"),
+    }
+}

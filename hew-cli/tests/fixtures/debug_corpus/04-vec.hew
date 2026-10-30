@@ -1,0 +1,14 @@
+// Vec push, index, iteration.
+fn main() {
+    var v: Vec<i64> = Vec.new();
+    for i in 0..6 {
+        v.push(i * i);
+    }
+    println(v.len());
+    println(v[3]);
+    var sum = 0;
+    for x in v {
+        sum = sum + x;
+    }
+    println(sum);
+}

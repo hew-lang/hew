@@ -1,0 +1,13 @@
+// Strings, slicing and multibyte characters.
+fn main() {
+    let s: string = "héllo wörld";
+    println(s);
+    println(s.len());
+    println(s.byte_len());
+    let part: string = s[0..5];
+    println(part);
+    let name = "Hew";
+    println(f"hello {name}, {s.len()} chars");
+    let joined = "a" + "-" + "b";
+    println(joined);
+}

@@ -1,0 +1,24 @@
+// Enums with payloads, match with guards.
+enum Shape {
+    Circle(i64);
+    Rect(i64, i64);
+    Empty;
+}
+
+fn describe(s: Shape) -> string {
+    match s {
+        .Circle(r) if r > 10 => "big circle",
+        .Circle(_) => "circle",
+        .Rect(w, h) if w == h => "square",
+        .Rect(_, _) => "rect",
+        .Empty => "empty",
+    }
+}
+
+fn main() {
+    println(describe(Shape.Circle(20)));
+    println(describe(Shape.Circle(3)));
+    println(describe(Shape.Rect(4, 4)));
+    println(describe(Shape.Rect(4, 5)));
+    println(describe(Shape.Empty));
+}

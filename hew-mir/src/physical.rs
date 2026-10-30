@@ -116,6 +116,9 @@ use hew_types::{
 mod types;
 pub use types::*;
 
+#[path = "physical_debug_names.rs"]
+pub mod debug_names;
+
 #[path = "physical_module_lower.rs"]
 mod module_lower;
 pub use module_lower::*;

@@ -476,6 +476,7 @@ fn emit_module_with_triple(
             },
             link_freestanding_wasm,
             build_info: Some(hew_compile::VERSION),
+            debug_script_dir: None,
         },
     )
     .map_err(|error| {

@@ -18,9 +18,15 @@ supervisor Long {
     child worker: Worker;
 }
 
-fn refused(maximum: duration) -> bool {
+supervisor Pinned {
+    intensity: 10 within 1h;
+    backoff: restart.exponential(initial: 1m, maximum: 5s);
+    child worker: Worker;
+}
+
+fn refused(initial: duration, maximum: duration) -> bool {
     scope {
-        let _ = restart.exponential(initial: 1ms, maximum: maximum);
+        let _ = restart.exponential(initial: initial, maximum: maximum);
         false
     } handle failure {
         match failure {
@@ -31,9 +37,8 @@ fn refused(maximum: duration) -> bool {
 }
 
 fn main() {
-    // A written maximum is checked as written, including a computed zero.
-    println(refused(0ns) && refused(0ns - 2ns) && !refused(1ms));
-
+    // Zero and negative durations are refused; a maximum below initial is not.
+    println(refused(0ns, 1s) && refused(0ns - 1ms, 1s) && refused(1ms, 0ns) && refused(1ms, 0ns - 2ns) && !refused(1s, 1ms));
     let short = spawn Short;
     for _ in 0..3 {
         let started = instant.now();
@@ -43,7 +48,6 @@ fn main() {
     }
     stop(short);
     stopped(short);
-
     let long = spawn Long;
     for _ in 0..2 {
         let started = instant.now();
@@ -53,4 +57,13 @@ fn main() {
     }
     stop(long);
     stopped(long);
+    let pinned = spawn Pinned;
+    for _ in 0..2 {
+        let started = instant.now();
+        let _ = pinned.worker.fail();
+        restarted(pinned.worker);
+        println(started.elapsed().millis());
+    }
+    stop(pinned);
+    stopped(pinned);
 }

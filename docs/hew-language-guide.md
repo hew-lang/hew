@@ -2205,8 +2205,8 @@ window, its next crash starts at the initial delay again. Waiting for recovery
 does not count as healthy execution, and the restart budget still applies.
 The policy expression runs once when the supervisor is constructed and may
 use its configuration parameters. Stopping the supervisor cancels pending
-delays. `maximum` is optional; it defaults to 30 seconds, or to `initial` when that is
-longer. Without `backoff`, a
+delays. `maximum` is optional and defaults to 30 seconds; the delay never drops below
+`initial`, so `restart.exponential(initial: 1m)` waits one minute each time. Without `backoff`, a
 crashed child restarts immediately and only the restart budget limits a crash
 loop.
 

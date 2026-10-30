@@ -3,8 +3,8 @@
 ## [Unreleased]
 
 - Restart crashed supervised children immediately unless the supervisor
-  declares `backoff`, and default the backoff maximum to the larger of its
-  initial delay and 30 seconds.
+  declares `backoff`; default the backoff maximum to 30 seconds and never
+  delay less than the initial delay.
 
 ## [0.10.0-rc1] - 2026-10-26
 

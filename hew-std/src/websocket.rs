@@ -652,6 +652,16 @@ fn is_timeout_error(err: &tungstenite::Error) -> bool {
     )
 }
 
+/// A read that ended without data and may simply be retried: its deadline
+/// passed, or a signal (such as SIGCONT after a stop) interrupted the syscall.
+fn is_retryable_read_error(err: &tungstenite::Error) -> bool {
+    is_timeout_error(err)
+        || matches!(
+            err,
+            tungstenite::Error::Io(io_err) if io_err.kind() == io::ErrorKind::Interrupted
+        )
+}
+
 fn spawn_attach_reader(conn: &HewWsConn, delivery: ActorDelivery) -> Result<(), String> {
     // Hold this guard through validation, spawn, and store. Two concurrent
     // callers must not both observe an empty slot and start competing readers.
@@ -720,7 +730,7 @@ fn spawn_attach_reader(conn: &HewWsConn, delivery: ActorDelivery) -> Result<(), 
                 }
                 Ok(_) => {}
                 Err(err) => {
-                    if !is_timeout_error(&err) {
+                    if !is_retryable_read_error(&err) {
                         eprintln!("[attach-reader] read failed: {err}; exiting");
                         notify_close = true;
                         break;
@@ -783,7 +793,7 @@ fn receive(inner: &Arc<HewWsConnInner>, deadline: Option<Instant>) -> Received {
                 return Received::Closed;
             }
             Ok(Message::Ping(_) | Message::Pong(_) | Message::Frame(_)) => {}
-            Err(err) if is_timeout_error(&err) => {}
+            Err(err) if is_retryable_read_error(&err) => {}
             Err(_) if inner.closed.load(Ordering::Acquire) => return Received::Closed,
             Err(err) => return Received::Failed(err),
         }
@@ -4002,5 +4012,21 @@ mod tests {
         assert_eq!(hew_ws_last_errno(), WS_TIMED_OUT);
         assert!(started.elapsed() >= Duration::from_millis(250));
         drop(listener);
+    }
+
+    #[test]
+    fn interrupted_and_timed_out_reads_are_retried_but_other_errors_are_not() {
+        let io = |kind| tungstenite::Error::Io(io::Error::from(kind));
+        assert!(is_retryable_read_error(&io(io::ErrorKind::Interrupted)));
+        assert!(is_retryable_read_error(&io(io::ErrorKind::TimedOut)));
+        assert!(is_retryable_read_error(&io(io::ErrorKind::WouldBlock)));
+        assert!(!is_retryable_read_error(&io(
+            io::ErrorKind::ConnectionReset
+        )));
+        assert!(!is_retryable_read_error(
+            &tungstenite::Error::ConnectionClosed
+        ));
+        // A send interrupted by a signal is a failure, not a timeout.
+        assert!(!is_timeout_error(&io(io::ErrorKind::Interrupted)));
     }
 }

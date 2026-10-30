@@ -69,7 +69,7 @@ Programs 26 to 29 are unassigned.
 - 41 compiles with `hew run` but `hew build -g` crashes the compiler on the
   current base; it becomes a debug-build fixture once the DILocalVariable type
   fix lands.
-- Breaks in a non-root file (util.hew, types.hew, fl.hew) need per-file debug
-  attribution; until that lands only the root file's lines resolve.
+- Breaks in a non-root file (util.hew, types.hew, fl.hew) resolve once the
+  debug metadata emits one `DIFile` per entry of the physical file table.
 - A break on a function's declaration line stops before the parameters are
   stored; use a body line, as above.

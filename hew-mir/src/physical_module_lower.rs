@@ -1447,9 +1447,8 @@ pub(crate) fn lower_function(
         .collect::<Result<Vec<_>, PhysicalError>>()?;
 
     let place_storage = lowerer.lower_place_storage()?;
-    let attribution = file.and_then(|file| {
-        function_attribution(function, file, &lowerer.storage, &parameters, sites)
-    });
+    let attribution =
+        file.map(|file| function_attribution(function, file, &lowerer.storage, &parameters, sites));
     Ok((
         PhysicalFunction {
             callable: function.callable,
@@ -1479,7 +1478,7 @@ pub(crate) fn function_attribution(
     storage: &[PhysicalStorage],
     parameters: &[StorageId],
     sites: BTreeMap<(BlockId, u32), u32>,
-) -> Option<PhysicalDebugFunction> {
+) -> PhysicalDebugFunction {
     let mut locals = BTreeMap::new();
     for entry in storage {
         let binding = match entry.origin {
@@ -1507,7 +1506,7 @@ pub(crate) fn function_attribution(
             },
         );
     }
-    Some(PhysicalDebugFunction {
+    PhysicalDebugFunction {
         name: function.name.clone(),
         file,
         decl: u32::try_from(function.span.start).unwrap_or(u32::MAX),
@@ -1515,7 +1514,7 @@ pub(crate) fn function_attribution(
         locals,
         available: BTreeMap::new(),
         sites,
-    })
+    }
 }
 
 pub(crate) fn terminator_result(terminator: &SemTerminator) -> Option<&hew_sir::ValueDef> {

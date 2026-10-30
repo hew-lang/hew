@@ -183,8 +183,7 @@ impl Verifier {
 
     fn module(&mut self, module: &HirModule) {
         for item in &module.items {
-            self.current_source_module = Self::item_source_module(module, item);
-            self.current_source_file = module.item_files.get(&Self::item_id(item)).copied();
+            self.enter_item(module, item);
             match item {
                 HirItem::Function(func) => self.function(func),
                 HirItem::TypeDecl(decl) => {
@@ -309,8 +308,7 @@ impl Verifier {
                     self.expr(&c.value);
                 }
             }
-            self.current_source_module = None;
-            self.current_source_file = None;
+            self.leave_item();
         }
     }
 
@@ -1299,6 +1297,17 @@ impl Verifier {
                 "HIR node id reused inside resolved HIR",
             ));
         }
+    }
+
+    /// Attribute the item's diagnostics and source facts to its module and file.
+    fn enter_item(&mut self, module: &HirModule, item: &HirItem) {
+        self.current_source_module = Self::item_source_module(module, item);
+        self.current_source_file = module.item_files.get(&Self::item_id(item)).copied();
+    }
+
+    fn leave_item(&mut self) {
+        self.current_source_module = None;
+        self.current_source_file = None;
     }
 
     fn item_source_module(module: &HirModule, item: &HirItem) -> Option<String> {

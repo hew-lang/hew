@@ -34,10 +34,16 @@ pub(super) fn tag_callable(function: FunctionValue<'_>, callable: CallableId) {
     );
 }
 
+/// The callable a defined function realizes, when a Hew body tags it. A tag
+/// is only ever written by [`tag_callable`], so a malformed one is a codegen
+/// defect.
 fn tagged_callable(function: FunctionValue<'_>) -> Option<CallableId> {
     let attribute = function.get_string_attribute(AttributeLoc::Function, CALLABLE_ATTRIBUTE)?;
-    let value = attribute.get_string_value().to_str().ok()?;
-    value.parse().ok().map(CallableId)
+    let value = attribute.get_string_value().to_string_lossy();
+    match value.parse() {
+        Ok(id) => Some(CallableId(id)),
+        Err(_) => unreachable!("tag_callable writes a decimal callable id, found {value:?}"),
+    }
 }
 
 /// The table-local id of each file in the module's file table: the files in
@@ -130,9 +136,8 @@ pub(super) fn emit_source_tables(module: &Module<'_>, physical: &PhysicalModule,
 /// pipeline so inlined bodies are gone and coroutine parts exist.
 ///
 /// Each entry's `start` is the function's distance from the table and its
-/// `size` the distance to the next function emitted, both resolved by the
-/// assembler or as PC-relative fixups. A trailing marker function bounds the
-/// last entry.
+/// `end` the next emitted function's, both PC-relative fixups. A trailing
+/// marker function bounds the last entry.
 pub(super) fn emit_symtab(module: &Module<'_>, physical: &PhysicalModule) -> CodegenResult<()> {
     let ctx = module.get_context();
     let marker = module.add_function(
@@ -213,7 +218,7 @@ pub(super) fn emit_symtab(module: &Module<'_>, physical: &PhysicalModule) -> Cod
             .as_pointer_value()
             .const_to_int(i64_type);
         words[slot.start / 4] = start.const_sub(base).const_truncate(i32_type);
-        words[slot.size / 4] = end.const_sub(start).const_truncate(i32_type);
+        words[slot.end / 4] = end.const_sub(base).const_truncate(i32_type);
     }
     table.set_initializer(&i32_type.const_array(&words).as_basic_value_enum());
     table.set_constant(true);

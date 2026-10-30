@@ -77,11 +77,13 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                 ctx,
                 emitter,
                 function_debug,
-                attribution,
-                function,
-                &module.module.target,
-                &slots,
-                prologue,
+                &debug::BodyLocals {
+                    attribution,
+                    function,
+                    target: &module.module.target,
+                    slots: &slots,
+                    prologue,
+                },
             );
         }
         let place_flags = partial::allocate_flags(module, function, &builder, &slots)?;

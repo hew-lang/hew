@@ -615,6 +615,17 @@ impl<'ctx> FunctionDebug<'ctx> {
     }
 }
 
+/// The storage of one body whose locals are described.
+pub(super) struct BodyLocals<'a, 'ctx> {
+    pub attribution: &'a PhysicalDebugFunction,
+    pub function: &'a PhysicalFunction,
+    pub target: &'a PhysicalTarget,
+    /// One slot per storage entry, indexed by local id.
+    pub slots: &'a [PointerValue<'ctx>],
+    /// The entry block the declarations are placed in.
+    pub prologue: inkwell::basic_block::BasicBlock<'ctx>,
+}
+
 /// Describe every named local of one body by its storage slot.
 ///
 /// The slot is the variable's single home on every path, so one
@@ -625,12 +636,15 @@ pub(super) fn declare_locals<'ctx>(
     ctx: &'ctx Context,
     emitter: &DebugEmitter<'ctx>,
     function_debug: &FunctionDebug<'ctx>,
-    attribution: &PhysicalDebugFunction,
-    function: &PhysicalFunction,
-    target: &PhysicalTarget,
-    slots: &[PointerValue<'ctx>],
-    prologue: inkwell::basic_block::BasicBlock<'ctx>,
+    body: &BodyLocals<'_, 'ctx>,
 ) {
+    let BodyLocals {
+        attribution,
+        function,
+        target,
+        slots,
+        prologue,
+    } = *body;
     for (id, local) in &attribution.locals {
         let (Some(storage), Some(slot)) = (
             function.storage.get(id.0 as usize),

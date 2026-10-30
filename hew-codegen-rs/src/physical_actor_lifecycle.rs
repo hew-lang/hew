@@ -1101,6 +1101,7 @@ mod abi_tests {
             (CrashKind::PartitionDetected, "PartitionDetected"),
             (CrashKind::HandlerFailed, "HandlerFailed"),
             (CrashKind::TimerOverdue, "TimerOverdue"),
+            (CrashKind::StackOverflow, "StackOverflow"),
         ];
         assert_eq!(source.variants.len(), kinds.len());
         for (runtime, name) in kinds {

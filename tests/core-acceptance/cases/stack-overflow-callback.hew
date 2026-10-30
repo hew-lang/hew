@@ -1,0 +1,12 @@
+// A recursion that passes through a runtime-invoked callback still exhausts
+// the stack and fails with StackOverflow rather than running on unbounded.
+fn nest(n: i64) -> i64 {
+    let values: Vec<i64> = [n];
+    let deeper = values.map(|x: i64| -> i64 { nest(x + 1) });
+    deeper[0]
+}
+
+fn main() {
+    println("nesting");
+    println(nest(0));
+}

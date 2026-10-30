@@ -599,7 +599,7 @@ fn handle_monitor_down_frame(
         return;
     }
     if !(crate::internal::types::CrashKind::Crashed.tag()
-        ..=crate::internal::types::CrashKind::TimerOverdue.tag())
+        ..=crate::internal::types::CrashKind::StackOverflow.tag())
         .contains(&payload.crash_kind)
         || (!crashed && payload.crash_kind != 0)
     {

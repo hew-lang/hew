@@ -18,7 +18,7 @@ mod frames;
 #[cfg(not(target_arch = "wasm32"))]
 mod record;
 #[cfg(not(target_arch = "wasm32"))]
-mod stack;
+pub(crate) mod stack;
 
 thread_local! {
     /// Nested actor-state finalizers. This remains an explicit invariant guard

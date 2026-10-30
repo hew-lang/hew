@@ -1,0 +1,69 @@
+// A recursion that exhausts an actor's stack fails that actor with
+// StackOverflow. The failing call's cleanup runs, the crash hook sees the
+// kind, the supervisor restarts the actor and the process continues.
+// Recursion at the guaranteed floor succeeds in main, in an actor handler and
+// in a task.
+
+fn depth(n: i64) -> i64 {
+    if n == 0 { 0 } else { let below = depth(n - 1); below + 1 }
+}
+
+fn descend(n: i64) -> i64 {
+    let below = descend(n + 1);
+    below - n
+}
+
+actor Walker {
+    var walks: i64 = 0;
+
+    receive fn floor() -> i64 {
+        walks = walks + 1;
+        depth(10000)
+    }
+
+    receive fn unbounded() -> i64 {
+        walks = walks + 1;
+        defer {
+            println("unbounded cleanup ran");
+        }
+        descend(0)
+    }
+
+    receive fn walks() -> i64 {
+        walks
+    }
+
+    #[on(crash)]
+    fn crashed(info: CrashInfo) -> CrashAction {
+        assert(match info.kind {
+            .StackOverflow => true,
+            _ => false,
+        });
+        CrashAction.Restart
+    }
+}
+
+supervisor Group {
+    intensity: 3 within 60s;
+    child walker: Walker;
+}
+
+fn main() {
+    println(depth(10000));
+    let group = spawn Group;
+    println(group.walker.floor().expect("floor in a handler"));
+    match group.walker.unbounded() {
+        .Err(.Trapped) => println("walker overflowed"),
+        _ => panic("expected a stack overflow"),
+    }
+    restarted(group.walker);
+    println(group.walker.walks().expect("fresh incarnation"));
+    println(group.walker.floor().expect("floor after restart"));
+    scope {
+        let task = fork depth(10000);
+        println(await task);
+    }
+    stop(group);
+    stopped(group);
+    println("process continued");
+}

@@ -1,0 +1,40 @@
+// The guaranteed depth floor (HEW-SPEC-2026 §2.2): 10,000 nested calls of an
+// ordinary function with several locals, a string and a vector succeed in
+// main, in an actor handler and in a task.
+fn walk(n: i64, label: string, values: Vec<i64>) -> i64 {
+    if n == 0 {
+        return values.len();
+    }
+    let a = n * 3;
+    let b = a + 7;
+    let c = b % 11;
+    let d = if c > 5 { c - 5 } else { c + 5 };
+    let e = f"{label}";
+    let f = e.len() + d;
+    let g = a - b + c * d;
+    let below = walk(n - 1, label, values);
+    below + f + g - g
+}
+
+fn floor() -> i64 {
+    let values: Vec<i64> = [1, 2, 3];
+    walk(10000, "x", values)
+}
+
+actor Walker {
+    receive fn floor() -> i64 {
+        floor()
+    }
+}
+
+fn main() {
+    println(floor());
+    let walker = spawn Walker;
+    println(walker.floor().expect("floor in a handler"));
+    scope {
+        let task = fork floor();
+        println(await task);
+    }
+    stop(walker);
+    stopped(walker);
+}

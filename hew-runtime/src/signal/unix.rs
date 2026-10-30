@@ -435,6 +435,7 @@ pub(crate) fn init_crash_handling() {
     // synchronous Hew code and needs the same alternate stack and bounds as a
     // worker. Any later thread that enters the runtime this way registers once.
     if installed_here {
+        crate::stack_limit::reserve_main_stack();
         init_thread(ThreadLabel::Main);
     } else if !stack::is_registered() {
         init_thread(ThreadLabel::Other);

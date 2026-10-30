@@ -1,0 +1,10 @@
+[[case]]
+id = "stack-overflow-callback"
+intent = "Recursion through a runtime-invoked collection callback fails with StackOverflow and exit 1."
+source = "cases/stack-overflow-callback.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 60
+
+[case.expected]
+stdout = "nesting\n"
+exit = 1

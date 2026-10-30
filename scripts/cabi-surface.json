@@ -18516,6 +18516,21 @@
         "native",
         "wasm32-wasip1"
       ],
+      "classification": "unclassified-stdlib",
+      "extent": "no-in-signature-extent",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
+        "native": "fn hew_stack_check( *mut usize, usize) -> i32",
+        "wasm32-wasip1": "fn hew_stack_check( *mut usize, usize) -> i32"
+      },
+      "symbol": "hew_stack_check"
+    },
+    {
+      "availability": [
+        "native",
+        "wasm32-wasip1"
+      ],
       "classification": "stable",
       "extent": "no-in-signature-extent",
       "nul": "nul-terminated",

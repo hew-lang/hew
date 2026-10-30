@@ -636,6 +636,7 @@ pub extern "C" fn hew_sched_init() -> c_int {
     for (id, deque) in deques.into_iter().enumerate() {
         match thread::Builder::new()
             .name(format!("hew-worker-{id}"))
+            .stack_size(WORKER_STACK_BYTES)
             .spawn(move || worker_loop(id, rt, &deque))
         {
             Ok(handle) => handles.push(Some(handle)),
@@ -1284,6 +1285,11 @@ impl Drop for LocalQueueRefDrain<'_> {
         }
     }
 }
+
+/// Workers run actor handlers, so their stacks hold the 10,000-call depth
+/// floor at O0 like the main thread's (HEW-SPEC-2026 §2.2). The size reserves
+/// address space; pages are committed only as they are used.
+const WORKER_STACK_BYTES: usize = crate::stack_limit::HEW_STACK_BYTES;
 
 /// Main loop executed by each worker thread.
 ///

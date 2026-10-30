@@ -1920,6 +1920,10 @@ fn follower_waits_for_a_close_before_settling_a_crossing() {
 /// A held connection that closes while it is being published again withdraws
 /// its reservation, so the peer can connect afresh.
 #[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "keep the scripted restore race and the state it settles to together"
+)]
 fn held_connection_closed_during_its_restore_leaves_the_peer_admissible() {
     let _guard = crate::runtime_test_guard();
     crate::registry::hew_registry_clear();

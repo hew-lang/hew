@@ -1538,6 +1538,61 @@ fn scalar_and_vector_loop_chunks_preserve_the_shared_budget_across_serial_calls(
 }
 
 #[test]
+fn loop_chunk_bodies_keep_a_local_symbol_in_the_object() {
+    use object::{Object, ObjectSymbol};
+    // Profilers and debuggers attribute samples by symbol; a chunk emitted
+    // under an assembler-private label has machine code but no name.
+    let semantic = lower_source(
+        r"
+        fn probe(limit: i64) -> i64 {
+            var sum: i64 = 0;
+            for index in 0..limit { sum += index; }
+            sum
+        }
+        fn main() -> i64 { probe(4) }
+        ",
+    );
+    let triple = native_emission_triple();
+    let target = physical_target_for_inventory(
+        &triple,
+        &hew_mir::physical::physical_type_inventory(&semantic),
+    )
+    .unwrap();
+    let verified = hew_mir::lower_physical_module(&semantic, target).unwrap();
+    for opt_level in [OptLevel::O0, OptLevel::O2] {
+        let dir = tempfile::tempdir().expect("loop chunk output directory");
+        let artefacts = emit_physical_object(
+            &verified,
+            &PhysicalEmitOptions {
+                module_name: "loop_chunk_symbols",
+                out_dir: dir.path(),
+                target_triple: Some(&triple),
+                opt_level,
+                emit_llvm: false,
+                address_sanitizer: false,
+                debug_source: None,
+                link_freestanding_wasm: false,
+                build_info: None,
+            },
+        )
+        .expect("emit loop chunk object");
+        let object = std::fs::read(artefacts.native_obj_path.expect("native object"))
+            .expect("read loop chunk object");
+        let object = object::File::parse(&*object).expect("parse loop chunk object");
+        // A private label still reaches Mach-O and COFF symbol tables under an
+        // assembler-temporary prefix (`l`, `.L`), which tools do not name.
+        let named = object.symbols().any(|symbol| {
+            let name = symbol.name().unwrap_or_default();
+            symbol.kind() == object::SymbolKind::Text
+                && name.contains(".loop.")
+                && !name.starts_with(".L")
+                && !name.starts_with('l')
+        });
+        assert!(named, "{opt_level:?}: loop chunk body has no symbol");
+    }
+}
+
+#[test]
 fn vector_loop_chunks_preserve_empty_scans_bounds_and_overflow_at_o0_o2() {
     let semantic = lower_source(
         r"

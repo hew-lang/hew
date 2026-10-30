@@ -2147,6 +2147,7 @@ dependencies = [
  "hew-types",
  "inkwell",
  "llvm-sys",
+ "object 0.40.0",
  "serde_json",
  "tempfile",
 ]

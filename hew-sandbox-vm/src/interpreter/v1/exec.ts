@@ -2368,9 +2368,16 @@ class ExecutorV1 {
           term.ty,
         );
         if (failure) {
-          const edge = term.failures.find(
-            (candidate) => candidate.trap === failure,
-          );
+          // Earlier v1 packages fold the signed minimum by -1 into their
+          // overflow edge, so they keep the IntegerOverflow trap their
+          // compiler emitted.
+          const edge =
+            term.failures.find((candidate) => candidate.trap === failure) ??
+            (failure === "signed_min_div_neg_one"
+              ? term.failures.find(
+                  (candidate) => candidate.trap === "integer_overflow",
+                )
+              : undefined);
           if (!edge) {
             throw new Error(`checked.binary names no ${failure} edge`);
           }

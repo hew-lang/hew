@@ -291,6 +291,14 @@ Actor calls and suspensions carry `result_shape` and `error_shape` for the
 checked completion envelope. Runtime-produced `Ok`, `Err`, `Trapped` and `Dead`
 values use those descriptors' declaration-order tags.
 
+### Checked arithmetic
+
+A signed `Divide` or `Modulo` `checked.binary` names a `signed_min_div_neg_one`
+edge for the signed minimum divided by -1. Packages emitted before that trap
+kind joined the v1 vocabulary carry only `divide_by_zero` and
+`integer_overflow` edges; for those the VM takes the `integer_overflow` edge,
+so they keep reporting `IntegerOverflow` as their compiler did.
+
 ### Selected value operations and resources
 
 `runtime.call.callbacks` lists the selected value-capability plan IDs demanded

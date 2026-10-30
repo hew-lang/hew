@@ -420,76 +420,101 @@ test("v1: checked.binary takes the failure edge the package names instead of tra
   assert.equal(stdout(fine), "2147483647\n");
 });
 
-test("v1: signed MIN / -1 and MIN % -1 take the signed-minimum edge at every width", async () => {
-  const dividing = (op, ty, lhs, rhs) =>
-    pkg({
-      strings: ["divided by zero", "signed minimum by -1"],
-      runtime_families: [PRINT_LN, { id: 1, family: "I64ToString" }],
-      functions: [
-        fn(0, "main", [
-          block(
-            0,
-            [
-              { op: "const.int", dst: 0, value: String(lhs), ty, span: null },
-              { op: "const.int", dst: 1, value: String(rhs), ty, span: null },
+/// A signed division whose failure edges print which trap fired. `minTrap`
+/// names the edge for the signed minimum by -1: `signed_min_div_neg_one` today,
+/// `integer_overflow` in packages emitted before that trap kind existed.
+function signedDivision(op, ty, lhs, rhs, minTrap = "signed_min_div_neg_one") {
+  return pkg({
+    strings: ["divided by zero", "signed minimum by -1"],
+    runtime_families: [PRINT_LN, { id: 1, family: "I64ToString" }],
+    functions: [
+      fn(0, "main", [
+        block(
+          0,
+          [
+            { op: "const.int", dst: 0, value: String(lhs), ty, span: null },
+            { op: "const.int", dst: 1, value: String(rhs), ty, span: null },
+          ],
+          {
+            op: "checked.binary",
+            binary_op: op,
+            lhs: 0,
+            rhs: 1,
+            ty,
+            result: { value: 2, own: "owned" },
+            normal: { to: 1, args: [] },
+            failures: [
+              { trap: "divide_by_zero", edge: { to: 3, args: [] } },
+              { trap: minTrap, edge: { to: 5, args: [] } },
             ],
-            {
-              op: "checked.binary",
-              binary_op: op,
-              lhs: 0,
-              rhs: 1,
-              ty,
-              result: { value: 2, own: "owned" },
-              normal: { to: 1, args: [] },
-              failures: [
-                { trap: "divide_by_zero", edge: { to: 3, args: [] } },
-                { trap: "signed_min_div_neg_one", edge: { to: 5, args: [] } },
-              ],
-              span: null,
-            },
-          ),
-          block(1, [], toStringCall2(2, 3, 2)),
-          block(2, [], printTerm(3, 4)),
-          block(
-            3,
-            [{ op: "const.str", dst: 4, str: 0, span: null }],
-            printTerm(4, 4),
-          ),
-          block(4, [], RETURN_UNIT),
-          block(
-            5,
-            [{ op: "const.str", dst: 5, str: 1, span: null }],
-            printTerm(5, 4),
-          ),
-        ]),
-      ],
-    });
+            span: null,
+          },
+        ),
+        block(1, [], toStringCall2(2, 3, 2)),
+        block(2, [], printTerm(3, 4)),
+        block(
+          3,
+          [{ op: "const.str", dst: 4, str: 0, span: null }],
+          printTerm(4, 4),
+        ),
+        block(4, [], RETURN_UNIT),
+        block(
+          5,
+          [{ op: "const.str", dst: 5, str: 1, span: null }],
+          printTerm(5, 4),
+        ),
+      ]),
+    ],
+  });
+}
 
+test("v1: signed MIN / -1 and MIN % -1 take the signed-minimum edge at every width", async () => {
   for (const bits of [8n, 16n, 32n, 64n]) {
     const ty = `i${bits}`;
     const min = -(1n << (bits - 1n));
     for (const op of ["Divide", "Modulo"]) {
       // The quotient is unrepresentable and the remainder, though 0, traps
       // with it, exactly as native does.
-      const trapped = await run(dividing(op, ty, min, -1n));
+      const trapped = await run(signedDivision(op, ty, min, -1n));
       assert.equal(stdout(trapped), "signed minimum by -1\n", `${ty} ${op}`);
 
       // Negative controls: a divisor of 1 or a dividend above the minimum
       // stays on the normal edge, and zero still names its own edge.
       assert.equal(
-        stdout(await run(dividing(op, ty, min, 1n))),
+        stdout(await run(signedDivision(op, ty, min, 1n))),
         op === "Divide" ? `${min}\n` : "0\n",
         `${ty} ${op} by 1`,
       );
       assert.equal(
-        stdout(await run(dividing(op, ty, min + 1n, -1n))),
+        stdout(await run(signedDivision(op, ty, min + 1n, -1n))),
         op === "Divide" ? `${-(min + 1n)}\n` : "0\n",
         `${ty} ${op} above the minimum`,
       );
       assert.equal(
-        stdout(await run(dividing(op, ty, min, 0n))),
+        stdout(await run(signedDivision(op, ty, min, 0n))),
         "divided by zero\n",
         `${ty} ${op} by zero`,
+      );
+    }
+  }
+});
+
+test("v1: an earlier package's overflow edge catches signed MIN / -1 and MIN % -1", async () => {
+  for (const bits of [8n, 16n, 32n, 64n]) {
+    const ty = `i${bits}`;
+    const min = -(1n << (bits - 1n));
+    for (const op of ["Divide", "Modulo"]) {
+      const old = (lhs, rhs) =>
+        signedDivision(op, ty, lhs, rhs, "integer_overflow");
+      assert.equal(
+        stdout(await run(old(min, -1n))),
+        "signed minimum by -1\n",
+        `${ty} ${op}`,
+      );
+      assert.equal(
+        stdout(await run(old(min + 1n, -1n))),
+        op === "Divide" ? `${-(min + 1n)}\n` : "0\n",
+        `${ty} ${op} above the minimum`,
       );
     }
   }

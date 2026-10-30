@@ -87,10 +87,16 @@ thread_local! {
     static ALT_STACK: RefCell<Option<AlternateStack>> = const { RefCell::new(None) };
 }
 
-/// Give the calling thread an alternate signal stack, unless it has one.
+/// Give the calling thread an alternate signal stack of at least
+/// [`ALT_STACK_BYTES`], replacing a smaller one: Rust's own per-thread stack
+/// is sized for its overflow message, not for walking the unwind tables.
 fn ensure_alt_stack() {
     ALT_STACK.with(|slot| {
-        if slot.borrow().is_some() || registered_alt_stack().ss_flags & libc::SS_DISABLE == 0 {
+        if slot.borrow().is_some() {
+            return;
+        }
+        let registered = registered_alt_stack();
+        if registered.ss_flags & libc::SS_DISABLE == 0 && registered.ss_size >= ALT_STACK_BYTES {
             return;
         }
         let mut memory = vec![0_u8; ALT_STACK_BYTES].into_boxed_slice();
@@ -134,7 +140,9 @@ fn sent_by_process(info: &libc::siginfo_t) -> bool {
     #[cfg(not(any(target_os = "linux", target_os = "android")))]
     {
         // Darwin and FreeBSD number SI_USER, SI_QUEUE, SI_LWP and the other
-        // non-fault origins from 0x10001.
+        // non-fault origins from 0x10001. Darwin delivers a kill-sent fault
+        // signal with a fault's si_code and no sender pid, so there it reads
+        // as a fault.
         info.si_code & 0x10000 != 0
     }
 }
@@ -238,8 +246,22 @@ unsafe fn fill_record(
     record.frames.clear();
     // SAFETY: forwarded from the handler.
     if let Some(pc) = unsafe { fault_pc(context) } {
-        frames::capture(pc, &mut record.frames);
+        if walk_is_safe(record.kind) {
+            frames::capture(pc, bounds, &mut record.frames);
+        } else {
+            record.frames.push(pc);
+        }
     }
+}
+
+/// Whether the platform unwinder can step out of this fault's frame.
+///
+/// `FreeBSD`'s unwinder looks up the faulting frame's CFI at `pc - 1`; in a
+/// prologue that has just moved the stack pointer into the guard, that row
+/// sends it to read the guard page, and the nested fault ends the process
+/// without a record. An overflow there reports only the faulting pc.
+const fn walk_is_safe(kind: FaultKind) -> bool {
+    !(cfg!(target_os = "freebsd") && matches!(kind, FaultKind::StackOverflow))
 }
 
 unsafe extern "C" fn fatal_signal_handler(
@@ -341,6 +363,7 @@ mod image {
 mod image {
     /// The end of the Mach-O image whose header is at `base`: its highest
     /// segment, relative to `__TEXT`.
+    #[allow(deprecated, reason = "libc's Mach-O header types match the loaded ABI")]
     pub(super) unsafe fn end(base: usize, _anchor: usize) -> Option<usize> {
         const LC_SEGMENT_64: u32 = 0x19;
         // SAFETY: `base` is a mapped mach_header_64 from dladdr.
@@ -385,6 +408,9 @@ pub(crate) fn init_crash_handling() {
     INSTALL.call_once(|| {
         installed_here = true;
         record_image_range();
+        // Bind the unwinder's lazy symbols and caches now; resolving them in
+        // the handler would cost stack and take the loader's locks.
+        frames::warm_up();
         for signal in FAULT_SIGNALS {
             // SAFETY: zero is a valid initial representation; all required
             // sigaction fields are initialized below.
@@ -434,6 +460,7 @@ pub(crate) fn ignore_sigpipe() {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(any(target_os = "linux", target_os = "android"))]
     use crate::signal::stack::StackBounds;
 
     #[cfg(all(
@@ -504,9 +531,11 @@ mod tests {
         let overflow = classify_forged(bounds.low - 16, bounds);
         assert_eq!(overflow.kind, FaultKind::StackOverflow);
         assert_eq!(overflow.address, bounds.low - 16);
-        // No signal frame leads to the forged pc, so it is the whole walk.
-        let pcs: Vec<usize> = overflow.frames.runs().iter().map(|run| run.pc).collect();
-        assert_eq!(pcs, [0xDEAD]);
+        // The walk starts at the faulting pc; this test's own frames follow.
+        assert_eq!(
+            overflow.frames.runs().first().map(|run| run.pc),
+            Some(0xDEAD)
+        );
 
         let wild = classify_forged(8, bounds);
         assert_eq!(wild.kind, FaultKind::Signal);

@@ -1060,21 +1060,32 @@ pub(crate) fn expire_refuting_claims(mgr: &HewConnMgr, now_ms: u64) {
     }
     // SAFETY: cluster is owned by the live manager.
     let cluster = unsafe { &*mgr.cluster };
-    let lapsed: Vec<(c_int, u64)> = mgr
+    let lapsed: Vec<(NodeId, c_int, u64)> = mgr
         .claims
         .0
         .lock_or_recover()
-        .values()
-        .filter(|claim| match claim.state {
+        .iter()
+        .filter(|(_, claim)| match claim.state {
             ClaimState::Refuting { expires_ms } => {
                 expires_ms <= now_ms || cluster.member_state(claim.route_slot) == -1
             }
             _ => false,
         })
-        .map(|claim| (claim.conn_id, claim.publication_token))
+        .map(|(identity, claim)| (*identity, claim.conn_id, claim.publication_token))
         .collect();
-    for (conn_id, publication_token) in lapsed {
-        let _ = remove_connection(mgr, conn_id, Some(publication_token));
+    for (identity, conn_id, publication_token) in lapsed {
+        // Retire the claim only while it is still refuting: a refutation read
+        // since the scan has published the connection, which stays open.
+        if settle_identity_claim(
+            mgr,
+            identity,
+            conn_id,
+            publication_token,
+            |state| matches!(state, ClaimState::Refuting { .. }),
+            ClaimState::Retired,
+        ) {
+            let _ = remove_connection(mgr, conn_id, Some(publication_token));
+        }
     }
 }
 

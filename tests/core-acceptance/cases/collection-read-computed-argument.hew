@@ -1,0 +1,66 @@
+type Holder {
+    values: HashMap<i64, string>;
+}
+
+fn lookup(values: HashMap<i64, string>, key: i64) -> string {
+    match values.get(key) {
+        .Some(value) => value,
+        .None => "none",
+    }
+}
+
+fn main() {
+    var colours: HashMap<i64, string> = HashMap.new();
+    for i in 0..4 {
+        colours.insert(i * 7, f"colour{i}");
+    }
+    let step = 7;
+
+    // A computed key reads the map in place; the result stays independent.
+    let found = colours.get(2 * step);
+    colours.insert(2 * step, "replaced");
+    println(match found {
+        .Some(value) => value,
+        .None => "missing",
+    });
+    println(lookup(colours, 2 * step));
+    println(colours.contains_key(3 * step + 0));
+    println(colours.contains_key(-step));
+    println(colours[step * 1]);
+
+    // A later argument that writes the receiver still sees the earlier value.
+    let before = colours.get({
+        colours.insert(5 * step, "late");
+        5 * step
+    });
+    println(match before {
+        .Some(value) => value,
+        .None => "absent before insert",
+    });
+    println(colours.len());
+
+    // Field receivers read in place under a computed key.
+    let holder = Holder { values: colours };
+    println(lookup(holder.values, step * 3));
+
+    var names: Vec<string> = Vec.new();
+    names.push("alpha".to_upper());
+    names.push("beta".to_upper());
+    let first = names.get(step - 7);
+    names.set(0, "gamma");
+    println(match first {
+        .Some(value) => value,
+        .None => "none",
+    });
+    println(names[step / 7]);
+
+    var seen: HashSet<i64> = HashSet.new();
+    seen.insert(14);
+    println(seen.contains(step * 2));
+
+    var raw = bytes.new();
+    for i in 0..8 {
+        raw.push((i * 3) as u8);
+    }
+    println(raw[(step + 2) % 8] as i64);
+}

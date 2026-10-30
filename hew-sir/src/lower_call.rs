@@ -13,15 +13,29 @@ use super::{
 };
 
 impl Builder<'_, '_> {
-    /// These expressions cannot consume a prior argument's owner or branch to
-    /// cleanup while a call-local loan is open. Other evaluation requires a
-    /// snapshot of copyable arguments or a protected loan of affine arguments.
+    /// These expressions cannot write or consume a prior argument's place, so
+    /// an earlier argument may be read in place while they run. Operators,
+    /// numeric casts and indexed reads may fault, but a fault only leaves the
+    /// call before it starts; nothing they evaluate can replace the owner a
+    /// read borrows. Other evaluation (blocks, calls, mutating methods)
+    /// requires a snapshot of copyable arguments or a protected loan of affine
+    /// arguments.
     pub(super) fn stable_argument_read(expr: &HirExpr) -> bool {
         match &expr.kind {
             HirExprKind::Literal(_) | HirExprKind::BindingRef { .. } => true,
             HirExprKind::FieldAccess { object, .. } => Self::stable_argument_read(object),
             HirExprKind::TupleIndex { tuple, .. } => Self::stable_argument_read(tuple),
             HirExprKind::SubsumedValue { source, .. } => Self::stable_argument_read(source),
+            HirExprKind::Binary { left, right, .. } => {
+                Self::stable_argument_read(left) && Self::stable_argument_read(right)
+            }
+            HirExprKind::Unary { operand, .. } => Self::stable_argument_read(operand),
+            HirExprKind::NumericCast { value, .. }
+            | HirExprKind::SaturatingWidthCast { value, .. }
+            | HirExprKind::TryWidthCast { value, .. } => Self::stable_argument_read(value),
+            HirExprKind::Index { container, index } => {
+                Self::stable_argument_read(container) && Self::stable_argument_read(index)
+            }
             _ => false,
         }
     }

@@ -1,0 +1,22 @@
+type Holder {
+    values: HashMap<i64, string>;
+}
+
+fn probe(holder: Holder, divisor: i64) -> i64 {
+    let temporary = "temporary".to_upper();
+    println(temporary);
+    if holder.values.contains_key(7 / divisor) {
+        1
+    } else {
+        0
+    }
+}
+
+fn main() {
+    var values: HashMap<i64, string> = HashMap.new();
+    values.insert(7, "seven".to_upper());
+    let holder = Holder { values: values };
+    println(probe(holder, 1));
+    println(probe(holder, 0));
+    println("unreachable");
+}

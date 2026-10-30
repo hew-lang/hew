@@ -31,6 +31,11 @@ pub(super) fn negotiates_responder_commit(local: &HewHandshake, peer: &HewHandsh
     local.feature_flags & peer.feature_flags & HEW_FEATURE_RESPONDER_COMMIT != 0
 }
 
+/// Whether this end advertises the responder-commit step.
+pub(super) fn offers_responder_commit(local: &HewHandshake) -> bool {
+    local.feature_flags & HEW_FEATURE_RESPONDER_COMMIT != 0
+}
+
 /// Send the responder's commit, or the initiator's echo of it: the first
 /// frame from that end on the protected channel, carrying the order in which
 /// the responder reserved this connection.

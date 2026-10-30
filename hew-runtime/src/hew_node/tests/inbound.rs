@@ -1587,14 +1587,8 @@ struct Crossing {
 /// node's accept of the lower dial reserves only once the lower node is
 /// waiting for its commit, or, between ends that settle on their own, once
 /// the lower node has closed the higher node's dial. Neither wait relies on
-/// the scheduler. `withhold` names the nodes that do not advertise the
-/// responder-commit step.
-fn scripted_crossing(
-    id_a: u16,
-    id_b: u16,
-    withhold_lower: bool,
-    withhold_higher: bool,
-) -> Crossing {
+/// the scheduler.
+fn scripted_crossing(id_a: u16, id_b: u16) -> Crossing {
     let (a, port_a, b, port_b) = start_authorized_tcp_pair(id_a, id_b);
     // SAFETY: both nodes stay started until the stops below.
     unsafe {
@@ -1606,11 +1600,6 @@ fn scripted_crossing(
             };
         let lower_mgr = (*lower.as_ptr()).conn_mgr.cast_const();
         let higher_mgr = (*higher.as_ptr()).conn_mgr.cast_const();
-        let _withheld: Vec<_> = [(withhold_lower, lower_mgr), (withhold_higher, higher_mgr)]
-            .into_iter()
-            .filter(|&(withheld, _)| withheld)
-            .map(|(_, mgr)| connection::withheld_commit::withhold(mgr))
-            .collect();
         record_suspects(lower);
         record_suspects(higher);
 
@@ -1692,7 +1681,7 @@ fn crossing_dials_switch_to_the_winner_without_suspicion() {
     let _guard = crate::runtime_test_guard();
     crate::registry::hew_registry_clear();
     for round in 0..4 {
-        let crossing = scripted_crossing(343, 344, false, false);
+        let crossing = scripted_crossing(343, 344);
         assert!(
             crossing.progress.lower_awaiting_commit && !crossing.progress.timed_out,
             "round {round}: the script did not run: {crossing:?}"
@@ -1712,22 +1701,100 @@ fn crossing_dials_switch_to_the_winner_without_suspicion() {
 }
 
 /// A node that advertises the responder-commit step still pairs with one that
-/// does not: neither waits for a commit, and both ends keep the newer
-/// connection, here the lower node's dial.
+/// does not, whichever of the two is the lower node: crossing dials, however
+/// their paths differ in latency, leave both ends sharing one connection. The
+/// node with the step follows the other's choice.
 #[test]
-fn crossing_dials_interoperate_with_a_node_without_responder_commit() {
+fn crossing_dials_converge_with_a_node_without_responder_commit() {
     let _guard = crate::runtime_test_guard();
     crate::registry::hew_registry_clear();
-    for (withhold_lower, withhold_higher) in [(true, false), (false, true)] {
-        let crossing = scripted_crossing(347, 348, withhold_lower, withhold_higher);
-        assert!(
-            !crossing.progress.lower_awaiting_commit && !crossing.progress.timed_out,
-            "neither end waits for a commit: {crossing:?}"
-        );
-        assert_eq!(
-            crossing.lower_dial.0, 0,
-            "the lower dial connects: {crossing:?}"
-        );
+    for withhold_lower in [true, false] {
+        for delay_ms in [0, 300, 1500] {
+            for slow_higher in [true, false] {
+                skewed_crossing(347, 348, delay_ms, false, slow_higher, Some(withhold_lower));
+            }
+        }
+    }
+    crate::registry::hew_registry_clear();
+}
+
+/// The case that divides a pair keeping the newer connection: each node
+/// admits its own dial before the peer's, so each end's newer connection is
+/// the one the other end superseded. The node with the responder-commit step
+/// follows the other's choice, so the pair still ends sharing one connection.
+#[test]
+fn opposite_admission_orders_converge_with_a_node_without_responder_commit() {
+    let _guard = crate::runtime_test_guard();
+    crate::registry::hew_registry_clear();
+    for lower_lacks in [true, false] {
+        let (a, port_a, b, port_b) = start_authorized_tcp_pair(359, 360);
+        // SAFETY: both nodes stay started until the stops below.
+        unsafe {
+            let ((lower, lower_port), (higher, higher_port)) =
+                if kept_origin(&a, &b) == ConnectionOrigin::Dialled {
+                    ((&a, port_a), (&b, port_b))
+                } else {
+                    ((&b, port_b), (&a, port_a))
+                };
+            let lacking = if lower_lacks { lower } else { higher };
+            let _withheld =
+                connection::withheld_commit::withhold((*lacking.as_ptr()).conn_mgr.cast_const());
+            // Each node admits the peer's dial only once its own published.
+            let own_dial_first = |node: &TestNode,
+                                  peer: &TestNode|
+             -> connection::admission_script::Hook {
+                let (node, peer) = (node.as_ptr() as usize, peer.as_ptr() as usize);
+                Arc::new(move |point, origin| {
+                    if point != connection::admission_script::Point::Authenticated
+                        || origin != ConnectionOrigin::Accepted
+                    {
+                        return;
+                    }
+                    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+                    // The nodes outlive their admissions.
+                    while {
+                        connection::peer_connection_view(
+                            &*(*(node as *mut HewNode)).conn_mgr,
+                            (*(peer as *mut HewNode))
+                                .auth
+                                .node_identity()
+                                .expect("peer identity"),
+                        )
+                    }
+                    .owner
+                        != Some((ClaimState::Published, ConnectionOrigin::Dialled))
+                        && std::time::Instant::now() < deadline
+                    {
+                        std::thread::sleep(std::time::Duration::from_millis(1));
+                    }
+                })
+            };
+            let script = connection::admission_script::install(&[
+                (
+                    (*lower.as_ptr()).conn_mgr.cast_const(),
+                    own_dial_first(lower, higher),
+                ),
+                (
+                    (*higher.as_ptr()).conn_mgr.cast_const(),
+                    own_dial_first(higher, lower),
+                ),
+            ]);
+            let barrier = Arc::new(std::sync::Barrier::new(2));
+            let lower_dial = spawn_dial(lower, higher_port, &barrier, None);
+            let higher_dial = spawn_dial(higher, lower_port, &barrier, None);
+            let dials = (
+                lower_dial.join().expect("lower dial"),
+                higher_dial.join().expect("higher dial"),
+            );
+            drop(script);
+            await_one_shared_connection(
+                lower,
+                higher,
+                &format!("lower lacks the step: {lower_lacks}; dials {dials:?}"),
+            );
+            assert_eq!(hew_node_stop(b.as_ptr()), 0);
+            assert_eq!(hew_node_stop(a.as_ptr()), 0);
+        }
     }
     crate::registry::hew_registry_clear();
 }
@@ -1910,57 +1977,78 @@ fn crossing_dials_with_skewed_latency_keep_one_connection() {
         (1500, true),
     ] {
         for slow_higher in [true, false] {
-            let (a, port_a, b, port_b) = start_authorized_tcp_pair(351, 352);
-            // SAFETY: both nodes stay started until the stops below.
-            unsafe {
-                let ((lower, lower_port), (higher, higher_port)) =
-                    if kept_origin(&a, &b) == ConnectionOrigin::Dialled {
-                        ((&a, port_a), (&b, port_b))
-                    } else {
-                        ((&b, port_b), (&a, port_a))
-                    };
-                let delay = std::time::Duration::from_millis(delay_ms);
-                let (slow, slow_target, slow_direct, fast, fast_target) = if slow_higher {
-                    (
-                        higher,
-                        delayed_proxy(lower_port, delay),
-                        lower_port,
-                        lower,
-                        higher_port,
-                    )
-                } else {
-                    (
-                        lower,
-                        delayed_proxy(higher_port, delay),
-                        higher_port,
-                        higher,
-                        lower_port,
-                    )
-                };
-                let start = Arc::new(std::sync::Barrier::new(1));
-                let slow_dial = spawn_dial(slow, slow_target, &start, None);
-                std::thread::sleep(std::time::Duration::from_millis(100));
-                let fast_dial = spawn_dial(fast, fast_target, &start, None);
-                let redial = redial.then(|| {
-                    std::thread::sleep(std::time::Duration::from_millis(50));
-                    spawn_dial(slow, slow_direct, &start, None)
-                });
-                let dials = (
-                    slow_dial.join().expect("slow dial"),
-                    fast_dial.join().expect("fast dial"),
-                    redial.map(|dial| dial.join().expect("redial")),
-                );
-                let case = format!(
-                    "delay {delay_ms} ms on the {} dial: dials {dials:?}",
-                    if slow_higher { "higher" } else { "lower" }
-                );
-                await_one_shared_connection(lower, higher, &case);
-                assert_eq!(hew_node_stop(b.as_ptr()), 0);
-                assert_eq!(hew_node_stop(a.as_ptr()), 0);
-            }
+            skewed_crossing(351, 352, delay_ms, redial, slow_higher, None);
         }
     }
     crate::registry::hew_registry_clear();
+}
+
+/// One skewed crossing: the slow node's dial passes through a proxy that holds
+/// it for `delay_ms`; the other node dials directly 100 ms later, and with
+/// `redial` the slow node also dials directly 50 ms after that. With
+/// `withhold_lower`, the lower (`Some(true)`) or higher (`Some(false)`) node
+/// does not advertise the responder-commit step. Asserts the pair ends sharing
+/// one connection.
+fn skewed_crossing(
+    id_a: u16,
+    id_b: u16,
+    delay_ms: u64,
+    redial: bool,
+    slow_higher: bool,
+    withhold_lower: Option<bool>,
+) {
+    let (a, port_a, b, port_b) = start_authorized_tcp_pair(id_a, id_b);
+    // SAFETY: both nodes stay started until the stops below.
+    unsafe {
+        let ((lower, lower_port), (higher, higher_port)) =
+            if kept_origin(&a, &b) == ConnectionOrigin::Dialled {
+                ((&a, port_a), (&b, port_b))
+            } else {
+                ((&b, port_b), (&a, port_a))
+            };
+        let _withheld = withhold_lower.map(|lower_lacks| {
+            let node = if lower_lacks { lower } else { higher };
+            connection::withheld_commit::withhold((*node.as_ptr()).conn_mgr.cast_const())
+        });
+        let delay = std::time::Duration::from_millis(delay_ms);
+        let (slow, slow_target, slow_direct, fast, fast_target) = if slow_higher {
+            (
+                higher,
+                delayed_proxy(lower_port, delay),
+                lower_port,
+                lower,
+                higher_port,
+            )
+        } else {
+            (
+                lower,
+                delayed_proxy(higher_port, delay),
+                higher_port,
+                higher,
+                lower_port,
+            )
+        };
+        let start = Arc::new(std::sync::Barrier::new(1));
+        let slow_dial = spawn_dial(slow, slow_target, &start, None);
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        let fast_dial = spawn_dial(fast, fast_target, &start, None);
+        let redial = redial.then(|| {
+            std::thread::sleep(std::time::Duration::from_millis(50));
+            spawn_dial(slow, slow_direct, &start, None)
+        });
+        let dials = (
+            slow_dial.join().expect("slow dial"),
+            fast_dial.join().expect("fast dial"),
+            redial.map(|dial| dial.join().expect("redial")),
+        );
+        let case = format!(
+            "delay {delay_ms} ms on the {} dial, {withhold_lower:?} lacks the step: dials {dials:?}",
+            if slow_higher { "higher" } else { "lower" }
+        );
+        await_one_shared_connection(lower, higher, &case);
+        assert_eq!(hew_node_stop(b.as_ptr()), 0);
+        assert_eq!(hew_node_stop(a.as_ptr()), 0);
+    }
 }
 
 /// The responder's commit is provisional until the initiator echoes it. A

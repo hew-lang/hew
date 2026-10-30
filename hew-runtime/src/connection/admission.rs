@@ -17,12 +17,12 @@ use super::channel::{
 };
 use super::handshake::{
     close_transport_conn, handshake_exchange, local_handshake, negotiates_responder_commit,
-    peer_identity_compatible, recv_commit, send_commit,
+    offers_responder_commit, peer_identity_compatible, recv_commit, send_commit,
 };
 use super::identity_claim::{
     abort_identity_claim, publish_identity_connection_established, replacing_owner,
-    reserve_identity_claim, retire_identity_connection_publication, AdmissionStart,
-    ClaimReservation, Commit,
+    reserve_identity_claim, restore_followed_loser, retire_identity_connection_publication,
+    AdmissionStart, ClaimReservation, Commit,
 };
 use super::reader::reader_loop;
 use super::reconnect::{next_publication_token, track_worker};
@@ -394,6 +394,7 @@ pub(super) unsafe fn add_connection_on_transport(
     // waits on the initiator, so neither end can stall the other. A responder
     // that yields or refuses closes the connection instead.
     let commit = match Commit::negotiate(
+        offers_responder_commit(&local_hs),
         negotiates_responder_commit(&local_hs, &peer_hs),
         local_identity,
         peer_hs.node_id,
@@ -492,7 +493,7 @@ pub(super) unsafe fn add_connection_on_transport(
     // gave up keeps the connection it still owns. The initiator never waits on
     // the network holding a reservation, so the two waits cannot form a cycle.
     let settled = match commit {
-        Commit::Unordered => true,
+        Commit::Unordered | Commit::Follow => true,
         // SAFETY: admission owns the connection and no reader has started.
         Commit::Initiator(_) => unsafe {
             send_commit(&protection, transport_ptr, conn_id, commit_order)
@@ -550,6 +551,8 @@ pub(super) unsafe fn add_connection_on_transport(
     let peer_feature_flags = actor.peer_feature_flags;
     let reader_lifecycle_guard = mgr.reader_lifecycle.register();
     let channel = Arc::clone(&actor.channel);
+    let followed_loser = (commit == Commit::Follow).then(|| Arc::clone(&actor.followed_loser));
+    let reader_followed_loser = followed_loser.clone();
 
     let handle = thread::Builder::new()
         .name(format!("hew-conn-{conn_id}"))
@@ -565,6 +568,7 @@ pub(super) unsafe fn add_connection_on_transport(
                 router,
                 peer_feature_flags,
                 channel,
+                reader_followed_loser,
             );
         });
 
@@ -615,6 +619,7 @@ pub(super) unsafe fn add_connection_on_transport(
         &publication_sync,
         &publication_removed,
         superseded_claim,
+        followed_loser.as_deref(),
     ) {
         // A same-session connection that took the claim while this one was
         // publishing keeps the peer connected: report it, as a crossing dial
@@ -880,6 +885,7 @@ pub(super) fn remove_connection(
     // past the retirement below and restore it there, so a same-credential
     // reconnect removed mid-publication hands authority back to the prior
     // connection instead of orphaning it claimless.
+    let followed_loser = conn.followed_loser.lock_or_recover().take();
     let restore_after_retire = resolve_admission_claim_before_join(
         mgr,
         peer_identity,
@@ -914,6 +920,12 @@ pub(super) fn remove_connection(
         publication_token,
         &publication_sync,
     );
+    // A connection that followed a peer without the responder-commit step
+    // and closed before the peer confirmed it: the peer kept the connection
+    // this one superseded, so publish that one again.
+    if let (Some(loser), Some(peer_identity)) = (followed_loser, peer_identity) {
+        restore_followed_loser(mgr, peer_identity, conn_id, publication_token, loser);
+    }
 
     // Suppressed-publication restore (see the pre-join comment above): with our
     // claim retired, hand the node's authority back to the superseded prior

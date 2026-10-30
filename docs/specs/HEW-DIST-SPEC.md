@@ -347,14 +347,18 @@ connection the other still owns. The initiator never waits on the network
 while holding a reservation, so the two ends cannot wait on each other. The
 step costs the initiator half a round trip and the responder a round trip.
 
-When either record lacks bit `4`, as with a node that predates it during a
-rolling upgrade, neither end applies the crossing rule: each keeps the newer
-same-session connection and closes the one it superseded when it publishes, as
-a node without the step does. When two dials cross, the ends can each keep a
-different one and close the other's, leaving the pair with no connection until
-one of them redials. The records are bound into the channel transcript, so the
-bit cannot be removed without failing the handshake. Feature bit `2` is
-reserved; bit `3` is retired and is not reused.
+When neither record sets bit `4`, each end keeps the newer same-session
+connection and closes the one it superseded when it publishes. When only one
+record sets it, as during a rolling upgrade, the node without the bit does the
+same and the node with it follows that node's choice: it also moves its claim
+to the newer connection, but leaves the superseded one open. Once the peer
+sends on the newer connection, the peer kept it, and the superseded one is
+closed. If the peer closes the newer connection first, the peer kept the
+superseded one, which is published again. Either way both ends converge on one
+connection, though the switch can briefly demote the peer to suspect. The
+records are bound into the channel transcript, so the bit cannot be removed
+without failing the handshake. Feature bit `2` is reserved; bit `3` is retired
+and is not reused.
 
 ## 5. Wire framing and schema
 

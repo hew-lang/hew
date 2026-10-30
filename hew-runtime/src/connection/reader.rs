@@ -2,7 +2,7 @@
 
 use std::ffi::c_int;
 use std::sync::atomic::{AtomicI32, AtomicU64, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use crate::envelope::{decode_wire_frame, WireFrame};
 use crate::set_last_error;
@@ -14,9 +14,11 @@ use super::control::{
     location_matches_node_session,
 };
 use super::gossip::retry_pending_registry_flush;
+use super::identity_claim::close_followed_loser;
 use super::peer::deposit_reply_envelope;
 use super::reconnect::{reconnect_plan, spawn_reconnect_worker};
 use super::{ConnectionTransport, HewConnMgr, InboundRouter, SendConnMgr};
+use crate::peer_binding::LiveClaim;
 
 // ── Reader thread ──────────────────────────────────────────────────────
 
@@ -72,6 +74,7 @@ pub(super) fn reader_loop(
     router: Option<InboundRouter>,
     peer_feature_flags: u32,
     channel: Arc<ChannelProtection>,
+    followed_loser: Option<Arc<Mutex<Option<LiveClaim>>>>,
 ) {
     let mgr = mgr.0;
     let transport_ptr = transport.as_ptr();
@@ -123,6 +126,15 @@ pub(super) fn reader_loop(
             }
         };
         let payload_ptr = buf.as_mut_ptr();
+
+        // The peer sends only on the connection it kept: a loser this one
+        // superseded while following the peer can close now.
+        if let Some(held) = &followed_loser {
+            if !mgr.is_null() {
+                // SAFETY: reader_loop owns a live manager pointer for this connection.
+                close_followed_loser(unsafe { &*mgr }, held);
+            }
+        }
 
         // Update heartbeat.
         // SAFETY: hew_now_ms has no preconditions.

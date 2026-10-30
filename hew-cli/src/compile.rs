@@ -61,6 +61,42 @@ pub struct CompileOptions {
     pub lint_levels: hew_types::LintLevels,
 }
 
+/// The source path a program's debug info names: absolute, so the compile
+/// unit's directory resolves from any working directory, then rewritten by the
+/// active `--trim-paths` / `--remap-path-prefix` policy.
+pub(crate) fn debug_source_path(path: &std::path::Path) -> PathBuf {
+    let absolute = std::path::absolute(path).unwrap_or_else(|_| path.to_path_buf());
+    hew_compile::display_source_path(&absolute)
+}
+
+/// Each rewritten source prefix as (spelling in the debug info, real
+/// directory), the pairs a debugger maps back with gdb's `set
+/// substitute-path` or lldb's `target.source-map`. Empty when no prefix is
+/// rewritten.
+pub(crate) fn debugger_source_map() -> Vec<(PathBuf, PathBuf)> {
+    let mut map: Vec<(PathBuf, PathBuf)> = Vec::new();
+    for (source, display) in hew_compile::source_path_policy().prefixes() {
+        // The policy holds a lexical and a canonical spelling of each root;
+        // the debugger needs one real directory per rewritten prefix.
+        if source.is_dir() && !map.iter().any(|(seen, _)| seen == display) {
+            map.push((display.to_path_buf(), source.to_path_buf()));
+        }
+    }
+    map
+}
+
+/// Tell the person running `hew build -g` how to point a debugger at sources
+/// whose paths the build rewrote.
+pub(crate) fn print_debugger_source_map() {
+    for (display, real) in debugger_source_map() {
+        let (display, real) = (display.display(), real.display());
+        eprintln!(
+            "   Sources {display} -> {real} (gdb: set substitute-path {display} {real}; \
+             lldb: settings set target.source-map {display} {real})"
+        );
+    }
+}
+
 pub(crate) fn frontend_options(target: &TargetSpec, options: &CompileOptions) -> FrontendOptions {
     FrontendOptions {
         session_type_seed: None,

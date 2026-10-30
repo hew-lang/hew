@@ -458,7 +458,7 @@ fn emit_module_with_triple(
     source_path: Option<&Path>,
     source: Option<(&str, &str)>,
 ) -> Result<hew_codegen_rs::EmitArtefacts, DiagChannel> {
-    let display_source = source_path.map(hew_compile::display_source_path);
+    let display_source = source_path.map(compile::debug_source_path);
     hew_codegen_rs::emit_physical_object(
         pipeline,
         &hew_codegen_rs::PhysicalEmitOptions {
@@ -1122,12 +1122,7 @@ fn emit_obj_only(
 
 fn cmd_build(a: &args::BuildArgs) {
     diagnostic_json::set_output_format(a.format.into());
-    let _path_scope = source_paths::build_policy(
-        a.input.as_deref(),
-        a.common.project_dir.as_deref(),
-        a.trim_paths || (a.release && !a.no_trim_paths),
-    )
-    .enter();
+    let _path_scope = a.source_path_policy().enter();
     // Same single flush-then-exit chokepoint as `cmd_compile`: `cmd_build_run`
     // returns an exit code for EVERY path and never calls `process::exit`, so
     // the guard flushes accumulated JSON advisories on every path by construction.
@@ -1242,6 +1237,16 @@ fn cmd_build_run(a: &args::BuildArgs) -> i32 {
                 "   Built {}",
                 display_relative_to_cwd(&output_path).display()
             );
+            if a.debug && !target.is_wasm() {
+                match link::finish_debug_output(&output_path, &target, a.split_debug) {
+                    Ok(lines) => lines.iter().for_each(|line| eprintln!("   {line}")),
+                    Err(error) => {
+                        eprintln!("{error}");
+                        return 1;
+                    }
+                }
+                compile::print_debugger_source_map();
+            }
             write_deps(a.emit_deps.as_deref(), &output_path, &prerequisites)
         }
         Err(channel) => channel.exit_code(),
@@ -2191,27 +2196,10 @@ fn which_exists(name: &str) -> bool {
 }
 
 fn find_debug_script(name: &str) -> Option<String> {
-    // Check next to the hew binary first, then the repo scripts/ dir
-    if let Ok(exe) = std::env::current_exe() {
-        if let Some(dir) = exe.parent() {
-            let candidate = dir.join(format!("../share/hew/{name}"));
-            if candidate.exists() {
-                return candidate
-                    .canonicalize()
-                    .ok()
-                    .map(|p| p.display().to_string());
-            }
-            // Development layout
-            let candidate = dir.join(format!("../../scripts/debug/{name}"));
-            if candidate.exists() {
-                return candidate
-                    .canonicalize()
-                    .ok()
-                    .map(|p| p.display().to_string());
-            }
-        }
-    }
-    None
+    link::debug_script_dir()
+        .map(|dir| dir.join(name))
+        .filter(|script| script.is_file())
+        .map(|script| script.display().to_string())
 }
 
 fn cmd_fmt(a: &args::FmtArgs) {
@@ -2949,8 +2937,19 @@ fn cmd_completions(a: &args::CompletionsArgs) {
     generate(shell, &mut cmd, "hew", &mut std::io::stdout());
 }
 
-fn cmd_version() {
+fn cmd_version(args: args::VersionArgs) {
     println!("hew {}", hew_compile::VERSION);
+    if args.verbose {
+        // The identity a symbol store or debugger matches the shipped
+        // `hew.debug`, `hew.dSYM` or `hew.pdb` against.
+        match std::env::current_exe()
+            .ok()
+            .and_then(|exe| link::binary_identity(&exe))
+        {
+            Some(identity) => println!("{identity}"),
+            None => println!("build identity unavailable"),
+        }
+    }
 }
 
 /// `hew env`: print the resolved package-manager environment, one

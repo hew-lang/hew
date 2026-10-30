@@ -103,7 +103,7 @@ pub enum Command {
     /// Print shell completion script.
     Completions(CompletionsArgs),
     /// Print version info.
-    Version,
+    Version(VersionArgs),
     /// Print resolved package-manager environment (`HEW_HOME`,
     /// `HEW_REGISTRY`, `HEW_CC`), naming which are set and which fall back
     /// to their default.
@@ -168,6 +168,15 @@ pub struct CompileArgs {
     /// Diagnostic output format: `text` (default) or `json`.
     #[arg(long, value_enum, default_value_t = DiagnosticFormat::Text, value_name = "FORMAT")]
     pub format: DiagnosticFormat,
+}
+
+/// `hew version` / `hew --version`.
+#[derive(Debug, Args, Clone, Copy, Default)]
+pub struct VersionArgs {
+    /// Also print the build identity (ELF build-id, Mach-O UUID or PDB
+    /// GUID) that matches this binary to its shipped debug symbols.
+    #[arg(long)]
+    pub verbose: bool,
 }
 
 // ---------------------------------------------------------------------------
@@ -589,26 +598,34 @@ pub struct BuildArgs {
     #[arg(long, short = 'r')]
     pub release: bool,
     /// Remove checkout prefixes from diagnostics and compiled source paths.
-    /// Enabled by default with --release.
+    /// Enabled by default with --release, unless -g is also given.
     #[arg(long, conflicts_with = "no_trim_paths")]
     pub trim_paths: bool,
     /// Retain original source paths, including in release builds.
     #[arg(long, conflicts_with = "trim_paths")]
     pub no_trim_paths: bool,
+    /// Rewrite source paths under FROM to start with TO instead, in debug
+    /// info and diagnostics. Repeatable; the longest matching FROM wins.
+    #[arg(long = "remap-path-prefix", value_name = "FROM=TO", value_parser = parse_path_remap)]
+    pub remap_path_prefix: Vec<PathRemap>,
     /// Build with debug info (no optimization, no stripping).
     ///
-    /// Emits DWARF debug info into the native object. gdb and lldb read this
-    /// faithfully on Linux (ELF), macOS, and FreeBSD. On `windows-msvc` the
-    /// output is COFF with `CodeView` plus a sidecar `.pdb`; `windows-gnu`
-    /// remains the PE/COFF GNU-target path with embedded DWARF, which no
-    /// debugger check currently proves (the live-debugger suite is excluded
-    /// on Windows and the PDB check covers only `windows-msvc`).
+    /// Linux and FreeBSD: DWARF in the ELF binary, found by its build-id.
+    /// macOS: DWARF gathered into `<out>.dSYM` beside the binary. Windows
+    /// (`windows-msvc`): `CodeView` in `<out>.pdb` beside the `.exe`, read
+    /// by cdb and `WinDbg`. Debugging on `windows-gnu` is not verified and
+    /// is unsupported. Source paths in the debug info are absolute unless
+    /// `--trim-paths` or `--remap-path-prefix` rewrites them.
     ///
     /// Rendering an enum local needs lldb 18 or newer, which is where lldb
     /// learned to read `DW_TAG_variant_part`; an older lldb prints the enum as
     /// an empty struct. gdb reads it at every version this project tests.
     #[arg(long, short = 'g')]
     pub debug: bool,
+    /// Move an ELF binary's debug info into `<out>.debug`, linked back by
+    /// `.gnu_debuglink` and the build-id, leaving a binary without DWARF.
+    #[arg(long = "split-debug", requires = "debug")]
+    pub split_debug: bool,
     /// LLVM middle-end optimization level: `0` (default, no optimization) or
     /// `2` (the `default<O2>` release pipeline). Independent of `-g`: `-g`
     /// remains O0 unless `--opt-level 2` is also passed (which produces
@@ -643,6 +660,44 @@ impl BuildArgs {
             ..self.common.base_compile_options()
         }
     }
+
+    /// Release builds trim checkout prefixes by default; a debug build keeps
+    /// absolute paths so a debugger finds the sources from any directory.
+    pub fn trims_paths(&self) -> bool {
+        self.trim_paths || (self.release && !self.debug && !self.no_trim_paths)
+    }
+
+    /// The source-path presentation this build compiles and reports with:
+    /// the trimmed prefixes, then each `--remap-path-prefix` on top.
+    pub fn source_path_policy(&self) -> hew_compile::SourcePathPolicy {
+        let mut policy = crate::source_paths::build_policy(
+            self.input.as_deref(),
+            self.common.project_dir.as_deref(),
+            self.trims_paths(),
+        );
+        for remap in &self.remap_path_prefix {
+            policy.insert(&remap.from, &remap.to);
+        }
+        policy
+    }
+}
+
+/// One `--remap-path-prefix FROM=TO` rule.
+#[derive(Debug, Clone)]
+pub struct PathRemap {
+    from: PathBuf,
+    to: PathBuf,
+}
+
+fn parse_path_remap(value: &str) -> Result<PathRemap, String> {
+    let (from, to) = value.split_once('=').ok_or("expected FROM=TO")?;
+    if from.is_empty() {
+        return Err("--remap-path-prefix requires a FROM path".into());
+    }
+    Ok(PathRemap {
+        from: PathBuf::from(from),
+        to: PathBuf::from(to),
+    })
 }
 
 // ---------------------------------------------------------------------------

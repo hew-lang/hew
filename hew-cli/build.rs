@@ -8,6 +8,12 @@ use hew_mir::physical::{ParamCarrier, SemParamPassing};
 use hew_types::ResolvedTy;
 
 fn main() {
+    // `hew.exe` exports the runtime symbols it links, so the MSVC linker
+    // would write its import library as `hew.lib` beside it, clobbering the
+    // `hew-lib` staticlib of the same name in the same Cargo output directory.
+    if std::env::var("CARGO_CFG_TARGET_ENV").as_deref() == Ok("msvc") {
+        println!("cargo:rustc-link-arg-bins=/NOIMPLIB");
+    }
     let build = std::thread::Builder::new()
         .name("hew-presentation-renderers".into())
         .stack_size(hew_compile::COMPILER_STACK_SIZE)

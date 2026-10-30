@@ -2,8 +2,10 @@
 //! the final binary from the object file emitted by Hew's Rust codegen-rs
 //! backend and the combined Hew library (`libhew.a`).
 
+use std::path::{Path, PathBuf};
+
 use crate::diagnostic::emit_plain_diagnostic_line;
-use crate::target::TargetSpec;
+use crate::target::{DebugInfoLayout, TargetSpec};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct NativeCompiler {
@@ -273,22 +275,9 @@ pub(crate) fn link_executable_with_hew_lib(
     if debug {
         cmd.arg("-g");
     }
+    cmd.args(plan.build_id_flags);
 
-    // ── Windows CodeView PDB (target-driven via NativeLinkPlan) ───────
-    // On ELF/Mach-O, `-g` carries debug info inside the object/executable. On
-    // Windows the CodeView channel is written to a standalone `.pdb` that
-    // lld-link only produces when asked: `-g` alone leaves the CodeView records
-    // (emitted by codegen for windows-msvc) on the floor and no PDB is written.
-    // `/DEBUG:FULL` writes complete line+local info (not the `/DEBUG:GHASH`
-    // fast-link variant) and `/PDB:<output>.pdb` names the sidecar next to the
-    // `.exe` so cdb/WinDbg/Visual Studio find it. The flags pass through the
-    // clang driver to lld-link as `-Wl,/DEBUG:FULL -Wl,/PDB:<path>`, mirroring
-    // the CRT-fixup `-Wl,/...` spellings below. Only attached on a debug build.
-    if debug && plan.needs_pdb_debug {
-        let pdb_path = pdb_output_path(&safe_output);
-        cmd.arg("-Wl,/DEBUG:FULL");
-        cmd.arg(format!("-Wl,/PDB:{pdb_path}"));
-    }
+    add_debug_info_flags(&mut cmd, plan.debug_layout, &compiler, debug, &safe_output);
 
     // ── Dead-code elimination (target-driven via NativeLinkPlan) ──────
     // Under coverage instrumentation, skip GC and symbol stripping so the
@@ -384,77 +373,492 @@ pub(crate) fn link_executable_with_hew_lib(
         return Err("linking failed".into());
     }
 
-    // ── dsymutil for Darwin debug builds (target-driven intent) ───────
-    // Darwin debug info requires a separate dSYM bundle: the linker writes a
-    // "debug map" referencing the object file, and dsymutil pulls the DWARF
-    // into a .dSYM bundle next to the binary.  Without this the debugger sees
-    // no Hew debug info in the linked binary.
-    if debug && plan.needs_dsymutil {
-        run_dsymutil_for_darwin(&safe_output);
+    if debug {
+        finish_linked_debug_info(plan.debug_layout, &compiler, &safe_output);
     }
 
     Ok(())
 }
 
-/// Run `dsymutil` after a Darwin debug link, if the tool is present on the host.
+/// Post-link work on a debug link's DWARF.
+fn finish_linked_debug_info(layout: DebugInfoLayout, compiler: &NativeCompiler, binary: &str) {
+    match layout {
+        DebugInfoLayout::ElfDwarf => {
+            if let DwarfShrink::Refused(reason) = shrink_elf_dwarf(compiler, binary) {
+                eprintln!("warning: {reason}; debug info left as linked");
+            }
+        }
+        // ── dSYM for Darwin debug builds ──────────────────────────────
+        // The Darwin linker leaves DWARF in the objects and writes a debug
+        // map (OSO stabs) naming them. dsymutil gathers it into a .dSYM
+        // beside the binary while the object still exists, then the stabs
+        // are stripped so a moved binary names no build paths and lldb
+        // matches the dSYM by UUID.
+        DebugInfoLayout::DarwinDsym => build_darwin_dsym(binary),
+        DebugInfoLayout::WindowsPdb | DebugInfoLayout::Unsupported => {}
+    }
+}
+
+/// The linker flags that decide where a link's debug info goes.
+fn add_debug_info_flags(
+    cmd: &mut std::process::Command,
+    layout: DebugInfoLayout,
+    compiler: &NativeCompiler,
+    debug: bool,
+    output: &str,
+) {
+    match layout {
+        // ── Windows CodeView PDB ──────────────────────────────────────
+        // lld-link writes the CodeView records codegen emits for windows-msvc
+        // to a PDB only when asked: `/DEBUG:FULL` (complete line and local
+        // info, not the `/DEBUG:GHASH` fast-link variant) and `/PDB:` naming
+        // the sidecar beside the `.exe`. `/PDBALTPATH:%_PDB%` records the bare
+        // file name in the executable's debug directory, so cdb and WinDbg find
+        // the PDB beside the executable from any directory and no build path
+        // is embedded. `/NOIMPLIB` stops the runtime's exported symbols from
+        // leaving a stray import library beside every program.
+        DebugInfoLayout::WindowsPdb => {
+            if debug {
+                cmd.arg("-Wl,/DEBUG:FULL");
+                cmd.arg(format!("-Wl,/PDB:{}", pdb_output_path(output)));
+                cmd.arg("-Wl,/PDBALTPATH:%_PDB%");
+                if let Some(natvis) = installed_natvis() {
+                    cmd.arg(format!("-Wl,/NATVIS:{}", natvis.display()));
+                }
+            }
+            cmd.arg("-Wl,/NOIMPLIB");
+        }
+        // zstd-compressed DWARF is several times smaller on disk and loads
+        // faster; the flag needs a linker built with zstd, probed once.
+        DebugInfoLayout::ElfDwarf if debug && compressed_debug_sections(compiler) => {
+            cmd.arg(ZSTD_DEBUG_SECTIONS);
+        }
+        DebugInfoLayout::ElfDwarf | DebugInfoLayout::DarwinDsym | DebugInfoLayout::Unsupported => {}
+    }
+}
+
+/// A runtime function every program's entry calls (it drops the entry's
+/// fault slot), so its line lookup shows whether a DWARF rewrite kept the
+/// runtime's line tables readable.
+const DWARF_PROBE_SYMBOL: &str = "hew_fault_drop";
+
+/// What [`shrink_elf_dwarf`] did to a linked binary.
+#[derive(Debug, PartialEq, Eq)]
+enum DwarfShrink {
+    /// The binary now carries only the DWARF of code the link kept.
+    Shrunk,
+    /// The LLVM tools are absent, or the linked binary has no line lookup
+    /// for [`DWARF_PROBE_SYMBOL`] that a rewrite could be checked against.
+    Skipped,
+    /// The rewrite failed or lost the probe's line; the binary is unchanged.
+    Refused(String),
+}
+
+/// Drop the DWARF of code the link discarded, then recompress what remains.
 ///
-/// `plan.needs_dsymutil` is set for any Darwin target.  The actual invocation
-/// is guarded to macOS hosts at compile time because dsymutil is a macOS tool;
-/// on other hosts this is a no-op (unreachable in practice, since
-/// `can_link_with_host_tools` only permits Darwin targets on macOS hosts).
-fn run_dsymutil_for_darwin(binary_path: &str) {
-    #[cfg(target_os = "macos")]
-    run_dsymutil(binary_path);
-    #[cfg(not(target_os = "macos"))]
-    let _ = binary_path;
+/// `--gc-sections` drops unused runtime code but the linker still copies its
+/// debug info; `llvm-dwarfutil --garbage-collection` removes it, roughly
+/// halving a `-g` binary. The rewrite replaces the binary only when
+/// `llvm-symbolizer` maps [`DWARF_PROBE_SYMBOL`] to a source line both before
+/// and after it.
+fn shrink_elf_dwarf(compiler: &NativeCompiler, binary: &str) -> DwarfShrink {
+    let Some(tools) = dwarf_rewrite_tools() else {
+        return DwarfShrink::Skipped;
+    };
+    if !resolves_probe_line(tools.symbolizer, std::path::Path::new(binary)) {
+        return DwarfShrink::Skipped;
+    }
+    let dir = std::path::Path::new(binary)
+        .parent()
+        .filter(|dir| !dir.as_os_str().is_empty())
+        .unwrap_or(std::path::Path::new("."));
+    let shrunk = match tempfile::NamedTempFile::new_in(dir) {
+        Ok(file) => file.into_temp_path(),
+        Err(error) => {
+            return DwarfShrink::Refused(format!("cannot create a file beside {binary}: {error}"))
+        }
+    };
+    let mut gc = std::process::Command::new(tools.dwarfutil);
+    gc.arg("--garbage-collection").arg(binary).arg(&shrunk);
+    let mut steps = vec![gc];
+    if compressed_debug_sections(compiler) {
+        let mut compress = std::process::Command::new(tools.objcopy);
+        compress.arg("--compress-debug-sections=zstd").arg(&shrunk);
+        steps.push(compress);
+    }
+    for mut step in steps {
+        let program = step.get_program().to_string_lossy().into_owned();
+        match step.output() {
+            Ok(output) if output.status.success() => {}
+            Ok(output) => {
+                return DwarfShrink::Refused(format!("{program} exited with {}", output.status));
+            }
+            Err(error) => return DwarfShrink::Refused(format!("cannot run {program}: {error}")),
+        }
+    }
+    if !resolves_probe_line(tools.symbolizer, &shrunk) {
+        return DwarfShrink::Refused(format!(
+            "{} lost the line table of {DWARF_PROBE_SYMBOL}",
+            tools.dwarfutil
+        ));
+    }
+    match shrunk.persist(binary) {
+        Ok(()) => DwarfShrink::Shrunk,
+        Err(error) => DwarfShrink::Refused(format!("cannot replace {binary}: {error}")),
+    }
+}
+
+/// The LLVM tools a DWARF rewrite needs, found once per process.
+struct DwarfRewriteTools {
+    dwarfutil: &'static str,
+    objcopy: &'static str,
+    symbolizer: &'static str,
+}
+
+fn dwarf_rewrite_tools() -> Option<&'static DwarfRewriteTools> {
+    static TOOLS: std::sync::OnceLock<Option<DwarfRewriteTools>> = std::sync::OnceLock::new();
+    TOOLS
+        .get_or_init(|| {
+            // A versioned name covers distributions that install LLVM only
+            // with a suffix; 17 is the oldest dwarfutil that reads DWARF 5.
+            const DWARFUTIL: &[&str] = &[
+                "llvm-dwarfutil",
+                "llvm-dwarfutil-22",
+                "llvm-dwarfutil-21",
+                "llvm-dwarfutil-20",
+                "llvm-dwarfutil-19",
+                "llvm-dwarfutil-18",
+                "llvm-dwarfutil-17",
+            ];
+            const OBJCOPY: &[&str] = &[
+                "llvm-objcopy",
+                "llvm-objcopy-22",
+                "llvm-objcopy-21",
+                "llvm-objcopy-20",
+                "llvm-objcopy-19",
+                "llvm-objcopy-18",
+                "llvm-objcopy-17",
+            ];
+            const SYMBOLIZER: &[&str] = &[
+                "llvm-symbolizer",
+                "llvm-symbolizer-22",
+                "llvm-symbolizer-21",
+                "llvm-symbolizer-20",
+                "llvm-symbolizer-19",
+                "llvm-symbolizer-18",
+                "llvm-symbolizer-17",
+            ];
+            let first = |names: &[&'static str]| names.iter().copied().find(|name| has_tool(name));
+            Some(DwarfRewriteTools {
+                dwarfutil: first(DWARFUTIL)?,
+                objcopy: first(OBJCOPY)?,
+                symbolizer: first(SYMBOLIZER)?,
+            })
+        })
+        .as_ref()
+}
+
+/// Whether `llvm-symbolizer` maps [`DWARF_PROBE_SYMBOL`] to a source line.
+fn resolves_probe_line(symbolizer: &str, binary: &std::path::Path) -> bool {
+    std::process::Command::new(symbolizer)
+        .args(["--no-inlines", "--functions=none", "--obj"])
+        .arg(binary)
+        .arg(DWARF_PROBE_SYMBOL)
+        .stderr(std::process::Stdio::null())
+        .output()
+        .is_ok_and(|output| {
+            // `file:line:column` on success, `??:0:0` when the lookup fails.
+            String::from_utf8_lossy(&output.stdout)
+                .lines()
+                .next()
+                .is_some_and(|line| !line.starts_with("??"))
+        })
+}
+
+/// The zstd DWARF compression flag for an ELF debug link.
+const ZSTD_DEBUG_SECTIONS: &str = "-Wl,--compress-debug-sections=zstd";
+
+/// Whether the selected driver and linker accept zstd-compressed DWARF.
+///
+/// Probed once per process by linking an empty program with the flag: a
+/// linker built without zstd rejects it, and its absence only costs size.
+fn compressed_debug_sections(compiler: &NativeCompiler) -> bool {
+    static SUPPORTED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *SUPPORTED.get_or_init(|| probe_compressed_debug_sections(compiler))
+}
+
+fn probe_compressed_debug_sections(compiler: &NativeCompiler) -> bool {
+    let Ok(dir) = tempfile::tempdir() else {
+        return false;
+    };
+    let source = dir.path().join("probe.c");
+    if std::fs::write(&source, "int main(void) { return 0; }\n").is_err() {
+        return false;
+    }
+    let mut cmd = std::process::Command::new(&compiler.program);
+    #[cfg(not(any(target_os = "windows", target_os = "macos")))]
+    if has_tool("ld.lld") {
+        cmd.arg("-fuse-ld=lld");
+    }
+    cmd.arg("-g")
+        .arg(ZSTD_DEBUG_SECTIONS)
+        .arg(&source)
+        .arg("-o")
+        .arg(dir.path().join("probe"))
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .is_ok_and(|status| status.success())
+}
+
+/// Gather a Darwin debug link's DWARF into `<binary>.dSYM` and strip the
+/// debug map from the binary.
+///
+/// The target is linkable only on a macOS host, where `dsymutil` and `strip`
+/// ship with the Command Line Tools. Failure is non-fatal: the binary still
+/// runs, and the warning says what the debugger will lack.
+fn build_darwin_dsym(binary_path: &str) {
+    let Some(dsymutil) = ["dsymutil", "llvm-dsymutil"]
+        .into_iter()
+        .find(|tool| has_tool(tool))
+    else {
+        eprintln!(
+            "warning: dsymutil not found; no .dSYM was written and lldb will show no Hew source"
+        );
+        return;
+    };
+    match std::process::Command::new(dsymutil)
+        .arg(binary_path)
+        .status()
+    {
+        Ok(status) if status.success() => {}
+        Ok(status) => {
+            eprintln!("warning: dsymutil exited with {status}; the .dSYM may be incomplete");
+            return;
+        }
+        Err(error) => {
+            eprintln!("warning: cannot run dsymutil: {error}");
+            return;
+        }
+    }
+    // `strip -S` removes the OSO stabs (absolute object paths) and keeps the
+    // symbol table; the dSYM already holds everything they pointed at.
+    match std::process::Command::new("strip")
+        .arg("-S")
+        .arg(binary_path)
+        .status()
+    {
+        Ok(status) if status.success() => {}
+        Ok(status) => eprintln!("warning: strip -S exited with {status}; object paths remain"),
+        Err(error) => eprintln!("warning: cannot run strip -S: {error}; object paths remain"),
+    }
 }
 
 /// Derive the PDB sidecar path for a Windows debug link from the executable
-/// output path: replace a trailing `.exe` with `.pdb`, otherwise append `.pdb`.
+/// output path: replace a trailing `.exe` (in any case, as Windows paths are
+/// case-insensitive) with `.pdb`, otherwise append `.pdb`.
 ///
-/// `lld-link`'s `/PDB:<path>` names the standalone `CodeView` database. Placing
-/// it next to the `.exe` (same stem) is what cdb/WinDbg/Visual Studio expect: the
-/// executable's debug directory records the PDB path the linker wrote here, and
-/// a sibling-stem PDB is found even if the recorded absolute path moves.
+/// The PDB sits beside the `.exe` with the same stem, where cdb, `WinDbg` and
+/// Visual Studio look for the bare name `/PDBALTPATH:%_PDB%` records.
 fn pdb_output_path(output: &str) -> String {
-    match output.strip_suffix(".exe") {
-        Some(stem) => format!("{stem}.pdb"),
-        None => format!("{output}.pdb"),
+    let stem_end = output.len().saturating_sub(".exe".len());
+    match output.get(stem_end..) {
+        Some(suffix) if suffix.eq_ignore_ascii_case(".exe") => {
+            format!("{}.pdb", &output[..stem_end])
+        }
+        _ => format!("{output}.pdb"),
     }
 }
 
-/// Run `dsymutil` on a linked binary to produce a `.dSYM` bundle.
-///
-/// On macOS the linker embeds a "debug map" that references the original object
-/// file's DWARF sections.  `dsymutil` reads that map and copies the DWARF into
-/// a standalone `.dSYM` bundle next to the binary.  If the object file has
-/// already been deleted (e.g. a temp file), the DWARF is lost — so we call
-/// this immediately after a successful link while the object is still alive.
-///
-/// Failure is non-fatal: the binary is still usable, just without rich debug
-/// info in the dSYM bundle.
-#[cfg(target_os = "macos")]
-fn run_dsymutil(binary_path: &str) {
-    let tool = if has_tool("dsymutil") {
-        "dsymutil"
-    } else if has_tool("llvm-dsymutil") {
-        "llvm-dsymutil"
-    } else {
-        eprintln!("warning: dsymutil not found — .dSYM bundle not generated");
-        return;
-    };
+/// The directory holding the debugger helpers (`hew-gdb.py`, `hew_lldb.py`,
+/// `hew.natvis` and the init files): `<prefix>/share/hew` beside an installed
+/// `bin/hew`, or `scripts/debug` beside a checkout's `target/<profile>/hew`.
+pub(crate) fn debug_script_dir() -> Option<PathBuf> {
+    let exe = std::env::current_exe().ok()?.canonicalize().ok()?;
+    let bin = exe.parent()?;
+    [bin.join("../share/hew"), bin.join("../../scripts/debug")]
+        .into_iter()
+        .find(|dir| dir.join("hew-gdb.py").is_file())
+        .and_then(|dir| dir.canonicalize().ok())
+}
 
-    let status = std::process::Command::new(tool).arg(binary_path).status();
+/// The installed Visual Studio visualizer, embedded in a debug PDB when the
+/// installation ships it.
+fn installed_natvis() -> Option<PathBuf> {
+    debug_script_dir()
+        .map(|dir| dir.join("hew.natvis"))
+        .filter(|natvis| natvis.is_file())
+}
 
-    match status {
-        Ok(s) if s.success() => {}
-        Ok(s) => {
-            eprintln!("warning: dsymutil exited with status {s} — .dSYM may be incomplete");
+/// Finish a `hew build -g` binary's debug info and describe where it lives.
+///
+/// With `split`, ELF DWARF moves from the binary into `<binary>.debug`,
+/// which the binary names in `.gnu_debuglink` beside its build-id; gdb
+/// loads it from the same directory or from a `.build-id/` tree. Each
+/// returned line names one artefact and the identity a debugger matches it
+/// by.
+///
+/// # Errors
+///
+/// Returns a message when `split` is requested for a target whose debug info
+/// is not embedded ELF DWARF, or when the split tools fail.
+pub(crate) fn finish_debug_output(
+    binary: &Path,
+    target: &TargetSpec,
+    split: bool,
+) -> Result<Vec<String>, String> {
+    let layout = target.native_link_plan().debug_layout;
+    if split && layout != DebugInfoLayout::ElfDwarf {
+        return Err(format!(
+            "Error: --split-debug applies to ELF targets; {} keeps its debug info in a {}",
+            target.normalized_triple(),
+            match layout {
+                DebugInfoLayout::DarwinDsym => ".dSYM beside the binary already",
+                DebugInfoLayout::WindowsPdb => ".pdb beside the executable already",
+                _ => "form no debugger reads",
+            }
+        ));
+    }
+    match layout {
+        DebugInfoLayout::ElfDwarf => {
+            let identity = binary_identity(binary)
+                .map(|id| format!(" ({id})"))
+                .unwrap_or_default();
+            if split {
+                let debug_file = split_elf_debug_info(binary)?;
+                Ok(vec![format!(
+                    "Debug info {}{identity}",
+                    debug_file.display()
+                )])
+            } else {
+                Ok(vec![format!("Debug info embedded{identity}")])
+            }
         }
-        Err(e) => {
-            eprintln!("warning: failed to run dsymutil: {e}");
+        DebugInfoLayout::DarwinDsym => {
+            let dsym = PathBuf::from(format!("{}.dSYM", binary.display()));
+            let dwarf = binary
+                .file_name()
+                .map(|name| dsym.join("Contents/Resources/DWARF").join(name));
+            match dwarf.as_deref().and_then(binary_identity) {
+                Some(uuid) => Ok(vec![format!("dSYM {} ({uuid})", dsym.display())]),
+                None => Ok(vec![format!("dSYM missing: {}", dsym.display())]),
+            }
+        }
+        DebugInfoLayout::WindowsPdb => {
+            let pdb = pdb_output_path(&binary.display().to_string());
+            let identity = binary_identity(binary)
+                .map(|id| format!(" ({id})"))
+                .unwrap_or_default();
+            Ok(vec![format!("PDB {pdb}{identity}")])
+        }
+        DebugInfoLayout::Unsupported => {
+            let mut note = format!(
+                "note: debugging {} is not verified and is unsupported",
+                target.normalized_triple()
+            );
+            if target.os() == crate::target::TargetOs::Windows {
+                note.push_str("; windows-msvc with cdb or WinDbg is the supported Windows path");
+            }
+            Ok(vec![note])
         }
     }
+}
+
+/// Move an ELF binary's DWARF into `<binary>.debug` and link it back.
+///
+/// `--only-keep-debug` copies the debug sections and symbol table, then
+/// `--strip-debug` removes the DWARF from the binary while keeping its symbol
+/// table (in-process backtraces still name functions) and adds a
+/// `.gnu_debuglink` with the debug file's CRC beside the existing build-id.
+fn split_elf_debug_info(binary: &Path) -> Result<PathBuf, String> {
+    let objcopy = ["llvm-objcopy", "objcopy"]
+        .into_iter()
+        .find(|tool| has_tool(tool))
+        .ok_or("Error: --split-debug needs llvm-objcopy or objcopy on PATH")?;
+    let debug_file = PathBuf::from(format!("{}.debug", binary.display()));
+    let run = |args: &[&std::ffi::OsStr]| -> Result<(), String> {
+        let output = std::process::Command::new(objcopy)
+            .args(args)
+            .output()
+            .map_err(|error| format!("Error: cannot run {objcopy}: {error}"))?;
+        if output.status.success() {
+            Ok(())
+        } else {
+            Err(format!(
+                "Error: {objcopy} failed while splitting debug info: {}",
+                String::from_utf8_lossy(&output.stderr).trim()
+            ))
+        }
+    };
+    run(&[
+        "--only-keep-debug".as_ref(),
+        binary.as_os_str(),
+        debug_file.as_os_str(),
+    ])?;
+    let debuglink = format!("--add-gnu-debuglink={}", debug_file.display());
+    run(&[
+        "--strip-debug".as_ref(),
+        debuglink.as_ref(),
+        binary.as_os_str(),
+    ])?;
+    Ok(debug_file)
+}
+
+/// The identity a debugger or symbol server matches this binary by, labelled
+/// with its kind: `build-id <hex>` for ELF, `UUID <uuid>` for Mach-O, or
+/// `PDB <guid>-<age> <name>` for a PE executable. It is how `.debug`, `.dSYM`
+/// and `.pdb` files are found for the binary.
+pub(crate) fn binary_identity(path: &Path) -> Option<String> {
+    use object::read::{Object, ReadCache};
+    let file = std::fs::File::open(path).ok()?;
+    let cache = ReadCache::new(file);
+    let parsed = object::File::parse(&cache).ok()?;
+    if let Ok(Some(id)) = parsed.build_id() {
+        return Some(format!("build-id {}", hex(id)));
+    }
+    if let Ok(Some(uuid)) = parsed.mach_uuid() {
+        return Some(format!("UUID {}", format_uuid(uuid)));
+    }
+    if let Ok(Some(pdb)) = parsed.pdb_info() {
+        return Some(format!(
+            "PDB {}-{} {}",
+            format_guid(pdb.guid()),
+            pdb.age(),
+            String::from_utf8_lossy(pdb.path())
+        ));
+    }
+    None
+}
+
+fn hex(bytes: &[u8]) -> String {
+    use std::fmt::Write as _;
+    bytes.iter().fold(String::new(), |mut out, byte| {
+        let _ = write!(out, "{byte:02x}");
+        out
+    })
+}
+
+/// Mach-O UUIDs print as dwarfdump and lldb show them.
+fn format_uuid(uuid: [u8; 16]) -> String {
+    let text = hex(&uuid).to_ascii_uppercase();
+    format!(
+        "{}-{}-{}-{}-{}",
+        &text[0..8],
+        &text[8..12],
+        &text[12..16],
+        &text[16..20],
+        &text[20..32]
+    )
+}
+
+/// PDB GUIDs store their first three fields little-endian; print them as
+/// cdb's `lm` and symbol servers do.
+fn format_guid(guid: [u8; 16]) -> String {
+    let mut ordered = guid;
+    ordered[0..4].reverse();
+    ordered[4..6].reverse();
+    ordered[6..8].reverse();
+    format_uuid(ordered)
 }
 
 /// Find the Darwin SDK path using `xcrun --show-sdk-path`.
@@ -1671,6 +2075,186 @@ mod tests {
         // A suffixless output (cross-link with no `.exe`) appends `.pdb` so the
         // PDB is still a distinct sibling file, never overwriting the binary.
         assert_eq!(pdb_output_path("app"), "app.pdb");
+        assert_eq!(pdb_output_path("app.v2"), "app.v2.pdb");
+    }
+
+    #[test]
+    fn pdb_path_matches_exe_suffix_in_any_case() {
+        // Windows paths are case-insensitive: `APP.EXE` must not become
+        // `APP.EXE.pdb`, which cdb would never look for.
+        assert_eq!(pdb_output_path(r"C:\Build\APP.EXE"), r"C:\Build\APP.pdb");
+        assert_eq!(pdb_output_path("app.Exe"), "app.pdb");
+        assert_eq!(pdb_output_path(".exe"), ".pdb");
+    }
+
+    // ── binary identities ─────────────────────────────────────────────
+
+    #[test]
+    fn uuid_prints_in_dwarfdump_spelling() {
+        let uuid = [
+            0x8a, 0x1b, 0x2c, 0x3d, 0x4e, 0x5f, 0x60, 0x71, 0x82, 0x93, 0xa4, 0xb5, 0xc6, 0xd7,
+            0xe8, 0xf9,
+        ];
+        assert_eq!(format_uuid(uuid), "8A1B2C3D-4E5F-6071-8293-A4B5C6D7E8F9");
+    }
+
+    #[test]
+    fn pdb_guid_prints_its_little_endian_fields_in_display_order() {
+        // GUID {00112233-4455-6677-8899-AABBCCDDEEFF} as stored in CodeView.
+        let stored = [
+            0x33, 0x22, 0x11, 0x00, 0x55, 0x44, 0x77, 0x66, 0x88, 0x99, 0xaa, 0xbb, 0xcc, 0xdd,
+            0xee, 0xff,
+        ];
+        assert_eq!(format_guid(stored), "00112233-4455-6677-8899-AABBCCDDEEFF");
+    }
+
+    /// A real `-g` link split by the same objcopy steps `hew build
+    /// --split-debug` runs: the DWARF leaves the binary, the debug file keeps
+    /// it, and the two share the build-id the debuglink sits beside.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn split_debug_moves_dwarf_behind_a_debuglink() {
+        use object::{Object, ObjectSection, SectionKind};
+        let dir = tempfile::tempdir().expect("tempdir");
+        let source = dir.path().join("main.c");
+        std::fs::write(&source, "int main(void) { return 0; }\n").expect("source");
+        let binary = dir.path().join("app");
+        let status = std::process::Command::new("cc")
+            .args(["-g", "-Wl,--build-id"])
+            .arg(&source)
+            .arg("-o")
+            .arg(&binary)
+            .status()
+            .expect("cc");
+        assert!(status.success(), "cc -g failed");
+        let target = TargetSpec::from_requested(None).expect("host target");
+
+        let lines = finish_debug_output(&binary, &target, true).expect("split");
+
+        let debug_file = dir.path().join("app.debug");
+        assert_eq!(lines.len(), 1, "{lines:?}");
+        assert!(lines[0].contains("app.debug"), "{lines:?}");
+        let identity = binary_identity(&binary).expect("build-id");
+        assert!(identity.starts_with("build-id "), "{identity}");
+        assert!(lines[0].contains(&identity), "{lines:?}");
+        assert_eq!(
+            binary_identity(&debug_file).as_deref(),
+            Some(identity.as_str())
+        );
+
+        let stripped = std::fs::read(&binary).expect("binary");
+        let stripped = object::File::parse(&*stripped).expect("parse binary");
+        assert!(stripped.section_by_name(".debug_info").is_none());
+        assert!(stripped.section_by_name(".gnu_debuglink").is_some());
+        let debug = std::fs::read(&debug_file).expect("debug file");
+        let debug = object::File::parse(&*debug).expect("parse debug file");
+        let info = debug.section_by_name(".debug_info").expect(".debug_info");
+        assert_ne!(info.kind(), SectionKind::UninitializedData);
+        assert!(info.size() > 0);
+    }
+
+    /// A `-g` link drops the DWARF of a function `--gc-sections` discarded,
+    /// keeps the probe's line lookup, and stays a runnable executable.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn dwarf_shrink_drops_discarded_code_and_keeps_line_lookup() {
+        use object::{Object, ObjectSection};
+        use std::os::unix::fs::PermissionsExt;
+        if dwarf_rewrite_tools().is_none() {
+            eprintln!("skipped: llvm-dwarfutil, llvm-objcopy or llvm-symbolizer not found");
+            return;
+        }
+        let dir = tempfile::tempdir().expect("tempdir");
+        let source = dir.path().join("main.c");
+        std::fs::write(
+            &source,
+            "int hew_fault_drop(int x) { return x - 1; }\n\
+             int discarded_by_the_link(int x) { return x * 7; }\n\
+             int main(void) { return hew_fault_drop(1); }\n",
+        )
+        .expect("source");
+        let binary = dir.path().join("app");
+        let target = TargetSpec::from_requested(None).expect("host target");
+        let compiler = select_native_compiler(&target).expect("C driver");
+        let status = std::process::Command::new(&compiler.program)
+            .args(["-g", "-ffunction-sections", "-Wl,--gc-sections"])
+            .arg(&source)
+            .arg("-o")
+            .arg(&binary)
+            .status()
+            .expect("link");
+        assert!(status.success(), "-g link failed");
+        let debug_names = |path: &Path| {
+            let bytes = std::fs::read(path).expect("binary");
+            let file = object::File::parse(&*bytes).expect("parse");
+            let strings = file.section_by_name(".debug_str").expect(".debug_str");
+            String::from_utf8_lossy(&strings.uncompressed_data().expect("debug strings"))
+                .into_owned()
+        };
+        assert!(debug_names(&binary).contains("discarded_by_the_link"));
+
+        assert_eq!(
+            shrink_elf_dwarf(&compiler, binary.to_str().expect("utf-8 path")),
+            DwarfShrink::Shrunk
+        );
+
+        assert!(!debug_names(&binary).contains("discarded_by_the_link"));
+        let tools = dwarf_rewrite_tools().expect("tools");
+        assert!(resolves_probe_line(tools.symbolizer, &binary));
+        let mode = std::fs::metadata(&binary)
+            .expect("metadata")
+            .permissions()
+            .mode();
+        assert_eq!(mode & 0o111, 0o111, "the rewrite must stay executable");
+        let status = std::process::Command::new(&binary).status().expect("run");
+        assert_eq!(status.code(), Some(0));
+    }
+
+    /// A binary without the probe's line lookup has nothing to check a
+    /// rewrite against, so it stays byte-for-byte as linked.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn dwarf_shrink_leaves_a_binary_without_the_probe_untouched() {
+        if dwarf_rewrite_tools().is_none() {
+            eprintln!("skipped: llvm-dwarfutil, llvm-objcopy or llvm-symbolizer not found");
+            return;
+        }
+        let dir = tempfile::tempdir().expect("tempdir");
+        let source = dir.path().join("main.c");
+        std::fs::write(
+            &source,
+            "int discarded_by_the_link(int x) { return x * 7; }\n\
+             int main(void) { return 0; }\n",
+        )
+        .expect("source");
+        let binary = dir.path().join("app");
+        let target = TargetSpec::from_requested(None).expect("host target");
+        let compiler = select_native_compiler(&target).expect("C driver");
+        let status = std::process::Command::new(&compiler.program)
+            .args(["-g", "-ffunction-sections", "-Wl,--gc-sections"])
+            .arg(&source)
+            .arg("-o")
+            .arg(&binary)
+            .status()
+            .expect("link");
+        assert!(status.success(), "-g link failed");
+        let linked = std::fs::read(&binary).expect("binary");
+
+        assert_eq!(
+            shrink_elf_dwarf(&compiler, binary.to_str().expect("utf-8 path")),
+            DwarfShrink::Skipped
+        );
+        assert_eq!(std::fs::read(&binary).expect("binary"), linked);
+    }
+
+    #[test]
+    fn split_debug_is_refused_where_debug_info_is_already_separate() {
+        let binary = Path::new("app");
+        for triple in ["aarch64-apple-darwin", "x86_64-pc-windows-msvc"] {
+            let target = TargetSpec::from_requested(Some(triple)).expect("target");
+            let error = finish_debug_output(binary, &target, true).unwrap_err();
+            assert!(error.contains("--split-debug"), "{triple}: {error}");
+        }
     }
 
     // ── symbol_to_feature_hint ────────────────────────────────────────

@@ -158,11 +158,17 @@ _resolve_version() {
 PLATFORM=""
 TARBALL_NAME=""
 TARBALL_PATH=""
+DEBUG_TARBALL_NAME=""
+DEBUG_TARBALL_PATH=""
 
 _init_tarball_vars() {
     PLATFORM="linux-${TARGET_ARCH}"
     TARBALL_NAME="hew-v${VERSION}-${PLATFORM}.tar.gz"
     TARBALL_PATH="${DIST_DIR}/${TARBALL_NAME}"
+    # The compiler's split debug info, `.build-id/xx/yyyy.debug` under one
+    # top-level directory; the -dbgsym and -debuginfo packages install it.
+    DEBUG_TARBALL_NAME="hew-v${VERSION}-${PLATFORM}-debug.tar.gz"
+    DEBUG_TARBALL_PATH="${DIST_DIR}/${DEBUG_TARBALL_NAME}"
 }
 
 build_tarball() {
@@ -207,7 +213,11 @@ build_tarball() {
     # Standard library sources (all .hew files, including subdirectories)
     cp -r "${REPO_DIR}/std/." "${staging}/std/"
     mkdir -p "${staging}/share/hew"
-    cp "${REPO_DIR}/scripts/debug/hew-gdb.py" "${REPO_DIR}/scripts/debug/hew_lldb.py" "${staging}/share/hew/"
+    # Every debugger helper: gdb and lldb scripts, the init files and the natvis.
+    for helper in "${REPO_DIR}"/scripts/debug/*; do
+        [[ -f "${helper}" ]] || continue
+        cp "${helper}" "${staging}/share/hew/"
+    done
     cp "${REPO_DIR}/hew-cabi/include/hew.h" "${REPO_DIR}/hew-cabi/include/hew_host.h" "${staging}/include/"
 
     # Generate shell completions from built binaries
@@ -218,8 +228,13 @@ build_tarball() {
     cp "${REPO_DIR}/LICENSE-MIT" "${REPO_DIR}/LICENSE-APACHE" \
         "${REPO_DIR}/NOTICE" "${REPO_DIR}/README.md" "${staging}/"
 
+    sh "${REPO_DIR}/scripts/split-debug-symbols.sh" --triple "${TARGET_ARCH}-unknown-linux-gnu" \
+        --built-dir "${release_dir}" --binary "${staging}/bin/hew" \
+        --destination "${staging_root}/hew-v${VERSION}-${PLATFORM}-debug"
+
     mkdir -p "${DIST_DIR}"
     tar -czf "${TARBALL_PATH}" -C "${staging_root}" "hew-v${VERSION}-${PLATFORM}"
+    tar -czf "${DEBUG_TARBALL_PATH}" -C "${staging_root}" "hew-v${VERSION}-${PLATFORM}-debug"
     rm -rf "${staging_root}"
 
     _record_ok "tarball" "${TARBALL_PATH}"
@@ -270,8 +285,11 @@ build_debian() {
     echo "${VERSION}" >"${ctx}/hew-${VERSION}/debian/hew-version"
     sed -i "1s/^hew ([^)]*)/hew (${VERSION}-1)/" "${ctx}/hew-${VERSION}/debian/changelog"
 
-    # Pre-place the tarball so debian/rules skips the download
+    # Pre-place the tarballs so debian/rules skips the download
     cp "${TARBALL_PATH}" "${ctx}/hew-${VERSION}/"
+    if [[ -f "${DEBUG_TARBALL_PATH}" ]]; then
+        cp "${DEBUG_TARBALL_PATH}" "${ctx}/hew-${VERSION}/"
+    fi
 
     info "docker" "debian:bookworm -> hew_${VERSION}-1_${deb_arch}.deb"
     if docker run --rm \
@@ -282,10 +300,11 @@ build_debian() {
              apt-get install -y -qq dpkg-dev debhelper curl >/dev/null 2>&1 &&
              dpkg-buildpackage -b -nc -us -uc 2>&1'; then
         local deb_name="hew_${VERSION}-1_${deb_arch}.deb"
-        if [[ -f "${ctx}/${deb_name}" ]]; then
-            cp "${ctx}/${deb_name}" "${DIST_DIR}/"
+        local dbgsym_name="hew-dbgsym_${VERSION}-1_${deb_arch}.deb"
+        if [[ -f "${ctx}/${deb_name}" && -f "${ctx}/${dbgsym_name}" ]]; then
+            cp "${ctx}/${deb_name}" "${ctx}/${dbgsym_name}" "${DIST_DIR}/"
             _docker_rm "${ctx}"
-            _record_ok "debian" "${DIST_DIR}/${deb_name}"
+            _record_ok "debian" "${DIST_DIR}/${deb_name} ${DIST_DIR}/${dbgsym_name}"
         else
             _docker_rm "${ctx}"
             _record_fail "debian" ".deb not found after build"
@@ -319,6 +338,11 @@ build_rpm() {
     mkdir -p "${ctx}"
 
     cp "${TARBALL_PATH}" "${ctx}/"
+    [[ -f "${DEBUG_TARBALL_PATH}" ]] || {
+        _record_fail "rpm" "debug symbols tarball not found: ${DEBUG_TARBALL_PATH}"
+        return 0
+    }
+    cp "${DEBUG_TARBALL_PATH}" "${ctx}/"
     cp "${SCRIPT_DIR}/rpm/hew.spec" "${ctx}/"
     sed -i "s/^Version:.*/Version:        ${VERSION}/" "${ctx}/hew.spec"
 
@@ -328,17 +352,18 @@ build_rpm() {
         fedora:41 bash -c \
         'dnf install -y rpm-build >/dev/null 2>&1 &&
              mkdir -p /root/rpmbuild/{SOURCES,SPECS,RPMS} &&
-             cp /build/'"${TARBALL_NAME}"' /root/rpmbuild/SOURCES/ &&
+             cp /build/'"${TARBALL_NAME}"' /build/'"${DEBUG_TARBALL_NAME}"' /root/rpmbuild/SOURCES/ &&
              cp /build/hew.spec /root/rpmbuild/SPECS/ &&
              rpmbuild -bb /root/rpmbuild/SPECS/hew.spec 2>&1 &&
              cp /root/rpmbuild/RPMS/'"${TARGET_ARCH}"'/*.rpm /build/ 2>/dev/null'; then
         # RPM filename includes dist tag (e.g. .fc41), so glob for it
-        local rpm_file
+        local rpm_file debuginfo_file
         rpm_file="$(ls "${ctx}"/hew-"${VERSION}"-1.*.rpm 2>/dev/null | head -1)"
-        if [[ -n "${rpm_file}" && -f "${rpm_file}" ]]; then
-            cp "${rpm_file}" "${DIST_DIR}/"
+        debuginfo_file="$(ls "${ctx}"/hew-debuginfo-"${VERSION}"-1.*.rpm 2>/dev/null | head -1)"
+        if [[ -n "${rpm_file}" && -f "${rpm_file}" && -n "${debuginfo_file}" ]]; then
+            cp "${rpm_file}" "${debuginfo_file}" "${DIST_DIR}/"
             _docker_rm "${ctx}"
-            _record_ok "rpm" "${DIST_DIR}/$(basename "${rpm_file}")"
+            _record_ok "rpm" "${DIST_DIR}/$(basename "${rpm_file}") ${DIST_DIR}/$(basename "${debuginfo_file}")"
         else
             _docker_rm "${ctx}"
             _record_fail "rpm" ".rpm not found after build"

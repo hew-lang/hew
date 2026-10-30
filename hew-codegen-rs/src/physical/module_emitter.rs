@@ -72,6 +72,17 @@ pub(super) fn build_module_with_host<'ctx>(
     emitter.emit_actor_ingress_adapters()?;
     emitter.emit_functions()?;
     emitter.emit_entry()?;
+    for callable in &physical.callables {
+        let body = if callable.is_resumable {
+            emitter.ramps.get(&callable.id)
+        } else {
+            emitter.functions.get(&callable.id)
+        };
+        if let Some(body) = body {
+            symtab::tag_callable(*body, callable.id);
+        }
+    }
+    symtab::emit_source_tables(&emitter.llvm, physical, debug_source.is_some());
     if let Some(export) = host {
         host::emit(&emitter, export)?;
     }
@@ -80,8 +91,23 @@ pub(super) fn build_module_with_host<'ctx>(
         debug.finalize();
     }
     c_abi::seal_c_scalar_widening(&emitter.llvm)?;
+    keep_frame_pointers(&emitter.llvm);
     verify_bounded(&emitter.llvm)?;
     Ok(emitter.llvm)
+}
+
+/// Keep a frame-pointer chain through every function the module defines, at
+/// every optimization level, so sampling profilers, crash backtraces and
+/// debuggers can walk Hew frames without unwind tables. Bodies LLVM later
+/// splits out of these (coroutine resume and destroy parts) inherit it.
+fn keep_frame_pointers(module: &Module<'_>) {
+    let ctx = module.get_context();
+    let attribute = ctx.create_string_attribute("frame-pointer", "all");
+    for function in module.get_functions() {
+        if function.count_basic_blocks() > 0 {
+            function.add_attribute(inkwell::attributes::AttributeLoc::Function, attribute);
+        }
+    }
 }
 
 /// Longest verifier report a diagnostic carries. LLVM prints every offending

@@ -331,8 +331,9 @@ impl LowerCtx<'_> {
             tail: Some(Box::new(body)),
             span: span.clone(),
         };
+        let id = self.mint_body_item();
         self.pending_lambda_actors.push(HirActorDecl {
-            id: self.ids.item(),
+            id,
             node: self.ids.node(),
             declaration: identity.actor,
             name: identity.path.clone(),

@@ -66,9 +66,17 @@ pub fn display_names(module: &SemModule) -> BTreeMap<CallableId, DisplayName> {
         .map(|closure| (closure.id, closure.instance.enclosing))
         .collect();
 
+    let last_def = module.defs.ids().last();
     let mut names = BTreeMap::new();
     for callable in &module.callables {
-        let name = name_of(module, callable.id, &enclosing, &closure_ordinals, 0);
+        let name = name_of(
+            module,
+            callable.id,
+            &enclosing,
+            &closure_ordinals,
+            last_def,
+            0,
+        );
         names.insert(callable.id, name);
     }
     names
@@ -83,6 +91,7 @@ fn name_of(
     id: CallableId,
     enclosing: &BTreeMap<hew_sir::ClosureId, CallableId>,
     ordinals: &BTreeMap<hew_sir::ClosureId, usize>,
+    last_def: Option<hew_types::DefId>,
     depth: usize,
 ) -> DisplayName {
     let Some(callable) = module.callables.get(id.0 as usize) else {
@@ -92,6 +101,14 @@ fn name_of(
         };
     };
     let defs = &module.defs;
+    // A body whose declaration the module's table never minted (a hand-built
+    // module) has no source spelling.
+    if last_def.is_none_or(|last| callable.declaration > last) {
+        return DisplayName {
+            text: String::new(),
+            artificial: true,
+        };
+    }
     let declared = || defs.dotted_declaration_path(callable.declaration);
     let source = |text: String| DisplayName {
         text,
@@ -127,7 +144,7 @@ fn name_of(
         CallableInstance::Closure(closure) => {
             let owner = match enclosing.get(closure) {
                 Some(owner) if depth < MAX_CLOSURE_DEPTH => {
-                    name_of(module, *owner, enclosing, ordinals, depth + 1).text
+                    name_of(module, *owner, enclosing, ordinals, last_def, depth + 1).text
                 }
                 _ => declared(),
             };

@@ -920,6 +920,7 @@ impl LowerCtx<'_> {
                 self.lower_generator_fn_body(func, declaration, source_return_ty, &span);
             self.pop_scope();
             self.current_fn_type_params = prior_fn_type_params;
+            self.note_item_file(id);
             return Some(HirFn {
                 failure_domain: hew_types::CallableFailureDomain::HewFault,
                 id,
@@ -973,6 +974,7 @@ impl LowerCtx<'_> {
             .first()
             .filter(|_| self.consuming_inherent_methods.contains(&declaration))
             .map(|parameter| parameter.id);
+        self.note_item_file(id);
         Some(HirFn {
             failure_domain: hew_types::CallableFailureDomain::HewFault,
             id,

@@ -253,6 +253,7 @@ pub struct FileSpanIndices {
     item_index: HashMap<ModulePath, Vec<u32>>,
     by_path: HashMap<PathBuf, u32>,
     module_name: HashMap<u32, String>,
+    paths: HashMap<u32, PathBuf>,
 }
 
 impl FileSpanIndices {
@@ -280,6 +281,13 @@ impl FileSpanIndices {
     #[must_use]
     pub fn path_index(&self, path: &Path) -> Option<u32> {
         self.by_path.get(path).copied()
+    }
+
+    /// The source file an index was allocated for. A module recorded without
+    /// source paths owns an index with no file.
+    #[must_use]
+    pub fn file_path(&self, index: u32) -> Option<&Path> {
+        self.paths.get(&index).map(PathBuf::as_path)
     }
 
     /// The dotted module path that owns an index.
@@ -340,6 +348,7 @@ impl ModuleGraph {
             for (offset, path) in files.iter().enumerate() {
                 let idx = base + u32::try_from(offset).unwrap_or(0);
                 indices.by_path.entry(path.clone()).or_insert(idx);
+                indices.paths.insert(idx, path.clone());
             }
             for offset in 0..file_count {
                 let idx = base + u32::try_from(offset).unwrap_or(0);
@@ -372,6 +381,9 @@ impl ModuleGraph {
         if let Some(root) = self.modules.get(&self.root) {
             for path in &root.source_paths {
                 indices.by_path.entry(path.clone()).or_insert(0);
+            }
+            if let Some(path) = root.source_paths.first() {
+                indices.paths.insert(0, path.clone());
             }
         }
         indices

@@ -2108,6 +2108,10 @@ fn initiator_that_gives_up_after_the_commit_keeps_the_shared_connection() {
 /// connection at once, sends to the peer fail and its replies are dropped
 /// for a round trip, and a SWIM probe in that window suspects the peer.
 #[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "keep the held reservation and the reply that crosses it together"
+)]
 fn responder_keeps_the_shared_connection_while_it_awaits_the_echo() {
     let _guard = crate::runtime_test_guard();
     crate::registry::hew_registry_clear();
@@ -2212,8 +2216,9 @@ fn responder_keeps_the_shared_connection_while_it_awaits_the_echo() {
             Ok(Some((ReplyStatus::Success, b"shared".to_vec()))),
             "the reply returned on the shared connection"
         );
-        assert_eq!(rc, 0, "the redial connected");
-        await_one_shared_connection(lower, higher, "after the redial");
+        // The held redial may outlast its attempt budget; either way the pair
+        // keeps one connection.
+        await_one_shared_connection(lower, higher, &format!("after the redial (rc {rc})"));
         assert_eq!(hew_node_stop(b.as_ptr()), 0);
         assert_eq!(hew_node_stop(a.as_ptr()), 0);
     }

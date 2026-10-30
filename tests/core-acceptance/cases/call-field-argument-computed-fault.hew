@@ -1,0 +1,21 @@
+type Holder {
+    items: Vec<string>;
+}
+
+fn read(items: Vec<string>, index: i64) -> string {
+    items[index]
+}
+
+fn pick(scale: i64) -> i64 {
+    var holder = Holder { items: ["old".to_upper()] };
+    let indices = [0];
+    let kept = read(holder.items, indices[0] / scale);
+    println(kept);
+    let again = read(holder.items, indices[scale * 99]);
+    println(again);
+    kept.len() + again.len()
+}
+
+fn main() {
+    println(pick(1));
+}

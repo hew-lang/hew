@@ -1,0 +1,10 @@
+[[case]]
+id = "call-field-argument-computed-fault"
+intent = "A field argument read in place while a later computed argument faults unwinds without entering the callee and releases the holder exactly once."
+source = "cases/call-field-argument-computed-fault.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "OLD\n"
+exit = 1

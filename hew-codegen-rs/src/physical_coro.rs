@@ -463,12 +463,14 @@ impl<'ctx> Frame<'ctx> {
         let pointer = ctx.ptr_type(AddressSpace::default());
         let view_ty = self.managed_frame_type;
         let size = view_ty.get_field_type_at_index(1).unwrap().into_int_type();
-        let view = if let Some(view) = self.managed_view.get() {
-            view
+        // Coroutine entry publishes the view once; a later root table rewrites
+        // that published view in place and needs no second publication.
+        let (view, published) = if let Some(view) = self.managed_view.get() {
+            (view, true)
         } else {
             let view = self.storage(ctx, view_ty.into(), "managed.frame")?;
             self.managed_view.set(Some(view));
-            view
+            (view, false)
         };
         let (operation, _) = self.operation_storage(ctx)?;
         let child = self.child_storage(ctx)?.0;
@@ -485,6 +487,9 @@ impl<'ctx> Frame<'ctx> {
             builder
                 .build_store(field, entry)
                 .llvm_ctx("bind canonical invocation roots")?;
+        }
+        if published {
+            return Ok(());
         }
         let bind = get_or_declare_external(
             module,

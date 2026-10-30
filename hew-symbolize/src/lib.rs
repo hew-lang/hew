@@ -207,6 +207,9 @@ pub(crate) fn read_file(path: &Path) -> Result<Vec<u8>> {
 pub struct Symbolizer {
     path: PathBuf,
     build_id: Option<BuildId>,
+    /// The address the image's first byte has in its own file: zero on ELF,
+    /// the `__TEXT` address on Mach-O, `ImageBase` on PE, zero for a `.pdb`.
+    static_base: u64,
     source: Source,
 }
 
@@ -237,6 +240,7 @@ impl Symbolizer {
         }
         let image = dwarf::ObjectSymbols::parse(&file, &data)?;
         let build_id = image.build_id().cloned();
+        let static_base = image.static_base();
         let source = match image.sidecar() {
             Some(dwarf::Sidecar::Object { path: sidecar, crc }) if !image.has_dwarf() => {
                 let sidecar_data = read_file(&sidecar)?;
@@ -257,6 +261,7 @@ impl Symbolizer {
         Ok(Self {
             path: path.to_path_buf(),
             build_id,
+            static_base,
             source,
         })
     }
@@ -265,16 +270,21 @@ impl Symbolizer {
     /// names: a split debug file never names a further one, and following
     /// its link would loop on a pair of files that name each other.
     fn from_data(path: &Path, file: &Path, data: Vec<u8>) -> Result<Self> {
-        let (build_id, source) = if pdb_file::is_pdb(&data) {
+        let (build_id, static_base, source) = if pdb_file::is_pdb(&data) {
             let symbols = pdb_file::PdbSymbols::parse(file, data)?;
-            (Some(symbols.build_id().clone()), Source::Pdb(symbols))
+            (Some(symbols.build_id().clone()), 0, Source::Pdb(symbols))
         } else {
             let image = dwarf::ObjectSymbols::parse(file, &data)?;
-            (image.build_id().cloned(), Source::Object(image))
+            (
+                image.build_id().cloned(),
+                image.static_base(),
+                Source::Object(image),
+            )
         };
         Ok(Self {
             path: path.to_path_buf(),
             build_id,
+            static_base,
             source,
         })
     }
@@ -289,6 +299,14 @@ impl Symbolizer {
     #[must_use]
     pub fn build_id(&self) -> Option<&BuildId> {
         self.build_id.as_ref()
+    }
+
+    /// The address the image's first byte has in its own file. A frame with
+    /// this as its `image_base` resolves a file address, as `nm` or a
+    /// disassembly prints it, rather than a run-time one.
+    #[must_use]
+    pub fn static_base(&self) -> u64 {
+        self.static_base
     }
 
     /// Resolve one frame, innermost inlined call first.

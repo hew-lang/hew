@@ -83,6 +83,10 @@ impl ObjectSymbols {
         self.build_id.as_ref()
     }
 
+    pub(crate) fn static_base(&self) -> u64 {
+        self.static_base
+    }
+
     pub(crate) fn has_dwarf(&self) -> bool {
         self.dwarf.is_some()
     }
@@ -214,7 +218,13 @@ fn function_symbols(file: &object::File<'_>) -> Vec<FunctionSymbol> {
                 .map_or(symbol.address(), |section| {
                     section.address() + section.size()
                 });
-            let name = symbol.name().ok()?.to_string();
+            let name = symbol.name().ok()?;
+            // Mach-O prefixes every C-level symbol with `_`.
+            let name = match file.format() {
+                object::BinaryFormat::MachO => name.strip_prefix('_').unwrap_or(name),
+                _ => name,
+            }
+            .to_string();
             Some((symbol.address(), symbol.size(), section_end, name))
         })
         .collect();

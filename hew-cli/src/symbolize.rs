@@ -18,9 +18,9 @@ pub struct SymbolizeArgs {
     pub addresses: Vec<u64>,
     /// The image's run-time base: the load bias on ELF, the `mach_header`
     /// address on Mach-O, the module handle on Windows. Without it the
-    /// addresses are offsets from the image's start.
-    #[arg(long, value_name = "ADDRESS", value_parser = parse_address, default_value = "0")]
-    pub base: u64,
+    /// addresses are file addresses, as `nm` or a disassembly prints them.
+    #[arg(long, value_name = "ADDRESS", value_parser = parse_address)]
+    pub base: Option<u64>,
     /// Refuse the binary unless its build identity is this hex string.
     #[arg(long = "build-id", value_name = "HEX", value_parser = parse_build_id)]
     pub build_id: Option<BuildId>,
@@ -49,11 +49,12 @@ fn parse_build_id(value: &str) -> Result<BuildId, String> {
 /// call first. An address no symbols cover prints `??`.
 pub(crate) fn run(args: &SymbolizeArgs) -> Result<String, hew_symbolize::Error> {
     let symbolizer = Symbolizer::open(&args.binary)?;
+    let image_base = args.base.unwrap_or_else(|| symbolizer.static_base());
     let mut out = String::new();
     for &pc in &args.addresses {
         let frame = Frame {
             pc,
-            image_base: args.base,
+            image_base,
             build_id: args.build_id.clone(),
             return_address: args.return_addresses,
         };

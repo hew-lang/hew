@@ -41,10 +41,11 @@
 //! # Absence
 //!
 //! An image without a table (a wasm module, a Rust test binary that links the
-//! runtime) is valid. The runtime reaches the tables through weak references:
-//! stable Rust has no `extern_weak`, so a C shim declares them
-//! `__attribute__((weak))` on ELF and Mach-O and resolves them through
-//! `/alternatename` to a null default on MSVC.
+//! runtime) is valid. Stable Rust has no `extern_weak` and Mach-O refuses a
+//! weak reference nothing defines, so a C shim in the runtime gives each table
+//! a zeroed default: an `__attribute__((weak))` definition on ELF, Mach-O and
+//! wasm, an `/alternatename` stand-in on MSVC. The program's table replaces it
+//! at link time; a reader treats the default's zero magic as no table.
 
 #![no_std]
 

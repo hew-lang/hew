@@ -9,7 +9,8 @@
 //! module) resolves nothing, and every consumer omits location and frame
 //! names silently.
 //!
-//! The tables are reached through weak references in `debug_tables.c`. Every
+//! `debug_tables.c` gives every table a weak zeroed default the program's own
+//! table replaces at link time; a zero magic reads as absent. Every
 //! lookup only reads them in place (no allocation, locks or thread-locals),
 //! so a fault handler may call it.
 
@@ -48,7 +49,7 @@ mod image {
     }
 
     pub(super) fn file_table() -> *const u8 {
-        // SAFETY: the shim only returns a symbol's address or null.
+        // SAFETY: the shim only returns a table's address.
         unsafe { hew_debug_file_table() }
     }
 

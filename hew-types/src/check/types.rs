@@ -3400,24 +3400,24 @@ pub struct Checker {
     /// per-call-site side table. Tests may insert names directly to exercise
     /// the consume-marker path.
     pub(super) consume_receiver_methods: HashSet<String>,
-    pub(super) pending_lowering_facts: HashMap<SpanKey, PendingLoweringFact>,
+    pub(super) pending_lowering_facts: BTreeMap<SpanKey, PendingLoweringFact>,
     /// `HashMap` key/value admission checks deferred until after inference
     /// completes.  Keyed by span to suppress duplicates from repeated
     /// traversals of the same site (annotation + method call on the same map).
-    pub(super) deferred_hashmap_admission: HashMap<SpanKey, DeferredHashMapAdmission>,
+    pub(super) deferred_hashmap_admission: BTreeMap<SpanKey, DeferredHashMapAdmission>,
     /// See [`DeferredCollectionValueCopy`].
-    pub(super) deferred_collection_value_copy: HashMap<SpanKey, DeferredCollectionValueCopy>,
+    pub(super) deferred_collection_value_copy: BTreeMap<SpanKey, DeferredCollectionValueCopy>,
     /// `HashSet` element admission checks deferred until after inference
     /// completes.  Keyed by span to suppress duplicates from repeated
     /// traversals of the same site (annotation + method call on the same set).
-    pub(super) deferred_hashset_admission: HashMap<SpanKey, DeferredHashSetAdmission>,
+    pub(super) deferred_hashset_admission: BTreeMap<SpanKey, DeferredHashSetAdmission>,
     /// `Vec` element admission checks deferred until after inference
     /// completes. Keyed by span to suppress duplicates from repeated traversals
     /// of the same site.
-    pub(super) deferred_vec_admission: HashMap<SpanKey, DeferredVecAdmission>,
+    pub(super) deferred_vec_admission: BTreeMap<SpanKey, DeferredVecAdmission>,
     /// Built-in value-container clone checks deferred until after inference.
     /// Keyed by clone call-site span.
-    pub(super) deferred_builtin_clone_admission: HashMap<SpanKey, DeferredBuiltinCloneAdmission>,
+    pub(super) deferred_builtin_clone_admission: BTreeMap<SpanKey, DeferredBuiltinCloneAdmission>,
     /// Dedup set for [`Checker::reject_shadowing_method_type_params`], keyed by
     /// the DECLARATION's identity: owner key, declaration span, parameter name.
     ///
@@ -3558,7 +3558,7 @@ pub struct Checker {
     /// authority for whether a handler's `Result`-shaped reply is a declared
     /// failure (which a completion call reports as `ActorError.Failed`) or an
     /// ordinary `Result` value the handler happens to return.
-    pub(super) receive_fails_methods: HashSet<crate::DefId>,
+    pub(super) receive_fails_methods: BTreeSet<crate::DefId>,
     /// Handlers submitted one way through a mailbox view. Their
     /// declared failure becomes the actor's own fault, so the checker must
     /// prove the error renders before the program is published.
@@ -3579,7 +3579,7 @@ pub struct Checker {
     /// `is` obligations recorded while an operand type was still an
     /// inference variable, keyed by the `is` expression so a body checked more
     /// than once records one obligation.
-    pub(super) deferred_is_checks: HashMap<SpanKey, DeferredIsCheck>,
+    pub(super) deferred_is_checks: BTreeMap<SpanKey, DeferredIsCheck>,
     pub(super) deferred_monomorphic_sites: Vec<DeferredMonomorphicSite>,
     /// Tracks the span and originating module where each function was first defined
     /// (for duplicate detection and dead-code source attribution).
@@ -3696,7 +3696,7 @@ pub struct Checker {
     pub(super) loop_labels: Vec<String>,
     pub(super) modules: HashSet<String>,
     pub(super) known_types: HashSet<String>,
-    pub(super) type_aliases: HashMap<crate::DefId, TypeAliasDef>,
+    pub(super) type_aliases: BTreeMap<crate::DefId, TypeAliasDef>,
     /// Source-declared methods by receiver declaration and owner.
     pub(super) dispatch: super::dispatch_table::DispatchTable,
     /// The impl method whose body is being checked, so its own signature is
@@ -4212,7 +4212,7 @@ pub struct Checker {
     /// Inferred type arguments for generic function calls that omit explicit
     /// type annotations.  Populated in `check_call` after argument unification.
     pub(super) call_type_args: HashMap<SpanKey, Vec<Ty>>,
-    pub(super) callable_value_specializations: HashMap<SpanKey, Vec<Ty>>,
+    pub(super) callable_value_specializations: BTreeMap<SpanKey, Vec<Ty>>,
     /// Inferred or explicit type arguments for record / enum-struct-variant
     /// initialiser sites on user-defined generic types. Populated by
     /// `record_concrete_record_init_type_args` at each emission site.
@@ -4486,12 +4486,12 @@ impl Checker {
             actor_handler_state_guards: HashMap::new(),
             actor_max_heap: HashMap::new(),
             consume_receiver_methods: HashSet::new(),
-            pending_lowering_facts: HashMap::new(),
-            deferred_hashmap_admission: HashMap::new(),
-            deferred_collection_value_copy: HashMap::new(),
-            deferred_hashset_admission: HashMap::new(),
-            deferred_vec_admission: HashMap::new(),
-            deferred_builtin_clone_admission: HashMap::new(),
+            pending_lowering_facts: BTreeMap::new(),
+            deferred_hashmap_admission: BTreeMap::new(),
+            deferred_collection_value_copy: BTreeMap::new(),
+            deferred_hashset_admission: BTreeMap::new(),
+            deferred_vec_admission: BTreeMap::new(),
+            deferred_builtin_clone_admission: BTreeMap::new(),
             shadowed_method_type_param_reports: HashSet::new(),
             generic_requirements: HashMap::new(),
             generic_fn_instantiation_sites: Vec::new(),
@@ -4551,7 +4551,7 @@ impl Checker {
             handle_bearing_dirty: false,
             refresh_call_count: 0,
             receive_generator_methods: HashSet::new(),
-            receive_fails_methods: HashSet::new(),
+            receive_fails_methods: BTreeSet::new(),
             view_submitted_fails_methods: HashMap::new(),
             completion_call_edges: Vec::new(),
             actor_receive_methods: HashSet::new(),
@@ -4559,7 +4559,7 @@ impl Checker {
             fn_sig_inference_holes: HashMap::new(),
             deferred_inference_holes: Vec::new(),
             deferred_cast_checks: Vec::new(),
-            deferred_is_checks: HashMap::new(),
+            deferred_is_checks: BTreeMap::new(),
             deferred_monomorphic_sites: Vec::new(),
             fn_def_spans: HashMap::new(),
             fn_visibility: HashMap::new(),
@@ -4589,7 +4589,7 @@ impl Checker {
             loop_labels: Vec::new(),
             modules: HashSet::new(),
             known_types: HashSet::new(),
-            type_aliases: HashMap::new(),
+            type_aliases: BTreeMap::new(),
             dispatch: super::dispatch_table::DispatchTable::default(),
             checking_declaration: None,
             trait_defs: HashMap::new(),
@@ -4700,7 +4700,7 @@ impl Checker {
             const_values: HashMap::new(),
             source_constants: HashMap::new(),
             call_type_args: HashMap::new(),
-            callable_value_specializations: HashMap::new(),
+            callable_value_specializations: BTreeMap::new(),
             record_init_type_args: HashMap::new(),
             builtin_result_output_type_args: HashMap::new(),
             deferred_bound_checks: Vec::new(),

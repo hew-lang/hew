@@ -353,6 +353,31 @@ mod tests {
         );
     }
 
+    /// Deferred admissions are recorded as sites are visited, but their
+    /// refusals must come out in source order, independent of any map seed.
+    #[test]
+    fn finalize_hashmap_admission_reports_in_source_order() {
+        let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+        for index in (0..32).rev() {
+            let span = index * 10..index * 10 + 5;
+            checker.deferred_hashmap_admission.insert(
+                SpanKey::in_module(&span, 0),
+                DeferredHashMapAdmission {
+                    span,
+                    key_ty: Ty::String,
+                    val_ty: Ty::Var(TypeVar::fresh()),
+                    source_module: None,
+                    type_param_bounds: crate::check::ParamBounds::default(),
+                },
+            );
+        }
+
+        checker.finalize_hashmap_admission();
+
+        let starts: Vec<usize> = checker.errors.iter().map(|e| e.span.start).collect();
+        assert_eq!(starts, (0..32).map(|index| index * 10).collect::<Vec<_>>());
+    }
+
     /// A bare key type parameter is checked against the bounds recorded at
     /// the deferred site, not skipped: `K: Hash + Eq` must admit cleanly.
     #[test]

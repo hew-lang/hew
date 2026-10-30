@@ -82,6 +82,7 @@ enum ParseXmlError {
     MismatchedClose { expected: String, found: String },
     UnexpectedClose(String),
     InvalidAttribute(String),
+    InvalidName(String),
     UnknownEntity(String),
 }
 
@@ -105,11 +106,41 @@ impl ParseXmlError {
             Self::InvalidAttribute(tag) => {
                 format!("xml: element `{tag}` has a malformed attribute")
             }
+            Self::InvalidName(name) => format!("xml: `{name}` is not a valid XML name"),
             Self::UnknownEntity(name) => {
                 format!("xml: `&{name};` is not a known entity reference")
             }
         }
     }
+}
+
+/// Decode an element or attribute name, refusing what XML 1.0 §2.3 does not
+/// call a `Name`. The reader splits names on whitespace and `/` alone, so it
+/// hands back an empty name for `<\t/>` and quotes or `=` inside others;
+/// keeping one would print a document no reader accepts.
+fn name(text: &str) -> Result<String, ParseXmlError> {
+    let mut chars = text.chars();
+    let valid = chars.next().is_some_and(is_name_start) && chars.all(is_name_char);
+    if valid {
+        Ok(text.to_owned())
+    } else {
+        Err(ParseXmlError::InvalidName(text.to_owned()))
+    }
+}
+
+fn is_name_start(ch: char) -> bool {
+    matches!(ch,
+        ':' | 'A'..='Z' | '_' | 'a'..='z'
+        | '\u{C0}'..='\u{D6}' | '\u{D8}'..='\u{F6}' | '\u{F8}'..='\u{2FF}'
+        | '\u{370}'..='\u{37D}' | '\u{37F}'..='\u{1FFF}' | '\u{200C}'..='\u{200D}'
+        | '\u{2070}'..='\u{218F}' | '\u{2C00}'..='\u{2FEF}' | '\u{3001}'..='\u{D7FF}'
+        | '\u{F900}'..='\u{FDCF}' | '\u{FDF0}'..='\u{FFFD}' | '\u{10000}'..='\u{EFFFF}')
+}
+
+fn is_name_char(ch: char) -> bool {
+    is_name_start(ch)
+        || matches!(ch,
+            '-' | '.' | '0'..='9' | '\u{B7}' | '\u{300}'..='\u{36F}' | '\u{203F}'..='\u{2040}')
 }
 
 /// Extract tag name and attributes from a [`BytesStart`] event.
@@ -120,13 +151,13 @@ impl ParseXmlError {
 fn extract_tag_and_attrs(
     e: &BytesStart<'_>,
 ) -> Result<(String, Vec<(String, String)>), ParseXmlError> {
-    let tag = e.name().as_ref().to_string();
+    let tag = name(e.name().as_ref())?;
     let mut attributes = Vec::new();
     for attribute in e.attributes() {
         let Ok(a) = attribute else {
             return Err(ParseXmlError::InvalidAttribute(tag));
         };
-        let key = a.key.as_ref().to_string();
+        let key = name(a.key.as_ref())?;
         let Ok(val) = a.normalized_value(quick_xml::XmlVersion::Implicit1_0) else {
             return Err(ParseXmlError::InvalidAttribute(tag));
         };
@@ -736,6 +767,37 @@ mod tests {
             let text = read_and_free_string(hew_xml_get_text(node));
             assert_eq!(text, "Hello");
             hew_xml_free(node);
+        }
+    }
+
+    #[test]
+    fn invalid_names_are_refused() {
+        // `<\t/>` reaches the tree builder as an element with an empty name,
+        // which used to print as `</>`.
+        for source in [
+            "<\t/>",
+            "<r><\t/></r>",
+            "<r a\"b=\"1\"/>",
+            "<1r/>",
+            "<r -a=\"1\"/>",
+        ] {
+            assert!(parse(source).is_null(), "{source:?} parsed");
+            // SAFETY: reads and releases this thread's error slot.
+            let error = unsafe { read_and_free_optional_string(hew_xml_last_error()) };
+            assert!(error.is_some(), "{source:?} left no error");
+        }
+        assert!(parse("<\t/>").is_null());
+        // SAFETY: as above.
+        let error = unsafe { read_and_free_optional_string(hew_xml_last_error()) };
+        assert_eq!(error.as_deref(), Some("xml: `` is not a valid XML name"));
+        for source in [
+            "<r:x xmlns:r=\"u\" _a=\"1\" b.c-d=\"2\"/>",
+            "<\u{e9}t\u{e9}/>",
+        ] {
+            let node = parse(source);
+            assert!(!node.is_null(), "{source:?} refused");
+            // SAFETY: node is live and released once.
+            unsafe { hew_xml_free(node) };
         }
     }
 

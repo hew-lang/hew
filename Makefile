@@ -956,11 +956,10 @@ FUZZ_PARITY_SEEDS ?= 0..1000
 FUZZ_PARITY_SOURCE ?= --seeds $(FUZZ_PARITY_SEEDS)
 FUZZ_PARITY_ENGINES ?= native-O0,native-O2,wasi,vm
 FUZZ_PARITY_ARGS ?=
-FUZZ_PARITY_GEN_DIR := $(CARGO_TARGET_ROOT)/fuzz-parity-gen
 fuzz-parity: hew-native sandbox-vm-deps $(if $(findstring wasi,$(FUZZ_PARITY_ENGINES)),wasm-runtime) $(if $(strip $(HEW_WASM_MODULE)),,wasm)
 	npm --prefix hew-sandbox-vm run build
-	cargo build --manifest-path hew-parser/fuzz/Cargo.toml --release --bin parity_gen --target-dir "$(FUZZ_PARITY_GEN_DIR)"
-	$(PYTHON) scripts/fuzz/run-parity.py --hew "$(DEBUG_HEW)" --generator "$(FUZZ_PARITY_GEN_DIR)/release/parity_gen" \
+	cargo build -p hew-parity-gen --bin parity_gen
+	$(PYTHON) scripts/fuzz/run-parity.py --hew "$(DEBUG_HEW)" --generator "$(DEBUG_DIR)/parity_gen" \
 		$(FUZZ_PARITY_SOURCE) --engines $(FUZZ_PARITY_ENGINES) $(FUZZ_PARITY_ARGS)
 
 # Bounded libFuzzer smoke: nightly-only (see .github/workflows/nightly-sanitizers.yml).

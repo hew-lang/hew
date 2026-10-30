@@ -7,10 +7,11 @@
 //! cases, which the oracle uses to minimise a mismatch. Each program is written
 //! as `NAME.hew` beside `NAME.json`, the generator's model of its output.
 
+use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 
 use arbitrary::Unstructured;
-use hew_parser_fuzz::parity;
+use hew_parity_gen as parity;
 
 /// Bytes for a seed: a splitmix64 stream, stable across hosts and releases.
 fn seed_bytes(seed: u64) -> Vec<u8> {
@@ -33,7 +34,9 @@ fn json_string(text: &str) -> String {
             '"' => out.push_str("\\\""),
             '\\' => out.push_str("\\\\"),
             '\n' => out.push_str("\\n"),
-            c if u32::from(c) < 0x20 => out.push_str(&format!("\\u{:04x}", u32::from(c))),
+            c if u32::from(c) < 0x20 => {
+                let _ = write!(out, "\\u{:04x}", u32::from(c));
+            }
             c => out.push(c),
         }
     }

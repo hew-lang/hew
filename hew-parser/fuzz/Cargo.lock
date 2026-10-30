@@ -270,6 +270,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "hew-parity-gen"
+version = "0.10.0-rc1"
+dependencies = [
+ "arbitrary",
+]
+
+[[package]]
 name = "hew-parser"
 version = "0.10.0-rc1"
 dependencies = [
@@ -288,6 +295,7 @@ dependencies = [
  "hew-hir",
  "hew-lexer",
  "hew-mir",
+ "hew-parity-gen",
  "hew-parser",
  "hew-types",
  "libfuzzer-sys",

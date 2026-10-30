@@ -8,7 +8,7 @@ mod support;
 
 use arbitrary::Unstructured;
 use hew_parser::Severity;
-use hew_parser_fuzz::parity;
+use hew_parity_gen as parity;
 use libfuzzer_sys::fuzz_target;
 
 fuzz_target!(|data: &[u8]| {

@@ -7,7 +7,7 @@ category must agree across every engine and with the generator's model of the
 program when it has one. A refusal on one engine is a mismatch, not a skip:
 parity means every target compiles and runs the program with the same result.
 
-Programs come from `parity_gen` (hew-parser/fuzz): a deterministic seed range,
+Programs come from `parity_gen` (hew-parity-gen): a deterministic seed range,
 or a libFuzzer corpus of `fuzz_parity_gen` inputs rendered through the same
 generator. The expensive compile-and-run work stays here, outside libFuzzer.
 """

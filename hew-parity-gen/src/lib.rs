@@ -14,6 +14,7 @@ use std::fmt::Write as _;
 use arbitrary::{Result, Unstructured};
 
 /// A rendered program and its model.
+#[derive(Debug)]
 pub struct Program {
     pub source: String,
     pub stdout: String,
@@ -557,12 +558,12 @@ fn format_g(value: f64) -> String {
             text.to_string()
         }
     };
-    if !(-4..6).contains(&exponent) {
-        let sign = if exponent < 0 { '-' } else { '+' };
-        format!("{}e{sign}{:02}", trim(mantissa), exponent.abs())
-    } else {
+    if (-4..6).contains(&exponent) {
         let decimals = usize::try_from(5 - exponent).unwrap_or(0);
         trim(&format!("{value:.decimals$}"))
+    } else {
+        let sign = if exponent < 0 { '-' } else { '+' };
+        format!("{}e{sign}{:02}", trim(mantissa), exponent.abs())
     }
 }
 
@@ -591,6 +592,10 @@ fn float_literal(value: f64) -> String {
     }
 }
 
+#[expect(
+    clippy::many_single_char_names,
+    reason = "operand names mirror the generated source"
+)]
 fn floats(u: &mut Unstructured<'_>, out: &mut Out<'_>) -> Result<()> {
     let mut values = Vec::new();
     for index in 0..u.int_in_range(1..=3usize)? {
@@ -608,8 +613,11 @@ fn floats(u: &mut Unstructured<'_>, out: &mut Out<'_>) -> Result<()> {
             2 => (format!("f{a} * f{b}"), x * y),
             3 if y != 0.0 => (format!("f{a} / f{b}"), x / y),
             4 => {
-                // Float-to-integer conversion truncates toward zero.
-                out.print(&format!("f{a} as i64"), x.trunc() as i64);
+                // Float-to-integer conversion truncates toward zero; the
+                // FLOATS table holds only values inside the i64 range.
+                #[expect(clippy::cast_possible_truncation, reason = "FLOATS stay in range")]
+                let truncated = x.trunc() as i64;
+                out.print(&format!("f{a} as i64"), truncated);
                 continue;
             }
             5 => {
@@ -725,7 +733,7 @@ fn copies(
                     "copy.push(Cell{index} {{ id: {}, tags: [] }});",
                     copy.len()
                 ));
-                copy.push((copy.len() as i64, Vec::new()));
+                copy.push((i64::try_from(copy.len()).expect("small"), Vec::new()));
             }
         }
     }
@@ -810,6 +818,10 @@ fn control(
     Ok(())
 }
 
+#[expect(
+    clippy::many_single_char_names,
+    reason = "operand names mirror the generated source"
+)]
 fn traits(
     u: &mut Unstructured<'_>,
     index: usize,
@@ -998,7 +1010,9 @@ fn strings(u: &mut Unstructured<'_>, out: &mut Out<'_>) -> Result<()> {
                     "match {name}.find({}) {{ .Some(i) => i, .None => -1 }}",
                     quote(needle)
                 ),
-                s.find(needle).map_or(-1, |byte| char_index(s, byte) as i64),
+                s.find(needle).map_or(-1, |byte| {
+                    i64::try_from(char_index(s, byte)).expect("small")
+                }),
             ),
             10 => {
                 let at = u.int_in_range(0..=4usize)?;
@@ -1080,7 +1094,7 @@ fn collections(u: &mut Unstructured<'_>, out: &mut Out<'_>) -> Result<()> {
             let total: i64 = model
                 .iter()
                 .enumerate()
-                .map(|(i, n)| n * (i as i64 + 1))
+                .map(|(i, n)| n * (i64::try_from(i).expect("small") + 1))
                 .sum();
             out.print("total", total);
         }
@@ -1160,7 +1174,7 @@ fn records(
          impl {ty} {{\n    fn score(self) -> i64 {{\n        if self.on {{ self.count * 2 + self.label.len() }} else {{ self.count - self.label.len() }}\n    }}\n}}\n\n"
     );
     let score = |count: i64, label: &str, on: bool| {
-        let len = label.chars().count() as i64;
+        let len = i64::try_from(label.chars().count()).expect("small");
         if on {
             count * 2 + len
         } else {
@@ -1451,8 +1465,7 @@ fn actors(
         let (total, log) = &mut models[a];
         tally_message(u, out, &format!("a{a}"), total, log)?;
     }
-    for a in 0..count {
-        let (total, log) = &models[a];
+    for (a, (total, log)) in models.iter().enumerate() {
         out.print(
             &format!("match a{a}.read() {{ .Ok(s) => s, .Err(_) => \"err\" }}"),
             format!("{total}:{log}"),

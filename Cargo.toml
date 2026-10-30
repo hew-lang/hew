@@ -27,6 +27,7 @@ members = [
   "hew-codegen-rs",
   "hew-capability-gen",
   "hew-testutil",
+  "hew-parity-gen",
   "xtask",
 ]
 exclude = ["hew-parser/fuzz"]

@@ -9,11 +9,6 @@ edition = "2021"
 [package.metadata]
 cargo-fuzz = true
 
-[lib]
-path = "src/lib.rs"
-test = false
-doc = false
-
 [dependencies]
 libfuzzer-sys = "0.4.13"
 arbitrary = { version = "1", features = ["derive"] }
@@ -23,6 +18,7 @@ hew-types = { path = "../../hew-types" }
 hew-hir = { path = "../../hew-hir" }
 hew-compile = { path = "../../hew-compile" }
 hew-mir = { path = "../../hew-mir" }
+hew-parity-gen = { path = "../../hew-parity-gen" }
 
 [[bin]]
 name = "fuzz_parse"
@@ -88,11 +84,5 @@ doc = false
 [[bin]]
 name = "fuzz_parity_gen"
 path = "fuzz_targets/fuzz_parity_gen.rs"
-test = false
-doc = false
-
-[[bin]]
-name = "parity_gen"
-path = "src/bin/parity_gen.rs"
 test = false
 doc = false

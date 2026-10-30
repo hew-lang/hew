@@ -16,13 +16,15 @@ use super::super::*;
 use super::*;
 use crate::check::types::{
     DeferredIsCheck, GenericCallEdge, GenericCallee, GenericFnInstantiationSite,
-    GenericRequirement, GenericRequirementKind, PendingInstantiation,
+    GenericRequirement, GenericRequirementKind, GenericRequirementMemo, PendingInstantiation,
 };
 use crate::env::{PlaceConflict, PlacePath};
 use crate::BuiltinType;
 use std::collections::VecDeque;
 
 type GenericInstantiation = (crate::DefId, BTreeMap<crate::ParamHead, Ty>);
+type GenericDemands = HashMap<Option<crate::DefId>, Vec<GenericRequirement>>;
+type GenericEdges = HashMap<crate::DefId, Vec<GenericCallEdge>>;
 
 impl PendingInstantiation {
     fn follow_call(&self, edge: &GenericCallEdge) -> Self {
@@ -494,6 +496,7 @@ impl Checker {
     pub(super) fn partition_generic_instantiation_sites(
         &self,
         sites: Vec<GenericFnInstantiationSite>,
+        actor_callbacks: bool,
     ) -> (
         Vec<PendingInstantiation>,
         HashMap<crate::DefId, Vec<GenericCallEdge>>,
@@ -532,7 +535,9 @@ impl Checker {
                 depth: 0,
             });
         }
-        for (nominal, actor) in &self.type_defs {
+        // A checkpoint root declares no actor; its dependencies' callback
+        // edges are already settled.
+        for (nominal, actor) in self.type_defs.iter().filter(|_| actor_callbacks) {
             if actor.kind != TypeDefKind::Actor || actor.type_params.is_empty() {
                 continue;
             }
@@ -901,20 +906,73 @@ impl Checker {
     /// raised two hops down still lands on the concrete application the
     /// programmer wrote. Each demand consumes its existing semantic authority.
     pub(in crate::check) fn finalize_generic_requirements(&mut self) {
-        // Polymorphic recursion (`fn f<T>() { g<Vec<T>>() }`)
-        // generates an unbounded instantiation chain. Exceeding it is reported,
-        // never skipped — see `generic_structural_eq_depth_error`.
-        const MAX_INSTANTIATION_DEPTH: u32 = 64;
-
         let mut requirements = std::mem::take(&mut self.generic_requirements);
+        let mut sites = std::mem::take(&mut self.generic_fn_instantiation_sites);
+        let recording = self.finalization_memo.is_recording().then(|| {
+            (
+                requirements
+                    .iter()
+                    .map(|(owner, demands)| (*owner, demands.len()))
+                    .collect(),
+                sites.len(),
+            )
+        });
+        let memo = self.finalization_memo.shared();
+        let settled = memo.as_ref().map(|memo| &memo.generics);
+        if let Some(settled) = settled {
+            for (owner, demands) in &mut requirements {
+                let count = settled.requirement_counts.get(owner).copied().unwrap_or(0);
+                demands.drain(..count);
+            }
+            requirements.retain(|_, demands| !demands.is_empty());
+            sites.drain(..settled.sites);
+            for (method, receivers) in &settled.checked_receivers {
+                if let Some(binders) = self.impl_method_binders.get_mut(method) {
+                    binders.checked_receivers.extend(receivers.iter().cloned());
+                }
+            }
+        }
+        if settled.is_some() {
+            self.finalization_memo
+                .reused(|reused| reused.generic_requirements += 1);
+        }
+        let (generic, edges) = self.discharge_generic_requirements(requirements, sites, settled);
+        if let Some((requirement_counts, sites)) = recording {
+            let checked_receivers = self
+                .impl_method_binders
+                .iter()
+                .filter(|(_, binders)| !binders.checked_receivers.is_empty())
+                .map(|(method, binders)| (*method, binders.checked_receivers.clone()))
+                .collect();
+            if let Some(memo) = self.finalization_memo.record() {
+                memo.generics = GenericRequirementMemo {
+                    requirement_counts,
+                    sites,
+                    generic,
+                    edges,
+                    checked_receivers,
+                };
+            }
+        }
+    }
+
+    /// Discharge `requirements` and `sites` on top of a checkpoint's settled
+    /// generic demands and call edges, returning the combined ones.
+    fn discharge_generic_requirements(
+        &mut self,
+        mut requirements: GenericDemands,
+        sites: Vec<GenericFnInstantiationSite>,
+        settled: Option<&GenericRequirementMemo>,
+    ) -> (GenericDemands, GenericEdges) {
+        let mut generic = settled.map_or_else(HashMap::new, |settled| settled.generic.clone());
+        let settled_edges = settled.map_or_else(HashMap::new, |settled| settled.edges.clone());
         for requirement in requirements.values_mut().flatten() {
             requirement.ty = self
                 .normalize_for_use(&requirement.ty)
                 .materialize_literal_defaults();
         }
-        let sites = std::mem::take(&mut self.generic_fn_instantiation_sites);
-        if requirements.is_empty() {
-            return;
+        if requirements.is_empty() && generic.is_empty() {
+            return (generic, settled_edges);
         }
 
         let mut service = TypeFactService::new(self.type_fact_context(), BTreeMap::new());
@@ -930,17 +988,41 @@ impl Checker {
             });
             !demands.is_empty()
         });
-        if requirements.is_empty() {
-            self.errors.extend(new_errors);
-            return;
+        for (owner, demands) in requirements {
+            generic.entry(owner).or_default().extend(demands);
         }
-        let (roots, mut edges) = self.partition_generic_instantiation_sites(sites);
-        Self::retain_generic_requirement_edges(&requirements, &mut edges);
-        let mut relevant = HashMap::new();
-        let mut seen: HashSet<(GenericInstantiation, usize, Option<String>)> = HashSet::new();
+        if generic.is_empty() {
+            self.errors.extend(new_errors);
+            return (generic, settled_edges);
+        }
+        let (roots, mut edges) =
+            self.partition_generic_instantiation_sites(sites, settled.is_none());
+        Self::retain_generic_requirement_edges(&generic, &mut edges);
+        for (caller, calls) in settled_edges {
+            edges.entry(caller).or_default().extend(calls);
+        }
         let mut work: VecDeque<PendingInstantiation> = roots.into();
         work.extend(resource_roots);
+        self.walk_generic_instantiations(work, &generic, &edges, &mut service, &mut new_errors);
+        self.errors.extend(new_errors);
+        (generic, edges)
+    }
 
+    fn walk_generic_instantiations(
+        &mut self,
+        mut work: VecDeque<PendingInstantiation>,
+        requirements: &GenericDemands,
+        edges: &GenericEdges,
+        service: &mut TypeFactService,
+        new_errors: &mut Vec<TypeError>,
+    ) {
+        // Polymorphic recursion (`fn f<T>() { g<Vec<T>>() }`)
+        // generates an unbounded instantiation chain. Exceeding it is reported,
+        // never skipped — see `generic_structural_eq_depth_error`.
+        const MAX_INSTANTIATION_DEPTH: u32 = 64;
+
+        let mut relevant = HashMap::new();
+        let mut seen: HashSet<(GenericInstantiation, usize, Option<String>)> = HashSet::new();
         while let Some(pending) = work.pop_front() {
             let instance = (
                 pending.callee,
@@ -952,8 +1034,8 @@ impl Checker {
             );
             if !self.generic_instantiation_is_relevant(
                 &instance,
-                &requirements,
-                &edges,
+                requirements,
+                edges,
                 &mut relevant,
             ) {
                 continue;
@@ -984,12 +1066,9 @@ impl Checker {
                 else {
                     continue;
                 };
-                if let Some(error) = self.generic_requirement_error(
-                    requirement,
-                    &concrete,
-                    &mut service,
-                    Some(&pending),
-                ) {
+                if let Some(error) =
+                    self.generic_requirement_error(requirement, &concrete, service, Some(&pending))
+                {
                     new_errors.push(error);
                 }
                 work.extend(self.resource_close_pending(requirement, &concrete, Some(&pending)));
@@ -1003,7 +1082,5 @@ impl Checker {
                     .map(|edge| pending.follow_call(edge)),
             );
         }
-
-        self.errors.extend(new_errors);
     }
 }

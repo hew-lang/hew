@@ -675,9 +675,11 @@ admitted session:
   member a `PING` and, when the member's `ACK` arrives within
   `ping_timeout_ms`, forwards an `ACK` to the requester with `target` set to
   the member, once per request.
-- An `ACK` with `target` set is a forwarded `ACK`: the requester counts it
-  as contact with the target and as an ordinary `ACK` from the relay. Its
-  `incarnation` is the relay's and is never applied to the target.
+- An `ACK` with `target` set is a forwarded `ACK`. It is an ordinary `ACK`
+  from the relay, and it counts as contact with the target only when it
+  answers a `PING_REQ` the receiver sent that relay about that target within
+  `ping_timeout_ms`, once per request; an unsolicited one is not contact.
+  Its `incarnation` is the relay's and is never applied to the target.
 
 A node that predates forwarded ACKs never forwards, so a requester probing
 through it sees no indirect answer, as before. It validates `target` on a
@@ -687,9 +689,21 @@ relay. The payload schema is unchanged.
 A PING, ACK or `PING_REQ` is an ALIVE claim by its sender at its stated
 incarnation. A member suspected or declared DEAD at or above its own
 incarnation refutes by advancing its incarnation. Every SWIM frame sent to a
-member its sender holds DEAD leads its gossip with that member's DEAD entry,
-outside the gossip budget, so a buried member that stays connected learns of
+member its sender holds DEAD leads its gossip with that member's DEAD entry.
+The entry takes one of the frame's `max_gossip_per_msg` slots but not the
+event's retransmit budget, so a buried member that stays connected learns of
 its burial and refutes it even when every gossiped copy was lost.
+
+A member is suspected when a direct probe stays unanswered past
+`ping_timeout_ms`. With `N` members and protocol period `P`, a member silent
+since its last contact is probed within `(N-1)·P`, and its probe is overdue
+at the first period strictly past the timeout, so it is suspected within
+`(N-1)·P + (⌊ping_timeout_ms / P⌋ + 1)·P` of the last contact while the
+failure detector is cold. A warm detector (at least 10 contact intervals)
+also requires `φ > 8`, which can delay suspicion further; see
+[failure-philosophy](./failure-philosophy.md#detection-time). A SUSPECT member
+becomes DEAD at the first period strictly past `suspect_timeout_ms` after its
+last contact, and never in the period that suspected it.
 
 A DEAD or LEFT member is buried. Within its durable session it returns only
 through its own SWIM traffic or gossip at a strictly higher incarnation; an

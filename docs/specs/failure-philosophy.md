@@ -107,13 +107,40 @@ escalation uses a fixed timeout because the SUSPECT window already exists
 specifically to allow indirect-probe confirmation, and applying phi twice
 would not improve confirmation latency.
 
+### Detection time
+
+Take `N` members, protocol period `P`, probe timeout `T = ping_timeout_ms`
+and suspect timeout `S = suspect_timeout_ms`, with the defaults
+`P = 1000`, `T = 500` and `S = 3000`. Round-robin probing reaches a silent
+member within `(N-1)·P` of its last contact, and the tick that finds its
+probe overdue is the first one strictly past `T`, `(⌊T/P⌋ + 1)·P` later. A
+member is therefore suspected within
+
+```
+(N-1)·P + (⌊T/P⌋ + 1)·P     of its last contact (3000 ms at N = 3)
+```
+
+while its detector is cold. A warm detector also waits for `φ > 8`, that
+is, for silence beyond roughly `μ + 5.2σ` of the learned contact intervals,
+rounded up to the next period. When contacts arrive in bursts — a probe's
+ACK and the member's own PING landing together, then a gap of two periods —
+σ approaches μ and that wait dominates: a three-member mesh without
+indirect probes, μ ≈ 1000 ms and σ ≈ 950 ms, is suspected about 6 s after
+the last contact. Indirect probes add contacts and narrow σ. Gossip from
+another member that already suspects the peer can raise the suspicion
+sooner. A SUSPECT member becomes DEAD at the first period strictly past
+`S` after its last contact, and never in the period that suspected it, so
+detection completes within `max(S, suspicion time) + P` of the last contact.
+
 ### Indirect probes
 
 Each period the prober also sends `PING_REQ` naming the probed member to up
 to `indirect_ping_count` other connected peers. A relay pings the member
 and, when the member's ACK arrives within `ping_timeout_ms`, forwards an ACK
 naming the member to each requester, once. The requester counts that as
-contact with the member: it answers the overdue probe. A black hole between
+contact with the member, answering the overdue probe, only when it sent
+that relay a `PING_REQ` about that member within `ping_timeout_ms`, and once
+per request: a peer cannot keep a silent member alive with unsolicited ACKs. A black hole between
 two live members is therefore bridged by any third member that reaches both,
 and neither side is suspected. The forwarded ACK carries the relay's
 incarnation, so it never readmits a buried member or re-stamps one.
@@ -126,7 +153,9 @@ wins everywhere. Gossip alone cannot guarantee the member hears the claim:
 each event rides a bounded number of frames, and a member whose frames were
 dropped rather than delayed can come back after every copy was lost. So
 every SWIM frame a node sends to a member it holds DEAD leads with that
-member's obituary, outside the gossip budget. A buried member that stays
+member's obituary. It takes one of the frame's `max_gossip_per_msg` slots
+but not the retransmit budget of the gossip event queue, so it is sent
+however many earlier copies were spent. A buried member that stays
 connected learns of its burial from the next frame it receives from any
 node that buried it — the ACK to its own PING, a relayed PING or a
 `PING_REQ` — and refutes. The obituary rides frames the protocol already

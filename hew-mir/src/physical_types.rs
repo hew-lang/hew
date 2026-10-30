@@ -1601,6 +1601,8 @@ pub struct PhysicalDebug {
     /// Lexical blocks of the root compilation unit, in HIR scope order.
     pub scopes: Vec<hew_sir::SemDebugScope>,
     pub functions: BTreeMap<CallableId, PhysicalDebugFunction>,
+    /// The display name of every callable, from [`super::debug_names`].
+    pub names: BTreeMap<CallableId, super::debug_names::DisplayName>,
     /// Source field names of each concrete record, in declaration order.
     pub records: BTreeMap<ResolvedTy, Vec<PhysicalDebugField>>,
     /// Source variant names of each concrete enum, in declaration (tag) order.

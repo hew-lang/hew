@@ -1,0 +1,14 @@
+// HashSet insert and dedupe.
+fn main() {
+    var s: HashSet<i64> = HashSet.new();
+    s.insert(10);
+    s.insert(20);
+    s.insert(10);
+    s.insert(30);
+    println(s.len());
+    var total = 0;
+    for x in s {
+        total = total + x;
+    }
+    println(total);
+}

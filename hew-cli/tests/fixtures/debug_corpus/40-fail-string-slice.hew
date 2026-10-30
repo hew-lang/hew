@@ -1,0 +1,7 @@
+// FAILURE: string slice out of range.
+fn main() {
+    let s: string = "short";
+    println(s[0..3]);
+    let end = 50;
+    println(s[0..end]);
+}

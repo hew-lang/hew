@@ -1,0 +1,13 @@
+// FAILURE: checked integer overflow.
+fn grow(start: i32) -> i32 {
+    var v = start;
+    for _ in 0..40 {
+        v = v * 2;
+    }
+    v
+}
+
+fn main() {
+    println("growing");
+    println(grow(1));
+}

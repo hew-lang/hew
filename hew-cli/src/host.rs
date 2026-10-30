@@ -96,6 +96,7 @@ pub(super) fn emit(
             debug_source: None,
             link_freestanding_wasm: false,
             build_info: None,
+            debug_script_dir: None,
         },
     )
     .map_err(|error| {

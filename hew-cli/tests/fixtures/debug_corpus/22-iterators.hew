@@ -1,0 +1,14 @@
+// Lazy iterator adaptors over a Vec.
+fn main() {
+    var v: Vec<i64> = Vec.new();
+    for i in 0..10 {
+        v.push(i);
+    }
+    var evens = 0;
+    for x in v {
+        if x % 2 == 0 {
+            evens = evens + x;
+        }
+    }
+    println(evens);
+}

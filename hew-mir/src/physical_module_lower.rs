@@ -159,6 +159,7 @@ fn lower_physical_with_inventory(
     let mut debug = PhysicalDebug {
         scopes: module.debug.scopes.clone(),
         functions: BTreeMap::new(),
+        names: super::debug_names::display_names(module),
         records: module
             .aggregate_shapes
             .iter()

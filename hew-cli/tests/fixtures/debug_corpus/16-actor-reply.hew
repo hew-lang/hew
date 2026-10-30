@@ -1,0 +1,22 @@
+// Actor state, handlers and replies via await.
+actor Counter {
+    var count: i64;
+
+    receive fn add(n: i64) {
+        count = count + n;
+    }
+
+    receive fn total() -> i64 {
+        count
+    }
+}
+
+fn main() {
+    let c = spawn Counter { count: 0 };
+    let _ = c.add(10);
+    let _ = c.add(32);
+    match c.total() {
+        .Ok(v) => println(v),
+        .Err(_) => println("ask failed"),
+    }
+}

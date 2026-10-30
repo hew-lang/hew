@@ -1,0 +1,5 @@
+// Imported by 46-fail-in-import.hew: the failing expect lives in this non-root file.
+pub fn lookup(key: string) -> i64 {
+    let found: Result<i64, string> = if key == "known" { .Ok(1) } else { .Err("missing key") };
+    found.expect("lookup must find the key")
+}

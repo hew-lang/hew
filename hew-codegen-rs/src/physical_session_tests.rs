@@ -316,6 +316,7 @@ fn emit_live(
                 debug_source: None,
                 link_freestanding_wasm: false,
                 build_info: None,
+                debug_script_dir: None,
             },
         )
         .unwrap();

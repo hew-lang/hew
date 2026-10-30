@@ -1,0 +1,28 @@
+// Generators consumed with break.
+gen fn naturals(limit: i64) -> i64 {
+    var i = 0;
+    while i < limit {
+        yield i;
+        i = i + 1;
+    }
+}
+
+fn main() {
+    var total = 0;
+    for n in naturals(100) {
+        if n > 5 {
+            break;
+        }
+        total = total + n;
+    }
+    println(total);
+    let g = gen {
+        println("gen:a");
+        yield 1;
+        println("gen:b");
+        yield 2;
+    };
+    for v in g {
+        println(v);
+    }
+}

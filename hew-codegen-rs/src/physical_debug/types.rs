@@ -84,7 +84,7 @@ impl<'ctx> DebugEmitter<'ctx> {
         if let Some(cached) = self.types.borrow().get(ty) {
             return Some(*cached);
         }
-        let name = type_name(&self.defs, ty);
+        let name = type_name(ty);
         // The declaration and the definition share one identifier, so a
         // consumer that completes a forward reference by unique name
         // (CodeView) finds the definition.
@@ -831,49 +831,9 @@ fn target_size(bytes: usize) -> u64 {
 }
 
 /// The source spelling of a type, from the type checker's own renderer.
-/// The module that owns a root-unit declaration, as debuggers spell it.
-const ROOT_MODULE: &str = "main";
-
-/// A type as a debugger spells it: a user struct, enum or actor by its
-/// module-qualified dotted path (`main.Rect`, `geometry.Shape`), generics with
-/// the same spelling inside (`main.Box<main.Rect>`), and compiler builtins
-/// (`Vec`, `HashMap`, `Option`, `string`) as the source writes them.
-fn type_name(defs: &hew_types::DefTable, ty: &ResolvedTy) -> String {
-    use hew_types::TypeHead;
-    let list = |items: &[ResolvedTy]| {
-        items
-            .iter()
-            .map(|item| type_name(defs, item))
-            .collect::<Vec<_>>()
-            .join(", ")
-    };
-    match ty {
-        ResolvedTy::Named { head, args, .. }
-            if !matches!(head, TypeHead::Builtin(BuiltinType::ActorFn)) =>
-        {
-            let mut name = match head {
-                TypeHead::Nominal(nominal) | TypeHead::Actor(nominal) => {
-                    let path = defs.dotted_declaration_path(nominal.id.declaration());
-                    if path.contains('.') {
-                        path
-                    } else {
-                        format!("{ROOT_MODULE}.{path}")
-                    }
-                }
-                other => other.spelling().to_owned(),
-            };
-            if !args.is_empty() {
-                name.push('<');
-                name.push_str(&list(args));
-                name.push('>');
-            }
-            name
-        }
-        ResolvedTy::Tuple(items) => format!("({})", list(items)),
-        ResolvedTy::Array(element, size) => format!("[{}; {size}]", type_name(defs, element)),
-        ResolvedTy::Slice(element) => format!("[{}]", type_name(defs, element)),
-        other => other.user_facing().to_string(),
-    }
+/// The source spelling of a type, from the type checker's own renderer.
+fn type_name(ty: &ResolvedTy) -> String {
+    ty.user_facing().to_string()
 }
 
 fn header_name(name: &str) -> String {

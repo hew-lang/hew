@@ -418,10 +418,10 @@ fn types() -> Dies {
 fn types_carry_their_source_names() {
     let dies = types();
     let spelled = |local: &str| dies.name(dies.local(local)).to_owned();
-    assert_eq!(spelled("shape"), "main.Shape");
-    assert_eq!(spelled("rect"), "main.Rect");
-    assert_eq!(spelled("boxed_int"), "main.Box<i64>");
-    assert_eq!(spelled("boxed_text"), "main.Box<string>");
+    assert_eq!(spelled("shape"), "Shape");
+    assert_eq!(spelled("rect"), "Rect");
+    assert_eq!(spelled("boxed_int"), "Box<i64>");
+    assert_eq!(spelled("boxed_text"), "Box<string>");
     assert_eq!(spelled("maybe"), "Option<i64>");
     assert_eq!(spelled("parsed"), "Result<i64, string>");
     assert_eq!(spelled("tup"), "(i64, string, f64)");
@@ -429,7 +429,7 @@ fn types_carry_their_source_names() {
     assert_eq!(spelled("counts"), "HashMap<string, i64>");
     assert_eq!(spelled("seen"), "HashSet<i64>");
     assert_eq!(spelled("named"), "dyn Named");
-    assert_eq!(spelled("counter"), "main.Counter");
+    assert_eq!(spelled("counter"), "Counter");
     assert_eq!(spelled("small"), "i8");
     assert_eq!(spelled("short"), "i16");
     assert_eq!(spelled("byte"), "u8");
@@ -626,7 +626,7 @@ fn hash_map_slots_match_the_runtime_layout() {
     for (local, name, key, value) in [
         ("squares", "HashMap<i64, i64>", (8, 8), (8, 8)),
         ("counts", "HashMap<string, i64>", (8, 8), (8, 8)),
-        ("shapes", "HashMap<i64, main.Rect>", (8, 8), (16, 8)),
+        ("shapes", "HashMap<i64, Rect>", (8, 8), (16, 8)),
     ] {
         let handle = dies.local(local);
         assert_eq!(dies.name(handle), name);
@@ -668,7 +668,7 @@ fn hash_map_slots_match_the_runtime_layout() {
         );
     }
     let shapes = dies.target(dies.member(dies.target(dies.local("shapes")), "entries").1);
-    assert_eq!(dies.name(dies.member(shapes, "value").1), "main.Rect");
+    assert_eq!(dies.name(dies.member(shapes, "value").1), "Rect");
 }
 
 /// `HashSet<T>` is a handle to the set, which holds a map whose slots carry
@@ -754,7 +754,7 @@ fn main() {
 fn mutually_referring_actors_emit_with_debug_metadata() {
     let dir = tempfile::tempdir().expect("temp dir");
     let dies = read_dies(&emit(dir.path(), "ask_cycle", ASK_CYCLE));
-    for name in ["Option<main.Ping>", "Option<main.Pong>"] {
+    for name in ["Option<Ping>", "Option<Pong>"] {
         dies.definition(constants::DW_TAG_structure_type, name);
     }
 }
@@ -788,22 +788,22 @@ fn recursive_types_resolve_through_a_declaration() {
     let dir = tempfile::tempdir().expect("temp dir");
     let dies = read_dies(&emit(dir.path(), "recursive", RECURSIVE));
     let tree = dies.local("root");
-    assert_eq!(dies.name(tree), "main.Tree");
+    assert_eq!(dies.name(tree), "Tree");
     let children = dies.target(dies.member(tree, "children").1);
     let element = dies.type_of(dies.member(children, "ptr").1);
     assert_eq!(
         dies.name(element),
-        "main.Tree",
+        "Tree",
         "the element is the record itself"
     );
 
     let list = dies.local("list");
-    assert_eq!(dies.name(list), "main.List");
+    assert_eq!(dies.name(list), "List");
     let node = dies.target(list);
-    assert_eq!(dies.name(node), "main.List.Node");
+    assert_eq!(dies.name(node), "List.Node");
     assert_eq!(dies.member_names(node), ["tag", "payload"]);
     let cons = dies.member(dies.member(node, "payload").1, "Cons").1;
-    assert_eq!(dies.name(dies.member(cons, "_1").1), "main.List");
+    assert_eq!(dies.name(dies.member(cons, "_1").1), "List");
 }
 
 /// A declaration entered for a recursive type and its definition carry one
@@ -813,7 +813,7 @@ fn a_recursive_declaration_shares_its_definition_identifier() {
     let dir = tempfile::tempdir().expect("temp dir");
     let (_, ir) = emit_with_ir(dir.path(), "recursive", RECURSIVE);
     let ir = std::fs::read_to_string(ir).expect("read IR");
-    for name in ["main.Tree", "main.List.Node"] {
+    for name in ["Tree", "List.Node"] {
         let identifiers: Vec<&str> = ir
             .lines()
             .filter(|line| {

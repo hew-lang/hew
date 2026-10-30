@@ -15,7 +15,7 @@ use super::control::{
     location_matches_node_session, refuse_unadmitted_request,
 };
 use super::gossip::retry_pending_registry_flush;
-use super::identity_claim::DeferredLoser;
+use super::identity_claim::{held_loser_frame, held_loser_peer_closed, HeldLoser};
 use super::peer::deposit_reply_envelope;
 use super::reconnect::{reconnect_plan, spawn_reconnect_worker};
 use super::{ConnectionTransport, HewConnMgr, InboundRouter, SendConnMgr};
@@ -105,7 +105,7 @@ pub(super) fn reader_loop(
     router: Option<InboundRouter>,
     peer_feature_flags: u32,
     channel: Arc<ChannelProtection>,
-    mut confirm: Option<(u64, Arc<Mutex<DeferredLoser>>)>,
+    held_loser: Option<Arc<Mutex<HeldLoser>>>,
     buried: bool,
 ) {
     let mgr = mgr.0;
@@ -131,6 +131,11 @@ pub(super) fn reader_loop(
         };
 
         if bytes_read <= 0 {
+            if let Some(held) = held_loser.as_deref() {
+                if stop_flag.load(Ordering::Acquire) == 0 {
+                    held_loser_peer_closed(held);
+                }
+            }
             reader_cleanup(mgr, conn_id, &stop_flag);
             break;
         }
@@ -169,20 +174,11 @@ pub(super) fn reader_loop(
         };
         let payload_ptr = buf.as_mut_ptr();
 
-        // A responder-commit responder's first frame from the initiator is
-        // its confirmation, echoing the commit order: it has switched to
-        // this connection, so the connection this one superseded can close.
-        if let Some((order, deferred)) = confirm.take() {
-            if buf[..payload_len] != order.to_be_bytes() {
-                set_last_error("connection reader: initiator did not confirm the commit");
-                reader_cleanup(mgr, conn_id, &stop_flag);
-                break;
-            }
+        if let Some(held) = held_loser.as_deref() {
             if !mgr.is_null() {
                 // SAFETY: reader_loop owns a live manager pointer for this connection.
-                deferred.lock_or_recover().release(unsafe { &*mgr });
+                held_loser_frame(unsafe { &*mgr }, held);
             }
-            continue;
         }
 
         if let Some(frames) = refuting.as_mut() {

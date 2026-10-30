@@ -78,7 +78,9 @@ pub(crate) use channel::ChannelRefusal;
 pub(crate) use gossip::*;
 pub(crate) use handshake::*;
 #[cfg(test)]
-pub(crate) use identity_claim::{holds_deferred_loser, peer_connection_view, PeerConnectionView};
+pub(crate) use identity_claim::{
+    commit_order_for_test, held_loser_for_test, peer_connection_view, PeerConnectionView,
+};
 pub use manager::*;
 pub(crate) use peer::*;
 pub use send::*;
@@ -104,9 +106,11 @@ const HEW_FEATURE_SUPPORTS_ENCRYPTION: u32 = 1 << 0;
 const HEW_FEATURE_SUPPORTS_GOSSIP: u32 = 1 << 1;
 // Bit 2 (HEW_FEATURE_SUPPORTS_REMOTE_SPAWN) is reserved; not advertised until a
 // bootstrap-based remote-spawn path is implemented.
-// Bit 3 was the v2 ask-rejection capability; replies now always carry status.
+// Bit 3 was the v2 ask-rejection capability and is retired, not reused;
+// replies now always carry status.
 // Both ends advertise this bit to settle admission through the responder's
-// commit (`handshake::send_commit`); otherwise each end settles on its own.
+// commit (`handshake::send_commit`); otherwise each end keeps the newer
+// same-session connection.
 const HEW_FEATURE_RESPONDER_COMMIT: u32 = 1 << 4;
 const MAX_REGISTRY_GOSSIP_FLUSH_EVENTS: usize = 64;
 
@@ -237,9 +241,9 @@ struct ConnectionActor {
     /// remove-side abort is guarded by the exact `(conn_id, token, Reserved)`
     /// owner check, so a published or superseded claim never restores from it.
     superseded_claim: Mutex<Option<LiveClaim>>,
-    /// The connection this one superseded as the responder of a
-    /// responder-commit pair, closed once the initiator confirms its switch.
-    deferred_loser: Arc<Mutex<identity_claim::DeferredLoser>>,
+    /// The published connection this one superseded, held open until the
+    /// peer shows which of the two it kept; `None` where this end decides.
+    held_loser: Option<Arc<Mutex<identity_claim::HeldLoser>>>,
     /// The highest local incarnation at which this connection's peer was
     /// answered for burying this node (see `swim::claim_burial_answer`).
     burial_answered: AtomicU64,
@@ -635,7 +639,7 @@ impl ConnectionActor {
             reader_handle: None,
             reader_stop: Arc::new(AtomicI32::new(0)),
             superseded_claim: Mutex::new(None),
-            deferred_loser: Arc::default(),
+            held_loser: None,
             burial_answered: AtomicU64::new(0),
             reconnect: None,
             transport: ConnectionTransport::borrowed(std::ptr::null_mut()),

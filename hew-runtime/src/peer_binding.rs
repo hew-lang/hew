@@ -218,6 +218,22 @@ pub struct LiveClaim {
     pub publication_token: u64,
     /// Reserved (mid-admission) vs Published (established).
     pub state: ClaimState,
+    /// Which end opened the connection; decides crossing dials.
+    pub origin: ConnectionOrigin,
+    /// The manager's admission order when this claim published; zero until it
+    /// does. Admissions that began at or before it overlapped this one.
+    pub published_at: u64,
+}
+
+/// Which end opened a claimed connection.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ConnectionOrigin {
+    /// This node dialled the peer.
+    Dialled,
+    /// The peer dialled this node.
+    Accepted,
+    /// A relayed circuit: neither end dialled the other directly.
+    Relayed,
 }
 
 /// A node's stable Noise static keypair (TCP transport identity).

@@ -5,6 +5,7 @@ use crate::hew_node::inbound::{
     handle_inbound_ask, send_reply_envelope, INBOUND_ASK_ERROR_REPLY_HOOK,
     INBOUND_ASK_REPLY_ADMISSION_HOOK, INBOUND_ROUTER_AFTER_INCREMENT_HOOK,
 };
+use crate::peer_binding::{ClaimState, ConnectionOrigin};
 
 #[test]
 fn secondary_node_stop_does_not_fail_current_node_pending_asks() {
@@ -1400,5 +1401,172 @@ fn silent_inbound_handshake_does_not_stall_other_admissions() {
         "node stop is not held by a silent admission: {:?}",
         stopping.elapsed()
     );
+    crate::registry::hew_registry_clear();
+}
+
+/// How `node` sees `peer`, by authenticated identity.
+///
+/// # Safety
+/// Both nodes are started and live.
+unsafe fn peer_view(node: &TestNode, peer: &TestNode) -> connection::PeerConnectionView {
+    // SAFETY: the caller keeps both nodes started.
+    unsafe {
+        connection::peer_connection_view(
+            &*(*node.as_ptr()).conn_mgr,
+            (*peer.as_ptr())
+                .auth
+                .node_identity()
+                .expect("peer identity"),
+        )
+    }
+}
+
+/// Wait until `node` holds exactly one installed connection to `peer` and
+/// that connection, opened from `origin`, owns the published claim.
+///
+/// # Safety
+/// Both nodes are started and live.
+unsafe fn await_kept_connection(node: &TestNode, peer: &TestNode, origin: ConnectionOrigin) {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    loop {
+        // SAFETY: the caller keeps both nodes started.
+        let view = unsafe { peer_view(node, peer) };
+        if view.installed == 1 && view.owner == Some((ClaimState::Published, origin)) {
+            return;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "never kept only the {origin:?} connection: {view:?}"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(1));
+    }
+}
+
+/// The origin of the connection both ends keep, seen from `node`.
+///
+/// # Safety
+/// Both nodes are started and live.
+unsafe fn kept_origin(node: &TestNode, peer: &TestNode) -> ConnectionOrigin {
+    // SAFETY: the caller keeps both nodes started.
+    let (local, remote) = unsafe {
+        (
+            (*node.as_ptr())
+                .auth
+                .node_identity()
+                .expect("local identity"),
+            (*peer.as_ptr())
+                .auth
+                .node_identity()
+                .expect("peer identity"),
+        )
+    };
+    if local.to_bytes() < remote.to_bytes() {
+        ConnectionOrigin::Dialled
+    } else {
+        ConnectionOrigin::Accepted
+    }
+}
+
+/// Two nodes that dial each other at once both keep the connection the lower
+/// `NodeId` dialled. Had they chosen differently, each would close the one the
+/// other kept, and with reconnect off neither would be left connected. A fence
+/// holds both admissions on each node until both have authenticated, so they
+/// overlap however the scheduler runs; which one reserves first still races.
+#[test]
+fn crossing_dials_keep_one_connection_on_both_ends() {
+    let _guard = crate::runtime_test_guard();
+    crate::registry::hew_registry_clear();
+    for round in 0..16 {
+        let (a, port_a, b, port_b) = start_authorized_tcp_pair(343, 344);
+        // SAFETY: both nodes are started; their managers outlive the round.
+        let fence = connection::crossing_fence::enrol(unsafe {
+            &[
+                (*a.as_ptr()).conn_mgr.cast_const(),
+                (*b.as_ptr()).conn_mgr.cast_const(),
+            ]
+        });
+        let barrier = Arc::new(std::sync::Barrier::new(2));
+        let dial = |from: &TestNode, port: u16| {
+            let node = from.as_ptr() as usize;
+            let barrier = Arc::clone(&barrier);
+            std::thread::spawn(move || {
+                let target = CString::new(format!("127.0.0.1:{port}")).expect("valid address");
+                barrier.wait();
+                // SAFETY: the test joins this dial before stopping the node.
+                let rc = unsafe { hew_node_connect(node as *mut HewNode, target.as_ptr()) };
+                let error = crate::hew_last_error();
+                let error = if error.is_null() {
+                    None
+                } else {
+                    // SAFETY: a non-null `hew_last_error` is a live NUL-terminated string.
+                    Some(
+                        unsafe { CStr::from_ptr(error) }
+                            .to_string_lossy()
+                            .into_owned(),
+                    )
+                };
+                (rc, error)
+            })
+        };
+        let a_dial = dial(&a, port_b);
+        let b_dial = dial(&b, port_a);
+        let (a_dial, b_dial) = (
+            a_dial.join().expect("a dial"),
+            b_dial.join().expect("b dial"),
+        );
+        // SAFETY: both nodes stay started until the stops below.
+        unsafe {
+            // The lower node's dial is the one both ends keep. The higher
+            // node's own dial may be refused instead: the lower node closes it
+            // as soon as it settles, which can land while the higher node is
+            // still publishing it.
+            let lower_dial = if kept_origin(&a, &b) == ConnectionOrigin::Dialled {
+                a_dial
+            } else {
+                b_dial
+            };
+            assert_eq!(
+                lower_dial.0, 0,
+                "round {round}: lower dial failed: {:?}",
+                lower_dial.1
+            );
+            await_kept_connection(&a, &b, kept_origin(&a, &b));
+            await_kept_connection(&b, &a, kept_origin(&b, &a));
+            drop(fence);
+            assert_eq!(hew_node_stop(b.as_ptr()), 0);
+            assert_eq!(hew_node_stop(a.as_ptr()), 0);
+        }
+    }
+    crate::registry::hew_registry_clear();
+}
+
+/// The tie-break covers only dials in flight together. A same-session redial
+/// that begins after the lower node's connection published still replaces
+/// it, as it must replace that connection if it were half-open.
+#[test]
+fn later_redial_replaces_the_lower_node_dial() {
+    let _guard = crate::runtime_test_guard();
+    crate::registry::hew_registry_clear();
+    let (a, port_a, b, port_b) = start_authorized_tcp_pair(345, 346);
+    // SAFETY: both nodes stay started until the stops below.
+    unsafe {
+        let (lower, lower_port, higher, higher_port) =
+            if kept_origin(&a, &b) == ConnectionOrigin::Dialled {
+                (&a, port_a, &b, port_b)
+            } else {
+                (&b, port_b, &a, port_a)
+            };
+        let higher_address = CString::new(format!("127.0.0.1:{higher_port}")).unwrap();
+        assert_eq!(hew_node_connect(lower.as_ptr(), higher_address.as_ptr()), 0);
+        await_kept_connection(lower, higher, ConnectionOrigin::Dialled);
+        await_kept_connection(higher, lower, ConnectionOrigin::Accepted);
+
+        let lower_address = CString::new(format!("127.0.0.1:{lower_port}")).unwrap();
+        assert_eq!(hew_node_connect(higher.as_ptr(), lower_address.as_ptr()), 0);
+        await_kept_connection(lower, higher, ConnectionOrigin::Accepted);
+        await_kept_connection(higher, lower, ConnectionOrigin::Dialled);
+        assert_eq!(hew_node_stop(b.as_ptr()), 0);
+        assert_eq!(hew_node_stop(a.as_ptr()), 0);
+    }
     crate::registry::hew_registry_clear();
 }

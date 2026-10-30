@@ -9,12 +9,13 @@ use std::time::Duration;
 use rand::rng;
 use rand::RngExt;
 
-use crate::peer_binding::ClaimState;
+use crate::peer_binding::{ClaimState, ConnectionOrigin};
 use crate::set_last_error;
 use crate::transport::HEW_CONN_INVALID;
 
-use super::admission::add_connection;
+use super::admission::{add_connection, Admitted};
 use super::handshake::close_transport_conn;
+use super::identity_claim::AdmissionStart;
 use super::manager::{hew_connmgr_configure_reconnect, hew_connmgr_expect_peer};
 use super::{
     HewConnMgr, ReconnectOwner, ReconnectPlan, SendConnMgr, RECONNECT_DEFAULT_MAX_RETRIES,
@@ -264,6 +265,7 @@ fn reconnect_attempt_inner(
         ));
         return ReconnectAttemptOutcome::TransportError;
     };
+    let admission = AdmissionStart::now(mgr, ConnectionOrigin::Dialled);
     // SAFETY: mgr_ptr was checked non-null and remains valid for the connection lifetime.
     let new_conn_id = match unsafe { connect_addr(mgr_ptr, &target_addr) } {
         Ok(new_conn_id) => new_conn_id,
@@ -292,7 +294,9 @@ fn reconnect_attempt_inner(
     }
 
     // SAFETY: manager pointer is valid until shutdown and join in free.
-    if unsafe { add_connection(mgr_ptr, new_conn_id, Some(&plan.predecessor)) } != 0 {
+    let admitted =
+        unsafe { add_connection(mgr_ptr, new_conn_id, Some(&plan.predecessor), admission) };
+    let Some(admitted) = admitted else {
         // hew_connmgr_add owns conn_id cleanup on failure (closes the
         // transport connection on all failure paths, including a
         // pinned-identity mismatch) and has already recorded the specific
@@ -302,6 +306,11 @@ fn reconnect_attempt_inner(
         } else {
             ReconnectAttemptOutcome::Cancelled
         };
+    };
+    if let Admitted::Yielded(_) = admitted {
+        // The peer's own dial won a crossing: it owns the connection and its
+        // redial, and this worker's dial is already closed.
+        return ReconnectAttemptOutcome::Cancelled;
     }
 
     let retries = i32::try_from(plan.max_retries).unwrap_or(i32::MAX);
@@ -477,6 +486,7 @@ fn seed_attempt(
         return None;
     }
     let address = std::ffi::CString::new(target.target_addr.as_str()).ok()?;
+    let admission = AdmissionStart::now(mgr, ConnectionOrigin::Dialled);
     // SAFETY: manager and address remain valid through admission.
     let conn_id = unsafe { connect_addr(mgr_ptr, &address) }.ok()?;
     if let Some(expected) = target.expected_node_id {
@@ -487,14 +497,8 @@ fn seed_attempt(
             return None;
         }
     }
-    let mut owner = None;
     // SAFETY: admission consumes the connection on every path. It checks the
     // exact predecessor after authentication and before publishing any route.
-    if unsafe {
-        super::admission::add_connection_recording_owner(mgr_ptr, conn_id, predecessor, &mut owner)
-    } != 0
-    {
-        return None;
-    }
-    owner
+    // A yielded crossing dial supervises the winning publication instead.
+    unsafe { add_connection(mgr_ptr, conn_id, predecessor, admission) }.map(Admitted::owner)
 }

@@ -303,9 +303,17 @@ fn stale_reconnect_cannot_replace_newer_publication() {
 
         // A failed attempt restores the retired predecessor so retry remains
         // possible; shutdown cancels that otherwise valid retry before connect.
-        let ClaimReservation::Reserved { superseded } =
-            reserve_identity_claim(mgr, identity, 20, 1, None, 11, 101, Some(&plan.predecessor))
-        else {
+        let ClaimReservation::Reserved { superseded } = reserve_identity_claim(
+            mgr,
+            identity,
+            20,
+            1,
+            None,
+            11,
+            101,
+            Some(&plan.predecessor),
+            TEST_ADMISSION,
+        ) else {
             panic!("current retired predecessor must permit reconnect");
         };
         assert_eq!(
@@ -368,6 +376,7 @@ fn stale_reconnect_cannot_replace_newer_publication() {
                 12,
                 103,
                 Some(&plan.predecessor),
+                TEST_ADMISSION,
             ),
             ClaimReservation::Rejected(_)
         ));
@@ -511,6 +520,8 @@ fn configured_seed_follows_successor_but_never_arms_transient_reconnect() {
                 conn_id: 8,
                 publication_token: 42,
                 state: ClaimState::Published,
+                origin: ConnectionOrigin::Dialled,
+                published_at: 0,
             },
         );
         assert!(super::super::reconnect::seed_predecessor(manager, &old).is_none());

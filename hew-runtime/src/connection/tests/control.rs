@@ -467,7 +467,17 @@ fn registry_names_require_the_exact_authenticated_origin_session_and_publication
             .connections
             .access(|connections| connections.push(replacement));
         assert!(matches!(
-            reserve_identity_claim(&*mgr, old_session.node_id, 3, 2, None, 12, token, None),
+            reserve_identity_claim(
+                &*mgr,
+                old_session.node_id,
+                3,
+                2,
+                None,
+                12,
+                token,
+                None,
+                TEST_ADMISSION
+            ),
             ClaimReservation::Reserved { .. }
         ));
         assert!(publish_identity_claim(

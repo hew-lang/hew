@@ -67,11 +67,15 @@ mod swim;
 mod transport;
 use transport::ConnectionTransport;
 
+#[cfg(test)]
+pub(crate) use admission::crossing_fence;
 pub use admission::*;
 #[cfg(test)]
 pub(crate) use channel::ChannelRefusal;
 pub(crate) use gossip::*;
 pub(crate) use handshake::*;
+#[cfg(test)]
+pub(crate) use identity_claim::{peer_connection_view, PeerConnectionView};
 pub use manager::*;
 pub(crate) use peer::*;
 pub use send::*;

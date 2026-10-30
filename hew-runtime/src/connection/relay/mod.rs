@@ -8,10 +8,11 @@ use std::sync::{Arc, Mutex, Weak};
 use crate::envelope::{self, ControlFrame, NodeSessionIdentity};
 use crate::node_identity::NodeId;
 use crate::node_protocol_generated as wire;
-use crate::peer_binding::ClaimState;
+use crate::peer_binding::{ClaimState, ConnectionOrigin};
 use crate::util::MutexExt;
 use crate::{set_last_error, transport::with_connection_attempt_deadline};
 
+use super::identity_claim::{local_dials_first, AdmissionStart};
 use super::reconnect::{next_publication_token, track_worker};
 use super::send::claim_send;
 use super::{HewConnMgr, ReconnectOwner, SendConnMgr};
@@ -257,10 +258,11 @@ fn admit(manager: *mut HewConnMgr, circuit: Arc<Circuit>, expected: NodeSessionI
     let manager_ref = unsafe { &*manager };
     let previous = predecessor(manager_ref, expected);
     let conn_id = circuit.conn_id;
+    let admission = AdmissionStart::now(manager_ref, ConnectionOrigin::Relayed);
     with_connection_attempt_deadline(|| {
         let initiator = manager_ref
             .local_identity
-            .is_some_and(|identity| identity.to_bytes() < expected.node_id.to_bytes());
+            .is_some_and(|identity| local_dials_first(identity, expected.node_id));
         let Some(io) = transport::connection(manager, circuit, initiator) else {
             return;
         };
@@ -273,7 +275,7 @@ fn admit(manager: *mut HewConnMgr, circuit: Arc<Circuit>, expected: NodeSessionI
                 io,
                 Some(expected),
                 previous.as_ref(),
-                &mut None,
+                admission,
             )
         };
     });

@@ -6,7 +6,7 @@ use std::sync::Arc;
 use std::thread;
 
 use crate::node_identity::NodeId;
-use crate::peer_binding::{ClaimState, LiveClaim, Posture};
+use crate::peer_binding::{ClaimState, ConnectionOrigin, LiveClaim, Posture};
 use crate::routing::hew_routing_remove_route_if_conn;
 use crate::set_last_error;
 use crate::transport::with_connection_attempt_deadline;
@@ -20,7 +20,7 @@ use super::handshake::{
 };
 use super::identity_claim::{
     abort_identity_claim, publish_identity_connection_established, reserve_identity_claim,
-    retire_identity_connection_publication, ClaimReservation,
+    retire_identity_connection_publication, AdmissionStart, ClaimReservation,
 };
 use super::reader::reader_loop;
 use super::reconnect::{next_publication_token, track_worker};
@@ -88,8 +88,32 @@ pub(super) fn install_connection_actor(
 /// `conn_id` must be a valid connection ID from the transport.
 #[no_mangle]
 pub unsafe extern "C" fn hew_connmgr_add(mgr: *mut HewConnMgr, conn_id: c_int) -> c_int {
+    // SAFETY: the caller provides a live manager, or null.
+    let Some(manager) = (unsafe { mgr.as_ref() }) else {
+        set_last_error("hew_connmgr_add: manager is null");
+        return -1;
+    };
+    let admission = AdmissionStart::now(manager, ConnectionOrigin::Dialled);
     // SAFETY: the caller provides a live manager and an owned transport connection.
-    unsafe { add_connection(mgr, conn_id, None) }
+    unsafe { add_connection(mgr, conn_id, None, admission) }.map_or(-1, |_| 0)
+}
+
+/// A successful admission: the peer is connected through `owner`.
+#[derive(Debug)]
+pub(super) enum Admitted {
+    /// This connection was installed and published.
+    Installed(ReconnectOwner),
+    /// This connection crossed the peer's own dial and lost the tie-break, so
+    /// it was closed; the peer stays connected through the published winner.
+    Yielded(ReconnectOwner),
+}
+
+impl Admitted {
+    pub(super) fn owner(self) -> ReconnectOwner {
+        match self {
+            Self::Installed(owner) | Self::Yielded(owner) => owner,
+        }
+    }
 }
 
 /// Inbound admissions that may authenticate at once. Each ends within the
@@ -107,6 +131,9 @@ const MAX_INBOUND_ADMISSIONS: usize = 16;
 pub(crate) unsafe fn spawn_inbound_admission(mgr: *mut HewConnMgr, conn_id: c_int) {
     // SAFETY: the caller pins a live manager; `hew_connmgr_free` joins the worker.
     let manager = unsafe { &*mgr };
+    // The admission begins at accept, before any wait for a worker, so a busy
+    // node still sees a dial that crossed its own as overlapping it.
+    let start = AdmissionStart::now(manager, ConnectionOrigin::Accepted);
     manager
         .inbound_admissions
         .wait_below(MAX_INBOUND_ADMISSIONS);
@@ -117,7 +144,7 @@ pub(crate) unsafe fn spawn_inbound_admission(mgr: *mut HewConnMgr, conn_id: c_in
         let send = send;
         with_connection_attempt_deadline(|| {
             // SAFETY: the tracked worker pins the manager; admission owns `conn_id`.
-            unsafe { add_connection(send.0, conn_id, None) }
+            unsafe { add_connection(send.0, conn_id, None, start) };
         });
     });
     if !spawned {
@@ -126,27 +153,20 @@ pub(crate) unsafe fn spawn_inbound_admission(mgr: *mut HewConnMgr, conn_id: c_in
     }
 }
 
+/// Admit a direct transport connection. Returns the exact admitted
+/// publication even if its reader retires before admission returns: looking
+/// up a recycled transport id afterwards is unsound. `None` means the
+/// connection was refused and closed.
 pub(super) unsafe fn add_connection(
     mgr: *mut HewConnMgr,
     conn_id: c_int,
     predecessor: Option<&ReconnectOwner>,
-) -> c_int {
-    // SAFETY: the caller provides a live manager and owned connection.
-    unsafe { add_connection_recording_owner(mgr, conn_id, predecessor, &mut None) }
-}
-
-/// Return the exact admitted publication even if its reader retires before
-/// admission returns. Looking up a recycled transport id afterwards is unsound.
-pub(super) unsafe fn add_connection_recording_owner(
-    mgr: *mut HewConnMgr,
-    conn_id: c_int,
-    predecessor: Option<&ReconnectOwner>,
-    admitted_owner: &mut Option<ReconnectOwner>,
-) -> c_int {
+    admission: AdmissionStart,
+) -> Option<Admitted> {
     // SAFETY: the caller pins a live manager, or supplies null.
     let Some(manager) = (unsafe { mgr.as_ref() }) else {
         set_last_error("hew_connmgr_add: manager is null");
-        return -1;
+        return None;
     };
     // SAFETY: the caller owns the connection and pins the node transport.
     unsafe {
@@ -156,7 +176,7 @@ pub(super) unsafe fn add_connection_recording_owner(
             super::ConnectionTransport::borrowed(manager.transport),
             None,
             predecessor,
-            admitted_owner,
+            admission,
         )
     }
 }
@@ -171,14 +191,14 @@ pub(super) unsafe fn add_connection_on_transport(
     transport: super::ConnectionTransport,
     expected: Option<crate::envelope::NodeSessionIdentity>,
     predecessor: Option<&ReconnectOwner>,
-    admitted_owner: &mut Option<ReconnectOwner>,
-) -> c_int {
+    admission: AdmissionStart,
+) -> Option<Admitted> {
     let transport_ptr = transport.as_ptr();
     if mgr.is_null() {
         // Cannot close conn_id: no transport pointer available.  This is API
         // misuse; the caller retains ownership of conn_id in this case only.
         set_last_error("hew_connmgr_add: manager is null");
-        return -1;
+        return None;
     }
     // Ownership: hew_connmgr_add takes ownership of conn_id on entry.
     // On SUCCESS: ownership transfers to the manager (closed by remove/free).
@@ -198,7 +218,7 @@ pub(super) unsafe fn add_connection_on_transport(
         // SAFETY: conn_id came from the transport and is not yet tracked by the manager.
         unsafe { close_transport_conn(transport_ptr, conn_id) };
         set_last_error("hew_connmgr_add: manager is shutting down");
-        return -1;
+        return None;
     }
 
     {
@@ -212,7 +232,7 @@ pub(super) unsafe fn add_connection_on_transport(
             set_last_error(format!(
                 "hew_connmgr_add: connection {conn_id} already exists"
             ));
-            return -1;
+            return None;
         }
     }
 
@@ -223,7 +243,7 @@ pub(super) unsafe fn add_connection_on_transport(
         // SAFETY: transport_ptr and conn_id are valid per caller contract of hew_connmgr_add.
         unsafe { close_transport_conn(transport_ptr, conn_id) };
         set_last_error(format!("hew_connmgr_add: {refusal} (conn {conn_id})"));
-        -1
+        None
     };
     // SAFETY: transport_ptr is valid while the connection manager is alive.
     let Some(channel) = (unsafe { channel_kind(transport_ptr) }) else {
@@ -243,7 +263,7 @@ pub(super) unsafe fn add_connection_on_transport(
         set_last_error(
             "hew_connmgr_add: v2 distributed handshake requires a loaded authenticated local identity and durable session",
         );
-        return -1;
+        return None;
     };
     let mut local_hs = local_handshake(
         local_identity,
@@ -257,7 +277,7 @@ pub(super) unsafe fn add_connection_on_transport(
     let Some(peer_hs) = (unsafe { handshake_exchange(transport_ptr, conn_id, &local_hs) }) else {
         // SAFETY: transport_ptr and conn_id are valid per caller contract of hew_connmgr_add.
         unsafe { close_transport_conn(transport_ptr, conn_id) };
-        return -1;
+        return None;
     };
     if expected.is_some_and(|expected| {
         expected.node_id != peer_hs.node_id
@@ -268,7 +288,7 @@ pub(super) unsafe fn add_connection_on_transport(
         set_last_error(
             "hew_connmgr_add: origin identity or session differs from the selected peer",
         );
-        return -1;
+        return None;
     }
     if !peer_identity_compatible(local_identity, peer_hs.node_id) {
         // SAFETY: transport_ptr and conn_id are valid per caller contract.
@@ -277,7 +297,7 @@ pub(super) unsafe fn add_connection_on_transport(
             "hew_connmgr_add: peer NodeId {} collides with local NodeId for conn {conn_id}",
             peer_hs.node_id
         ));
-        return -1;
+        return None;
     }
 
     // ── Per-connection posture (issue #2652, D1/D2/BLOCK-7) ───────────────
@@ -303,7 +323,7 @@ pub(super) unsafe fn add_connection_on_transport(
         set_last_error(format!(
             "hew_connmgr_add: v2 identity traffic requires authenticated strict posture (conn {conn_id})"
         ));
-        return -1;
+        return None;
     }
     if posture == Posture::Strict {
         let unconfigured =
@@ -314,7 +334,7 @@ pub(super) unsafe fn add_connection_on_transport(
             set_last_error(format!(
                 "hew_connmgr_add: strict connection requires an installed cluster enrolment (conn {conn_id})"
             ));
-            return -1;
+            return None;
         }
     }
 
@@ -344,7 +364,7 @@ pub(super) unsafe fn add_connection_on_transport(
             set_last_error(format!(
                 "hew_connmgr_add: cluster admission refused: {error}"
             ));
-            return -1;
+            return None;
         }
     }
     let derived_peer_identity = peer_credential.node_id();
@@ -355,7 +375,7 @@ pub(super) unsafe fn add_connection_on_transport(
             "hew_connmgr_add: authenticated credential derives NodeId {derived_peer_identity}, not advertised {} (conn {conn_id})",
             peer_hs.node_id
         ));
-        return -1;
+        return None;
     }
     let requested_route_slot = if cfg!(test) {
         mgr.auth
@@ -372,8 +392,10 @@ pub(super) unsafe fn add_connection_on_transport(
         set_last_error(format!(
             "hew_connmgr_add: publication token space is exhausted (conn {conn_id})"
         ));
-        return -1;
+        return None;
     };
+    #[cfg(test)]
+    crossing_fence::arrive(mgr);
     let superseded_claim: Option<LiveClaim> = match reserve_identity_claim(
         mgr,
         peer_hs.node_id,
@@ -383,13 +405,19 @@ pub(super) unsafe fn add_connection_on_transport(
         conn_id,
         claim_token,
         predecessor,
+        admission,
     ) {
         ClaimReservation::Reserved { superseded } => superseded,
+        ClaimReservation::Yielded(winner) => {
+            // SAFETY: admission still owns this unpublished transport handle.
+            unsafe { close_transport_conn(transport_ptr, conn_id) };
+            return Some(Admitted::Yielded(winner));
+        }
         ClaimReservation::Rejected(detail) => {
             // SAFETY: transport_ptr and conn_id are valid per caller contract.
             unsafe { close_transport_conn(transport_ptr, conn_id) };
             set_last_error(format!("hew_connmgr_add: {detail}"));
-            return -1;
+            return None;
         }
     };
 
@@ -405,14 +433,14 @@ pub(super) unsafe fn add_connection_on_transport(
         // SAFETY: this failed admission still owns its unpublished handle.
         unsafe { close_transport_conn(transport_ptr, conn_id) };
         set_last_error("hew_connmgr_add: reserved identity lost its route assignment");
-        return -1;
+        return None;
     };
     if expected_peer_node_id.is_some_and(|expected| expected != peer_route_slot) {
         abort_identity_claim(mgr, peer_hs.node_id, conn_id, claim_token, superseded_claim);
         // SAFETY: admission owns the unpublished transport handle.
         unsafe { close_transport_conn(transport_ptr, conn_id) };
         set_last_error("hew_connmgr_add: peer route slot does not match selected target");
-        return -1;
+        return None;
     }
 
     let mut actor = ConnectionActor::new(conn_id, Arc::new(protection));
@@ -480,7 +508,7 @@ pub(super) unsafe fn add_connection_on_transport(
         set_last_error(format!(
             "hew_connmgr_add: failed to spawn reader thread for conn {conn_id}"
         ));
-        return -1;
+        return None;
     }
 
     let ConnectionInstallPublication {
@@ -494,14 +522,14 @@ pub(super) unsafe fn add_connection_on_transport(
             set_last_error(format!(
                 "hew_connmgr_add: manager shutdown won install race for conn {conn_id}"
             ));
-            return -1;
+            return None;
         }
         Err(ConnectionInstallError::Duplicate) => {
             abort_identity_claim(mgr, peer_hs.node_id, conn_id, claim_token, superseded_claim);
             set_last_error(format!(
                 "hew_connmgr_add: connection {conn_id} became duplicate during install"
             ));
-            return -1;
+            return None;
         }
     };
 
@@ -517,15 +545,14 @@ pub(super) unsafe fn add_connection_on_transport(
         &publication_removed,
         superseded_claim,
     ) {
-        return -1;
+        return None;
     }
 
-    *admitted_owner = Some(ReconnectOwner {
+    Some(Admitted::Installed(ReconnectOwner {
         node_id: peer_hs.node_id,
         session_incarnation: peer_hs.session_incarnation,
         publication_token,
-    });
-    0
+    }))
 }
 
 /// Pre-join admission-claim resolution for `hew_connmgr_remove` (see the
@@ -836,4 +863,62 @@ pub(super) fn remove_connection(
     }
 
     0
+}
+
+/// Test fence that holds a manager's admissions just before reservation until
+/// both connections of a crossing dial have authenticated, so their admissions
+/// overlap whatever the scheduler does.
+#[cfg(test)]
+pub(crate) mod crossing_fence {
+    use std::collections::HashMap;
+    use std::sync::{Condvar, LazyLock, Mutex};
+    use std::time::{Duration, Instant};
+
+    use crate::util::{CondvarExt, MutexExt};
+
+    use super::HewConnMgr;
+
+    /// Admissions arrived per enrolled manager address.
+    static FENCE: LazyLock<(Mutex<HashMap<usize, usize>>, Condvar)> =
+        LazyLock::new(|| (Mutex::new(HashMap::new()), Condvar::new()));
+
+    /// Managers held at the fence until this is dropped, even by a panic,
+    /// so a later manager at a reused address is never fenced.
+    pub(crate) struct Enrolment(Vec<usize>);
+
+    pub(crate) fn enrol(managers: &[*const HewConnMgr]) -> Enrolment {
+        let keys: Vec<usize> = managers.iter().map(|&mgr| mgr as usize).collect();
+        let mut arrived = FENCE.0.lock_or_recover();
+        for &key in &keys {
+            arrived.insert(key, 0);
+        }
+        Enrolment(keys)
+    }
+
+    impl Drop for Enrolment {
+        fn drop(&mut self) {
+            let mut arrived = FENCE.0.lock_or_recover();
+            for key in &self.0 {
+                arrived.remove(key);
+            }
+        }
+    }
+
+    pub(super) fn arrive(mgr: &HewConnMgr) {
+        let key = std::ptr::from_ref(mgr) as usize;
+        let (lock, condvar) = &*FENCE;
+        let mut arrived = lock.lock_or_recover();
+        let Some(count) = arrived.get_mut(&key) else {
+            return;
+        };
+        *count += 1;
+        condvar.notify_all();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while arrived.get(&key).is_some_and(|count| *count < 2) {
+            let Some(left) = deadline.checked_duration_since(Instant::now()) else {
+                return;
+            };
+            arrived = condvar.wait_timeout_or_recover(arrived, left).0;
+        }
+    }
 }

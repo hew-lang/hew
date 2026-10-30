@@ -2258,17 +2258,27 @@ impl<'a> Formatter<'a> {
     }
 
     /// Start of the machine-body section keyword `word` (`events`, `emits`,
-    /// `default`) directly inside the machine's braces; 0 without source.
+    /// `default`) directly inside the machine's braces and opening a `{`
+    /// body, so a state of that name is not taken for it; 0 without source.
     fn machine_section(&self, start: usize, end: usize, word: &str) -> usize {
         let mut depth = 0usize;
-        for (token, span) in &self.tokens[self.token_at_or_after(start)..] {
+        let first = self.token_at_or_after(start);
+        for (index, (token, span)) in self.tokens.iter().enumerate().skip(first) {
             if span.start >= end {
                 break;
             }
             match token {
                 hew_lexer::Token::LeftBrace => depth += 1,
                 hew_lexer::Token::RightBrace => depth = depth.saturating_sub(1),
-                _ if depth == 1 && self.source[span.clone()] == *word => return span.start,
+                _ if depth == 1
+                    && self.source[span.clone()] == *word
+                    && matches!(
+                        self.tokens.get(index + 1),
+                        Some((hew_lexer::Token::LeftBrace, _))
+                    ) =>
+                {
+                    return span.start;
+                }
                 _ => {}
             }
         }

@@ -922,3 +922,27 @@ fn a_block_arm_continued_by_a_postfix_takes_no_comma() {
         "type P {\n    n: i64;\n}\n\nfn main() {\n    let x: Option<i64> = .None;\n    let y = match x {\n        .Some(v) => {\n            P { n: v }\n        }.n\n        other => 0,\n    };\n    println(y);\n}\n",
     );
 }
+
+#[test]
+fn a_state_named_like_a_section_is_not_a_section() {
+    assert_faithful(
+        "machine Gate {\n    events {\n        Go;\n    }\n\n    state Idle;\n    state emits;\n\n    on Go: Idle => emits;\n    on Go: emits => Idle;\n}\n\nfn main() {}\n",
+    );
+    assert_faithful(
+        "machine Gate {\n    state events;\n    state Idle;\n\n    events {\n        Go;\n    }\n\n    on Go: Idle => events;\n    on Go: events => Idle;\n}\n\nfn main() {}\n",
+    );
+}
+
+#[test]
+fn a_lone_carriage_return_outside_a_comment_is_rejected() {
+    for source in [
+        "fn main() {\n    let x = 1;\n}\n",
+        "fn main() {\r\n    let x = 1;\r\n}\r\n",
+    ] {
+        let stray = source.replacen("1;", "1;\r", 1);
+        assert!(
+            matches!(check(source, &stray), Err(FidelityError::LineEnding { .. })),
+            "{stray:?}"
+        );
+    }
+}

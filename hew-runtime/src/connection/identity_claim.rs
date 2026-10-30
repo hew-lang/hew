@@ -259,7 +259,9 @@ pub(super) fn reserve_identity_claim(
             superseding: None,
         };
         let Some(existing) = map.get(&node_id) else {
-            if predecessor.is_some() {
+            // A predecessor whose claim is gone was retired with its member:
+            // the retry is a fresh admission.
+            if predecessor.is_some_and(|owner| owner.node_id != node_id) {
                 return ClaimReservation::Rejected(format!(
                     "stale reconnect predecessor for NodeId {node_id}"
                 ));

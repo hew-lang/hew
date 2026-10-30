@@ -175,6 +175,8 @@ impl MonoClock {
 struct DriverHandle {
     /// Set true to request shutdown; the loop observes it within one slice.
     stop: Arc<AtomicBool>,
+    /// Address of the runtime the ticker thread entered, or `0` for none.
+    runtime: usize,
     /// The ticker thread's join handle (taken at stop time).
     ///
     /// The join — not an in-flight spin guard — is the lifetime barrier here:
@@ -204,6 +206,13 @@ struct NodePtr(*mut HewNode);
 // (guaranteed by the join-before-free ordering documented at module level).
 unsafe impl Send for NodePtr {}
 
+/// The runtime a ticker thread enters for its whole life.
+struct RuntimePtr(Option<*const crate::runtime::RuntimeInner>);
+
+// SAFETY: the runtime synchronizes its own state; the pointer is dereferenced
+// only on the ticker thread while the owning node, and so its runtime, lives.
+unsafe impl Send for RuntimePtr {}
+
 /// Start the SWIM ticker for `node` if one is not already running.
 ///
 /// Idempotent: a second call for the same node while a ticker is live is a
@@ -227,18 +236,32 @@ pub(crate) unsafe fn start_swim_driver(node: *mut HewNode) -> bool {
         let stop = Arc::new(AtomicBool::new(false));
         let thread_stop = Arc::clone(&stop);
         let node_ptr = NodePtr(node);
+        // The node belongs to the runtime starting it. Its membership effects
+        // (quarantine, monitor fan-out, current-node lookups) must resolve
+        // that runtime on the ticker thread too, not the process default.
+        let runtime = RuntimePtr(crate::runtime::rt_current_opt().map(std::ptr::from_ref));
+        let runtime_key = runtime.0.map_or(0, |rt| rt as usize);
         // Select clock once at start: sim when SIMTIME_ENABLED, real otherwise.
         let clock = MonoClock::for_current_context();
 
         let spawn = std::thread::Builder::new()
             .name("hew-swim-driver".into())
-            .spawn(move || run_driver_loop(node_ptr, &thread_stop, clock));
+            .spawn(move || {
+                let runtime = runtime;
+                // SAFETY: the runtime's drop joins this thread
+                // (`stop_drivers_for_runtime`) before any of its fields free,
+                // and a node stop joins it earlier, so the runtime outlives
+                // every use on this thread.
+                let _entered = runtime.0.map(|rt| unsafe { crate::runtime::enter(&*rt) });
+                run_driver_loop(node_ptr, &thread_stop, clock);
+            });
 
         if let Ok(join) = spawn {
             table.insert(
                 node as usize,
                 DriverHandle {
                     stop,
+                    runtime: runtime_key,
                     join: Some(join),
                 },
             );
@@ -247,6 +270,45 @@ pub(crate) unsafe fn start_swim_driver(node: *mut HewNode) -> bool {
             crate::set_last_error("start_swim_driver: failed to spawn SWIM ticker thread");
             false
         }
+    })
+}
+
+/// Stop and join every SWIM ticker that entered `runtime`.
+///
+/// Runtime cleanup frees a runtime without stopping a node the program never
+/// shut down. Its ticker would then resolve the freed runtime, so the
+/// runtime's drop calls this before any of its fields free. The node itself
+/// is left as it is: only the thread borrowing the runtime ends.
+pub(crate) fn stop_drivers_for_runtime(runtime: *const crate::runtime::RuntimeInner) {
+    let key = runtime as usize;
+    let handles = SWIM_DRIVERS.access(|slot| {
+        let Some(table) = slot.as_mut() else {
+            return Vec::new();
+        };
+        let nodes = table
+            .iter()
+            .filter(|(_, handle)| handle.runtime == key)
+            .map(|(node, _)| *node)
+            .collect::<Vec<_>>();
+        nodes
+            .into_iter()
+            .filter_map(|node| table.remove(&node))
+            .collect::<Vec<_>>()
+    });
+    for mut handle in handles {
+        handle.stop.store(true, Ordering::Release);
+        if let Some(join) = handle.join.take() {
+            crate::util::report_join_panic("hew SWIM driver thread", join.join());
+        }
+    }
+}
+
+/// Whether a SWIM ticker is registered for `node`.
+#[cfg(test)]
+pub(crate) fn driver_running_for_test(node: *mut HewNode) -> bool {
+    SWIM_DRIVERS.access(|slot| {
+        slot.as_ref()
+            .is_some_and(|table| table.contains_key(&(node as usize)))
     })
 }
 
@@ -364,6 +426,11 @@ unsafe fn run_one_period(node: *mut HewNode) {
     //    Returns the next direct-probe target (0 = none).
     // SAFETY: cluster pointer is owned by the live node.
     let target = unsafe { cluster::hew_cluster_tick(cluster_ptr) };
+    // 1b. Retire buried members whose retention ended, with their claims and
+    //     routing sessions, so departed peers do not accumulate.
+    // SAFETY: conn_mgr is owned by the live node; hew_now_ms has no
+    // preconditions.
+    unsafe { connection::retire_departed_peers(&*conn_ptr, crate::clock::hew_now_ms()) };
     if target == 0 {
         return;
     }
@@ -485,6 +552,7 @@ mod tests {
                 node as usize,
                 DriverHandle {
                     stop: Arc::clone(&stop),
+                    runtime: 0,
                     join: Some(join),
                 },
             );

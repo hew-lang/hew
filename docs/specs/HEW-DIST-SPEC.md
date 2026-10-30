@@ -303,7 +303,8 @@ The receiver MUST reject:
 
 An equal-session reconnect is valid only for a live, non-buried member. A
 strictly higher durable session can replace an earlier connection and readmit a
-buried member.
+buried member. Once membership retires a buried member (§11), its identity is
+unknown again and any session is admitted as a new member.
 
 ### 4.1 One connection per peer
 
@@ -766,6 +767,34 @@ publication; a member returning from DEAD re-announces its registered names.
 
 Quarantine blocks sends, asks, monitors, and links until a valid readmission.
 SWIM frames are not blocked, so the protocol can reach a buried member.
+
+A buried member is retained, then retired. Retention starts when the node first
+sees the member DEAD or LEFT: a LEFT member is retained for one
+`suspect_timeout_ms`, long enough for its departure to be gossiped, and a DEAD
+member for ten (30 s by default), the window in which the burial rules above
+apply. At most 64 buried members are retained, the size of the gossip window;
+beyond that the oldest burial is retired first, so churn through node ids that
+never return uses bounded memory. A buried member whose connection is still
+published is never retired: that connection carries its obituary and can
+readmit it.
+
+Retirement forgets the member: its membership entry, durable session, failure
+detector, pending gossip and quarantine, its identity claim and session replay
+fence, and its admitted routing session. Its receiver-local route slot can then
+be assigned to another identity. A location on a retired discovered peer
+resolves as a stale reference rather than a partition. Retirement wakes node
+observers once and reports no second departure: an observer already saw the
+member DEAD or LEFT, and now sees it absent. A retired node that returns,
+whatever its session, is admitted as a new member at incarnation 1 and
+refutes any burial other nodes still hold through the usual SWIM rules.
+
+This includes a node that left. A node leaves as it stops, so a redial
+normally finds nothing listening. If it is still reachable, for example
+because its leave was gossiped while it kept running, a redial at the same
+session is refused during the LEFT grace. After the grace, the redial
+succeeds and the node is admitted as a new member. A longer DEAD window would
+not help a disconnected buried member: its gossip is not accepted without a
+published connection, so the window would only lengthen its outage.
 
 ## 12. Native-only target posture
 

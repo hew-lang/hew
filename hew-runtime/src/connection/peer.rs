@@ -12,8 +12,46 @@ use crate::util::{CondvarExt, MutexExt};
 use super::identity_claim::CLAIM_RESERVE_WAIT_MS;
 use super::{HewConnMgr, CONN_STATE_ACTIVE};
 
+/// Retire buried members whose retention has ended, then everything this
+/// manager keeps for them.
+///
+/// The membership table decides retirement. A `Retired` claim whose route
+/// slot no longer has a member belongs to a retired peer: the claim, its
+/// session replay fence and its routing session go together, which frees the
+/// route slot for another identity. A claim mid-admission or published is a
+/// live owner and stays. Holding the claims lock fences route publication,
+/// which needs this identity's claim to publish.
+pub(crate) fn retire_departed_peers(mgr: &HewConnMgr, now_ms: u64) {
+    if mgr.cluster.is_null() {
+        return;
+    }
+    // SAFETY: the manager's cluster outlives every caller holding the manager.
+    let cluster = unsafe { &*mgr.cluster };
+    cluster.retire_buried(now_ms);
+    let (lock, condvar) = &mgr.claims;
+    let mut claims = lock.lock_or_recover();
+    let mut forgotten = Vec::new();
+    claims.retain(|identity, claim| {
+        let retired =
+            claim.state == ClaimState::Retired && cluster.member_state(claim.route_slot) == -1;
+        if retired {
+            forgotten.push(*identity);
+        }
+        !retired
+    });
+    for identity in &forgotten {
+        // SAFETY: the manager's routing table is null or live with it.
+        unsafe { crate::routing::hew_routing_forget_node(mgr.routing_table, *identity) };
+    }
+    drop(claims);
+    if !forgotten.is_empty() {
+        condvar.notify_all();
+    }
+}
+
 /// Project a receiver-local alias from the canonical identity claims. Retired
-/// claims retain identity for departure observations and session replay fences.
+/// claims retain identity for departure observations and session replay fences
+/// until the membership table retires the member.
 pub(crate) fn identity_for_route_slot(mgr: &HewConnMgr, route_slot: u16) -> Option<NodeId> {
     if route_slot == mgr.local_node_id {
         return mgr.local_identity;

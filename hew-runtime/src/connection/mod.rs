@@ -63,7 +63,9 @@ mod reconnect;
 mod relay;
 pub(crate) use reconnect::{add_dialled_connection, start_seed};
 #[cfg(test)]
-pub(crate) use reconnect::{install_stand_in_for_test, reconnect_targets_for_test};
+pub(crate) use reconnect::{
+    install_stand_in_for_test, reconnect_successor_for_test, reconnect_targets_for_test,
+};
 mod send;
 mod swim;
 mod transport;

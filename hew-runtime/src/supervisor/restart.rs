@@ -391,6 +391,11 @@ pub(crate) unsafe fn restart_with_budget_and_strategy(
             crate::tracing::SPAN_SUPERVISOR_MAX_RESTARTS,
             recent,
         );
+        super::lifecycle::report_giveup(
+            sup,
+            super::lifecycle::GiveupChild::Actor(failed_index),
+            recent,
+        );
         // SAFETY: caller keeps `sup` live; no roster reference crosses this
         // cancellation/escalation operation.
         return stop_and_maybe_escalate(sup, record);
@@ -517,6 +522,11 @@ pub(crate) unsafe fn restart_child_supervisor_with_budget(
         crate::tracing::record_supervisor_event(
             sup_actor_id,
             crate::tracing::SPAN_SUPERVISOR_MAX_RESTARTS,
+            recent,
+        );
+        super::lifecycle::report_giveup(
+            sup,
+            super::lifecycle::GiveupChild::Supervisor(failed_index),
             recent,
         );
         // SAFETY: no roster reference crosses cancellation/escalation.

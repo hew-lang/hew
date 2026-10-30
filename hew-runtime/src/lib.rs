@@ -435,6 +435,14 @@ pub mod profiler {
             "Actor".to_owned()
         }
 
+        /// Stub registered-type lookup: without a registry nothing is registered.
+        #[must_use]
+        pub fn lookup_registered_dispatch_type_by_ptr_owned(
+            _dispatch_ptr: usize,
+        ) -> Option<String> {
+            None
+        }
+
         /// Stub handler-name lookup when profiler registry is unavailable.
         ///
         /// Always returns `None` — the same default the real registry returns
@@ -576,8 +584,16 @@ pub use machine_emit::{
 pub mod parse_error_slot;
 
 mod coverage;
+/// C ABI accessors a debugger calls to read the runtime's failure state.
+pub mod debug_accessors;
+/// Generated failure-kind list: trap codes, names and derived metric labels.
+pub mod failure_kinds;
+/// The one description of a failure, built at its origin.
+pub mod failure_record;
 pub mod internal;
 mod send_ptr;
+/// The runtime's reader of the compiler-emitted debug tables.
+pub mod symtab_abi;
 mod trap_code;
 // On WASM, provide shims for runtime functions used by codegen but not
 // applicable to WASM (no threads, no native timer support).

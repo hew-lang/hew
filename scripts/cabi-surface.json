@@ -5707,36 +5707,6 @@
         "wasm32-wasip1"
       ],
       "classification": "stable",
-      "extent": "not-applicable",
-      "nul": "not-applicable",
-      "ownership": "unmeasured",
-      "signature": {
-        "native": "fn hew_crash_log_last() -> CrashReport",
-        "wasm32-wasip1": "fn hew_crash_log_last() -> CrashReport"
-      },
-      "symbol": "hew_crash_log_last"
-    },
-    {
-      "availability": [
-        "native",
-        "wasm32-wasip1"
-      ],
-      "classification": "stable",
-      "extent": "not-applicable",
-      "nul": "not-applicable",
-      "ownership": "unmeasured",
-      "signature": {
-        "native": "fn hew_crash_log_push( CrashReport)",
-        "wasm32-wasip1": "fn hew_crash_log_push( CrashReport)"
-      },
-      "symbol": "hew_crash_log_push"
-    },
-    {
-      "availability": [
-        "native",
-        "wasm32-wasip1"
-      ],
-      "classification": "stable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -6193,6 +6163,51 @@
         "wasm32-wasip1": "fn hew_dealloc( *mut u8, u64, u64)"
       },
       "symbol": "hew_dealloc"
+    },
+    {
+      "availability": [
+        "native",
+        "wasm32-wasip1"
+      ],
+      "classification": "unclassified-stdlib",
+      "extent": "no-in-signature-extent",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
+        "native": "fn hew_debug_current_actor() -> *mut HewActor",
+        "wasm32-wasip1": "fn hew_debug_current_actor() -> *mut HewActor"
+      },
+      "symbol": "hew_debug_current_actor"
+    },
+    {
+      "availability": [
+        "native",
+        "wasm32-wasip1"
+      ],
+      "classification": "unclassified-stdlib",
+      "extent": "no-in-signature-extent",
+      "nul": "nul-terminated",
+      "ownership": "unmeasured",
+      "signature": {
+        "native": "fn hew_debug_dump_actors() -> *const c_char",
+        "wasm32-wasip1": "fn hew_debug_dump_actors() -> *const c_char"
+      },
+      "symbol": "hew_debug_dump_actors"
+    },
+    {
+      "availability": [
+        "native",
+        "wasm32-wasip1"
+      ],
+      "classification": "unclassified-stdlib",
+      "extent": "no-in-signature-extent",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
+        "native": "fn hew_debug_last_fault() -> *const FailureRecord",
+        "wasm32-wasip1": "fn hew_debug_last_fault() -> *const FailureRecord"
+      },
+      "symbol": "hew_debug_last_fault"
     },
     {
       "availability": [
@@ -7531,6 +7546,21 @@
         "native",
         "wasm32-wasip1"
       ],
+      "classification": "unclassified-stdlib",
+      "extent": "no-in-signature-extent",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
+        "native": "fn hew_fault_raise( *const FailureRecord)",
+        "wasm32-wasip1": "fn hew_fault_raise( *const FailureRecord)"
+      },
+      "symbol": "hew_fault_raise"
+    },
+    {
+      "availability": [
+        "native",
+        "wasm32-wasip1"
+      ],
       "classification": "non-declarable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
@@ -7555,6 +7585,21 @@
         "wasm32-wasip1": "fn hew_fault_report_entry( *const HewFault) -> i32"
       },
       "symbol": "hew_fault_report_entry"
+    },
+    {
+      "availability": [
+        "native",
+        "wasm32-wasip1"
+      ],
+      "classification": "unclassified-stdlib",
+      "extent": "no-in-signature-extent",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
+        "native": "fn hew_fault_report_entry_error( *const HewString, u32) -> i32",
+        "wasm32-wasip1": "fn hew_fault_report_entry_error( *const HewString, u32) -> i32"
+      },
+      "symbol": "hew_fault_report_entry_error"
     },
     {
       "availability": [
@@ -25520,6 +25565,21 @@
         "wasm32-wasip1": "static HEW_CIRCUIT_BREAKER_OPEN: c_int"
       },
       "symbol": "HEW_CIRCUIT_BREAKER_OPEN"
+    },
+    {
+      "availability": [
+        "native",
+        "wasm32-wasip1"
+      ],
+      "classification": "circuit-breaker-constant",
+      "extent": "not-applicable",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
+        "native": "static hew_last_fault_record: LastFault",
+        "wasm32-wasip1": "static hew_last_fault_record: LastFault"
+      },
+      "symbol": "hew_last_fault_record"
     },
     {
       "availability": [

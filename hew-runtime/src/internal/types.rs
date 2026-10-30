@@ -428,117 +428,19 @@ mod ask_error_role_tests {
 // ── Trap error codes ─────────────────────────────────────────────────────
 //
 // Codes stored in `actor.error_code` to distinguish named exit kinds from
-// raw OS signal numbers. OS signal numbers are < 32 on all supported
-// platforms. Hew-specific codes start at 200 to leave room for POSIX signals
-// and any future OS-specific ranges.
-//
-// Defined here (rather than in the native-only `supervisor` module) so that
-// both native and WASM arena/dispatch paths can stamp the canonical code on
-// an actor crash. The native supervisor module re-exports each constant for
-// callers that import from `crate::supervisor::*`.
-
-/// Error code stored in `actor.error_code` when an actor's arena cap is
-/// exhausted. Produced by `hew_arena_malloc` routing through the language-unwind
-/// crash seam (native) or the fail-closed trap seam (WASM) when `cap > 0` and
-/// an allocation would exceed it.
-///
-/// Distinct from any POSIX signal number (which are < 32 on all supported
-/// platforms). Code 200 is reserved for this purpose and must not be reused
-/// for any other exit kind.
-pub const HEW_TRAP_HEAP_EXCEEDED: i32 = 200;
-
-/// Error code recorded when a MIR `Terminator::Trap { kind: IntegerOverflow }`
-/// fires inside an actor dispatch.
-pub const HEW_TRAP_INTEGER_OVERFLOW: i32 = 201;
-
-/// Error code recorded for `Terminator::Trap { kind: DivideByZero }`.
-pub const HEW_TRAP_DIVIDE_BY_ZERO: i32 = 202;
-
-/// Error code recorded for `Terminator::Trap { kind: SignedMinDivNegOne }`
-/// — signed integer division of the minimum value by `-1`, whose mathematical
-/// result is not representable in the operand width.
-pub const HEW_TRAP_SIGNED_MIN_DIV_NEG_ONE: i32 = 203;
-
-/// Error code recorded for `Terminator::Trap { kind: ShiftOutOfRange }`.
-pub const HEW_TRAP_SHIFT_OUT_OF_RANGE: i32 = 204;
-
-/// Error code recorded for `Terminator::Trap { kind: IndexOutOfBounds }`.
-pub const HEW_TRAP_INDEX_OUT_OF_BOUNDS: i32 = 205;
-
-/// Error code recorded when codegen checks the i32 return value of
-/// `hew_actor_send_by_id` and finds it nonzero — the recipient was gone, the
-/// queue was full, or the actor ID routed to a remote partition that rejected
-/// the message.
-pub const HEW_TRAP_ACTOR_SEND_FAILED: i32 = 206;
-
-/// Error code recorded for `Terminator::Trap { kind: MachineDispatchUnreachable }`.
-///
-/// Fires when a synthesised `<Name>__step` machine dispatch function reaches a
-/// state×event combination that has no declared transition. Per LESSONS
-/// `fail-closed-not-pretend` (P0), the trap is the substrate's fail-closed
-/// surface — HIR exhaustiveness guarantees this code is dead in well-typed
-/// programs; the trap proves the property at runtime.
-pub const HEW_TRAP_MACHINE_DISPATCH_UNREACHABLE: i32 = 207;
-
-/// Discriminator for a `Terminator::Trap { kind: ExhaustivenessFallthrough }`.
-///
-/// Fires when a `match`-expression dispatch chain falls through every arm at
-/// runtime. The type checker pre-gates this code path by rejecting
-/// non-exhaustive enum matches; this trap is the belt-and-braces fail-closed
-/// surface mandated by LESSONS `match-fail-closed` (P0) — dead in well-typed
-/// programs, observable if a producer regression ever lets an unreached value
-/// reach the dispatch chain.
-pub const HEW_TRAP_EXHAUSTIVENESS_FALLTHROUGH: i32 = 208;
-
-/// Error code recorded when a synthesised codegen helper hits an internal
-/// compiler-invariant violation that is dead code in correctly-compiled
-/// programs: a module-init regex literal that failed to compile (patterns are
-/// validated by the type-checker) or an enum-clone helper synthesised for an
-/// opaque-handle-bearing variant whose clone direction was never meant to be
-/// reachable. Both codegen sites emit `hew_trap_with_code(209)` as the
-/// fail-closed sink so the path traps loudly rather than aliasing a handle or
-/// proceeding past a malformed pattern.
-///
-/// The single source of truth for the codegen literal: `hew-codegen-rs`
-/// imports this constant so a renumber here fails the codegen build closed.
-pub const HEW_TRAP_MODULE_INIT_REGEX_FAILED: i32 = 209;
-
-/// Error code recorded when a wire-type `Type.decode(bytes)` is handed bytes
-/// that are not a valid encoding of the type. The deserialize thunk frees its
-/// partial reconstruction and returns null; the codegen call site branches on
-/// that null and emits `hew_trap_with_code(210)` so malformed/adversarial input
-/// fails CLOSED (a clean trap) instead of dereferencing the null return and
-/// segfaulting. Per LESSONS `fail-closed-not-pretend` (P0): the boundary refuses
-/// loudly rather than crashing on a null deref.
-///
-/// The single source of truth for the codegen literal: `hew-codegen-rs` imports
-/// this constant so a renumber here fails the codegen build closed.
-pub const HEW_TRAP_WIRE_DECODE_FAILED: i32 = 210;
-
-/// Error code recorded when a `join{}` branch's reply resolves without a
-/// value. The join surface awaits every branch and binds a tuple — it has no
-/// per-branch `Result` binding — so a branch failure is fail-closed
-/// (§4.11.2: cancel the remaining branches and propagate). Pre-fix the null
-/// branch emitted a bare `llvm.trap` with no code and no diagnostic; the
-/// failure now traps with THIS code after `hew_join_branch_failed` names the
-/// classified cause (actor stopped, cancelled, handler trapped, or reply
-/// allocation failure — the observable-honesty axiom applied to the join
-/// site).
-///
-/// The single source of truth for the codegen literal: `hew-codegen-rs`
-/// imports this constant so a renumber here fails the codegen build closed.
-pub const HEW_TRAP_JOIN_BRANCH_FAILED: i32 = 211;
-
-/// Explicit user panic carried by the private logical-fault ABI.
-pub const HEW_TRAP_USER_PANIC: i32 = 212;
-
-/// A `fails` handler submitted through a mailbox view returned its declared
-/// error (error code 213). A one-way submission carries no reply channel, so
-/// the failure has no caller to answer: it becomes the actor's own fault and
-/// reaches its supervisor. The diagnostic carries the error's `Display` text.
-pub const HEW_TRAP_ACTOR_UNHANDLED_FAILURE: i32 = 213;
-/// An actor-owned one-shot request missed its handler-start deadline.
-pub const HEW_TRAP_ACTOR_TIMER_OVERDUE: i32 = 214;
+// raw OS signal numbers (< 32 on every supported platform). The codes, their
+// names and the metrics derived from them are generated from one table by
+// `scripts/gen-failure-kinds.py`; both native and WASM paths stamp them, and
+// `hew-codegen-rs` imports them so a renumber fails its build closed.
+pub use crate::failure_kinds::{
+    HEW_TRAP_ACTOR_SEND_FAILED, HEW_TRAP_ACTOR_TIMER_OVERDUE, HEW_TRAP_ACTOR_UNHANDLED_FAILURE,
+    HEW_TRAP_DIVIDE_BY_ZERO, HEW_TRAP_EXHAUSTIVENESS_FALLTHROUGH, HEW_TRAP_FAILED,
+    HEW_TRAP_HEAP_EXCEEDED, HEW_TRAP_INDEX_OUT_OF_BOUNDS, HEW_TRAP_INTEGER_OVERFLOW,
+    HEW_TRAP_JOIN_BRANCH_FAILED, HEW_TRAP_MACHINE_DISPATCH_UNREACHABLE,
+    HEW_TRAP_MODULE_INIT_REGEX_FAILED, HEW_TRAP_SHIFT_OUT_OF_RANGE,
+    HEW_TRAP_SIGNED_MIN_DIV_NEG_ONE, HEW_TRAP_STACK_OVERFLOW, HEW_TRAP_USER_PANIC,
+    HEW_TRAP_WIRE_DECODE_FAILED,
+};
 
 // ── Reply-failure classification ─────────────────────────────────────────
 //
@@ -650,6 +552,10 @@ pub enum ExitReason {
     ActorUnhandledFailure,
     /// An actor-owned one-shot request did not start before its overdue deadline.
     ActorTimerOverdue,
+    /// A thread or coroutine stack hit its guard page (error code 215).
+    StackOverflow,
+    /// A `fails` error escaped the program entry (error code 216).
+    Failed,
     /// Actor crashed with a hardware signal or via `hew_panic`. The raw
     /// signal number is preserved.
     Signal(i32),
@@ -683,6 +589,8 @@ impl ExitReason {
             ExitReason::UserPanic => "UserPanic",
             ExitReason::ActorUnhandledFailure => "ActorUnhandledFailure",
             ExitReason::ActorTimerOverdue => "ActorTimerOverdue",
+            ExitReason::StackOverflow => "StackOverflow",
+            ExitReason::Failed => "Failed",
             ExitReason::Signal(_) => "Signal",
             ExitReason::Normal => "Normal",
         }
@@ -709,6 +617,8 @@ impl ExitReason {
             HEW_TRAP_USER_PANIC => ExitReason::UserPanic,
             HEW_TRAP_ACTOR_UNHANDLED_FAILURE => ExitReason::ActorUnhandledFailure,
             HEW_TRAP_ACTOR_TIMER_OVERDUE => ExitReason::ActorTimerOverdue,
+            HEW_TRAP_STACK_OVERFLOW => ExitReason::StackOverflow,
+            HEW_TRAP_FAILED => ExitReason::Failed,
             sig => ExitReason::Signal(sig),
         }
     }
@@ -756,6 +666,8 @@ impl ExitReason {
             | ExitReason::WireDecodeFailed
             | ExitReason::JoinBranchFailed
             | ExitReason::UserPanic
+            | ExitReason::StackOverflow
+            | ExitReason::Failed
             | ExitReason::Signal(_)
             | ExitReason::Normal => CrashKind::Crashed,
         }
@@ -811,6 +723,14 @@ impl CrashKind {
 mod crash_kind_projection_tests {
     use super::*;
 
+    /// Every generated failure kind has an `ExitReason` of the same name.
+    #[test]
+    fn exit_reasons_name_every_generated_kind() {
+        for &(code, name) in crate::failure_kinds::FAILURE_KINDS {
+            assert_eq!(ExitReason::from_error_code(code).trap_kind_name(), name);
+        }
+    }
+
     /// Distinct public failure classes retain their canonical tags.
     #[test]
     fn public_failure_classes_retain_their_kinds() {
@@ -852,6 +772,8 @@ mod crash_kind_projection_tests {
             HEW_TRAP_WIRE_DECODE_FAILED,
             HEW_TRAP_JOIN_BRANCH_FAILED,
             HEW_TRAP_USER_PANIC,
+            HEW_TRAP_STACK_OVERFLOW,
+            HEW_TRAP_FAILED,
         ] {
             assert_eq!(
                 CrashKind::tag_from_error_code(code),

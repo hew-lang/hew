@@ -1,8 +1,10 @@
 //! Private per-process outcome record for `hew test`.
 //!
-//! The test runner supplies a fresh `HEW_TEST_REPORT` path. Terminal fault
-//! reporting records the fault's typed data here; the process exit authority
-//! writes one JSON record after cleanup and actor shutdown have settled.
+//! The test runner supplies a fresh `HEW_TEST_REPORT` path. The terminal
+//! failure's record is kept here; the process exit authority writes one JSON
+//! record after cleanup and actor shutdown have settled. Source locations and
+//! frames are not part of this report: the runner reads them from the
+//! failure log (`HEW_FAILURE_LOG`), the record's full projection.
 
 use std::sync::Mutex;
 
@@ -13,7 +15,6 @@ struct FaultEvidence {
     kind: &'static str,
     code: i32,
     message: Option<String>,
-    site_offset: Option<u32>,
     assertion: Option<crate::fault::AssertionOperands>,
 }
 
@@ -45,11 +46,10 @@ pub extern "C" fn hew_test_selected() -> i64 {
         .map_or(-1, i64::from)
 }
 
-pub(crate) fn note_fault(
-    kind: &'static str,
-    code: i32,
+/// Keep the terminal failure of this test process: the first one wins.
+pub(crate) fn note_terminal_failure(
+    record: &crate::failure_record::FailureRecord,
     message: Option<&str>,
-    site_offset: Option<u32>,
     assertion: Option<&crate::fault::AssertionOperands>,
 ) {
     if std::env::var_os("HEW_TEST_REPORT").is_none() {
@@ -57,11 +57,13 @@ pub(crate) fn note_fault(
     }
     let mut slot = FAULT.lock_or_recover();
     if slot.is_none() {
+        let kind = crate::failure_record::kind_cstr(record.code)
+            .to_str()
+            .expect("kind names are ASCII");
         *slot = Some(FaultEvidence {
             kind,
-            code,
+            code: record.code,
             message: message.map(str::to_owned),
-            site_offset,
             assertion: assertion.cloned(),
         });
     }
@@ -89,7 +91,6 @@ pub(crate) fn finish(status: i32) {
         "fault_kind": fault.as_ref().map(|fault| fault.kind),
         "fault_code": fault.as_ref().map(|fault| fault.code),
         "message": fault.as_ref().and_then(|fault| fault.message.as_deref()),
-        "site_offset": fault.as_ref().and_then(|fault| fault.site_offset),
         "assertion": fault.as_ref().and_then(|fault| fault.assertion.as_ref()),
         "schedule": driver.map(|(schedule, _, _, _)| schedule),
         "seed": driver.map(|(_, seed, _, _)| seed.to_string()),

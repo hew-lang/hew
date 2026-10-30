@@ -864,7 +864,11 @@ pub(crate) fn activate_queued_actor(actor: *mut HewActor) {
                     msgs_processed += 1;
                     continue;
                 }
-                let observe_dispatch_ticket = crate::observe::observe_dispatch_begin();
+                let observe_dispatch_ticket = crate::observe::observe_dispatch_begin(
+                    a.id,
+                    a.dispatch.map_or(0, |dispatch| dispatch as usize),
+                    msg_ref.msg_type,
+                );
                 // Check for injected crash fault (testing only).
                 if crate::deterministic::check_crash_fault(a.id) {
                     // Simulate a crash: use hew_actor_trap to trigger

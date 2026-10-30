@@ -7,14 +7,15 @@
 //! The handle is opaque to generated code and is not a public embedding API.
 
 use std::io::{self, Write};
-use std::sync::atomic::{AtomicU32, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex, OnceLock};
 
 use crate::util::MutexExt;
 
 use hew_cabi::string::{string_as_str, HewString};
 
-use crate::internal::types::{ExitReason, HEW_TRAP_USER_PANIC};
+use crate::failure_record::{Backtrace, FailureRecord};
+use crate::internal::types::HEW_TRAP_USER_PANIC;
 
 /// Private completion codes kept distinct from source panic and trap codes.
 pub const HEW_FAULT_CANCELLED: i32 = -1;
@@ -53,9 +54,56 @@ struct FaultDiagnostic {
     code: i32,
     message: Option<Box<str>>,
     assertion: Option<AssertionOperands>,
-    /// Root-source byte offset, when codegen can attribute the fault.
-    site: AtomicU32,
+    /// The failure as described at its origin; absent for the completion
+    /// markers (cancellation, deadline, refusal) that are not failures.
+    record: Option<Mutex<Box<FailureRecord>>>,
+    /// The record has gone through [`hew_fault_raise`].
+    raised: AtomicBool,
     reported: Mutex<bool>,
+}
+
+impl FaultDiagnostic {
+    /// Raise this failure once: name its frames and hand it to
+    /// [`hew_fault_raise`], the one point a debugger breaks on.
+    ///
+    /// Inlined, with the raise as its last call on a heap record, so the
+    /// optimizer can make it a tail call: a debugger stopped in
+    /// `hew_fault_raise` then sees the failing Hew function as its caller.
+    #[allow(
+        clippy::inline_always,
+        reason = "the raise must stay in the caller so hew_fault_raise is a tail call"
+    )]
+    #[inline(always)]
+    fn raise(&self) {
+        let Some(record) = &self.record else {
+            return;
+        };
+        if self.raised.swap(true, Ordering::AcqRel) {
+            return;
+        }
+        let record: *const FailureRecord = {
+            let mut record = record.lock_or_recover();
+            crate::failure_record::name_frames(&mut record);
+            &raw const **record
+        };
+        // SAFETY: the record is boxed in this diagnostic, which outlives the
+        // call; its only writer (the site attachment) has finished.
+        unsafe { raise_record(record) };
+    }
+
+    /// The record to report: the origin's, or a bare one for a marker.
+    fn report_record(&self) -> FailureRecord {
+        let mut record = self.record.as_ref().map_or_else(
+            || FailureRecord::new(self.code),
+            |record| **record.lock_or_recover(),
+        );
+        if record.message_len == 0 {
+            if let Some(message) = &self.message {
+                record.set_message(message);
+            }
+        }
+        record
+    }
 }
 
 /// Rendered values from one failed comparison, retained with its fault.
@@ -66,7 +114,10 @@ pub(crate) struct AssertionOperands {
     pub right: String,
 }
 
-const NO_SITE: u32 = u32::MAX;
+/// Whether `code` describes a failure, as opposed to a completion marker.
+fn is_failure(code: i32) -> bool {
+    code > 0
+}
 
 impl HewFault {
     fn new(code: i32, message: Option<Box<str>>) -> Self {
@@ -78,12 +129,20 @@ impl HewFault {
         message: Option<Box<str>>,
         assertion: Option<AssertionOperands>,
     ) -> Self {
+        let record = is_failure(code).then(|| {
+            let mut record = origin_record(code);
+            if let Some(message) = &message {
+                record.set_message(message);
+            }
+            Mutex::new(record)
+        });
         Self {
             primary: Arc::new(FaultDiagnostic {
                 code,
                 message,
                 assertion,
-                site: AtomicU32::new(NO_SITE),
+                record,
+                raised: AtomicBool::new(false),
                 reported: Mutex::new(false),
             }),
             secondary: Vec::new(),
@@ -135,6 +194,8 @@ impl HewFault {
             (!message.is_empty()).then(|| message.into_boxed_str()),
         );
         *fault.primary.reported.lock_or_recover() = true;
+        // The origin node raised it; this node only carries it on.
+        fault.primary.raised.store(true, Ordering::Release);
         fault
     }
 
@@ -144,6 +205,13 @@ impl HewFault {
             .message
             .as_deref()
             .unwrap_or_else(|| fault_reason(self.code()))
+    }
+
+    /// Raise every diagnostic that has not been raised yet.
+    fn raise(&self) {
+        for diagnostic in self.diagnostics() {
+            diagnostic.raise();
+        }
     }
 
     fn recovery_message(&self) -> String {
@@ -561,28 +629,270 @@ pub unsafe extern "C" fn hew_fault_code(fault: *const HewFault) -> i32 {
     unsafe { fault.as_ref() }.map_or(0, HewFault::code)
 }
 
-/// Attach the source site that raised a newly created fault.
+/// Attach the source site that raised a newly created fault, then raise it.
+///
+/// Codegen calls this immediately after constructing the fault, in the Hew
+/// function that failed, so the raise happens at the origin with the site
+/// known.
 ///
 /// # Safety
 /// `fault` must be a live uniquely owned fault without concurrent readers.
 #[no_mangle]
 pub unsafe extern "C" fn hew_fault_set_site(fault: *mut HewFault, offset: u32) {
     // SAFETY: the caller retains a unique live owner for this operation.
-    if let Some(fault) = unsafe { fault.as_ref() } {
-        fault.primary.site.store(offset, Ordering::Relaxed);
+    let Some(fault) = (unsafe { fault.as_ref() }) else {
+        return;
+    };
+    if let Some(record) = &fault.primary.record {
+        let mut record = record.lock_or_recover();
+        record.site.offset = offset;
+        if let Some(position) = crate::symtab_abi::resolve_site(offset) {
+            record.site.file = position.file;
+            record.site.module_id = position.module_id;
+            record.site.line = position.line;
+            record.site.col = position.col;
+        }
+    }
+    fault.primary.raise();
+}
+
+// ── The raise point ──────────────────────────────────────────────────────
+
+/// What to do when a failure is raised (`HEW_ON_FAULT`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum OnFault {
+    /// Report it when it reaches its terminal observer and unwind as usual.
+    Report,
+    /// Report it now and abort at the origin, so a core keeps the stack.
+    Abort,
+    /// Stop in an attached debugger at the origin, then continue as `Report`.
+    Trap,
+}
+
+#[derive(Debug)]
+struct Policy {
+    on_fault: OnFault,
+    failure_log: Option<Mutex<std::fs::File>>,
+}
+
+/// The failure policy, read from the environment once.
+fn policy() -> &'static Policy {
+    static POLICY: OnceLock<Policy> = OnceLock::new();
+    POLICY.get_or_init(|| {
+        let on_fault = match std::env::var("HEW_ON_FAULT").as_deref() {
+            Ok("abort") => OnFault::Abort,
+            Ok("trap") => OnFault::Trap,
+            _ => OnFault::Report,
+        };
+        if let Some(level) = std::env::var("HEW_BACKTRACE")
+            .ok()
+            .as_deref()
+            .and_then(Backtrace::parse)
+        {
+            level.set();
+        }
+        let failure_log = std::env::var_os("HEW_FAILURE_LOG").and_then(|path| {
+            match std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&path)
+            {
+                Ok(file) => Some(Mutex::new(file)),
+                Err(error) => {
+                    crate::output::write(
+                        crate::output::Stream::Err,
+                        format!(
+                            "hew: cannot open HEW_FAILURE_LOG {}: {error}\n",
+                            std::path::Path::new(&path).display()
+                        )
+                        .as_bytes(),
+                    );
+                    None
+                }
+            }
+        });
+        crate::failure_record::prime_build_info();
+        // Start the process clock that `/api/crashes` times are relative to.
+        let _ = crate::monotonic::monotonic_ns();
+        Policy {
+            on_fault,
+            failure_log,
+        }
+    })
+}
+
+/// Read the failure policy and image facts before any failure needs them.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn configure_from_env() {
+    let _ = policy();
+    crate::debug_accessors::retain();
+}
+
+/// A record of `code` with everything known at its origin: the stack, the
+/// running actor, the thread and the time.
+#[inline(never)]
+fn origin_record(code: i32) -> Box<FailureRecord> {
+    let _ = policy();
+    crate::debug_accessors::retain();
+    let mut record = Box::new(FailureRecord::new(code));
+    crate::failure_record::capture_frames(&mut record);
+    record.wall_time_ns = crate::failure_record::wall_time_ns();
+    record.build = crate::failure_record::build_info();
+    if let Some(name) = std::thread::current().name() {
+        crate::failure_record::copy_name(&mut record.thread, name);
+    }
+    crate::crash::describe_current_actor(&mut record);
+    record
+}
+
+/// Raise a failure: publish it as the last failure (`hew_debug_last_fault()`),
+/// append it to `HEW_FAILURE_LOG`, then enter [`hew_fault_raise`]. Publishing
+/// first means a debugger stopped at the raise already reads the record.
+///
+/// # Safety
+/// `record` points at a record live for this call.
+#[allow(
+    clippy::inline_always,
+    reason = "the raise must stay in the caller so hew_fault_raise is a tail call"
+)]
+#[inline(always)]
+pub(crate) unsafe fn raise_record(record: *const FailureRecord) {
+    // SAFETY: forwarded caller contract.
+    publish(unsafe { &*record });
+    // SAFETY: forwarded caller contract.
+    unsafe { hew_fault_raise(record) };
+}
+
+/// Publish a raised record to the last-fault slot and the failure log. Kept
+/// out of line so the raise that follows stays a tail call.
+#[inline(never)]
+fn publish(record: &FailureRecord) {
+    crate::failure_record::publish_last_fault(record);
+    if let Some(log) = &policy().failure_log {
+        let line = record.to_ndjson();
+        let _ = log.lock_or_recover().write_all(line.as_bytes());
     }
 }
 
-fn note_test_fault(fault: &HewFault) {
-    let primary = fault.primary.as_ref();
-    let site = primary.site.load(Ordering::Relaxed);
-    crate::test_report::note_fault(
-        fault_reason(primary.code),
-        primary.code,
-        primary.message.as_deref(),
-        (site != NO_SITE).then_some(site),
-        primary.assertion.as_ref(),
+/// The one point every failure passes through at its origin, after it is
+/// published; applies `HEW_ON_FAULT`.
+///
+/// A debugger stops here with `break hew_fault_raise`: the caller is the
+/// failing code and `*record`, the same record `hew_debug_last_fault()`
+/// returns, describes the failure.
+///
+/// # Safety
+/// `record` is null or points at a record live for this call.
+#[no_mangle]
+#[inline(never)]
+pub unsafe extern "C" fn hew_fault_raise(record: *const FailureRecord) {
+    // SAFETY: forwarded caller contract.
+    let Some(record) = (unsafe { record.as_ref() }) else {
+        return;
+    };
+    let policy = policy();
+    match policy.on_fault {
+        OnFault::Report => {}
+        OnFault::Abort => {
+            print_record(record, None);
+            crate::output::flush();
+            // JUSTIFIED: abort-on-fault is the requested debugging mode; the
+            // core it leaves keeps the failing stack intact.
+            std::process::abort();
+        }
+        OnFault::Trap => {
+            if crate::failure_record::tracer_attached() {
+                breakpoint();
+            }
+        }
+    }
+}
+
+/// Stop in the attached debugger.
+fn breakpoint() {
+    #[cfg(unix)]
+    // SAFETY: raising SIGTRAP with a debugger attached stops the process there.
+    unsafe {
+        libc::raise(libc::SIGTRAP);
+    }
+    #[cfg(windows)]
+    {
+        #[link(name = "kernel32")]
+        unsafe extern "system" {
+            fn DebugBreak();
+        }
+        // SAFETY: called only while a debugger is attached.
+        unsafe { DebugBreak() };
+    }
+}
+
+/// Render one record to stderr in a single write.
+fn print_record(record: &FailureRecord, message: Option<&str>) {
+    let mut out = Vec::new();
+    write_record(record, message, false, &mut out);
+    crate::output::write(crate::output::Stream::Err, &out);
+}
+
+/// Append the rendering of `record` to `out`. `message` replaces the inline
+/// copy, which is truncated, when the full text is still at hand.
+fn write_record(record: &FailureRecord, message: Option<&str>, secondary: bool, out: &mut Vec<u8>) {
+    let mut record = *record;
+    // Splice the text back in when the inline copy cannot show it: longer
+    // than the capacity, or an explicitly empty message (still `": "`).
+    let message = message.filter(|message| {
+        message.is_empty() || message.len() > crate::failure_record::MESSAGE_CAPACITY
+    });
+    if message.is_some() {
+        record.message_len = 0;
+    }
+    let start = out.len();
+    out.resize(start + 16 * 1024, 0);
+    let len = crate::failure_record::format_with(
+        &record,
+        Backtrace::current(),
+        secondary,
+        &mut out[start..],
     );
+    out.truncate(start + len);
+    if let Some(message) = message {
+        // Splice the full message into the first line, before its newline.
+        let first_line_end = out[start..]
+            .iter()
+            .position(|&byte| byte == b'\n')
+            .map_or(out.len(), |offset| start + offset);
+        let mut tail = out.split_off(first_line_end);
+        out.extend_from_slice(b": ");
+        out.extend_from_slice(message.as_bytes());
+        out.append(&mut tail);
+    }
+}
+
+thread_local! {
+    /// The failure an actor crash on this thread is about to record: the
+    /// record and whether it already reached stderr.
+    static CRASH_CAUSE: std::cell::RefCell<Option<(Box<FailureRecord>, bool)>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// Raise a failure that a raw trap reports by code alone (the trap bridge).
+/// The record is built here, at the origin, and kept for the report or the
+/// actor crash that follows on this thread.
+pub(crate) fn raise_trap(code: i32) {
+    let record = origin_record(code);
+    let mut named = record;
+    crate::failure_record::name_frames(&mut named);
+    // SAFETY: the record is live for the call.
+    unsafe { raise_record(&raw const *named) };
+    CRASH_CAUSE.with(|cause| *cause.borrow_mut() = Some((named, false)));
+}
+
+/// The failure behind an actor crash of `code` on this thread, and whether it
+/// was already printed. `None` when the crash had no raised failure.
+pub(crate) fn take_crash_cause(code: i32) -> Option<(FailureRecord, bool)> {
+    CRASH_CAUSE
+        .with(|cause| cause.borrow_mut().take())
+        .filter(|(record, _)| record.code == code)
+        .map(|(record, printed)| (*record, printed))
 }
 
 /// Report each diagnostic to stderr once across all observers. Return 0 on
@@ -598,9 +908,17 @@ pub unsafe extern "C" fn hew_fault_report(fault: *const HewFault) -> i32 {
     let Some(fault) = (unsafe { fault.as_ref() }) else {
         return 1;
     };
+    fault.raise();
     // Unlike eprintln!, an output error must not panic across this C boundary.
     let mut report = crate::output::Report::new(crate::output::Stream::Err);
-    i32::from(write_unreported(fault, &mut report).is_err())
+    let failed = write_unreported(fault, &mut report).is_err();
+    if !crate::actor::hew_actor_self().is_null() {
+        // The actor crash that follows records this failure without
+        // printing it a second time.
+        let record = Box::new(fault.primary.report_record());
+        CRASH_CAUSE.with(|cause| *cause.borrow_mut() = Some((record, !failed)));
+    }
+    i32::from(failed)
 }
 
 /// Report the process entry's terminal fault and return its process exit code.
@@ -617,7 +935,7 @@ pub unsafe extern "C" fn hew_fault_report_entry(fault: *const HewFault) -> i32 {
         if cancelled_by_shutdown(fault.code()) && fault.secondary.is_empty() {
             return 0;
         }
-        note_test_fault(fault);
+        note_terminal(fault);
     }
     // SAFETY: forwarded unchanged from the caller.
     let _ = unsafe { hew_fault_report(fault) };
@@ -658,8 +976,9 @@ pub unsafe extern "C-unwind" fn hew_fault_trap(code: i32, fault: *mut HewFault) 
     // SAFETY: the caller transfers one live, unique fault owner.
     let fault = unsafe { Box::from_raw(fault) };
     let code = fault.code();
+    fault.raise();
     if crate::actor::hew_actor_self().is_null() {
-        note_test_fault(&fault);
+        note_terminal(&fault);
     }
     let _ = write_report(
         &fault,
@@ -677,26 +996,54 @@ pub unsafe extern "C-unwind" fn hew_fault_trap(code: i32, fault: *mut HewFault) 
 /// [`hew_fault_report`]. Both print the one line HEW-SPEC-2026 5.8 promises,
 /// from this one formatter, so the text does not depend on which path failed.
 pub(crate) fn report_trap_code(code: i32) {
-    let fault = HewFault::new(code, None);
-    note_test_fault(&fault);
-    let _ = write_report(
-        &fault,
-        &mut crate::output::Report::new(crate::output::Stream::Err),
+    let record = if let Some((record, _)) = take_crash_cause(code) {
+        record
+    } else {
+        let mut record = origin_record(code);
+        crate::failure_record::name_frames(&mut record);
+        // SAFETY: the record is live for the call.
+        unsafe { raise_record(&raw const *record) };
+        *record
+    };
+    crate::test_report::note_terminal_failure(&record, None, None);
+    print_record(&record, None);
+}
+
+/// Hand a terminal fault to the `hew test` report.
+fn note_terminal(fault: &HewFault) {
+    let primary = fault.primary.as_ref();
+    crate::test_report::note_terminal_failure(
+        &primary.report_record(),
+        primary.message.as_deref(),
+        primary.assertion.as_ref(),
     );
 }
 
+/// Report a `fails` error that escaped the program entry and return the
+/// process status. The record has kind `Failed`, the error's display text and
+/// the site of the propagation that let it escape.
+///
+/// # Safety
+/// `message` is null or a live managed string for this call.
+#[no_mangle]
+pub unsafe extern "C" fn hew_fault_report_entry_error(message: *const HewString, site: u32) -> i32 {
+    // SAFETY: the caller supplies a live length-carrying UTF-8 string borrow.
+    let message = unsafe { string_as_str(message) };
+    let fault = HewFault::new(
+        crate::internal::types::HEW_TRAP_FAILED,
+        Some(message.into()),
+    );
+    // SAFETY: `fault` is a live unique local owner.
+    unsafe { hew_fault_set_site((&raw const fault).cast_mut(), site) };
+    let mut report = crate::output::Report::new(crate::output::Stream::Err);
+    let _ = write_unreported(&fault, &mut report);
+    1
+}
+
 fn fault_reason(code: i32) -> &'static str {
-    if matches!(code, HEW_FAULT_CANCELLED | HEW_FAULT_RACE_LOST) {
-        return "Cancelled";
-    }
-    if code == HEW_FAULT_DEADLINE {
-        return "Deadline";
-    }
-    match ExitReason::from_error_code(code) {
-        // A logical handle cannot make a hardware fault recoverable.
-        ExitReason::Signal(_) | ExitReason::Normal => "UnknownFault",
-        reason => reason.trap_kind_name(),
-    }
+    crate::failure_record::kind_cstr(code)
+        .to_str()
+        .expect("kind names are ASCII")
 }
 
 fn write_diagnostic(
@@ -704,22 +1051,14 @@ fn write_diagnostic(
     secondary: bool,
     output: &mut impl Write,
 ) -> io::Result<()> {
-    let label = if secondary {
-        "secondary failure"
-    } else {
-        "failure"
-    };
-    write!(
-        output,
-        "hew: {label}: {} ({})",
-        fault_reason(diagnostic.code),
-        diagnostic.code
-    )?;
-    if let Some(message) = &diagnostic.message {
-        output.write_all(b": ")?;
-        output.write_all(message.as_bytes())?;
-    }
-    output.write_all(b"\n")
+    let mut rendered = Vec::new();
+    write_record(
+        &diagnostic.report_record(),
+        diagnostic.message.as_deref(),
+        secondary,
+        &mut rendered,
+    );
+    output.write_all(&rendered)
 }
 
 fn write_report(fault: &HewFault, output: &mut impl Write) -> io::Result<()> {

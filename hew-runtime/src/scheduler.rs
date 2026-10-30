@@ -3497,11 +3497,10 @@ mod tests {
             .actor_state
             .store(HewActorState::Runnable as i32, Ordering::Release);
         activate_actor(actor_ptr);
-        // SAFETY: the crash log returns a value copy of the completed report.
-        let report = unsafe { crate::crash::hew_crash_log_last() };
-        assert_eq!(report.actor_id, actor.id);
-        assert_eq!(report.msg_type, 71);
-        assert_eq!(report.signal, 212);
+        let report = crate::crash::last_crash().expect("the crash was recorded");
+        assert_eq!(report.actor.id, actor.id);
+        assert_eq!(report.actor.msg_type, 71);
+        assert_eq!(report.code, 212);
         assert!(actor.checked_invocation.load(Ordering::Acquire).is_null());
         assert_eq!(frame.destroyed.load(Ordering::Acquire), 1);
     }

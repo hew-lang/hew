@@ -2231,7 +2231,12 @@ mod tests {
 
         // SAFETY: hew_yaml_last_error returns a managed string owner.
         let err = unsafe { read_and_free_string(hew_yaml_last_error()) };
-        assert!(err.contains("alias expansion limit"), "got: {err}");
+        // serde_yaml's own alias-jump limit catches this shape before the
+        // node budget does; either refusal keeps the tree from being built.
+        assert!(
+            err.contains("alias expansion limit") || err.contains("repetition limit"),
+            "got: {err}"
+        );
     }
 
     #[test]

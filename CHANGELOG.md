@@ -5,8 +5,8 @@
 - Escape tab, newline and carriage-return in XML attribute values and text so
   they read back unchanged, and refuse element and attribute names XML does not
   allow.
-- Refuse YAML whose aliases expand beyond 32 units per input byte (floor 64 KiB)
-  instead of counting anchors and aliases; the 200-anchor and 1,024-alias limits
+- Refuse YAML whose aliases expand it past about a million nodes instead of
+  counting anchors and aliases; the 200-anchor and 1,024-alias limits
   are gone.
 - Cap MessagePack, JSON and typed wire decoding at one shared nesting depth of
   127, so every document `msgpack.to_json` converts is one `json.parse` reads.

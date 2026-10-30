@@ -21,17 +21,15 @@ pub fn parse(input: &str) -> Result<serde_yaml::Value, String> {
     serde_yaml::from_str(input).map_err(|error| error.to_string())
 }
 
-/// Expansion budget units each input byte buys. A node costs
-/// [`YAML_NODE_COST`] units plus one per scalar byte, so a document without
-/// aliases always fits; aliases may at most multiply the document's size by
-/// this factor over [`YAML_NODE_COST`].
-pub const YAML_EXPANSION_UNITS_PER_BYTE: usize = 32;
-/// Expansion units every document may use regardless of its length.
-pub const YAML_EXPANSION_FLOOR_UNITS: usize = 64 * 1024;
+/// Expansion units any one document may use. A node costs
+/// [`YAML_NODE_COST`] units plus one per scalar byte, so every alias-free
+/// document within [`YAML_PARSE_SIZE_LIMIT_BYTES`] fits, and no document,
+/// aliases replayed, builds more than about a million nodes.
+pub const YAML_EXPANSION_BUDGET_UNITS: usize = 16 * YAML_PARSE_SIZE_LIMIT_BYTES;
 /// Units one node costs before its scalar text.
 const YAML_NODE_COST: usize = 16;
 
-/// Refuse a document whose aliases expand it beyond its expansion budget.
+/// Refuse a document whose aliases expand it beyond the expansion budget.
 ///
 /// Counting anchors and aliases does not bound the parsed tree: an anchor
 /// over a large node, or one that itself holds aliases, is copied in full at
@@ -45,11 +43,7 @@ const YAML_NODE_COST: usize = 16;
 ///
 /// Returns the expansion-limit diagnostic, at the position the walk stopped.
 pub fn check_alias_expansion(input: &str) -> Result<(), serde_yaml::Error> {
-    let left = Cell::new(
-        YAML_EXPANSION_UNITS_PER_BYTE
-            .saturating_mul(input.len())
-            .max(YAML_EXPANSION_FLOOR_UNITS),
-    );
+    let left = Cell::new(YAML_EXPANSION_BUDGET_UNITS);
     let over = Cell::new(false);
     let walk = Walk {
         left: &left,
@@ -194,9 +188,9 @@ mod tests {
         let doc = format!(
             "a: &a \"{}\"\nb: [{}]\n",
             "x".repeat(16 * 1024),
-            vec!["*a"; 1000].join(", ")
+            vec!["*a"; 2000].join(", ")
         );
-        let err = parse(&doc).expect_err("16 MB of copies from 20 KB");
+        let err = parse(&doc).expect_err("32 MB of copies from 24 KB");
         assert!(err.contains("alias expansion limit"), "got: {err}");
     }
 
@@ -211,13 +205,39 @@ mod tests {
     }
 
     #[test]
+    fn merged_defaults_across_many_services_parse() {
+        // A compose-style file: 100 shared settings merged into 200 services
+        // expands about 1,500-fold over its 13 KB of text.
+        let mut doc = String::from("defaults: &defaults\n");
+        for k in 0..100 {
+            writeln!(doc, "  key{k}: value{k}").unwrap();
+        }
+        doc.push_str("services:\n");
+        for i in 0..200 {
+            writeln!(doc, "  svc{i}:\n    <<: *defaults\n    name: svc{i}").unwrap();
+        }
+        let value = parse(&doc).expect("ordinary merge-key reuse is within budget");
+        assert_eq!(
+            value["services"]["svc199"]["name"],
+            serde_yaml::Value::from("svc199")
+        );
+    }
+
+    #[test]
     fn alias_free_documents_always_fit_the_budget() {
         // Densest node-per-byte shapes: empty flow sequences and implicit nulls.
         for doc in ["[[], [], [], []]", "a:\nb:\nc:\n", "- \n- \n- \n"] {
             assert!(check_alias_expansion(doc).is_ok(), "{doc:?}");
         }
-        let wide = format!("[{}]", vec!["[]"; 200_000].join(","));
+        // The same shapes at the 1 MiB input limit.
+        let wide = format!(
+            "[{}]",
+            vec!["[]"; YAML_PARSE_SIZE_LIMIT_BYTES / 3 - 1].join(",")
+        );
+        assert!(wide.len() <= YAML_PARSE_SIZE_LIMIT_BYTES);
         assert!(check_alias_expansion(&wide).is_ok());
+        let nulls = "- \n".repeat(YAML_PARSE_SIZE_LIMIT_BYTES / 3);
+        assert!(check_alias_expansion(&nulls).is_ok());
     }
 
     #[test]

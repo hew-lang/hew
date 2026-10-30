@@ -3834,20 +3834,32 @@ fn resolve_module_candidate(
 
 /// A positioned resolver diagnostic on the import at `span`, or a plain one
 /// when the importing file can no longer be read.
-/// The package root `canonical` lies outside, when the importer belongs to a
-/// package (spec 3.5.3): the directory holding the manifest, compared by real
-/// path, so a link that leads out of the package leaves it.
+/// The package root `path` lies outside, when the importing file belongs to a
+/// package (spec 3.5.3): the directory holding the manifest. Both are compared
+/// by real path where the file system has them, so a link that leads out of
+/// the package leaves it, and lexically for an editor buffer.
 fn outside_package(
     anchor: &hew_types::module_registry::ModuleAnchor,
-    canonical: &Path,
+    documents: &SourceSet,
+    path: &Path,
 ) -> Option<PathBuf> {
     let hew_types::module_registry::ModuleAnchor::Package { dir, .. } = anchor else {
         return None;
     };
-    let root = dir
-        .canonicalize()
-        .unwrap_or_else(|_| compile_time::normalize(dir));
-    (!canonical.starts_with(&root)).then_some(root)
+    let lexical_root = compile_time::normalize(dir);
+    let (real, real_root) = if documents.filesystem {
+        (
+            buffer_identity(path).unwrap_or_else(|| compile_time::normalize(path)),
+            dir.canonicalize().ok(),
+        )
+    } else {
+        (compile_time::normalize(path), None)
+    };
+    let inside = real.starts_with(&lexical_root)
+        || real_root
+            .as_ref()
+            .is_some_and(|root| real.starts_with(root));
+    (!inside).then(|| real_root.unwrap_or(lexical_root))
 }
 
 /// `E_IMPORT_OUTSIDE_PACKAGE`: an import that reaches a file outside the
@@ -3999,6 +4011,9 @@ fn resolve_file_imports_internal(
 
     let std_roots = stdlib_roots(ctx.module_search_paths);
     let anchor = importer_anchor(source_file, ctx, &std_roots)?;
+    // Containment is judged by the package the importing file sits in, not
+    // the project it is compiled with: a loose file stays loose.
+    let own_anchor = anchor_for(source_file, &std_roots, ctx.documents)?;
 
     for idx in &import_indices {
         let canonical = match &items[*idx].0 {
@@ -4006,7 +4021,7 @@ fn resolve_file_imports_internal(
                 let file_path = decl.file_path.as_ref().expect("checked above");
                 let resolved = source_dir.join(file_path);
                 if let Some(canonical) = resolve_candidate(ctx.documents, &resolved) {
-                    if let Some(root) = outside_package(&anchor, &canonical) {
+                    if let Some(root) = outside_package(&own_anchor, ctx.documents, &canonical) {
                         return Err(import_escape(
                             ctx,
                             source_file,
@@ -4081,19 +4096,27 @@ fn resolve_file_imports_internal(
                     // lie outside the package; a module beside the importer
                     // or under the package name that a link carries out of
                     // the package is refused.
+                    let membership = membership_of(&canonical, &std_roots, ctx.documents)?;
                     if matches!(origin, CandidateRoot::Package | CandidateRoot::Relative) {
-                        if let Some(root) = outside_package(&anchor, &canonical) {
+                        // A directory module brings its peers along; each must
+                        // lie in the package too.
+                        let escaped = std::iter::once(&canonical)
+                            .chain(&membership.peers)
+                            .find_map(|file| {
+                                outside_package(&own_anchor, ctx.documents, file)
+                                    .map(|root| (file, root))
+                            });
+                        if let Some((file, root)) = escaped {
                             return Err(import_escape(
                                 ctx,
                                 source_file,
                                 &items[*idx].1,
                                 &source_module,
-                                &canonical,
+                                file,
                                 &root,
                             ));
                         }
                     }
-                    let membership = membership_of(&canonical, &std_roots, ctx.documents)?;
                     if origin == CandidateRoot::Dependency {
                         if let (
                             ModuleAnchor::Package { dir: importer, .. },
@@ -10586,16 +10609,105 @@ mod source_anchor_tests {
         // the path; elsewhere it is part of one file name that does not exist.
         let (_root, pkg) = escape_fixture();
         let main = "import \"..\\\\outside\\\\x.hew\";\nfn main() { println(x()); }\n";
-        assert!(check_app(&pkg, "", main).is_err());
+        let result = check_app(&pkg, "", main);
+        if cfg!(windows) {
+            assert_eq!(result, Err("E_IMPORT_OUTSIDE_PACKAGE".to_string()));
+        } else {
+            let error = result.expect_err("no such file");
+            assert!(error.contains("not found"), "{error}");
+        }
     }
 
     #[test]
     fn a_case_variant_spelling_does_not_leave_the_package() {
         // On a case-insensitive file system the variant names the real
         // directory and is refused; elsewhere it names nothing.
-        let (_root, pkg) = escape_fixture();
+        let (root, pkg) = escape_fixture();
+        let insensitive = root.path().join("OUTSIDE/x.hew").is_file();
         let main = "import \"../OUTSIDE/x.hew\";\nfn main() { println(x()); }\n";
-        assert!(check_app(&pkg, "", main).is_err());
+        let result = check_app(&pkg, "", main);
+        if insensitive {
+            assert_eq!(result, Err("E_IMPORT_OUTSIDE_PACKAGE".to_string()));
+        } else {
+            let error = result.expect_err("no such file");
+            assert!(error.contains("not found"), "{error}");
+        }
+    }
+
+    #[test]
+    fn an_editor_buffer_outside_the_package_is_refused() {
+        let (root, pkg) = escape_fixture();
+        std::fs::write(
+            pkg.join("hew.toml"),
+            "[package]\nname = \"app\"\nversion = \"0.1.0\"\n",
+        )
+        .unwrap();
+        let input = pkg.join("app.hew");
+        std::fs::write(
+            &input,
+            "import \"../outside/gen.hew\";\nfn main() { println(g()); }\n",
+        )
+        .unwrap();
+        let mut documents = SourceSet::new();
+        documents.insert(
+            root.path().join("outside/gen.hew"),
+            "pub fn g() -> i64 { 4 }\n",
+        );
+        let options = FrontendOptions {
+            documents,
+            ..FrontendOptions::default()
+        };
+        let Err(failure) = check_file(&input.display().to_string(), &options) else {
+            panic!("a buffer outside the package is refused");
+        };
+        assert!(
+            failure.diagnostics.iter().any(|d| matches!(
+                &d.kind,
+                FrontendDiagnosticKind::Message(m) if m.code == "E_IMPORT_OUTSIDE_PACKAGE"
+            )),
+            "{}",
+            failure.message
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_directory_module_peer_linked_out_of_the_package_is_refused() {
+        let (root, pkg) = escape_fixture();
+        std::fs::create_dir_all(pkg.join("util")).unwrap();
+        std::fs::write(pkg.join("util/util.hew"), "pub fn u() -> i64 { 5 }\n").unwrap();
+        std::os::unix::fs::symlink(root.path().join("outside/x.hew"), pkg.join("util/evil.hew"))
+            .unwrap();
+        let main = "import util;\nfn main() { println(util.u() + util.x()); }\n";
+        assert_eq!(
+            check_app(&pkg, "", main),
+            Err("E_IMPORT_OUTSIDE_PACKAGE".to_string())
+        );
+    }
+
+    #[test]
+    fn a_loose_file_compiled_with_a_project_keeps_its_siblings() {
+        let (root, pkg) = escape_fixture();
+        std::fs::write(
+            pkg.join("hew.toml"),
+            "[package]\nname = \"app\"\nversion = \"0.1.0\"\n",
+        )
+        .unwrap();
+        let loose = root.path().join("loose");
+        std::fs::create_dir_all(&loose).unwrap();
+        std::fs::write(loose.join("helper.hew"), "pub fn h() -> i64 { 6 }\n").unwrap();
+        let input = loose.join("main.hew");
+        std::fs::write(
+            &input,
+            "import \"helper.hew\";\nfn main() { println(h()); }\n",
+        )
+        .unwrap();
+        let options = FrontendOptions {
+            project_dir: Some(pkg),
+            ..FrontendOptions::default()
+        };
+        let result = check_file(&input.display().to_string(), &options);
+        assert!(result.is_ok(), "{:?}", result.err().map(|f| f.message));
     }
 
     #[cfg(unix)]

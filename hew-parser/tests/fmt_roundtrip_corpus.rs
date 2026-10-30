@@ -57,15 +57,24 @@ fn workspace_root() -> PathBuf {
         .to_path_buf()
 }
 
-/// Every `.hew` file under `root`, skipping build output and hidden
-/// directories.
+/// Every `.hew` file under `root`, skipping build output, hidden directories
+/// and the generated cargo-fuzz corpora and artefacts.
 fn hew_files(root: &Path) -> Vec<PathBuf> {
     let mut files: Vec<PathBuf> = WalkDir::new(root)
         .into_iter()
         .filter_entry(|entry| {
             let name = entry.file_name().to_string_lossy();
+            let fuzz_output = (name == "corpus" || name == "artifacts")
+                && entry
+                    .path()
+                    .parent()
+                    .and_then(Path::file_name)
+                    .is_some_and(|parent| parent == "fuzz");
             entry.depth() == 0
-                || !(name.starts_with('.') || name == "target" || name == "node_modules")
+                || !(name.starts_with('.')
+                    || name == "target"
+                    || name == "node_modules"
+                    || fuzz_output)
         })
         .filter_map(Result::ok)
         .map(walkdir::DirEntry::into_path)

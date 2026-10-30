@@ -700,7 +700,7 @@ fn parse_and_type_check_with_inputs(
             // Run the HIR verifier to catch Unsupported placeholders and other
             // structural invariant violations that lower_program may not diagnose
             // directly. Dedup by (kind, span) so each problem is reported once.
-            // Mirrors the native `hew check` path in hew-cli/src/main.rs.
+            // Mirrors the native `hew check` path in hew-cli/src/lib.rs.
             let mut diags = lower_output.diagnostics;
             let analysis = hew_hir::analyze_hir(&lower_output.module);
             for diag in analysis.diagnostics() {

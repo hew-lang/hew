@@ -170,6 +170,14 @@ impl ControlHarness {
         session(PEERS[index % HARNESS_PEERS].0)
     }
 
+    /// The route slot a harness identity is admitted on.
+    #[must_use]
+    pub fn slot_of(node_id: crate::node_identity::NodeId) -> Option<u16> {
+        Self::slots()
+            .into_iter()
+            .find(|&slot| test_node_identity(slot) == node_id)
+    }
+
     /// Route slots of the local node and every peer.
     #[must_use]
     pub fn slots() -> Vec<u16> {

@@ -3,11 +3,16 @@
 //! The input is a sequence of `(peer, frame)` deliveries to an in-process node
 //! with two authenticated peers and one delivery-only peer. After every
 //! delivery the node must hold a bounded member table, no incarnation may move
-//! backwards within a session, and the frame may provoke only a bounded number of sends.
+//! backwards within a session, and the frame may provoke only a bounded
+//! number of sends.
+//! An ACK forwarded for a probed member, with no gossip of its own, vouches
+//! for liveness only: it never changes that member's session or incarnation.
 #![no_main]
 
 mod support;
 
+use hew_runtime::cluster::SWIM_MSG_ACK;
+use hew_runtime::envelope::{decode_swim_payload, decode_wire_frame, WireFrame, CTRL_SWIM};
 use hew_runtime::fuzzing::{split_deliveries, ControlHarness, Member, HARNESS_PEERS};
 use libfuzzer_sys::fuzz_target;
 
@@ -38,6 +43,15 @@ fuzz_target!(|data: &[u8]| {
         for (old, new) in before.iter().zip(&after) {
             check_incarnation(old, new);
         }
+        if let Some(slot) = forwarded_ack_target(frame) {
+            let old = before.iter().find(|member| member.slot == slot);
+            let new = after.iter().find(|member| member.slot == slot);
+            assert_eq!(
+                old.map(|m| (m.session, m.incarnation)),
+                new.map(|m| (m.session, m.incarnation)),
+                "a forwarded ACK changed slot {slot}"
+            );
+        }
         let local_after = node.local_incarnation();
         assert!(
             local_after >= local_before,
@@ -60,4 +74,20 @@ fn check_incarnation(old: &Member, new: &Member) {
             old.slot
         );
     }
+}
+
+/// The probed member a gossip-free forwarded ACK vouches for.
+fn forwarded_ack_target(frame: &[u8]) -> Option<u16> {
+    let Ok(WireFrame::Control(control)) = decode_wire_frame(frame) else {
+        return None;
+    };
+    if control.ctrl_kind != CTRL_SWIM {
+        return None;
+    }
+    let payload = decode_swim_payload(&control.payload).ok()?;
+    let target = payload.target?;
+    if payload.msg_type != SWIM_MSG_ACK || !payload.gossip.is_empty() || target == payload.from {
+        return None;
+    }
+    ControlHarness::slot_of(target.node_id)
 }

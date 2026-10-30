@@ -22,18 +22,20 @@
 //! table is relative to the table's own first byte, so a table carries no
 //! absolute address and needs no load-time relocation under PIE or ASLR.
 //!
-//! [`SymEntry::start`] is the one field that names code. It holds the signed
-//! distance from the table's first byte to the function's first instruction,
-//! which the linker resolves as a PC-relative fixup: `R_X86_64_PC32` /
-//! `R_AARCH64_PREL32` on ELF, a `SUBTRACTOR`/`UNSIGNED` pair on Mach-O and
-//! `IMAGE_REL_AMD64_REL32` / `IMAGE_REL_ARM64_REL32` on COFF. No format needs
-//! an absolute pointer. A reader adds `start` to the table's address: the
-//! runtime to the table's run-time address, `hew-symbolize` to the table
-//! symbol's address in the file.
+//! [`SymEntry::start`] and [`SymEntry::end`] are the only fields that name
+//! code. Each holds the signed distance from the table's first byte to an
+//! instruction address, which the linker resolves as one PC-relative fixup:
+//! `R_X86_64_PC32` / `R_AARCH64_PREL32` on ELF, a `SUBTRACTOR`/`UNSIGNED` pair
+//! on Mach-O and `IMAGE_REL_AMD64_REL32` / `IMAGE_REL_ARM64_REL32` on COFF. No
+//! format needs an absolute pointer. A difference of two code addresses (a
+//! size) is not used: COFF cannot express it from a data section, and the
+//! assembler folds it against the wrong base. A reader adds `start` and `end`
+//! to the table's address: the runtime to the table's run-time address,
+//! `hew-symbolize` to the table symbol's address in the file.
 //!
 //! The linker decides the final function order, so symtab entries are in
 //! emission order; readers sort by `start` before searching. A function's
-//! `size` runs to the next function the compiler emitted, artificial glue
+//! `end` is the next function the compiler emitted, artificial glue
 //! included, so an address inside glue never resolves to its neighbour.
 //!
 //! # Absence
@@ -157,8 +159,9 @@ impl SiteEntry {
 pub struct SymEntry {
     /// Signed distance from the table's first byte to the function's entry.
     pub start: i32,
-    /// Bytes to the next emitted function.
-    pub size: u32,
+    /// Signed distance from the table's first byte to the next emitted
+    /// function, which bounds this one.
+    pub end: i32,
     /// Offset of the UTF-8 display name.
     pub name_offset: u32,
     pub name_len: u32,
@@ -363,12 +366,12 @@ impl<'a> Table<'a> {
             return Ok(None);
         };
         let start = read_u32(self.bytes, at)?.cast_signed();
-        let size = read_u32(self.bytes, at + 4)?;
+        let end = read_u32(self.bytes, at + 4)?.cast_signed();
         let name_offset = read_u32(self.bytes, at + 8)?;
         let name_len = read_u32(self.bytes, at + 12)?;
         Ok(Some(Symbol {
             start,
-            size,
+            end,
             name: self.text_at(name_offset, name_len)?,
             file_id: read_u32(self.bytes, at + 16)?,
             decl_line: read_u32(self.bytes, at + 20)?,
@@ -384,14 +387,23 @@ pub struct File<'a> {
     pub md5: [u8; 16],
 }
 
-/// A decoded function entry. `start` is relative to the symtab's first byte.
+/// A decoded function entry. `start` and `end` are relative to the symtab's
+/// first byte.
 #[derive(Debug, Clone, Copy)]
 pub struct Symbol<'a> {
     pub start: i32,
-    pub size: u32,
+    pub end: i32,
     pub name: &'a str,
     pub file_id: u32,
     pub decl_line: u32,
+}
+
+impl Symbol<'_> {
+    /// Bytes from the function's entry to the next emitted function.
+    #[must_use]
+    pub fn size(&self) -> u32 {
+        self.end.wrapping_sub(self.start).cast_unsigned()
+    }
 }
 
 /// One file's line-start offsets.
@@ -551,8 +563,8 @@ impl TableWriter {
         writer.finish()
     }
 
-    /// The symtab for `symbols` with every `start` and `size` zero. The
-    /// returned offsets locate each entry's `start` and `size` words, which
+    /// The symtab for `symbols` with every `start` and `end` zero. The
+    /// returned offsets locate each entry's `start` and `end` words, which
     /// the codegen fills with relocated expressions.
     #[must_use]
     pub fn symtab(symbols: &[SymbolRecord<'_>]) -> (Vec<u8>, Vec<SymbolSlots>) {
@@ -570,7 +582,7 @@ impl TableWriter {
             writer.put_u32(at + 20, symbol.decl_line);
             slots.push(SymbolSlots {
                 start: at,
-                size: at + 4,
+                end: at + 4,
             });
         }
         (writer.finish(), slots)
@@ -581,7 +593,7 @@ impl TableWriter {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SymbolSlots {
     pub start: usize,
-    pub size: usize,
+    pub end: usize,
 }
 
 #[cfg(test)]
@@ -662,11 +674,11 @@ mod tests {
         ];
         let (mut bytes, slots) = TableWriter::symtab(&symbols);
         bytes[slots[1].start..slots[1].start + 4].copy_from_slice(&(-64i32).to_le_bytes());
-        bytes[slots[1].size..slots[1].size + 4].copy_from_slice(&48u32.to_le_bytes());
+        bytes[slots[1].end..slots[1].end + 4].copy_from_slice(&(-16i32).to_le_bytes());
         let table = Table::parse(&bytes, TableKind::Symtab).unwrap();
         let triple = table.symbol(1).unwrap().unwrap();
         assert_eq!(triple.name, "util.triple");
-        assert_eq!((triple.start, triple.size), (-64, 48));
+        assert_eq!((triple.start, triple.end), (-64, -16));
         assert_eq!((triple.file_id, triple.decl_line), (1, 2));
         assert_eq!(table.symbol(0).unwrap().unwrap().name, "main");
     }

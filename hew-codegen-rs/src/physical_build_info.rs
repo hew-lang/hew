@@ -52,7 +52,7 @@ pub fn emit_build_info<'ctx>(module: &Module<'ctx>, version: &str, triple: &str)
 /// Add `global` to the module's single `llvm.used` array, preserving entries
 /// other emitters already registered (a second `llvm.used` would be renamed and
 /// ignored by LLVM).
-fn retain<'ctx>(module: &Module<'ctx>, global: GlobalValue<'ctx>) {
+pub(super) fn retain<'ctx>(module: &Module<'ctx>, global: GlobalValue<'ctx>) {
     let pointer = module.get_context().ptr_type(AddressSpace::default());
     let mut entries = Vec::new();
     if let Some(existing) = module.get_global("llvm.used") {

@@ -3,6 +3,18 @@
 use super::*;
 
 impl<'checked> LowerCtx<'checked> {
+    /// Mint an item that owns a body and record the file it is lowered from.
+    pub(super) fn mint_body_item(&mut self) -> crate::ids::ItemId {
+        let id = self.ids.item();
+        self.note_item_file(id);
+        id
+    }
+
+    /// Record that `id`'s body indexes the file currently being lowered.
+    pub(super) fn note_item_file(&mut self, id: crate::ids::ItemId) {
+        self.item_files.insert(id, self.current_module_idx);
+    }
+
     #[allow(
         clippy::too_many_lines,
         reason = "initializes the complete checker-to-HIR typed context atomically"
@@ -189,6 +201,7 @@ impl<'checked> LowerCtx<'checked> {
                 .collect(),
             checked_type_defs: tc_output.type_defs_by_path(),
             current_module_idx: 0,
+            item_files: HashMap::new(),
             current_item_ordinal: 0,
             root_item_ids: HashSet::new(),
             lowering_injected_items: false,

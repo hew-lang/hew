@@ -76,12 +76,14 @@ mod managed;
 mod materialize;
 mod module_emitter;
 mod runtime_calls;
+mod symtab;
 mod text;
 mod timestamp;
 mod value_emitter;
 
 use c_abi::{get_or_declare_external, get_or_declare_external_widened, Widen};
 use helpers::*;
+pub(crate) use module_emitter::verify_bounded;
 use module_emitter::*;
 use value_emitter::*;
 
@@ -592,6 +594,7 @@ fn emit_physical_object_with_host(
         host,
         options.debug_source,
         options.build_info,
+        options.debug_script_dir.as_deref(),
     )?;
     if !wasm {
         return Ok(EmitArtefacts {
@@ -641,6 +644,7 @@ pub fn validate_physical_codegen(
         None,
         None,
         None,
+        None,
     )
 }
 
@@ -659,6 +663,7 @@ fn emit_physical_to_paths(
     host: Option<&HostExport<'_>>,
     debug_source: Option<DebugSource<'_>>,
     build_info: Option<&str>,
+    debug_script_dir: Option<&Path>,
 ) -> CodegenResult<()> {
     let machine = crate::llvm::target_machine_for_triple_with_opt_level(triple, opt_level)?;
     let ctx = Context::create();
@@ -673,10 +678,16 @@ fn emit_physical_to_paths(
     if let Some(version) = build_info.filter(|_| !triple.starts_with("wasm32")) {
         build_info::emit_build_info(&llvm_module, version, triple);
     }
+    if let (Some(dir), Some(_)) = (debug_script_dir, debug_source) {
+        symtab::emit_gdb_script_section(&llvm_module, dir, triple);
+    }
     crate::llvm::run_module_pipeline(&llvm_module, &machine, opt_level)?;
     if address_sanitizer {
         crate::sanitizer::instrument_address_sanitizer(&llvm_module, &machine)
             .map_err(CodegenError::FailClosed)?;
+    }
+    if !triple.starts_with("wasm") {
+        symtab::emit_symtab(&llvm_module, verified.module())?;
     }
     if let Some(path) = ll_path {
         llvm_module

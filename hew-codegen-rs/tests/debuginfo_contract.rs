@@ -68,23 +68,26 @@ fn verified(source: &str) -> hew_mir::VerifiedPhysicalModule {
     hew_mir::lower_physical_module(&semantic, target).expect("verified physical module")
 }
 
-/// Emit `PROGRAM` from `dir` and return the native object; the textual IR
-/// sits beside it.
+/// Emit `PROGRAM` from `dir` and return the native object.
 fn emit(dir: &Path, opt_level: OptLevel, debug: bool) -> PathBuf {
+    emit_source(dir, PROGRAM, opt_level, debug)
+}
+
+fn emit_source(dir: &Path, program: &str, opt_level: OptLevel, debug: bool) -> PathBuf {
     let source = dir.join("contract.hew");
-    std::fs::write(&source, PROGRAM).expect("write fixture source");
+    std::fs::write(&source, program).expect("write fixture source");
     emit_physical_object(
-        &verified(PROGRAM),
+        &verified(program),
         &PhysicalEmitOptions {
             module_name: "contract",
             out_dir: dir,
             target_triple: None,
             opt_level,
-            emit_llvm: true,
+            emit_llvm: false,
             address_sanitizer: false,
             debug_source: debug.then_some(DebugSource {
                 path: &source,
-                text: PROGRAM,
+                text: program,
             }),
             link_freestanding_wasm: false,
             build_info: None,
@@ -145,6 +148,7 @@ struct Subprogram {
     name: String,
     linkage_name: Option<String>,
     artificial: bool,
+    prototyped: bool,
     decl_line: u64,
     low: u64,
     high: u64,
@@ -220,6 +224,7 @@ fn read_unit(object: &Path) -> Unit {
                         subprogram.linkage_name = Some(attr_string(attribute.value()));
                     }
                     constants::DW_AT_artificial => subprogram.artificial = true,
+                    constants::DW_AT_prototyped => subprogram.prototyped = true,
                     constants::DW_AT_decl_line => {
                         subprogram.decl_line = attribute.udata_value().unwrap_or(0);
                     }
@@ -303,8 +308,8 @@ impl Unit {
 
 /// A subprogram is named for a person, carries no mangled linkage name a
 /// debugger would index it by instead, and lists its source parameters in
-/// every part that runs source. Its subroutine type is prototyped; LLVM
-/// writes `DW_AT_prototyped` only for C-family units, so the IR shows it.
+/// every part that runs source. The unit is C11, so each subprogram is
+/// prototyped and a debugger reads its parameter list as complete.
 #[test]
 fn subprograms_carry_display_names_and_prototyped_parameters() {
     let dir = tempfile::tempdir().expect("temp dir");
@@ -322,17 +327,8 @@ fn subprograms_carry_display_names_and_prototyped_parameters() {
         }
     }
     assert!(!unit.named("main").is_empty(), "the Hew entry is `main`");
-    let ir = std::fs::read_to_string(dir.path().join("contract.ll")).expect("textual IR");
-    let signatures: Vec<&str> = ir
-        .lines()
-        .filter(|line| line.contains("DISubroutineType("))
-        .collect();
-    assert!(!signatures.is_empty(), "subprograms have subroutine types");
-    for signature in signatures {
-        assert!(
-            signature.contains("DIFlagPrototyped"),
-            "{signature} is prototyped"
-        );
+    for part in unit.subprograms.iter().filter(|part| !part.artificial) {
+        assert!(part.prototyped, "`{}` is prototyped", part.name);
     }
     for subprogram in &unit.subprograms {
         // LLVM's coroutine split names the clone it makes of a body after the
@@ -467,13 +463,40 @@ fn text_of(object: &Path) -> Vec<u8> {
 }
 
 /// Debug information describes the code; it never changes it. An optimized
-/// object's code is byte-identical with and without `-g`.
+/// object's code is byte-identical with and without `-g`, for the shapes that
+/// once differed: coroutine bodies (generators, defer, actors) and the
+/// loop-chunk bodies of vectors and shadowed blocks.
 #[test]
 fn debug_information_leaves_optimized_code_unchanged() {
-    let plain = tempfile::tempdir().expect("temp dir");
-    let debug = tempfile::tempdir().expect("temp dir");
-    let without = text_of(&emit(plain.path(), OptLevel::O2, false));
-    let with = text_of(&emit(debug.path(), OptLevel::O2, true));
-    assert!(!without.is_empty(), "the object has code");
-    assert!(without == with, "-g changes optimized code");
+    let shapes = [
+        ("recursion", PROGRAM),
+        (
+            "shadowing",
+            include_str!("../../hew-cli/tests/fixtures/debug_corpus/02-shadowing-blocks.hew"),
+        ),
+        (
+            "vec",
+            include_str!("../../hew-cli/tests/fixtures/debug_corpus/04-vec.hew"),
+        ),
+        (
+            "generators",
+            include_str!("../../hew-cli/tests/fixtures/debug_corpus/11-generators.hew"),
+        ),
+        (
+            "defer",
+            include_str!("../../hew-cli/tests/fixtures/debug_corpus/13-defer.hew"),
+        ),
+        (
+            "actors",
+            include_str!("../../hew-cli/tests/fixtures/debug_corpus/16-actor-reply.hew"),
+        ),
+    ];
+    for (name, program) in shapes {
+        let plain = tempfile::tempdir().expect("temp dir");
+        let debug = tempfile::tempdir().expect("temp dir");
+        let without = text_of(&emit_source(plain.path(), program, OptLevel::O2, false));
+        let with = text_of(&emit_source(debug.path(), program, OptLevel::O2, true));
+        assert!(!without.is_empty(), "{name} has code");
+        assert!(without == with, "-g changes optimized code of {name}");
+    }
 }

@@ -890,18 +890,22 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
         self.emit_propagate_fault()
     }
 
+    /// The fault-site id of `block`'s terminator: its index in the module's
+    /// site table.
     fn terminator_site(&self, block: &PhysicalBlock) -> Option<u32> {
         let index = u32::try_from(block.ops.len())
             .expect("verified physical operation count fits a u32 index");
+        let attribution = self.module.debug.functions.get(&self.function.callable)?;
+        let offset = *attribution.sites.get(&(block.id, index))?;
         self.module
             .debug
-            .functions
-            .get(&self.function.callable)?
-            .sites
-            .get(&(block.id, index))
-            .copied()
+            .fault_site_id(hew_mir::physical::SemSourceSite {
+                file: attribution.file,
+                offset,
+            })
     }
 
+    /// Record fault-site id `site` on the active fault.
     pub(super) fn attach_active_fault_site(&self, site: Option<u32>) -> CodegenResult<()> {
         let Some(site) = site else {
             return Ok(());

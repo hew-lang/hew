@@ -25,13 +25,26 @@ use super::{
 pub struct PhysicalPlan<'a> {
     checked: hew_sir::CheckedModule<'a>,
     inventory: PhysicalTypeInventory,
+    sources: BTreeMap<u32, super::PhysicalSourceFile>,
 }
 
 impl<'a> PhysicalPlan<'a> {
     #[must_use]
     pub fn new(checked: hew_sir::CheckedModule<'a>) -> Self {
         let inventory = physical_type_inventory(checked.module());
-        Self { checked, inventory }
+        Self {
+            checked,
+            inventory,
+            sources: BTreeMap::new(),
+        }
+    }
+
+    /// Supply the source files bodies index, by file span index. A body whose
+    /// file is absent still lowers; its file table entry carries no lines.
+    #[must_use]
+    pub fn with_sources(mut self, sources: BTreeMap<u32, super::PhysicalSourceFile>) -> Self {
+        self.sources = sources;
+        self
     }
 
     #[must_use]
@@ -44,7 +57,7 @@ impl<'a> PhysicalPlan<'a> {
     /// # Errors
     /// Returns a layout, ownership-realization or physical verification diagnostic.
     pub fn lower(self, target: PhysicalTarget) -> Result<VerifiedPhysicalModule, PhysicalError> {
-        lower_physical_with_inventory(&self.checked, &self.inventory, target)
+        lower_physical_with_inventory(&self.checked, &self.inventory, target, self.sources)
     }
 }
 
@@ -80,6 +93,7 @@ fn lower_physical_with_inventory(
     checked: &hew_sir::CheckedModule<'_>,
     inventory: &PhysicalTypeInventory,
     target: PhysicalTarget,
+    sources: BTreeMap<u32, super::PhysicalSourceFile>,
 ) -> Result<VerifiedPhysicalModule, PhysicalError> {
     let module = checked.module();
 
@@ -157,6 +171,8 @@ fn lower_physical_with_inventory(
         .collect::<Result<Vec<_>, PhysicalError>>()?;
 
     let mut debug = PhysicalDebug {
+        files: BTreeMap::new(),
+        fault_sites: Vec::new(),
         scopes: module.debug.scopes.clone(),
         functions: BTreeMap::new(),
         names: super::debug_names::display_names(module),
@@ -215,6 +231,35 @@ fn lower_physical_with_inventory(
             Ok(lowered)
         })
         .collect::<Result<Vec<_>, PhysicalError>>()?;
+    // The file table holds exactly the files attributed bodies index; the
+    // site table, each attributed body's terminator sites in that file.
+    let mut fault_sites = BTreeSet::new();
+    for function in &functions {
+        let Some(attribution) = debug.functions.get(&function.callable) else {
+            continue;
+        };
+        for block in &function.blocks {
+            if let Some(offset) = attribution
+                .sites
+                .get(&(block.id, index_key(block.ops.len())))
+            {
+                fault_sites.insert(hew_sir::SemSourceSite {
+                    file: attribution.file,
+                    offset: *offset,
+                });
+            }
+        }
+    }
+    debug.fault_sites = fault_sites.into_iter().collect();
+    let attributed_files: BTreeSet<u32> = debug
+        .functions
+        .values()
+        .map(|attribution| attribution.file)
+        .collect();
+    debug.files = sources
+        .into_iter()
+        .filter(|(file, _)| attributed_files.contains(file))
+        .collect();
     let mut structural_glue = structural.into_inner().finish()?;
     for index in 0..structural_glue.len() {
         let callees = structural::display_callees(&structural_glue, structural_glue[index].id)?;
@@ -1338,6 +1383,16 @@ pub(crate) fn lower_function(
     }
 
     let cfg = certificate.cfg();
+    // A body's sites index the file it was lowered from. A site in another
+    // file has no line in this body's coordinate space.
+    let file = module.debug.item_file(function.id);
+    let site_offset = |provenance: &hew_sir::Provenance| {
+        module
+            .debug
+            .site(provenance)
+            .filter(|site| Some(site.file) == file)
+            .map(|site| site.offset)
+    };
     let mut sites: BTreeMap<(BlockId, u32), u32> = BTreeMap::new();
     let blocks = function
         .blocks
@@ -1370,14 +1425,14 @@ pub(crate) fn lower_function(
                 .try_fold(Vec::new(), |mut ops, operation| {
                     let first = ops.len();
                     ops.extend(lowerer.lower_op(operation, (block.id, ops.len()))?);
-                    if let Some(offset) = module.debug.site_offset(&operation.provenance) {
+                    if let Some(offset) = site_offset(&operation.provenance) {
                         for index in first..ops.len() {
                             sites.insert((block.id, index_key(index)), offset);
                         }
                     }
                     Ok::<_, PhysicalError>(ops)
                 })?;
-            if let Some(offset) = module.debug.site_offset(&block.terminator_provenance) {
+            if let Some(offset) = site_offset(&block.terminator_provenance) {
                 // The terminator's attribution takes the index one past the
                 // last op, the position codegen reaches it at.
                 sites.insert((block.id, index_key(ops.len())), offset);
@@ -1393,7 +1448,8 @@ pub(crate) fn lower_function(
         .collect::<Result<Vec<_>, PhysicalError>>()?;
 
     let place_storage = lowerer.lower_place_storage()?;
-    let attribution = function_attribution(function, &lowerer.storage, &parameters, sites);
+    let attribution =
+        file.map(|file| function_attribution(function, file, &lowerer.storage, &parameters, sites));
     Ok((
         PhysicalFunction {
             callable: function.callable,
@@ -1415,17 +1471,15 @@ pub(crate) fn index_key(index: usize) -> u32 {
 }
 
 /// Join SIR's ordered binding table onto the storage that realizes each source
-/// name. Only a root-unit body is attributed: another module's spans index a
-/// different file.
+/// name. Every body whose file is known is attributed in that file's
+/// coordinates.
 pub(crate) fn function_attribution(
     function: &SemFunction,
+    file: u32,
     storage: &[PhysicalStorage],
     parameters: &[StorageId],
     sites: BTreeMap<(BlockId, u32), u32>,
-) -> Option<PhysicalDebugFunction> {
-    if function.source_origin != hew_sir::FunctionSourceOrigin::RootUnit {
-        return None;
-    }
+) -> PhysicalDebugFunction {
     let mut locals = BTreeMap::new();
     for entry in storage {
         let binding = match entry.origin {
@@ -1453,14 +1507,15 @@ pub(crate) fn function_attribution(
             },
         );
     }
-    Some(PhysicalDebugFunction {
+    PhysicalDebugFunction {
         name: function.name.clone(),
+        file,
         decl: u32::try_from(function.span.start).unwrap_or(u32::MAX),
         end: u32::try_from(function.span.end).unwrap_or(u32::MAX),
         locals,
         available: BTreeMap::new(),
         sites,
-    })
+    }
 }
 
 pub(crate) fn terminator_result(terminator: &SemTerminator) -> Option<&hew_sir::ValueDef> {

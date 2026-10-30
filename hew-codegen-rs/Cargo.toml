@@ -14,6 +14,7 @@ categories = ["compilers"]
 serde_json.workspace = true
 hew-cabi = { path = "../hew-cabi" }
 hew-codec = { path = "../hew-codec" }
+hew-debug-abi = { path = "../hew-debug-abi" }
 hew-mir = { path = "../hew-mir" }
 hew-types = { path = "../hew-types" }
 hew-parser = { path = "../hew-parser" }

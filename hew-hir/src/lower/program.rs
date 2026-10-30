@@ -2478,6 +2478,7 @@ pub fn lower_program(
         indexed_place_operations: ctx.indexed_place_operations,
         items,
         diagnostic_source_modules,
+        item_files: ctx.item_files,
         root_item_ids: ctx.root_item_ids,
         entry_exit_plan,
         test_entry_plans: type_check_output.test_entry_plans.clone(),

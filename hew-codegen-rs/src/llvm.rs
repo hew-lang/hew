@@ -141,8 +141,11 @@ pub(crate) fn run_module_pipeline(
         // address that a debug record reads.
         unsafe { hewLLVMHomeRampFrameAddresses(module.as_mut_ptr()) };
     }
-    module.verify().map_err(|error| {
-        CodegenError::LlvmVerify(format!("module rejected after optimization: {error}"))
+    crate::physical::verify_bounded(module).map_err(|error| match error {
+        CodegenError::LlvmVerify(message) => {
+            CodegenError::LlvmVerify(format!("module rejected after optimization: {message}"))
+        }
+        other => other,
     })
 }
 /// Link a freestanding `wasm32-unknown-unknown` object into a `.wasm` module.

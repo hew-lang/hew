@@ -1293,6 +1293,9 @@ struct LowerCtx<'checked> {
     /// the checker's module-scoped inserts, preventing byte-offset collisions
     /// across stdlib files (L23 defect root cause).
     current_module_idx: u32,
+    /// The span index of the file each item with a body was lowered from, the
+    /// one coordinate space its sites and scopes index.
+    item_files: HashMap<ItemId, u32>,
     /// Source-order discriminator used only when a source-less AST surface
     /// gives every top-level item the synthetic `0..0` span.
     current_item_ordinal: usize,

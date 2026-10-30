@@ -1099,6 +1099,28 @@ mod tests {
     }
 
     #[test]
+    fn long_numbers_survive_a_round_trip() {
+        // Long literals, from fuzzing: the fast float parser read these one
+        // unit in the last place away from the value their printed form names.
+        for text in [
+            "18446744073709573709551616",
+            "1.1701411834604692e58",
+            "-3.5264805301296273e-38",
+        ] {
+            let first = parse(text);
+            assert!(!first.is_null());
+            // SAFETY: each value is live until freed below.
+            unsafe {
+                let printed = read_and_free_string(hew_json_stringify(first));
+                let second = parse(&printed);
+                assert_eq!(hew_json_eq(first, second), 1, "{text} printed as {printed}");
+                hew_json_free(second);
+                hew_json_free(first);
+            }
+        }
+    }
+
+    #[test]
     fn unsigned_integer_boundaries_are_exact() {
         let baseline = live_value_boxes();
         for (number, text, status) in [

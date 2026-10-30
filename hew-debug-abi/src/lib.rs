@@ -124,8 +124,9 @@ impl TableHeader {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(C)]
 pub struct FileEntry {
-    /// Offset of the UTF-8 display path. It is the `--trim-paths` spelling,
-    /// never a host path when trimming is on.
+    /// Offset of the UTF-8 display path, followed by a NUL that `name_len`
+    /// excludes. It is the `--trim-paths` spelling, never a host path when
+    /// trimming is on.
     pub name_offset: u32,
     pub name_len: u32,
     /// Offset of `line_count` 4-byte-aligned `u32` byte offsets, one per line
@@ -162,7 +163,8 @@ pub struct SymEntry {
     /// Signed distance from the table's first byte to the next emitted
     /// function, which bounds this one.
     pub end: i32,
-    /// Offset of the UTF-8 display name.
+    /// Offset of the UTF-8 display name, followed by a NUL that `name_len`
+    /// excludes.
     pub name_offset: u32,
     pub name_len: u32,
     /// The declaring file, or [`NO_FILE`].
@@ -508,9 +510,12 @@ impl TableWriter {
         self.bytes[at..at + 4].copy_from_slice(&value.to_le_bytes());
     }
 
-    fn append(&mut self, data: &[u8]) -> u32 {
+    /// Append a name and the NUL after it, so a C reader or a failure record
+    /// can point at the name in place.
+    fn append_name(&mut self, name: &str) -> u32 {
         let offset = u32::try_from(self.bytes.len()).unwrap_or(u32::MAX);
-        self.bytes.extend_from_slice(data);
+        self.bytes.extend_from_slice(name.as_bytes());
+        self.bytes.push(0);
         offset
     }
 
@@ -538,7 +543,7 @@ impl TableWriter {
             for start in file.line_starts {
                 writer.bytes.extend_from_slice(&start.to_le_bytes());
             }
-            let name_offset = writer.append(file.name.as_bytes());
+            let name_offset = writer.append_name(file.name);
             writer.put_u32(at, name_offset);
             writer.put_u32(at + 4, u32::try_from(file.name.len()).unwrap_or(u32::MAX));
             writer.put_u32(at + 8, lines_offset);
@@ -572,7 +577,7 @@ impl TableWriter {
         let mut slots = Vec::with_capacity(symbols.len());
         for (index, symbol) in symbols.iter().enumerate() {
             let at = TableHeader::SIZE + index * SymEntry::SIZE;
-            let name_offset = writer.append(symbol.name.as_bytes());
+            let name_offset = writer.append_name(symbol.name);
             writer.put_u32(at + 8, name_offset);
             writer.put_u32(
                 at + 12,

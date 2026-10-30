@@ -128,12 +128,15 @@ pub(crate) fn run_module_pipeline(
     // SAFETY: the shim replaces only the subprograms and debug locations of
     // coroutine destroy parts in this live module.
     unsafe { hewLLVMMarkCoroutineDestroyParts(module.as_mut_ptr()) };
-    // SAFETY: the shim only updates debug records and their pointer storage in
-    // this live module, after coroutine splitting has selected frame addresses.
-    unsafe { hewLLVMStabilizeDebugFrameLocations(module.as_mut_ptr()) };
-    // Optimized code tracks the frame address through register allocation;
-    // only an unoptimized ramp needs it homed on the stack.
+    // Only an unoptimized body keeps its frame addresses in memory, and the
+    // shim adds an alloca and a store per address a debug record reads.
+    // Optimized code is never changed by debug information (D2), so it keeps
+    // LLVM's own value locations.
     if level == OptLevel::O0 {
+        // SAFETY: the shim only updates debug records and their pointer
+        // storage in this live module, after coroutine splitting has selected
+        // frame addresses.
+        unsafe { hewLLVMStabilizeDebugFrameLocations(module.as_mut_ptr()) };
         // SAFETY: as above; the shim adds one alloca and store per ramp frame
         // address that a debug record reads.
         unsafe { hewLLVMHomeRampFrameAddresses(module.as_mut_ptr()) };

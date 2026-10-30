@@ -2685,6 +2685,138 @@ fn initiator_returns_from_a_dial_the_responder_yields_without_suspicion() {
     crate::registry::hew_registry_clear();
 }
 
+/// When the responder settles a crossing on the connection the initiator moved
+/// to, the initiator learns the responder's names afresh from what the
+/// responder announces there: a name the responder withdrew on the released
+/// connection, unread when that one closed, does not survive the switch, and
+/// the names it holds do. The withdrawn name is planted at the initiator.
+#[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "keep the scripted crossing and the names it settles together"
+)]
+fn initiator_relearns_the_responder_names_when_it_settles_a_switch() {
+    let _guard = crate::runtime_test_guard();
+    crate::registry::hew_registry_clear();
+    let (a, port_a, b, port_b) = start_authorized_tcp_pair(391, 392);
+    // SAFETY: both nodes stay started until the stops below.
+    unsafe {
+        let ((lower, lower_port), (higher, higher_port)) =
+            if kept_origin(&a, &b) == ConnectionOrigin::Dialled {
+                ((&a, port_a), (&b, port_b))
+            } else {
+                ((&b, port_b), (&a, port_a))
+            };
+        let lower_mgr = (*lower.as_ptr()).conn_mgr.cast_const();
+        let higher_mgr = (*higher.as_ptr()).conn_mgr.cast_const();
+        let higher_identity = (*higher.as_ptr())
+            .auth
+            .node_identity()
+            .expect("higher identity");
+        let higher_session = (*higher.as_ptr())
+            .auth
+            .session_incarnation()
+            .expect("higher session");
+        // A name the responder holds, announced on each connection it publishes.
+        assert!((*(*higher.as_ptr()).registry).apply_origin_name(
+            "present",
+            Location::direct(higher_identity, 9, higher_session).expect("present location"),
+            true
+        ));
+        let progress: Progress = Arc::default();
+        let (higher_node, lower_node) = (higher.as_ptr() as usize, lower.as_ptr() as usize);
+        let lower_hook: connection::admission_script::Hook = {
+            let progress = Arc::clone(&progress);
+            Arc::new(move |point, origin| {
+                use connection::admission_script::Point;
+                match (point, origin) {
+                    (Point::Authenticated, ConnectionOrigin::Dialled) => {
+                        await_progress(&progress, |state| state.higher_dial_settled);
+                        // The nodes outlive their admissions.
+                        let (lower, higher) = (
+                            &*(lower_node as *mut HewNode),
+                            &*(higher_node as *mut HewNode),
+                        );
+                        let name = Location::direct(
+                            higher.auth.node_identity().expect("higher identity"),
+                            7,
+                            higher.auth.session_incarnation().expect("higher session"),
+                        )
+                        .expect("name location");
+                        (*lower.registry)
+                            .remote_names
+                            .lock_or_recover()
+                            .insert("ghost".into(), name);
+                    }
+                    (Point::AwaitingCommit, ConnectionOrigin::Dialled) => {
+                        progress.0.lock_or_recover().lower_awaiting_commit = true;
+                        progress.1.notify_all();
+                    }
+                    _ => {}
+                }
+            })
+        };
+        let higher_hook: connection::admission_script::Hook = {
+            let progress = Arc::clone(&progress);
+            Arc::new(move |point, origin| {
+                if point == connection::admission_script::Point::Authenticated
+                    && origin == ConnectionOrigin::Accepted
+                {
+                    await_progress(&progress, |state| {
+                        state.lower_awaiting_commit
+                            || (state.higher_dial_settled && {
+                                connection::peer_connection_view(
+                                    &*(*(higher_node as *mut HewNode)).conn_mgr,
+                                    (*(lower_node as *mut HewNode))
+                                        .auth
+                                        .node_identity()
+                                        .expect("lower identity"),
+                                )
+                            }
+                            .installed
+                                == 0)
+                    });
+                }
+            })
+        };
+        let script = connection::admission_script::install(&[
+            (lower_mgr, lower_hook),
+            (higher_mgr, higher_hook),
+        ]);
+        let barrier = Arc::new(std::sync::Barrier::new(2));
+        let lower_dial = spawn_dial(lower, higher_port, &barrier, None);
+        let higher_dial = spawn_dial(higher, lower_port, &barrier, Some(Arc::clone(&progress)));
+        let dials = (
+            lower_dial.join().expect("lower dial"),
+            higher_dial.join().expect("higher dial"),
+        );
+        await_kept_connection(lower, higher, ConnectionOrigin::Dialled);
+        await_kept_connection(higher, lower, ConnectionOrigin::Accepted);
+        drop(script);
+        let progress = std::mem::take(&mut *progress.0.lock_or_recover());
+        assert!(
+            progress.lower_awaiting_commit && !progress.timed_out,
+            "the script did not run: {progress:?}"
+        );
+        let names = &(*(*lower.as_ptr()).registry).remote_names;
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while {
+            let names = names.lock_or_recover();
+            names.contains_key("ghost") || !names.contains_key("present")
+        } {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "dials {dials:?}: the initiator's names for the responder: {:?}",
+                names.lock_or_recover().keys().collect::<Vec<_>>()
+            );
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        assert_eq!(hew_node_stop(b.as_ptr()), 0);
+        assert_eq!(hew_node_stop(a.as_ptr()), 0);
+    }
+    crate::registry::hew_registry_clear();
+}
+
 /// The commit order of the connection that holds `peer`'s claim at `node`,
 /// asserted equal at both ends.
 ///

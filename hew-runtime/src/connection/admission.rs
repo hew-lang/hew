@@ -948,7 +948,17 @@ pub(super) fn remove_connection(
     // the token, so they do nothing a completed retirement or the loser's
     // current publication has already covered.
     if let (true, Some(peer_identity)) = (held_a_loser, peer_identity) {
-        if !mgr.cluster.is_null() {
+        // An admission reserving the claim publishes its own token next; the
+        // peer is not lost meanwhile.
+        let succeeded = mgr
+            .claims
+            .0
+            .lock_or_recover()
+            .get(&peer_identity)
+            .is_some_and(|claim| {
+                claim.state == ClaimState::Reserved && claim.publication_token != publication_token
+            });
+        if !mgr.cluster.is_null() && !succeeded {
             // SAFETY: the cluster is owned by the live manager.
             let _ = unsafe {
                 crate::cluster::hew_cluster_notify_connection_lost_if_current(

@@ -356,6 +356,9 @@ pub(crate) fn init_crash_handling() {
     let mut installed_here = false;
     INSTALL.call_once(|| {
         installed_here = true;
+        // The handler reads the backtrace policy and image facts; settle
+        // them now, since a program without actors never starts a scheduler.
+        crate::fault::configure_from_env();
         minidump::configure();
         // SAFETY: the callback remains resident for the process lifetime.
         if unsafe { AddVectoredExceptionHandler(1, Some(fatal_exception_handler)) }.is_null() {

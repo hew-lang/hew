@@ -309,6 +309,9 @@ pub(crate) fn init_crash_handling() {
     let mut installed_here = false;
     INSTALL.call_once(|| {
         installed_here = true;
+        // The handler reads the backtrace policy and image facts; settle
+        // them now, since a program without actors never starts a scheduler.
+        crate::fault::configure_from_env();
         // Bind the unwinder's lazy symbols and caches now; resolving them in
         // the handler would cost stack and take the loader's locks.
         frames::warm_up();

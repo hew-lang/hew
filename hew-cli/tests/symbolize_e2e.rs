@@ -112,3 +112,79 @@ fn debug_build_resolves_a_hew_function_to_its_source() {
 fn optimized_debug_build_resolves_a_hew_function_to_its_source() {
     names_level2_in_source(true);
 }
+
+const PANICS: &str = "\
+fn level2(x: i64) -> i64 {
+    if x > 3 {
+        panic(\"too big\");
+    }
+    x
+}
+
+fn main() -> i64 {
+    println(level2(4));
+    0
+}
+";
+
+/// A release build without `-g` keeps no symbol table, only the Hew tables:
+/// the runtime names the failing frame and site from them, and `hew
+/// symbolize` resolves the recorded frame from them too.
+#[test]
+fn stripped_release_build_resolves_frames_from_the_hew_tables() {
+    require_codegen();
+    let dir = tempdir();
+    let src = dir.path().join("p.hew");
+    std::fs::write(&src, PANICS).expect("write source");
+    let binary = hew_testutil::compiled_binary_path(dir.path(), "p");
+    let output = Command::new(hew_binary())
+        .args(["build", "--release"])
+        .arg(&src)
+        .arg("-o")
+        .arg(&binary)
+        .output()
+        .expect("run hew build");
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let log = dir.path().join("failures.ndjson");
+    let run = Command::new(&binary)
+        .env("HEW_BACKTRACE", "1")
+        .env("HEW_FAILURE_LOG", &log)
+        .output()
+        .expect("run program");
+    let stderr = String::from_utf8_lossy(&run.stderr);
+    assert!(
+        stderr.contains("hew: failure: UserPanic (212) at p.hew:3:9: too big"),
+        "{stderr}"
+    );
+    assert!(stderr.contains("hew:   at level2 (p.hew:1)"), "{stderr}");
+
+    let record: serde_json::Value = serde_json::from_str(
+        std::fs::read_to_string(&log)
+            .expect("failure log")
+            .lines()
+            .next()
+            .expect("one record"),
+    )
+    .expect("record parses");
+    let frame = record["frames"]
+        .as_array()
+        .expect("frames")
+        .iter()
+        .find(|frame| frame["hew_fn"] == "level2")
+        .unwrap_or_else(|| panic!("a level2 frame: {record}"));
+    let output = symbolize(
+        &binary,
+        &[
+            frame["pc"].as_str().expect("pc").to_owned(),
+            format!("--base={}", record["build"]["image_base"].as_str().unwrap()),
+            "--return-addresses".to_owned(),
+        ],
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("level2 at p.hew:1"), "{stdout}");
+}

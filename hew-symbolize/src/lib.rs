@@ -23,6 +23,7 @@
 
 mod dwarf;
 mod pdb_file;
+mod tables;
 
 use std::fmt;
 use std::path::{Path, PathBuf};

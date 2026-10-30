@@ -1,5 +1,6 @@
 //! ELF, Mach-O and PE images: DWARF line and function information, then the
-//! symbol table for frames without DWARF.
+//! image's Hew function table, then the symbol table for frames without
+//! either.
 
 use std::borrow::Cow;
 use std::path::{Path, PathBuf};
@@ -8,6 +9,7 @@ use std::sync::Arc;
 use gimli::Reader as _;
 use object::{Object, ObjectSection, ObjectSegment, ObjectSymbol};
 
+use crate::tables::HewTables;
 use crate::{format_error, BuildId, Location, Result};
 
 type Reader = gimli::EndianArcSlice<gimli::RunTimeEndian>;
@@ -28,6 +30,8 @@ pub(crate) struct ObjectSymbols {
     sidecar: Option<Sidecar>,
     /// DWARF from this file or from its split debug file.
     dwarf: Option<Dwarf>,
+    /// The image's own Hew function table, present without `-g`.
+    hew: HewTables,
     /// Function symbols, address-sorted and non-overlapping.
     symbols: Vec<FunctionSymbol>,
 }
@@ -75,6 +79,7 @@ impl ObjectSymbols {
             static_base,
             sidecar,
             dwarf,
+            hew: HewTables::parse(&file),
             symbols,
         })
     }
@@ -123,7 +128,12 @@ impl ObjectSymbols {
                 return Ok(locations);
             }
         }
-        Ok(self.symbol_at(address).into_iter().collect())
+        Ok(self
+            .hew
+            .lookup(address)
+            .or_else(|| self.symbol_at(address))
+            .into_iter()
+            .collect())
     }
 
     fn symbol_at(&self, address: u64) -> Option<Location> {

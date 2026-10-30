@@ -264,8 +264,25 @@ extern "C" void hewLLVMMarkCoroutineDestroyParts(LLVMModuleRef module) {
                      0);
         store->getPointerOperand()->stripAndAccumulateConstantOffsets(
             layout, offset, /* AllowNonInbounds */ true);
-        if (offset == layout.getPointerSize())
+        // Only a ramp stores its own parts: the part's subprogram is the
+        // ramp's, cloned by the split.
+        DISubprogram *ramp = function.getSubprogram();
+        if (offset != layout.getPointerSize() || !ramp)
+          continue;
+        auto same = [&](Value *candidate) {
+          auto *part = dyn_cast<Function>(candidate);
+          DISubprogram *cloned = part ? part->getSubprogram() : nullptr;
+          return cloned && cloned != ramp &&
+                 cloned->getRawFile() == ramp->getRawFile() &&
+                 cloned->getLine() == ramp->getLine() &&
+                 cloned->getRawType() == ramp->getRawType();
+        };
+        if (auto *select = dyn_cast<SelectInst>(stored)) {
+          if (same(select->getTrueValue()) && same(select->getFalseValue()))
+            note(stored);
+        } else if (same(stored)) {
           note(stored);
+        }
       }
   for (Function *function : parts) {
     DISubprogram *old = function->getSubprogram();

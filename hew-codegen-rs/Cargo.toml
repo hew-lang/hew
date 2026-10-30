@@ -33,6 +33,9 @@ llvm-sys = "221"
 cc = "1"
 
 [dev-dependencies]
+# Read the DWARF the emitter writes, independent of LLVM.
+gimli = "0.33"
+object = "0.40"
 hew-live = { path = "../hew-live" }
 hew-compile = { path = "../hew-compile" }
 hew-std = { path = "../hew-std" }

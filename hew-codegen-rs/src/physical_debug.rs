@@ -203,7 +203,7 @@ impl<'ctx> DebugEmitter<'ctx> {
     /// name: lldb indexes a subprogram that has one by that name alone, and a
     /// Hew symbol does not demangle to the name a person types. The
     /// subroutine type lists the source parameters and result, so a debugger
-    /// can print a call's arguments and the value `finish` returns.
+    /// can print a call's arguments.
     pub(super) fn function(
         &self,
         value: FunctionValue<'ctx>,
@@ -218,18 +218,17 @@ impl<'ctx> DebugEmitter<'ctx> {
         } else {
             self.lines.line(attribution.decl)
         };
-        let result = callable
-            .return_layout
-            .as_ref()
-            .and_then(|layout| self.resolve_type(&callable.return_ty, layout, target));
         let params: Vec<DIType<'ctx>> = callable
             .params
             .iter()
             .filter_map(|param| self.resolve_type(&param.ty, &param.layout, target))
             .collect();
+        // No result type: a Hew body returns its fault status in the return
+        // register and its value through an out pointer, so a declared result
+        // would make `finish` print the status as the value.
         let subroutine =
             self.builder
-                .create_subroutine_type(self.file, result, &params, DIFlags::PROTOTYPED);
+                .create_subroutine_type(self.file, None, &params, DIFlags::PROTOTYPED);
         let flags = if artificial {
             DIFlags::PROTOTYPED | DIFlags::ARTIFICIAL
         } else {
@@ -484,6 +483,39 @@ impl<'ctx> DebugEmitter<'ctx> {
                 candidate.start >= attribution.decl && candidate.start < attribution.end
             })
     }
+}
+
+/// The first source point execution reaches from `block`, following
+/// unconditional edges and safepoints' normal edges.
+pub(super) fn first_site_from(
+    function: &PhysicalFunction,
+    attribution: &PhysicalDebugFunction,
+    block: hew_mir::physical::BlockId,
+) -> Option<u32> {
+    use hew_mir::physical::PhysicalTerminator;
+    let mut target = block;
+    let mut seen = std::collections::BTreeSet::new();
+    while seen.insert(target) {
+        if let Some((_, offset)) = attribution
+            .sites
+            .range((target, 0)..=(target, u32::MAX))
+            .next()
+        {
+            return Some(*offset);
+        }
+        target = match &function
+            .blocks
+            .iter()
+            .find(|candidate| candidate.id == target)?
+            .terminator
+        {
+            PhysicalTerminator::Goto(edge) | PhysicalTerminator::Safepoint { normal: edge, .. } => {
+                edge.target
+            }
+            _ => return None,
+        };
+    }
+    None
 }
 
 /// Whether `machine` generates optimized code, which the compile unit and

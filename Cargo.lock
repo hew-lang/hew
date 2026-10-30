@@ -2134,6 +2134,7 @@ name = "hew-codegen-rs"
 version = "0.10.0-rc1"
 dependencies = [
  "cc",
+ "gimli",
  "hew-cabi",
  "hew-codec",
  "hew-compile",
@@ -2147,6 +2148,7 @@ dependencies = [
  "hew-types",
  "inkwell",
  "llvm-sys",
+ "object 0.40.0",
  "serde_json",
  "tempfile",
 ]

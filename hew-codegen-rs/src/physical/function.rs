@@ -210,6 +210,14 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                 &task_scopes,
             )?;
         }
+        // The branch into the body is the first instruction of the first
+        // statement, so `prologue_end` lands on it, after every parameter
+        // store, and a function breakpoint sees the arguments.
+        if let Some((emitter, function_debug, attribution)) = &debug {
+            if let Some(offset) = debug::first_site_from(function, attribution, function.entry) {
+                builder.set_current_debug_location(emitter.location(ctx, function_debug, offset));
+            }
+        }
         builder
             .build_unconditional_branch(blocks[&function.entry])
             .llvm_ctx("branch to physical entry")?;
@@ -354,31 +362,12 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
         let PhysicalTerminator::Safepoint { normal, .. } = &block.terminator else {
             return;
         };
-        let mut target = normal.target;
-        let mut seen = std::collections::BTreeSet::new();
-        while seen.insert(target) {
-            if let Some((_, offset)) = attribution
-                .sites
-                .range((target, 0)..=(target, u32::MAX))
-                .next()
-            {
-                self.builder.set_current_debug_location(emitter.location(
-                    self.ctx,
-                    function_debug,
-                    *offset,
-                ));
-                return;
-            }
-            let Some(PhysicalTerminator::Goto(edge)) = self
-                .function
-                .blocks
-                .iter()
-                .find(|candidate| candidate.id == target)
-                .map(|candidate| &candidate.terminator)
-            else {
-                return;
-            };
-            target = edge.target;
+        if let Some(offset) = debug::first_site_from(self.function, attribution, normal.target) {
+            self.builder.set_current_debug_location(emitter.location(
+                self.ctx,
+                function_debug,
+                offset,
+            ));
         }
     }
 

@@ -744,10 +744,10 @@ pub(crate) unsafe fn normalize_dispatch_completion(
 }
 
 /// Resolve the caller of a turn that a stop or shutdown cancelled before it
-/// replied. A turn cancelled while parked has its reply retired on resume; one
-/// cancelled without parking, such as an accept refused because shutdown had
-/// already closed listener admission, completes here, and its ordinary return
-/// would otherwise leave the caller waiting on a reply that never comes.
+/// replied, whether it completes on resume after parking or without ever
+/// parking, such as an accept refused because shutdown had already closed
+/// listener admission. Without this, the ordinary return of a turn that never
+/// parked would leave the caller waiting on a reply that never comes.
 ///
 /// # Safety
 /// `ctx` is the exclusively owned current activation context.

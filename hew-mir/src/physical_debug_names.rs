@@ -25,9 +25,10 @@ use hew_sir::{CallableId, CallableInstance, SemModule};
 /// The display name of the Hew entry function: `break main` stops in it.
 pub const ENTRY_DISPLAY_NAME: &str = "main";
 
-/// The debug name of the C `main` the linker enters through. It is an
-/// artificial subprogram so a debugger resolving `main` by name finds only
-/// [`ENTRY_DISPLAY_NAME`]; the C entry keeps `main` as its linkage name.
+/// The symbol and debug name of a native image's C entry, the function the
+/// C runtime calls as `main`. The link aliases `main` to it and no `main`
+/// symbol is left in the image, so a debugger resolving `main` by name finds
+/// only [`ENTRY_DISPLAY_NAME`], the Hew entry. A WASI module keeps `main`.
 pub const C_ENTRY_DEBUG_NAME: &str = "__hew_shim_entry";
 
 /// Reserved prefix of every compiler-generated shim symbol.

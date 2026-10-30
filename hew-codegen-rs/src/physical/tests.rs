@@ -940,7 +940,12 @@ fn windows_uses_the_same_status_result_fault_abi() {
     let params = body.get_type().get_param_types();
     assert_eq!(params.len(), 2, "result-out and fault-out");
     assert!(params.iter().all(|parameter| parameter.is_pointer_type()));
-    assert!(module.get_function("main").is_some(), "process adapter");
+    assert!(
+        module
+            .get_function(hew_mir::physical::debug_names::C_ENTRY_DEBUG_NAME)
+            .is_some(),
+        "process adapter"
+    );
 }
 
 #[test]

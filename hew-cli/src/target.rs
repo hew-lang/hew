@@ -128,6 +128,26 @@ pub struct NativeLinkPlan {
     /// Where a `-g` link leaves debug info: the step after the link (a
     /// `dsymutil` pass, a `--split-debug` copy) and the PDB flags follow it.
     pub debug_layout: DebugInfoLayout,
+
+    /// How the C runtime's call to `main` reaches the image's C entry.
+    pub entry: EntryAlias,
+}
+
+/// How the link binds the C runtime's `main` to the compiler's C entry,
+/// whose symbol is not `main` so that a debugger's `break main` resolves only
+/// the Hew entry.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EntryAlias {
+    /// `--defsym=main=<entry>`; the `main` symbol is then stripped from the
+    /// linked image's symbol table (ELF, and PE through GNU ld).
+    Defsym,
+    /// `-e <entry>`: dyld starts at the entry directly (Mach-O `LC_MAIN`).
+    DarwinEntry,
+    /// `/alternatename:main=<entry>`, which resolves the CRT's reference to
+    /// `main` without defining a `main` symbol (lld-link).
+    MsvcAlternateName,
+    /// The module exports `main` itself (wasm).
+    None,
 }
 
 impl TargetSpec {
@@ -220,6 +240,7 @@ impl TargetSpec {
                 needs_darwin_sdk: true,
                 needs_windows_crt_fixup: false,
                 debug_layout: DebugInfoLayout::DarwinDsym,
+                entry: EntryAlias::DarwinEntry,
             },
             TargetOs::Linux => NativeLinkPlan {
                 gc_flags: &["-Wl,--gc-sections"],
@@ -230,6 +251,7 @@ impl TargetSpec {
                 needs_darwin_sdk: false,
                 needs_windows_crt_fixup: false,
                 debug_layout: DebugInfoLayout::ElfDwarf,
+                entry: EntryAlias::Defsym,
             },
             TargetOs::FreeBsd => NativeLinkPlan {
                 gc_flags: &["-Wl,--gc-sections"],
@@ -242,6 +264,7 @@ impl TargetSpec {
                 needs_darwin_sdk: false,
                 needs_windows_crt_fixup: false,
                 debug_layout: DebugInfoLayout::ElfDwarf,
+                entry: EntryAlias::Defsym,
             },
             TargetOs::Windows => NativeLinkPlan {
                 // The Windows linker (lld-link) does not accept ELF-style -Wl
@@ -277,6 +300,11 @@ impl TargetSpec {
                 } else {
                     DebugInfoLayout::Unsupported
                 },
+                entry: if self.env.as_deref() == Some("msvc") {
+                    EntryAlias::MsvcAlternateName
+                } else {
+                    EntryAlias::Defsym
+                },
             },
             TargetOs::Wasi | TargetOs::WasmFreestanding => NativeLinkPlan {
                 gc_flags: &[],
@@ -287,6 +315,7 @@ impl TargetSpec {
                 needs_darwin_sdk: false,
                 needs_windows_crt_fixup: false,
                 debug_layout: DebugInfoLayout::Unsupported,
+                entry: EntryAlias::None,
             },
         }
     }

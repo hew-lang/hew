@@ -1,6 +1,7 @@
 //! Module assembly: declarations, glue, callables and process entry.
 
 use super::*;
+use hew_mir::physical::debug_names::C_ENTRY_DEBUG_NAME;
 
 #[cfg(test)]
 pub(super) fn build_module<'ctx>(
@@ -797,8 +798,11 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
         let plan = self.module.entry_exit_plan.as_ref().ok_or_else(|| {
             CodegenError::FailClosed("physical executable entry has no typed exit plan".into())
         })?;
+        // A WASI module exports `main` itself; a native image names its C
+        // entry apart from the Hew `main`, and the link aliases `main` to it.
+        let wasm = self.module.target.triple.starts_with("wasm32");
         let wrapper = self.llvm.add_function(
-            "main",
+            if wasm { "main" } else { C_ENTRY_DEBUG_NAME },
             self.ctx.i32_type().fn_type(&[], false),
             Some(Linkage::External),
         );
@@ -808,15 +812,11 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
         self.emit_process_runtime_start(&builder, wrapper)?;
         self.emit_actor_observe_registration(&builder)?;
         self.emit_selected_entry_body(&builder, wrapper, entry_id, plan.action.clone())?;
-        if self.module.target.triple.starts_with("wasm32") {
+        if wasm {
             self.emit_wasi_entry_adapter(wrapper)?;
         }
         if let Some(debug) = &self.debug {
-            debug.shim(
-                self.ctx,
-                wrapper,
-                hew_mir::physical::debug_names::C_ENTRY_DEBUG_NAME,
-            );
+            debug.shim(self.ctx, wrapper, C_ENTRY_DEBUG_NAME);
         }
         Ok(())
     }
@@ -933,7 +933,7 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
             ));
         }
         let wrapper = self.llvm.add_function(
-            "main",
+            C_ENTRY_DEBUG_NAME,
             self.ctx.i32_type().fn_type(&[], false),
             Some(Linkage::External),
         );
@@ -984,6 +984,9 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
         builder
             .build_return(Some(&failure))
             .llvm_ctx("return invalid test selection")?;
+        if let Some(debug) = &self.debug {
+            debug.shim(self.ctx, wrapper, C_ENTRY_DEBUG_NAME);
+        }
         Ok(())
     }
 

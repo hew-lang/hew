@@ -5,7 +5,8 @@
 use std::path::{Path, PathBuf};
 
 use crate::diagnostic::emit_plain_diagnostic_line;
-use crate::target::{DebugInfoLayout, TargetSpec};
+use crate::target::{DebugInfoLayout, EntryAlias, TargetSpec};
+use hew_mir::physical::debug_names::C_ENTRY_DEBUG_NAME;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct NativeCompiler {
@@ -276,6 +277,7 @@ pub(crate) fn link_executable_with_hew_lib(
         cmd.arg("-g");
     }
     cmd.args(plan.build_id_flags);
+    cmd.args(entry_alias_flags(plan.entry));
 
     add_debug_info_flags(&mut cmd, plan.debug_layout, &compiler, debug, &safe_output);
 
@@ -376,8 +378,57 @@ pub(crate) fn link_executable_with_hew_lib(
     if debug {
         finish_linked_debug_info(plan.debug_layout, &compiler, &safe_output);
     }
+    // A stripped image has no symbol table left to clean.
+    let symbols_kept = debug || coverage_instrument || sanitize_address;
+    if plan.entry == EntryAlias::Defsym && symbols_kept {
+        strip_main_alias(&safe_output);
+    }
 
     Ok(())
+}
+
+/// The linker flags that bind the C runtime's `main` to the compiler's C
+/// entry, [`C_ENTRY_DEBUG_NAME`].
+fn entry_alias_flags(alias: EntryAlias) -> Vec<String> {
+    match alias {
+        EntryAlias::Defsym => vec![format!("-Wl,--defsym=main={C_ENTRY_DEBUG_NAME}")],
+        // Mach-O prefixes C symbols with an underscore.
+        EntryAlias::DarwinEntry => vec![format!("-Wl,-e,_{C_ENTRY_DEBUG_NAME}")],
+        // lld-link infers the entry and subsystem from a defined `main`, which
+        // an alternate name does not provide, so both are stated.
+        EntryAlias::MsvcAlternateName => vec![
+            format!("-Wl,/alternatename:main={C_ENTRY_DEBUG_NAME}"),
+            "-Wl,/entry:mainCRTStartup".to_string(),
+            "-Wl,/subsystem:console".to_string(),
+        ],
+        EntryAlias::None => Vec::new(),
+    }
+}
+
+/// Remove the `main` alias `--defsym` left in the symbol table, so a
+/// debugger's `break main` resolves only the Hew entry. The C runtime's
+/// reference to `main` was resolved at link time and does not need it. The
+/// image runs either way, so a missing or failing tool only warns.
+fn strip_main_alias(binary: &str) {
+    let Some(objcopy) = ["llvm-objcopy", "objcopy"]
+        .into_iter()
+        .find(|tool| has_tool(tool))
+    else {
+        eprintln!("warning: no objcopy on PATH; `break main` also stops in the C entry");
+        return;
+    };
+    match std::process::Command::new(objcopy)
+        .arg("--strip-symbol=main")
+        .arg(binary)
+        .output()
+    {
+        Ok(output) if output.status.success() => {}
+        Ok(output) => eprintln!(
+            "warning: {objcopy} could not remove the main alias: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        ),
+        Err(error) => eprintln!("warning: cannot run {objcopy}: {error}"),
+    }
 }
 
 /// Post-link work on a debug link's DWARF.

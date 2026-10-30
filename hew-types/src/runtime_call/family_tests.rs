@@ -149,6 +149,17 @@ fn fixed_array_update_preserves_length_and_element_ownership() {
     ));
     assert!(!contract.matches_signature(&crate::DefTable::new(), &arguments, &ResolvedTy::Unit));
 
+    // Fixed-array element access shares the physical vector operation, whose
+    // failure edge already carries the bounds fault: SIR must propagate it
+    // rather than raise a second one over it.
+    for op in [ArrayValueOp::Index, ArrayValueOp::Set] {
+        let array_contract = RuntimeCallFamily::Array(op).semantic_contract().unwrap();
+        assert!(array_contract.propagates_fault(), "{op:?}");
+    }
+    // A failed replacement leaves the array and the incoming element with
+    // the caller.
+    assert!(contract.preserves_inputs_on_failure());
+
     // Updating replaces the array owner; the index is copied and an
     // owning element follows its copy-or-move value boundary.
     assert!(family.consumes_receiver());

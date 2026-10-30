@@ -799,6 +799,9 @@ pub(super) fn remove_connection(
         let _publication = publication_sync.lock_or_recover();
         publication_removed.store(true, Ordering::Release);
     }
+    // Wake this connection's reader if it waits on another admission's claim
+    // as a held loser: it has no authority left to wait for.
+    mgr.claims.1.notify_all();
     // Publication may have filled in the identity after the initial lookup
     // snapshot. Refresh it only after cancellation is serialized: an earlier
     // publisher has now exposed its identity and route, while a later one must
@@ -918,6 +921,12 @@ pub(super) fn remove_connection(
     });
     // Drop joins the reader thread after transport close.
     drop(conn);
+    // A connection that held the one it superseded for the peer's choice:
+    // the loser takes the claim if the peer closed this one, before this
+    // one's retirement could report the peer lost; otherwise it closes.
+    let restored = held_loser.is_some_and(|held| {
+        settle_held_loser(mgr, peer_identity, conn_id, publication_token, &held)
+    });
     // Full publication retirement: re-removes route (idempotent) and fires the
     // cluster connection-lost notification. Deferred until after drop(conn) so
     // that a racing replacement connection can establish and publish first —
@@ -931,10 +940,14 @@ pub(super) fn remove_connection(
         publication_token,
         &publication_sync,
     );
-    // A connection that held the one it superseded for the peer's choice:
-    // publish that one again if the peer closed this one, else close it.
-    if let Some(held) = held_loser {
-        settle_held_loser(mgr, peer_identity, conn_id, publication_token, &held);
+    // The loser took the claim, so retirement settled nothing for this
+    // publication: its own monitors and links are still lost.
+    if let (true, Some(peer_identity)) = (restored, peer_identity) {
+        crate::hew_node::fan_out_monitor_lost_for_publication(
+            peer_identity,
+            peer_session_incarnation,
+            publication_token,
+        );
     }
 
     // Suppressed-publication restore (see the pre-join comment above): with our

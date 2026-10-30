@@ -89,10 +89,7 @@ pub(crate) fn authenticated_peer_node_id_for_conn(mgr: &HewConnMgr, conn_id: c_i
         Some(claim) if claim.state == ClaimState::Published && claim.conn_id == conn_id => {
             route_slot
         }
-        _ => {
-            drop(guard);
-            held_loser_authority(mgr, conn_id, None).unwrap_or(0)
-        }
+        _ => 0,
     }
 }
 
@@ -187,7 +184,7 @@ pub(crate) fn wait_authenticated_peer_node_id_for_conn(
             // unless the claim's owner holds this one for the peer's choice.
             Some((_, _, ClaimState::Retired)) | None => {
                 drop(guard);
-                if let Some(authority) = held_loser_authority(mgr, conn_id, Some(claim_token)) {
+                if let Some(authority) = held_loser_authority(mgr, conn_id, claim_token) {
                     return authority;
                 }
                 // A successor's admission is in flight: wait for it to settle.

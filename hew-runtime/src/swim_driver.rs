@@ -204,6 +204,13 @@ struct NodePtr(*mut HewNode);
 // (guaranteed by the join-before-free ordering documented at module level).
 unsafe impl Send for NodePtr {}
 
+/// The runtime a ticker thread enters for its whole life.
+struct RuntimePtr(Option<*const crate::runtime::RuntimeInner>);
+
+// SAFETY: the runtime synchronizes its own state; the pointer is dereferenced
+// only on the ticker thread while the owning node, and so its runtime, lives.
+unsafe impl Send for RuntimePtr {}
+
 /// Start the SWIM ticker for `node` if one is not already running.
 ///
 /// Idempotent: a second call for the same node while a ticker is live is a
@@ -227,12 +234,23 @@ pub(crate) unsafe fn start_swim_driver(node: *mut HewNode) -> bool {
         let stop = Arc::new(AtomicBool::new(false));
         let thread_stop = Arc::clone(&stop);
         let node_ptr = NodePtr(node);
+        // The node belongs to the runtime starting it. Its membership effects
+        // (quarantine, monitor fan-out, current-node lookups) must resolve
+        // that runtime on the ticker thread too, not the process default.
+        let runtime = RuntimePtr(crate::runtime::rt_current_opt().map(std::ptr::from_ref));
         // Select clock once at start: sim when SIMTIME_ENABLED, real otherwise.
         let clock = MonoClock::for_current_context();
 
         let spawn = std::thread::Builder::new()
             .name("hew-swim-driver".into())
-            .spawn(move || run_driver_loop(node_ptr, &thread_stop, clock));
+            .spawn(move || {
+                let runtime = runtime;
+                // SAFETY: the node's runtime owns the node slot this node is
+                // registered in and outlives the node, whose stop joins this
+                // thread before the node is freed.
+                let _entered = runtime.0.map(|rt| unsafe { crate::runtime::enter(&*rt) });
+                run_driver_loop(node_ptr, &thread_stop, clock);
+            });
 
         if let Ok(join) = spawn {
             table.insert(

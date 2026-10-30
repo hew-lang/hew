@@ -2101,6 +2101,125 @@ fn initiator_that_gives_up_after_the_commit_keeps_the_shared_connection() {
     crate::registry::hew_registry_clear();
 }
 
+/// While the responder waits for the initiator's echo on a redial, the
+/// connection the pair shares still carries the peer's traffic at the
+/// responder: it can send there, and a reply the initiator returns there is
+/// delivered. Counterfactual: the reservation takes the claim from the shared
+/// connection at once, sends to the peer fail and its replies are dropped
+/// for a round trip, and a SWIM probe in that window suspects the peer.
+#[test]
+fn responder_keeps_the_shared_connection_while_it_awaits_the_echo() {
+    let _guard = crate::runtime_test_guard();
+    crate::registry::hew_registry_clear();
+    let (a, port_a, b, port_b) = start_authorized_tcp_pair(363, 364);
+    // SAFETY: both nodes stay started until the stops below.
+    unsafe {
+        let (lower, higher, higher_port) = if kept_origin(&a, &b) == ConnectionOrigin::Dialled {
+            (&a, &b, port_b)
+        } else {
+            (&b, &a, port_a)
+        };
+        let higher_address = CString::new(format!("127.0.0.1:{higher_port}")).unwrap();
+        assert_eq!(hew_node_connect(lower.as_ptr(), higher_address.as_ptr()), 0);
+        await_one_shared_connection(lower, higher, "first dial");
+        let (lower_mgr, higher_mgr) = ((*lower.as_ptr()).conn_mgr, (*higher.as_ptr()).conn_mgr);
+        let lower_identity = (*lower.as_ptr())
+            .auth
+            .node_identity()
+            .expect("lower identity");
+        let higher_identity = (*higher.as_ptr())
+            .auth
+            .node_identity()
+            .expect("higher identity");
+        let lower_shared = connection::claim_send_by_identity(&*lower_mgr, higher_identity, None)
+            .expect("the lower node's shared connection")
+            .publication_token;
+
+        // Hold the redial's initiator once the responder has committed.
+        let (waiting, at_commit) = std::sync::mpsc::channel();
+        let (release, released) = std::sync::mpsc::channel::<()>();
+        let released = Mutex::new(released);
+        let lower_hook: connection::admission_script::Hook = Arc::new(move |point, origin| {
+            if point == connection::admission_script::Point::AwaitingCommit
+                && origin == ConnectionOrigin::Dialled
+            {
+                let _ = waiting.send(());
+                let _ = released
+                    .lock_or_recover()
+                    .recv_timeout(std::time::Duration::from_secs(5));
+            }
+        });
+        let script = connection::admission_script::install(&[(lower_mgr.cast_const(), lower_hook)]);
+        let lower_pointer = lower.as_ptr() as usize;
+        let redial = thread::spawn(move || {
+            // The test keeps the lower node started until this joins.
+            hew_node_connect(lower_pointer as *mut HewNode, higher_address.as_ptr())
+        });
+        let observed = (|| -> Result<_, String> {
+            at_commit
+                .recv_timeout(std::time::Duration::from_secs(5))
+                .map_err(|_| "the initiator never awaited the commit")?;
+            // The responder has reserved the redial and committed it.
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+            while connection::peer_connection_view(&*higher_mgr, lower_identity).owner
+                != Some((ClaimState::Reserved, ConnectionOrigin::Accepted))
+            {
+                if std::time::Instant::now() >= deadline {
+                    return Err("the responder never reserved the redial".into());
+                }
+                std::thread::sleep(std::time::Duration::from_millis(1));
+            }
+            let shared = connection::claim_send_by_identity(&*higher_mgr, lower_identity, None)
+                .ok_or("the responder cannot send on the shared connection")?;
+            let (request, reply) = reply_table().register_with_waker(
+                ConnectionKey::new(higher_mgr, shared.connection_id()),
+                None,
+                PendingReplyKind::Ask(shared.publication_token),
+            );
+            drop(shared);
+            send_reply_envelope(
+                connection::authenticated_peer_node_id_for_conn(
+                    &*lower_mgr,
+                    connection::claim_send_by_identity(&*lower_mgr, higher_identity, None)
+                        .ok_or("the initiator lost the shared connection")?
+                        .connection_id(),
+                ),
+                request,
+                lower_shared,
+                b"shared",
+                lower_mgr,
+                &AtomicBool::new(false),
+            );
+            let (outcome, _) = reply
+                .cond
+                .wait_timeout_while(
+                    reply.outcome.lock().unwrap(),
+                    Duration::from_secs(5),
+                    |outcome| outcome.is_none(),
+                )
+                .unwrap();
+            let outcome = outcome
+                .as_ref()
+                .map(|outcome| (outcome.status, outcome.data.clone()));
+            reply_table().remove(request);
+            Ok(outcome)
+        })();
+        let _ = release.send(());
+        let rc = redial.join().expect("redial");
+        drop(script);
+        assert_eq!(
+            observed,
+            Ok(Some((ReplyStatus::Success, b"shared".to_vec()))),
+            "the reply returned on the shared connection"
+        );
+        assert_eq!(rc, 0, "the redial connected");
+        await_one_shared_connection(lower, higher, "after the redial");
+        assert_eq!(hew_node_stop(b.as_ptr()), 0);
+        assert_eq!(hew_node_stop(a.as_ptr()), 0);
+    }
+    crate::registry::hew_registry_clear();
+}
+
 /// A redial that reaches the responder late and is held there still leaves
 /// the pair sharing one connection, whichever connection that turns out to be.
 #[test]

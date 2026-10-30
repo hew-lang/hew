@@ -5,7 +5,7 @@ use std::sync::atomic::Ordering;
 use std::sync::Arc;
 
 use crate::node_identity::{Location, NodeId};
-use crate::peer_binding::{ClaimState, Posture};
+use crate::peer_binding::{ClaimState, LiveClaim, Posture};
 use crate::set_last_error;
 use crate::transport::HEW_CONN_INVALID;
 use crate::util::MutexExt;
@@ -176,9 +176,11 @@ fn claim_send_admitted(
         .lock_or_recover()
         .get(&claim.identity)
         .is_some_and(|owner| {
-            admits(owner.state)
+            (admits(owner.state)
                 && owner.conn_id == conn_id
                 && owner.publication_token == publication_token
+                || owner.state == ClaimState::Reserved
+                    && owner.superseding == Some((conn_id, publication_token)))
                 && owner.route_slot == claim.route_slot
                 && owner.session_incarnation == claim.session_incarnation
                 && owner.credential == credential
@@ -191,7 +193,7 @@ pub(crate) fn claim_send_by_identity(
     peer: NodeId,
     publication: Option<u64>,
 ) -> Option<SendClaim> {
-    let connection = manager.claims.0.lock_or_recover().get(&peer)?.conn_id;
+    let (connection, _) = manager.claims.0.lock_or_recover().get(&peer)?.carrier()?;
     let claim = claim_send(manager, connection, publication)?;
     (claim.identity == peer).then_some(claim)
 }
@@ -216,17 +218,14 @@ pub(crate) fn claim_send_to_route(
     }
     // A predecessor may remain active while its successor publishes. Select
     // the authoritative claim, then revalidate it after releasing this lock.
-    let conn_id = manager
+    let (conn_id, _) = manager
         .claims
         .0
         .lock_or_recover()
         .values()
-        .find(|owner| {
-            owner.state == ClaimState::Published
-                && owner.route_slot == route_slot
-                && publication.is_none_or(|token| owner.publication_token == token)
-        })?
-        .conn_id;
+        .filter(|owner| owner.route_slot == route_slot)
+        .filter_map(LiveClaim::carrier)
+        .find(|&(_, token)| publication.is_none_or(|publication| publication == token))?;
     let claim = claim_send(manager, conn_id, publication)?;
     (claim.route_slot == route_slot).then_some(claim)
 }

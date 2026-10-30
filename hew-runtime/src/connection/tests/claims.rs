@@ -511,6 +511,7 @@ fn route_alias_allocation_preserves_retired_identities_and_refuses_exhaustion() 
                 origin: ConnectionOrigin::Dialled,
                 published_at: 0,
                 commit_order: 0,
+                superseding: None,
             },
         );
     }

@@ -245,6 +245,24 @@ pub struct LiveClaim {
     /// The order the responder committed this connection in, under the
     /// responder-commit step; zero when the pair did not negotiate it.
     pub commit_order: u64,
+    /// While `Reserved`, the published connection this admission is replacing,
+    /// as `(conn_id, publication_token)`: it carries the peer's traffic until
+    /// the reservation publishes or aborts.
+    pub superseding: Option<(c_int, u64)>,
+}
+
+impl LiveClaim {
+    /// The connection the peer's traffic takes under this claim, as
+    /// `(conn_id, publication_token)`: the published one, or the one a
+    /// reservation is replacing.
+    #[must_use]
+    pub fn carrier(&self) -> Option<(c_int, u64)> {
+        match self.state {
+            ClaimState::Published => Some((self.conn_id, self.publication_token)),
+            ClaimState::Reserved => self.superseding,
+            ClaimState::Refuting { .. } | ClaimState::Retired => None,
+        }
+    }
 }
 
 /// Which end opened a claimed connection.

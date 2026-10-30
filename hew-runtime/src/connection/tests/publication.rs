@@ -133,6 +133,7 @@ fn stale_publisher_cannot_clear_reused_conn_successor_stash() {
             origin: ConnectionOrigin::Dialled,
             published_at: 0,
             commit_order: 0,
+            superseding: None,
         };
         mgr.connections.access(|connections| {
             let successor = connections

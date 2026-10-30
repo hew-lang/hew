@@ -528,7 +528,10 @@ fn configured_seed_follows_successor_but_never_arms_transient_reconnect() {
                 commit_order: 0,
             },
         );
-        assert!(super::super::reconnect::seed_predecessor(manager, &old).is_none());
+        assert!(matches!(
+            super::super::reconnect::seed_predecessor(manager, &old),
+            super::super::reconnect::SeedNext::Wait
+        ));
         manager
             .claims
             .0
@@ -536,9 +539,24 @@ fn configured_seed_follows_successor_but_never_arms_transient_reconnect() {
             .get_mut(&identity)
             .unwrap()
             .state = ClaimState::Retired;
-        let next = super::super::reconnect::seed_predecessor(manager, &old).unwrap();
+        let super::super::reconnect::SeedNext::Reconnect(next) =
+            super::super::reconnect::seed_predecessor(manager, &old)
+        else {
+            panic!("a retired publication is reconnected as its successor");
+        };
         assert_eq!(next.session_incarnation, 2);
         assert_eq!(next.publication_token, 42);
+        // Once membership retires the identity, the seed dials it afresh.
+        let retired = manager.claims.0.lock_or_recover().remove(&identity);
+        assert!(matches!(
+            super::super::reconnect::seed_predecessor(manager, &old),
+            super::super::reconnect::SeedNext::Fresh
+        ));
+        manager
+            .claims
+            .0
+            .lock_or_recover()
+            .insert(identity, retired.expect("claim"));
         manager
             .seed_identities
             .access(|identities| identities.push(identity));

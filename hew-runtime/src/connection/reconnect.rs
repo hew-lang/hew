@@ -221,9 +221,11 @@ fn reconnect_may_retry(mgr: &HewConnMgr, plan: &ReconnectPlan) -> bool {
             .0
             .lock_or_recover()
             .get(&plan.predecessor.node_id)
-            .is_some_and(|claim| {
+            .is_none_or(|claim| {
                 // A provisional successor can still abort and restore the
                 // predecessor; only a resolved claim can obsolete this retry.
+                // A claim retired with its member leaves nothing to obsolete
+                // it, so the retry continues as a fresh admission.
                 claim.state == ClaimState::Reserved || plan.predecessor.matches(claim)
             })
 }
@@ -509,17 +511,32 @@ pub(crate) unsafe fn start_seed(mgr: *mut HewConnMgr, target: super::SeedTarget)
     }
 }
 
+/// What a seed worker does next for the identity it last admitted.
+pub(super) enum SeedNext {
+    /// A connection still owns the identity, or an admission is in flight.
+    Wait,
+    /// The identity's last publication retired; reconnect as its successor.
+    Reconnect(ReconnectOwner),
+    /// The membership table retired the identity; dial as a fresh admission.
+    Fresh,
+}
+
 /// A seed follows the latest authenticated publication for its discovered
 /// identity. A successor transfers supervision; it never revives a stale
 /// predecessor or replays actor requests.
-pub(super) fn seed_predecessor(mgr: &HewConnMgr, owner: &ReconnectOwner) -> Option<ReconnectOwner> {
+pub(super) fn seed_predecessor(mgr: &HewConnMgr, owner: &ReconnectOwner) -> SeedNext {
     let claims = mgr.claims.0.lock_or_recover();
-    let claim = claims.get(&owner.node_id)?;
-    (claim.state == crate::peer_binding::ClaimState::Retired).then_some(ReconnectOwner {
-        node_id: owner.node_id,
-        session_incarnation: claim.session_incarnation,
-        publication_token: claim.publication_token,
-    })
+    match claims.get(&owner.node_id) {
+        None => SeedNext::Fresh,
+        Some(claim) if claim.state == crate::peer_binding::ClaimState::Retired => {
+            SeedNext::Reconnect(ReconnectOwner {
+                node_id: owner.node_id,
+                session_incarnation: claim.session_incarnation,
+                publication_token: claim.publication_token,
+            })
+        }
+        Some(_) => SeedNext::Wait,
+    }
 }
 
 fn seed_worker_loop(send: &SendConnMgr, target: &super::SeedTarget) {
@@ -529,17 +546,15 @@ fn seed_worker_loop(send: &SendConnMgr, target: &super::SeedTarget) {
     let mut owner = None;
     let mut backoff = RECONNECT_INITIAL_BACKOFF_MS;
     while !mgr.reconnect_shutdown.load(Ordering::Acquire) {
-        let predecessor = match owner.as_ref() {
-            Some(owner) => {
-                let Some(predecessor) = seed_predecessor(mgr, owner) else {
-                    if !sleep_until_retry(&mgr.reconnect_shutdown, RECONNECT_SLEEP_SLICE_MS) {
-                        return;
-                    }
-                    continue;
-                };
-                Some(predecessor)
+        let predecessor = match owner.as_ref().map(|owner| seed_predecessor(mgr, owner)) {
+            Some(SeedNext::Wait) => {
+                if !sleep_until_retry(&mgr.reconnect_shutdown, RECONNECT_SLEEP_SLICE_MS) {
+                    return;
+                }
+                continue;
             }
-            None => None,
+            Some(SeedNext::Reconnect(predecessor)) => Some(predecessor),
+            Some(SeedNext::Fresh) | None => None,
         };
         let installed = crate::transport::with_connection_attempt_deadline(|| {
             seed_attempt(mgr_ptr, target, predecessor.as_ref())

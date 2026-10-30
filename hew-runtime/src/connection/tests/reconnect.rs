@@ -525,6 +525,7 @@ fn configured_seed_follows_successor_but_never_arms_transient_reconnect() {
                 origin: ConnectionOrigin::Dialled,
                 published_at: 0,
                 commit_order: 0,
+                superseding: None,
             },
         );
         assert!(super::super::reconnect::seed_predecessor(manager, &old).is_none());

@@ -256,6 +256,7 @@ pub(super) fn reserve_identity_claim(
                 Commit::Responder => next_publication_token(mgr).unwrap_or(u64::MAX),
                 Commit::Initiator(order) => order,
             },
+            superseding: None,
         };
         let Some(existing) = map.get(&node_id) else {
             if predecessor.is_some() {
@@ -314,7 +315,12 @@ pub(super) fn reserve_identity_claim(
             }
         }
         // Same-credential reconnect, a higher durable session, or the winning
-        // side of a crossing dial.
+        // side of a crossing dial. The connection replaced keeps carrying the
+        // peer's traffic until this reservation settles.
+        let claim = LiveClaim {
+            superseding: existing.carrier(),
+            ..claim
+        };
         let superseded = map.insert(node_id, claim);
         return ClaimReservation::Reserved { superseded };
     }

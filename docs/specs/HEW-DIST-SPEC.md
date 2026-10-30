@@ -344,7 +344,8 @@ cluster of nodes that require it. Between two nodes that set it:
    the connection, and closes the one it superseded, only after the echo. If
    the connection ends first, or its first frame is anything else, the
    initiator never switched: the responder abandons the reservation and keeps
-   the connection it would have superseded.
+   the connection it would have superseded. Until the reservation settles,
+   that connection keeps carrying the peer's traffic at both ends.
 
 So the responder switches before the initiator settles, and the initiator
 switches before the responder closes anything; neither end closes a

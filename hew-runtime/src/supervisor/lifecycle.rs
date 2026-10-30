@@ -4076,10 +4076,10 @@ mod tests {
             {
                 let mut roster = locked_roster!(sup);
                 let spec = &mut roster.child_specs[0];
-                // Restartable by policy, and already backing off, so the crash
+                // Restartable by policy with a declared delay, so the crash
                 // takes the DELAYED path rather than restarting in line.
                 spec.restart_policy = RESTART_PERMANENT;
-                spec.backoff.delay_ns = 200_000_000;
+                spec.backoff = RestartBackoff::configured(Some((200_000_000, 200_000_000)));
             }
 
             actor::hew_actor_trap(child, 1);

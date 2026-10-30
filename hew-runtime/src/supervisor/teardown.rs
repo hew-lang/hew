@@ -990,8 +990,9 @@ pub(crate) unsafe fn restart_child_from_spec_expected(
         // healed, otherwise repeated null-clones would silently close the
         // breaker and mask OOM. The outer `restart_with_budget_and_strategy`
         // already counted this attempt via `record_restart`, so max-restarts /
-        // escalation still fire on persistent failure. Backoff is also applied
-        // so the supervisor doesn't busy-loop retrying clone fns.
+        // escalation still fire on persistent failure. A declared backoff also
+        // advances; nothing re-drives the failed spawn, so no delay is needed
+        // to prevent a retry loop.
         //
         // **state_clone_fn NOT registered**: fall back to the legacy byte-copy
         // path via `hew_actor_spawn_opts`. The Q185(c) checker remains in

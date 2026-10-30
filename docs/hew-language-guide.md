@@ -2205,7 +2205,9 @@ window, its next crash starts at the initial delay again. Waiting for recovery
 does not count as healthy execution, and the restart budget still applies.
 The policy expression runs once when the supervisor is constructed and may
 use its configuration parameters. Stopping the supervisor cancels pending
-delays. Omit `backoff` to retain the established restart behaviour.
+delays. `maximum` is optional and defaults to 30 seconds. Without `backoff`, a
+crashed child restarts immediately and only the restart budget limits a crash
+loop.
 
 ### Free functions callable from receive fns
 

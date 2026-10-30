@@ -1,0 +1,32 @@
+actor Worker {
+    let value: i64 = 7;
+    receive fn read() -> i64 {
+        value
+    }
+    receive fn crash_me() {
+        panic("restart the child");
+    }
+}
+
+supervisor App {
+    strategy: one_for_one;
+    intensity: 60 within 60s;
+    child worker: Worker { value: 7 };
+}
+
+fn main() {
+    let app = spawn App;
+    let started = instant.now();
+    for _ in 0..50 {
+        let _ = app.worker.crash_me();
+        let role = app.worker;
+        restarted(role);
+        match role.read() {
+            .Ok(value) => assert(value == 7),
+            .Err(_) => panic("restarted child unavailable"),
+        }
+    }
+    println(started.elapsed() == 0ns);
+    stop(app);
+    stopped(app);
+}

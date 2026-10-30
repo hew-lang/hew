@@ -1,0 +1,13 @@
+[[case]]
+id = "supervisor-restart-immediate"
+intent = "A supervisor without a declared backoff restarts a crashed child immediately, so fifty consecutive crash-and-restart cycles advance the deterministic clock by nothing while the budget still counts each restart."
+source = "cases/supervisor-restart-immediate.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 10
+
+[case.env]
+HEW_DETERMINISTIC = ""
+
+[case.expected]
+stdout = "true\n"
+exit = 0

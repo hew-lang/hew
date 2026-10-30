@@ -2,6 +2,9 @@
 
 ## [Unreleased]
 
+- Restart crashed supervised children immediately unless the supervisor
+  declares `backoff`, and default the backoff maximum to 30 seconds.
+
 ## [0.10.0-rc1] - 2026-10-26
 
 - Account for actor-owned managed values across native and browser execution,

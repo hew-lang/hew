@@ -1,6 +1,6 @@
 [[case]]
 id = "actor-restarted-role-cancel"
-intent = "Cancelling a parked role restart observer releases its wake target and supervisor pin before shutdown."
+intent = "Cancelling a role restart observer parked on a declared backoff releases its wake target and supervisor pin before shutdown."
 source = "cases/actor-restarted-role-cancel.hew"
 suites = ["acceptance", "safety"]
 timeout_seconds = 20

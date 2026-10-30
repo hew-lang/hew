@@ -6461,8 +6461,10 @@ fn main() {
   within the rolling `<duration>` window. The window is a duration literal
   (`60s`, `5m`, `1h`), not a bare integer. Default `10 within 5s`.
 - `backoff: <expression>`: an optional `std.restart.Backoff`, usually
-  `restart.exponential(initial: 100ms, maximum: 5s)`. The expression runs once
-  during supervisor construction and can use its configuration parameters.
+  `restart.exponential(initial: 100ms, maximum: 5s)`; `maximum` defaults to
+  `30s`. The expression runs once during supervisor construction and can use
+  its configuration parameters. Without `backoff`, a crashed child restarts
+  immediately.
 
 **Child specifications:**
 
@@ -6543,8 +6545,9 @@ The supervisor's `intensity: N within <window>` budget caps restarts; exceeding 
 
 An optional `backoff` delays crash recovery per stable child role, including
 nested supervisors and individual pool members. Its first delay is `initial`;
-later failures double it up to `maximum`. Both values are durations, `initial`
-must be positive, and `maximum` must be at least `initial`. Invalid policies
+later failures double it up to `maximum`, which defaults to 30 seconds. Both
+values are durations, `initial` must be positive, and `maximum` must be at
+least `initial`. Invalid policies
 fail supervisor construction before any child starts.
 
 After a replacement runs without failure for the supervisor's existing restart
@@ -6552,7 +6555,8 @@ window, its next crash uses `initial` again. That healthy interval begins when
 the replacement is published; time spent waiting or constructing it does not
 count. This reset does not change the restart intensity budget. Stopping a
 supervisor cancels pending delays and waits for their cleanup. Omitting
-`backoff` retains the established restart behaviour.
+`backoff` restarts every crashed child immediately; the intensity budget alone
+bounds a crash loop.
 
 Circuit-breaker configuration remains outside the source restart contract;
 runtime support alone does not imply a source API.

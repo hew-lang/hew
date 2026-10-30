@@ -18,7 +18,11 @@ impl Checker {
         &mut self,
         types: &HashMap<super::SpanKey, Ty>,
     ) {
-        for (key, target) in &self.direct_call_targets {
+        // `direct_call_targets` is a published lookup table; visit it in
+        // source order so the refusals below come out deterministically.
+        let mut targets: Vec<_> = self.direct_call_targets.iter().collect();
+        targets.sort_unstable_by_key(|(key, _)| *key);
+        for (key, target) in targets {
             let Some((_, parameters, _)) = types.get(key).and_then(Ty::callable_signature) else {
                 continue;
             };

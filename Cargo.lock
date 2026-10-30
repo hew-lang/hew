@@ -2449,6 +2449,7 @@ dependencies = [
  "hew-parser",
  "hew-runtime",
  "hew-types",
+ "indexmap 2.14.2",
  "regex",
  "schemars",
  "serde",

@@ -378,12 +378,13 @@ unsafe fn run_one_period(node: *mut HewNode) {
 
     // 3. Indirect probing (C4): ask up to K relay peers to PING the target on
     //    our behalf. This is SWIM's accuracy mechanism — a single lost packet
-    //    on the direct path does not falsely suspect a live node, because a
-    //    relay's successful PING (and the target's ACK back to the relay)
-    //    propagates the target's liveness via gossip. We always issue indirect
-    //    probes alongside the direct one rather than waiting for a direct
-    //    no-ack, because the sync transport gives us no per-probe ack callback
-    //    to time out on; the redundancy is cheap and bounded by K.
+    //    on the direct path does not falsely suspect a live node, because the
+    //    target's ACK to a relay is forwarded to us as contact with the target
+    //    (it clears our overdue probe; it never vouches for the target's
+    //    incarnation). We always issue indirect probes alongside the direct
+    //    one rather than waiting for a direct no-ack, because the sync
+    //    transport gives us no per-probe ack callback to time out on; the
+    //    redundancy is cheap and bounded by K.
     // SAFETY: cluster pointer is owned by the live node.
     let k = unsafe { &*cluster_ptr }.indirect_ping_count();
     if k == 0 {

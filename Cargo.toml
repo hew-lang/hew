@@ -54,6 +54,7 @@ stacker = "0.1"
 dirs = "6"
 finl_unicode = "1"
 sha2 = "0.11"
+indexmap = "2"
 
 [workspace.lints.rust]
 ambiguous_negative_literals = "warn"

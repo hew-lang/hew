@@ -47,6 +47,17 @@ extern "C" void hewLLVMStabilizeDebugFrameLocations(LLVMModuleRef module) {
   if (!ir->getNamedMetadata("llvm.dbg.cu"))
     return;
   for (auto &function : *ir) {
+    // CoroSplit reloads a spilled value at the start of each block that uses
+    // it, after the block's debug records are placed and under the user's
+    // line. A breakpoint on that line would then stop before the records
+    // that say which locals hold a value. The reload is plumbing, so it
+    // belongs to line 0.
+    for (auto &block : function)
+      for (auto &instruction : block)
+        if (instruction.getName().contains(".reload") &&
+            instruction.getDebugLoc() && instruction.getDebugLoc().getLine())
+          instruction.setDebugLoc(DILocation::get(
+              ir->getContext(), 0, 0, instruction.getDebugLoc()->getScope()));
     SmallVector<std::pair<DbgVariableRecord *, Instruction *>, 8> records;
     for (auto &block : function)
       for (auto &instruction : block)
@@ -77,7 +88,11 @@ extern "C" void hewLLVMStabilizeDebugFrameLocations(LLVMModuleRef module) {
                                           marker->getDbgRecordRange().end()),
                                *marker, false);
       IRBuilder<> location(instruction);
-      location.SetCurrentDebugLocation(DebugLoc());
+      // The address store belongs to the variable's scope, on line 0, so the
+      // scope exists in the code even when no source statement lies directly
+      // in it; a scope with no code would drop its variables.
+      location.SetCurrentDebugLocation(DILocation::get(
+          ir->getContext(), 0, 0, variable->getVariable()->getScope()));
       Value *address = pointer;
       if (ops.size() == 4)
         address = location.CreateLoad(pointer->getType(), address);

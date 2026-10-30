@@ -569,6 +569,7 @@ pub(crate) enum FaultState {
 #[derive(Debug)]
 pub(crate) struct FunctionInitialization {
     pub(crate) available: super::PhysicalDebugAvailability,
+    pub(crate) changes: BTreeMap<(BlockId, u32), super::PhysicalDebugChange>,
     pub(crate) frame_roots: super::PhysicalFrameRootPlan,
 }
 
@@ -766,8 +767,10 @@ pub(crate) fn verify_initialization(
             }
         }
     }
+    let (available, changes) = debug_availability(module, function, incoming);
     Ok(FunctionInitialization {
-        available: debug_availability(module, function, incoming),
+        available,
+        changes,
         frame_roots,
     })
 }
@@ -776,26 +779,57 @@ fn debug_availability(
     module: &PhysicalModule,
     function: &PhysicalFunction,
     incoming: BTreeMap<BlockId, Vec<FlowState>>,
-) -> super::PhysicalDebugAvailability {
+) -> (
+    super::PhysicalDebugAvailability,
+    BTreeMap<(BlockId, u32), super::PhysicalDebugChange>,
+) {
     let Some(debug) = module.debug.functions.get(&function.callable) else {
-        return BTreeMap::new();
+        return (BTreeMap::new(), BTreeMap::new());
     };
-    incoming
-        .into_iter()
-        .map(|(block, states)| {
-            let available = debug
-                .locals
-                .keys()
-                .copied()
-                .filter(|id| {
-                    states
-                        .iter()
-                        .all(|state| initialization_status(function, state, *id).is_ok())
-                })
-                .collect();
-            (block, available)
-        })
-        .collect()
+    let holds = |states: &[FlowState]| -> BTreeSet<StorageId> {
+        debug
+            .locals
+            .keys()
+            .copied()
+            .filter(|id| {
+                states
+                    .iter()
+                    .all(|state| initialization_status(function, state, *id).is_ok())
+            })
+            .collect()
+    };
+    let borrows = BorrowDependents::of(function);
+    let mut available = BTreeMap::new();
+    let mut changes = BTreeMap::new();
+    for (block_id, mut states) in incoming {
+        let mut before = holds(&states);
+        available.insert(block_id, before.clone());
+        let Some(block) = function.blocks.iter().find(|block| block.id == block_id) else {
+            continue;
+        };
+        for (index, operation) in block.ops.iter().enumerate() {
+            let advanced = states.iter_mut().try_for_each(|state| {
+                apply_operation(module, function, &borrows, operation, state, block_id)
+            });
+            if advanced.is_err() {
+                break;
+            }
+            let after = holds(&states);
+            if after != before {
+                if let Ok(index) = u32::try_from(index) {
+                    changes.insert(
+                        (block_id, index),
+                        super::PhysicalDebugChange {
+                            bound: after.difference(&before).copied().collect(),
+                            ended: before.difference(&after).copied().collect(),
+                        },
+                    );
+                }
+                before = after;
+            }
+        }
+    }
+    (available, changes)
 }
 
 /// Reverse-postorder rank of every block reachable from the entry. Any rank

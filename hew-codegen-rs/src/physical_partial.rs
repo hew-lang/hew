@@ -288,7 +288,6 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
         id: StorageId,
         initialized: bool,
     ) -> CodegenResult<()> {
-        self.debug_local(id, initialized);
         if matches!(self.storage(id)?.origin, StorageOrigin::ActorState { .. }) {
             if !self.module.managed_types[&self.storage(id)?.ty].tracks_occupancy() {
                 return Ok(());

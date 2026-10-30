@@ -761,8 +761,13 @@ fn s_value_reads(section: &str) -> Vec<&str> {
     section
         .lines()
         .filter(|line| {
+            // lldb prefixes a read with the variable's type: `(string) s = ...`.
             let line = line.trim_start();
-            line.starts_with("s = ") || line.starts_with("(hew_string *) s = ")
+            let line = match line.strip_prefix('(') {
+                Some(typed) => typed.split_once(") ").map_or(line, |(_, rest)| rest),
+                None => line,
+            };
+            line.starts_with("s = ")
         })
         .collect()
 }

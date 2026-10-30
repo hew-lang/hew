@@ -176,11 +176,6 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                 )?,
             };
             values.store_value(slots[storage_id.0 as usize], &physical_param.layout, loaded)?;
-            if let (Some((emitter, function_debug, _)), Some(block)) =
-                (&debug, builder.get_insert_block())
-            {
-                emitter.bind_local(function_debug, *storage_id, block);
-            }
             param_index += 1;
         }
         let result_out = if callable.return_layout.is_some() {
@@ -401,6 +396,7 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
             for (index, operation) in block.ops.iter().enumerate() {
                 self.locate(block.id, index);
                 self.emit_op(operation)?;
+                self.debug_changes(block.id, index);
             }
             self.locate_terminator(block);
             self.emit_terminator(block)?;
@@ -528,14 +524,32 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
             self.slots[id.0 as usize],
             &self.storage(id)?.layout,
             value,
-        )?;
-        self.debug_local(id, true);
-        Ok(())
+        )
+    }
+
+    /// Apply what the verifier proved about which locals hold a value after
+    /// operation `index` of `block`.
+    fn debug_changes(&self, block: BlockId, index: usize) {
+        let Some((_, _, attribution)) = &self.debug else {
+            return;
+        };
+        let Some(change) = u32::try_from(index)
+            .ok()
+            .and_then(|index| attribution.changes.get(&(block, index)))
+        else {
+            return;
+        };
+        for id in &change.ended {
+            self.debug_local(*id, false);
+        }
+        for id in &change.bound {
+            self.debug_local(*id, true);
+        }
     }
 
     /// Tell a debugger whether `id` holds a value from here on. Only a
     /// coroutine body describes its locals this way.
-    pub(super) fn debug_local(&self, id: StorageId, holds_value: bool) {
+    fn debug_local(&self, id: StorageId, holds_value: bool) {
         let (Some((emitter, function_debug, _)), Some(block)) =
             (&self.debug, self.builder.get_insert_block())
         else {
@@ -938,10 +952,7 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                 let value = self.load(*source, "borrow")?;
                 self.store(*dest, value)
             }
-            PhysicalOp::EndBorrow { source } => {
-                self.debug_local(*source, false);
-                Ok(())
-            }
+            PhysicalOp::EndBorrow { .. } => Ok(()),
             PhysicalOp::StorageLive { storage } => self.set_place_initialized(*storage, false),
             PhysicalOp::Assign {
                 dest,

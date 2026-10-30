@@ -158,6 +158,7 @@ pub(crate) fn check_physical_module(
         function.frame_roots = facts.frame_roots;
         if let Some(debug) = module.debug.functions.get_mut(&function.callable) {
             debug.available = facts.available;
+            debug.changes = facts.changes;
         }
     }
     Ok(super::VerifiedPhysicalModule(module))

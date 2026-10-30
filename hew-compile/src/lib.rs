@@ -8379,7 +8379,8 @@ extern "C" { fn hew_tcp_read(foo: Foo); }
     /// process-wide default exists (`HEW_STD`, the toolchain's own std). A
     /// copy of the std outside the toolchain checks and lowers as the std: its
     /// prelude declarations stay the builtin prelude rather than colliding
-    /// with it as a second, user-owned declaration.
+    /// with it as a second, user-owned declaration, and its intrinsic floor
+    /// and directory modules import as the std.
     #[test]
     fn given_std_roots_are_the_canonical_std() {
         let dir = tempfile::tempdir().expect("create temp dir");
@@ -8393,9 +8394,12 @@ extern "C" { fn hew_tcp_read(foo: Foo); }
         let input = write_source(
             &project_dir,
             "main.hew",
-            "fn main() {\n    let values = [1, 2, 3];\n    var total = 0;\n    \
+            "import std.math;\nimport std.encoding.json;\n\nfn main() {\n    \
+             let values = [1, 2, 3];\n    var total = 0;\n    \
              for value in values {\n        total = total + value;\n    }\n    \
-             println(f\"{total}\");\n}\n",
+             println(f\"{total} {math.sqrt(16.0)}\");\n    \
+             match json.parse(\"[1]\") {\n        .Ok(_) => println(\"parsed\"),\n        \
+             .Err(_) => println(\"invalid\"),\n    }\n}\n",
         );
         let options = FrontendOptions {
             project_dir: Some(project_dir),
@@ -8420,6 +8424,13 @@ extern "C" { fn hew_tcp_read(foo: Foo); }
                 .contains(&hew_parser::module::ModulePath::new(["std", "builtins"])),
             "the given std's builtins are the canonical builtins"
         );
+        for module in [["std", "math"].as_slice(), &["std", "encoding", "json"]] {
+            assert!(
+                tco.canonical_std_modules
+                    .contains(&hew_parser::module::ModulePath::new(module.iter().copied())),
+                "the given std's {module:?} is canonical"
+            );
+        }
         Session::from_frontend_options(SessionTarget::native(), &options)
             .lower_program(&state.program, tco)
             .expect("the program lowers against the given std");

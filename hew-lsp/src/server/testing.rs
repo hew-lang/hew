@@ -33,17 +33,13 @@ pub(super) fn failure_from_event(
     let uri = open_document_uri(&Url::from_checked_file_path(path)?, documents);
     let source = source_for_path(path, documents)?;
     let lines = compute_line_offsets(&source);
-    let offset = event
-        .pointer("/report/site_offset")
-        .and_then(Value::as_u64)
-        .and_then(|value| usize::try_from(value).ok())
-        .or_else(|| {
-            let parsed = hew_parser::parse(&source);
-            hew_analysis::test_discovery::discover_tests(&parsed.program)
-                .into_iter()
-                .find(|test| test.name == name)
-                .map(|test| test.span.start)
-        })?;
+    let offset = site_offset(event, path, &lines).or_else(|| {
+        let parsed = hew_parser::parse(&source);
+        hew_analysis::test_discovery::discover_tests(&parsed.program)
+            .into_iter()
+            .find(|test| test.name == name)
+            .map(|test| test.span.start)
+    })?;
     let range = offset_range_to_lsp(&source, &lines, offset, offset.saturating_add(1));
     let mut message = event
         .get("message")
@@ -79,4 +75,18 @@ pub(super) fn failure_from_event(
         },
         seed,
     })
+}
+
+/// The byte offset in `path` of the failure site the runtime reported, when
+/// the site lies in that file. The site table records a project-relative
+/// path, a one-based line and a one-based byte column.
+fn site_offset(event: &Value, path: &Path, lines: &[usize]) -> Option<usize> {
+    let site = event.pointer("/report/site")?;
+    let file = site.get("file")?.as_str()?;
+    if !path.ends_with(file) {
+        return None;
+    }
+    let line = usize::try_from(site.get("line")?.as_u64()?).ok()?;
+    let col = usize::try_from(site.get("col")?.as_u64()?).ok()?;
+    Some(lines.get(line.checked_sub(1)?)? + col.checked_sub(1)?)
 }

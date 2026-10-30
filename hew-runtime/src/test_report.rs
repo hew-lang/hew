@@ -2,9 +2,9 @@
 //!
 //! The test runner supplies a fresh `HEW_TEST_REPORT` path. The terminal
 //! failure's record is kept here; the process exit authority writes one JSON
-//! record after cleanup and actor shutdown have settled. Source locations and
-//! frames are not part of this report: the runner reads them from the
-//! failure log (`HEW_FAILURE_LOG`), the record's full projection.
+//! record after cleanup and actor shutdown have settled. The failure's source
+//! site is the record's own, resolved through the image's site table; frames
+//! stay in the failure log (`HEW_FAILURE_LOG`), the record's full projection.
 
 use std::sync::Mutex;
 
@@ -16,6 +16,8 @@ struct FaultEvidence {
     code: i32,
     message: Option<String>,
     assertion: Option<crate::fault::AssertionOperands>,
+    /// Source file, one-based line and one-based byte column.
+    site: Option<(&'static str, u32, u32)>,
 }
 
 static BENCHMARKS: Mutex<Vec<(u64, u64)>> = Mutex::new(Vec::new());
@@ -65,6 +67,9 @@ pub(crate) fn note_terminal_failure(
             code: record.code,
             message: message.map(str::to_owned),
             assertion: assertion.cloned(),
+            site: record
+                .site_file()
+                .map(|file| (file, record.site.line, record.site.col)),
         });
     }
 }
@@ -92,6 +97,9 @@ pub(crate) fn finish(status: i32) {
         "fault_code": fault.as_ref().map(|fault| fault.code),
         "message": fault.as_ref().and_then(|fault| fault.message.as_deref()),
         "assertion": fault.as_ref().and_then(|fault| fault.assertion.as_ref()),
+        "site": fault.as_ref().and_then(|fault| fault.site).map(|(file, line, col)| {
+            serde_json::json!({ "file": file, "line": line, "col": col })
+        }),
         "schedule": driver.map(|(schedule, _, _, _)| schedule),
         "seed": driver.map(|(_, seed, _, _)| seed.to_string()),
         "steps": driver.map(|(_, _, steps, _)| steps),

@@ -318,6 +318,17 @@ struct Execution {
     driver: Option<(Schedule, u64)>,
 }
 
+/// Where the terminal failure was raised, from the image's site table.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct TestSite {
+    /// The source file as the compiler recorded it, project-relative.
+    file: String,
+    /// One-based line.
+    line: u32,
+    /// One-based byte column.
+    col: u32,
+}
+
 /// Private record written by the runtime after the selected test settles.
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct TestReport {
@@ -334,7 +345,8 @@ pub struct TestReport {
     fault_code: Option<i32>,
     #[serde(default)]
     message: Option<String>,
-    site_offset: Option<u32>,
+    #[serde(default)]
+    site: Option<TestSite>,
     #[serde(default)]
     pub(crate) assertion: Option<AssertionOperands>,
     #[serde(default)]
@@ -1421,11 +1433,8 @@ fn judge_run(
                 } else {
                     with_operand_diff(stderr.clone())
                 };
-                if let Some(site) = report
-                    .and_then(|report| report.site_offset)
-                    .and_then(|offset| test_source_location(&test.file, offset))
-                {
-                    let _ = write!(msg, "\n  at {site}");
+                if let Some(site) = report.and_then(|report| report.site.as_ref()) {
+                    let _ = write!(msg, "\n  at {}:{}:{}", site.file, site.line, site.col);
                 }
                 if test.should_panic {
                     msg = match (&test.should_panic_message, expected_fault) {
@@ -1477,14 +1486,6 @@ fn judge_run(
             String::new(),
         ),
     }
-}
-
-fn test_source_location(file: &str, offset: u32) -> Option<String> {
-    let source = std::fs::read_to_string(file).ok()?;
-    let prefix = source.get(..usize::try_from(offset).ok()?)?;
-    let line = prefix.bytes().filter(|byte| *byte == b'\n').count() + 1;
-    let column = prefix.rsplit('\n').next()?.chars().count() + 1;
-    Some(format!("{file}:{line}:{column}"))
 }
 
 #[cfg(test)]

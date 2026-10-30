@@ -783,6 +783,14 @@ member DEAD or LEFT, and now sees it absent. A retired node that returns,
 whatever its session, is admitted as a new member at incarnation 1 and
 refutes any burial other nodes still hold through the usual SWIM rules.
 
+This includes a node that left. A node leaves as it stops, so a redial
+normally finds nothing listening. If it is still reachable, for example
+because its leave was gossiped while it kept running, a redial at the same
+session is refused during the LEFT grace. After the grace, the redial
+succeeds and the node is admitted as a new member. A longer DEAD window would
+not help a disconnected buried member: its gossip is not accepted without a
+published connection, so the window would only lengthen its outage.
+
 ## 12. Native-only target posture
 
 Distributed nodes, remote messaging, authenticated transports, registry gossip,

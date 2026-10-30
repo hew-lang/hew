@@ -230,6 +230,30 @@ fn reconnect_may_retry(mgr: &HewConnMgr, plan: &ReconnectPlan) -> bool {
             })
 }
 
+/// Run one reconnect attempt to `target_addr` as the successor of the exact
+/// publication `(node_id, session, publication_token)`, as a reconnect worker
+/// would. True when the connection was installed.
+#[cfg(test)]
+pub(crate) fn reconnect_successor_for_test(
+    mgr: *mut HewConnMgr,
+    node_id: crate::node_identity::NodeId,
+    session_incarnation: u32,
+    publication_token: u64,
+    target_addr: &str,
+) -> bool {
+    let plan = ReconnectPlan {
+        predecessor: ReconnectOwner {
+            node_id,
+            session_incarnation,
+            publication_token,
+        },
+        target_addr: target_addr.into(),
+        max_retries: 1,
+        expected_node_id: None,
+    };
+    reconnect_attempt(mgr, &plan, 0, 1) == ReconnectAttemptOutcome::Installed
+}
+
 /// Runs one reconnect attempt: connect, replay the pinned peer identity
 /// (`plan.expected_node_id`) if any, install via `hew_connmgr_add`, and
 /// re-arm reconnect on success.

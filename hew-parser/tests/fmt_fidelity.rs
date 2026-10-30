@@ -726,6 +726,12 @@ fn mixed_line_endings_in_output_are_rejected() {
 }
 
 #[test]
+fn a_carriage_return_inside_a_comment_is_content() {
+    assert_faithful("// one\rtwo\nfn main() {\n    // three\r four\n}\n");
+    assert_faithful("// one\rtwo\r\nfn main() {\r\n    // three\r four\r\n}\r\n");
+}
+
+#[test]
 fn a_comment_moved_across_a_separator_is_rejected() {
     let source = "fn f(a: i64, b: i64) -> i64 {\n    a\n}\n\nfn main() {\n    let x = f(1 /* one */, 2);\n}\n";
     let moved = "fn f(a: i64, b: i64) -> i64 {\n    a\n}\n\nfn main() {\n    let x = f(1, /* one */ 2);\n}\n";

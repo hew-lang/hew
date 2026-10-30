@@ -204,7 +204,8 @@ pub fn check(source: &str, formatted: &str) -> Result<(), FidelityError> {
 }
 
 /// Every line break between tokens of `formatted` must be `\r\n` when `crlf`
-/// and `\n` otherwise. Breaks inside literals are the program's content.
+/// and `\n` otherwise. Breaks inside literals are the program's content, and
+/// so is a carriage return that ends no line, such as one inside a comment.
 fn check_line_endings(formatted: &str, crlf: bool) -> Result<(), FidelityError> {
     let mut gap_start = 0;
     let spans = hew_lexer::Lexer::new(formatted)
@@ -214,12 +215,7 @@ fn check_line_endings(formatted: &str, crlf: bool) -> Result<(), FidelityError> 
         let gap = &formatted.as_bytes()[gap_start..start];
         for (i, &b) in gap.iter().enumerate() {
             let preceded_by_cr = i > 0 && gap[i - 1] == b'\r';
-            let wrong = match b {
-                b'\n' => crlf != preceded_by_cr,
-                b'\r' => !crlf || gap.get(i + 1) != Some(&b'\n'),
-                _ => false,
-            };
-            if wrong {
+            if b == b'\n' && crlf != preceded_by_cr {
                 return Err(FidelityError::LineEnding {
                     formatted_offset: gap_start + i,
                 });

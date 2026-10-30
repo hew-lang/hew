@@ -24,7 +24,6 @@ struct ActiveInvocation {
     state: crate::coro_state::HewCoroState,
     frame: *mut c_void,
     fault: *mut crate::fault::HewFault,
-    _code: crate::code_owner::CodeRoot,
 }
 
 impl BorrowedInvocation {
@@ -85,10 +84,8 @@ impl BorrowedInvocation {
             // SAFETY: the operation pins this exact compiler descriptor.
             let descriptor =
                 unsafe { callable.descriptor.as_ref() }.unwrap_or_else(|| std::process::abort());
-            // SAFETY: the caller's callable owner pins this environment layout.
-            let code = unsafe {
-                crate::code_owner::CodeRoot::acquire((*descriptor.environment).code_owner)
-            };
+            // The borrowed carrier retains its defining code root until the
+            // operation finishes, so the invocation takes no lease of its own.
             if let Some(invoke) = descriptor.invoke_borrow_sync {
                 // SAFETY: the operation retains all exact typed slots for this synchronous invocation.
                 let status = unsafe {
@@ -106,7 +103,6 @@ impl BorrowedInvocation {
             // SAFETY: the operation supplies the live caller during construction.
             let parent = unsafe { parent.as_ref() }.unwrap_or_else(|| std::process::abort());
             let mut active = Box::new(ActiveInvocation {
-                _code: code,
                 // SAFETY: the parent retains its token and wake target during creation.
                 state: unsafe { crate::coro_state::operation_child(parent) },
                 frame: ptr::null_mut(),

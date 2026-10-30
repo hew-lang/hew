@@ -113,6 +113,12 @@ const PARITY_CASES: &[ParityCase] = &[
         source_rel: "examples/sandbox-graduation/float_classification.hew",
     },
     ParityCase {
+        // Negation at each signed width, at a width settled after the
+        // negation, and at the contextual float width.
+        test_name: "signed_negation",
+        source_rel: "examples/sandbox-graduation/signed_negation.hew",
+    },
+    ParityCase {
         // Integer bit methods and wrapping, saturating and checked arithmetic
         // at narrow, signed and unsigned receiver widths.
         test_name: "integer_bit_methods",
@@ -1557,6 +1563,98 @@ fn concurrent_stdin_reads_match_native() {
     assert_case(&case, "one\ntwo\nthree\nfour");
 }
 
+/// Signed division and remainder of the minimum by -1 at every width, as an
+/// operator and a compound assignment: both engines print the line before it,
+/// then report `SignedMinDivNegOne` rather than an overflow or a zero
+/// remainder, including from an actor handler and through deferred cleanup.
+/// The neighbouring operations stay on the normal path.
+#[cfg(unix)]
+#[test]
+fn signed_min_div_neg_one_matches_native() {
+    const TRAPPING: &[ParityCase] = &[
+        ParityCase {
+            test_name: "div_i8",
+            source_rel: "hew-wasm/tests/fixtures/signed_min_div/div_i8.hew",
+        },
+        ParityCase {
+            test_name: "div_i16",
+            source_rel: "hew-wasm/tests/fixtures/signed_min_div/div_i16.hew",
+        },
+        ParityCase {
+            test_name: "div_i32",
+            source_rel: "hew-wasm/tests/fixtures/signed_min_div/div_i32.hew",
+        },
+        ParityCase {
+            test_name: "div_i64",
+            source_rel: "hew-wasm/tests/fixtures/signed_min_div/div_i64.hew",
+        },
+        ParityCase {
+            test_name: "rem_i8",
+            source_rel: "hew-wasm/tests/fixtures/signed_min_div/rem_i8.hew",
+        },
+        ParityCase {
+            test_name: "rem_i16",
+            source_rel: "hew-wasm/tests/fixtures/signed_min_div/rem_i16.hew",
+        },
+        ParityCase {
+            test_name: "rem_i32",
+            source_rel: "hew-wasm/tests/fixtures/signed_min_div/rem_i32.hew",
+        },
+        ParityCase {
+            test_name: "rem_i64",
+            source_rel: "hew-wasm/tests/fixtures/signed_min_div/rem_i64.hew",
+        },
+        ParityCase {
+            test_name: "assign_div_i32",
+            source_rel: "hew-wasm/tests/fixtures/signed_min_div/assign_div_i32.hew",
+        },
+        ParityCase {
+            test_name: "assign_rem_i16",
+            source_rel: "hew-wasm/tests/fixtures/signed_min_div/assign_rem_i16.hew",
+        },
+    ];
+    set_test_hewpath();
+    ensure_native_toolchain();
+    ensure_parity_runner_built();
+
+    for case in TRAPPING {
+        let name = case.test_name;
+        let (native, sandbox) =
+            case_outputs_with_inputs(case, "", hew_compile::SourceSet::in_memory());
+        assert_eq!(
+            String::from_utf8_lossy(&native.stderr),
+            "hew: failure: SignedMinDivNegOne (203)\n",
+            "{name} native failure"
+        );
+        assert_eq!(String::from_utf8_lossy(&native.stdout), "start\n", "{name}");
+        assert_exit_code_parity(case, &native, &sandbox);
+        assert_stdout_parity(case, &native, &sandbox);
+        assert_stderr_parity(case, &native, &sandbox);
+    }
+
+    // The fault crosses an actor handler, whose caller sees the failure and
+    // carries on, and unwinds through deferred cleanup in two frames.
+    for case in [
+        ParityCase {
+            test_name: "signed_min_div_actor_rem_i8",
+            source_rel: "hew-wasm/tests/fixtures/signed_min_div/actor_rem_i8.hew",
+        },
+        ParityCase {
+            test_name: "signed_min_div_defer_div_i64",
+            source_rel: "hew-wasm/tests/fixtures/signed_min_div/defer_div_i64.hew",
+        },
+    ] {
+        assert_case(&case, "");
+    }
+    assert_case(
+        &ParityCase {
+            test_name: "signed_min_div_neighbours",
+            source_rel: "hew-wasm/tests/fixtures/signed_min_div/neighbours.hew",
+        },
+        "",
+    );
+}
+
 #[cfg(unix)]
 #[test]
 fn identity_w7_record_resource_does_not_join_runtime_admission() {
@@ -1922,6 +2020,9 @@ fn assert_exact_stdout(case: &ParityCase, native: &Output) {
         "failure_edges" => Some(include_str!(
             "../../tests/core-acceptance/cases/failure-edges.toml"
         )),
+        "signed_negation" => Some(include_str!(
+            "../../tests/core-acceptance/cases/signed-negation.toml"
+        )),
         _ => None,
     }
     .map(|text| toml::from_str::<toml::Value>(text).expect("core acceptance manifest"));
@@ -1941,6 +2042,11 @@ fn assert_exact_stdout(case: &ParityCase, native: &Output) {
             "nan=false finite=true infinite=false\nnan=false finite=false infinite=true\nnan=false finite=false infinite=true\nnan=true finite=false infinite=false\n4609434218613702656\n13835058055282163712\nfalse\nfalse\ntrue\ntrue\n1.5\n-0.25\nrefused infinity: NonFinite\n",
         ),
         "pointer_width_native64" => Some("4294967296\n4294967296\n"),
+        "signed_min_div_actor_rem_i8" => Some("handler failed\nafter\n"),
+        "signed_min_div_defer_div_i64" => Some("quotient cleanup\nmain cleanup\n"),
+        "signed_min_div_neighbours" => Some(
+            "-128 0 127 0 -64 0\n-32768 0 32767 0 -16384 0\n-2147483648 0 2147483647 0 -1073741824 0\n-9223372036854775808 0 9223372036854775807 0 -4611686018427387904 0\n",
+        ),
         "sort_values" | "float_sort_values" => Some("sort-authority=0\n"),
         "user_codec_stream" => Some("user codec frames\n"),
         "wire-generic-values" => Some("generic wire values passed\n"),

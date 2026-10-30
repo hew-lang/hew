@@ -454,6 +454,24 @@ pub fn terminate_process_group(child: &mut Child, label: &str) -> Result<bool, S
     Ok(group_killed)
 }
 
+/// Non-Unix targets have no process groups; the child is spawned as-is.
+#[cfg(not(unix))]
+pub fn own_process_group(_command: &mut Command) {}
+
+/// Kills and reaps `child` alone on targets without process groups.
+///
+/// # Errors
+///
+/// Returns `Err` if the child cannot be killed or reaped.
+#[cfg(not(unix))]
+pub fn terminate_process_group(child: &mut Child, label: &str) -> Result<bool, String> {
+    kill_child_only(child, label)?;
+    child
+        .wait()
+        .map_err(|error| format!("cannot reap child after kill: {error}"))?;
+    Ok(false)
+}
+
 #[derive(Debug)]
 struct BoundedChild {
     child: Child,

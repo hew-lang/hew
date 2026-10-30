@@ -24,6 +24,58 @@ fn warn_unused_variable() {
 }
 
 #[test]
+fn unused_variable_warnings_follow_declaration_order() {
+    // Scope-exit lints walk the scope's bindings. With enough bindings in one
+    // scope, any hash-ordered walk reorders them, so every fresh checker must
+    // report them in source order.
+    let bindings: Vec<String> = (0..40)
+        .map(|index| format!("    let unused_{index} = {index};"))
+        .collect();
+    let source = format!("fn main() {{\n{}\n}}", bindings.join("\n"));
+    let result = hew_parser::parse(&source);
+    for _ in 0..3 {
+        let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+        let output = checker.check_program(&result.program);
+        let starts: Vec<usize> = output
+            .warnings
+            .iter()
+            .filter(|w| w.kind == TypeErrorKind::UnusedVariable)
+            .map(|w| w.span.start)
+            .collect();
+        assert_eq!(starts.len(), 40, "warnings: {:?}", output.warnings);
+        assert!(
+            starts.windows(2).all(|pair| pair[0] < pair[1]),
+            "unused-variable warnings out of source order: {starts:?}"
+        );
+    }
+}
+
+#[test]
+fn shared_bare_variant_resolves_to_first_declared_enum() {
+    // Several enums share `Red`; the bare-variant refusal must name the same
+    // owner every run, whatever order the type table iterates in.
+    let enums: Vec<String> = (0..12)
+        .map(|index| format!("enum Paint{index} {{ Red; Shade{index}; }}"))
+        .collect();
+    let source = format!("{}\nfn main() {{ let _x = Red; }}", enums.join("\n"));
+    let result = hew_parser::parse(&source);
+    for _ in 0..3 {
+        let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+        let output = checker.check_program(&result.program);
+        let refusal = output
+            .errors
+            .iter()
+            .find(|error| error.kind == TypeErrorKind::BareVariantExpr)
+            .unwrap_or_else(|| panic!("bare variant refused: {:?}", output.errors));
+        assert_eq!(
+            refusal.suggestions,
+            ["replace `Red` with `Paint0.Red`"],
+            "{refusal:?}"
+        );
+    }
+}
+
+#[test]
 fn raii_handle_bindings_suppress_unused_lint_but_plain_still_warns() {
     // A `#[resource]` and a `#[linear]` handle exist to be dropped/consumed:
     // binding one for its scope-exit drop is the use, so the unused-binding lint

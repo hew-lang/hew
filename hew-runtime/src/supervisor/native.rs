@@ -315,6 +315,8 @@ pub unsafe extern "C" fn hew_supervisor_native_spawn_new(
             op.final_state = true;
             return Box::into_raw(op);
         }
+        // Only the token reaches the program, so a spent root may retire itself.
+        (*op.supervisor).token_owned = true;
         #[expect(
             clippy::cast_possible_truncation,
             clippy::cast_sign_loss,

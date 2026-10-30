@@ -244,11 +244,12 @@ mod tests {
     fn wall_clock_normalizes_both_sides_of_epoch() {
         use std::time::{Duration, UNIX_EPOCH};
         for (offset, seconds, nanoseconds) in [
-            (-1_000_000_001_i64, -2, 999_999_999),
+            // Offsets are multiples of 100 ns, the finest `SystemTime` step on Windows.
+            (-1_000_000_100_i64, -2, 999_999_900),
             (-1_000_000_000, -1, 0),
-            (-1, -1, 999_999_999),
+            (-100, -1, 999_999_900),
             (0, 0, 0),
-            (1_000_000_001, 1, 1),
+            (1_000_000_100, 1, 100),
         ] {
             let magnitude = Duration::from_nanos(offset.unsigned_abs());
             let time = if offset < 0 {

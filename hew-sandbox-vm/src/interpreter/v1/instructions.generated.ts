@@ -1250,6 +1250,7 @@ export type TrapName =
   | "heap_exceeded"
   | "integer_overflow"
   | "divide_by_zero"
+  | "signed_min_div_neg_one"
   | "shift_out_of_range"
   | "vector_bounds"
   | "actor_refused";

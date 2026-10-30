@@ -1,0 +1,10 @@
+[[case]]
+id = "supervisor-spent-root-closes"
+intent = "A root supervisor that spends its restart budget closes its whole tree, so stopped completes and the unrecovered fault fails the process."
+source = "cases/supervisor-spent-root-closes.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 30
+
+[case.expected]
+stdout = "keeper stopped\nsettled root closed\nkeeper stopped\nracing root closed\n"
+exit = 1

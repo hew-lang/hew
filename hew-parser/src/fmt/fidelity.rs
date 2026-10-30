@@ -204,7 +204,8 @@ pub fn check(source: &str, formatted: &str) -> Result<(), FidelityError> {
 }
 
 /// Every line break between tokens of `formatted` must be `\r\n` when `crlf`
-/// and `\n` otherwise. Breaks inside literals are the program's content.
+/// and `\n` otherwise. Breaks inside literals are the program's content, and
+/// so is a carriage return inside a comment that ends no line.
 fn check_line_endings(formatted: &str, crlf: bool) -> Result<(), FidelityError> {
     let mut gap_start = 0;
     let spans = hew_lexer::Lexer::new(formatted)
@@ -212,14 +213,23 @@ fn check_line_endings(formatted: &str, crlf: bool) -> Result<(), FidelityError> 
         .chain(std::iter::once((formatted.len(), formatted.len())));
     for (start, end) in spans {
         let gap = &formatted.as_bytes()[gap_start..start];
+        let mut line_comment = false;
+        let mut block_comments = 0usize;
         for (i, &b) in gap.iter().enumerate() {
             let preceded_by_cr = i > 0 && gap[i - 1] == b'\r';
-            let wrong = match b {
-                b'\n' => crlf != preceded_by_cr,
-                b'\r' => !crlf || gap.get(i + 1) != Some(&b'\n'),
-                _ => false,
-            };
-            if wrong {
+            let pair = (b, gap.get(i + 1).copied());
+            match pair {
+                (b'/', Some(b'/')) if block_comments == 0 => line_comment = true,
+                (b'/', Some(b'*')) if !line_comment => block_comments += 1,
+                (b'*', Some(b'/')) if !line_comment => {
+                    block_comments = block_comments.saturating_sub(1);
+                }
+                (b'\n', _) => line_comment = false,
+                _ => {}
+            }
+            let in_comment = line_comment || block_comments > 0;
+            let lone_cr = b == b'\r' && gap.get(i + 1) != Some(&b'\n');
+            if (b == b'\n' && crlf != preceded_by_cr) || (lone_cr && !in_comment) {
                 return Err(FidelityError::LineEnding {
                     formatted_offset: gap_start + i,
                 });

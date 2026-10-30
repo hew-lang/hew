@@ -1,0 +1,7 @@
+fn main() {
+    var a: i32 = (-2147483648);
+    let b: i32 = -1;
+    println("start");
+    a /= b;
+    println(a);
+}

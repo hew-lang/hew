@@ -664,12 +664,56 @@ for monitor observations.
 SWIM membership is keyed by `NodeId` and durable node session. SWIM's own
 incarnation orders membership updates within that node session.
 
-A DEAD or LEFT member is buried. Equal- or lower-session traffic cannot revive
-it. A strictly higher durable session can be admitted, clears quarantine, and
-then resumes registry and routing publication.
+SWIM control payloads (`SwimControl` in `node_controls.hew`) carry
+`msg_type`, the sender's session and incarnation, an optional `target`
+session and piggybacked gossip. A receiver accepts a frame only when `from`
+is the connection's authenticated peer and `target`, when present, is an
+admitted session:
 
-Quarantine blocks sends, asks, monitors, and links until a valid higher-session
-readmission.
+- `PING` (1) is answered with an `ACK` (2).
+- `PING_REQ` (3) names the probed member in `target`. The relay sends that
+  member a `PING` and, when the member's `ACK` arrives within
+  `ping_timeout_ms`, forwards an `ACK` to the requester with `target` set to
+  the member, once per request.
+- An `ACK` with `target` set is a forwarded `ACK`. It is an ordinary `ACK`
+  from the relay, and it counts as contact with the target only when it
+  answers a `PING_REQ` the receiver sent that relay about that target within
+  `ping_timeout_ms`, once per request; an unsolicited one is not contact.
+  Its `incarnation` is the relay's and is never applied to the target.
+
+A node that predates forwarded ACKs never forwards, so a requester probing
+through it sees no indirect answer, as before. It validates `target` on a
+forwarded `ACK` like any other and treats the frame as a plain `ACK` from the
+relay. The payload schema is unchanged.
+
+A PING, ACK or `PING_REQ` is an ALIVE claim by its sender at its stated
+incarnation. A member suspected or declared DEAD at or above its own
+incarnation refutes by advancing its incarnation. Every SWIM frame sent to a
+member its sender holds DEAD leads its gossip with that member's DEAD entry.
+The entry takes one of the frame's `max_gossip_per_msg` slots but not the
+event's retransmit budget, so a buried member that stays connected learns of
+its burial and refutes it even when every gossiped copy was lost.
+
+A member is suspected when a direct probe stays unanswered past
+`ping_timeout_ms`. With `N` members and protocol period `P`, a member silent
+since its last contact is probed within `(N-1)·P`, and its probe is overdue
+at the first period strictly past the timeout, so it is suspected within
+`(N-1)·P + (⌊ping_timeout_ms / P⌋ + 1)·P` of the last contact while the
+failure detector is cold. A warm detector (at least 10 contact intervals)
+also requires `φ > 8`, which can delay suspicion further; see
+[failure-philosophy](./failure-philosophy.md#detection-time). A SUSPECT member
+becomes DEAD at the first period strictly past `suspect_timeout_ms` after its
+last contact, and never in the period that suspected it.
+
+A DEAD or LEFT member is buried. Within its durable session it returns only
+through its own SWIM traffic or gossip at a strictly higher incarnation; an
+equal-session reconnect, or any claim at or below the buried incarnation,
+cannot revive it. A strictly higher durable session can be admitted. Either
+readmission clears quarantine and then resumes registry and routing
+publication; a member returning from DEAD re-announces its registered names.
+
+Quarantine blocks sends, asks, monitors, and links until a valid readmission.
+SWIM frames are not blocked, so the protocol can reach a buried member.
 
 ## 12. Native-only target posture
 

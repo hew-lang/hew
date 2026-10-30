@@ -1,0 +1,14 @@
+// A prefix operator applies before `as` (§12.2): `-x as i64` negates the i8
+// and then widens, `-(x as i64)` widens and then negates.
+fn main() {
+    let x: i8 = -100;
+    println(-x as i64);
+    println(-(x as i64));
+    let f = 2.5;
+    println(-f as i64);
+    let flag = false;
+    println(!flag as i32);
+    let n: u8 = 5;
+    println(10 - n as i64 * -2);
+    println(n as i64 as f64);
+}

@@ -234,16 +234,16 @@ inspecting the receiver at run time.
 
 ### Trap kinds
 
-SIR's five trap kinds map onto the trace schema's kinds and the process exit
-statuses native execution uses:
+SIR's language-visible trap kinds map onto the trace schema's kinds and the
+process exit statuses native execution uses:
 
-| SIR `TrapKind`       | Trace `trap_kind`    | Exit |
-| -------------------- | -------------------- | ---- |
-| `IntegerOverflow`    | `integer_overflow`   | 201  |
-| `SignedMinDivNegOne` | `integer_overflow`   | 201  |
-| `DivideByZero`       | `divide_by_zero`     | 202  |
-| `ShiftOutOfRange`    | `shift_out_of_range` | 204  |
-| `IndexOutOfBounds`   | `vector_bounds`      | 205  |
+| SIR `TrapKind`       | Trace `trap_kind`        | Exit |
+| -------------------- | ------------------------ | ---- |
+| `IntegerOverflow`    | `integer_overflow`       | 201  |
+| `DivideByZero`       | `divide_by_zero`         | 202  |
+| `SignedMinDivNegOne` | `signed_min_div_neg_one` | 203  |
+| `ShiftOutOfRange`    | `shift_out_of_range`     | 204  |
+| `IndexOutOfBounds`   | `vector_bounds`          | 205  |
 
 A panic is `panic` / 101.
 

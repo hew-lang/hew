@@ -197,6 +197,7 @@ fn lower_physical_with_inventory(
                         .iter()
                         .map(|variant| PhysicalDebugVariant {
                             name: variant.name.clone(),
+                            kind: variant.kind,
                             fields: variant.fields.iter().map(debug_variant_field).collect(),
                         })
                         .collect(),

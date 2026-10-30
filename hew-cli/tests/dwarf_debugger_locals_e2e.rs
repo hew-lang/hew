@@ -364,10 +364,8 @@ fn require_debugger() -> &'static str {
 /// Which debugger actually ran, for a failure message.
 ///
 /// A rendering assertion that fails on one machine and passes on another is
-/// usually the debugger's version rather than the DWARF. lldb only learned to
-/// read `DW_TAG_variant_part` in lldb 18; before that it renders an enum as an
-/// empty struct, rustc's enums included. Naming the binary and its version in
-/// the panic turns that into a one-line diagnosis.
+/// usually the debugger's version rather than the DWARF. Naming the binary and
+/// its version in the panic turns that into a one-line diagnosis.
 #[cfg(any(target_os = "linux", target_os = "macos", target_os = "freebsd"))]
 fn debugger_identity(debugger: &str) -> String {
     let first_line = |output: std::process::Output| {
@@ -1234,9 +1232,11 @@ fn debugger_names_suspended_actor_handler_frame_at_runtime_boundary() {
     );
 }
 
+/// An enum is a tagged struct every debugger reads without a script: `tag`
+/// names the active variant and `payload` holds it, its record fields named.
 #[cfg(any(target_os = "linux", target_os = "macos", target_os = "freebsd"))]
 #[test]
-fn debugger_renders_only_active_enum_variant_payload() {
+fn debugger_renders_enum_tag_and_payload() {
     require_codegen();
     let dbg = require_debugger();
     let fixture = build_debug_fixture("enum-render", ENUM_SRC);
@@ -1252,16 +1252,10 @@ fn debugger_renders_only_active_enum_variant_payload() {
             "run",
             // lldb's default `target.max-children-depth` varies by release,
             // and without an explicit --depth the nested Payload record inside
-            // the active variant renders as an elided `{...}` instead of
+            // the variant renders as an elided `{...}` instead of
             // `(code = 7)`. Forcing a depth deep enough for this fixture's
-            // nesting (Status -> $variants$ -> $variant$N -> value -> field)
-            // makes the rendering version-stable.
-            //
-            // Depth is not the whole version story: lldb before 18 cannot read
-            // `DW_TAG_variant_part` at all and prints `(Status) status = {}`,
-            // rustc's own enums included. That is why the macOS CI job runs on
-            // an image whose lldb is new enough; `debugger_identity` names the
-            // binary in the panic when it is not.
+            // nesting (Status -> payload -> Packet -> _0 -> code) makes the
+            // rendering version-stable.
             "-o",
             "frame variable status --depth 10",
             "-o",
@@ -1277,14 +1271,6 @@ fn debugger_renders_only_active_enum_variant_payload() {
             &format!("break {src}:12"),
             "-ex",
             "run",
-            // gdb auto-detects the DWARF source language as Rust from the
-            // producer; in Rust mode `print` renders record fields as
-            // `Payload {code: 7}` instead of the C-style `code = 7` this
-            // assertion expects. Forcing C mode makes the rendering match
-            // the other gdb assertions in this suite (see `set language c`
-            // above).
-            "-ex",
-            "set language c",
             "-ex",
             "print status",
             bin,
@@ -1300,12 +1286,8 @@ fn debugger_renders_only_active_enum_variant_payload() {
     );
     let identity = debugger_identity(dbg);
     assert!(
-        text.contains("Packet") && text.contains("code = 7"),
-        "debugger must render the active Packet payload (ran {identity}):\n{text}"
-    );
-    assert!(
-        !text.contains("Idle =") && !text.contains("Idle {"),
-        "debugger must not render the inactive Idle variant (ran {identity}):\n{text}"
+        text.contains("tag = Packet") && text.contains("code = 7"),
+        "debugger must name the active variant and its payload (ran {identity}):\n{text}"
     );
 }
 

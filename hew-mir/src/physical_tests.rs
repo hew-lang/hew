@@ -3728,6 +3728,98 @@ fn vector_loop_chunks_borrow_only_invariant_scalar_receivers() {
 }
 
 #[test]
+fn loop_chunks_carry_a_scalar_vector_append_and_restore_its_handle() {
+    let semantic = lower_source(
+        r#"
+        fn build(limit: i64) -> i64 {
+            var values: Vec<i64> = Vec.new();
+            for index in 0..limit { values.push(index % 251); }
+            values.len()
+        }
+        fn mixed(limit: i64) -> i64 {
+            var values: Vec<i64> = Vec.new();
+            values.push(1);
+            var sum: i64 = 0;
+            for index in 0..limit {
+                values.push(index);
+                sum += values[0];
+            }
+            sum
+        }
+        fn strings(limit: i64) -> i64 {
+            var values: Vec<string> = Vec.new();
+            for index in 0..limit { values.push("x"); }
+            values.len()
+        }
+        fn main() -> i64 { build(3) + mixed(3) + strings(3) }
+        "#,
+    );
+    let verified = lower_physical_module(&semantic, target_for_inventory(&semantic)).unwrap();
+    let module = verified.module();
+    let function = |name: &str| {
+        module
+            .functions
+            .iter()
+            .find(|function| {
+                let callable = &module.callables[function.callable.0 as usize];
+                module.defs.path(callable.declaration) == name
+            })
+            .unwrap()
+    };
+    let build = function("build");
+    let chunks = build.loop_chunks(module);
+    assert_eq!(chunks.len(), 1);
+    let chunk = &chunks[0];
+    let push = build
+        .blocks
+        .iter()
+        .find(|block| {
+            matches!(
+                block.terminator,
+                PhysicalTerminator::RuntimeCall {
+                    action: PhysicalRuntimeAction {
+                        carrier: PhysicalRuntimeCarrier::Vector {
+                            operation: PhysicalVectorOp::Push,
+                            ..
+                        },
+                        ..
+                    },
+                    ..
+                }
+            )
+        })
+        .unwrap();
+    assert!(chunk.blocks.contains(&push.id));
+    let PhysicalTerminator::RuntimeCall {
+        args,
+        failure: Some(failure),
+        ..
+    } = &push.terminator
+    else {
+        panic!("a checked push keeps its refusal edge");
+    };
+    let ArgumentTransfer::Move(receiver) = args[0] else {
+        panic!("push moves its receiver");
+    };
+    // The refusal exit carries the moved handle back to its place.
+    assert!(chunk.exits[&failure.target].contains(&receiver));
+    let place = chunk
+        .inputs
+        .iter()
+        .find(|id| matches!(build.storage[id.0 as usize].origin, StorageOrigin::Local(_)))
+        .expect("the vector place is carried into the chunk");
+    assert!(build.place_storage.contains_key(place));
+    assert!(
+        function("mixed").loop_chunks(module).is_empty(),
+        "an appended vector is not also an invariant read receiver"
+    );
+    assert!(
+        function("strings").loop_chunks(module).is_empty(),
+        "only scalar elements append without glue"
+    );
+}
+
+#[test]
 fn loop_chunks_retain_immutable_aggregate_constants_without_freezing_mutable_fields() {
     let semantic = lower_source(
         r"

@@ -1,0 +1,3 @@
+HTTP/1.1 302 Found
+Location: wss://other.test:8443/x?y
+

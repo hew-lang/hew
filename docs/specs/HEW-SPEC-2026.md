@@ -6553,8 +6553,8 @@ later failures double it up to `maximum`, which defaults to the larger of
 `initial` and 30 seconds. Both
 values are durations; `restart.exponential` requires a positive `initial` and
 a `maximum` of at least `initial`. `restart.immediate()` sets both to zero and
-selects no delay. Any other value fails supervisor construction before any
-child starts.
+selects no delay. A child whose effective policy holds any other value fails
+supervisor construction before any child starts.
 
 A child's `backoff:` clause replaces the supervisor's policy for that child; a
 child without one inherits it. The supervisor's expression runs first, then

@@ -1,6 +1,8 @@
-//! Seed corpora for the runtime fuzz targets, built from the runtime's own
-//! encoders. `HEW_FUZZ_WRITE_SEEDS=1` rewrites `seeds/`; otherwise the test
-//! fails when a committed seed no longer matches its encoder.
+//! Seed corpora and dictionaries for the runtime fuzz targets. Seeds come from
+//! the runtime's own encoders; each target's `dicts/<target>.dict` is a copy
+//! of the one wire dictionary below. `HEW_FUZZ_WRITE_SEEDS=1` rewrites
+//! `seeds/` and `dicts/`; otherwise the test fails when a committed file no
+//! longer matches its source.
 
 use std::path::{Path, PathBuf};
 
@@ -47,6 +49,32 @@ fn sync(target: &str, seeds: &[Vec<u8>]) {
 
 fn display(path: &Path) -> String {
     path.display().to_string()
+}
+
+/// CBOR control-frame headers, length headers, harness identities and
+/// checked-protocol field names, shared by the targets that read wire frames.
+const WIRE_DICTIONARY: &str = include_str!("../dicts/wire.dict.src");
+
+fn sync_dictionary(target: &str, text: &str) {
+    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("dicts")
+        .join(format!("{target}.dict"));
+    if std::env::var_os("HEW_FUZZ_WRITE_SEEDS").is_some() {
+        std::fs::write(&path, text).expect("write dictionary");
+    } else {
+        assert_eq!(
+            std::fs::read_to_string(&path).ok().as_deref(),
+            Some(text),
+            "{} is stale; rerun with HEW_FUZZ_WRITE_SEEDS=1",
+            display(&path)
+        );
+    }
+}
+
+#[test]
+fn dictionaries_match_their_source() {
+    sync_dictionary("fuzz_wire_frames", WIRE_DICTIONARY);
+    sync_dictionary("fuzz_control_handler", WIRE_DICTIONARY);
 }
 
 #[test]

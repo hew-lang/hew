@@ -32,20 +32,21 @@ cargo fuzz list
 cargo fuzz build -s none
 cargo fuzz run -s none fuzz_wire_frames fuzz/corpus/fuzz_wire_frames fuzz/seeds/fuzz_wire_frames \
   -- -max_total_time=900 -rss_limit_mb=1024 -timeout=10 -close_fd_mask=2 \
-  -dict=fuzz/dictionaries/wire.dict
+  -dict=fuzz/dicts/fuzz_wire_frames.dict
 ```
 
 libFuzzer writes new inputs to the first corpus directory, which is ignored by
 git. `-close_fd_mask=2` silences the cluster's stderr diagnostics; crash
-reports still print. `fuzz/dictionaries/wire.dict` carries the CBOR control
-headers, length headers and checked-protocol field names for both targets.
+reports still print. `fuzz/dicts/<target>.dict` carries the CBOR control
+headers, length headers and checked-protocol field names for each target that
+reads wire frames; every copy is generated from `fuzz/dicts/wire.dict.src`.
 
-## Seeds
+## Seeds and dictionaries
 
 `fuzz/seeds/<target>/` holds seeds built from the runtime's own encoders,
 addressed with the control harness's authenticated peer identities. The `seeds`
-test fails when a committed seed no longer matches its encoder; regenerate
-them with:
+test fails when a committed seed or dictionary no longer matches its source;
+regenerate both with:
 
 ```bash
 cd hew-runtime/fuzz

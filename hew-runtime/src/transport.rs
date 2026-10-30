@@ -791,7 +791,7 @@ pub(crate) unsafe fn hew_transport_tcp_bound_port(transport: *mut HewTransport) 
 /// Wake every thread blocked on one of this transport's connections, including
 /// an admission that has not been handed to a connection manager yet. Slots stay
 /// allocated until their owners close them. Node stop calls this so a stalled
-/// peer cannot hold teardown; transports without socket slots are unaffected.
+/// peer cannot hold teardown. TCP, Unix and `quic_mesh` transports are swept.
 ///
 /// # Safety
 /// `transport` is null or valid for the duration of the call.
@@ -813,6 +813,8 @@ pub(crate) unsafe fn hew_transport_cancel_io(transport: *mut HewTransport) {
     }
     #[cfg(unix)]
     unix_transport::cancel_io(transport);
+    #[cfg(feature = "quic")]
+    crate::quic_mesh::cancel_io(transport);
 }
 
 /// Classify a connection's remote endpoint for per-connection posture

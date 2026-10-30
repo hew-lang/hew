@@ -77,7 +77,7 @@ fn names_level2_in_source(release: bool) {
     let dir = tempdir();
     let binary = build(dir.path(), release);
     let start = format!("{:#x}", level2_address(&binary));
-    let output = symbolize(&binary, &[start.clone()]);
+    let output = symbolize(&binary, std::slice::from_ref(&start));
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(
         output.status.success(),

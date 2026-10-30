@@ -1,19 +1,13 @@
 //! Allocation-free frame capture for fault handlers.
 //!
-//! Frames come from the faulting context's frame-pointer chain. Every read is
-//! validated against the thread's recorded stack bounds before it happens, so
-//! a corrupt or absent chain ends the walk instead of faulting again. Runs of
-//! one return address (deep recursion) collapse into a single entry with a
-//! repeat count, so an overflow of tens of thousands of frames still fits.
-
-use super::stack::StackBounds;
+//! Frames come from the image's unwind tables (CFI), the same tables that
+//! carry Hew failures through cleanup pads, so the walk needs no frame
+//! pointers from generated code. Runs of one return address (deep recursion)
+//! collapse into a single entry with a repeat count, so an overflow of
+//! hundreds of thousands of frames still fits.
 
 /// Distinct frame runs kept for the record.
 pub(crate) const MAX_FRAMES: usize = 48;
-
-/// Upper bound on chain links followed; a stack of 8 MiB holds well under this
-/// many frames of 16 bytes.
-const MAX_LINKS: usize = 1 << 20;
 
 /// One run of identical frames.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -60,173 +54,176 @@ impl Frames {
     }
 }
 
-/// Read one machine word from a validated stack address.
-pub(crate) trait StackReader {
-    fn read_word(&self, addr: usize) -> usize;
+#[cfg(unix)]
+pub(crate) use unwind::capture;
+
+/// Upper bound on frames visited; an 8 MiB stack of minimal frames holds
+/// fewer.
+#[cfg(unix)]
+const MAX_STEPS: usize = 1 << 20;
+
+/// Turns the unwinder's frames, which start inside the fault handler, into
+/// the faulting thread's frames.
+#[cfg(unix)]
+struct Collector<'a> {
+    fault_pc: usize,
+    reached: bool,
+    steps: usize,
+    out: &'a mut Frames,
 }
 
-/// Reads the live stack of the faulting thread.
-pub(crate) struct LiveStack;
+#[cfg(unix)]
+impl Collector<'_> {
+    /// Take one frame; returns whether to keep walking.
+    ///
+    /// Frames before the faulting pc belong to the handler and the signal
+    /// trampoline and are skipped. A frame whose `ip` is a return address
+    /// reports `ip - 1`, the call itself, so its line is the call site.
+    fn visit(&mut self, ip: usize, before_insn: bool) -> bool {
+        self.steps += 1;
+        if ip == 0 || self.steps > MAX_STEPS {
+            return false;
+        }
+        if !self.reached {
+            if ip == self.fault_pc {
+                self.reached = true;
+                self.out.push(ip);
+            }
+            return true;
+        }
+        self.out.push(if before_insn { ip } else { ip - 1 });
+        true
+    }
 
-impl StackReader for LiveStack {
-    fn read_word(&self, addr: usize) -> usize {
-        // SAFETY: `walk` only reads words it has proved lie inside the
-        // thread's recorded, mapped stack.
-        unsafe { (addr as *const usize).read() }
+    /// Close the walk: an unwinder that cannot step through the signal frame
+    /// never reaches the fault, and then the faulting pc is the whole record.
+    fn finish(self) {
+        if !self.reached {
+            self.out.clear();
+            self.out.push(self.fault_pc);
+        }
     }
 }
 
-const WORD: usize = size_of::<usize>();
+#[cfg(unix)]
+mod unwind {
+    use std::ffi::{c_int, c_void};
 
-/// Walk the frame-pointer chain from a faulting `pc` and frame pointer `fp`.
-///
-/// Each frame record is `[fp] = caller's fp`, `[fp + WORD] = return address`,
-/// as on x86-64 and `AArch64` for System V, `Darwin` and `FreeBSD`. The chain must stay
-/// inside `bounds`, be word aligned and strictly ascend; the first link that
-/// does not ends the walk.
-pub(crate) fn walk(
-    pc: usize,
-    mut fp: usize,
-    bounds: StackBounds,
-    reader: &impl StackReader,
-    out: &mut Frames,
-) {
-    out.clear();
-    out.push(pc);
-    for _ in 0..MAX_LINKS {
-        if !fp.is_multiple_of(WORD) || !bounds.contains(fp) {
-            return;
+    use super::{Collector, Frames};
+
+    #[repr(C)]
+    struct UnwindContext {
+        _opaque: [u8; 0],
+    }
+
+    const URC_NO_REASON: c_int = 0;
+    const URC_END_OF_STACK: c_int = 5;
+
+    type TraceFn = unsafe extern "C" fn(*mut UnwindContext, *mut c_void) -> c_int;
+
+    // The platform unwinder: libgcc_s on Linux, LLVM libunwind (as libgcc_s)
+    // on FreeBSD, libunwind in libSystem on Darwin. Rust's own unwinding
+    // already links it.
+    unsafe extern "C" {
+        fn _Unwind_Backtrace(trace: TraceFn, arg: *mut c_void) -> c_int;
+        fn _Unwind_GetIPInfo(context: *mut UnwindContext, ip_before_insn: *mut c_int) -> usize;
+    }
+
+    unsafe extern "C" fn trace(context: *mut UnwindContext, arg: *mut c_void) -> c_int {
+        // SAFETY: `capture` passes its live collector as the argument.
+        let collector = unsafe { &mut *arg.cast::<Collector<'_>>() };
+        let mut before_insn: c_int = 0;
+        // SAFETY: the unwinder passes a valid context for this frame.
+        let ip = unsafe { _Unwind_GetIPInfo(context, &raw mut before_insn) };
+        if collector.visit(ip, before_insn != 0) {
+            URC_NO_REASON
+        } else {
+            URC_END_OF_STACK
         }
-        let Some(ret_slot) = fp.checked_add(WORD) else {
-            return;
+    }
+
+    /// Capture the faulting thread's frames, starting at `fault_pc`.
+    ///
+    /// Called from the fault handler on the alternate stack. The unwinder
+    /// steps through the kernel's signal frame into the interrupted context
+    /// and reads only CFI and the stack it describes; it does not allocate.
+    /// Its table lookup may take the loader's lock, which is recursive for
+    /// the faulting thread, so the walk can only wait on another thread that
+    /// is itself still running.
+    pub(crate) fn capture(fault_pc: usize, out: &mut Frames) {
+        out.clear();
+        let mut collector = Collector {
+            fault_pc,
+            reached: false,
+            steps: 0,
+            out,
         };
-        if !bounds.contains(ret_slot) {
-            return;
-        }
-        let next = reader.read_word(fp);
-        let ret = reader.read_word(ret_slot);
-        if ret == 0 {
-            return;
-        }
-        // The return address points after the call; report the call itself
-        // so the line is the caller's call site.
-        out.push(ret - 1);
-        if next <= fp {
-            return;
-        }
-        fp = next;
+        // SAFETY: `trace` only uses the collector for the call's duration.
+        unsafe { _Unwind_Backtrace(trace, (&raw mut collector).cast()) };
+        collector.finish();
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::collections::BTreeMap;
 
-    struct ForgedStack(BTreeMap<usize, usize>);
-
-    impl StackReader for ForgedStack {
-        fn read_word(&self, addr: usize) -> usize {
-            *self
-                .0
-                .get(&addr)
-                .unwrap_or_else(|| panic!("walk read unvalidated address {addr:#x}"))
+    #[cfg(unix)]
+    fn collect(fault_pc: usize, frames: &[(usize, bool)]) -> Vec<(usize, u64)> {
+        let mut out = Frames::EMPTY;
+        let mut collector = Collector {
+            fault_pc,
+            reached: false,
+            steps: 0,
+            out: &mut out,
+        };
+        for &(ip, before_insn) in frames {
+            if !collector.visit(ip, before_insn) {
+                break;
+            }
         }
-    }
-
-    const LOW: usize = 0x1000;
-    const HIGH: usize = 0x9000;
-
-    fn bounds() -> StackBounds {
-        StackBounds {
-            low: LOW,
-            high: HIGH,
-            guard: 4096,
-        }
-    }
-
-    /// A chain of `(fp, saved fp, return address)` records.
-    fn forge(links: &[(usize, usize, usize)]) -> ForgedStack {
-        let mut words = BTreeMap::new();
-        for &(fp, next, ret) in links {
-            words.insert(fp, next);
-            words.insert(fp + WORD, ret);
-        }
-        ForgedStack(words)
+        collector.finish();
+        out.runs().iter().map(|run| (run.pc, run.count)).collect()
     }
 
     #[test]
-    fn recursion_collapses_into_one_run() {
-        let mut links = Vec::new();
-        let mut fp = LOW + 0x100;
-        for _ in 0..1000 {
-            links.push((fp, fp + 0x10, 0xAAA1));
-            fp += 0x10;
-        }
-        links.push((fp, fp + 0x40, 0xBBB1));
-        links.push((fp + 0x40, 0, 0xCCC1));
-        let mut frames = Frames::EMPTY;
-        walk(0xAAA0, LOW + 0x100, bounds(), &forge(&links), &mut frames);
-        let runs: Vec<(usize, u64)> = frames.runs().iter().map(|r| (r.pc, r.count)).collect();
-        assert_eq!(runs, [(0xAAA0, 1001), (0xBBB0, 1), (0xCCC0, 1)]);
-    }
-
-    #[test]
-    fn a_chain_leaving_the_stack_stops_before_reading() {
-        // The second link points below the stack; the walk must not read it.
-        let links = [(LOW + 0x100, LOW - 0x100, 0x2001)];
-        let mut frames = Frames::EMPTY;
-        walk(
-            0x1000_0000,
-            LOW + 0x100,
-            bounds(),
-            &forge(&links),
-            &mut frames,
-        );
+    #[cfg(unix)]
+    fn handler_frames_are_skipped_and_recursion_collapses() {
+        let mut frames = vec![(0x7000, false), (0x7100, false), (0xAAA0, true)];
+        frames.extend(std::iter::repeat_n((0xAAB1, false), 1000));
+        frames.extend([(0xBBB1, false), (0xCCC1, false)]);
         assert_eq!(
-            frames.runs().iter().map(|run| run.pc).collect::<Vec<_>>(),
-            [0x1000_0000, 0x2000]
+            collect(0xAAA0, &frames),
+            [(0xAAA0, 1), (0xAAB0, 1000), (0xBBB0, 1), (0xCCC0, 1)]
         );
     }
 
     #[test]
-    fn a_descending_or_misaligned_chain_stops() {
-        let descending = [(LOW + 0x200, LOW + 0x100, 0x2001)];
-        let mut frames = Frames::EMPTY;
-        walk(
-            0x10,
-            LOW + 0x200,
-            bounds(),
-            &forge(&descending),
-            &mut frames,
-        );
-        assert_eq!(frames.runs().len(), 2);
-
-        let mut frames = Frames::EMPTY;
-        walk(0x10, LOW + 0x203, bounds(), &forge(&[]), &mut frames);
-        assert_eq!(frames.runs().len(), 1);
+    #[cfg(unix)]
+    fn a_walk_that_never_reaches_the_fault_reports_only_its_pc() {
+        let frames = [(0x7000, false), (0x7100, false), (0x7200, false)];
+        assert_eq!(collect(0x4242, &frames), [(0x4242, 1)]);
     }
 
     #[test]
-    fn no_frame_pointer_still_reports_the_faulting_pc() {
-        let mut frames = Frames::EMPTY;
-        walk(0x4242, 0, bounds(), &forge(&[]), &mut frames);
+    #[cfg(unix)]
+    fn a_zero_ip_ends_the_walk() {
+        let frames = [(0x4242, true), (0x5001, false), (0, false), (0x6001, false)];
+        assert_eq!(collect(0x4242, &frames), [(0x4242, 1), (0x5000, 1)]);
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn the_live_unwinder_without_a_fault_frame_reports_only_its_pc() {
+        let mut out = Frames::EMPTY;
+        capture(0xDEAD, &mut out);
         assert_eq!(
-            frames.runs(),
+            out.runs(),
             &[FrameRun {
-                pc: 0x4242,
+                pc: 0xDEAD,
                 count: 1
             }]
         );
-        let mut frames = Frames::EMPTY;
-        walk(
-            0x4242,
-            0x1234,
-            StackBounds::UNKNOWN,
-            &forge(&[]),
-            &mut frames,
-        );
-        assert_eq!(frames.runs().len(), 1);
     }
 
     #[test]

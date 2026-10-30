@@ -420,31 +420,44 @@ fn terminating_signal(status: ExitStatus) -> Option<i32> {
     status.signal()
 }
 
+/// Synchronous fault signals the Hew runtime reports itself before the program
+/// dies by them; see `hew-runtime/src/signal/unix.rs`.
+#[cfg(unix)]
+const RUNTIME_REPORTED_SIGNALS: [i32; 5] = [
+    libc::SIGSEGV,
+    libc::SIGBUS,
+    libc::SIGFPE,
+    libc::SIGILL,
+    libc::SIGTRAP,
+];
+
 /// Preserve explicit program exits and report abnormal native termination.
 ///
-/// OS signals do not identify a language trap, so use the runtime's
-/// `UnknownFault` category rather than guessing a source-level cause.
-/// Windows reports exceptions and explicit exits through the same integer;
-/// preserve that integer because the two cannot be distinguished here.
+/// A synchronous fault signal was already reported by the runtime's fault
+/// boundary, which then let the program die by that signal; the wrapper adds
+/// no second record and exits as a shell reports the death, `128 + signal`.
+/// Any other signal (`SIGKILL`, `SIGABRT`, `SIGTERM`, ...) reached the program
+/// from outside or from `abort`, so no Hew record exists: report it as
+/// `UnknownFault` and exit 1. Windows reports exceptions and explicit exits
+/// through the same integer; preserve that integer because the two cannot be
+/// distinguished here.
 pub(crate) fn native_run_exit_code(status: ExitStatus, stderr: &mut impl std::io::Write) -> i32 {
     if let Some(code) = status.code() {
         return code;
     }
     #[cfg(unix)]
     if let Some(signal) = terminating_signal(status) {
+        if RUNTIME_REPORTED_SIGNALS.contains(&signal) {
+            return 128 + signal;
+        }
         let name = match signal {
             libc::SIGABRT => "SIGABRT",
-            libc::SIGBUS => "SIGBUS",
-            libc::SIGFPE => "SIGFPE",
-            libc::SIGILL => "SIGILL",
             libc::SIGINT => "SIGINT",
             libc::SIGHUP => "SIGHUP",
             libc::SIGKILL => "SIGKILL",
             libc::SIGPIPE => "SIGPIPE",
             libc::SIGQUIT => "SIGQUIT",
-            libc::SIGSEGV => "SIGSEGV",
             libc::SIGTERM => "SIGTERM",
-            libc::SIGTRAP => "SIGTRAP",
             _ => "unknown signal",
         };
         // An unavailable stderr must not turn a child failure into a CLI panic.
@@ -1166,20 +1179,41 @@ mod tests {
         );
     }
 
-    #[test]
-    fn native_run_reports_signalled_child() {
+    #[cfg(unix)]
+    fn status_of_signalled_shell(signal: &str) -> ExitStatus {
         let mut command = Command::new("sh");
-        command.args(["-c", "ulimit -c 0; kill -SEGV $$"]);
-        let status = BoundedChild::spawn(&mut command)
+        command.args(["-c", &format!("ulimit -c 0; kill -{signal} $$")]);
+        BoundedChild::spawn(&mut command)
             .unwrap()
             .child
             .wait()
-            .unwrap();
+            .unwrap()
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn native_run_adds_nothing_to_a_runtime_reported_fault() {
+        // The runtime already wrote the fault record; the wrapper exits as a
+        // shell reports the death and writes nothing more.
+        for (name, signal) in [("SEGV", libc::SIGSEGV), ("BUS", libc::SIGBUS)] {
+            let mut stderr = Vec::new();
+            let code = native_run_exit_code(status_of_signalled_shell(name), &mut stderr);
+            assert_eq!(code, 128 + signal);
+            assert!(stderr.is_empty(), "{}", String::from_utf8_lossy(&stderr));
+        }
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn native_run_reports_an_unreported_signal_once() {
         let mut stderr = Vec::new();
-        assert_eq!(native_run_exit_code(status, &mut stderr), 1);
+        let code = native_run_exit_code(status_of_signalled_shell("TERM"), &mut stderr);
+        assert_eq!(code, 1);
         let stderr = String::from_utf8(stderr).unwrap();
-        assert!(stderr.contains("hew: failure: UnknownFault"), "{stderr}");
-        assert!(stderr.contains("SIGSEGV"), "{stderr}");
+        assert_eq!(
+            stderr,
+            "hew: failure: UnknownFault (15): native program terminated by signal 15 (SIGTERM)\n"
+        );
     }
 
     #[test]

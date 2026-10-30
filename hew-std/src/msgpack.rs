@@ -13,7 +13,10 @@ use hew_cabi::string::{string_as_str, string_from_str, HewString};
 use hew_runtime::bytes::{hew_bytes_from_static, BytesTriple};
 use std::ffi::{c_char, CStr};
 
-const MAX_MSGPACK_DEPTH: usize = 128;
+/// The deepest nesting `to_json` converts: the most `json.parse` reads back.
+/// `serde_json` refuses a 128th nested container, so a document nested 128 deep
+/// converted to JSON that no JSON reader in the standard library accepts.
+const MAX_MSGPACK_DEPTH: usize = 127;
 const MALFORMED_MSGPACK_ERROR: &str = "msgpack: malformed input during depth pre-scan";
 
 std::thread_local! {
@@ -668,6 +671,28 @@ mod tests {
                 read_and_free_managed(hew_msgpack_last_error()),
                 depth_exceeded_error()
             );
+        }
+    }
+
+    #[test]
+    fn to_json_output_always_parses_as_json() {
+        for depth in 1..=200 {
+            let mut nested = vec![0x91; depth];
+            nested.push(0xc0);
+            // SAFETY: nested is a valid buffer; each result is released once.
+            unsafe {
+                let out = hew_msgpack_to_json(nested.as_ptr(), nested.len());
+                if out.is_null() {
+                    assert!(depth > MAX_MSGPACK_DEPTH, "depth {depth} refused");
+                    continue;
+                }
+                let text = CStr::from_ptr(out).to_str().unwrap().to_owned();
+                hew_cabi::cabi::free_cstring(out);
+                let doc = crate::test_string::ManagedString::new(&text);
+                let value = crate::json::hew_json_parse(doc.as_ptr());
+                assert!(!value.is_null(), "json.parse refuses depth {depth}");
+                crate::json::hew_json_free(value);
+            }
         }
     }
 

@@ -2445,6 +2445,8 @@ dependencies = [
  "object 0.40.0",
  "pdb",
  "rustc-demangle",
+ "serde",
+ "serde_json",
  "tempfile",
 ]
 

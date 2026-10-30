@@ -22,13 +22,21 @@ pub(crate) enum Sidecar {
 
 pub(crate) struct ObjectSymbols {
     build_id: Option<BuildId>,
-    /// The static address the image's lowest mapped byte has.
+    /// The static address `image_base` corresponds to.
     static_base: u64,
     sidecar: Option<Sidecar>,
     /// DWARF from this file or from its split debug file.
     dwarf: Option<Dwarf>,
-    /// Function symbols, address-sorted: `(address, name)`.
-    symbols: Vec<(u64, String)>,
+    /// Function symbols, address-sorted and non-overlapping.
+    symbols: Vec<FunctionSymbol>,
+}
+
+struct FunctionSymbol {
+    start: u64,
+    /// One past the last byte: the symbol's size when the format records
+    /// one, otherwise the next symbol or the end of its section.
+    end: u64,
+    name: String,
 }
 
 struct Dwarf {
@@ -51,11 +59,7 @@ impl ObjectSymbols {
         let file = object::File::parse(data).map_err(|error| format_error(path, error))?;
         let build_id = image_build_id(&file).map_err(|error| format_error(path, error))?;
         let static_base = match file.format() {
-            object::BinaryFormat::Elf => file
-                .segments()
-                .map(|segment| segment.address())
-                .min()
-                .unwrap_or(0),
+            object::BinaryFormat::Elf => 0,
             object::BinaryFormat::MachO => file
                 .segments()
                 .find(|segment| segment.name() == Ok(Some("__TEXT")))
@@ -64,14 +68,7 @@ impl ObjectSymbols {
         };
         let sidecar = sidecar(path, &file);
         let dwarf = load_dwarf(&file).map_err(|error| format_error(path, error))?;
-        let mut symbols: Vec<(u64, String)> = file
-            .symbols()
-            .chain(file.dynamic_symbols())
-            .filter(|symbol| symbol.kind() == object::SymbolKind::Text && symbol.address() != 0)
-            .filter_map(|symbol| Some((symbol.address(), symbol.name().ok()?.to_string())))
-            .collect();
-        symbols.sort_unstable();
-        symbols.dedup_by_key(|(address, _)| *address);
+        let symbols = function_symbols(&file);
         Ok(Self {
             build_id,
             static_base,
@@ -124,11 +121,11 @@ impl ObjectSymbols {
     fn symbol_at(&self, address: u64) -> Option<Location> {
         let index = self
             .symbols
-            .partition_point(|(start, _)| *start <= address)
+            .partition_point(|symbol| symbol.start <= address)
             .checked_sub(1)?;
-        let name = &self.symbols[index].1;
-        Some(Location {
-            function: Some(display_name(name, None).into_owned()),
+        let symbol = &self.symbols[index];
+        (address < symbol.end).then(|| Location {
+            function: Some(display_name(&symbol.name, None).into_owned()),
             ..Location::default()
         })
     }
@@ -197,6 +194,46 @@ fn declared_name(
         }
     }
     Ok(None)
+}
+
+/// The image's function symbols with the extent each covers, so an address
+/// past the last function (in another image, or in padding) names nothing.
+fn function_symbols(file: &object::File<'_>) -> Vec<FunctionSymbol> {
+    let mut raw: Vec<(u64, u64, u64, String)> = file
+        .symbols()
+        .chain(file.dynamic_symbols())
+        .filter(|symbol| symbol.kind() == object::SymbolKind::Text && symbol.address() != 0)
+        .filter_map(|symbol| {
+            let section_end = symbol
+                .section_index()
+                .and_then(|index| file.section_by_index(index).ok())
+                .map_or(symbol.address(), |section| {
+                    section.address() + section.size()
+                });
+            let name = symbol.name().ok()?.to_string();
+            Some((symbol.address(), symbol.size(), section_end, name))
+        })
+        .collect();
+    raw.sort_unstable_by_key(|(start, ..)| *start);
+    raw.dedup_by_key(|(start, ..)| *start);
+    let next_starts: Vec<u64> = raw
+        .iter()
+        .skip(1)
+        .map(|(start, ..)| *start)
+        .chain(std::iter::once(u64::MAX))
+        .collect();
+    raw.into_iter()
+        .zip(next_starts)
+        .map(|((start, size, section_end, name), next)| FunctionSymbol {
+            start,
+            end: if size > 0 {
+                start + size
+            } else {
+                next.min(section_end)
+            },
+            name,
+        })
+        .collect()
 }
 
 fn image_build_id(file: &object::File<'_>) -> object::Result<Option<BuildId>> {

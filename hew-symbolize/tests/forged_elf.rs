@@ -6,7 +6,7 @@ use std::path::Path;
 use gimli::write::{
     Address, AttributeValue, DwarfUnit, EndianVec, LineProgram, LineString, Sections,
 };
-use hew_symbolize::{BuildId, Error, Frame, Location, Symbolizer};
+use hew_symbolize::{BuildId, Error, FailureRecordJson, Frame, Location, Symbolizer};
 use object::write::{Object, StandardSection, Symbol, SymbolSection};
 use object::{Architecture, BinaryFormat, Endianness, SectionKind, SymbolFlags, SymbolKind};
 
@@ -310,4 +310,108 @@ fn frame_from_another_build_is_refused() {
         matches!(&error, Error::BuildIdMismatch { expected, .. } if expected.as_bytes() == BUILD),
         "{error}"
     );
+}
+
+#[test]
+fn addresses_past_every_symbol_collapse() {
+    let dir = tempfile::tempdir().unwrap();
+    let symbols = Symbolizer::open(write(dir.path(), "fail", FULL)).unwrap();
+    // Past the last function's extent, still inside `.text`.
+    assert!(symbols
+        .symbolize(&frame(RAISE + 0x70, false))
+        .unwrap()
+        .is_empty());
+    // Another image's code, far beyond this one.
+    assert!(symbols
+        .symbolize(&frame(0x2_0000_0000, false))
+        .unwrap()
+        .is_empty());
+}
+
+/// A record as the runtime writes it, with every frame left unnamed.
+fn unnamed_record() -> String {
+    format!(
+        concat!(
+            r#"{{"version":1,"kind":"UserPanic","code":212,"message":"level3 refuses n > 2","#,
+            r#""site":{{"file":null,"module_id":0,"line":null,"col":null,"offset":17}},"#,
+            r#""frames":[{{"pc":"{:#x}","hew_fn":null,"file":null,"line":null}},"#,
+            r#"{{"pc":"{:#x}","hew_fn":null,"file":null,"line":null}},"#,
+            r#"{{"pc":"{:#x}","hew_fn":null,"file":null,"line":null}}],"#,
+            r#""thread":"main","worker_id":null,"actor":null,"supervisor":null,"wall_time_ns":7,"#,
+            r#""build":{{"image_base":"{:#x}","build_id":"{}","has_debug_info":false,"hew_version":"0.10.0"}}}}"#
+        ),
+        LOAD_BASE + RAISE + 4,
+        LOAD_BASE + LEVEL3 + 0x11,
+        LOAD_BASE + 0x9000,
+        LOAD_BASE,
+        BuildId::new(BUILD.to_vec()),
+    )
+}
+
+#[test]
+fn record_without_runtime_names_is_filled_from_symbols() {
+    let dir = tempfile::tempdir().unwrap();
+    let symbols = Symbolizer::open(write(dir.path(), "fail", FULL)).unwrap();
+    let mut record = FailureRecordJson::parse(&unnamed_record()).unwrap();
+    assert_eq!(symbols.symbolize_record(&mut record).unwrap(), 2);
+
+    let [raise, level3, foreign] = &record.frames[..] else {
+        panic!("three frames");
+    };
+    assert_eq!(raise.name(), Some("hew_fault_raise"));
+    assert_eq!(raise.file, None);
+    assert_eq!(level3.name(), Some("level3"));
+    assert_eq!(
+        (level3.file.as_deref(), level3.line, level3.col),
+        (Some(SOURCE), Some(4), Some(15))
+    );
+    assert_eq!(foreign.name(), None);
+
+    // Fields the reader does not name survive the rewrite.
+    let rewritten: serde_json::Value = serde_json::from_str(&record.to_line().unwrap()).unwrap();
+    assert_eq!(rewritten["thread"], "main");
+    assert_eq!(rewritten["site"]["offset"], 17);
+    assert_eq!(rewritten["build"]["has_debug_info"], false);
+    assert_eq!(rewritten["frames"][1]["function"], "level3");
+    assert_eq!(rewritten["frames"][1]["col"], 15);
+}
+
+#[test]
+fn runtime_resolved_names_are_kept() {
+    let dir = tempfile::tempdir().unwrap();
+    let symbols = Symbolizer::open(write(dir.path(), "fail", FULL)).unwrap();
+    let line = unnamed_record().replacen(
+        r#""hew_fn":null,"file":null,"line":null},{"pc""#,
+        r#""hew_fn":"hew_fault_raise","file":"runtime.rs","line":9},{"pc""#,
+        1,
+    );
+    let line = line.replacen(
+        r#""hew_fn":null,"file":null,"line":null},{"pc""#,
+        r#""hew_fn":"main.level3","file":"/src/fail.hew","line":4},{"pc""#,
+        1,
+    );
+    let mut record = FailureRecordJson::parse(&line).unwrap();
+    let original = record.clone();
+    assert_eq!(symbols.symbolize_record(&mut record).unwrap(), 0);
+    assert_eq!(record, original);
+    assert_eq!(record.frames[1].name(), Some("main.level3"));
+}
+
+#[test]
+fn record_from_another_build_is_refused() {
+    let dir = tempfile::tempdir().unwrap();
+    let debug = write(
+        dir.path(),
+        "other.debug",
+        Image {
+            build_id: OTHER_BUILD,
+            ..FULL
+        },
+    );
+    let symbols = Symbolizer::open(debug).unwrap();
+    let mut record = FailureRecordJson::parse(&unnamed_record()).unwrap();
+    assert!(matches!(
+        symbols.symbolize_record(&mut record),
+        Err(Error::BuildIdMismatch { .. })
+    ));
 }

@@ -8,10 +8,10 @@
 //!
 //! # Addresses
 //!
-//! `image_base` is the address the image's lowest mapped byte was loaded at:
-//! `dladdr`'s `dli_fbase` on ELF and Mach-O, the `HMODULE` on Windows. The
-//! symbolizer subtracts it from `pc` and adds the image's static base (the
-//! lowest `PT_LOAD` address on ELF, the `__TEXT` address on Mach-O, the
+//! `image_base` is what the runtime records for the image: the load bias
+//! (`dlpi_addr`) on ELF, the `mach_header` address on Mach-O and the
+//! `HMODULE` on Windows. The symbolizer subtracts it from `pc` and adds the
+//! image's static base (zero on ELF, the `__TEXT` address on Mach-O, the
 //! optional header's `ImageBase` on PE) to reach the address the debug
 //! information describes.
 //!
@@ -23,6 +23,9 @@
 
 mod dwarf;
 mod pdb_file;
+mod record;
+
+pub use record::{BuildJson, FailureRecordJson, FrameJson, SiteJson};
 
 use std::fmt;
 use std::path::{Path, PathBuf};
@@ -81,7 +84,7 @@ impl fmt::Debug for BuildId {
 pub struct Frame {
     /// The return or fault address.
     pub pc: u64,
-    /// The runtime address of the image's lowest mapped byte.
+    /// The image's runtime base, as the crate documentation defines it.
     pub image_base: u64,
     /// The identity of the image that holds `pc`, when the runtime knew it.
     pub build_id: Option<BuildId>,

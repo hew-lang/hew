@@ -21,6 +21,8 @@ object = { version = "0.40", default-features = false, features = [
 ] }
 pdb = "0.8"
 rustc-demangle = "0.1"
+serde.workspace = true
+serde_json.workspace = true
 
 [lints]
 workspace = true
@@ -34,4 +36,5 @@ object = { version = "0.40", default-features = false, features = [
   "std",
   "write",
 ] }
+serde_json.workspace = true
 tempfile.workspace = true

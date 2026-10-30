@@ -11,12 +11,12 @@
 //! `hew_runtime::supervisor::hew_trap_with_code(HEW_TRAP_DIVIDE_BY_ZERO)`,
 //! which is exactly the C-ABI entry-point codegen emits in the IR it
 //! produces for `lhs / 0`. The caught-unwind recovery seam catches the trap,
-//! `handle_crash_recovery_impl` builds a `CrashReport` with
+//! `handle_crash_recovery_impl` builds a `FailureRecord` with
 //! `signal = HEW_TRAP_DIVIDE_BY_ZERO`, and pushes it to the global crash
 //! log that `snapshot_crashes_json` serialises.
 //!
 //! Gating: native actor unwind recovery is native-only. WASM has its own non-actor
-//! `hew_trap_with_code` path (no recovery context, no `CrashReport`).
+//! `hew_trap_with_code` path (no recovery context, no crash record).
 //! The producer-side `trap_kind` derivation lives in
 //! `hew-runtime/src/crash.rs::snapshot_crashes_json`, behind the same
 //! `profiler` feature it has always required.
@@ -33,7 +33,7 @@ use std::time::{Duration, Instant};
 
 use hew_observe_protocol::CrashEntry as ObserveCrashEntry;
 use hew_runtime::actor::hew_actor_send;
-use hew_runtime::crash::{hew_crash_log_count, hew_crash_log_last, snapshot_crashes_json};
+use hew_runtime::crash::{hew_crash_log_count, last_crash, snapshot_crashes_json};
 use hew_runtime::deterministic::hew_deterministic_reset;
 use hew_runtime::supervisor::{
     hew_supervisor_add_child_spec, hew_supervisor_get_child_wait, hew_trap_with_code,
@@ -75,8 +75,8 @@ unsafe fn wait_for_new_crash(log_before: i32, timeout: Duration) -> Option<(u64,
     loop {
         let count = unsafe { hew_crash_log_count() };
         if count > log_before {
-            let report = unsafe { hew_crash_log_last() };
-            return Some((report.actor_id, report.signal));
+            let report = last_crash().expect("the ring holds the new crash");
+            return Some((report.actor.id, report.code));
         }
         if Instant::now() >= deadline {
             return None;
@@ -94,7 +94,7 @@ unsafe fn wait_for_new_crash(log_before: i32, timeout: Duration) -> Option<(u64,
 /// 1. Supervised actor spawns with `divide_by_zero_dispatch`.
 /// 2. The actor is sent `MSG_DIV_BY_ZERO`, which calls
 ///    `hew_trap_with_code(HEW_TRAP_DIVIDE_BY_ZERO)`.
-/// 3. The caught-unwind seam recovers, pushes a `CrashReport` with
+/// 3. The caught-unwind seam recovers, pushes a `FailureRecord` with
 ///    `signal = HEW_TRAP_DIVIDE_BY_ZERO` (202).
 /// 4. `snapshot_crashes_json()` serialises the report; the new `trap_kind`
 ///    field resolves to `"DivideByZero"` via
@@ -166,7 +166,7 @@ fn divide_by_zero_trap_surfaces_trap_kind_on_observe_event_surface() {
         );
         assert_eq!(
             crash_signal, HEW_TRAP_DIVIDE_BY_ZERO,
-            "CrashReport.signal must carry the canonical divide-by-zero trap code"
+            "the crash record code must carry the canonical divide-by-zero trap code"
         );
 
         // Wait for the supervisor to drain the crash so RECENT_CRASHES has a

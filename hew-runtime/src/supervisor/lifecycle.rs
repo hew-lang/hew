@@ -5401,3 +5401,92 @@ mod tests {
         }
     }
 }
+
+// ── Failure reporting ───────────────────────────────────────────────────
+
+/// Which child a supervisor gave up on.
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum GiveupChild {
+    /// An actor child, by roster index.
+    Actor(usize),
+    /// A nested supervisor, by its slot.
+    Supervisor(usize),
+}
+
+/// A supervisor's display label: its actor type and id.
+fn supervisor_label(sup: *mut HewSupervisor) -> String {
+    // SAFETY: callers keep the supervisor live for this read.
+    let self_actor = unsafe { (*sup).self_actor };
+    if self_actor.is_null() {
+        return "supervisor".to_owned();
+    }
+    // SAFETY: the self actor belongs to the live supervisor.
+    let (id, dispatch) = unsafe {
+        (
+            (*self_actor).id,
+            (*self_actor)
+                .dispatch
+                .map_or(0, |dispatch| dispatch as usize),
+        )
+    };
+    // Supervisors register no type name of their own.
+    let name =
+        crate::profiler::actor_registry::lookup_registered_dispatch_type_by_ptr_owned(dispatch)
+            .unwrap_or_else(|| "supervisor".to_owned());
+    format!("{name}#{id}")
+}
+
+/// The role path of a supervised child, outermost supervisor first:
+/// `App#1/Workers#3/worker`. Never blocks: a roster held elsewhere names the
+/// child by its index.
+pub(crate) fn role_path(sup: *mut HewSupervisor, child_index: i32) -> String {
+    let child = usize::try_from(child_index).ok().and_then(|index| {
+        // SAFETY: the running child's supervisor is live while it runs.
+        let roster = unsafe { &(*sup).roster }.try_lock().ok()?;
+        let spec = roster.child_specs.get(index)?;
+        Some(child_name(spec.name, &format!("child[{index}]")))
+    });
+    let mut path = child.unwrap_or_else(|| format!("child[{child_index}]"));
+    let mut current = sup;
+    while !current.is_null() {
+        path = format!("{}/{path}", supervisor_label(current));
+        // SAFETY: a live supervisor's parent outlives it.
+        current = unsafe { (*current).parent };
+    }
+    path
+}
+
+/// Report that `sup` exhausted its restart intensity on `child`: one line,
+/// the give-up counter, and the unrecovered crash when nothing above it can
+/// restart the subtree.
+pub(crate) fn report_giveup(sup: *mut HewSupervisor, child: GiveupChild, restarts: c_int) {
+    // SAFETY: callers keep the supervisor live; these policy fields are
+    // immutable after construction.
+    let (strategy, window, root) =
+        unsafe { ((*sup).strategy, (*sup).window_secs, (*sup).parent.is_null()) };
+    let child = {
+        // SAFETY: as above; the roster serializes the spec read.
+        let roster = unsafe { &(*sup).roster }.lock_or_recover();
+        match child {
+            GiveupChild::Actor(index) => roster.child_specs.get(index).map_or_else(
+                || format!("child[{index}]"),
+                |spec| child_name(spec.name, &format!("child[{index}]")),
+            ),
+            GiveupChild::Supervisor(index) => format!("supervisor[{index}]"),
+        }
+    };
+    let outcome = if root { "stopping" } else { "escalating" };
+    crate::output::write(
+        crate::output::Stream::Err,
+        format!(
+            "hew: supervisor {} [{}] giving up on child {child}: restart intensity {restarts} in {window}s exceeded; {outcome}\n",
+            supervisor_label(sup),
+            supervisor_strategy_name(strategy),
+        )
+        .as_bytes(),
+    );
+    crate::observe::record_supervisor_giveup();
+    if root {
+        crate::crash::note_supervisor_giveup();
+    }
+}

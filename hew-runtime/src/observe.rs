@@ -82,6 +82,19 @@ static COROUTINES_FRAME_BYTES_LIVE: AtomicU64 = AtomicU64::new(0);
 static REACTOR_REGISTRATIONS_LIVE: AtomicU64 = AtomicU64::new(0);
 static REACTOR_READY_EVENTS_TOTAL: AtomicU64 = AtomicU64::new(0);
 static ACTORS_CRASHES_TOTAL: AtomicU64 = AtomicU64::new(0);
+static SUPERVISOR_GIVEUPS_TOTAL: AtomicU64 = AtomicU64::new(0);
+/// Crash counts by `(trap_kind, actor_type)`, the labels of
+/// [`crate::failure_kinds::CRASH_SERIES`].
+static CRASHES_BY_KIND: crate::lifetime::PoisonSafe<Vec<((&'static str, String), u64)>> =
+    crate::lifetime::PoisonSafe::new(Vec::new());
+/// The message type each worker shard is dispatching, for failure records and
+/// the hang snapshot. Zero when the shard is between turns.
+static TURN_MSG_TYPE: [std::sync::atomic::AtomicI32; SHARD_COUNT] =
+    [const { std::sync::atomic::AtomicI32::new(0) }; SHARD_COUNT];
+/// The actor each worker shard is dispatching, or zero.
+static TURN_ACTOR: [AtomicU64; SHARD_COUNT] = [const { AtomicU64::new(0) }; SHARD_COUNT];
+/// The dispatch function of each shard's actor, the handler registry's key.
+static TURN_DISPATCH: [AtomicU64; SHARD_COUNT] = [const { AtomicU64::new(0) }; SHARD_COUNT];
 static ACTORS_RESTARTS_TOTAL: AtomicU64 = AtomicU64::new(0);
 static ARENA_RESETS_TOTAL: AtomicU64 = AtomicU64::new(0);
 static THREADS_BLOCKING_COUNT: AtomicU64 = AtomicU64::new(0);
@@ -215,9 +228,14 @@ pub struct RuntimeHookSnapshot {
 // only there. Live on macOS, Linux, FreeBSD and Windows.
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn configure_from_env() {
-    let enabled = std::env::var("HEW_OBSERVE")
-        .is_ok_and(|value| matches!(value.as_str(), "1" | "true" | "yes" | "on" | "hot"));
+    // A profiled run (`HEW_PPROF`, set by `hew run --profile` and `hew debug`)
+    // defaults to the hot tier; `HEW_OBSERVE` still decides when set.
+    let enabled = match std::env::var("HEW_OBSERVE") {
+        Ok(value) => matches!(value.as_str(), "1" | "true" | "yes" | "on" | "hot"),
+        Err(_) => std::env::var_os("HEW_PPROF").is_some(),
+    };
     HOT_TIER_ENABLED.store(enabled, Ordering::Release);
+    crate::fault::configure_from_env();
 }
 
 #[must_use]
@@ -358,7 +376,15 @@ fn publish_dispatch_watermark() -> u64 {
     current
 }
 
-pub(crate) fn observe_dispatch_begin() -> ObserveDispatchTicket {
+pub(crate) fn observe_dispatch_begin(
+    actor_id: u64,
+    dispatch: usize,
+    msg_type: i32,
+) -> ObserveDispatchTicket {
+    let shard = current_shard();
+    TURN_ACTOR[shard].store(actor_id, Ordering::Relaxed);
+    TURN_DISPATCH[shard].store(dispatch as u64, Ordering::Relaxed);
+    TURN_MSG_TYPE[shard].store(msg_type, Ordering::Relaxed);
     let ticket = NEXT_DISPATCH_TICKET
         .fetch_add(1, Ordering::Relaxed)
         .saturating_add(1);
@@ -369,6 +395,8 @@ pub(crate) fn observe_dispatch_begin() -> ObserveDispatchTicket {
 
 fn clear_active_dispatch_ticket(ticket: ObserveDispatchTicket) {
     let shard = current_shard();
+    TURN_ACTOR[shard].store(0, Ordering::Relaxed);
+    TURN_MSG_TYPE[shard].store(0, Ordering::Relaxed);
     if DISPATCH_ACTIVE_TICKETS[shard]
         .compare_exchange(ticket.0, 0, Ordering::SeqCst, Ordering::Relaxed)
         .is_ok()
@@ -504,9 +532,67 @@ pub(crate) fn record_pool_saturation() {
     POOL_SATURATIONS_TOTAL.fetch_add(1, Ordering::Relaxed);
 }
 
-// KEEP(wasm32): crash.rs fault handler.
-pub(crate) fn record_actor_crash() {
+/// Count one actor crash under its kind and actor type.
+pub(crate) fn record_actor_crash(kind: &str, actor_type: &str) {
     ACTORS_CRASHES_TOTAL.fetch_add(1, Ordering::Relaxed);
+    let kind = crate::failure_kinds::TRAP_KIND_LABEL_VALUES
+        .iter()
+        .copied()
+        .find(|known| *known == kind)
+        .unwrap_or(crate::failure_kinds::KIND_UNKNOWNFAULT);
+    CRASHES_BY_KIND.access(|counts| {
+        match counts
+            .iter_mut()
+            .find(|((k, t), _)| *k == kind && t == actor_type)
+        {
+            Some((_, count)) => *count += 1,
+            None => counts.push(((kind, actor_type.to_owned()), 1)),
+        }
+    });
+}
+
+/// Count a supervisor giving up on a child.
+pub(crate) fn record_supervisor_giveup() {
+    SUPERVISOR_GIVEUPS_TOTAL.fetch_add(1, Ordering::Relaxed);
+}
+
+/// The actor and message type the calling worker shard is dispatching.
+#[must_use]
+pub(crate) fn current_msg_type() -> i32 {
+    TURN_MSG_TYPE[current_shard()].load(Ordering::Relaxed)
+}
+
+/// The calling thread's worker index plus one; zero off the worker pool.
+#[must_use]
+pub(crate) fn current_worker_id() -> u32 {
+    u32::try_from(current_shard()).unwrap_or(u32::MAX)
+}
+
+/// One worker shard's turn in progress.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct BusyWorker {
+    /// Worker index plus one; zero for threads off the pool.
+    pub worker_id: usize,
+    pub actor_id: u64,
+    pub dispatch: usize,
+    pub msg_type: i32,
+}
+
+/// What every worker shard is dispatching now.
+#[must_use]
+pub(crate) fn busy_workers() -> Vec<BusyWorker> {
+    (0..SHARD_COUNT)
+        .filter_map(|shard| {
+            let actor_id = TURN_ACTOR[shard].load(Ordering::Relaxed);
+            (actor_id != 0).then(|| BusyWorker {
+                worker_id: shard,
+                actor_id,
+                dispatch: usize::try_from(TURN_DISPATCH[shard].load(Ordering::Relaxed))
+                    .unwrap_or(0),
+                msg_type: TURN_MSG_TYPE[shard].load(Ordering::Relaxed),
+            })
+        })
+        .collect()
 }
 
 // KEEP(wasm32): supervisor.rs restart path.
@@ -796,6 +882,7 @@ pub fn read_u64(name: &str) -> Option<u64> {
         }
         "actors.crashes_total" => Some(ACTORS_CRASHES_TOTAL.load(Ordering::Relaxed)),
         "actors.restarts_total" => Some(ACTORS_RESTARTS_TOTAL.load(Ordering::Relaxed)),
+        "supervisor.giveups_total" => Some(SUPERVISOR_GIVEUPS_TOTAL.load(Ordering::Relaxed)),
         #[cfg(all(feature = "profiler", not(target_arch = "wasm32")))]
         "mailbox.depth" => Some(crate::profiler::actor_registry::mailbox_aggregate().sum_depth),
         #[cfg(all(feature = "profiler", not(target_arch = "wasm32")))]
@@ -848,6 +935,7 @@ fn observe_series() -> &'static [(&'static str, &'static str)] {
         ("actors.attributed_turn_duration_ns_total", "counter"),
         ("actors.crashes_total", "counter"),
         ("actors.restarts_total", "counter"),
+        ("supervisor.giveups_total", "counter"),
         ("mailbox.depth", "gauge"),
         ("mailbox.depth_max", "gauge"),
         ("mailbox.depth_p99", "gauge"),
@@ -1079,6 +1167,36 @@ fn restarts_by_child_snapshot() -> Vec<(String, String, u64)> {
     Vec::new()
 }
 
+/// The crash counter, labelled by kind and actor type. Every kind in the
+/// generated list appears, at zero when no actor crashed with it, so a query
+/// for one kind does not depend on it having happened.
+fn push_crash_series(out: &mut String) {
+    use crate::failure_kinds::{CRASH_LABEL_KEYS, CRASH_SERIES, TRAP_KIND_LABEL_VALUES};
+    let mut counts = CRASHES_BY_KIND.access(|counts| counts.clone());
+    counts.sort();
+    out.push_str("# TYPE ");
+    out.push_str(CRASH_SERIES);
+    out.push_str(" counter\n");
+    let mut line = |kind: &str, actor_type: &str, value: u64| {
+        let _ = writeln!(
+            out,
+            "{CRASH_SERIES}{{{}=\"{}\",{}=\"{}\"}} {value}",
+            CRASH_LABEL_KEYS[0],
+            prometheus_label_value(kind),
+            CRASH_LABEL_KEYS[1],
+            prometheus_label_value(actor_type),
+        );
+    };
+    for kind in TRAP_KIND_LABEL_VALUES {
+        if !counts.iter().any(|((counted, _), _)| counted == kind) {
+            line(kind, "", 0);
+        }
+    }
+    for ((kind, actor_type), count) in &counts {
+        line(kind, actor_type, *count);
+    }
+}
+
 fn push_restarts_by_child_series(out: &mut String) {
     let rows = restarts_by_child_snapshot();
     if rows.is_empty() {
@@ -1220,6 +1338,10 @@ pub fn scrape_text() -> String {
     for (name, kind) in observe_series() {
         if let Some(value) = read_u64(name) {
             let prometheus_name = render_prometheus_name(name);
+            if prometheus_name == crate::failure_kinds::CRASH_SERIES {
+                push_crash_series(&mut out);
+                continue;
+            }
             out.push_str("# TYPE ");
             out.push_str(&prometheus_name);
             out.push(' ');
@@ -1335,6 +1457,8 @@ pub(crate) fn reset_live_safe_counters() {
     COROUTINES_SUSPENDS_TOTAL.store(0, Ordering::Relaxed);
     REACTOR_READY_EVENTS_TOTAL.store(0, Ordering::Relaxed);
     ACTORS_CRASHES_TOTAL.store(0, Ordering::Relaxed);
+    SUPERVISOR_GIVEUPS_TOTAL.store(0, Ordering::Relaxed);
+    CRASHES_BY_KIND.access(Vec::clear);
     ACTORS_RESTARTS_TOTAL.store(0, Ordering::Relaxed);
     ARENA_RESETS_TOTAL.store(0, Ordering::Relaxed);
     ATTRIBUTED_TURNS.access(|slot| {
@@ -1432,7 +1556,7 @@ mod tests {
         // worker reached its attribution/close edge.  The reset runs on a
         // separate thread to keep the production cross-thread shape, while the
         // barrier makes the active-ticket ordering deterministic.
-        let ticket = observe_dispatch_begin();
+        let ticket = observe_dispatch_begin(0, 0, 0);
         std::thread::spawn(|| crate::scheduler::hew_sched_metrics_reset())
             .join()
             .expect("live metrics reset thread must not panic");
@@ -1654,7 +1778,7 @@ mod tests {
         let _guard = crate::runtime_test_guard();
         reset_all();
         set_current_worker_shard(0);
-        let ticket = observe_dispatch_begin();
+        let ticket = observe_dispatch_begin(0, 0, 0);
         observe_dispatch_attributed(ticket);
 
         let started = Instant::now();
@@ -1671,7 +1795,7 @@ mod tests {
         let _guard = crate::runtime_test_guard();
         reset_all();
         set_current_worker_shard(0);
-        let ticket = observe_dispatch_begin();
+        let ticket = observe_dispatch_begin(0, 0, 0);
 
         let worker = std::thread::spawn(move || {
             std::thread::sleep(Duration::from_millis(25));
@@ -1693,7 +1817,7 @@ mod tests {
         let _guard = crate::runtime_test_guard();
         reset_all();
         set_current_worker_shard(0);
-        let ticket_a = observe_dispatch_begin();
+        let ticket_a = observe_dispatch_begin(0, 0, 0);
         let (done_tx, done_rx) = std::sync::mpsc::channel();
 
         let waiter = std::thread::spawn(move || {
@@ -1710,7 +1834,7 @@ mod tests {
         }
 
         set_current_worker_shard(1);
-        let ticket_b = observe_dispatch_begin();
+        let ticket_b = observe_dispatch_begin(0, 0, 0);
         observe_dispatch_attributed(ticket_b);
 
         std::thread::sleep(Duration::from_millis(50));
@@ -1737,7 +1861,7 @@ mod tests {
         set_current_worker_shard(0);
 
         for _ in 0..1024 {
-            let ticket = observe_dispatch_begin();
+            let ticket = observe_dispatch_begin(0, 0, 0);
             observe_dispatch_attributed(ticket);
         }
 
@@ -1766,7 +1890,7 @@ mod tests {
         let _guard = crate::runtime_test_guard();
         reset_all();
         set_current_worker_shard(0);
-        let first = observe_dispatch_begin();
+        let first = observe_dispatch_begin(0, 0, 0);
         let (first_tx, first_rx) = std::sync::mpsc::channel();
         let first_waiter = std::thread::spawn(move || {
             first_tx.send(hew_observe_barrier()).unwrap();
@@ -1774,7 +1898,7 @@ mod tests {
         wait_for_barrier_waiters(1);
 
         set_current_worker_shard(1);
-        let second = observe_dispatch_begin();
+        let second = observe_dispatch_begin(0, 0, 0);
         let (second_tx, second_rx) = std::sync::mpsc::channel();
         let second_waiter = std::thread::spawn(move || {
             second_tx.send(hew_observe_barrier()).unwrap();
@@ -1815,7 +1939,7 @@ mod tests {
         let _guard = crate::runtime_test_guard();
         reset_all();
         set_current_worker_shard(0);
-        let ticket = observe_dispatch_begin();
+        let ticket = observe_dispatch_begin(0, 0, 0);
         // The barrier can take its cut before it obtains this mutex. Close
         // without a waiter notification, then let it register and recheck.
         let guard = dispatch_barrier_lock();

@@ -43,7 +43,6 @@ pub(crate) unsafe fn pin_registered_supervisor(
     (pin.supervisor() == supervisor).then_some(pin)
 }
 
-#[cfg(feature = "profiler")]
 fn supervisor_strategy_name(strategy: c_int) -> &'static str {
     match strategy {
         STRATEGY_ONE_FOR_ONE => "one_for_one",
@@ -79,7 +78,6 @@ fn actor_state_name(actor: *mut HewActor) -> &'static str {
     }
 }
 
-#[cfg(feature = "profiler")]
 fn child_name(name: *const c_char, fallback: &str) -> String {
     if name.is_null() {
         fallback.to_owned()
@@ -558,6 +556,9 @@ pub unsafe extern "C-unwind" fn hew_trap_with_code(code: i32) {
 ///
 /// Same contract as [`hew_trap_with_code`].
 pub(crate) unsafe fn trap_with_code(code: i32, reported: bool) {
+    if !reported {
+        crate::fault::raise_trap(code);
+    }
     crate::cont::abort_if_crash_cleanup_finalizer_trap(trap_kind_name(code));
     let actor_stamped = crate::trap_code::stamp_current_actor_error_code(code);
     if actor_stamped && crate::execution_context::current_context_can_unwind() {

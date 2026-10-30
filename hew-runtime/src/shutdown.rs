@@ -1332,27 +1332,29 @@ mod tests {
     }
 
     /// When the drain window expires with a worker still active,
-    /// `shutdown_orchestrate` must set `PHASE_FAILED` promptly (skipping the
-    /// join) rather than claiming successful completion or blocking indefinitely.
+    /// `shutdown_orchestrate` must publish `PHASE_FAILED` and skip the join and
+    /// every post-drain stage rather than claim success or block on the worker.
     ///
-    /// We simulate an un-drainable runtime by holding `ACTIVE_WORKERS` at 1
-    /// for the duration of the drain window, then releasing it after
-    /// `shutdown_orchestrate` returns so that `reset_shutdown_state` can
-    /// complete cleanly.
+    /// `ACTIVE_WORKERS` is held at 1 so the drain cannot converge. A
+    /// one-nanosecond window has expired by the first observation however the
+    /// test thread is scheduled, so the outcome depends on no host timing; a
+    /// registered root left in place shows the supervisor sweep was skipped.
     #[test]
     fn shutdown_orchestrate_reports_failure_on_drain_timeout() {
         let _guard = shutdown_test_guard();
         reset_shutdown_state();
+        // SAFETY: the test owns this fresh supervisor until the reset below.
+        let sup = unsafe {
+            crate::supervisor::hew_supervisor_new(crate::supervisor::STRATEGY_ONE_FOR_ONE, 1, 1)
+        };
+        assert!(!sup.is_null());
+        // SAFETY: as above.
+        unsafe { hew_shutdown_register_supervisor(sup) };
         shutdown_phase_store(PHASE_QUIESCE, Ordering::Release);
 
         // Keep the drain loop from ever converging.
         scheduler::ACTIVE_WORKERS.fetch_add(1, Ordering::Release);
-
-        let drain_ms = 50u64;
-        let started = Instant::now();
-        shutdown_orchestrate(Duration::from_millis(drain_ms));
-        let elapsed = started.elapsed();
-
+        shutdown_orchestrate(Duration::from_nanos(1));
         // Release the artificial worker count so later teardown is clean.
         scheduler::ACTIVE_WORKERS.fetch_sub(1, Ordering::Release);
 
@@ -1366,10 +1368,9 @@ mod tests {
             -2,
             "a timed-out drain must be observable through the shutdown ABI"
         );
-        // Must complete within ~2× the drain window (drain + small grace).
         assert!(
-            elapsed < Duration::from_millis(drain_ms * 4),
-            "timed-out drain must not block; elapsed={elapsed:?}"
+            is_supervisor_registered_for_test(sup),
+            "a timed-out drain must leave supervisors to the live runtime"
         );
 
         reset_shutdown_state();

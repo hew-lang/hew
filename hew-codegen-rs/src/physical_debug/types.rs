@@ -84,11 +84,15 @@ impl<'ctx> DebugEmitter<'ctx> {
         if let Some(cached) = self.types.borrow().get(ty) {
             return Some(*cached);
         }
-        let name = type_name(ty);
-        if let Some(placeholder) = self.placeholder(ty, &name, layout, target) {
+        let name = type_name(&self.defs, ty);
+        // The declaration and the definition share one identifier, so a
+        // consumer that completes a forward reference by unique name
+        // (CodeView) finds the definition.
+        let unique = self.unique(&name);
+        if let Some(placeholder) = self.placeholder(ty, &name, &unique, layout, target) {
             self.types.borrow_mut().insert(ty.clone(), placeholder);
         }
-        let described = self.build_type(ty, &name, layout, target);
+        let described = self.build_type(ty, &name, &unique, layout, target);
         let mut types = self.types.borrow_mut();
         match described {
             Some(described) => {
@@ -107,6 +111,7 @@ impl<'ctx> DebugEmitter<'ctx> {
         &self,
         ty: &ResolvedTy,
         name: &str,
+        unique: &str,
         layout: &PhysicalLayout,
         target: &PhysicalTarget,
     ) -> Option<DIType<'ctx>> {
@@ -115,16 +120,17 @@ impl<'ctx> DebugEmitter<'ctx> {
                 .variant_layout(ty)
                 .is_some_and(|cases| cases.is_indirect);
         if indirect {
-            let node = self.declaration(&node_name(name));
+            let node = self.declaration(&node_name(name), &node_name(unique));
             return Some(self.handle(name, node, layout));
         }
-        matches!(layout.repr, PhysicalRepr::Struct(_)).then(|| self.declaration(name))
+        matches!(layout.repr, PhysicalRepr::Struct(_)).then(|| self.declaration(name, unique))
     }
 
     fn build_type(
         &self,
         ty: &ResolvedTy,
         name: &str,
+        unique: &str,
         layout: &PhysicalLayout,
         target: &PhysicalTarget,
     ) -> Option<DIType<'ctx>> {
@@ -134,7 +140,7 @@ impl<'ctx> DebugEmitter<'ctx> {
             return Some(self.typedef(scalar.name, base, layout.align));
         }
         if let Some(variants) = self.enums.get(ty) {
-            return self.build_enum(ty, name, layout, variants, target);
+            return self.build_enum(ty, name, unique, layout, variants, target);
         }
         match &layout.repr {
             PhysicalRepr::Unit => None,
@@ -148,7 +154,9 @@ impl<'ctx> DebugEmitter<'ctx> {
                 let array = self.layout_type(layout)?;
                 Some(self.typedef(name, array, layout.align))
             }
-            PhysicalRepr::Struct(fields) => self.build_struct(ty, name, layout, fields, target),
+            PhysicalRepr::Struct(fields) => {
+                self.build_struct(ty, name, unique, layout, fields, target)
+            }
         }
     }
 
@@ -338,6 +346,7 @@ impl<'ctx> DebugEmitter<'ctx> {
         &self,
         ty: &ResolvedTy,
         name: &str,
+        unique: &str,
         layout: &PhysicalLayout,
         fields: &[PhysicalLayout],
         target: &PhysicalTarget,
@@ -397,7 +406,7 @@ impl<'ctx> DebugEmitter<'ctx> {
                 }
             },
         }
-        Some(self.structure(name, layout.size, layout.align, &members))
+        Some(self.structure_as(name, unique, layout.size, layout.align, &members))
     }
 
     /// A callable's environment: the initialization mask and each capture.
@@ -444,6 +453,7 @@ impl<'ctx> DebugEmitter<'ctx> {
         &self,
         ty: &ResolvedTy,
         name: &str,
+        unique: &str,
         layout: &PhysicalLayout,
         variants: &[PhysicalDebugVariant],
         target: &PhysicalTarget,
@@ -455,6 +465,7 @@ impl<'ctx> DebugEmitter<'ctx> {
         if cases.is_indirect {
             let node = self.tagged(
                 &node_name(name),
+                &node_name(unique),
                 &cases.object,
                 variants,
                 &cases.variants,
@@ -462,12 +473,13 @@ impl<'ctx> DebugEmitter<'ctx> {
             )?;
             return Some(self.handle(name, node, layout));
         }
-        self.tagged(name, layout, variants, &cases.variants, target)
+        self.tagged(name, unique, layout, variants, &cases.variants, target)
     }
 
     fn tagged(
         &self,
         name: &str,
+        unique: &str,
         layout: &PhysicalLayout,
         variants: &[PhysicalDebugVariant],
         cases: &[PhysicalLayout],
@@ -556,7 +568,7 @@ impl<'ctx> DebugEmitter<'ctx> {
             self.member("tag", tag_type, tag, 0),
             self.member("payload", union, payload, payload_offset),
         ];
-        Some(self.structure(name, layout.size, layout.align, &members))
+        Some(self.structure_as(name, unique, layout.size, layout.align, &members))
     }
 
     /// Describe storage by its physical shape alone, for runtime carrier words
@@ -692,6 +704,19 @@ impl<'ctx> DebugEmitter<'ctx> {
         align: u32,
         members: &[DIType<'ctx>],
     ) -> DIType<'ctx> {
+        self.structure_as(name, &self.unique(name), size, align, members)
+    }
+
+    /// A struct with a reserved identifier: the definition of a type whose
+    /// declaration was entered first.
+    fn structure_as(
+        &self,
+        name: &str,
+        unique: &str,
+        size: u64,
+        align: u32,
+        members: &[DIType<'ctx>],
+    ) -> DIType<'ctx> {
         self.builder
             .create_struct_type(
                 self.file.as_debug_info_scope(),
@@ -705,13 +730,13 @@ impl<'ctx> DebugEmitter<'ctx> {
                 members,
                 0,
                 None,
-                &self.unique(name),
+                unique,
             )
             .as_type()
     }
 
-    /// A member-less declaration a debugger completes by name.
-    fn declaration(&self, name: &str) -> DIType<'ctx> {
+    /// A member-less declaration a debugger completes by name or identifier.
+    fn declaration(&self, name: &str, unique: &str) -> DIType<'ctx> {
         self.builder
             .create_struct_type(
                 self.file.as_debug_info_scope(),
@@ -725,7 +750,7 @@ impl<'ctx> DebugEmitter<'ctx> {
                 &[],
                 0,
                 None,
-                name,
+                unique,
             )
             .as_type()
     }
@@ -806,8 +831,49 @@ fn target_size(bytes: usize) -> u64 {
 }
 
 /// The source spelling of a type, from the type checker's own renderer.
-fn type_name(ty: &ResolvedTy) -> String {
-    ty.user_facing().to_string()
+/// The module that owns a root-unit declaration, as debuggers spell it.
+const ROOT_MODULE: &str = "main";
+
+/// A type as a debugger spells it: a user struct, enum or actor by its
+/// module-qualified dotted path (`main.Rect`, `geometry.Shape`), generics with
+/// the same spelling inside (`main.Box<main.Rect>`), and compiler builtins
+/// (`Vec`, `HashMap`, `Option`, `string`) as the source writes them.
+fn type_name(defs: &hew_types::DefTable, ty: &ResolvedTy) -> String {
+    use hew_types::TypeHead;
+    let list = |items: &[ResolvedTy]| {
+        items
+            .iter()
+            .map(|item| type_name(defs, item))
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
+    match ty {
+        ResolvedTy::Named { head, args, .. }
+            if !matches!(head, TypeHead::Builtin(BuiltinType::ActorFn)) =>
+        {
+            let mut name = match head {
+                TypeHead::Nominal(nominal) | TypeHead::Actor(nominal) => {
+                    let path = defs.dotted_declaration_path(nominal.id.declaration());
+                    if path.contains('.') {
+                        path
+                    } else {
+                        format!("{ROOT_MODULE}.{path}")
+                    }
+                }
+                other => other.spelling().to_owned(),
+            };
+            if !args.is_empty() {
+                name.push('<');
+                name.push_str(&list(args));
+                name.push('>');
+            }
+            name
+        }
+        ResolvedTy::Tuple(items) => format!("({})", list(items)),
+        ResolvedTy::Array(element, size) => format!("[{}; {size}]", type_name(defs, element)),
+        ResolvedTy::Slice(element) => format!("[{}]", type_name(defs, element)),
+        other => other.user_facing().to_string(),
+    }
 }
 
 fn header_name(name: &str) -> String {

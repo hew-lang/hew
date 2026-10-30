@@ -92,6 +92,8 @@ pub(super) struct DebugEmitter<'ctx> {
     records: HashMap<ResolvedTy, Vec<PhysicalDebugField>>,
     /// Source variant names of each concrete enum, in tag order.
     enums: HashMap<ResolvedTy, Vec<PhysicalDebugVariant>>,
+    /// Declaration paths: a nominal type is named by its module-qualified path.
+    defs: std::sync::Arc<hew_types::DefTable>,
     /// The description of each storage type, built once per type.
     types: RefCell<BTreeMap<ResolvedTy, DIType<'ctx>>>,
     /// Composites created so far, numbering their unique identifiers.
@@ -123,6 +125,7 @@ impl<'ctx> DebugEmitter<'ctx> {
         triple: &str,
         source: DebugSource<'_>,
         debug: &PhysicalDebug,
+        defs: std::sync::Arc<hew_types::DefTable>,
     ) -> Self {
         let file_name = source.path.file_name().map_or_else(
             || "module.hew".to_owned(),
@@ -187,6 +190,7 @@ impl<'ctx> DebugEmitter<'ctx> {
             scopes: debug.scopes.clone(),
             records: debug.records.clone().into_iter().collect(),
             enums: debug.enums.clone().into_iter().collect(),
+            defs,
             types: RefCell::new(BTreeMap::new()),
             composites: Cell::new(0),
             _unit: unit,

@@ -39,8 +39,16 @@ pub(super) fn build_module_with_host<'ctx>(
     let llvm = ctx.create_module(name);
     llvm.set_triple(&triple);
     llvm.set_data_layout(&data_layout);
-    let debug = debug_source
-        .map(|source| debug::DebugEmitter::new(ctx, &llvm, &triple_text, source, &physical.debug));
+    let debug = debug_source.map(|source| {
+        debug::DebugEmitter::new(
+            ctx,
+            &llvm,
+            &triple_text,
+            source,
+            &physical.debug,
+            std::sync::Arc::clone(&physical.defs),
+        )
+    });
     let mut emitter = ModuleEmitter {
         ctx,
         module: physical,

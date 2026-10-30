@@ -1012,9 +1012,12 @@ mod image {
     use super::{FailureBuild, BUILD_ID_CAPACITY};
 
     const LC_UUID: u32 = 0x1b;
+    /// `sizeof(struct mach_header_64)`; `ncmds` is the word at byte 16.
+    const HEADER_SIZE: usize = 32;
+    const NCMDS_OFFSET: usize = 16;
 
     unsafe extern "C" {
-        fn _dyld_get_image_header(index: u32) -> *const libc::mach_header_64;
+        fn _dyld_get_image_header(index: u32) -> *const u8;
     }
 
     pub(super) fn fill(build: &mut FailureBuild) {
@@ -1024,18 +1027,19 @@ mod image {
             return;
         }
         build.image_base = header as usize;
-        // SAFETY: the load commands follow the 64-bit header in mapped memory.
+        // SAFETY: the 64-bit header and the load commands that follow it are
+        // mapped; each command starts with its `cmd` and `cmdsize` words.
         unsafe {
-            let mut command = header.add(1).cast::<u8>();
-            for _ in 0..(*header).ncmds {
-                let load = &*command.cast::<libc::load_command>();
-                if load.cmd == LC_UUID {
+            let word = |at: *const u8| std::ptr::read_unaligned(at.cast::<u32>());
+            let mut command = header.add(HEADER_SIZE);
+            for _ in 0..word(header.add(NCMDS_OFFSET)) {
+                if word(command) == LC_UUID {
                     let uuid = std::slice::from_raw_parts(command.add(8), 16);
                     build.build_id[..16.min(BUILD_ID_CAPACITY)].copy_from_slice(uuid);
                     build.build_id_len = 16;
                     return;
                 }
-                command = command.add(load.cmdsize as usize);
+                command = command.add(word(command.add(4)) as usize);
             }
         }
     }
@@ -1140,12 +1144,13 @@ pub fn tracer_attached() -> bool {
         const P_FLAG_OFFSET: usize = 32;
         const P_TRACED: i32 = 0x800;
         let mut info = [0u8; KINFO_PROC_SIZE];
-        kern_proc_self(info.as_mut_ptr().cast(), KINFO_PROC_SIZE) && {
-            let flag = i32::from_ne_bytes(
-                info[P_FLAG_OFFSET..P_FLAG_OFFSET + 4]
-                    .try_into()
-                    .expect("four bytes"),
-            );
+        kern_proc_self(info.as_mut_ptr(), KINFO_PROC_SIZE) && {
+            let flag = i32::from_ne_bytes([
+                info[P_FLAG_OFFSET],
+                info[P_FLAG_OFFSET + 1],
+                info[P_FLAG_OFFSET + 2],
+                info[P_FLAG_OFFSET + 3],
+            ]);
             flag & P_TRACED != 0
         }
     }

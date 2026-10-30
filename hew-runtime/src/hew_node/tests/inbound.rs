@@ -1728,6 +1728,7 @@ fn crossing_dials_converge_with_a_node_without_responder_commit() {
 fn opposite_admission_orders_converge_with_a_node_without_responder_commit() {
     let _guard = crate::runtime_test_guard();
     crate::registry::hew_registry_clear();
+    let fences = fence_timeouts();
     for lower_lacks in [true, false] {
         let (a, port_a, b, port_b) = start_authorized_tcp_pair(359, 360);
         // SAFETY: both nodes stay started until the stops below.
@@ -1759,6 +1760,7 @@ fn opposite_admission_orders_converge_with_a_node_without_responder_commit() {
                 higher_dial.join().expect("higher dial"),
             );
             drop(script);
+            assert_eq!(fence_timeouts(), fences, "a script fence timed out");
             await_one_shared_connection(
                 lower,
                 higher,
@@ -1784,8 +1786,16 @@ fn own_dial_first(node: &TestNode, peer: &TestNode) -> connection::admission_scr
     })
 }
 
+/// Script fences that gave up waiting, so a test can tell a script that did
+/// not run from the behaviour it checks.
+static FENCE_TIMEOUTS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+fn fence_timeouts() -> usize {
+    FENCE_TIMEOUTS.load(std::sync::atomic::Ordering::Acquire)
+}
+
 /// Wait until `node` holds `peer`'s published claim on a connection of
-/// `origin`.
+/// `origin`; a wait that gives up is counted in [`FENCE_TIMEOUTS`].
 ///
 /// # Safety
 /// Both pointers name started nodes.
@@ -1803,8 +1813,11 @@ unsafe fn await_owner(node: usize, peer: usize, origin: ConnectionOrigin) {
     }
     .owner
         != Some((ClaimState::Published, origin))
-        && std::time::Instant::now() < deadline
     {
+        if std::time::Instant::now() >= deadline {
+            FENCE_TIMEOUTS.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+            return;
+        }
         std::thread::sleep(std::time::Duration::from_millis(1));
     }
 }
@@ -1816,6 +1829,7 @@ unsafe fn await_owner(node: usize, peer: usize, origin: ConnectionOrigin) {
 fn follower_waits_for_a_close_before_settling_a_crossing() {
     let _guard = crate::runtime_test_guard();
     crate::registry::hew_registry_clear();
+    let fences = fence_timeouts();
     for lower_lacks in [true, false] {
         let (a, port_a, b, port_b) = start_authorized_tcp_pair(361, 362);
         // SAFETY: both nodes stay started until the stops below.
@@ -1883,6 +1897,7 @@ fn follower_waits_for_a_close_before_settling_a_crossing() {
                 std::thread::sleep(std::time::Duration::from_millis(1));
             }
             drop(script);
+            assert_eq!(fence_timeouts(), fences, "a script fence timed out");
             let sent = *sent.lock_or_recover();
             assert_eq!(
                 sent,
@@ -1908,6 +1923,7 @@ fn follower_waits_for_a_close_before_settling_a_crossing() {
 fn held_connection_closed_during_its_restore_leaves_the_peer_admissible() {
     let _guard = crate::runtime_test_guard();
     crate::registry::hew_registry_clear();
+    let fences = fence_timeouts();
     for lower_lacks in [true, false] {
         let (a, port_a, b, port_b) = start_authorized_tcp_pair(365, 366);
         // SAFETY: both nodes stay started until the stops below.
@@ -1959,43 +1975,39 @@ fn held_connection_closed_during_its_restore_leaves_the_peer_admissible() {
                 higher_dial.join().expect("higher dial"),
             );
             // Both connections close at both ends; the follower ends with no
-            // live claim.
-            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-            while !(restoring.lock_or_recover().is_some()
-                && peer_view(follower, old).installed == 0
-                && peer_view(old, follower).installed == 0
-                && peer_view(follower, old)
-                    .owner
-                    .is_none_or(|(state, _)| state == ClaimState::Retired))
-            {
-                assert!(
-                    std::time::Instant::now() < deadline,
-                    "lower lacks the step: {lower_lacks}; dials {dials:?}: the restore \
-                     did not settle: removal {:?}, follower {:?}, old {:?}",
-                    *restoring.lock_or_recover(),
-                    peer_view(follower, old),
-                    peer_view(old, follower)
-                );
-                std::thread::sleep(std::time::Duration::from_millis(1));
-            }
-            drop(script);
-            // The holder's publication was reported lost: the member is not
-            // left alive on a connection that no longer exists.
+            // live claim, and its member is not left alive on a connection that
+            // no longer exists: the holder's publication was reported lost.
             let old_slot: u16 = if std::ptr::eq(old.as_ptr(), a.as_ptr()) {
                 365
             } else {
                 366
             };
             let cluster = &*(*follower.as_ptr()).cluster;
-            let (owner, state) = (
-                cluster.member_owner(old_slot),
-                cluster.member_state(old_slot),
-            );
-            assert!(
-                owner.1.is_none() && state != crate::cluster::MEMBER_ALIVE,
-                "lower lacks the step: {lower_lacks}: no connection is left, yet the member \
-                 is alive: owner {owner:?}, state {state}"
-            );
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+            while !(restoring.lock_or_recover().is_some()
+                && peer_view(follower, old).installed == 0
+                && peer_view(old, follower).installed == 0
+                && peer_view(follower, old)
+                    .owner
+                    .is_none_or(|(state, _)| state == ClaimState::Retired)
+                && cluster.member_owner(old_slot).1.is_none()
+                && cluster.member_state(old_slot) != crate::cluster::MEMBER_ALIVE)
+            {
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "lower lacks the step: {lower_lacks}; dials {dials:?}: the restore \
+                     did not settle: removal {:?}, follower {:?}, old {:?}, member owner \
+                     {:?}, state {}",
+                    *restoring.lock_or_recover(),
+                    peer_view(follower, old),
+                    peer_view(old, follower),
+                    cluster.member_owner(old_slot),
+                    cluster.member_state(old_slot)
+                );
+                std::thread::sleep(std::time::Duration::from_millis(1));
+            }
+            drop(script);
+            assert_eq!(fence_timeouts(), fences, "a script fence timed out");
             let redial = spawn_dial(
                 follower,
                 old_port,
@@ -2027,6 +2039,7 @@ fn held_connection_closed_during_its_restore_leaves_the_peer_admissible() {
 fn local_disconnect_closes_the_held_connection() {
     let _guard = crate::runtime_test_guard();
     crate::registry::hew_registry_clear();
+    let fences = fence_timeouts();
     for lower_lacks in [true, false] {
         let (a, port_a, b, port_b) = start_authorized_tcp_pair(367, 368);
         // SAFETY: both nodes stay started until the stops below.
@@ -2087,6 +2100,7 @@ fn local_disconnect_closes_the_held_connection() {
                 higher_dial.join().expect("higher dial"),
             );
             drop(script);
+            assert_eq!(fence_timeouts(), fences, "a script fence timed out");
             let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
             loop {
                 let view = peer_view(follower, old);
@@ -2585,12 +2599,15 @@ fn held_connection_serves_the_peer_until_the_switch() {
 /// A crossing in which the initiator moves to the responder's dial, which the
 /// responder then yields to the initiator's by the crossing rule once the
 /// echo arrives: the initiator returns to its own dial without losing the
-/// peer's member for a moment. Counterfactual: the initiator retires the
-/// yielded dial before restoring its own, and suspects the peer.
+/// peer's member for a moment, or the peer's names, which the peer does not
+/// announce again on a connection it kept throughout. Counterfactual: the
+/// initiator retires the yielded dial before restoring its own, and suspects
+/// the peer; or forgets the names when it moves to the yielded dial.
 #[test]
 fn initiator_returns_from_a_dial_the_responder_yields_without_suspicion() {
     let _guard = crate::runtime_test_guard();
     crate::registry::hew_registry_clear();
+    let fences = fence_timeouts();
     let (a, port_a, b, port_b) = start_authorized_tcp_pair(371, 372);
     // SAFETY: both nodes stay started until the stops below.
     unsafe {
@@ -2614,6 +2631,22 @@ fn initiator_returns_from_a_dial_the_responder_yields_without_suspicion() {
                 let _ = waiting.lock_or_recover().send(());
                 // The nodes outlive their admissions.
                 await_owner(higher_node, lower_node, ConnectionOrigin::Accepted);
+                await_owner(lower_node, higher_node, ConnectionOrigin::Dialled);
+                // The lower node has learnt one of the higher node's names.
+                let (lower, higher) = (
+                    &*(lower_node as *mut HewNode),
+                    &*(higher_node as *mut HewNode),
+                );
+                let name = Location::direct(
+                    higher.auth.node_identity().expect("higher identity"),
+                    7,
+                    higher.auth.session_incarnation().expect("higher session"),
+                )
+                .expect("name location");
+                (*lower.registry)
+                    .remote_names
+                    .lock_or_recover()
+                    .insert("crossing".into(), name);
             }
         });
         let script = connection::admission_script::install(&[(
@@ -2631,12 +2664,20 @@ fn initiator_returns_from_a_dial_the_responder_yields_without_suspicion() {
             higher_dial.join().expect("higher dial"),
         );
         drop(script);
+        assert_eq!(fence_timeouts(), fences, "a script fence timed out");
         await_kept_connection(lower, higher, ConnectionOrigin::Dialled);
         await_kept_connection(higher, lower, ConnectionOrigin::Accepted);
         assert_eq!(
             (suspects(lower), suspects(higher)),
             (0, 0),
             "no member is suspected: dials {dials:?}"
+        );
+        assert!(
+            (*(*lower.as_ptr()).registry)
+                .remote_names
+                .lock_or_recover()
+                .contains_key("crossing"),
+            "the lower node keeps the higher node's names"
         );
         assert_eq!(hew_node_stop(b.as_ptr()), 0);
         assert_eq!(hew_node_stop(a.as_ptr()), 0);

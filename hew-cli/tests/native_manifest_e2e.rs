@@ -393,7 +393,10 @@ fn assert_remapped_debug_source(dir: &Path, roots: &[PathBuf; 2]) {
         .args(["--batch", "--nx", "-ex"])
         .arg(format!("set substitute-path . \"{source_root}\""))
         .args(["-ex", "list main.hew:1"])
-        .arg(binary(&moved, "linked"));
+        // The package object carries the same `main.hew` line table the
+        // linker copies. The linked program would also make gdb index the
+        // whole runtime's debug info, which this remap check does not need.
+        .arg(moved.join("probe.o"));
     let output = run_bounded_command(command, "read remapped debugger source");
     assert_ok(&output, "debugger source remapping");
     assert!(

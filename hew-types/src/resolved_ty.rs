@@ -161,7 +161,7 @@ pub enum ResolvedTy {
     /// production for `Task<T>` as a type annotation).
     ///
     /// Display: `<task<T>>` (angle brackets signal compiler-internal origin;
-    /// implemented via `to_ty()` → `Ty::Task` → `fmt_with_numeric_names`).
+    /// implemented via `to_ty()` → `Ty::Task` → `Ty::render`).
     Task(Box<ResolvedTy>),
     /// An abstract generic type parameter, e.g. the `T` in `fn id<T>(x: T) -> T`.
     ///

@@ -256,6 +256,22 @@ fn websocket_config(max_message_size: usize, max_frame_size: usize) -> WebSocket
         .max_frame_size(Some(max_frame_size))
 }
 
+/// The inbound caps every Hew WebSocket attach site applies, for the fuzz
+/// targets that drive tungstenite over in-memory streams.
+#[cfg(feature = "fuzzing")]
+#[doc(hidden)]
+pub mod fuzzing {
+    pub use tungstenite::protocol::WebSocketConfig;
+
+    pub const MAX_MESSAGE_SIZE_BYTES: usize = super::WEBSOCKET_MAX_MESSAGE_SIZE_BYTES;
+    pub const MAX_FRAME_SIZE_BYTES: usize = super::WEBSOCKET_MAX_FRAME_SIZE_BYTES;
+
+    #[must_use]
+    pub fn default_config() -> WebSocketConfig {
+        super::websocket_config(MAX_MESSAGE_SIZE_BYTES, MAX_FRAME_SIZE_BYTES)
+    }
+}
+
 fn parse_websocket_cap_from_env(env_name: &str) -> Result<Option<usize>, String> {
     match std::env::var(env_name) {
         Ok(raw) => raw

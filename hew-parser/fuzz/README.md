@@ -37,3 +37,13 @@ has a timeout and output cap, and timeout cleanup terminates its process group.
 Stable regression programs belong to `tests/core-acceptance/cases/`, where
 observable output, exit status and cleanup are checked at O0 and O2. Raw replay
 has no expected-failure ledger and is not a default CI gate.
+
+## Standard library
+
+The standard library's Rust parsers and codecs have their own cargo-fuzz
+crates: `hew-codec/fuzz` (wire codecs and YAML values, built without the
+runtime) and `hew-std/fuzz` (everything else that reads untrusted bytes:
+XML, MessagePack, protobuf, compression, Markdown, WebSocket, JWT, regex,
+calendar, URL and IP text). Each has checked-in seeds and dictionaries;
+see their READMEs. Run them from their own directory with `-s none`, for
+example `cd hew-std/fuzz && cargo +nightly fuzz run -s none fuzz_xml`.

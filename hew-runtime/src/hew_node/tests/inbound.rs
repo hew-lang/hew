@@ -1701,15 +1701,17 @@ fn crossing_dials_switch_to_the_winner_without_suspicion() {
 }
 
 /// A node that advertises the responder-commit step still pairs with one that
-/// does not, whichever of the two is the lower node: crossing dials, however
-/// their paths differ in latency, leave both ends sharing one connection. The
-/// node with the step follows the other's choice.
+/// does not, whichever of the two is the lower node: crossing dials whose paths
+/// differ in latency leave both ends sharing one connection. The node with the
+/// step follows the other's choice. A dial that outlasts its attempt budget is
+/// not covered: a node without the step can publish it and close the pair's
+/// other connection after the dialler has given it up.
 #[test]
 fn crossing_dials_converge_with_a_node_without_responder_commit() {
     let _guard = crate::runtime_test_guard();
     crate::registry::hew_registry_clear();
     for withhold_lower in [true, false] {
-        for delay_ms in [0, 300, 1500] {
+        for delay_ms in [0, 300] {
             for slow_higher in [true, false] {
                 skewed_crossing(347, 348, delay_ms, false, slow_higher, Some(withhold_lower));
             }
@@ -1834,11 +1836,14 @@ fn follower_waits_for_a_close_before_settling_a_crossing() {
             // The old node publishes its own dial, waits until the follower has
             // superseded its own dial with it, sends on it, and only then
             // admits the follower's dial.
+            let sent = Arc::new(Mutex::new(None));
             let old_hook: connection::admission_script::Hook = {
                 let (old, follower) = (old.as_ptr() as usize, follower.as_ptr() as usize);
+                let sent = Arc::clone(&sent);
                 Arc::new(move |point, origin| {
                     if point != connection::admission_script::Point::Authenticated
                         || origin != ConnectionOrigin::Accepted
+                        || sent.lock_or_recover().is_some()
                     {
                         return;
                     }
@@ -1853,9 +1858,8 @@ fn follower_waits_for_a_close_before_settling_a_crossing() {
                         &*(*(old as *mut HewNode)).conn_mgr,
                         follower_identity,
                         None,
-                    )
-                    .expect("the old node's dial is published");
-                    assert_eq!(claim.send(b"x"), 0, "the old node sends on its dial");
+                    );
+                    *sent.lock_or_recover() = Some(claim.map(|claim| claim.send(b"x")));
                 })
             };
             let script = connection::admission_script::install(&[
@@ -1872,7 +1876,20 @@ fn follower_waits_for_a_close_before_settling_a_crossing() {
                 lower_dial.join().expect("lower dial"),
                 higher_dial.join().expect("higher dial"),
             );
+            // The follower's dial returns once the follower publishes it; the
+            // old node admits it afterwards, once it has sent.
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+            while sent.lock_or_recover().is_none() && std::time::Instant::now() < deadline {
+                std::thread::sleep(std::time::Duration::from_millis(1));
+            }
             drop(script);
+            let sent = *sent.lock_or_recover();
+            assert_eq!(
+                sent,
+                Some(Some(0)),
+                "lower lacks the step: {lower_lacks}: the old node sent on its dial; \
+                 dials {dials:?}"
+            );
             await_one_shared_connection(
                 lower,
                 higher,
@@ -1908,20 +1925,20 @@ fn held_connection_closed_during_its_restore_leaves_the_peer_admissible() {
             };
             let _withheld =
                 connection::withheld_commit::withhold((*old.as_ptr()).conn_mgr.cast_const());
-            let restoring = Arc::new(std::sync::atomic::AtomicBool::new(false));
+            let restoring = Arc::new(Mutex::new(None));
             let follower_hook: connection::admission_script::Hook = {
                 let own_first = own_dial_first(follower, old);
                 let restoring = Arc::clone(&restoring);
                 let mgr = (*follower.as_ptr()).conn_mgr as usize;
                 Arc::new(move |point, origin| {
                     if let connection::admission_script::Point::RestoringLoser(loser) = point {
-                        restoring.store(true, std::sync::atomic::Ordering::Release);
                         // The peer drops the held connection as well.
                         // SAFETY: the manager outlives its admissions.
-                        let _ = connection::hew_connmgr_remove(
+                        let removed = connection::hew_connmgr_remove(
                             mgr as *mut connection::HewConnMgr,
                             loser,
                         );
+                        *restoring.lock_or_recover() = Some(removed);
                     } else {
                         own_first(point, origin);
                     }
@@ -1941,10 +1958,12 @@ fn held_connection_closed_during_its_restore_leaves_the_peer_admissible() {
                 lower_dial.join().expect("lower dial"),
                 higher_dial.join().expect("higher dial"),
             );
-            // Both connections close; the follower ends with no live claim.
+            // Both connections close at both ends; the follower ends with no
+            // live claim.
             let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-            while !(restoring.load(std::sync::atomic::Ordering::Acquire)
+            while !(restoring.lock_or_recover().is_some()
                 && peer_view(follower, old).installed == 0
+                && peer_view(old, follower).installed == 0
                 && peer_view(follower, old)
                     .owner
                     .is_none_or(|(state, _)| state == ClaimState::Retired))
@@ -1952,12 +1971,31 @@ fn held_connection_closed_during_its_restore_leaves_the_peer_admissible() {
                 assert!(
                     std::time::Instant::now() < deadline,
                     "lower lacks the step: {lower_lacks}; dials {dials:?}: the restore \
-                     did not settle: {:?}",
-                    peer_view(follower, old)
+                     did not settle: removal {:?}, follower {:?}, old {:?}",
+                    *restoring.lock_or_recover(),
+                    peer_view(follower, old),
+                    peer_view(old, follower)
                 );
                 std::thread::sleep(std::time::Duration::from_millis(1));
             }
             drop(script);
+            // The holder's publication was reported lost: the member is not
+            // left alive on a connection that no longer exists.
+            let old_slot: u16 = if std::ptr::eq(old.as_ptr(), a.as_ptr()) {
+                365
+            } else {
+                366
+            };
+            let cluster = &*(*follower.as_ptr()).cluster;
+            let (owner, state) = (
+                cluster.member_owner(old_slot),
+                cluster.member_state(old_slot),
+            );
+            assert!(
+                owner.1.is_none() && state != crate::cluster::MEMBER_ALIVE,
+                "lower lacks the step: {lower_lacks}: no connection is left, yet the member \
+                 is alive: owner {owner:?}, state {state}"
+            );
             let redial = spawn_dial(
                 follower,
                 old_port,
@@ -2431,6 +2469,10 @@ fn late_echo_returns_both_ends_to_the_shared_connection() {
 /// both ends: the responder can still send on it, and the initiator, which
 /// has already moved to the redial, serves the peer on it and replies there.
 #[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "keep the held window and the reply that crosses it together"
+)]
 fn held_connection_serves_the_peer_until_the_switch() {
     let _guard = crate::runtime_test_guard();
     crate::registry::hew_registry_clear();

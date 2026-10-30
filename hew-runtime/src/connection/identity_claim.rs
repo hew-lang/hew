@@ -420,11 +420,25 @@ pub(super) fn abort_identity_claim(
 /// Returns `true` iff `claims[node_id]` is still our exact reservation (so the
 /// caller may write route + cluster token under the same lock). A superseding
 /// claim arriving meanwhile ⇒ `false` (abort publish, write nothing).
+#[cfg(test)]
 pub(super) fn publish_identity_claim(
     mgr: &HewConnMgr,
     node_id: NodeId,
     conn_id: c_int,
     publication_token: u64,
+) -> bool {
+    publish_claim_keeping_names(mgr, node_id, conn_id, publication_token, false)
+}
+
+/// As [`publish_identity_claim`]; `keep_names` keeps the peer's names, for a
+/// switch between two of the peer's connections at one session that the peer
+/// has not yet settled and so will not announce its names for again.
+fn publish_claim_keeping_names(
+    mgr: &HewConnMgr,
+    node_id: NodeId,
+    conn_id: c_int,
+    publication_token: u64,
+    keep_names: bool,
 ) -> bool {
     let (lock, condvar) = &mgr.claims;
     let mut map = lock.lock_or_recover();
@@ -437,8 +451,9 @@ pub(super) fn publish_identity_claim(
     // Holding the claim lock fences an old publication's final name mutation.
     // SAFETY: the node retains its canonical registry through all manager users.
     let registry = unsafe { mgr.registry.as_ref() };
-    let names_changed =
-        still_ours && registry.is_some_and(|registry| registry.forget_origin_names(node_id));
+    let names_changed = still_ours
+        && !keep_names
+        && registry.is_some_and(|registry| registry.forget_origin_names(node_id));
     if still_ours {
         let published_at = next_publication_token(mgr).unwrap_or(u64::MAX);
         if let Some(claim) = map.get_mut(&node_id) {
@@ -726,17 +741,31 @@ pub(super) fn publish_identity_connection_established(
     publication_sync: &Arc<Mutex<()>>,
     publication_removed: &Arc<AtomicBool>,
     superseded: Option<LiveClaim>,
-    held_loser: Option<&Mutex<HeldLoser>>,
+    switch: Switch<'_>,
 ) -> bool {
     if publication_removed.load(Ordering::Acquire) {
         set_last_error("connection publication cancelled before establishment");
         return false;
     }
 
+    let held_loser = match switch {
+        Switch::Hold(held) => Some(held),
+        Switch::Close | Switch::Restore => None,
+    };
+    // A switch the peer has not settled keeps the peer's names: the peer
+    // announces them again only on a connection it publishes anew.
+    let keep_names = match switch {
+        Switch::Restore => true,
+        Switch::Hold(_) => superseded.as_ref().is_some_and(|previous| {
+            previous.state == ClaimState::Published
+                && previous.session_incarnation == peer_session_incarnation
+        }),
+        Switch::Close => false,
+    };
     // Transition our reservation Reserved → Published (issue #2652, D3 step 3).
     // A superseding admission arriving in the reserve window ⇒ we are no longer
     // the map owner ⇒ abort publish (write no route / cluster token / gossip).
-    if !publish_identity_claim(mgr, peer_identity, conn_id, publication_token) {
+    if !publish_claim_keeping_names(mgr, peer_identity, conn_id, publication_token, keep_names) {
         set_last_error("connection publication no longer owns the peer claim");
         return false;
     }
@@ -893,6 +922,17 @@ pub(super) fn publish_identity_connection_established(
     true
 }
 
+/// What a publication does with the connection it supersedes.
+#[derive(Clone, Copy)]
+pub(super) enum Switch<'a> {
+    /// Close it: this end settles the pair.
+    Close,
+    /// Hold it until the peer shows which of the two it kept.
+    Hold(&'a Mutex<HeldLoser>),
+    /// This is a held connection taking the claim back from its holder.
+    Restore,
+}
+
 /// The published connection a newer one superseded at an end whose peer
 /// decides which of the two the pair keeps: a follower of a peer without the
 /// responder-commit step, or the initiator under it. The peer closes the one
@@ -1003,8 +1043,8 @@ pub(super) fn held_loser_peer_closed(held: &Mutex<HeldLoser>) {
 /// Settle the loser held by the connection `conn_id` as `publication_token`,
 /// being removed: publish the loser in its place when the peer closed the
 /// holder and the holder still has the claim, and otherwise close it, so a
-/// held connection never outlives its holder. Returns whether the loser took
-/// the claim.
+/// held connection never outlives its holder. Returns whether the holder held
+/// a loser.
 pub(super) fn settle_held_loser(
     mgr: &HewConnMgr,
     node_id: Option<NodeId>,
@@ -1026,7 +1066,7 @@ pub(super) fn settle_held_loser(
     if !restored {
         close_superseded_connection_once(mgr, loser.conn_id, loser.publication_token);
     }
-    restored
+    true
 }
 
 /// Publish `loser` again in place of the connection `conn_id` as
@@ -1111,10 +1151,30 @@ fn restore_held_loser(
         &sync,
         &removed,
         None,
-        None,
+        Switch::Restore,
     );
     if !published {
-        abort_identity_claim(mgr, node_id, loser_conn, loser_token, prior);
+        // Hand the claim back to the holder, whose retirement follows, even
+        // when the loser's own removal has already withdrawn the reservation.
+        let (lock, condvar) = &mgr.claims;
+        let mut map = lock.lock_or_recover();
+        let withdrawn = map.get(&node_id).is_none_or(|claim| {
+            claim.state == ClaimState::Reserved
+                && claim.conn_id == loser_conn
+                && claim.publication_token == loser_token
+        });
+        if withdrawn {
+            match prior {
+                Some(prior) => {
+                    map.insert(node_id, prior);
+                }
+                None => {
+                    map.remove(&node_id);
+                }
+            }
+        }
+        drop(map);
+        condvar.notify_all();
     }
     published
 }
@@ -1231,7 +1291,7 @@ pub(super) fn publish_connection_established(
         publication_sync,
         publication_removed,
         superseded,
-        None,
+        Switch::Close,
     );
 }
 

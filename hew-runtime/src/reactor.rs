@@ -1121,7 +1121,10 @@ fn drain_windows_io() {
     }
     let mut events = Vec::new();
     while WINDOWS_IO_IN_FLIGHT.load(Ordering::SeqCst) != 0 {
-        if poller.wait(1000, &mut events).is_err() {
+        if poller
+            .wait_for(Some(Duration::from_millis(1000)), &mut events)
+            .is_err()
+        {
             break;
         }
         for event in events.drain(..) {

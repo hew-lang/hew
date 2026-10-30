@@ -341,18 +341,37 @@ fn write_node(buf: &mut String, node: &XmlNodeKind) {
 }
 
 /// Escape special characters in text content.
+///
+/// A carriage return is written as a reference: a reader normalizes a
+/// literal one to a line feed, which would change the text.
 fn escape_text(s: &str) -> String {
-    s.replace('&', "&amp;")
-        .replace('<', "&lt;")
-        .replace('>', "&gt;")
+    escape(s, false)
 }
 
 /// Escape special characters in attribute values.
+///
+/// Tab, line feed and carriage return are written as references: a reader
+/// normalizes literal whitespace in an attribute value to spaces, so a value
+/// that holds them would not survive a round trip.
 fn escape_attr(s: &str) -> String {
-    s.replace('&', "&amp;")
-        .replace('<', "&lt;")
-        .replace('>', "&gt;")
-        .replace('"', "&quot;")
+    escape(s, true)
+}
+
+fn escape(s: &str, attribute: bool) -> String {
+    let mut out = String::with_capacity(s.len());
+    for ch in s.chars() {
+        match ch {
+            '&' => out.push_str("&amp;"),
+            '<' => out.push_str("&lt;"),
+            '>' => out.push_str("&gt;"),
+            '\r' => out.push_str("&#13;"),
+            '"' if attribute => out.push_str("&quot;"),
+            '\t' if attribute => out.push_str("&#9;"),
+            '\n' if attribute => out.push_str("&#10;"),
+            _ => out.push(ch),
+        }
+    }
+    out
 }
 
 /// Recursively collect text content from a node tree.
@@ -676,6 +695,32 @@ mod tests {
         // SAFETY: ptr is an owned managed result.
         unsafe { string_release(ptr) };
         Some(s)
+    }
+
+    #[test]
+    fn whitespace_references_survive_a_round_trip() {
+        // Character references put a tab, line feed and carriage return into
+        // an attribute and a carriage return into text. Written back
+        // literally, a reader turns the first three into spaces and the last
+        // into a line feed.
+        let source = "<r a=\"x&#9;y&#10;z&#13;\">p&#13;q</r>";
+        let node = parse(source);
+        assert!(!node.is_null());
+        // SAFETY: node and every reparsed tree are live until freed below.
+        unsafe {
+            let printed = read_and_free_string(hew_xml_to_string(node));
+            let reparsed = parse(&printed);
+            assert!(!reparsed.is_null(), "{printed:?}");
+            for tree in [node, reparsed] {
+                let name = ManagedString::new("a");
+                let attr = read_and_free_string(hew_xml_get_attribute(tree, name.as_ptr()));
+                assert_eq!(attr, "x\ty\nz\r");
+                assert_eq!(read_and_free_string(hew_xml_get_text(tree)), "p\rq");
+            }
+            assert_eq!(read_and_free_string(hew_xml_to_string(reparsed)), printed);
+            hew_xml_free(reparsed);
+            hew_xml_free(node);
+        }
     }
 
     #[test]

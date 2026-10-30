@@ -269,6 +269,8 @@ pub enum TrapName {
     IntegerOverflow,
     #[serde(rename = "divide_by_zero")]
     DivideByZero,
+    #[serde(rename = "signed_min_div_neg_one")]
+    SignedMinDivNegOne,
     #[serde(rename = "shift_out_of_range")]
     ShiftOutOfRange,
     #[serde(rename = "vector_bounds")]

@@ -46,23 +46,32 @@ pub(crate) fn infix_bp(op: &Token) -> Option<(u8, u8)> {
 /// operand stops at either joiner and `parse_condition` owns the chain.
 pub(crate) const CONDITION_OPERAND_BP: u8 = 8;
 
+/// Left binding power of the `as` cast (§12.2): tighter than every binary
+/// operator, looser than every prefix operator. `a * b as T` is
+/// `a * (b as T)` and `-x as T` is `(-x) as T`; `x as T as U` chains left.
+pub(crate) const CAST_BP: u8 = 25;
+
+/// Right binding power of the unary prefixes `!`, `-`, `~`, `*` and the
+/// contextual `clone`. Above [`CAST_BP`], so the cast applies to the
+/// prefixed operand; postfix `.`, `()`, `[]` and `?` still bind into the
+/// operand: `-x.f()?` negates the result of `x.f()?`.
+pub(crate) const UNARY_BP: u8 = 27;
+
+/// Right binding power of the task prefixes `await` and `fork`. Above
+/// [`UNARY_BP`], so a postfix `?` applies to the awaited value:
+/// `await t?` is `(await t)?`.
+pub(crate) const TASK_PREFIX_BP: u8 = 28;
+
 pub(crate) fn prefix_bp(op: &Token) -> Option<u8> {
     match op {
         // `*expr` is a raw-pointer dereference.  v0.5 parses it only so
         // the type checker can reject it deterministically — no codegen
         // path is reached.  Same binding power as the other unary prefixes.
-        Token::Bang | Token::Minus | Token::Tilde | Token::Star => Some(25),
-        Token::Await => Some(26),
+        Token::Bang | Token::Minus | Token::Tilde | Token::Star => Some(UNARY_BP),
+        Token::Await => Some(TASK_PREFIX_BP),
         _ => None,
     }
 }
-
-/// Right binding power of the contextual `clone <operand>` prefix.
-///
-/// Matches the other unary prefixes (`!`, `-`, `~`) so `clone a + b` parses as
-/// `(clone a) + b` and a postfix chain binds into the operand: `clone x.f()`
-/// clones the result of `x.f()`.
-pub(crate) const CLONE_PREFIX_BP: u8 = 25;
 
 /// Whether `tok` begins an operand for the contextual `clone` prefix.
 ///

@@ -4208,7 +4208,9 @@ impl<'a> Formatter<'a> {
     // ------------------------------------------------------------------
 
     fn format_task_operand(&mut self, operand: &Spanned<Expr>) {
-        if matches!(operand.0, Expr::PostfixTry(_)) && !self.source_parenthesizes(&operand.1) {
+        if matches!(operand.0, Expr::PostfixTry(_) | Expr::Cast { .. })
+            && !self.source_parenthesizes(&operand.1)
+        {
             self.write("(");
             self.format_expr(operand);
             self.write(")");
@@ -4222,7 +4224,7 @@ impl<'a> Formatter<'a> {
     ///
     /// Postfix operators bind at the highest precedence in the Pratt loop.  Any
     /// expression at a strictly lower precedence level — binary ops, prefix unary
-    /// ops, range, `is`, `await`, `clone` — must be wrapped in parens so that
+    /// ops, `as` casts, range, `is`, `await`, `clone` — must be wrapped in parens so that
     /// re-parsing produces the same AST.  Delimited forms (literals, identifiers,
     /// tuples, arrays, blocks, calls, other postfix) are already unambiguous.
     ///
@@ -4245,8 +4247,36 @@ impl<'a> Formatter<'a> {
                 | Expr::Range { .. }
                 | Expr::Is { .. }
                 | Expr::Await(_)
+                | Expr::Cast { .. }
                 | Expr::StructInit { .. }
         )
+    }
+
+    /// Return `true` when `expr` must be parenthesised as the operand of a
+    /// unary prefix (`!`, `-`, `~`, `*`): every binary form and the
+    /// `as` cast bind looser than the prefix (§12.2), so `-(x as u8)` keeps
+    /// its parentheses.
+    fn needs_prefix_operand_parens(expr: &Expr) -> bool {
+        matches!(
+            expr,
+            Expr::Binary { .. }
+                | Expr::Is { .. }
+                | Expr::Range { .. }
+                | Expr::Cast { .. }
+                | Expr::Coalesce { .. }
+                | Expr::Handle { .. }
+                | Expr::ReturnError(_)
+        )
+    }
+
+    /// Return `true` when `expr` must be parenthesised as the operand of `as`.
+    /// A prefix operator binds tighter than the cast (§12.2), so `-x as u8`
+    /// needs none; binary forms bind looser and keep their parentheses.
+    fn needs_cast_operand_parens(expr: &Expr) -> bool {
+        !matches!(
+            expr,
+            Expr::Unary { .. } | Expr::Clone(_) | Expr::Await(_) | Expr::Cast { .. }
+        ) && Self::needs_receiver_parens(expr)
     }
 
     /// Format an expression that appears as the object/receiver of a postfix
@@ -4460,14 +4490,8 @@ impl<'a> Formatter<'a> {
                     UnaryOp::BitNot => self.write("~"),
                     UnaryOp::RawDeref => self.write("*"),
                 }
-                let needs_parens = matches!(
-                    operand.0,
-                    Expr::Binary { .. }
-                        | Expr::Is { .. }
-                        | Expr::Coalesce { .. }
-                        | Expr::Handle { .. }
-                        | Expr::ReturnError(_)
-                ) && self.chooses_parens(&operand.1);
+                let needs_parens = Self::needs_prefix_operand_parens(&operand.0)
+                    && self.chooses_parens(&operand.1);
                 if needs_parens {
                     self.write("(");
                 }
@@ -4924,7 +4948,13 @@ impl<'a> Formatter<'a> {
                 self.write("]");
             }
             Expr::Cast { expr, ty } => {
-                self.format_receiver(expr);
+                if Self::needs_cast_operand_parens(&expr.0) && self.chooses_parens(&expr.1) {
+                    self.write("(");
+                    self.format_expr(expr);
+                    self.write(")");
+                } else {
+                    self.format_expr(expr);
+                }
                 self.write(" as ");
                 self.format_type_expr(&ty.0);
             }

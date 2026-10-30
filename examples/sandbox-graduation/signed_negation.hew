@@ -22,7 +22,7 @@ fn main() {
     println(g);
     println(h);
 
-    // A cast binds tighter than unary minus: negate first, then cast.
+    // Unary minus binds tighter than a cast: negate first, then cast.
     let d: i32 = 7;
-    println((-d) as i64);
+    println(-d as i64);
 }

@@ -1175,10 +1175,9 @@ fn negated_literal_on_an_unsigned_type_is_rejected() {
 
 #[test]
 fn negating_an_unsigned_value_is_rejected() {
-    // `as` binds tighter than unary minus, so `-1.5 as u32` negates a `u32`.
     for source in [
         "fn main() { let a: u32 = 5; println(-a); }",
-        "fn main() { println(-1.5 as u32); }",
+        "fn main() { println(-(1.5 as u32)); }",
         "fn main() { let a: u8 = 5; let b: u8 = -(a + 1); println(b); }",
         // The operand settles unsigned only after the negation is checked.
         "fn main() { let a = 5; let b = -a; let c: u32 = b; println(c); }",

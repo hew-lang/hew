@@ -42,7 +42,9 @@ where
             (d <= max_dist).then(|| (d, c.to_string()))
         })
         .collect();
-    matches.sort_by_key(|(d, _)| *d);
+    // Rank by distance, then spelling: candidates often come from hash
+    // containers, so input order must not decide ties.
+    matches.sort();
     matches.truncate(3);
     matches.into_iter().map(|(_, s)| s).collect()
 }
@@ -1652,6 +1654,16 @@ mod tests {
     }
 
     #[test]
+    fn find_similar_breaks_distance_ties_by_spelling() {
+        // Candidates arrive from hash containers in arbitrary order; equally
+        // close suggestions must still come out the same way every time.
+        let forward = find_similar("colour", ["colours", "colourx", "coloura"]);
+        let reverse = find_similar("colour", ["coloura", "colourx", "colours"]);
+        assert_eq!(forward, ["coloura", "colours", "colourx"]);
+        assert_eq!(reverse, forward);
+    }
+
+    #[test]
     fn test_error_with_notes() {
         let err = TypeError::duplicate_definition(10..20, "foo", 0..5);
         assert_eq!(err.notes.len(), 1);
@@ -1704,11 +1716,11 @@ mod tests {
         let names = ["print", "printl", "printlns", "eprintln", "random"];
         let similar = find_similar("println", names.iter().copied());
         // 4 candidates match (dist ≤ 2), but truncate(3) keeps only 3.
-        // Sorted by distance, stable within same distance (iterator order):
-        //   dist-1: "printl", "printlns", "eprintln"  →  all 3 slots filled
+        // Sorted by distance, then spelling:
+        //   dist-1: "eprintln", "printl", "printlns"  →  all 3 slots filled
         assert_eq!(
             similar,
-            vec!["printl", "printlns", "eprintln"],
+            vec!["eprintln", "printl", "printlns"],
             "should return closest matches sorted by distance"
         );
     }

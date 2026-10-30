@@ -1,0 +1,15 @@
+actor Divider {
+    receive fn rem(a: i8, b: i8) -> i8 {
+        a % b
+    }
+}
+
+fn main() {
+    let divider = spawn Divider;
+    let min: i8 = (-128);
+    match divider.rem(min, -1) {
+        .Ok(value) => println(f"remainder {value}"),
+        .Err(_) => println("handler failed"),
+    }
+    println("after");
+}

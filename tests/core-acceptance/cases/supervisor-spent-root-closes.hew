@@ -1,0 +1,48 @@
+actor Worker {
+    receive fn fail() {
+        panic("worker failed");
+    }
+    receive fn ping() {}
+}
+
+actor Keeper {
+    #[on(stop)]
+    fn stopping() {
+        println("keeper stopped");
+    }
+    receive fn ping() {}
+}
+
+supervisor Root {
+    strategy: one_for_one;
+    intensity: 1 within 60s;
+    child worker: Worker;
+    child keeper: Keeper;
+}
+
+fn spend(root: Root) {
+    for _ in 0 .. 2 {
+        let _ = root.worker.fail();
+        let role = root.worker;
+        restarted(role);
+    }
+}
+
+fn main() {
+    // Observe the spent budget before waiting for the tree.
+    let settled = spawn Root;
+    spend(settled);
+    assert(settled.worker.ping().is_err());
+    stopped(settled);
+    assert(settled.keeper.ping().is_err());
+    println("settled root closed");
+
+    // Wait for the tree while the final ruling may still be pending.
+    let racing = spawn Root;
+    let _ = racing.worker.fail();
+    let role = racing.worker;
+    restarted(role);
+    let _ = racing.worker.fail();
+    stopped(racing);
+    println("racing root closed");
+}

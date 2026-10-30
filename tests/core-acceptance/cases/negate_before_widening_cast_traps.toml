@@ -1,0 +1,10 @@
+[[case]]
+id = "negate_before_widening_cast_traps"
+intent = "`-x as i64` negates the i8 before widening, so i8::MIN traps IntegerOverflow after the widened negation prints 128."
+source = "../vertical-slice/accept/negate_before_widening_cast_traps.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.expected]
+stdout = "128\n"
+exit = 1

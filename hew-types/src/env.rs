@@ -5,7 +5,7 @@
 
 use crate::ty::Ty;
 use hew_parser::ast::{Expr, Ident, Span, Spanned, Symbol};
-use std::collections::HashMap;
+use indexmap::IndexMap;
 
 /// A spelling the lexical environment binds or looks up. Lexical scopes are
 /// keyed by `(Symbol, SyntaxContext)` — an [`Ident`] — so a binding written
@@ -481,7 +481,7 @@ struct LoopScope {
     /// Each visible binding's `observing_reads` when the body opened, so
     /// [`TypeEnv::exit_loop`] can tell a body that observed the binding from
     /// one that only mutated it.
-    observing_reads: HashMap<TypeBindingId, u32>,
+    observing_reads: IndexMap<TypeBindingId, u32>,
 }
 
 /// Ownership state of every visible binding at one point in the control flow.
@@ -491,7 +491,7 @@ struct LoopScope {
 /// one arm's exit state into the next arm.
 #[derive(Debug, Clone, Default)]
 pub struct OwnershipSnapshot {
-    states: HashMap<TypeBindingId, OwnershipState>,
+    states: IndexMap<TypeBindingId, OwnershipState>,
 }
 
 impl OwnershipSnapshot {
@@ -559,7 +559,7 @@ pub enum ScopeWarningKind {
 /// Lookup walks from innermost to outermost scope.
 #[derive(Debug, Clone, Default)]
 pub struct TypeEnv {
-    scopes: Vec<HashMap<Ident, Binding>>,
+    scopes: Vec<IndexMap<Ident, Binding>>,
     /// Deferred bodies registered in each lexical scope, parallel to `scopes`.
     deferred_scopes: Vec<Vec<Spanned<Expr>>>,
     /// Active loop labels, lexical floors and entry ownership snapshots.
@@ -578,7 +578,7 @@ pub struct TypeEnv {
 /// A lexical scope lifted off the stack while a sibling branch is checked.
 #[derive(Debug)]
 pub struct SuspendedScope {
-    bindings: HashMap<Ident, Binding>,
+    bindings: IndexMap<Ident, Binding>,
     defers: Vec<Spanned<Expr>>,
 }
 
@@ -587,7 +587,7 @@ impl TypeEnv {
     #[must_use]
     pub fn new() -> Self {
         Self {
-            scopes: vec![HashMap::new()],
+            scopes: vec![IndexMap::new()],
             deferred_scopes: vec![Vec::new()],
             loop_scope_floors: Vec::new(),
             initialization_floors: Vec::new(),
@@ -608,7 +608,7 @@ impl TypeEnv {
 
     /// Push a new scope onto the stack.
     pub fn push_scope(&mut self) {
-        self.scopes.push(HashMap::new());
+        self.scopes.push(IndexMap::new());
         self.deferred_scopes.push(Vec::new());
     }
 
@@ -684,7 +684,7 @@ impl TypeEnv {
         let observing_reads = self
             .scopes
             .iter()
-            .flat_map(HashMap::values)
+            .flat_map(IndexMap::values)
             .map(|binding| (binding.id, binding.observing_reads))
             .collect();
         self.loop_scope_floors.push(LoopScope {
@@ -699,7 +699,7 @@ impl TypeEnv {
         });
         // Calls checked before a write must also see replacements from later
         // iterations. Exit joins the entry with the actual checked back edges.
-        for binding in self.scopes.iter_mut().flat_map(HashMap::values_mut) {
+        for binding in self.scopes.iter_mut().flat_map(IndexMap::values_mut) {
             if binding.is_mutable {
                 binding.value_candidates = crate::check::IndirectCallCandidates {
                     known: vec![crate::check::CallableCandidate::LoopInput {
@@ -812,7 +812,7 @@ impl TypeEnv {
         // own writes on the next iteration, even when the source reads before
         // it writes. Traversal sees the body once, so credit the observation
         // here rather than leaving the write looking lost.
-        for binding in self.scopes.iter_mut().flat_map(HashMap::values_mut) {
+        for binding in self.scopes.iter_mut().flat_map(IndexMap::values_mut) {
             let floor = scope.observing_reads.get(&binding.id).copied();
             if binding.mutation == MutationState::Unobserved
                 && floor.is_some_and(|floor| binding.observing_reads > floor)
@@ -824,7 +824,7 @@ impl TypeEnv {
         // A re-initialisation inside this loop's body is not one since the
         // head of a loop that is no longer active.
         let depth = self.loop_scope_floors.len();
-        for binding in self.scopes.iter_mut().flat_map(HashMap::values_mut) {
+        for binding in self.scopes.iter_mut().flat_map(IndexMap::values_mut) {
             for fresh in &mut binding.loop_fresh {
                 fresh.loops = fresh.loops.min(depth);
             }
@@ -952,7 +952,7 @@ impl TypeEnv {
     pub(crate) fn initialization_conflicts(&self, ids: &[TypeBindingId]) -> Vec<(String, Binding)> {
         self.scopes
             .iter()
-            .flat_map(HashMap::iter)
+            .flat_map(IndexMap::iter)
             .filter(|(_, binding)| ids.contains(&binding.id))
             .map(|(name, binding)| (name.to_string(), binding.clone()))
             .collect()
@@ -1147,7 +1147,7 @@ impl TypeEnv {
         for scope in &mut environment.deferred_scopes {
             scope.clear();
         }
-        for binding in environment.scopes.iter_mut().flat_map(HashMap::values_mut) {
+        for binding in environment.scopes.iter_mut().flat_map(IndexMap::values_mut) {
             // Captures are independent fields. Their access mode is inferred
             // from writes in this body, regardless of the enclosing binding's
             // mutability. A nested body starts its own observation window.
@@ -1163,7 +1163,7 @@ impl TypeEnv {
     /// its private mutations or invocation-time moves to the enclosing scope.
     pub(crate) fn merge_closure_reads(&mut self, body: &Self) {
         self.next_binding_id = body.next_binding_id;
-        for binding in self.scopes.iter_mut().flat_map(HashMap::values_mut) {
+        for binding in self.scopes.iter_mut().flat_map(IndexMap::values_mut) {
             if let Some(checked) = body.binding_by_id(binding.id) {
                 let captured = checked.read_count > binding.read_count;
                 binding.read_count = binding.read_count.max(checked.read_count);
@@ -1183,14 +1183,14 @@ impl TypeEnv {
     pub(crate) fn binding_name_by_id(&self, id: TypeBindingId) -> Option<(&Ident, &Binding)> {
         self.scopes
             .iter()
-            .flat_map(HashMap::iter)
+            .flat_map(IndexMap::iter)
             .find(|(_, binding)| binding.id == id)
     }
 
     pub(crate) fn binding_by_id(&self, id: TypeBindingId) -> Option<&Binding> {
         self.scopes
             .iter()
-            .flat_map(HashMap::values)
+            .flat_map(IndexMap::values)
             .find(|binding| binding.id == id)
     }
 
@@ -1378,7 +1378,7 @@ impl TypeEnv {
     /// fresh id) is never confused with the binding it shadows.
     #[must_use]
     pub fn ownership_snapshot(&self) -> OwnershipSnapshot {
-        let mut states = HashMap::new();
+        let mut states = IndexMap::new();
         for scope in &self.scopes {
             for binding in scope.values() {
                 states.insert(
@@ -1418,7 +1418,7 @@ impl TypeEnv {
         before: &OwnershipSnapshot,
         selected: &OwnershipSnapshot,
     ) {
-        for binding in self.scopes.iter_mut().flat_map(HashMap::values_mut) {
+        for binding in self.scopes.iter_mut().flat_map(IndexMap::values_mut) {
             let (Some(before), Some(selected)) = (before.get(binding.id), selected.get(binding.id))
             else {
                 continue;
@@ -1456,8 +1456,8 @@ impl TypeEnv {
         entry: &OwnershipSnapshot,
         exits: &[OwnershipSnapshot],
     ) -> OwnershipJoin {
-        let mut merged: HashMap<TypeBindingId, OwnershipState> =
-            HashMap::with_capacity(entry.states.len());
+        let mut merged: IndexMap<TypeBindingId, OwnershipState> =
+            IndexMap::with_capacity(entry.states.len());
         let mut conflicts = Vec::new();
         let mut cleanup = Vec::new();
         for (id, entry_state) in &entry.states {
@@ -1532,8 +1532,8 @@ impl TypeEnv {
     }
 
     fn apply_ownership(
-        scopes: &mut [HashMap<Ident, Binding>],
-        states: &HashMap<TypeBindingId, OwnershipState>,
+        scopes: &mut [IndexMap<Ident, Binding>],
+        states: &IndexMap<TypeBindingId, OwnershipState>,
     ) {
         for scope in scopes.iter_mut() {
             for binding in scope.values_mut() {
@@ -1879,7 +1879,7 @@ impl TypeEnv {
         if let Some(binding) = self
             .scopes
             .iter_mut()
-            .flat_map(HashMap::values_mut)
+            .flat_map(IndexMap::values_mut)
             .find(|binding| binding.id == id)
         {
             binding.value_candidates = candidates;
@@ -1887,14 +1887,14 @@ impl TypeEnv {
     }
 
     pub(crate) fn visible_bindings(&self) -> impl Iterator<Item = &Binding> {
-        self.scopes.iter().flat_map(HashMap::values)
+        self.scopes.iter().flat_map(IndexMap::values)
     }
 
     pub(crate) fn visible_bindings_from_depth(
         &self,
         depth: usize,
     ) -> impl Iterator<Item = &Binding> {
-        self.scopes.iter().skip(depth).flat_map(HashMap::values)
+        self.scopes.iter().skip(depth).flat_map(IndexMap::values)
     }
 
     /// Yield `(name, binding id)` for every binding in the innermost (current)

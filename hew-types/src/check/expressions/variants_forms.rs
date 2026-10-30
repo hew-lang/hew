@@ -486,8 +486,12 @@ else needs `impl Display for {rendered}`)"
         // (local-shadows-global rule).  Pass 1 considers only types recorded in
         // `local_type_defs` or `source_type_defs`; pass 2 considers the rest.
         let mut found = None;
+        // `type_defs` is a hash table; when several enums share the variant,
+        // the first declared one is chosen so recovery and help are stable.
+        let mut ordered_type_defs: Vec<_> = self.type_defs.iter().collect();
+        ordered_type_defs.sort_unstable_by_key(|(id, _)| **id);
         // Pass 1: user-declared types.
-        for (id, td) in &self.type_defs {
+        for &(id, td) in &ordered_type_defs {
             if !self.type_decl_has_bare_variants(*id) {
                 continue;
             }
@@ -508,7 +512,7 @@ else needs `impl Display for {rendered}`)"
         }
         // Pass 2: builtin/imported types (only when no user type matched).
         if found.is_none() {
-            for (id, td) in &self.type_defs {
+            for &(id, td) in &ordered_type_defs {
                 if !self.type_decl_has_bare_variants(*id) {
                     continue;
                 }

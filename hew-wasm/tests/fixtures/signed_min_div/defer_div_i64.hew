@@ -1,0 +1,10 @@
+fn quotient(a: i64, b: i64) -> i64 {
+    defer println("quotient cleanup");
+    a / b
+}
+
+fn main() {
+    let min: i64 = (-9223372036854775808);
+    defer println("main cleanup");
+    println(quotient(min, -1));
+}

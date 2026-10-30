@@ -59,12 +59,12 @@ pub(crate) enum ChildWaitOutcome {
 }
 
 /// How a timed-out child should be terminated.
+#[cfg(unix)]
 #[derive(Clone, Copy, Debug)]
 pub(crate) enum TimeoutKillTarget {
     /// Kill only the direct child process.
     Child,
     /// Kill the child's process group.
-    #[cfg(unix)]
     ProcessGroup,
 }
 
@@ -884,37 +884,6 @@ fn kill_timed_out_child(child: &mut Child, kill_target: TimeoutKillTarget) -> Re
             Ok(false)
         }
     }
-}
-
-/// Kill the process tree rooted at `child` on Windows using `taskkill /T /F`.
-///
-/// Returns `true` only when `taskkill` exits 0, which means it positively
-/// identified and terminated every process in the tree.  All other outcomes
-/// return `false` so the caller detaches drain threads rather than joining:
-///
-/// - Exit 128 ("PID not found"): the root child exited on its own between
-///   `try_wait()` and this call.  Its descendants may still be alive and
-///   holding inherited pipe write-ends open, so we cannot claim the tree is
-///   dead.
-/// - Any other non-zero exit or spawn failure: partial or no kill; fall back
-///   to `child.kill()` for the root and return `false`.
-#[cfg(windows)]
-fn kill_timed_out_child(child: &mut Child, kill_target: TimeoutKillTarget) -> Result<bool, String> {
-    match kill_target {
-        TimeoutKillTarget::Child => {
-            kill_child_only(child)?;
-            Ok(false)
-        }
-    }
-}
-
-#[cfg(not(any(unix, windows)))]
-fn kill_timed_out_child(
-    child: &mut Child,
-    _kill_target: TimeoutKillTarget,
-) -> Result<bool, String> {
-    kill_child_only(child)?;
-    Ok(false)
 }
 
 /// Kill the process tree rooted at `child` on Windows using `taskkill /T /F`.

@@ -2507,15 +2507,12 @@ const fn capability_name(capability: hew_types::ValueCapability) -> Capability {
 }
 
 /// SIR's trap kinds carried into the trace schema's vocabulary.
-///
-/// `SignedMinDivNegOne` is an overflow: dividing the signed minimum by -1 has
-/// no representable result, and native execution exits with the overflow
-/// status.
 const fn trap_kind(kind: TrapKind) -> wire::TrapName {
     match kind {
         TrapKind::HeapExceeded => wire::TrapName::HeapExceeded,
-        TrapKind::IntegerOverflow | TrapKind::SignedMinDivNegOne => wire::TrapName::IntegerOverflow,
+        TrapKind::IntegerOverflow => wire::TrapName::IntegerOverflow,
         TrapKind::DivideByZero => wire::TrapName::DivideByZero,
+        TrapKind::SignedMinDivNegOne => wire::TrapName::SignedMinDivNegOne,
         TrapKind::ShiftOutOfRange => wire::TrapName::ShiftOutOfRange,
         TrapKind::IndexOutOfBounds => wire::TrapName::VectorBounds,
         TrapKind::ActorRefused => wire::TrapName::ActorRefused,

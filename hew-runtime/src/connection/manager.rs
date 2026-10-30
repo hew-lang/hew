@@ -230,6 +230,36 @@ pub(crate) unsafe fn hew_connmgr_mark_stopping(mgr: *mut HewConnMgr) {
     mgr_ref.reconnect_shutdown.store(true, Ordering::Release);
 }
 
+/// Cancel every blocking transport operation of a stopping manager.
+///
+/// Node stop calls this after [`hew_connmgr_mark_stopping`] and before joining
+/// the threads that run admissions and probes, so a stalled peer cannot hold
+/// teardown: an inbound handshake read, a seed dial's admission or a send into
+/// a full socket buffer each fail promptly instead of waiting on the peer.
+/// Installed readers are marked stopped first so their wake-up is an expected
+/// stop, never a removal or a reconnect. An admission that stores its socket
+/// after the sweep next observes the shutdown flag and closes it; the
+/// transport's slot lock orders that store against the sweep. Slots stay
+/// allocated, so [`hew_connmgr_free`] still closes each one exactly once.
+///
+/// # Safety
+///
+/// `mgr` must be null or a valid pointer returned by [`hew_connmgr_new`].
+pub(crate) unsafe fn hew_connmgr_cancel_io(mgr: *mut HewConnMgr) {
+    // SAFETY: caller guarantees `mgr` is null or valid for the call.
+    let Some(mgr) = (unsafe { mgr.as_ref() }) else {
+        return;
+    };
+    debug_assert!(mgr.reconnect_shutdown.load(Ordering::Acquire));
+    mgr.connections.access(|connections| {
+        for connection in connections.iter() {
+            connection.reader_stop.store(1, Ordering::Release);
+        }
+    });
+    // SAFETY: the manager's transport outlives the manager.
+    unsafe { crate::transport::hew_transport_cancel_io(mgr.transport) };
+}
+
 pub(crate) unsafe fn hew_connmgr_shutdown_flag(mgr: *mut HewConnMgr) -> Option<Arc<AtomicBool>> {
     if mgr.is_null() {
         return None;

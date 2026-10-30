@@ -2038,6 +2038,11 @@ pub unsafe extern "C" fn hew_node_stop(node: *mut HewNode) -> c_int {
                 }
             });
         }
+        // Admission is closed: wake every thread still blocked on a peer (the
+        // accept thread mid-handshake, a seed dial, a probe send) so the joins
+        // below wait only on local work.
+        // SAFETY: the node still owns its manager; it is freed below.
+        unsafe { connection::hew_connmgr_cancel_io(node.conn_mgr) };
         stop_node_accept_thread(node);
 
         // Stop and JOIN the SWIM ticker before freeing the cluster / conn_mgr

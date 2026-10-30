@@ -1,0 +1,13 @@
+[[case]]
+id = "driver-shutdown-hook-work-adds-no-virtual-time"
+intent = "Under the deterministic driver, a stop hook that spawns and messages an actor during shutdown is run by the drain without advancing the virtual clock."
+source = "cases/driver-shutdown-hook-work-adds-no-virtual-time.hew"
+suites = ["acceptance"]
+timeout_seconds = 10
+
+[case.env]
+HEW_DETERMINISTIC = ""
+
+[case.expected]
+stdout = "ping\nmain done\nparent stop after 0ms\nchild hi\nchild stop after 0ms\n"
+exit = 0

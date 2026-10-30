@@ -3,12 +3,21 @@
 //! Hew logical failures use typed Rust/C-unwind propagation through generated
 //! LLVM cleanup landing pads. A synchronous hardware fault can interrupt an
 //! arbitrary ownership operation, so resuming it—especially with longjmp—is
-//! unsound. Unix installs an alternate-stack handler that performs only
-//! async-signal-safe diagnostic output and `_exit`. Windows uses a vectored
-//! exception handler that writes the same diagnostic and terminates the process.
+//! unsound. Every thread that runs Hew code registers its stack bounds; the
+//! fault handler classifies a fault in the stack guard as `StackOverflow`,
+//! writes one allocation-free record, and lets the process die by the original
+//! signal or exception, so the operating system's crash artefacts (cores,
+//! macOS crash reports, Windows Error Reporting dumps) are still produced.
 //! Other targets retain their platform default fatal disposition.
 
 use std::cell::Cell;
+
+#[cfg(not(target_arch = "wasm32"))]
+mod frames;
+#[cfg(not(target_arch = "wasm32"))]
+mod record;
+#[cfg(not(target_arch = "wasm32"))]
+mod stack;
 
 thread_local! {
     /// Nested actor-state finalizers. This remains an explicit invariant guard
@@ -64,196 +73,14 @@ pub(crate) fn state_field_finalizer_depth() -> usize {
 }
 
 #[cfg(unix)]
-mod platform {
-    use std::cell::RefCell;
-    use std::mem::MaybeUninit;
-    use std::ptr;
-    use std::sync::Once;
-
-    const ALT_STACK_BYTES: usize = 64 * 1024;
-    const FATAL_MESSAGE: &[u8] = b"hew: fatal synchronous hardware fault\n";
-
-    #[derive(Debug)]
-    struct AlternateStack(Box<[u8]>);
-
-    fn current_stack() -> libc::stack_t {
-        let mut stack = MaybeUninit::<libc::stack_t>::uninit();
-        // SAFETY: a null first argument queries this thread's registration.
-        if unsafe { libc::sigaltstack(ptr::null(), stack.as_mut_ptr()) } != 0 {
-            std::process::abort();
-        }
-        // SAFETY: the successful query initialized the complete stack_t.
-        unsafe { stack.assume_init() }
-    }
-
-    impl Drop for AlternateStack {
-        fn drop(&mut self) {
-            let registered = current_stack();
-            if registered.ss_flags & libc::SS_DISABLE != 0
-                || registered.ss_sp != self.0.as_mut_ptr().cast()
-            {
-                return;
-            }
-            let disabled = libc::stack_t {
-                ss_sp: ptr::null_mut(),
-                ss_flags: libc::SS_DISABLE,
-                ss_size: self.0.len(),
-            };
-            // SAFETY: this thread installed and still owns the registered memory.
-            unsafe {
-                if libc::sigaltstack(&raw const disabled, ptr::null_mut()) != 0 {
-                    std::process::abort();
-                }
-            }
-        }
-    }
-
-    thread_local! {
-        /// Owns the memory registered with `sigaltstack` for this worker's
-        /// lifetime. The handler never touches this Rust container.
-        static ALT_STACK: RefCell<Option<AlternateStack>> = const { RefCell::new(None) };
-    }
-
-    unsafe extern "C" fn fatal_signal_handler(
-        signal: libc::c_int,
-        _info: *mut libc::siginfo_t,
-        _context: *mut libc::c_void,
-    ) {
-        // SAFETY: write and _exit are async-signal-safe POSIX operations; the
-        // buffer is static and its exact length is supplied.
-        unsafe {
-            let _ = libc::write(
-                libc::STDERR_FILENO,
-                FATAL_MESSAGE.as_ptr().cast(),
-                FATAL_MESSAGE.len(),
-            );
-            libc::_exit(128_i32.saturating_add(signal));
-        }
-    }
-
-    pub(crate) fn init_crash_handling() {
-        static INSTALL: Once = Once::new();
-        INSTALL.call_once(|| {
-            let signals = [
-                libc::SIGSEGV,
-                libc::SIGBUS,
-                libc::SIGFPE,
-                libc::SIGILL,
-                libc::SIGTRAP,
-            ];
-            for signal in signals {
-                let mut action = MaybeUninit::<libc::sigaction>::zeroed();
-                // SAFETY: zero is a valid initial representation; all required
-                // sigaction fields are initialized below.
-                let action = unsafe { action.assume_init_mut() };
-                action.sa_sigaction = fatal_signal_handler as *const () as usize;
-                action.sa_flags = libc::SA_SIGINFO | libc::SA_ONSTACK;
-                // SAFETY: action points to initialized writable storage.
-                unsafe {
-                    libc::sigemptyset(&raw mut action.sa_mask);
-                    if libc::sigaction(signal, action, ptr::null_mut()) != 0 {
-                        std::process::abort();
-                    }
-                }
-            }
-        });
-    }
-
-    pub(crate) fn init_worker_recovery(_worker_id: u32) {
-        ALT_STACK.with(|slot| {
-            if slot.borrow().is_some() {
-                return;
-            }
-            if current_stack().ss_flags & libc::SS_DISABLE == 0 {
-                return;
-            }
-            let mut memory = vec![0_u8; ALT_STACK_BYTES].into_boxed_slice();
-            let stack = libc::stack_t {
-                ss_sp: memory.as_mut_ptr().cast(),
-                ss_flags: 0,
-                ss_size: memory.len(),
-            };
-            // SAFETY: memory remains owned by ALT_STACK until thread teardown.
-            if unsafe { libc::sigaltstack(&raw const stack, ptr::null_mut()) } != 0 {
-                std::process::abort();
-            }
-            *slot.borrow_mut() = Some(AlternateStack(memory));
-        });
-    }
-
-    pub(crate) fn ignore_sigpipe() {
-        // SAFETY: setting SIGPIPE to SIG_IGN is process-wide and idempotent.
-        unsafe {
-            libc::signal(libc::SIGPIPE, libc::SIG_IGN);
-        }
-    }
-}
+mod unix;
+#[cfg(unix)]
+use unix as platform;
 
 #[cfg(windows)]
-mod platform {
-    use std::sync::Once;
-
-    use windows_sys::Win32::Foundation::{
-        EXCEPTION_ACCESS_VIOLATION, EXCEPTION_ARRAY_BOUNDS_EXCEEDED, EXCEPTION_BREAKPOINT,
-        EXCEPTION_DATATYPE_MISALIGNMENT, EXCEPTION_FLT_DENORMAL_OPERAND,
-        EXCEPTION_FLT_DIVIDE_BY_ZERO, EXCEPTION_FLT_INEXACT_RESULT,
-        EXCEPTION_FLT_INVALID_OPERATION, EXCEPTION_FLT_OVERFLOW, EXCEPTION_FLT_STACK_CHECK,
-        EXCEPTION_FLT_UNDERFLOW, EXCEPTION_ILLEGAL_INSTRUCTION, EXCEPTION_INT_DIVIDE_BY_ZERO,
-        EXCEPTION_INT_OVERFLOW, EXCEPTION_IN_PAGE_ERROR, EXCEPTION_PRIV_INSTRUCTION,
-    };
-    use windows_sys::Win32::System::Diagnostics::Debug::{
-        AddVectoredExceptionHandler, EXCEPTION_CONTINUE_SEARCH, EXCEPTION_POINTERS,
-    };
-    use windows_sys::Win32::System::Threading::{GetCurrentProcess, TerminateProcess};
-
-    const FATAL_MESSAGE: &[u8] = b"hew: fatal synchronous hardware fault\n";
-
-    unsafe extern "system" fn fatal_exception_handler(info: *mut EXCEPTION_POINTERS) -> i32 {
-        // SAFETY: Windows provides valid exception records for the callback.
-        let code = unsafe { (*(*info).ExceptionRecord).ExceptionCode };
-        // Match Unix's 128 + signal exit codes. In particular, do not intercept
-        // Rust/C++ unwind exceptions or guard-page notifications used by the OS.
-        let status = match code {
-            EXCEPTION_ILLEGAL_INSTRUCTION | EXCEPTION_PRIV_INSTRUCTION => 132,
-            EXCEPTION_BREAKPOINT => 133,
-            EXCEPTION_DATATYPE_MISALIGNMENT | EXCEPTION_IN_PAGE_ERROR => 135,
-            EXCEPTION_FLT_DENORMAL_OPERAND
-            | EXCEPTION_FLT_DIVIDE_BY_ZERO
-            | EXCEPTION_FLT_INEXACT_RESULT
-            | EXCEPTION_FLT_INVALID_OPERATION
-            | EXCEPTION_FLT_OVERFLOW
-            | EXCEPTION_FLT_STACK_CHECK
-            | EXCEPTION_FLT_UNDERFLOW
-            | EXCEPTION_INT_DIVIDE_BY_ZERO
-            | EXCEPTION_INT_OVERFLOW => 136,
-            EXCEPTION_ACCESS_VIOLATION | EXCEPTION_ARRAY_BOUNDS_EXCEEDED => 139,
-            _ => return EXCEPTION_CONTINUE_SEARCH,
-        };
-        // Avoid Rust formatting, allocation, locks and unwinding on a damaged
-        // thread. TerminateProcess on the current process never returns on
-        // success; abort is only the fail-closed fallback for an API failure.
-        // SAFETY: the diagnostic buffer is static and the pseudo-handle
-        // always identifies the current process.
-        unsafe {
-            crate::trap_code::write_stderr(FATAL_MESSAGE);
-            let _ = TerminateProcess(GetCurrentProcess(), status);
-        }
-        std::process::abort();
-    }
-
-    pub(crate) fn init_crash_handling() {
-        static INSTALL: Once = Once::new();
-        INSTALL.call_once(|| {
-            // SAFETY: the callback remains resident for the process lifetime.
-            if unsafe { AddVectoredExceptionHandler(1, Some(fatal_exception_handler)) }.is_null() {
-                std::process::abort();
-            }
-        });
-    }
-
-    pub(crate) fn init_worker_recovery(_worker_id: u32) {}
-    pub(crate) fn ignore_sigpipe() {}
-}
+mod windows;
+#[cfg(windows)]
+use windows as platform;
 
 #[cfg(all(not(any(unix, windows)), not(target_arch = "wasm32")))]
 mod platform {

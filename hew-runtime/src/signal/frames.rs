@@ -2,63 +2,18 @@
 //!
 //! Frames come from the image's unwind tables (CFI), the same tables that
 //! carry Hew failures through cleanup pads, so the walk needs no frame
-//! pointers from generated code. Runs of one return address (deep recursion)
+//! pointers from generated code. Frames land in the shared
+//! [`FailureRecord`], whose runs of one return address (deep recursion)
 //! collapse into a single entry with a repeat count, so an overflow of
 //! hundreds of thousands of frames still fits.
 
 #[cfg(unix)]
 use super::stack::StackBounds;
-
-/// Distinct frame runs kept for the record.
-pub(crate) const MAX_FRAMES: usize = 48;
-
-/// One run of identical frames.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) struct FrameRun {
-    pub(crate) pc: usize,
-    /// How many consecutive frames had this pc (at least 1).
-    pub(crate) count: u64,
-}
-
-/// A captured stack, in a fixed buffer.
-#[derive(Debug)]
-pub(crate) struct Frames {
-    runs: [FrameRun; MAX_FRAMES],
-    len: usize,
-    /// Frames walked after the buffer filled.
-    pub(crate) omitted: u64,
-}
-
-impl Frames {
-    pub(crate) const EMPTY: Self = Self {
-        runs: [FrameRun { pc: 0, count: 0 }; MAX_FRAMES],
-        len: 0,
-        omitted: 0,
-    };
-
-    pub(crate) fn clear(&mut self) {
-        self.len = 0;
-        self.omitted = 0;
-    }
-
-    pub(crate) fn runs(&self) -> &[FrameRun] {
-        &self.runs[..self.len]
-    }
-
-    pub(crate) fn push(&mut self, pc: usize) {
-        if self.len > 0 && self.runs[self.len - 1].pc == pc {
-            self.runs[self.len - 1].count += 1;
-        } else if self.len < MAX_FRAMES {
-            self.runs[self.len] = FrameRun { pc, count: 1 };
-            self.len += 1;
-        } else {
-            self.omitted += 1;
-        }
-    }
-}
+#[cfg(unix)]
+use crate::failure_record::FailureRecord;
 
 #[cfg(unix)]
-pub(crate) use unwind::{capture, warm_up};
+pub(crate) use unwind::{capture, capture_current, warm_up};
 
 /// Upper bound on frames visited; an 8 MiB stack of minimal frames holds
 /// fewer.
@@ -74,7 +29,7 @@ struct Collector<'a> {
     stack: StackBounds,
     reached: bool,
     steps: usize,
-    out: &'a mut Frames,
+    out: &'a mut FailureRecord,
 }
 
 #[cfg(unix)]
@@ -86,8 +41,8 @@ impl Collector<'_> {
     /// stack and are skipped. The faulting thread's frames begin at the
     /// faulting pc, or at the first frame whose CFA lies on that thread's
     /// stack: Darwin's unwinder steps from `_sigtramp` straight to the
-    /// faulting frame's caller. A frame whose `ip` is a return address
-    /// reports `ip - 1`, the call itself, so its line is the call site.
+    /// faulting frame's caller. A frame whose `ip` is already the call
+    /// (`before_insn`) is stored one past it, as a return address.
     fn visit(&mut self, ip: usize, before_insn: bool, cfa: usize) -> bool {
         self.steps += 1;
         if ip == 0 || self.steps > MAX_STEPS {
@@ -99,12 +54,14 @@ impl Collector<'_> {
                 return true;
             }
             self.reached = true;
-            self.out.push(self.fault_pc);
+            self.out.push_frame(self.fault_pc);
             if ip == self.fault_pc {
                 return true;
             }
         }
-        self.out.push(if before_insn { ip } else { ip - 1 });
+        // The record keeps return addresses as the unwinder reports them;
+        // its readers look up `pc - 1` for every frame but the fault's.
+        self.out.push_frame(if before_insn { ip + 1 } else { ip });
         true
     }
 
@@ -112,8 +69,8 @@ impl Collector<'_> {
     /// never reaches the fault, and then the faulting pc is the whole record.
     fn finish(self) {
         if !self.reached {
-            self.out.clear();
-            self.out.push(self.fault_pc);
+            self.out.clear_frames();
+            self.out.push_frame(self.fault_pc);
         }
     }
 }
@@ -122,7 +79,7 @@ impl Collector<'_> {
 mod unwind {
     use std::ffi::{c_int, c_void};
 
-    use super::{Collector, Frames, StackBounds};
+    use super::{Collector, FailureRecord, StackBounds};
 
     #[repr(C)]
     struct UnwindContext {
@@ -167,8 +124,8 @@ mod unwind {
     /// Its table lookup may take the loader's lock, which is recursive for
     /// the faulting thread, so the walk can only wait on another thread that
     /// is itself still running.
-    pub(crate) fn capture(fault_pc: usize, stack: StackBounds, out: &mut Frames) {
-        out.clear();
+    pub(crate) fn capture(fault_pc: usize, stack: StackBounds, out: &mut FailureRecord) {
+        out.clear_frames();
         let mut collector = Collector {
             fault_pc,
             stack,
@@ -184,8 +141,44 @@ mod unwind {
     /// Run one walk outside any handler, so the unwinder's lazily bound
     /// symbols and table lookups are resolved before a fault needs them.
     pub(crate) fn warm_up() {
-        let mut out = Frames::EMPTY;
+        let mut out = FailureRecord::EMPTY;
         capture(0, StackBounds::UNKNOWN, &mut out);
+    }
+
+    /// The walk of a failure raised by code rather than a fault.
+    struct Here<'a> {
+        skip: usize,
+        out: &'a mut [usize],
+        len: usize,
+    }
+
+    unsafe extern "C" fn here(context: *mut UnwindContext, arg: *mut c_void) -> c_int {
+        // SAFETY: `capture_current` passes its live walk as the argument.
+        let walk = unsafe { &mut *arg.cast::<Here<'_>>() };
+        let mut before_insn: c_int = 0;
+        // SAFETY: the unwinder passes a valid context for this frame.
+        let ip = unsafe { _Unwind_GetIPInfo(context, &raw mut before_insn) };
+        if ip == 0 || walk.len == walk.out.len() {
+            return URC_END_OF_STACK;
+        }
+        if walk.skip > 0 {
+            walk.skip -= 1;
+            return URC_NO_REASON;
+        }
+        walk.out[walk.len] = ip;
+        walk.len += 1;
+        URC_NO_REASON
+    }
+
+    /// Write the calling thread's return addresses into `out`, innermost
+    /// first, after skipping `skip` frames (this one included); returns how
+    /// many were written.
+    #[inline(never)]
+    pub(crate) fn capture_current(skip: usize, out: &mut [usize]) -> usize {
+        let mut walk = Here { skip, out, len: 0 };
+        // SAFETY: `here` only uses the walk for the call's duration.
+        unsafe { _Unwind_Backtrace(here, (&raw mut walk).cast()) };
+        walk.len
     }
 }
 
@@ -207,8 +200,8 @@ mod tests {
     const ON: usize = 0x18_0000;
 
     #[cfg(unix)]
-    fn collect(fault_pc: usize, frames: &[(usize, bool, usize)]) -> Vec<(usize, u64)> {
-        let mut out = Frames::EMPTY;
+    fn collect(fault_pc: usize, frames: &[(usize, bool, usize)]) -> Vec<(usize, u32)> {
+        let mut out = FailureRecord::EMPTY;
         let mut collector = Collector {
             fault_pc,
             stack: STACK,
@@ -222,7 +215,10 @@ mod tests {
             }
         }
         collector.finish();
-        out.runs().iter().map(|run| (run.pc, run.count)).collect()
+        out.frames()
+            .iter()
+            .map(|frame| (frame.pc, frame.repeat))
+            .collect()
     }
 
     #[test]
@@ -237,7 +233,7 @@ mod tests {
         frames.extend([(0xBBB1, false, ON), (0xCCC1, false, ON)]);
         assert_eq!(
             collect(0xAAA0, &frames),
-            [(0xAAA0, 1), (0xAAB0, 1000), (0xBBB0, 1), (0xCCC0, 1)]
+            [(0xAAA0, 1), (0xAAB1, 1000), (0xBBB1, 1), (0xCCC1, 1)]
         );
     }
 
@@ -250,14 +246,14 @@ mod tests {
             (0x7100, false, ALT),
             (0xAAB1, false, ON),
         ];
-        assert_eq!(collect(0xAAA4, &frames), [(0xAAA4, 1), (0xAAB0, 1)]);
+        assert_eq!(collect(0xAAA4, &frames), [(0xAAA4, 1), (0xAAB1, 1)]);
     }
 
     #[test]
     #[cfg(unix)]
     fn a_frame_in_the_guard_is_on_the_thread_stack() {
         let frames = [(0x7000, false, ALT), (0xAAB1, false, STACK.low - 8)];
-        assert_eq!(collect(0xAAA4, &frames), [(0xAAA4, 1), (0xAAB0, 1)]);
+        assert_eq!(collect(0xAAA4, &frames), [(0xAAA4, 1), (0xAAB1, 1)]);
     }
 
     #[test]
@@ -280,31 +276,30 @@ mod tests {
             (0, false, ON),
             (0x6001, false, ON),
         ];
-        assert_eq!(collect(0x4242, &frames), [(0x4242, 1), (0x5000, 1)]);
+        assert_eq!(collect(0x4242, &frames), [(0x4242, 1), (0x5001, 1)]);
     }
 
     #[test]
     #[cfg(unix)]
     fn the_live_unwinder_without_a_fault_frame_reports_only_its_pc() {
         // Unknown bounds: only the faulting pc can mark the fault frame.
-        let mut out = Frames::EMPTY;
+        let mut out = FailureRecord::EMPTY;
         capture(0xDEAD, StackBounds::UNKNOWN, &mut out);
-        assert_eq!(
-            out.runs(),
-            &[FrameRun {
-                pc: 0xDEAD,
-                count: 1
-            }]
-        );
+        let frames: Vec<_> = out
+            .frames()
+            .iter()
+            .map(|frame| (frame.pc, frame.repeat))
+            .collect();
+        assert_eq!(frames, [(0xDEAD, 1)]);
     }
 
     #[test]
     fn distinct_frames_past_capacity_are_counted() {
-        let mut frames = Frames::EMPTY;
-        for pc in 0..(MAX_FRAMES + 5) {
-            frames.push(pc);
+        let mut record = crate::failure_record::FailureRecord::EMPTY;
+        for pc in 0..(crate::failure_record::MAX_FRAMES + 5) {
+            record.push_frame(pc);
         }
-        assert_eq!(frames.runs().len(), MAX_FRAMES);
-        assert_eq!(frames.omitted, 5);
+        assert_eq!(record.frames().len(), crate::failure_record::MAX_FRAMES);
+        assert_eq!(record.frames_omitted, 5);
     }
 }

@@ -3,12 +3,12 @@
 //! Hew logical failures use typed Rust/C-unwind propagation through generated
 //! LLVM cleanup landing pads. A synchronous hardware fault can interrupt an
 //! arbitrary ownership operation, so resuming it—especially with longjmp—is
-//! unsound, and every such fault is process-fatal (§5.7), stack exhaustion
-//! included. Every thread that runs Hew code registers its stack bounds; the
-//! fault handler classifies a fault in the stack guard as `StackOverflow`,
-//! writes one allocation-free record, and lets the process die by the original
-//! signal or exception, so the operating system's crash artefacts (cores,
-//! macOS crash reports, Windows Error Reporting dumps) are still produced.
+//! unsound, and such a fault is process-fatal (§5.7). Every thread that runs
+//! Hew code registers its stack bounds; the fault handler classifies a fault
+//! in the stack guard as `StackOverflow`, fills the shared `FailureRecord`
+//! without allocating, and lets the process die by the original signal or
+//! exception, so the operating system's crash artefacts (cores, macOS crash
+//! reports, Windows Error Reporting dumps) are still produced.
 //! Other targets retain their platform default fatal disposition.
 
 use std::cell::Cell;
@@ -92,6 +92,17 @@ mod platform {
 
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) use platform::{ignore_sigpipe, init_crash_handling, init_worker_recovery};
+
+#[cfg(unix)]
+pub(crate) use frames::capture_current;
+#[cfg(any(unix, windows))]
+pub(crate) use platform::describe_fault;
+
+/// The name of a fault signal and whether a process sent it.
+#[cfg(not(any(unix, windows)))]
+pub(crate) const fn describe_fault(_signal: i32, _si_code: i32) -> (&'static str, bool) {
+    ("signal", false)
+}
 
 #[cfg(test)]
 mod tests {

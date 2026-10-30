@@ -62,6 +62,9 @@ pub struct FailureFrame {
     pub file: *const c_char,
     /// One-based line of `pc`, zero if unknown.
     pub line: u32,
+    /// Consecutive frames at this `pc` the entry stands for: deep recursion
+    /// collapses into one entry. Zero in an unused slot.
+    pub repeat: u32,
 }
 
 /// The actor that was running when the failure was raised.
@@ -134,6 +137,8 @@ pub struct FailureRecord {
     pub site: FailureSite,
     /// Valid entries in `frames`.
     pub frame_count: u32,
+    /// Frames walked after `frames` filled.
+    pub frames_omitted: u32,
     /// Return addresses from the origin outward.
     pub frames: [FailureFrame; MAX_FRAMES],
     /// Name of the failing thread, NUL-padded.
@@ -168,6 +173,7 @@ const EMPTY_FRAME: FailureFrame = FailureFrame {
     hew_fn: std::ptr::null(),
     file: std::ptr::null(),
     line: 0,
+    repeat: 0,
 };
 
 impl FailureRecord {
@@ -187,6 +193,7 @@ impl FailureRecord {
             offset: u32::MAX,
         },
         frame_count: 0,
+        frames_omitted: 0,
         frames: [EMPTY_FRAME; MAX_FRAMES],
         thread: [0; THREAD_NAME_CAPACITY],
         worker_id: 0,
@@ -251,6 +258,34 @@ impl FailureRecord {
         &self.frames[..(self.frame_count as usize).min(MAX_FRAMES)]
     }
 
+    /// Append the next outer frame, folding a repeat of the previous `pc`
+    /// into its count. Async-signal-safe.
+    pub fn push_frame(&mut self, pc: usize) {
+        let count = (self.frame_count as usize).min(MAX_FRAMES);
+        if let Some(last) = self.frames[..count].last_mut() {
+            if last.pc == pc {
+                last.repeat = last.repeat.saturating_add(1);
+                return;
+            }
+        }
+        if count == MAX_FRAMES {
+            self.frames_omitted = self.frames_omitted.saturating_add(1);
+            return;
+        }
+        self.frames[count] = FailureFrame {
+            pc,
+            repeat: 1,
+            ..EMPTY_FRAME
+        };
+        self.frame_count += 1;
+    }
+
+    /// Forget every captured frame.
+    pub fn clear_frames(&mut self) {
+        self.frame_count = 0;
+        self.frames_omitted = 0;
+    }
+
     /// The source file of the site, if the binary's tables named one.
     #[must_use]
     pub fn site_file(&self) -> Option<&'static str> {
@@ -272,6 +307,7 @@ impl FailureRecord {
                     // SAFETY: frame files point into the static file table.
                     "file": unsafe { static_str(frame.file) },
                     "line": (frame.line != 0).then_some(frame.line),
+                    "repeat": frame.repeat,
                 })
             })
             .collect();
@@ -290,6 +326,7 @@ impl FailureRecord {
                 "offset": (self.site.offset != u32::MAX).then_some(self.site.offset),
             },
             "frames": frames,
+            "frames_omitted": self.frames_omitted,
             "thread": padded_str(&self.thread),
             "worker_id": (self.worker_id != 0).then(|| self.worker_id - 1),
             "actor": (self.actor.id != 0).then(|| serde_json::json!({
@@ -571,14 +608,32 @@ pub fn format_with(
     }
 
     if record.signal.signal != 0 {
-        out.bytes(b"hew:   signal ");
-        out.signed(i64::from(record.signal.signal));
-        out.bytes(b" code ");
-        out.signed(i64::from(record.signal.si_code));
-        out.bytes(b" at ");
-        out.hex(record.signal.fault_addr as u64);
-        if record.signal.guard_hit != 0 {
-            out.bytes(b" (stack guard)");
+        let (name, sent) =
+            crate::signal::describe_fault(record.signal.signal, record.signal.si_code);
+        out.bytes(b"hew:   ");
+        out.bytes(name.as_bytes());
+        out.bytes(b" (");
+        // Windows exception codes read as hex; Unix signal numbers as decimal.
+        let code = record.signal.signal.cast_unsigned();
+        if code > 0xFFFF {
+            out.hex(u64::from(code));
+        } else {
+            out.decimal(u64::from(code));
+        }
+        out.bytes(b")");
+        if sent {
+            out.bytes(b" sent by kill");
+        } else {
+            out.bytes(b" at ");
+            out.hex(record.signal.fault_addr as u64);
+            if record.signal.guard_hit != 0 {
+                out.bytes(b" (stack guard)");
+            }
+        }
+        // An actor's line below names its thread.
+        if record.actor.id == 0 && record.thread[0] != 0 {
+            out.bytes(b", thread ");
+            out.padded(&record.thread);
         }
         out.bytes(b"\n");
     }
@@ -619,7 +674,7 @@ pub fn format_with(
         for frame in record.frames() {
             let named = !frame.hew_fn.is_null();
             if !named && backtrace == Backtrace::Hew {
-                collapsed += 1;
+                collapsed += u64::from(frame.repeat.max(1));
                 continue;
             }
             if collapsed != 0 {
@@ -642,6 +697,16 @@ pub fn format_with(
                 out.bytes(b")");
             }
             out.bytes(b"\n");
+            if frame.repeat > 1 {
+                out.bytes(b"hew:     (... ");
+                out.decimal(u64::from(frame.repeat - 1));
+                out.bytes(b" identical frames)\n");
+            }
+        }
+        if record.frames_omitted != 0 {
+            out.bytes(b"hew:   ... ");
+            out.decimal(u64::from(record.frames_omitted));
+            out.bytes(b" more frames\n");
         }
         // Frames past the last Hew frame are the runtime's own entry; a
         // trailing count says nothing a user can act on.
@@ -744,12 +809,19 @@ pub fn last_fault_ptr() -> *const FailureRecord {
 // ── Origin capture ───────────────────────────────────────────────────────
 
 /// Name each captured frame from the compiler's symbol table. Frames outside
-/// Hew code keep a null name and collapse in the report.
+/// Hew code keep a null name and collapse in the report. Async-signal-safe.
 pub fn name_frames(record: &mut FailureRecord) {
     let count = (record.frame_count as usize).min(MAX_FRAMES);
-    for frame in &mut record.frames[..count] {
-        // A return address points one past the call; look up the call itself.
-        if let Some(function) = crate::symtab_abi::function_at(frame.pc.saturating_sub(1)) {
+    let fault = record.signal.signal != 0;
+    for (index, frame) in record.frames[..count].iter_mut().enumerate() {
+        // A return address points one past the call; look up the call
+        // itself. A fault's first frame is the faulting instruction.
+        let lookup = if fault && index == 0 {
+            frame.pc
+        } else {
+            frame.pc.saturating_sub(1)
+        };
+        if let Some(function) = crate::symtab_abi::function_at(lookup) {
             frame.hew_fn = function.name;
             if let Some(position) = function.position {
                 frame.file = position.file;
@@ -767,9 +839,16 @@ pub fn name_frames(record: &mut FailureRecord) {
 /// unwind tables both the runtime and Hew code carry instead.
 #[inline(never)]
 pub fn capture_frames(record: &mut FailureRecord) {
-    record.frame_count = 0;
-    #[cfg(all(unix, not(target_arch = "wasm32")))]
-    unwind::capture(record);
+    record.clear_frames();
+    #[cfg(unix)]
+    {
+        let mut addresses = [0usize; MAX_FRAMES];
+        // Skip `capture_current` and this function.
+        let count = crate::signal::capture_current(2, &mut addresses);
+        for pc in &addresses[..count] {
+            record.push_frame(*pc);
+        }
+    }
     #[cfg(windows)]
     {
         let mut addresses = [std::ptr::null_mut::<std::ffi::c_void>(); MAX_FRAMES];
@@ -782,71 +861,9 @@ pub fn capture_frames(record: &mut FailureRecord) {
                 std::ptr::null_mut(),
             )
         };
-        for (frame, address) in record
-            .frames
-            .iter_mut()
-            .zip(&addresses[..usize::from(count)])
-        {
-            frame.pc = *address as usize;
+        for address in &addresses[..usize::from(count)] {
+            record.push_frame(*address as usize);
         }
-        record.frame_count = u32::from(count);
-    }
-}
-
-#[cfg(all(unix, not(target_arch = "wasm32")))]
-mod unwind {
-    use std::ffi::{c_int, c_void};
-
-    use super::{FailureRecord, MAX_FRAMES};
-
-    #[repr(C)]
-    struct UnwindContext {
-        _opaque: [u8; 0],
-    }
-
-    const URC_NO_REASON: c_int = 0;
-    const URC_END_OF_STACK: c_int = 5;
-
-    type Trace = extern "C" fn(*mut UnwindContext, *mut c_void) -> c_int;
-
-    unsafe extern "C" {
-        fn _Unwind_Backtrace(trace: Trace, argument: *mut c_void) -> c_int;
-        fn _Unwind_GetIP(context: *mut UnwindContext) -> usize;
-    }
-
-    struct Walk<'a> {
-        record: &'a mut FailureRecord,
-        skip: usize,
-    }
-
-    extern "C" fn step(context: *mut UnwindContext, argument: *mut c_void) -> c_int {
-        // SAFETY: `argument` is the live `Walk` passed by `capture` below.
-        let walk = unsafe { &mut *argument.cast::<Walk<'_>>() };
-        // SAFETY: the unwinder passes a valid context for this frame.
-        let pc = unsafe { _Unwind_GetIP(context) };
-        if pc == 0 {
-            return URC_END_OF_STACK;
-        }
-        if walk.skip > 0 {
-            walk.skip -= 1;
-            return URC_NO_REASON;
-        }
-        let index = walk.record.frame_count as usize;
-        walk.record.frames[index].pc = pc;
-        walk.record.frame_count += 1;
-        if index + 1 == MAX_FRAMES {
-            URC_END_OF_STACK
-        } else {
-            URC_NO_REASON
-        }
-    }
-
-    #[inline(never)]
-    pub(super) fn capture(record: &mut FailureRecord) {
-        // Skip this function and `capture_frames`.
-        let mut walk = Walk { record, skip: 2 };
-        // SAFETY: `step` only touches the `Walk` it is handed.
-        unsafe { _Unwind_Backtrace(step, (&raw mut walk).cast()) };
     }
 }
 
@@ -1251,6 +1268,7 @@ mod tests {
             hew_fn: c"Fragile.bad".as_ptr(),
             file: c"app.hew".as_ptr(),
             line: 10,
+            repeat: 1,
         };
         record.frames[2] = FailureFrame {
             pc: 0x30,
@@ -1278,16 +1296,19 @@ mod tests {
 
     #[test]
     fn signal_detail_is_reported() {
-        let mut record = FailureRecord::new(11);
+        let mut record = FailureRecord::new(failure_kinds::HEW_TRAP_STACK_OVERFLOW);
         record.signal = FailureSignal {
             signal: 11,
             si_code: 2,
             fault_addr: 0x7ff0,
             guard_hit: 1,
         };
+        let (name, _) = crate::signal::describe_fault(11, 2);
         assert_eq!(
             render(&record, Backtrace::Off),
-            "hew: failure: UnknownFault (11)\nhew:   signal 11 code 2 at 0x7ff0 (stack guard)\n"
+            format!(
+                "hew: failure: StackOverflow (215)\nhew:   {name} (11) at 0x7ff0 (stack guard)\n"
+            )
         );
     }
 
@@ -1338,6 +1359,7 @@ mod tests {
             hew_fn: c"main".as_ptr(),
             file: c"vec.hew".as_ptr(),
             line: 8,
+            repeat: 1,
         };
         record.frame_count = 1;
         record.actor.id = 4;

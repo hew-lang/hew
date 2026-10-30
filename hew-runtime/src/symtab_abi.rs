@@ -2,10 +2,12 @@
 //!
 //! The compiler emits `__hew_file_table`, `__hew_site_table`, `__hew_symtab`
 //! and `__hew_has_debug_info` into every native image, release builds
-//! included; the `hew-debug-abi` crate owns their layout and this module is
-//! the one place the runtime reads them. An image without the tables (wasm, a
-//! Rust test binary, an object built before the tables existed) resolves
-//! nothing, and every consumer omits location and frame names silently.
+//! included, and the file and site tables into wasm modules; the
+//! `hew-debug-abi` crate owns their layout and this module is the one place
+//! the runtime reads them. An image without a table (a Rust test binary, an
+//! object built before the tables existed, the function table of a wasm
+//! module) resolves nothing, and every consumer omits location and frame
+//! names silently.
 //!
 //! The tables are reached through weak references in `debug_tables.c`. Every
 //! lookup only reads them in place (no allocation, locks or thread-locals),
@@ -37,7 +39,6 @@ pub struct HewFunction {
     pub position: Option<SourcePosition>,
 }
 
-#[cfg(not(target_arch = "wasm32"))]
 mod image {
     unsafe extern "C" {
         fn hew_debug_file_table() -> *const u8;
@@ -64,25 +65,6 @@ mod image {
     pub(super) fn has_debug_info() -> *const u8 {
         // SAFETY: as above.
         unsafe { hew_debug_has_debug_info() }
-    }
-}
-
-#[cfg(target_arch = "wasm32")]
-mod image {
-    pub(super) fn file_table() -> *const u8 {
-        std::ptr::null()
-    }
-
-    pub(super) fn site_table() -> *const u8 {
-        std::ptr::null()
-    }
-
-    pub(super) fn symtab() -> *const u8 {
-        std::ptr::null()
-    }
-
-    pub(super) fn has_debug_info() -> *const u8 {
-        std::ptr::null()
     }
 }
 

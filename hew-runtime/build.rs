@@ -23,14 +23,12 @@ fn main() {
         .flag(if msvc { "/EHsc" } else { "-fexceptions" })
         .compile("hew_coro_llvm");
 
-    // Weak references to the compiler's debug tables; wasm images carry none.
+    // Weak references to the compiler's debug tables.
     println!("cargo:rerun-if-changed=src/debug_tables.c");
-    if std::env::var("CARGO_CFG_TARGET_ARCH").is_ok_and(|arch| arch != "wasm32") {
-        cc::Build::new()
-            .compiler(clang.clone())
-            .file("src/debug_tables.c")
-            .compile("hew_debug_tables");
-    }
+    cc::Build::new()
+        .compiler(clang.clone())
+        .file("src/debug_tables.c")
+        .compile("hew_debug_tables");
 
     // Build scripts run on the host, so use Cargo's target cfg env vars rather
     // than `#[cfg(unix)]`/`#[cfg(windows)]` to avoid leaking native link flags

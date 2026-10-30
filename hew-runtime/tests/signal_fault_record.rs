@@ -56,6 +56,7 @@ fn child_entry() {
             assert_eq!(hew_runtime::scheduler::hew_sched_init(), 0);
             match case.as_str() {
                 "overflow" => {
+                    eprintln!("descend={:#x}", descend as *const () as usize);
                     std::hint::black_box(descend(0));
                 }
                 #[cfg(unix)]
@@ -107,6 +108,7 @@ fn stack_overflow_is_reported_once_and_dies_by_the_signal() {
         stderr.contains("thread main\n  #0 0x"),
         "the record names the thread and the faulting frame: {stderr}"
     );
+    assert_frames_walk_the_recursion(&stderr);
     #[cfg(unix)]
     {
         // macOS reports a guard-page hit as SIGBUS on some releases.
@@ -123,6 +125,43 @@ fn stack_overflow_is_reported_once_and_dies_by_the_signal() {
         output.status.code().map(i32::cast_unsigned),
         Some(0xC000_00FD),
         "overflow must exit with STATUS_STACK_OVERFLOW; stderr:\n{stderr}"
+    );
+}
+
+/// The record's frames continue past the faulting frame through the
+/// recursion: a run of repeated `descend` call sites, found from the unwind
+/// tables rather than frame pointers.
+fn assert_frames_walk_the_recursion(stderr: &str) {
+    let descend = stderr
+        .lines()
+        .find_map(|line| line.strip_prefix("descend=0x"))
+        .and_then(|hex| usize::from_str_radix(hex, 16).ok())
+        .unwrap_or_else(|| panic!("child prints descend's address: {stderr}"));
+    let mut lines = stderr.lines().peekable();
+    let mut recursion = None;
+    while let Some(line) = lines.next() {
+        let Some(frame) = line.trim_start().strip_prefix('#') else {
+            continue;
+        };
+        let repeated = lines
+            .peek()
+            .is_some_and(|next| next.contains("identical frames"));
+        let pc = frame
+            .split_whitespace()
+            .nth(1)
+            .and_then(|pc| pc.strip_prefix("0x"))
+            .and_then(|hex| usize::from_str_radix(hex, 16).ok());
+        if repeated {
+            recursion = pc;
+            break;
+        }
+    }
+    let pc = recursion.unwrap_or_else(|| panic!("a collapsed recursion run: {stderr}"));
+    // Each frame reports its call site, inside descend, which is far smaller
+    // than a page.
+    assert!(
+        (descend..descend + 4096).contains(&pc),
+        "the repeated frame {pc:#x} is a descend call site (descend={descend:#x}): {stderr}"
     );
 }
 

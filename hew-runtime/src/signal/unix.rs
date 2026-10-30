@@ -15,7 +15,7 @@ use std::ptr;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Once;
 
-use super::frames::{self, LiveStack};
+use super::frames;
 use super::record::{FaultKind, FaultRecord};
 use super::stack::{self, ThreadLabel};
 
@@ -139,7 +139,7 @@ fn sent_by_process(info: &libc::siginfo_t) -> bool {
     }
 }
 
-/// Program counter, stack pointer and frame pointer of the faulting context.
+/// Program counter of the faulting context.
 ///
 /// # Safety
 ///
@@ -151,7 +151,7 @@ fn sent_by_process(info: &libc::siginfo_t) -> bool {
     clippy::cast_sign_loss,
     reason = "register words are address-sized on every 64-bit target this maps"
 )]
-unsafe fn registers(context: *mut libc::c_void) -> Option<(usize, usize, usize)> {
+unsafe fn fault_pc(context: *mut libc::c_void) -> Option<usize> {
     if context.is_null() {
         return None;
     }
@@ -163,20 +163,14 @@ unsafe fn registers(context: *mut libc::c_void) -> Option<(usize, usize, usize)>
             target_arch = "x86_64"
         ))]
         {
-            let regs = &(*uc).uc_mcontext.gregs;
-            return Some((
-                regs[libc::REG_RIP as usize] as usize,
-                regs[libc::REG_RSP as usize] as usize,
-                regs[libc::REG_RBP as usize] as usize,
-            ));
+            return Some((*uc).uc_mcontext.gregs[libc::REG_RIP as usize] as usize);
         }
         #[cfg(all(
             any(target_os = "linux", target_os = "android"),
             target_arch = "aarch64"
         ))]
         {
-            let mc = &(*uc).uc_mcontext;
-            return Some((mc.pc as usize, mc.sp as usize, mc.regs[29] as usize));
+            return Some((*uc).uc_mcontext.pc as usize);
         }
         #[cfg(all(target_vendor = "apple", target_arch = "x86_64"))]
         {
@@ -184,8 +178,7 @@ unsafe fn registers(context: *mut libc::c_void) -> Option<(usize, usize, usize)>
             if mc.is_null() {
                 return None;
             }
-            let ss = &(*mc).__ss;
-            return Some((ss.__rip as usize, ss.__rsp as usize, ss.__rbp as usize));
+            return Some((*mc).__ss.__rip as usize);
         }
         #[cfg(all(target_vendor = "apple", target_arch = "aarch64"))]
         {
@@ -193,18 +186,15 @@ unsafe fn registers(context: *mut libc::c_void) -> Option<(usize, usize, usize)>
             if mc.is_null() {
                 return None;
             }
-            let ss = &(*mc).__ss;
-            return Some((ss.__pc as usize, ss.__sp as usize, ss.__fp as usize));
+            return Some((*mc).__ss.__pc as usize);
         }
         #[cfg(all(target_os = "freebsd", target_arch = "x86_64"))]
         {
-            let mc = &(*uc).uc_mcontext;
-            return Some((mc.mc_rip as usize, mc.mc_rsp as usize, mc.mc_rbp as usize));
+            return Some((*uc).uc_mcontext.mc_rip as usize);
         }
         #[cfg(all(target_os = "freebsd", target_arch = "aarch64"))]
         {
-            let gp = &(*uc).uc_mcontext.mc_gpregs;
-            return Some((gp.gp_elr as usize, gp.gp_sp as usize, gp.gp_x[29] as usize));
+            return Some((*uc).uc_mcontext.mc_gpregs.gp_elr as usize);
         }
         #[allow(unreachable_code, reason = "targets without a register map")]
         {
@@ -247,8 +237,8 @@ unsafe fn fill_record(
     record.load_image_range();
     record.frames.clear();
     // SAFETY: forwarded from the handler.
-    if let Some((pc, _sp, fp)) = unsafe { registers(context) } {
-        frames::walk(pc, fp, bounds, &LiveStack, &mut record.frames);
+    if let Some(pc) = unsafe { fault_pc(context) } {
+        frames::capture(pc, &mut record.frames);
     }
 }
 
@@ -450,12 +440,10 @@ mod tests {
         any(target_os = "linux", target_os = "android"),
         target_arch = "x86_64"
     ))]
-    fn forged_context(pc: usize, sp: usize, fp: usize) -> libc::ucontext_t {
+    fn forged_context(pc: usize) -> libc::ucontext_t {
         // SAFETY: ucontext_t is plain data; zero is a valid representation.
         let mut uc: libc::ucontext_t = unsafe { std::mem::zeroed() };
         uc.uc_mcontext.gregs[libc::REG_RIP as usize] = i64::try_from(pc).unwrap();
-        uc.uc_mcontext.gregs[libc::REG_RSP as usize] = i64::try_from(sp).unwrap();
-        uc.uc_mcontext.gregs[libc::REG_RBP as usize] = i64::try_from(fp).unwrap();
         uc
     }
 
@@ -463,18 +451,16 @@ mod tests {
         any(target_os = "linux", target_os = "android"),
         target_arch = "aarch64"
     ))]
-    fn forged_context(pc: usize, sp: usize, fp: usize) -> libc::ucontext_t {
+    fn forged_context(pc: usize) -> libc::ucontext_t {
         // SAFETY: ucontext_t is plain data; zero is a valid representation.
         let mut uc: libc::ucontext_t = unsafe { std::mem::zeroed() };
         uc.uc_mcontext.pc = pc as u64;
-        uc.uc_mcontext.sp = sp as u64;
-        uc.uc_mcontext.regs[29] = fp as u64;
         uc
     }
 
-    /// A forged fault at `address` with the given registers.
+    /// A forged fault at `address`, outside any signal frame.
     #[cfg(any(target_os = "linux", target_os = "android"))]
-    fn classify_forged(address: usize, frame: &[usize; 2], bounds: StackBounds) -> FaultRecord {
+    fn classify_forged(address: usize, bounds: StackBounds) -> FaultRecord {
         // SAFETY: siginfo_t is plain data; the fields read are set below.
         let mut info: libc::siginfo_t = unsafe { std::mem::zeroed() };
         info.si_signo = libc::SIGSEGV;
@@ -489,8 +475,7 @@ mod tests {
                 .write_unaligned(address);
             assert_eq!(info.si_addr() as usize, address);
         }
-        let fp = frame.as_ptr() as usize;
-        let mut uc = forged_context(0xDEAD, fp, fp);
+        let mut uc = forged_context(0xDEAD);
         let previous = stack::set_current_for_test(bounds);
         let mut record = FaultRecord::EMPTY;
         // SAFETY: the record is local; info and context are forged but valid.
@@ -509,21 +494,21 @@ mod tests {
     #[test]
     #[cfg(any(target_os = "linux", target_os = "android"))]
     fn a_fault_below_the_stack_classifies_as_overflow() {
-        // One frame record on this test's real stack: [saved fp = 0, ret].
-        let frame = [0_usize, 0xBEEF];
-        let here = frame.as_ptr() as usize;
+        let local = 0_usize;
+        let here = (&raw const local) as usize;
         let bounds = StackBounds {
             low: here - 0x1000,
             high: here + 0x1000,
             guard: 4096,
         };
-        let overflow = classify_forged(bounds.low - 16, &frame, bounds);
+        let overflow = classify_forged(bounds.low - 16, bounds);
         assert_eq!(overflow.kind, FaultKind::StackOverflow);
         assert_eq!(overflow.address, bounds.low - 16);
+        // No signal frame leads to the forged pc, so it is the whole walk.
         let pcs: Vec<usize> = overflow.frames.runs().iter().map(|run| run.pc).collect();
-        assert_eq!(pcs, [0xDEAD, 0xBEEE]);
+        assert_eq!(pcs, [0xDEAD]);
 
-        let wild = classify_forged(8, &frame, bounds);
+        let wild = classify_forged(8, bounds);
         assert_eq!(wild.kind, FaultKind::Signal);
     }
 

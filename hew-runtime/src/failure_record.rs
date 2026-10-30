@@ -943,6 +943,8 @@ mod image {
     use super::{FailureBuild, BUILD_ID_CAPACITY};
 
     const NT_GNU_BUILD_ID: u32 = 3;
+    /// `PT_NOTE`, which the libc crate does not export on every BSD.
+    const PT_NOTE: u32 = 4;
 
     #[allow(
         clippy::cast_possible_truncation,
@@ -960,7 +962,7 @@ mod image {
         for index in 0..usize::from(info.dlpi_phnum) {
             // SAFETY: the program header table has `dlpi_phnum` entries.
             let header = unsafe { &*info.dlpi_phdr.add(index) };
-            if header.p_type != libc::PT_NOTE {
+            if header.p_type != PT_NOTE {
                 continue;
             }
             let start = (info.dlpi_addr as usize).wrapping_add(header.p_vaddr as usize);
@@ -1150,7 +1152,7 @@ pub fn tracer_attached() -> bool {
         let flags = info.kp_proc.p_flag;
         #[cfg(target_os = "freebsd")]
         let flags = info.ki_flag;
-        status == 0 && flags & libc::P_TRACED != 0
+        status == 0 && i64::from(flags) & i64::from(libc::P_TRACED) != 0
     }
     #[cfg(windows)]
     {

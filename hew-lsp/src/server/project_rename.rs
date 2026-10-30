@@ -852,14 +852,21 @@ pub(super) async fn rename(
     }
     let pkg_paths = server.extra_pkg_paths.clone();
     let worker_name = new_name.to_owned();
-    // An edited snapshot or a cancelled request can never publish this plan.
+    // A changed snapshot or a cancelled request can never publish this plan.
     // The worker stops at its next source rather than finishing the analysis.
+    // An editor event only prompts the comparison: opening and closing an
+    // unrelated document leaves the snapshot, and so the plan, valid.
     let retired = RetireOnDrop(Arc::new(AtomicBool::new(false)));
     let request_live = Arc::clone(&retired.0);
     let open_generation = Arc::clone(&server.open_generation);
+    let open_documents = Arc::clone(&server.open_documents);
+    let planned_snapshot = snapshot.clone();
     let current = move || {
         !request_live.load(Ordering::Relaxed)
-            && open_generation.load(Ordering::Acquire) == generation
+            && (open_generation.load(Ordering::Acquire) == generation
+                || open_documents
+                    .read()
+                    .is_ok_and(|open| *open == planned_snapshot))
     };
     let planned = spawn_rename_job(permit, move || {
         plan_project(project, &worker_name, roots, &pkg_paths, &current)
@@ -1419,6 +1426,41 @@ mod tests {
         assert_eq!(jobs.available_permits(), 0);
         drop(next);
         assert_eq!(jobs.available_permits(), 1);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn rename_survives_editor_events_that_leave_its_snapshot_unchanged() {
+        let original = "pub fn greet() -> i32 { 7 }\n";
+        let project = Project::new(&[
+            ("greeting.hew", original),
+            (
+                "consumer.hew",
+                "import greeting;\npub fn value() -> i32 { greeting.greet() }\n",
+            ),
+        ]);
+        let (service, _socket) = tower_lsp_server::LspService::new(HewLanguageServer::new);
+        let server = service.inner();
+        let uri = Uri::from_checked_file_path(project.0.join("greeting.hew")).unwrap();
+        server.open_documents.write().unwrap().insert(
+            uri.clone(),
+            OpenDocument {
+                source: original.into(),
+                version: 1,
+            },
+        );
+        *server.workspace_roots.write().unwrap() = vec![project.0.clone()];
+        let occupied = std::sync::Arc::clone(&server.rename_jobs)
+            .acquire_owned()
+            .await
+            .unwrap();
+        let mut queued = Box::pin(rename(server, &uri, Position::new(0, 8), "salute"));
+        assert_pending(queued.as_mut()).await;
+        // An unrelated document opened and closed again.
+        server.advance_open_generation();
+        server.advance_open_generation();
+        drop(occupied);
+        let edit = queued.await.unwrap().unwrap();
+        assert_eq!(edit.changes.unwrap().len(), 2);
     }
 
     #[tokio::test(flavor = "current_thread")]

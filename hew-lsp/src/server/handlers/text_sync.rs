@@ -188,8 +188,9 @@ pub(crate) async fn did_change(server: &HewLanguageServer, params: DidChangeText
 pub(crate) async fn did_close(server: &HewLanguageServer, params: DidCloseTextDocumentParams) {
     let analysis = server.analysis_jobs.lock().await;
     if let Ok(mut open) = server.open_documents.write() {
-        open.remove(&params.text_document.uri);
-        server.advance_open_generation();
+        if open.remove(&params.text_document.uri).is_some() {
+            server.advance_open_generation();
+        }
     }
     // Retain a monotonically increasing generation across close/reopen so a
     // sleeping task from a previous open cannot match the reopened document.

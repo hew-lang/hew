@@ -131,8 +131,11 @@ unsafe extern "C" fn script_close(implementation: *mut std::ffi::c_void, _: c_in
     script.changed.notify_all();
 }
 
-/// Envelopes the node routed to a local actor.
+/// Envelopes the node routed to a local actor, counted from the current
+/// fixture's admission.
 static ROUTED: AtomicUsize = AtomicUsize::new(0);
+/// Serializes the fixtures that share [`ROUTED`].
+static FIXTURE: Mutex<()> = Mutex::new(());
 
 unsafe extern "C" fn count_routed(
     _: crate::node_identity::HewLocation,
@@ -153,6 +156,7 @@ unsafe extern "C" fn count_routed(
 
 /// This node with a peer it buried, reconnected at the buried session.
 struct BuriedPeer {
+    _serial: std::sync::MutexGuard<'static, ()>,
     script: Box<Script>,
     ops: Box<crate::transport::HewTransportOps>,
     transport: *mut HewTransport,
@@ -168,6 +172,10 @@ struct BuriedPeer {
 
 impl BuriedPeer {
     fn admit() -> Self {
+        let serial = FIXTURE
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        ROUTED.store(0, Ordering::SeqCst);
         let script = Box::<Script>::default();
         let ops = Box::new(crate::transport::HewTransportOps {
             connect: None,
@@ -256,6 +264,7 @@ impl BuriedPeer {
             true,
         ));
         Self {
+            _serial: serial,
             script,
             ops,
             transport,

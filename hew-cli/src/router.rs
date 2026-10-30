@@ -31,6 +31,7 @@ pub(crate) trait CommandDispatcher {
     fn env(&mut self);
     fn help(&mut self);
     fn observe(&mut self, args: &args::ObserveArgs);
+    fn symbolize(&mut self, args: &crate::symbolize::SymbolizeArgs);
     fn lsp(&mut self, args: &args::LspArgs);
     fn pkg(&mut self, cmd: &hew_pkg::cli::PkgCommand);
 }
@@ -144,6 +145,16 @@ impl CommandDispatcher for MainCommandDispatcher {
         crate::cmd_observe(args);
     }
 
+    fn symbolize(&mut self, args: &crate::symbolize::SymbolizeArgs) {
+        match crate::symbolize::run(args) {
+            Ok(text) => print!("{text}"),
+            Err(error) => {
+                eprintln!("hew symbolize: {error}");
+                std::process::exit(1);
+            }
+        }
+    }
+
     fn lsp(&mut self, args: &args::LspArgs) {
         crate::cmd_lsp(args);
     }
@@ -214,6 +225,7 @@ pub(crate) fn dispatch_command(command: Option<&Command>, dispatcher: &mut impl 
         Some(Command::Version) => dispatcher.version(),
         Some(Command::Env) => dispatcher.env(),
         Some(Command::Observe(args)) => dispatcher.observe(args),
+        Some(Command::Symbolize(args)) => dispatcher.symbolize(args),
         Some(Command::Lsp(args)) => dispatcher.lsp(args),
         Some(Command::Pkg(cmd)) => dispatcher.pkg(cmd),
         None => dispatcher.help(),
@@ -648,6 +660,10 @@ mod tests {
 
         fn observe(&mut self, _args: &crate::args::ObserveArgs) {
             self.calls.push("observe".to_string());
+        }
+
+        fn symbolize(&mut self, _args: &crate::symbolize::SymbolizeArgs) {
+            self.calls.push("symbolize".to_string());
         }
 
         fn lsp(&mut self, _args: &crate::args::LspArgs) {

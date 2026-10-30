@@ -2102,6 +2102,7 @@ dependencies = [
  "hew-pkg",
  "hew-runtime",
  "hew-sir",
+ "hew-symbolize",
  "hew-testutil",
  "hew-types",
  "hew-wasm",

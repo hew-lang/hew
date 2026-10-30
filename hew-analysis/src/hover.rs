@@ -335,10 +335,16 @@ fn hover_field_access_at_offset(
     let receiver_end = crate::definition::find_field_receiver_end(source, field_span.start)?;
     let receiver_ty = crate::method_lookup::find_receiver_type(type_output, receiver_end)?;
     let receiver_type_name = receiver_ty.type_name()?;
-    let type_def = type_output.type_defs.iter().find_map(|(id, type_def)| {
-        Ty::names_match_qualified(type_output.defs.path(id.declaration()), receiver_type_name)
-            .then_some(type_def)
-    })?;
+    // Several declarations can match a short receiver name; take the first
+    // declared one rather than the first in hash order.
+    let type_def = type_output
+        .type_defs
+        .iter()
+        .filter(|(id, _)| {
+            Ty::names_match_qualified(type_output.defs.path(id.declaration()), receiver_type_name)
+        })
+        .min_by_key(|(id, _)| **id)
+        .map(|(_, type_def)| type_def)?;
     let field_ty = type_def.fields.get(&field_name)?;
     Some(field_hover_result(
         &field_name,

@@ -286,6 +286,14 @@ fn wait_for_child_stop_deadline(
     completed
 }
 
+#[cfg(all(test, not(target_arch = "wasm32")))]
+thread_local! {
+    /// Runs once on the installing thread right after a handback restores its
+    /// cleanup root.
+    pub(crate) static HANDBACK_ROOT_RESTORED_HOOK: std::cell::Cell<Option<Box<dyn FnOnce()>>> =
+        std::cell::Cell::new(None);
+}
+
 pub(super) unsafe fn return_supervisor_to_runtime_cleanup(sup: *mut HewSupervisor) {
     // Top-level stops unregister before the deferred owner starts. If scheduler
     // shutdown prevents that owner from reaching a safe actor-quiescence point,
@@ -295,12 +303,8 @@ pub(super) unsafe fn return_supervisor_to_runtime_cleanup(sup: *mut HewSuperviso
     // their parent tree.
     // SAFETY: the deferred owner still holds the live supervisor allocation.
     if unsafe { (*sup).parent.is_null() } {
-        // SAFETY: the deferred owner is returning the still-live allocation
-        // without consuming it.
-        // SAFETY: canonical cleanup still owns the live top-level allocation.
-        unsafe { roots::hew_shutdown_register_supervisor(sup) };
-        // Publish the handback after the root is back: a stop that took the
-        // root from the cleanup set and then lost the claim restores it.
+        // Publish the handback before the root is back: a stop that takes the
+        // restored root from the cleanup set and loses the claim must see it.
         // SAFETY: the claimed owner still holds the live allocation.
         let (handles, token) = unsafe { ((*sup).handles, (*sup).local_pid_id) };
         // SAFETY: a live supervisor's runtime authority outlives its control.
@@ -309,6 +313,14 @@ pub(super) unsafe fn return_supervisor_to_runtime_cleanup(sup: *mut HewSuperviso
         {
             control.hand_teardown_back();
         }
+        // SAFETY: canonical cleanup still owns the live top-level allocation.
+        unsafe { roots::hew_shutdown_register_supervisor(sup) };
+        #[cfg(all(test, not(target_arch = "wasm32")))]
+        HANDBACK_ROOT_RESTORED_HOOK.with(|h| {
+            if let Some(hook) = h.take() {
+                hook();
+            }
+        });
     }
 }
 

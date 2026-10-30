@@ -5544,4 +5544,52 @@ mod tests {
             );
         }
     }
+
+    /// A shutdown sweep that takes a root the moment its owner hands it back
+    /// must restore it, or nothing reclaims the allocation.
+    #[test]
+    fn sweep_taking_a_root_as_it_is_handed_back_restores_it() {
+        let _rt = crate::runtime_test_guard();
+        // SAFETY: this test owns the fresh top-level supervisor.
+        let sup = unsafe { hew_supervisor_new(STRATEGY_ONE_FOR_ONE, 1, 1) };
+        assert!(!sup.is_null());
+        // SAFETY: as above.
+        unsafe { roots::hew_shutdown_register_supervisor(sup) };
+        // SAFETY: as above.
+        let teardown = unsafe { begin_supervisor_teardown(sup) }.expect("lease");
+        assert_eq!(
+            claim_supervisor_teardown(sup),
+            crate::lifetime::local_handles::TeardownClaim::Won
+        );
+        // SAFETY: as above.
+        unsafe { roots::hew_shutdown_unregister_supervisor(sup) };
+        let observed = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let seen = Arc::clone(&observed);
+        crate::supervisor::teardown::HANDBACK_ROOT_RESTORED_HOOK.with(|h| {
+            h.set(Some(Box::new(move || {
+                // The shutdown sweep (another thread in production).
+                let taken = roots::take_supervisor_roots();
+                seen.store(taken.len(), Ordering::SeqCst);
+                for root in taken {
+                    root.stop();
+                }
+            })));
+        });
+        FAIL_NEXT_SUPERVISOR_ACCESS_CLOSE.with(|slot| slot.set(true));
+        // SAFETY: the exact teardown owner retains the live allocation.
+        unsafe { stop_supervisor_owned(sup, &teardown) };
+        let registered = crate::shutdown::is_supervisor_registered_for_test(sup);
+        if !registered {
+            // Restore the root so cleanup reclaims it before the test fails.
+            // SAFETY: still live; claimed by the handed-back owner.
+            unsafe { roots::hew_shutdown_register_supervisor(sup) };
+        }
+        drop(teardown);
+        crate::scheduler::hew_runtime_cleanup();
+        assert_eq!(observed.load(Ordering::SeqCst), 1, "sweep saw the root");
+        assert!(
+            registered,
+            "sweep inside the handback window dropped the root"
+        );
+    }
 }

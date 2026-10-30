@@ -108,6 +108,9 @@ fn stack_overflow_is_reported_once_and_dies_by_the_signal() {
         stderr.contains("thread main\n  #0 0x"),
         "the record names the thread and the faulting frame: {stderr}"
     );
+    // FreeBSD's unwinder cannot step out of an overflowing prologue, so its
+    // record stops at the faulting frame.
+    #[cfg(not(target_os = "freebsd"))]
     assert_frames_walk_the_recursion(&stderr);
     #[cfg(unix)]
     {
@@ -131,6 +134,7 @@ fn stack_overflow_is_reported_once_and_dies_by_the_signal() {
 /// The record's frames continue past the faulting frame through the
 /// recursion: a run of repeated `descend` call sites, found from the unwind
 /// tables rather than frame pointers.
+#[cfg(not(target_os = "freebsd"))]
 fn assert_frames_walk_the_recursion(stderr: &str) {
     let descend = stderr
         .lines()
@@ -199,8 +203,16 @@ fn a_wild_pointer_is_a_signal_not_an_overflow() {
 fn a_sent_fault_signal_is_reported_and_re_raised() {
     let output = run_child("kill");
     let stderr = stderr_of(&output);
+    assert_eq!(
+        stderr.matches("hew: failure: Signal").count(),
+        1,
+        "kill -SEGV is reported once: {stderr}"
+    );
+    // Darwin gives a sent fault signal a fault's si_code, so only the other
+    // targets can say who sent it.
+    #[cfg(not(target_vendor = "apple"))]
     assert!(
-        stderr.contains("hew: failure: Signal") && stderr.contains("SIGSEGV (11) sent by kill"),
+        stderr.contains("SIGSEGV (11) sent by kill"),
         "kill -SEGV is reported as sent: {stderr}"
     );
     assert_died_by(&output, libc::SIGSEGV);

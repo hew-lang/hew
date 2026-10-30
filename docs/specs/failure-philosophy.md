@@ -168,7 +168,22 @@ gossip was lost. A claim at or below the buried incarnation is refused.
 
 Two members that hold each other DEAD with no third member in contact with
 both exchange no frames, since DEAD members are never probed; they stay
-apart until one of them reconnects with a higher durable session.
+apart until one of them reconnects with a higher durable session, or until
+each retires the other and a reconnect admits it as a new member.
+
+### Retention
+
+A burial is not forever. A LEFT member is retired after one
+`suspect_timeout_ms` and a DEAD member after ten, counted from when the
+node first sees it buried; at most 64 buried members are kept, oldest
+retired first. A member whose connection is still published is never
+retired, so obituaries and refutation keep working for a buried member that
+stays in contact. Retirement removes everything the node holds for the
+member at once, from the membership entry to the identity claim and routing
+session, so a long-running node does not accumulate dead peers and a
+discovered peer that left for good stops reading as partitioned. The
+windows derive from the suspect timeout and the cap from the gossip window,
+so neither adds a field to `ClusterConfig`.
 
 ### ABI
 

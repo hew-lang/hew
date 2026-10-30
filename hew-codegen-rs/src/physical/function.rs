@@ -83,6 +83,7 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                     target: &module.module.target,
                     slots: &slots,
                     prologue,
+                    resumable: frame.is_some(),
                 },
             );
         }
@@ -175,6 +176,11 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                 )?,
             };
             values.store_value(slots[storage_id.0 as usize], &physical_param.layout, loaded)?;
+            if let (Some((emitter, function_debug, _)), Some(block)) =
+                (&debug, builder.get_insert_block())
+            {
+                emitter.bind_local(function_debug, *storage_id, block);
+            }
             param_index += 1;
         }
         let result_out = if callable.return_layout.is_some() {
@@ -425,6 +431,16 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
             |offset| emitter.location(self.ctx, function_debug, offset),
         );
         self.builder.set_current_debug_location(location);
+        // Unoptimized value ranges follow the order blocks are laid out, not
+        // the order they run, so each block states which locals hold a value
+        // on entry. A debugger then never carries one block's reading into
+        // another.
+        if self.frame.is_some() {
+            let held = attribution.available.get(&block);
+            for id in attribution.locals.keys() {
+                self.debug_local(*id, held.is_some_and(|held| held.contains(id)));
+            }
+        }
         Ok(())
     }
 
@@ -512,7 +528,24 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
             self.slots[id.0 as usize],
             &self.storage(id)?.layout,
             value,
-        )
+        )?;
+        self.debug_local(id, true);
+        Ok(())
+    }
+
+    /// Tell a debugger whether `id` holds a value from here on. Only a
+    /// coroutine body describes its locals this way.
+    pub(super) fn debug_local(&self, id: StorageId, holds_value: bool) {
+        let (Some((emitter, function_debug, _)), Some(block)) =
+            (&self.debug, self.builder.get_insert_block())
+        else {
+            return;
+        };
+        if holds_value {
+            emitter.bind_local(function_debug, id, block);
+        } else {
+            emitter.kill_local(self.ctx, function_debug, id, block);
+        }
     }
 
     pub(super) fn clear_owned(&self, id: StorageId) -> CodegenResult<()> {
@@ -905,7 +938,10 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                 let value = self.load(*source, "borrow")?;
                 self.store(*dest, value)
             }
-            PhysicalOp::EndBorrow { .. } => Ok(()),
+            PhysicalOp::EndBorrow { source } => {
+                self.debug_local(*source, false);
+                Ok(())
+            }
             PhysicalOp::StorageLive { storage } => self.set_place_initialized(*storage, false),
             PhysicalOp::Assign {
                 dest,

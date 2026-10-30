@@ -701,6 +701,9 @@ fn two_stop_sleep_cmd(dbg: &str, src: &str, bin: &str) -> Command {
             &format!("break {src}:7"),
             "-ex",
             "run",
+            // `n` is a formal parameter, which gdb lists under `info args`.
+            "-ex",
+            "info args",
             "-ex",
             "info locals",
             "-ex",
@@ -709,6 +712,8 @@ fn two_stop_sleep_cmd(dbg: &str, src: &str, bin: &str) -> Command {
             "disable 1",
             "-ex",
             "continue",
+            "-ex",
+            "info args",
             "-ex",
             "info locals",
             bin,

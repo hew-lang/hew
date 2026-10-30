@@ -7,6 +7,7 @@
 #[path = "physical_debug/types.rs"]
 mod types;
 
+use super::StorageId;
 use std::cell::{Cell, RefCell};
 use std::collections::{BTreeMap, HashMap};
 use std::path::Path;
@@ -110,6 +111,16 @@ pub(super) struct FunctionDebug<'ctx> {
     /// `(start, end, scope)` sorted innermost-first, so the first containing
     /// entry is the tightest scope around a byte.
     ranges: Vec<(u32, u32, u32)>,
+    /// Locals of a resumable body, which a debugger sees only while their
+    /// slot holds a value; see [`DebugEmitter::bind_local`].
+    locals: RefCell<HashMap<StorageId, LocalSlot<'ctx>>>,
+}
+
+/// A source local whose location is a value range over its slot.
+struct LocalSlot<'ctx> {
+    variable: DILocalVariable<'ctx>,
+    location: DILocation<'ctx>,
+    slot: PointerValue<'ctx>,
 }
 
 impl<'ctx> DebugEmitter<'ctx> {
@@ -257,6 +268,7 @@ impl<'ctx> DebugEmitter<'ctx> {
             subprogram,
             blocks: HashMap::new(),
             ranges: Vec::new(),
+            locals: RefCell::new(HashMap::new()),
         };
         self.build_lexical_blocks(&mut function, attribution);
         function
@@ -484,6 +496,71 @@ impl<'ctx> DebugEmitter<'ctx> {
         }
     }
 
+    /// Say that `id` holds its value from here: its location is the slot's
+    /// memory until a later record ends it. The record names the slot, not a
+    /// copy, so the slot stays the one home of the value.
+    pub(super) fn bind_local(
+        &self,
+        function: &FunctionDebug<'ctx>,
+        id: StorageId,
+        block: inkwell::basic_block::BasicBlock<'ctx>,
+    ) {
+        if let Some(local) = function.locals.borrow().get(&id) {
+            self.value_record(local.slot.into(), local, block, true);
+        }
+    }
+
+    /// Say that `id` holds no value from here: a debugger reports it
+    /// unavailable instead of reading whatever the slot last held.
+    pub(super) fn kill_local(
+        &self,
+        ctx: &'ctx Context,
+        function: &FunctionDebug<'ctx>,
+        id: StorageId,
+        block: inkwell::basic_block::BasicBlock<'ctx>,
+    ) {
+        if let Some(local) = function.locals.borrow().get(&id) {
+            self.value_record(ctx.i8_type().get_undef().into(), local, block, false);
+        }
+    }
+
+    fn value_record(
+        &self,
+        value: inkwell::values::BasicValueEnum<'ctx>,
+        local: &LocalSlot<'ctx>,
+        block: inkwell::basic_block::BasicBlock<'ctx>,
+        indirect: bool,
+    ) {
+        use inkwell::llvm_sys::debuginfo::{
+            LLVMDIBuilderInsertDbgValueRecordAtEnd, LLVMDIBuilderInsertDbgValueRecordBefore,
+        };
+        let expression =
+            self.builder
+                .create_expression(if indirect { vec![DW_OP_DEREF] } else { vec![] });
+        // SAFETY: the value, metadata and block belong to this live context.
+        unsafe {
+            if let Some(terminator) = block.get_terminator() {
+                LLVMDIBuilderInsertDbgValueRecordBefore(
+                    self.builder.as_mut_ptr(),
+                    value.as_value_ref(),
+                    local.variable.as_mut_ptr(),
+                    expression.as_mut_ptr(),
+                    local.location.as_mut_ptr(),
+                    terminator.as_value_ref(),
+                );
+            } else {
+                LLVMDIBuilderInsertDbgValueRecordAtEnd(
+                    self.builder.as_mut_ptr(),
+                    value.as_value_ref(),
+                    local.variable.as_mut_ptr(),
+                    expression.as_mut_ptr(),
+                    local.location.as_mut_ptr(),
+                    block.as_mut_ptr(),
+                );
+            }
+        }
+    }
+
     /// Whether `scope` is one of the lexical blocks inside this body.
     fn owns(&self, attribution: &PhysicalDebugFunction, scope: u32) -> bool {
         self.scopes
@@ -619,6 +696,9 @@ impl<'ctx> FunctionDebug<'ctx> {
     }
 }
 
+/// `DW_OP_deref`: read the value at the address the record names.
+const DW_OP_DEREF: i64 = 0x06;
+
 /// The storage of one body whose locals are described.
 pub(super) struct BodyLocals<'a, 'ctx> {
     pub attribution: &'a PhysicalDebugFunction,
@@ -628,14 +708,21 @@ pub(super) struct BodyLocals<'a, 'ctx> {
     pub slots: &'a [PointerValue<'ctx>],
     /// The entry block the declarations are placed in.
     pub prologue: inkwell::basic_block::BasicBlock<'ctx>,
+    /// The body is a coroutine. Its slots are written on one side of a
+    /// suspension and read on the other, so a local is described only over
+    /// the stretches that follow a store to it.
+    pub resumable: bool,
 }
 
 /// Describe every named local of one body by its storage slot.
 ///
 /// The slot is the variable's single home on every path, so one
 /// `dbg.declare` covers the whole body: mem2reg and SROA turn it into value
-/// locations under optimization, and coroutine splitting rewrites it to the
-/// frame field the slot moves into.
+/// locations under optimization. A coroutine body is different: a local
+/// there is honest only after its store, so it gets value records over the
+/// slot instead, bound where the slot is written and ended where it is
+/// cleared; coroutine splitting rewrites them to the frame field the slot
+/// moves into.
 pub(super) fn declare_locals<'ctx>(
     ctx: &'ctx Context,
     emitter: &DebugEmitter<'ctx>,
@@ -648,6 +735,7 @@ pub(super) fn declare_locals<'ctx>(
         target,
         slots,
         prologue,
+        resumable,
     } = *body;
     for (id, local) in &attribution.locals {
         let (Some(storage), Some(slot)) = (
@@ -662,6 +750,17 @@ pub(super) fn declare_locals<'ctx>(
             continue;
         };
         let location = emitter.location_in(ctx, scope, line);
-        emitter.declare(*slot, variable, location, prologue);
+        if resumable {
+            function_debug.locals.borrow_mut().insert(
+                *id,
+                LocalSlot {
+                    variable,
+                    location,
+                    slot: *slot,
+                },
+            );
+        } else {
+            emitter.declare(*slot, variable, location, prologue);
+        }
     }
 }

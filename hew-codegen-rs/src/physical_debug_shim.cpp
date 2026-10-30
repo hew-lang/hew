@@ -201,14 +201,14 @@ extern "C" void hewLLVMHomeRampFrameAddresses(LLVMModuleRef module) {
 // A DWARF 5 line table names each file with its MD5 so a debugger can tell
 // the text it shows from the text compiled. LLVM-C creates files without a
 // checksum, so the unit's file is replaced with one that carries it.
-extern "C" void
+extern "C" LLVMMetadataRef
 hewLLVMDICompileUnitChecksumFile(LLVMDIBuilderRef builder, LLVMMetadataRef unit,
                                  const char *name, size_t name_len,
                                  const char *directory, size_t directory_len,
                                  const char *text, size_t text_len) {
   auto *compile_unit = unwrapMetadata<DICompileUnit>(unit);
   if (!builder || !compile_unit)
-    return;
+    return nullptr;
   MD5 hash;
   hash.update(StringRef(text, text_len));
   MD5::MD5Result digest;
@@ -218,6 +218,7 @@ hewLLVMDICompileUnitChecksumFile(LLVMDIBuilderRef builder, LLVMMetadataRef unit,
       StringRef(name, name_len), StringRef(directory, directory_len),
       DIFile::ChecksumInfo<StringRef>(DIFile::CSK_MD5, hex));
   compile_unit->replaceOperandWith(0, file);
+  return reinterpret_cast<LLVMMetadataRef>(file);
 }
 
 // Whether `machine` optimizes: the compile unit and every subprogram state it

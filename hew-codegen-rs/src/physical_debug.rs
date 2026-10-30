@@ -543,8 +543,8 @@ fn source_directory(path: &Path) -> String {
 }
 
 /// The compile unit's file, carrying the MD5 of the text compiled. The shim
-/// installs it as the unit's own file, so the unit and every function share
-/// one file entry.
+/// installs it as the unit's own file, and every function and type uses the
+/// same node, so the line table has one checksummed file entry.
 ///
 /// LLVM's C API creates a file without a checksum; `physical_debug_shim.cpp`
 /// provides that one step.
@@ -566,11 +566,11 @@ fn checksummed_file<'ctx>(
             directory_len: usize,
             text: *const std::ffi::c_char,
             text_len: usize,
-        );
+        ) -> LLVMMetadataRef;
     }
     // SAFETY: the builder and unit belong to this live context; the shim
     // borrows the strings only for the call.
-    unsafe {
+    let file = unsafe {
         hewLLVMDICompileUnitChecksumFile(
             builder.as_mut_ptr(),
             unit.as_mut_ptr(),
@@ -580,9 +580,16 @@ fn checksummed_file<'ctx>(
             directory.len(),
             text.as_ptr().cast(),
             text.len(),
-        );
+        )
+    };
+    if file.is_null() {
+        return unit.get_file();
     }
-    unit.get_file()
+    // SAFETY: inkwell offers no constructor for a `DIFile` from a node made
+    // outside it. `DIFile` is a `Copy` wrapper whose only sized field is the
+    // metadata reference (the transmute checks the sizes), and `file` is a
+    // live `DIFile` node of this context.
+    unsafe { std::mem::transmute::<LLVMMetadataRef, DIFile<'ctx>>(file) }
 }
 
 impl<'ctx> FunctionDebug<'ctx> {

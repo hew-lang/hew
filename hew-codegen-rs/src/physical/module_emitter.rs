@@ -82,11 +82,27 @@ pub(super) fn build_module_with_host<'ctx>(
         debug.finalize();
     }
     c_abi::seal_c_scalar_widening(&emitter.llvm)?;
+    keep_frame_pointers(&emitter.llvm);
     emitter
         .llvm
         .verify()
         .map_err(|error| CodegenError::LlvmVerify(error.to_string()))?;
     Ok(emitter.llvm)
+}
+
+/// Every defined body keeps its frame pointer, with or without `-g`, so the
+/// crash reporter and debuggers can walk Hew frames at every optimization
+/// level and the `.text` of `--release` and `--release -g` stays identical.
+fn keep_frame_pointers(module: &inkwell::modules::Module<'_>) {
+    for function in module.get_functions() {
+        if function.count_basic_blocks() > 0 {
+            let context = module.get_context();
+            function.add_attribute(
+                inkwell::attributes::AttributeLoc::Function,
+                context.create_string_attribute("frame-pointer", "all"),
+            );
+        }
+    }
 }
 
 /// The module-private array of compiled `*HewRegex` handles. Native module

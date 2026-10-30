@@ -240,6 +240,15 @@ pub fn stdlib_search_paths() -> Vec<PathBuf> {
     compiler_stdlib_root().into_iter().collect()
 }
 
+/// `HEW_STD` when it names an existing directory not called `std`. Its parent
+/// is still the std root, so `std.*` resolves from a sibling `std/` that
+/// usually does not exist; a missing-std diagnostic names this as the cause.
+#[must_use]
+pub fn misnamed_hew_std() -> Option<PathBuf> {
+    let std_dir = PathBuf::from(std::env::var_os("HEW_STD")?);
+    (std_dir.is_dir() && std_dir.file_name().is_none_or(|name| name != "std")).then_some(std_dir)
+}
+
 /// What a source file's module membership is measured from (spec 3.5.1).
 ///
 /// The anchor travels with the code: the standard-library root, or the

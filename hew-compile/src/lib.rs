@@ -3346,11 +3346,24 @@ fn resolve_prelude_std_source(
                 .map(|root| display_path(&root.join("std")))
                 .collect::<Vec<_>>()
                 .join(", ");
+            let cause = misnamed_hew_std_cause()
+                .unwrap_or_else(|| "set HEW_STD to a std/ directory".to_string());
             FrontendFailure::message_only(format!(
                 "Error: std not found: `std/{name}.hew` is not in the toolchain's standard \
-                 library (tried: {tried}); set HEW_STD to a std/ directory"
+                 library (tried: {tried}); {cause}"
             ))
         })
+}
+
+/// Why `std.*` resolves nowhere when `HEW_STD` names a directory not called
+/// `std`: its parent is the std root, so the std it names is never read.
+fn misnamed_hew_std_cause() -> Option<String> {
+    hew_types::module_registry::misnamed_hew_std().map(|std_dir| {
+        format!(
+            "HEW_STD names `{}`, but it must name a directory called `std`",
+            display_path(&std_dir)
+        )
+    })
 }
 
 fn check_ambiguous_module_import_bindings(
@@ -4124,8 +4137,12 @@ fn resolve_file_imports_internal(
                         "\n  hint: this dependency is declared in hew.toml — run `hew install`"
                             .to_string()
                     } else if is_std_import {
-                        nearest_std_module(last, &std_roots)
-                            .map(|nearest| format!("\n  did you mean `{nearest}`?"))
+                        misnamed_hew_std_cause()
+                            .map(|cause| format!("\n  hint: {cause}"))
+                            .or_else(|| {
+                                nearest_std_module(last, &std_roots)
+                                    .map(|nearest| format!("\n  did you mean `{nearest}`?"))
+                            })
                             .unwrap_or_default()
                     } else {
                         let hints = module_not_found_hints(source_file, &anchor, &segments, ctx);
@@ -8439,6 +8456,59 @@ extern "C" { fn hew_tcp_read(foo: Foo); }
         Session::from_frontend_options(SessionTarget::native(), &options)
             .lower_program(&state.program, tco)
             .expect("the program lowers against the given std");
+    }
+
+    /// A given std whose `std/builtins.hew` lacks a declaration the prelude
+    /// publishes is refused with a diagnostic naming that file, not a panic.
+    /// The control is the same copy with the shipped builtins intact.
+    #[test]
+    fn an_incomplete_std_builtins_is_a_diagnostic() {
+        let dir = tempfile::tempdir().expect("create temp dir");
+        let toolchain = dir.path().join("toolchain");
+        let repo_root = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .expect("hew-compile lives below the repository root");
+        copy_tree(&repo_root.join("std"), &toolchain.join("std"));
+        let project_dir = dir.path().join("project");
+        fs::create_dir(&project_dir).expect("create project");
+        let input = write_source(
+            &project_dir,
+            "main.hew",
+            "fn main() {\n    println(1);\n}\n",
+        );
+        let options = FrontendOptions {
+            project_dir: Some(project_dir),
+            module_search_paths: Some(vec![toolchain.clone()]),
+            ..Default::default()
+        };
+        run_file_frontend_to_typecheck(&input, &options)
+            .unwrap_or_else(|failure| panic!("intact std: {:#?}", failure.diagnostics));
+
+        fs::write(toolchain.join("std/builtins.hew"), "pub fn nothing() {}\n")
+            .expect("replace builtins");
+        let Err(failure) = run_file_frontend_to_typecheck(&input, &options) else {
+            panic!("an incomplete std must be refused");
+        };
+        let missing = failure
+            .diagnostics
+            .iter()
+            .filter_map(|diagnostic| match &diagnostic.kind {
+                FrontendDiagnosticKind::Type(error)
+                    if error.kind == hew_types::error::TypeErrorKind::MalformedStdSource =>
+                {
+                    Some(error)
+                }
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert!(
+            missing.iter().any(
+                |error| error.message.contains("does not declare `LinkError`")
+                    && error.message.contains("builtins.hew")
+            ),
+            "{:#?}",
+            failure.diagnostics
+        );
     }
 
     #[test]

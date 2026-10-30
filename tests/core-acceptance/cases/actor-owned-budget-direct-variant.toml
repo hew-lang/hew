@@ -1,0 +1,13 @@
+[[case]]
+id = "actor-owned-budget-direct-variant"
+intent = "Direct variants charge nothing at the heap limit, moved payloads charge once, and indirect variants still refuse."
+source = "cases/actor-owned-budget-direct-variant.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 30
+
+[case.env]
+HEW_WORKERS = "2"
+
+[case.expected]
+stdout = "44\nindirect limit\n4\nliteral limit\n"
+exit = 1

@@ -254,7 +254,11 @@ impl Builder<'_, '_> {
             kind,
             provenance,
         };
-        if own == OwnKind::Owned && op.kind.is_managed_materialization() {
+        if own == OwnKind::Owned
+            && op
+                .kind
+                .is_managed_materialization(&self.service.variant_shapes)
+        {
             return self.emit_materialization(op);
         }
         if op.results[0].own == OwnKind::Owned {

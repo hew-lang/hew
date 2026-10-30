@@ -28,18 +28,16 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
         builder.position_at_end(prologue);
         // A body with debug info keeps a current location for every
         // instruction it builds: LLVM requires one on each inlinable call.
-        let mut debug = match (
+        let debug = match (
             &module.debug,
             module.module.debug.functions.get(&callable.id),
         ) {
             (Some(emitter), Some(attribution)) => {
-                let function_debug = emitter.function(value, &callable.symbol, attribution);
-                builder.set_current_debug_location(emitter.declaration_location(
-                    ctx,
-                    &function_debug,
-                    attribution.decl,
-                ));
-                debug::pin_for_inspection(ctx, value);
+                let function_debug =
+                    emitter.function(value, callable, attribution, &module.module.target);
+                builder.set_current_debug_location(
+                    emitter.unattributed_location(ctx, &function_debug),
+                );
                 Some((emitter, function_debug, attribution))
             }
             _ => None,
@@ -74,7 +72,7 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
             None
         };
         let slots = partial::allocate_storage(module, function, callable, value, &builder)?;
-        if let Some((emitter, function_debug, attribution)) = &mut debug {
+        if let Some((emitter, function_debug, attribution)) = &debug {
             debug::declare_locals(
                 ctx,
                 emitter,
@@ -84,8 +82,7 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                 &module.module.target,
                 &slots,
                 prologue,
-                frame.as_ref(),
-            )?;
+            );
         }
         let place_flags = partial::allocate_flags(module, function, &builder, &slots)?;
         let active_fault = coro::entry_storage(
@@ -176,17 +173,6 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                 )?,
             };
             values.store_value(slots[storage_id.0 as usize], &physical_param.layout, loaded)?;
-            if let Some((emitter, function_debug, _)) = &debug {
-                // Resumable parameter stores execute after coroutine initialization.
-                emitter.local_value(
-                    function_debug,
-                    *storage_id,
-                    loaded,
-                    builder
-                        .get_insert_block()
-                        .expect("parameter store has a block"),
-                )?;
-            }
             param_index += 1;
         }
         let result_out = if callable.return_layout.is_some() {
@@ -254,9 +240,7 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
     }
 
     pub(super) fn emit(self) -> CodegenResult<()> {
-        let inspectable = self.debug.is_some();
-        let value = self.value;
-        let chunks = if self.frame.is_some() && !inspectable && self.module.coverage.is_empty() {
+        let chunks = if self.frame.is_some() && self.module.coverage.is_empty() {
             self.function.loop_chunks(self.module)
         } else {
             Vec::new()
@@ -305,36 +289,25 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                 self.locate(block.id, index);
                 self.emit_op(operation)?;
             }
-            self.locate(block.id, block.ops.len());
+            self.locate_terminator(block);
             self.emit_terminator(block)?;
-        }
-        if inspectable {
-            debug::order_blocks_for_inspection(value);
         }
         Ok(())
     }
 
     /// Open a block at the earliest source point anything in it names, or at
-    /// the body's declaration when it names none.
+    /// line 0 when it names none: such a block is cleanup or fault plumbing.
     fn enter_block(&self, block: BlockId) -> CodegenResult<()> {
         let Some((emitter, function_debug, attribution)) = &self.debug else {
             return Ok(());
         };
-        if self.frame.is_some() {
-            self.builder.unset_current_debug_location();
-            if let Some(available) = attribution.available.get(&block) {
-                for id in available {
-                    self.load(*id, "debug.local.restore")?;
-                }
-            }
-        }
         let first = attribution
             .sites
             .range((block, 0)..=(block, u32::MAX))
             .next()
             .map(|(_, offset)| *offset);
         let location = first.map_or_else(
-            || emitter.declaration_location(self.ctx, function_debug, attribution.decl),
+            || emitter.unattributed_location(self.ctx, function_debug),
             |offset| emitter.location(self.ctx, function_debug, offset),
         );
         self.builder.set_current_debug_location(location);
@@ -361,31 +334,57 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
         ));
     }
 
+    /// Point the builder at the source a terminator lowered from.
+    ///
+    /// A safepoint has no source of its own: it polls the scheduler on the
+    /// way into the code it resumes. It takes that code's first source point,
+    /// so the entry poll belongs to the first statement (where `prologue_end`
+    /// lands, after every parameter is stored) and a loop's back-edge poll to
+    /// the loop header, instead of opening a line of its own.
+    fn locate_terminator(&self, block: &PhysicalBlock) {
+        let Some((emitter, function_debug, attribution)) = &self.debug else {
+            return;
+        };
+        let index = u32::try_from(block.ops.len())
+            .expect("verified physical operation count fits a u32 index");
+        if attribution.sites.contains_key(&(block.id, index)) {
+            self.locate(block.id, block.ops.len());
+            return;
+        }
+        let PhysicalTerminator::Safepoint { normal, .. } = &block.terminator else {
+            return;
+        };
+        let mut target = normal.target;
+        let mut seen = std::collections::BTreeSet::new();
+        while seen.insert(target) {
+            if let Some((_, offset)) = attribution
+                .sites
+                .range((target, 0)..=(target, u32::MAX))
+                .next()
+            {
+                self.builder.set_current_debug_location(emitter.location(
+                    self.ctx,
+                    function_debug,
+                    *offset,
+                ));
+                return;
+            }
+            let Some(PhysicalTerminator::Goto(edge)) = self
+                .function
+                .blocks
+                .iter()
+                .find(|candidate| candidate.id == target)
+                .map(|candidate| &candidate.terminator)
+            else {
+                return;
+            };
+            target = edge.target;
+        }
+    }
+
     pub(super) fn load(&self, id: StorageId, name: &str) -> CodegenResult<BasicValueEnum<'ctx>> {
-        let value = self.value_emitter().load_value(
-            self.slots[id.0 as usize],
-            &self.storage(id)?.layout,
-            name,
-        )?;
-        self.debug_value(id, value)?;
-        Ok(value)
-    }
-
-    fn debug_value(&self, id: StorageId, value: BasicValueEnum<'ctx>) -> CodegenResult<()> {
-        if let Some((emitter, function_debug, _)) = &self.debug {
-            if let Some(block) = self.builder.get_insert_block() {
-                emitter.local_value(function_debug, id, value, block)?;
-            }
-        }
-        Ok(())
-    }
-
-    pub(super) fn debug_unavailable(&self, id: StorageId) {
-        if let Some((emitter, function_debug, _)) = &self.debug {
-            if let Some(block) = self.builder.get_insert_block() {
-                emitter.local_unavailable(function_debug, id, block);
-            }
-        }
+        self.value_emitter()
+            .load_value(self.slots[id.0 as usize], &self.storage(id)?.layout, name)
     }
 
     pub(super) fn storage(&self, id: StorageId) -> CodegenResult<&PhysicalStorage> {
@@ -403,9 +402,7 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
             value,
         )?;
         self.set_capture_initialized(id, true)?;
-        self.set_place_initialized(id, true)?;
-        self.debug_value(id, value)?;
-        Ok(())
+        self.set_place_initialized(id, true)
     }
 
     /// Loop snapshots restore scalar values and invariant borrowed vector
@@ -420,14 +417,10 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
             self.slots[id.0 as usize],
             &self.storage(id)?.layout,
             value,
-        )?;
-        self.debug_value(id, value)
+        )
     }
 
     pub(super) fn clear_owned(&self, id: StorageId) -> CodegenResult<()> {
-        if self.storage(id)?.own == OwnKind::Owned {
-            self.debug_unavailable(id);
-        }
         self.set_capture_initialized(id, false)?;
         self.set_place_initialized(id, false)?;
         // A local aggregate leaf records its transfer in this frame's
@@ -817,14 +810,8 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                 let value = self.load(*source, "borrow")?;
                 self.store(*dest, value)
             }
-            PhysicalOp::EndBorrow { source } => {
-                self.debug_unavailable(*source);
-                Ok(())
-            }
-            PhysicalOp::StorageLive { storage } => {
-                self.debug_unavailable(*storage);
-                self.set_place_initialized(*storage, false)
-            }
+            PhysicalOp::EndBorrow { .. } => Ok(()),
+            PhysicalOp::StorageLive { storage } => self.set_place_initialized(*storage, false),
             PhysicalOp::Assign {
                 dest,
                 source,
@@ -843,7 +830,6 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                 destroy,
                 cleanup,
             } => {
-                self.debug_unavailable(*storage);
                 if self.destroy_certified_contents(*storage, cleanup)? {
                     return Ok(());
                 }
@@ -882,9 +868,6 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
             .map(|field| self.load(*field, "variant.make.field"))
             .collect::<CodegenResult<Vec<_>>>()?;
         self.write_variant_value(self.slots[dest.0 as usize], variant, &values, glue_id)?;
-        if self.debug.is_some() {
-            self.load(dest, "variant.debug.value")?;
-        }
         for field in fields {
             self.clear_owned(*field)?;
         }
@@ -1239,7 +1222,6 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
             return Ok(());
         }
         let value = self.load(source, "destroy.source")?;
-        self.debug_unavailable(source);
         self.clear_owned(source)?;
         self.release_loaded(value, &self.storage(source)?.layout, action)
     }
@@ -1256,7 +1238,6 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
             return Ok(());
         }
         let value = self.load(source, "destroy.source")?;
-        self.debug_unavailable(source);
         self.clear_owned(source)?;
         self.release_loaded(value, &self.storage(source)?.layout, action)
     }

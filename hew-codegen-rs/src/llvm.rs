@@ -122,10 +122,22 @@ pub(crate) fn run_module_pipeline(
         .map_err(|error| CodegenError::Llvm(format!("{pipeline} pass pipeline failed: {error}")))?;
     unsafe extern "C" {
         fn hewLLVMStabilizeDebugFrameLocations(module: inkwell::llvm_sys::prelude::LLVMModuleRef);
+        fn hewLLVMHomeRampFrameAddresses(module: inkwell::llvm_sys::prelude::LLVMModuleRef);
+        fn hewLLVMMarkCoroutineDestroyParts(module: inkwell::llvm_sys::prelude::LLVMModuleRef);
     }
+    // SAFETY: the shim replaces only the subprograms and debug locations of
+    // coroutine destroy parts in this live module.
+    unsafe { hewLLVMMarkCoroutineDestroyParts(module.as_mut_ptr()) };
     // SAFETY: the shim only updates debug records and their pointer storage in
     // this live module, after coroutine splitting has selected frame addresses.
     unsafe { hewLLVMStabilizeDebugFrameLocations(module.as_mut_ptr()) };
+    // Optimized code tracks the frame address through register allocation;
+    // only an unoptimized ramp needs it homed on the stack.
+    if level == OptLevel::O0 {
+        // SAFETY: as above; the shim adds one alloca and store per ramp frame
+        // address that a debug record reads.
+        unsafe { hewLLVMHomeRampFrameAddresses(module.as_mut_ptr()) };
+    }
     module.verify().map_err(|error| {
         CodegenError::LlvmVerify(format!("module rejected after optimization: {error}"))
     })

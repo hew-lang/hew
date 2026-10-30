@@ -8,8 +8,8 @@
 mod types;
 
 use super::{coro, CodegenResult, LlvmResultExt, StorageId};
-use std::cell::RefCell;
-use std::collections::HashMap;
+use std::cell::{Cell, RefCell};
+use std::collections::{BTreeMap, HashMap};
 use std::path::Path;
 
 use hew_mir::physical::SemDebugScope;
@@ -86,15 +86,16 @@ pub(super) struct DebugEmitter<'ctx> {
     builder: DebugInfoBuilder<'ctx>,
     file: DIFile<'ctx>,
     lines: LineIndex,
-    /// Whether this target's debug records are CodeView rather than DWARF.
-    codeview: bool,
     /// Root-unit lexical blocks, in HIR scope order.
     scopes: Vec<SemDebugScope>,
     /// Source field names of each concrete record, in declaration order.
     records: HashMap<ResolvedTy, Vec<PhysicalDebugField>>,
     /// Source variant names of each concrete enum, in tag order.
     enums: HashMap<ResolvedTy, Vec<PhysicalDebugVariant>>,
-    types: RefCell<HashMap<String, DIType<'ctx>>>,
+    /// The description of each storage type, built once per type.
+    types: RefCell<BTreeMap<ResolvedTy, DIType<'ctx>>>,
+    /// Composites created so far, numbering their unique identifiers.
+    composites: Cell<u64>,
     _unit: DICompileUnit<'ctx>,
 }
 
@@ -136,13 +137,15 @@ impl<'ctx> DebugEmitter<'ctx> {
                 |parent| parent.to_string_lossy().into_owned(),
             );
         let (builder, unit) = llvm.create_debug_info_builder(
-            /* allow_unresolved */ true,
-            // Hew's algebraic enums use Rust's `DW_TAG_variant_part` shape and
-            // lldb only enables its active-variant renderer for a Rust compile
-            // unit. WHEN OBSOLETE: a registered `DW_LANG_Hew` that lldb and gdb
-            // recognize. WHAT THE REAL FIX IS: upstream that language code plus
-            // a Hew-aware formatter, then name it here.
-            DWARFSourceLanguage::Rust,
+            // Every type is complete when it is created; nothing is left for
+            // `finalize` to resolve.
+            /* allow_unresolved */
+            false,
+            // Hew has no registered DWARF language code. Every type here is a
+            // C shape (typedefs, tagged structs, unions, enumerations), so a C
+            // unit gives gdb, lldb and the Windows debuggers their full C
+            // expression evaluator and renders those shapes without a plugin.
+            DWARFSourceLanguage::C11,
             &file_name,
             &directory,
             concat!("hew ", env!("CARGO_PKG_VERSION")),
@@ -181,11 +184,11 @@ impl<'ctx> DebugEmitter<'ctx> {
             builder,
             file,
             lines: LineIndex::new(source.text),
-            codeview,
             scopes: debug.scopes.clone(),
             records: debug.records.clone().into_iter().collect(),
             enums: debug.enums.clone().into_iter().collect(),
-            types: RefCell::new(HashMap::new()),
+            types: RefCell::new(BTreeMap::new()),
+            composites: Cell::new(0),
             _unit: unit,
         }
     }

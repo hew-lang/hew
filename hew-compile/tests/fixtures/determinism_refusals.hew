@@ -1,0 +1,25 @@
+// Refusals from producers that once followed hash-table order.
+
+enum Paint0 { Red; Shade0; }
+enum Paint1 { Red; Shade1; }
+enum Paint2 { Red; Shade2; }
+enum Paint3 { Red; Shade3; }
+enum Paint4 { Red; Shade4; }
+enum Paint5 { Red; Shade5; }
+
+#[resource]
+type Handle {
+    fd: i64;
+}
+
+fn main() {
+    let keyed_0: HashMap<Handle, i64> = HashMap.new();
+    let keyed_1: HashMap<Handle, i64> = HashMap.new();
+    let keyed_2: HashMap<Handle, i64> = HashMap.new();
+    let keyed_3: HashMap<Handle, i64> = HashMap.new();
+    println(keyed_0.len());
+    println(keyed_1.len());
+    println(keyed_2.len());
+    println(keyed_3.len());
+    let _colour = Red;
+}

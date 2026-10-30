@@ -1,0 +1,57 @@
+// Reports from producers that once followed hash-table order.
+import std.fs;
+
+fn acquire() {
+    let _ = fs.open_read("ungranted.txt");
+}
+
+#[confined]
+fn boundary_0() {
+    acquire();
+}
+
+#[confined]
+fn boundary_1() {
+    acquire();
+}
+
+#[confined]
+fn boundary_2() {
+    acquire();
+}
+
+#[confined]
+fn boundary_3() {
+    acquire();
+}
+
+#[confined]
+fn boundary_4() {
+    acquire();
+}
+
+#[confined]
+fn boundary_5() {
+    acquire();
+}
+
+fn main() {
+    let unused_0 = 0;
+    let unused_1 = 1;
+    let unused_2 = 2;
+    let unused_3 = 3;
+    let unused_4 = 4;
+    let unused_5 = 5;
+    let unused_6 = 6;
+    let unused_7 = 7;
+    let unused_8 = 8;
+    let unused_9 = 9;
+    let unused_10 = 10;
+    let unused_11 = 11;
+    var steady_0 = 0;
+    var steady_1 = 1;
+    var steady_2 = 2;
+    println(steady_0);
+    println(steady_1);
+    println(steady_2);
+}

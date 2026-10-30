@@ -524,6 +524,55 @@ impl<'ctx> DebugEmitter<'ctx> {
         }
     }
 
+    /// Describe parameter `id` by its incoming argument from the first
+    /// instruction of the body. A coroutine ramp reaches its frame only after
+    /// the frame is allocated, so until the record that names the frame slot
+    /// the argument itself is the only place the value is.
+    pub(super) fn bind_argument(
+        &self,
+        function: &FunctionDebug<'ctx>,
+        id: StorageId,
+        argument: inkwell::values::BasicValueEnum<'ctx>,
+        indirect: bool,
+        block: inkwell::basic_block::BasicBlock<'ctx>,
+    ) {
+        use inkwell::llvm_sys::debuginfo::{
+            LLVMDIBuilderInsertDbgValueRecordAtEnd, LLVMDIBuilderInsertDbgValueRecordBefore,
+        };
+        let Some(local) = function.locals.borrow().get(&id).map(|local| LocalSlot {
+            variable: local.variable,
+            location: local.location,
+            slot: local.slot,
+        }) else {
+            return;
+        };
+        let expression =
+            self.builder
+                .create_expression(if indirect { vec![DW_OP_DEREF] } else { vec![] });
+        // SAFETY: the value, metadata and block belong to this live context.
+        unsafe {
+            if let Some(first) = block.get_first_instruction() {
+                LLVMDIBuilderInsertDbgValueRecordBefore(
+                    self.builder.as_mut_ptr(),
+                    argument.as_value_ref(),
+                    local.variable.as_mut_ptr(),
+                    expression.as_mut_ptr(),
+                    local.location.as_mut_ptr(),
+                    first.as_value_ref(),
+                );
+            } else {
+                LLVMDIBuilderInsertDbgValueRecordAtEnd(
+                    self.builder.as_mut_ptr(),
+                    argument.as_value_ref(),
+                    local.variable.as_mut_ptr(),
+                    expression.as_mut_ptr(),
+                    local.location.as_mut_ptr(),
+                    block.as_mut_ptr(),
+                );
+            }
+        }
+    }
+
     fn value_record(
         &self,
         value: inkwell::values::BasicValueEnum<'ctx>,

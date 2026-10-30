@@ -405,13 +405,42 @@ fn each_line_starts_one_statement_and_prologue_ends_on_the_body() {
         .filter(|subprogram| !subprogram.artificial)
     {
         // LLVM's coroutine split re-lays a resume part's blocks, and it marks
-        // the first row of a re-entered block as a statement on its own.
-        let split = subprogram.linkage_name.is_some();
+        // the first row of a re-entered block as a statement on its own. The
+        // ramp it leaves behind interleaves line-0 plumbing (frame address
+        // homes, reloads) with the first statement and so restarts that line
+        // too. Both halves of a split body are exempt; every body that is not
+        // split must start each line once.
+        let split = subprogram.linkage_name.is_some()
+            || unit.subprograms.iter().any(|part| {
+                part.name == subprogram.name
+                    && part
+                        .linkage_name
+                        .as_deref()
+                        .is_some_and(|linkage| linkage.ends_with(".resume"))
+            });
         // The row at the entry address carries the scope line, which is the
         // first statement; the prologue ends on that statement's own row.
         let mut starts: BTreeMap<u64, Vec<u64>> = BTreeMap::new();
-        for row in unit.rows_in(subprogram) {
-            if row.is_stmt && row.line != 0 && row.address != subprogram.low {
+        let rows = unit.rows_in(subprogram);
+        // A coroutine ramp allocates its frame under the first statement's
+        // line, which is where its prologue ends so that a function
+        // breakpoint stops with the parameters homed, and then enters that
+        // statement a second time as the body. That one frame-allocation
+        // row is the only second start a line may have.
+        let frame_allocation = rows
+            .iter()
+            .find(|row| row.prologue_end)
+            .filter(|first| {
+                rows.iter()
+                    .any(|row| row.is_stmt && row.line == first.line && row.address > first.address)
+            })
+            .map(|row| row.address);
+        for row in rows {
+            if row.is_stmt
+                && row.line != 0
+                && row.address != subprogram.low
+                && Some(row.address) != frame_allocation
+            {
                 starts.entry(row.line).or_default().push(row.address);
             }
         }
@@ -424,6 +453,20 @@ fn each_line_starts_one_statement_and_prologue_ends_on_the_body() {
             );
         }
     }
+
+    // A split body's ramp ends its prologue on the first statement too, so a
+    // function breakpoint stops where the parameters are homed and readable.
+    let ramp = unit
+        .named("fact")
+        .into_iter()
+        .find(|part| part.linkage_name.is_none())
+        .expect("`fact` has a ramp");
+    assert!(
+        unit.rows_in(ramp)
+            .iter()
+            .any(|row| row.prologue_end && row.line == ramp.decl_line + 1),
+        "the ramp of `fact` ends its prologue on its first statement"
+    );
 
     let length = unit.named("length");
     assert_eq!(length.len(), 1, "`length` is not split");

@@ -52,12 +52,25 @@ extern "C" void hewLLVMStabilizeDebugFrameLocations(LLVMModuleRef module) {
     // line. A breakpoint on that line would then stop before the records
     // that say which locals hold a value. The reload is plumbing, so it
     // belongs to line 0.
-    for (auto &block : function)
-      for (auto &instruction : block)
-        if (instruction.getName().contains(".reload") &&
-            instruction.getDebugLoc() && instruction.getDebugLoc().getLine())
-          instruction.setDebugLoc(DILocation::get(
-              ir->getContext(), 0, 0, instruction.getDebugLoc()->getScope()));
+    for (auto &block : function) {
+      DebugLoc previous;
+      for (auto &instruction : block) {
+        if (!instruction.getName().contains(".reload")) {
+          if (instruction.getDebugLoc())
+            previous = instruction.getDebugLoc();
+          continue;
+        }
+        if (!instruction.getDebugLoc() || !instruction.getDebugLoc().getLine())
+          continue;
+        // Mid-line, the reload simply continues the line it interrupts; at
+        // the start of a block it has no line yet.
+        instruction.setDebugLoc(
+            previous ? previous
+                     : DebugLoc(DILocation::get(
+                           ir->getContext(), 0, 0,
+                           instruction.getDebugLoc()->getScope())));
+      }
+    }
     SmallVector<std::pair<DbgVariableRecord *, Instruction *>, 8> records;
     for (auto &block : function)
       for (auto &instruction : block)
@@ -112,6 +125,46 @@ extern "C" void hewLLVMStabilizeDebugFrameLocations(LLVMModuleRef module) {
       instruction->getParent()
           ->createMarker(instruction)
           ->absorbDebugValues(suffix, false);
+    }
+  }
+}
+
+// CoroSplit moves a parameter that outlives a suspension into a stack home
+// stored a few instructions into the ramp, and points the parameter's record
+// at that home. Until the store runs the argument is described nowhere, so a
+// breakpoint at the ramp's first instruction reads the parameter as optimized
+// out. Describe the incoming argument itself from the first instruction; the
+// record that names the home takes over once the store has run.
+extern "C" void hewLLVMDescribeRampArguments(LLVMModuleRef module) {
+  auto *ir = reinterpret_cast<Module *>(module);
+  if (!ir->getNamedMetadata("llvm.dbg.cu"))
+    return;
+  for (auto &function : *ir) {
+    if (function.isDeclaration())
+      continue;
+    auto &entry = function.getEntryBlock();
+    SmallVector<std::pair<Argument *, DbgVariableRecord *>, 4> arguments;
+    DenseMap<Value *, Argument *> homes;
+    for (auto &instruction : entry)
+      if (auto *store = dyn_cast<StoreInst>(&instruction))
+        if (auto *argument = dyn_cast<Argument>(store->getValueOperand()))
+          if (isa<AllocaInst>(store->getPointerOperand()))
+            homes[store->getPointerOperand()] = argument;
+    for (auto &instruction : entry)
+      for (auto &record : instruction.getDbgRecordRange())
+        if (auto *variable = dyn_cast<DbgVariableRecord>(&record))
+          if (variable->isDbgValue() && !variable->hasArgList() &&
+              variable->getNumVariableLocationOps() == 1 &&
+              variable->getVariable()->isParameter())
+            if (auto home = homes.find(variable->getVariableLocationOp(0));
+                home != homes.end())
+              arguments.push_back({home->second, variable});
+    for (auto [argument, variable] : arguments) {
+      auto *record = new DbgVariableRecord(
+          ValueAsMetadata::get(argument), variable->getVariable(),
+          DIExpression::get(ir->getContext(), {}), variable->getDebugLoc(),
+          DbgVariableRecord::LocationType::Value);
+      entry.insertDbgRecordBefore(record, entry.begin());
     }
   }
 }

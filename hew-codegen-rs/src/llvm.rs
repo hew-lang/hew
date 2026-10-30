@@ -123,6 +123,7 @@ pub(crate) fn run_module_pipeline(
     unsafe extern "C" {
         fn hewLLVMStabilizeDebugFrameLocations(module: inkwell::llvm_sys::prelude::LLVMModuleRef);
         fn hewLLVMHomeRampFrameAddresses(module: inkwell::llvm_sys::prelude::LLVMModuleRef);
+        fn hewLLVMDescribeRampArguments(module: inkwell::llvm_sys::prelude::LLVMModuleRef);
         fn hewLLVMMarkCoroutineDestroyParts(module: inkwell::llvm_sys::prelude::LLVMModuleRef);
     }
     // SAFETY: the shim replaces only the subprograms and debug locations of
@@ -140,6 +141,8 @@ pub(crate) fn run_module_pipeline(
         // SAFETY: as above; the shim adds one alloca and store per ramp frame
         // address that a debug record reads.
         unsafe { hewLLVMHomeRampFrameAddresses(module.as_mut_ptr()) };
+        // SAFETY: as above; the shim adds one record per ramp parameter home.
+        unsafe { hewLLVMDescribeRampArguments(module.as_mut_ptr()) };
     }
     crate::physical::verify_bounded(module).map_err(|error| match error {
         CodegenError::LlvmVerify(message) => {

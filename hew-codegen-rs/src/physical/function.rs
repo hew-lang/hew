@@ -35,9 +35,15 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
             (Some(emitter), Some(attribution)) => {
                 let function_debug =
                     emitter.function(value, callable, attribution, &module.module.target);
-                builder.set_current_debug_location(
-                    emitter.unattributed_location(ctx, &function_debug),
-                );
+                // A ramp starts on its declaration, the way a compiled C
+                // function does, so a debugger that skips to the next line
+                // after the frame setup lands past the argument homes.
+                let start = if callable.is_resumable {
+                    emitter.location(ctx, &function_debug, attribution.decl)
+                } else {
+                    emitter.unattributed_location(ctx, &function_debug)
+                };
+                builder.set_current_debug_location(start);
                 Some((emitter, function_debug, attribution))
             }
             _ => None,
@@ -61,8 +67,27 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
             } else {
                 state
             };
+            // The frame allocation is the first call of a ramp, and LLVM ends
+            // the prologue at the first instruction under a source line that
+            // precedes no call. Put it under the first statement's line so a
+            // breakpoint on the function stops there, with the parameters
+            // already homed, instead of at the first instruction.
+            if let Some((emitter, function_debug, attribution)) = &debug {
+                if let Some(offset) = debug::first_site_from(function, attribution, function.entry)
+                {
+                    builder.set_current_debug_location(emitter.location(
+                        ctx,
+                        function_debug,
+                        offset,
+                    ));
+                }
+            }
             let mut frame =
                 coro::begin(ctx, target_data, &module.llvm, &builder, value, execution)?;
+            if let Some((emitter, function_debug, _)) = &debug {
+                builder
+                    .set_current_debug_location(emitter.unattributed_location(ctx, function_debug));
+            }
             frame.completion_state = state;
             if callable.is_authored_close {
                 frame.bind_cleanup_execution(ctx, &module.llvm, &builder)?;
@@ -176,6 +201,17 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                 )?,
             };
             values.store_value(slots[storage_id.0 as usize], &physical_param.layout, loaded)?;
+            if frame.is_some() && !parameter.is_struct_value() && !parameter.is_array_value() {
+                if let Some((emitter, function_debug, _)) = &debug {
+                    emitter.bind_argument(
+                        function_debug,
+                        *storage_id,
+                        parameter,
+                        physical_param.carrier == ParamCarrier::Indirect,
+                        prologue,
+                    );
+                }
+            }
             param_index += 1;
         }
         let result_out = if callable.return_layout.is_some() {

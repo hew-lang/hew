@@ -45,6 +45,7 @@ pub(super) fn bind_runtime<'ctx>(llvm: &Module<'ctx>, engine: &ExecutionEngine<'
         materialize::hew_budget_materialize_commit,
         materialize::hew_budget_materialize_abort,
         materialize::hew_budget_materialize_overflow,
+        materialize::hew_budget_string_literal,
         materialize::hew_budget_publish_value,
         visit::hew_managed_visit_backing,
         visit::hew_managed_visit_opaque,

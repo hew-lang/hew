@@ -1227,6 +1227,7 @@ non-declarable = [
   "hew_budget_materialize_overflow",
   "hew_budget_publish_value",
   "hew_budget_release_backing",
+  "hew_budget_string_literal",
   "hew_bytes_append_checked",
   "hew_bytes_clear_managed",
   "hew_bytes_drop_managed",

@@ -1692,3 +1692,64 @@ fn active_operation_root_uses_the_split_coroutine_owner_slot() {
         }
     }
 }
+
+/// A fallible leaf builds its `Ok` result as a direct variant with no budget
+/// materialization; its error literal stays a checked acquisition made in one
+/// runtime step. The SIR contract covers the `?` frames above it.
+#[test]
+fn fallible_chain_builds_results_without_budget_materialization() {
+    use inkwell::values::AnyValue;
+
+    let semantic = lower_source(
+        r#"
+        fn leaf(value: i64) -> i64 fails string {
+            if value < 0 {
+                return error "negative input";
+            }
+            value % 251
+        }
+        fn middle(value: i64) -> i64 fails string {
+            let inner = leaf(value)?;
+            inner + 1
+        }
+        fn outer(value: i64) -> i64 fails string {
+            let inner = middle(value)?;
+            inner + 1
+        }
+        fn main() -> i64 {
+            match outer(3) {
+                .Ok(value) => value,
+                .Err(_) => -1,
+            }
+        }
+        "#,
+    );
+    let triple = native_emission_triple();
+    let inventory = hew_mir::physical::physical_type_inventory(&semantic);
+    let target = physical_target_for_inventory(&triple, &inventory).unwrap();
+    let physical = hew_mir::lower_physical_module(&semantic, target).unwrap();
+    let ctx = Context::create();
+    let machine =
+        crate::llvm::target_machine_for_triple_with_opt_level(&triple, OptLevel::O0).unwrap();
+    let llvm = build_module(&ctx, physical.module(), "fallible_chain", &machine).unwrap();
+    llvm.verify().unwrap();
+    let body = |name: &str| {
+        let callable = physical
+            .module()
+            .callables
+            .iter()
+            .find(|callable| emitted_symbol(physical.module(), callable).ends_with(name))
+            .expect("emitted callable");
+        llvm.get_function(&emitted_symbol(physical.module(), callable))
+            .expect("callable definition")
+            .print_to_string()
+            .to_string()
+    };
+    let leaf = body("_leaf");
+    assert!(!leaf.contains("@hew_budget_materialize_begin("), "{leaf}");
+    assert!(!leaf.contains("@hew_budget_materialize_commit("), "{leaf}");
+    assert_eq!(
+        leaf.matches("call i32 @hew_budget_string_literal(").count(),
+        1
+    );
+}

@@ -1033,6 +1033,11 @@ fn ask_error_from_code(code: i32) -> Option<AskError> {
     }
 }
 
+/// The wire reason a node gives for a request it refused unread.
+pub(crate) fn refusal_reason_code() -> u8 {
+    AskRejectionReasonCode::encode(AskError::Refused).expect("Refused has a wire code")
+}
+
 #[repr(u8)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum AskRejectionReasonCode {

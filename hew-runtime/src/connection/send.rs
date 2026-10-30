@@ -5,7 +5,7 @@ use std::sync::atomic::Ordering;
 use std::sync::Arc;
 
 use crate::node_identity::{Location, NodeId};
-use crate::peer_binding::{LiveClaim, Posture};
+use crate::peer_binding::{ClaimState, LiveClaim, Posture};
 use crate::set_last_error;
 use crate::transport::HEW_CONN_INVALID;
 use crate::util::MutexExt;
@@ -131,6 +131,19 @@ pub(crate) fn claim_send(
     conn_id: c_int,
     expected_publication: Option<u64>,
 ) -> Option<SendClaim> {
+    claim_send_admitted(manager, conn_id, expected_publication, |state| {
+        state == ClaimState::Published
+    })
+}
+
+/// As [`claim_send`], for a connection whose claim is in any state `admits`
+/// accepts.
+fn claim_send_admitted(
+    manager: &HewConnMgr,
+    conn_id: c_int,
+    expected_publication: Option<u64>,
+    admits: impl Fn(ClaimState) -> bool,
+) -> Option<SendClaim> {
     let (claim, publication_token, credential) = manager.connections.access(|connections| {
         let connection = connections.iter().find(|connection| {
             connection.conn_id == conn_id
@@ -163,7 +176,11 @@ pub(crate) fn claim_send(
         .lock_or_recover()
         .get(&claim.identity)
         .is_some_and(|owner| {
-            owner.carrier() == Some((conn_id, publication_token))
+            (admits(owner.state)
+                && owner.conn_id == conn_id
+                && owner.publication_token == publication_token
+                || owner.state == ClaimState::Reserved
+                    && owner.superseding == Some((conn_id, publication_token)))
                 && owner.route_slot == claim.route_slot
                 && owner.session_incarnation == claim.session_incarnation
                 && owner.credential == credential
@@ -210,6 +227,40 @@ pub(crate) fn claim_send_to_route(
         .filter_map(LiveClaim::carrier)
         .find(|&(_, token)| publication.is_none_or(|publication| publication == token))?;
     let claim = claim_send(manager, conn_id, publication)?;
+    (claim.route_slot == route_slot).then_some(claim)
+}
+
+/// Send `bytes` on `conn_id` while its claim holds the connection, refuting
+/// or published: a buried peer's refused requests are answered on it.
+pub(super) fn send_on_held_connection(
+    manager: &HewConnMgr,
+    conn_id: c_int,
+    publication_token: u64,
+    bytes: &[u8],
+) -> c_int {
+    claim_send_admitted(
+        manager,
+        conn_id,
+        Some(publication_token),
+        ClaimState::holds_connection,
+    )
+    .map_or(-1, |claim| claim.send(bytes))
+}
+
+/// A send claim for SWIM to `route_slot`. SWIM also reaches a buried peer
+/// over its refuting connection, so the peer can learn of its burial.
+pub(super) fn claim_swim_send_to_route(manager: &HewConnMgr, route_slot: u16) -> Option<SendClaim> {
+    if route_slot == 0 {
+        return None;
+    }
+    let conn_id = manager
+        .claims
+        .0
+        .lock_or_recover()
+        .values()
+        .find(|owner| owner.state.holds_connection() && owner.route_slot == route_slot)?
+        .conn_id;
+    let claim = claim_send_admitted(manager, conn_id, None, ClaimState::holds_connection)?;
     (claim.route_slot == route_slot).then_some(claim)
 }
 

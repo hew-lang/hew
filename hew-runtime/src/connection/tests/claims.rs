@@ -100,7 +100,7 @@ fn claim_reserve_publish_retire_exact_owner_lifecycle() {
     let cred = Some(PeerCredential::NoiseKey([7u8; 32]));
 
     match reserve_claim(mgr, 42, cred.as_ref(), 100, 1) {
-        ClaimReservation::Reserved { superseded } => assert!(superseded.is_none()),
+        ClaimReservation::Reserved { superseded, .. } => assert!(superseded.is_none()),
         ClaimReservation::Yielded(_) => panic!("no crossing dial in this test"),
         ClaimReservation::Rejected(d) => panic!("fresh reserve rejected: {d}"),
     }
@@ -144,7 +144,10 @@ fn retired_identity_claim_rejects_lower_session_and_allows_reconnect() {
             TEST_ADMISSION,
             Commit::Initiator(0)
         ),
-        ClaimReservation::Reserved { superseded: None }
+        ClaimReservation::Reserved {
+            superseded: None,
+            ..
+        }
     ));
     assert!(publish_identity_claim(mgr, identity, 100, 1));
     assert!(retire_identity_claim(mgr, identity, 100, 1));
@@ -179,8 +182,11 @@ fn retired_identity_claim_rejects_lower_session_and_allows_reconnect() {
     ) {
         ClaimReservation::Reserved {
             superseded: Some(retired),
+            ..
         } => retired,
-        ClaimReservation::Reserved { superseded: None } => {
+        ClaimReservation::Reserved {
+            superseded: None, ..
+        } => {
             panic!("equal-session reconnect must retain the retired fence")
         }
         ClaimReservation::Yielded(_) => panic!("no crossing dial in this test"),
@@ -208,7 +214,8 @@ fn retired_identity_claim_rejects_lower_session_and_allows_reconnect() {
             superseded: Some(LiveClaim {
                 state: ClaimState::Retired,
                 ..
-            })
+            }),
+            ..
         }
     ));
 
@@ -264,7 +271,7 @@ fn claim_reserve_supersedes_same_credential_and_abort_restores_it() {
 
     // Same-credential reconnect supersedes the live Published claim.
     let superseded = match reserve_claim(mgr, 42, cred.as_ref(), 200, 2) {
-        ClaimReservation::Reserved { superseded } => {
+        ClaimReservation::Reserved { superseded, .. } => {
             superseded.expect("same-credential reconnect supersedes the old claim")
         }
         ClaimReservation::Yielded(_) => panic!("no crossing dial in this test"),
@@ -380,7 +387,7 @@ fn claim_reserve_waits_on_reserved_then_checks_predecessor() {
             session_incarnation: 1,
             publication_token: 90,
         };
-        let ClaimReservation::Reserved { superseded } = reserve_claim(mgr, 42, None, 100, 100)
+        let ClaimReservation::Reserved { superseded, .. } = reserve_claim(mgr, 42, None, 100, 100)
         else {
             panic!("provisional successor must reserve the retired claim");
         };
@@ -616,7 +623,7 @@ fn crossing_dial_keeps_the_lower_node_dial() {
         dialled,
         Commit::Responder,
     ) {
-        ClaimReservation::Reserved { superseded } => {
+        ClaimReservation::Reserved { superseded, .. } => {
             assert_eq!(superseded.map(|claim| claim.conn_id), Some(300));
         }
         ClaimReservation::Yielded(_) => panic!("our crossing dial yielded to the peer's"),
@@ -637,7 +644,7 @@ fn crossing_dial_tie_break_is_bounded_to_overlapping_admissions() {
 
     publish_crossing_claim(mgr, ConnectionOrigin::Dialled, 100, 5);
     match reserve_crossing_claim(mgr, ConnectionOrigin::Accepted, 200, 6) {
-        ClaimReservation::Reserved { superseded } => {
+        ClaimReservation::Reserved { superseded, .. } => {
             assert_eq!(superseded.map(|claim| claim.conn_id), Some(100));
         }
         ClaimReservation::Yielded(_) => panic!("a later redial was pinned out"),
@@ -660,7 +667,7 @@ fn crossing_dial_tie_break_is_bounded_to_overlapping_admissions() {
         higher,
         Commit::Responder,
     ) {
-        ClaimReservation::Reserved { superseded } => {
+        ClaimReservation::Reserved { superseded, .. } => {
             assert_eq!(superseded.map(|claim| claim.conn_id), Some(300));
         }
         ClaimReservation::Yielded(_) => panic!("a higher session yielded to an old one"),
@@ -697,7 +704,10 @@ fn initiator_keeps_the_last_responder_commit() {
     // though the earlier one was this node's own dial.
     assert!(matches!(
         reserve(ConnectionOrigin::Accepted, 100, 5, 20),
-        ClaimReservation::Reserved { superseded: None }
+        ClaimReservation::Reserved {
+            superseded: None,
+            ..
+        }
     ));
     assert!(publish_identity_claim(mgr, identity, 100, 5));
     match reserve(ConnectionOrigin::Dialled, 200, 6, 10) {
@@ -709,7 +719,7 @@ fn initiator_keeps_the_last_responder_commit() {
     // A later commit replaces the kept connection, even one this node
     // accepted before its own dial began.
     match reserve(ConnectionOrigin::Dialled, 300, 7, 30) {
-        ClaimReservation::Reserved { superseded } => {
+        ClaimReservation::Reserved { superseded, .. } => {
             assert_eq!(superseded.map(|claim| claim.conn_id), Some(100));
         }
         ClaimReservation::Yielded(_) => panic!("a later commit yielded"),

@@ -20,7 +20,7 @@ fn remove_after_suppressed_publication_restores_superseded_claim() {
             // publication is then SUPPRESSED by removal, so the stash is
             // never cleared.
             let superseded = match reserve_claim(&*mgr, 15, None, 96, 800) {
-                ClaimReservation::Reserved { superseded } => {
+                ClaimReservation::Reserved { superseded, .. } => {
                     superseded.expect("reconnect must supersede the published claim")
                 }
                 ClaimReservation::Yielded(_) => panic!("no crossing dial in this test"),
@@ -66,7 +66,7 @@ fn remove_after_completed_publication_restores_nothing() {
         unsafe {
             assert!(publish_claim(&*mgr, 16, 95, 900), "original must publish");
             let superseded = match reserve_claim(&*mgr, 16, None, 96, 1000) {
-                ClaimReservation::Reserved { superseded } => {
+                ClaimReservation::Reserved { superseded, .. } => {
                     superseded.expect("reconnect must supersede the published claim")
                 }
                 ClaimReservation::Yielded(_) => panic!("no crossing dial in this test"),

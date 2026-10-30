@@ -431,6 +431,9 @@ unsafe fn run_one_period(node: *mut HewNode) {
     // SAFETY: conn_mgr is owned by the live node; hew_now_ms has no
     // preconditions.
     unsafe { connection::retire_departed_peers(&*conn_ptr, crate::clock::hew_now_ms()) };
+    // 1c. Close buried peers' connections that did not refute in time.
+    // SAFETY: as above.
+    unsafe { connection::expire_refuting_claims(&*conn_ptr, crate::clock::hew_now_ms()) };
     if target == 0 {
         return;
     }

@@ -6481,7 +6481,8 @@ fn main() {
     `permanent`). This is the only restart spelling — bare `T permanent` and
     `with restart:` are not accepted.
   - `backoff: <expression>` (optional) — this child's `std.restart.Backoff`,
-    replacing the supervisor's `backoff` for this child alone;
+    replacing the supervisor's `backoff` for this child alone; refused on a
+    `restart: temporary` child, which never restarts;
     `restart.immediate()` restarts it without delay under a supervisor that
     declares one. A child without the clause inherits the supervisor's policy.
   - `stop: <duration>` (optional) — the graceful-stop deadline (default
@@ -6561,8 +6562,10 @@ child without one inherits it. The supervisor's expression runs first, then
 each child's in declaration order, each once per construction. Every member of
 a pool carries its declaration's policy. Under `one_for_all` and
 `rest_for_one`, the crashing child's policy delays the group restart. A
-`temporary` child never restarts, so its policy has no effect; a `transient`
-child's applies to its restarts after `Terminated` or `Crashed`.
+`temporary` child never restarts, so a `backoff:` clause on it is a compile
+error; a `transient` child's applies to its restarts after `Terminated` or
+`Crashed`. A child inheriting the supervisor's policy is unaffected by its
+restart kind.
 
 After a replacement runs without failure for the supervisor's existing restart
 window, its next crash uses `initial` again. That healthy interval begins when

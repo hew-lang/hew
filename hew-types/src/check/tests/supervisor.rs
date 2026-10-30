@@ -63,6 +63,29 @@ fn child_backoff_requires_the_stdlib_policy_identity() {
 }
 
 #[test]
+fn temporary_child_refuses_a_backoff_clause() {
+    let declared = |restart: &str| {
+        check_source(&format!(
+            "import std.restart;\nactor Worker {{}}\nsupervisor Team {{ child worker: Worker restart: {restart} backoff: restart.immediate(); }}"
+        ))
+    };
+    let refused = |output: &TypeCheckOutput| {
+        output.errors.iter().any(|error| {
+            matches!(
+                error.kind,
+                TypeErrorKind::SupervisorError {
+                    subkind: SupervisorErrorKind::TemporaryBackoff
+                }
+            )
+        })
+    };
+    let temporary = declared("temporary");
+    assert!(refused(&temporary), "{:#?}", temporary.errors);
+    let transient = declared("transient");
+    assert!(!refused(&transient), "{:#?}", transient.errors);
+}
+
+#[test]
 fn nested_supervisor_remains_a_valid_child_target() {
     let output = check_source(
         "actor Worker {\n    receive fn ping() {}\n}\n\nsupervisor Inner {\n    child worker: Worker;\n}\n\nsupervisor Root {\n    child inner: Inner;\n}\n",

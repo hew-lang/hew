@@ -480,6 +480,18 @@ impl Checker {
             }
             if let Some(backoff) = &child.backoff {
                 self.check_supervisor_backoff(backoff);
+                if child.restart == Some(hew_parser::ast::RestartPolicy::Temporary) {
+                    self.errors.push(TypeError::new(
+                        TypeErrorKind::SupervisorError {
+                            subkind: SupervisorErrorKind::TemporaryBackoff,
+                        },
+                        backoff.1.clone(),
+                        format!(
+                            "child `{}` is `restart: temporary` and never restarts, so its `backoff:` has no effect; remove the clause or use `restart: transient`",
+                            child.name
+                        ),
+                    ));
+                }
             }
         }
 
@@ -804,9 +816,7 @@ impl Checker {
         for (index, child) in sd.children.iter().enumerate() {
             let mut bindings = Vec::new();
             if let Some(wiring) = &child.wired_to {
-                let mut entries: Vec<_> = wiring.iter().collect();
-                entries.sort_unstable_by_key(|(key, _)| *key);
-                for (key, sibling) in entries {
+                for (key, sibling) in wiring {
                     if let Some(target) = sd
                         .children
                         .iter()

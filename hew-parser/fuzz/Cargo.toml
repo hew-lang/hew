@@ -19,6 +19,7 @@ hew-hir = { path = "../../hew-hir" }
 hew-compile = { path = "../../hew-compile" }
 hew-mir = { path = "../../hew-mir" }
 hew-pkg = { path = "../../hew-pkg" }
+hew-parity-gen = { path = "../../hew-parity-gen" }
 
 [[bin]]
 name = "fuzz_parse"
@@ -94,4 +95,10 @@ doc = false
 [[bin]]
 name = "fuzz_qualified_ctor_resolution"
 path = "fuzz_targets/fuzz_qualified_ctor_resolution.rs"
+doc = false
+
+[[bin]]
+name = "fuzz_parity_gen"
+path = "fuzz_targets/fuzz_parity_gen.rs"
+test = false
 doc = false

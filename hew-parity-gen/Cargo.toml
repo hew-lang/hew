@@ -1,0 +1,22 @@
+[package]
+name = "hew-parity-gen"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+description = "Generator of modelled Hew programs for the native/WASI/sandbox parity oracle"
+repository = "https://github.com/hew-lang/hew"
+keywords = ["hew", "fuzzing", "parity"]
+categories = ["development-tools::testing"]
+
+[lints]
+workspace = true
+
+[dependencies]
+arbitrary = "1"
+
+[[bin]]
+name = "parity_gen"
+path = "src/bin/parity_gen.rs"
+test = false
+doc = false

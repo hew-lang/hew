@@ -56,5 +56,21 @@ class ProcessBoundaries(unittest.TestCase):
                 )
 
 
+class BuildClassification(unittest.TestCase):
+    def test_source_without_main_is_not_a_program(self):
+        output = (
+            "E_NO_MAIN: candidate.hew has no `fn main`, so it cannot be built"
+            " or run as a program\n"
+        )
+        verdict = oracle._classify_build_failure(output)
+        self.assertEqual(verdict, "not-a-program")
+        self.assertIn(verdict, oracle._ACCEPTED)
+
+    def test_unexplained_build_failure_stays_a_failure(self):
+        verdict = oracle._classify_build_failure("error: linking failed\n")
+        self.assertEqual(verdict, "build-ice")
+        self.assertNotIn(verdict, oracle._ACCEPTED)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -88,4 +88,11 @@ fn main() {
 }
 ```
 
+## Aliases
+
+Anchors and aliases are accepted, but a document whose aliases expand to more
+than 32 units per input byte (at least 64 KiB) is refused with an `alias
+expansion limit exceeded` error before any tree is built. Input larger than
+1 MiB is refused.
+
 See the [stdlib overview](../../README.md) for other modules.

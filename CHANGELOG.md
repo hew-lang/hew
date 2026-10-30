@@ -2,6 +2,19 @@
 
 ## [Unreleased]
 
+- Escape tab, newline and carriage-return in XML attribute values and text so
+  they read back unchanged, and refuse element and attribute names XML does not
+  allow.
+- Refuse YAML whose aliases expand beyond 32 units per input byte (floor 64 KiB)
+  instead of counting anchors and aliases; the 200-anchor and 1,024-alias limits
+  are gone.
+- Cap MessagePack, JSON and typed wire decoding at one shared nesting depth of
+  127, so every document `msgpack.to_json` converts is one `json.parse` reads.
+- Refuse JSON numbers beyond the `f64` range (`1e400`, a 400-digit integer) in
+  the typed wire decoder with an ordinary parse error, as `json.parse` already
+  does. Underflow (`1e-400`) still rounds to 0.
+- Read JSON floats back to the value they were printed from.
+
 ## [0.10.0-rc1] - 2026-10-26
 
 - Account for actor-owned managed values across native and browser execution,

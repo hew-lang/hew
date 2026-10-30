@@ -252,17 +252,17 @@ impl<'ctx> DebugEmitter<'ctx> {
             value.map_or((0, 1), |(layout, _)| (layout.size, layout.align));
         let (key_offset, value_offset, stride, entries_align) =
             hew_runtime::hashmap::compute_slot_layout(
-                usize::try_from(key_layout.size).ok()?,
-                usize::try_from(key_layout.align).ok()?,
-                usize::try_from(value_size).ok()?,
-                usize::try_from(value_align).ok()?,
+                convert(key_layout.size)?,
+                convert(key_layout.align)?,
+                convert(value_size)?,
+                convert(value_align)?,
             )?;
         let (key_offset, value_offset, stride) = (
-            u64::try_from(key_offset).ok()?,
-            u64::try_from(value_offset).ok()?,
-            u64::try_from(stride).ok()?,
+            convert::<_, u64>(key_offset)?,
+            convert::<_, u64>(value_offset)?,
+            convert::<_, u64>(stride)?,
         );
-        let entries_align = u32::try_from(entries_align).ok()?;
+        let entries_align = convert::<_, u32>(entries_align)?;
 
         let state = self.slot_state();
         let mut slot = vec![self.member_bits("state", state, 8, 8, 0)];
@@ -834,4 +834,10 @@ fn field_offsets(fields: &[PhysicalLayout]) -> Vec<u64> {
             at
         })
         .collect()
+}
+
+/// A layout number in another width; `None` when it does not fit, which leaves
+/// the type undescribed instead of described wrongly.
+fn convert<From, To: TryFrom<From>>(value: From) -> Option<To> {
+    To::try_from(value).ok()
 }

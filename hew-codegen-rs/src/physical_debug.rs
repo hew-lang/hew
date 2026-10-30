@@ -540,14 +540,17 @@ pub(super) fn optimizes(machine: &inkwell::targets::TargetMachine) -> bool {
     unsafe { hewLLVMTargetMachineOptimizes(machine.as_mut_ptr()) }
 }
 
-/// The canonical absolute directory of `path`, or its directory as given when
-/// it does not name a real one (a remapped or trimmed virtual root).
+/// The absolute directory of `path`, or its directory as given when it cannot
+/// be made absolute (a remapped or trimmed virtual root).
 fn source_directory(path: &Path) -> String {
     let parent = path
         .parent()
         .filter(|parent| !parent.as_os_str().is_empty())
         .unwrap_or_else(|| Path::new("."));
-    std::fs::canonicalize(parent)
+    // Absolute, but not canonical: a debugger matches the path the person
+    // types, and resolving symlinks would turn macOS's `/var` into
+    // `/private/var`.
+    std::path::absolute(parent)
         .map(|absolute| absolute.to_string_lossy().into_owned())
         .unwrap_or_else(|_| parent.to_string_lossy().into_owned())
 }

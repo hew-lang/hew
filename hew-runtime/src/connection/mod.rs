@@ -61,6 +61,8 @@ mod peer;
 mod reader;
 mod reconnect;
 mod relay;
+#[cfg(test)]
+pub(crate) use reconnect::reconnect_successor_for_test;
 pub(crate) use reconnect::start_seed;
 mod send;
 mod swim;

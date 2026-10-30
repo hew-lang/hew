@@ -162,6 +162,23 @@ fn retired_member_rejoins_as_new_member() {
         .contains(&(2, 7, MEMBER_ALIVE)));
 }
 
+/// A peer that left is refused at its session for one suspect timeout, so its
+/// departure can be gossiped, then forgotten: a redial at the same session
+/// is admitted as a new member. This covers a node whose leave was announced
+/// while it stayed reachable; a stopped node refuses the redial itself.
+#[test]
+fn left_peer_redial_is_refused_in_grace_then_admitted_as_new() {
+    let cluster = HewCluster::new(make_config(1));
+    bury(&cluster, 2, 7, MEMBER_LEFT, 3);
+    cluster.retire_buried(0);
+    assert_eq!(publish(&cluster, 2, 7, 21), -1);
+    assert!(cluster.retire_buried(LEFT_WINDOW_MS - 1).is_empty());
+    assert_eq!(cluster.retire_buried(LEFT_WINDOW_MS).len(), 1);
+    assert_eq!(publish(&cluster, 2, 7, 22), 1);
+    assert_eq!(cluster.member_state(2), MEMBER_ALIVE);
+    assert_eq!(cluster.member_incarnation(2), Some(1));
+}
+
 extern "C" fn record(node_id: u16, event: u8, user_data: *mut c_void) {
     // SAFETY: the test keeps the recorder alive until the binding is cleared.
     let events = unsafe { &*user_data.cast::<Mutex<Vec<(u16, u8)>>>() };
@@ -206,13 +223,64 @@ fn retirement_wakes_observers_once_without_reporting_again() {
     drop(unsafe { Box::from_raw(events) });
 }
 
+/// Resident-set growth allowed across the measured half of the soak. The
+/// resident set moves in allocator-sized steps, and one 512 KiB step has been
+/// seen there with retirement in place; retaining every departed id instead
+/// grew it by about 6 MiB over the same span.
+const SOAK_GROWTH_BOUND_BYTES: u64 = 1024 * 1024;
+
+/// This process's resident set, in bytes.
+#[cfg(target_os = "linux")]
+fn resident_bytes() -> u64 {
+    let status = std::fs::read_to_string("/proc/self/status").expect("process status");
+    let kib = status
+        .lines()
+        .find_map(|line| line.strip_prefix("VmRSS:"))
+        .and_then(|value| value.trim().strip_suffix("kB"))
+        .and_then(|value| value.trim().parse::<u64>().ok())
+        .expect("VmRSS");
+    kib * 1024
+}
+
 /// Three clusters churning 2000 node ids through join, burial and departure
-/// keep every per-slot map within the cap plus live members.
+/// keep every per-slot map within the cap, and the resident set stays within
+/// [`SOAK_GROWTH_BOUND_BYTES`] of its level after a 1000-id warm-up, by
+/// which time the allocator has reached its working set.
+///
+/// Runs in its own process: the resident set is process-wide, so other
+/// libtest cases would otherwise move it.
+#[cfg(target_os = "linux")]
 #[test]
 fn soak_three_clusters_with_2000_departing_ids_stays_flat() {
+    const CHILD: &str = "HEW_CLUSTER_RETENTION_SOAK_CHILD";
+    if std::env::var_os(CHILD).is_none() {
+        let output = std::process::Command::new(
+            std::env::current_exe().expect("runtime test binary"),
+        )
+        .args([
+            "cluster::tests::retention::soak_three_clusters_with_2000_departing_ids_stays_flat",
+            "--exact",
+            "--nocapture",
+            "--test-threads=1",
+        ])
+        .env(CHILD, "1")
+        .output()
+        .expect("isolated retention soak");
+        assert!(
+            output.status.success(),
+            "retention soak failed:\n{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        return;
+    }
+
+    let live = resident_bytes;
     let clusters = (1..=3)
         .map(|local| HewCluster::new(make_config(local)))
         .collect::<Vec<_>>();
+    let mut warm = 0;
+    let mut highest = 0;
     for round in 0..2000_u64 {
         let slot = 10 + u16::try_from(round).expect("slot fits");
         let state = if round % 3 == 0 {
@@ -225,7 +293,18 @@ fn soak_three_clusters_with_2000_departing_ids_stays_flat() {
             cluster.retire_buried(round * 10);
             cluster.take_swim_gossip(2, 8);
         }
+        if round == 999 {
+            warm = live();
+        } else if round > 999 {
+            highest = highest.max(live());
+        }
     }
+    let growth = highest.saturating_sub(warm);
+    println!("retention soak: warm {warm} B, highest {highest} B, growth {growth} B");
+    assert!(
+        growth <= SOAK_GROWTH_BOUND_BYTES,
+        "resident set grew {growth} bytes after warm-up"
+    );
     for cluster in &clusters {
         let members = cluster.members.lock_or_recover().len();
         assert!(members <= MAX_BURIED_MEMBERS, "members {members}");

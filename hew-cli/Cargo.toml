@@ -18,6 +18,10 @@ doctest = false
 name = "hew"
 path = "src/main.rs"
 
+[features]
+# In-process entry points for the cargo-fuzz targets in `fuzz/`.
+fuzzing = []
+
 [dependencies]
 hew-runtime = { path = "../hew-runtime", default-features = false, features = [
   "quic",

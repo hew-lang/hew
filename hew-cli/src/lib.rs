@@ -35,6 +35,8 @@ mod doc;
 mod eval;
 mod explain_cow;
 mod fixes;
+#[cfg(feature = "fuzzing")]
+pub mod fuzzing;
 mod generate;
 mod help;
 mod host;

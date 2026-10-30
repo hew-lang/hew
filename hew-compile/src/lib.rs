@@ -78,6 +78,9 @@ pub struct FrontendOptions {
     /// or the standard library shipped with the compiler. In-memory hosts can
     /// set these roots to match their retained source paths. Read them
     /// through [`FrontendOptions::std_roots`].
+    ///
+    /// Every root given here is trusted as the standard library: the std
+    /// authority is exactly these roots, with no other root consulted.
     pub module_search_paths: Option<Vec<PathBuf>>,
     /// Treat warning-severity diagnostics as hard errors.
     ///
@@ -128,7 +131,9 @@ impl FrontendOptions {
     /// The standard-library roots of this run: `module_search_paths` when
     /// given, otherwise `HEW_STD` or the compiler's shipped std. Each root
     /// holds a `std/` directory. Import resolution, the checker's canonical-std
-    /// provenance and diagnostic ownership all read this one answer.
+    /// provenance and diagnostic ownership all read this one answer. Every
+    /// returned root is trusted as the std; the std authority is exactly
+    /// these roots.
     #[must_use]
     pub fn std_roots(&self) -> Vec<PathBuf> {
         self.module_search_paths

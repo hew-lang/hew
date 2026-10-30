@@ -118,7 +118,16 @@ unsafe fn new_actor_state(
     token: *mut crate::cancel_token::HewCancellationToken,
 ) -> *mut crate::coro_state::HewCoroState {
     // SAFETY: activation ownership keeps the actor alive during capture.
-    let target = Arc::new(unsafe { ActorIncarnation::of(actor) });
+    let incarnation = unsafe { ActorIncarnation::of(actor) };
+    // SAFETY: as above; the incarnation's identity fields never change, so
+    // one wake target serves every turn.
+    let target = match unsafe { (*actor).native_completion.as_ref() } {
+        Some(completion) => completion
+            .turn_wake
+            .get_or_init(|| Arc::new(incarnation))
+            .clone(),
+        None => Arc::new(incarnation),
+    };
     let waker = crate::wake::HewWaker {
         context: Arc::as_ptr(&target).cast_mut().cast(),
         wake: wake_actor,

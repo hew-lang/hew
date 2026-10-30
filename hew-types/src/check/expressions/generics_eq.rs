@@ -16,7 +16,8 @@ use super::super::*;
 use super::*;
 use crate::check::types::{
     DeferredIsCheck, GenericCallEdge, GenericCallee, GenericFnInstantiationSite,
-    GenericRequirement, GenericRequirementKind, GenericRequirementMemo, PendingInstantiation,
+    GenericRequirement, GenericRequirementKind, GenericRequirementMemo, GenericRequirementSite,
+    PendingInstantiation,
 };
 use crate::env::{PlaceConflict, PlacePath};
 use crate::BuiltinType;
@@ -912,20 +913,27 @@ impl Checker {
             (
                 requirements
                     .iter()
-                    .map(|(owner, demands)| (*owner, demands.len()))
+                    .map(|(owner, demands)| {
+                        (
+                            *owner,
+                            demands.iter().map(GenericRequirementSite::of).collect(),
+                        )
+                    })
                     .collect(),
-                sites.len(),
+                sites.iter().map(GenericFnInstantiationSite::key).collect(),
             )
         });
         let memo = self.finalization_memo.shared();
         let settled = memo.as_ref().map(|memo| &memo.generics);
         if let Some(settled) = settled {
             for (owner, demands) in &mut requirements {
-                let count = settled.requirement_counts.get(owner).copied().unwrap_or(0);
-                demands.drain(..count);
+                if let Some(recorded) = settled.requirements.get(owner) {
+                    demands
+                        .retain(|demand| !recorded.contains(&GenericRequirementSite::of(demand)));
+                }
             }
             requirements.retain(|_, demands| !demands.is_empty());
-            sites.drain(..settled.sites);
+            sites.retain(|site| !settled.sites.contains(&site.key()));
             for (method, receivers) in &settled.checked_receivers {
                 if let Some(binders) = self.impl_method_binders.get_mut(method) {
                     binders.checked_receivers.extend(receivers.iter().cloned());
@@ -937,7 +945,7 @@ impl Checker {
                 .reused(|reused| reused.generic_requirements += 1);
         }
         let (generic, edges) = self.discharge_generic_requirements(requirements, sites, settled);
-        if let Some((requirement_counts, sites)) = recording {
+        if let Some((recorded_requirements, recorded_sites)) = recording {
             let checked_receivers = self
                 .impl_method_binders
                 .iter()
@@ -946,8 +954,8 @@ impl Checker {
                 .collect();
             if let Some(memo) = self.finalization_memo.record() {
                 memo.generics = GenericRequirementMemo {
-                    requirement_counts,
-                    sites,
+                    requirements: recorded_requirements,
+                    sites: recorded_sites,
                     generic,
                     edges,
                     checked_receivers,

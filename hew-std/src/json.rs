@@ -1099,6 +1099,26 @@ mod tests {
     }
 
     #[test]
+    fn numbers_beyond_f64_are_refused_and_underflow_rounds_to_zero() {
+        let big_integer = "9".repeat(400);
+        for text in ["1e400", "-1e400", big_integer.as_str()] {
+            assert!(parse(text).is_null(), "{text} was accepted");
+            assert!(
+                get_parse_last_error().contains("out of range"),
+                "{text}: {}",
+                get_parse_last_error()
+            );
+        }
+        let tiny = parse("1e-400");
+        assert!(!tiny.is_null());
+        // SAFETY: tiny is a live value.
+        unsafe {
+            assert!(hew_json_get_float(tiny).abs() < f64::MIN_POSITIVE);
+            hew_json_free(tiny);
+        }
+    }
+
+    #[test]
     fn long_numbers_survive_a_round_trip() {
         // Long literals, from fuzzing: the fast float parser read these one
         // unit in the last place away from the value their printed form names.

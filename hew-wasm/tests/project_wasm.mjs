@@ -176,6 +176,15 @@ test('YAML Value Wasm parsing preserves native input guards', () => {
   assert.ok(parse('title: "AT&T"\nurl: "https://example.com?a=1&b=2"').value);
 });
 
+test('JSON Value Wasm parsing refuses numbers beyond f64 and rounds underflow to zero', () => {
+  const parse = (format, text) => JSON.parse(compiler.executeCodec(JSON.stringify({encoding_value: {format, operation: 'parse', text}})));
+  for (const text of ['[1e400]', '[-1e400]', `[${'9'.repeat(400)}]`]) {
+    assert.match(parse('Json', text).error, /out of range/, text);
+  }
+  assert.ok(parse('Toml', 'a = [1e400]').error);
+  assert.ok(parse('Json', '[1e-400]').value);
+});
+
 test('JSON parsing errors and recovery execute in separate actors', async () => {
   const source = `
 import std.encoding.json;

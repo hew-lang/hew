@@ -737,6 +737,31 @@ mod tests {
     }
 
     #[test]
+    fn to_json_never_writes_a_number_json_parse_refuses() {
+        // float64 infinity and NaN have no JSON number form.
+        for bits in [f64::INFINITY, f64::NEG_INFINITY, f64::NAN] {
+            let mut msgpack = vec![0x91, 0xcb];
+            msgpack.extend_from_slice(&bits.to_be_bytes());
+            // SAFETY: msgpack is a valid buffer; the result is released once.
+            unsafe {
+                let out = hew_msgpack_to_json(msgpack.as_ptr(), msgpack.len());
+                if out.is_null() {
+                    continue;
+                }
+                let text = CStr::from_ptr(out).to_str().unwrap().to_owned();
+                hew_cabi::cabi::free_cstring(out);
+                let doc = crate::test_string::ManagedString::new(&text);
+                let value = crate::json::hew_json_parse(doc.as_ptr());
+                assert!(
+                    !value.is_null(),
+                    "{bits} became {text}, which json.parse refuses"
+                );
+                crate::json::hew_json_free(value);
+            }
+        }
+    }
+
+    #[test]
     fn to_json_allows_normal_nested_msgpack() {
         let msgpack = rmp_serde::to_vec(&serde_json::json!({
             "level1": [{"level2": {"level3": [{"level4": {"level5": null}}]}}]

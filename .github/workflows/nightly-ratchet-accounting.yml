@@ -215,3 +215,51 @@ jobs:
           fail_on_failure: true
           fail_on_parse_error: true
           require_tests: true
+
+  # Linux clippy runs in ci.yml (`make lint-rust`). macOS and Windows compile
+  # platform-gated code that Linux never sees, so lint it here. Failures show
+  # as a red nightly job; it is not a required PR check.
+  clippy-native:
+    name: Clippy (${{ matrix.name }})
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: macOS arm64
+            runner: macos-15
+            cache-key: nightly-clippy-macos
+            jobs: "4"
+          - name: Windows
+            runner: windows-2022
+            cache-key: nightly-clippy-windows
+            jobs: "2"
+    env:
+      # Windows values match account-windows-nextest (LLVM memory envelope).
+      AWS_LC_SYS_PREBUILT_NASM: "1"
+      CARGO_BUILD_JOBS: ${{ matrix.jobs }}
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+
+      - name: Setup MSVC environment
+        if: runner.os == 'Windows'
+        uses: ./.github/actions/setup-msvc
+
+      - uses: ./.github/actions/setup-rust-build
+        with:
+          components: clippy
+          cache-shared-key: ${{ matrix.cache-key }}
+
+      - name: Install LLVM ${{ env.LLVM_VERSION }}
+        uses: ./.github/actions/setup-llvm
+        with:
+          version: ${{ env.LLVM_VERSION }}
+
+      - name: Set macOS deployment target
+        if: runner.os == 'macOS'
+        run: echo "MACOSX_DEPLOYMENT_TARGET=13.0" >> "$GITHUB_ENV"
+
+      - name: Clippy (all targets, deny warnings)
+        shell: bash
+        run: cargo clippy --workspace --all-targets -- -D warnings

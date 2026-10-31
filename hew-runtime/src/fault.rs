@@ -58,16 +58,6 @@ struct FaultDiagnostic {
     reported: Mutex<bool>,
 }
 
-impl Drop for FaultDiagnostic {
-    /// Releasing a stack-overflow fault ends its unwind, so the thread's
-    /// stack check returns to its soft limit.
-    fn drop(&mut self) {
-        if self.code == crate::internal::types::HEW_TRAP_STACK_OVERFLOW {
-            crate::stack_limit::rearm();
-        }
-    }
-}
-
 /// Rendered values from one failed comparison, retained with its fault.
 #[derive(Debug, Clone, serde::Serialize)]
 pub(crate) struct AssertionOperands {

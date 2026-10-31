@@ -1400,6 +1400,9 @@ fn worker_loop(id: usize, rt: WorkerRuntimePtr, local: &WorkDeque) {
             }
             break;
         }
+        // No Hew frame is live between jobs, so a stack-overflow unwind from
+        // the previous job has finished and the soft limit applies again.
+        crate::stack_limit::rearm();
         // Claim the pop-to-activation handoff BEFORE looking for work, so no
         // observer can see an actor that has left a queue but has not yet
         // entered an activation. Dropped on every exit from this block,

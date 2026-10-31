@@ -11,9 +11,10 @@
 //! The limit sits [`SOFT_RESERVE`] bytes above the lowest usable stack
 //! address. A frame below it fails with `StackOverflow`, and the slot drops to
 //! the hard limit [`HARD_RESERVE`] so the unwind can run cleanup that calls
-//! further Hew functions. The slot returns to the soft limit when the fault is
-//! released ([`rearm`]). A frame below the hard limit fails again, so the
-//! remaining reserve always covers creating the fault and returning it.
+//! further Hew functions. The slot returns to the soft limit once no Hew frame
+//! is live on the thread ([`rearm`]). A frame below the hard limit fails
+//! again, so the remaining reserve always covers creating the fault and
+//! returning it.
 
 use std::cell::Cell;
 
@@ -143,8 +144,11 @@ pub unsafe extern "C" fn hew_stack_check(slot: *mut usize, sp: usize) -> i32 {
     1
 }
 
-/// Restore the soft limit once a `StackOverflow` fault is released. A thread
-/// that never installed a limit keeps its sentinel.
+/// Restore the soft limit once a `StackOverflow` unwind has finished on this
+/// thread. Called where no Hew frame is live on the calling thread (between
+/// scheduler jobs and process-root polls), so every frame that ran on the
+/// reserve has returned. A thread that never installed a limit keeps its
+/// sentinel.
 pub(crate) fn rearm() {
     LIMITS.with(|cell| {
         if let Some(limits) = cell.get() {
@@ -180,7 +184,7 @@ mod tests {
             // SAFETY: as above.
             assert_eq!(unsafe { hew_stack_check(&raw mut slot, hard - 1) }, 1);
             rearm();
-            assert_eq!(slot, soft, "releasing the fault restores the soft limit");
+            assert_eq!(slot, soft, "a finished unwind restores the soft limit");
         })
         .join()
         .unwrap();

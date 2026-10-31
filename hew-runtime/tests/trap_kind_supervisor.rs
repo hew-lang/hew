@@ -14,6 +14,7 @@
 use hew_runtime::supervisor::{
     ExitReason, HEW_TRAP_DIVIDE_BY_ZERO, HEW_TRAP_HEAP_EXCEEDED, HEW_TRAP_INDEX_OUT_OF_BOUNDS,
     HEW_TRAP_INTEGER_OVERFLOW, HEW_TRAP_SHIFT_OUT_OF_RANGE, HEW_TRAP_SIGNED_MIN_DIV_NEG_ONE,
+    HEW_TRAP_STACK_OVERFLOW,
 };
 
 /// `HEW_TRAP_*` codes occupy a private band above POSIX signals
@@ -28,6 +29,7 @@ fn trap_codes_are_above_posix_signal_range() {
         HEW_TRAP_SIGNED_MIN_DIV_NEG_ONE,
         HEW_TRAP_SHIFT_OUT_OF_RANGE,
         HEW_TRAP_INDEX_OUT_OF_BOUNDS,
+        HEW_TRAP_STACK_OVERFLOW,
     ] {
         assert!(
             code >= 64,
@@ -48,6 +50,7 @@ fn trap_codes_are_pairwise_distinct() {
         HEW_TRAP_SIGNED_MIN_DIV_NEG_ONE,
         HEW_TRAP_SHIFT_OUT_OF_RANGE,
         HEW_TRAP_INDEX_OUT_OF_BOUNDS,
+        HEW_TRAP_STACK_OVERFLOW,
     ];
     for (i, a) in codes.iter().enumerate() {
         for b in &codes[i + 1..] {
@@ -97,6 +100,15 @@ fn index_out_of_bounds_code_maps_to_index_out_of_bounds_variant() {
         ExitReason::from_error_code(HEW_TRAP_INDEX_OUT_OF_BOUNDS),
         ExitReason::IndexOutOfBounds,
     );
+}
+
+#[test]
+fn stack_overflow_code_maps_to_stack_overflow_variant() {
+    assert_eq!(
+        ExitReason::from_error_code(HEW_TRAP_STACK_OVERFLOW),
+        ExitReason::StackOverflow,
+    );
+    assert_eq!(ExitReason::StackOverflow.trap_kind_name(), "StackOverflow");
 }
 
 /// Codes outside the reserved trap band still flow through

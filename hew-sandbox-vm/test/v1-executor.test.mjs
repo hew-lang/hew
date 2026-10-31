@@ -845,3 +845,69 @@ test("v1: a package with no entry is refused rather than picking a function to r
   assert.equal(trace.result, "sandbox_rejected");
   assert.deepEqual(trace.final_state.stdout, []);
 });
+
+/// `down` recurses without end. Its entry safepoint is the stack check, so the
+/// call past the frame limit fails with `StackOverflow` and each frame unwinds
+/// through its own cleanup edge.
+function recursionPackage() {
+  const safepoint = {
+    op: "suspend",
+    kind: "Safepoint",
+    detail: { budget: 4000 },
+    inputs: [],
+    result: null,
+    resumes: [{ to: 1, args: [] }],
+    cancel: { to: 2, args: [] },
+    unwind: null,
+    span: null,
+  };
+  const recurse = {
+    op: "call",
+    callee: 1,
+    args: [],
+    result: null,
+    normal: { to: 3, args: [] },
+    unwind: { to: 2, args: [] },
+    span: null,
+  };
+  return pkg({
+    suspend_kinds: ["Safepoint"],
+    functions: [
+      fn(0, "main", [
+        block(0, [], {
+          op: "call",
+          callee: 1,
+          args: [],
+          result: null,
+          normal: { to: 1, args: [] },
+          unwind: { to: 2, args: [] },
+          span: null,
+        }),
+        block(1, [], RETURN_UNIT),
+        block(2, [], { op: "resume_unwind", span: null }),
+      ]),
+      fn(1, "down", [
+        block(0, [], safepoint),
+        block(1, [], recurse),
+        block(2, [], { op: "resume_unwind", span: null }),
+        block(3, [], RETURN_UNIT),
+      ]),
+    ],
+  });
+}
+
+test("v1: recursion past the frame limit fails with StackOverflow", async () => {
+  const trace = await run(recursionPackage(), { stepBudget: 10_000_000 });
+  assert.equal(
+    trace.result,
+    "trap",
+    JSON.stringify(trace.final_state.runtime_failures),
+  );
+  const [failure] = trace.final_state.runtime_failures;
+  assert.equal(failure.trap_kind, "stack_overflow");
+  assert.deepEqual(failure.hew_fault, { code: 215, kind: "StackOverflow" });
+  assert.equal(
+    trace.final_state.stderr.join(""),
+    "hew: failure: StackOverflow (215)\n",
+  );
+});

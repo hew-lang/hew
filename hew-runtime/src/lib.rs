@@ -658,6 +658,7 @@ pub mod shutdown;
 /// `os.shutdown_signal()` subscribers.
 #[cfg(not(target_arch = "wasm32"))]
 pub mod shutdown_signal;
+pub mod stack_limit;
 mod test_report;
 // One authority for "what exit status must this program report": read on every
 // native shutdown path, not just the implicit actor-drain one.

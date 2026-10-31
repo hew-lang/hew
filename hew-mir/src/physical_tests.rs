@@ -3512,7 +3512,7 @@ fn selected_value_call_verifier_rejects_signature_and_selection_drift() {
             .unwrap();
         let blocks = function.blocks.iter().map(|block| block.id).collect();
         assert!(
-            verify_terminator(&module, function, &blocks, &block.terminator).is_err(),
+            verify_terminator(&module, function, &blocks, block).is_err(),
             "mutation {mutation}"
         );
         assert!(

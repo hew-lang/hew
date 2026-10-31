@@ -3,15 +3,15 @@
 //! Typed Hew failures unwind through generated cleanup edges and the scheduler
 //! catch boundary. A synchronous hardware fault can interrupt an arbitrary
 //! ownership operation, so the unwind-safe runtime deliberately handles it
-//! with async-signal-safe diagnostic output and `_exit`; it never resumes the
-//! interrupted worker or longjmps across live Rust frames.
+//! with one async-signal-safe record and death by the original signal; it
+//! never resumes the interrupted worker or longjmps across live Rust frames.
 //!
 //! Platform notes:
 //! - x86-64 (Linux + macOS): `llvm.trap` → `ud2` → SIGILL (signal 4).
 //! - aarch64: `llvm.trap` → `brk #1` → SIGILL or SIGTRAP (signals 4/5),
 //!   according to the host kernel/debug environment.
-//! - Windows: the vectored exception handler maps illegal instructions and
-//!   breakpoints to the same process-fatal status and diagnostic.
+//! - Windows: the vectored exception handler writes the same record and leaves
+//!   the exception unhandled, so the process exits with its exception code.
 //!
 //! SIGTRAP is registered alongside SIGILL in `signal.rs::init_crash_handling`.
 //! This death test exercises whichever signal the platform delivers and proves
@@ -145,7 +145,7 @@ unsafe extern "C-unwind" fn counting_dispatch(
 /// 1. Supervisor spawns a child actor.
 /// 2. A normal message is delivered to confirm the actor is live.
 /// 3. A trap message triggers `trapping_dispatch` — the actor executes a
-///    real hardware trap, which the signal handler terminates with `_exit`.
+///    real hardware trap; the handler reports it and re-raises the signal.
 ///
 /// The child continues through the historical restart assertions only if the
 /// process-fatal handler fails to terminate it; that counterfactual exits zero,
@@ -215,17 +215,28 @@ fn overflow_hardware_trap_is_process_fatal_under_unwind_safe_raii() {
             .env(CHILD_MARKER, "1")
             .output()
             .expect("hardware-trap child launches");
+        #[cfg(unix)]
+        let died_by_trap = {
+            use std::os::unix::process::ExitStatusExt;
+            matches!(output.status.signal(), Some(libc::SIGILL | libc::SIGTRAP))
+        };
+        // STATUS_ILLEGAL_INSTRUCTION or STATUS_BREAKPOINT, left unhandled.
+        #[cfg(windows)]
+        let died_by_trap = matches!(
+            output.status.code().map(i32::cast_unsigned),
+            Some(0xC000_001D | 0x8000_0003)
+        );
         assert!(
-            matches!(output.status.code(), Some(132 | 133)),
-            "hardware trap must exit as 128+SIGILL/SIGTRAP, got {:?}; stdout:\n{}\nstderr:\n{}",
+            died_by_trap,
+            "hardware trap must end the process by SIGILL/SIGTRAP, got {:?}; stdout:\n{}\nstderr:\n{}",
             output.status,
             String::from_utf8_lossy(&output.stdout),
             String::from_utf8_lossy(&output.stderr),
         );
         let stderr = String::from_utf8_lossy(&output.stderr);
         assert!(
-            stderr.contains("hew: fatal synchronous hardware fault"),
-            "fatal signal handler must publish its async-signal-safe diagnostic: {stderr}"
+            stderr.contains("hew: failure: Signal"),
+            "fatal signal handler must publish its async-signal-safe record: {stderr}"
         );
         assert!(
             !stderr.contains("panicked at"),

@@ -643,6 +643,7 @@ fn expect_literal_diagnostics_are_cold_and_preserve_owned_payloads_at_o0_o2() {
             );
             match &block.terminator {
                 PhysicalTerminator::Goto(edge)
+                | PhysicalTerminator::StackCheck { normal: edge, .. }
                 | PhysicalTerminator::Materialize { normal: edge, .. } => {
                     prefix = edge.target;
                 }

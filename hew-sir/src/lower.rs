@@ -1036,6 +1036,7 @@ pub(crate) fn runtime_variant_tags(
             (Role::CrashKindPartitionDetected, "PartitionDetected"),
             (Role::CrashKindHandlerFailed, "HandlerFailed"),
             (Role::CrashKindTimerOverdue, "TimerOverdue"),
+            (Role::CrashKindStackOverflow, "StackOverflow"),
         ],
         head if *head == KnownDecl::Delivery.head() => &[
             (Role::DeliveryAccepted, "Accepted"),

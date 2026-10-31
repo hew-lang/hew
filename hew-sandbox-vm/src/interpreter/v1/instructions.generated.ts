@@ -925,6 +925,7 @@ export type RuntimeVariantRole =
   | "CrashKindPartitionDetected"
   | "CrashKindHandlerFailed"
   | "CrashKindTimerOverdue"
+  | "CrashKindStackOverflow"
   | "OptionSome"
   | "OptionNone"
   | "ResultOk"
@@ -1253,7 +1254,8 @@ export type TrapName =
   | "signed_min_div_neg_one"
   | "shift_out_of_range"
   | "vector_bounds"
-  | "actor_refused";
+  | "actor_refused"
+  | "stack_overflow";
 export type ValueCapability = {
   id: number;
   capability: Capability;

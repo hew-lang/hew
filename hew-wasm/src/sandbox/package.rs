@@ -504,6 +504,7 @@ pub enum RuntimeVariantRole {
     CrashKindPartitionDetected,
     CrashKindHandlerFailed,
     CrashKindTimerOverdue,
+    CrashKindStackOverflow,
     OptionSome,
     OptionNone,
     ResultOk,

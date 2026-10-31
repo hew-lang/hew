@@ -36,6 +36,7 @@ pub(crate) fn run_module(
 
     let mut command = Command::new(wasmtime);
     command.arg("run");
+    reserve_engine_stack(&mut command);
     if let Some(config) = deterministic {
         command
             .arg("--env")
@@ -69,7 +70,9 @@ pub(crate) fn run_module_captured(
     })?;
 
     let mut command = Command::new(wasmtime);
-    command.arg("run").arg(module_path);
+    command.arg("run");
+    reserve_engine_stack(&mut command);
+    command.arg(module_path);
 
     match crate::process::run_command_captured(&mut command, timeout)? {
         crate::process::BinaryRunOutcome::Success { stdout } => Ok(WasiCapturedOutcome::Success {
@@ -88,6 +91,62 @@ pub(crate) fn run_module_captured(
         crate::process::BinaryRunOutcome::Timeout => Ok(WasiCapturedOutcome::Timeout),
     }
 }
+
+/// Native stack the engine's main thread may grow to while running a module.
+#[cfg(unix)]
+const ENGINE_STACK_BYTES: libc::rlim_t = 64 << 20;
+
+/// Give wasmtime enough native stack that a module's own entry checks, which
+/// guard its 1 MiB linear-memory stack, fail a deep recursion with
+/// `StackOverflow` before the engine's call-stack limit traps the instance
+/// (HEW-SPEC-2026 §2.2). The child's main thread may grow to
+/// [`ENGINE_STACK_BYTES`], and wasm may use three quarters of it.
+#[cfg(unix)]
+fn reserve_engine_stack(command: &mut Command) {
+    use std::os::unix::process::CommandExt;
+
+    let mut limit = libc::rlimit {
+        rlim_cur: 0,
+        rlim_max: 0,
+    };
+    // SAFETY: `limit` is valid writable storage for one rlimit.
+    if unsafe { libc::getrlimit(libc::RLIMIT_STACK, &raw mut limit) } != 0 {
+        return;
+    }
+    let available = if limit.rlim_max == libc::RLIM_INFINITY {
+        ENGINE_STACK_BYTES
+    } else {
+        limit.rlim_max.min(ENGINE_STACK_BYTES)
+    };
+    if limit.rlim_cur != libc::RLIM_INFINITY && limit.rlim_cur < available {
+        let raised = libc::rlimit {
+            rlim_cur: available,
+            rlim_max: limit.rlim_max,
+        };
+        // SAFETY: setrlimit is async-signal-safe and touches only the child's
+        // own limits between fork and exec.
+        unsafe {
+            command.pre_exec(move || {
+                if libc::setrlimit(libc::RLIMIT_STACK, &raw const raised) != 0 {
+                    return Err(std::io::Error::last_os_error());
+                }
+                Ok(())
+            });
+        }
+    }
+    let usable = if limit.rlim_cur == libc::RLIM_INFINITY {
+        ENGINE_STACK_BYTES
+    } else {
+        available.max(limit.rlim_cur)
+    };
+    command
+        .arg("-W")
+        .arg(format!("max-wasm-stack={}", usable / 4 * 3));
+}
+
+/// Windows keeps the engine's defaults.
+#[cfg(not(unix))]
+fn reserve_engine_stack(_command: &mut Command) {}
 
 /// Returns the path to `wasmtime` if it is available, using the same lookup
 /// order as the production `run_module` / `run_module_captured` functions.

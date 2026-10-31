@@ -711,6 +711,7 @@ pub enum RuntimeVariantRole {
     CrashKindPartitionDetected,
     CrashKindHandlerFailed,
     CrashKindTimerOverdue,
+    CrashKindStackOverflow,
     OptionSome,
     OptionNone,
     ResultOk,
@@ -2287,6 +2288,11 @@ pub enum SemTerminator {
     /// A compiler-authored scheduling boundary. Cancellation follows the
     /// current lexical cleanup; polling has no operation-failure edge.
     /// An authored close has private cleanup ancestry and no cancellation exit.
+    ///
+    /// A function's entry safepoint is also where a call finds its thread's
+    /// stack exhausted: the frame leaves through `cancel` with a
+    /// `StackOverflow` fault, so the callee's parameters follow the same
+    /// cleanup as a cancellation (HEW-SPEC-2026 §2.2).
     Safepoint {
         resume: Edge,
         cancel: Option<Edge>,

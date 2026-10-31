@@ -305,6 +305,7 @@ pub(super) fn terminator_effects(
             used.extend(handback);
         }
         PhysicalTerminator::Safepoint { .. }
+        | PhysicalTerminator::StackCheck { .. }
         | PhysicalTerminator::TaskScopeJoin { .. }
         | PhysicalTerminator::EnterDefer { .. }
         | PhysicalTerminator::FinishDefer { .. }

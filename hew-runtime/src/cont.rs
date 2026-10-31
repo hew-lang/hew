@@ -2453,7 +2453,9 @@ mod tests {
         miri,
         ignore = "spawns a subprocess and raises SIGSEGV; Miri has no native signal handler"
     )]
-    fn hardware_fault_during_crash_cleanup_uses_async_signal_safe_exit() {
+    fn hardware_fault_during_crash_cleanup_dies_by_the_signal() {
+        use std::os::unix::process::ExitStatusExt;
+
         const HELPER: &str =
             "cont::tests::_helper_hardware_fault_during_crash_cleanup_is_process_fatal";
         let output = std::process::Command::new(std::env::current_exe().unwrap())
@@ -2463,9 +2465,9 @@ mod tests {
             .output()
             .expect("spawn crash-cleanup SIGSEGV helper");
         assert_eq!(
-            output.status.code(),
-            Some(128 + libc::SIGSEGV),
-            "cleanup SIGSEGV must _exit instead of longjmp across the drain; stderr:\n{}",
+            output.status.signal(),
+            Some(libc::SIGSEGV),
+            "cleanup SIGSEGV must end the process by the signal, not longjmp across the drain; stderr:\n{}",
             String::from_utf8_lossy(&output.stderr)
         );
     }
@@ -2487,9 +2489,9 @@ mod tests {
             .output()
             .expect("spawn state-finalizer hardware-fault helper");
         assert_eq!(
-            hardware.status.code(),
-            Some(128 + libc::SIGSEGV),
-            "hardware fault in pre-release phase must _exit, not actor-longjmp; stderr:\n{}",
+            hardware.status.signal(),
+            Some(libc::SIGSEGV),
+            "hardware fault in pre-release phase must end the process by the signal, not actor-longjmp; stderr:\n{}",
             String::from_utf8_lossy(&hardware.stderr)
         );
 

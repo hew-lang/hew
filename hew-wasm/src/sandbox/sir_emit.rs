@@ -58,6 +58,7 @@ fn runtime_role_name(role: SirRuntimeVariantRole) -> super::package::RuntimeVari
         }
         Role::CrashKindHandlerFailed => super::package::RuntimeVariantRole::CrashKindHandlerFailed,
         Role::CrashKindTimerOverdue => super::package::RuntimeVariantRole::CrashKindTimerOverdue,
+        Role::CrashKindStackOverflow => super::package::RuntimeVariantRole::CrashKindStackOverflow,
         Role::OptionSome => super::package::RuntimeVariantRole::OptionSome,
         Role::OptionNone => super::package::RuntimeVariantRole::OptionNone,
         Role::ResultOk => super::package::RuntimeVariantRole::ResultOk,

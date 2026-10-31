@@ -5,19 +5,25 @@
 )]
 use super::*;
 
-pub(crate) fn claim_supervisor_teardown(sup: *mut HewSupervisor) -> bool {
+/// Race for `sup`'s teardown authority. Only [`TeardownClaim::Won`] lets the
+/// caller touch `sup` afterwards: on any other outcome another owner may free
+/// it at once.
+pub(crate) fn claim_supervisor_teardown(
+    sup: *mut HewSupervisor,
+) -> crate::lifetime::local_handles::TeardownClaim {
+    use crate::lifetime::local_handles::TeardownClaim;
     if sup.is_null() {
-        return false;
+        return TeardownClaim::Held;
     }
     // SAFETY: callers guarantee a live allocation; copy its stable authority
     // without creating a whole-supervisor reference.
     let (handles, token) = unsafe { ((*sup).handles, (*sup).local_pid_id) };
     if handles.is_null() {
-        return false;
+        return TeardownClaim::Held;
     }
     // SAFETY: a live supervisor's runtime authority outlives its control.
     let Some(control) = (unsafe { &*handles }).supervisor_control_for_raw(token, sup) else {
-        return false;
+        return TeardownClaim::Held;
     };
     control.claim_teardown()
 }
@@ -280,6 +286,14 @@ fn wait_for_child_stop_deadline(
     completed
 }
 
+#[cfg(all(test, not(target_arch = "wasm32")))]
+thread_local! {
+    /// Runs once on the installing thread right after a handback restores its
+    /// cleanup root.
+    pub(crate) static HANDBACK_ROOT_RESTORED_HOOK: std::cell::Cell<Option<Box<dyn FnOnce()>>> =
+        std::cell::Cell::new(None);
+}
+
 pub(super) unsafe fn return_supervisor_to_runtime_cleanup(sup: *mut HewSupervisor) {
     // Top-level stops unregister before the deferred owner starts. If scheduler
     // shutdown prevents that owner from reaching a safe actor-quiescence point,
@@ -289,10 +303,24 @@ pub(super) unsafe fn return_supervisor_to_runtime_cleanup(sup: *mut HewSuperviso
     // their parent tree.
     // SAFETY: the deferred owner still holds the live supervisor allocation.
     if unsafe { (*sup).parent.is_null() } {
-        // SAFETY: the deferred owner is returning the still-live allocation
-        // without consuming it.
+        // Publish the handback before the root is back: a stop that takes the
+        // restored root from the cleanup set and loses the claim must see it.
+        // SAFETY: the claimed owner still holds the live allocation.
+        let (handles, token) = unsafe { ((*sup).handles, (*sup).local_pid_id) };
+        // SAFETY: a live supervisor's runtime authority outlives its control.
+        if let Some(control) = unsafe { handles.as_ref() }
+            .and_then(|handles| handles.supervisor_control_for_raw(token, sup))
+        {
+            control.hand_teardown_back();
+        }
         // SAFETY: canonical cleanup still owns the live top-level allocation.
         unsafe { roots::hew_shutdown_register_supervisor(sup) };
+        #[cfg(all(test, not(target_arch = "wasm32")))]
+        HANDBACK_ROOT_RESTORED_HOOK.with(|h| {
+            if let Some(hook) = h.take() {
+                hook();
+            }
+        });
     }
 }
 
@@ -333,7 +361,7 @@ pub(crate) unsafe fn claim_nested_supervisor_for_detach(
         }
         control
     };
-    if !control.claim_teardown() {
+    if control.claim_teardown() != crate::lifetime::local_handles::TeardownClaim::Won {
         return false;
     }
     // SAFETY: the stable pin proves the allocation live and the successful
@@ -582,7 +610,11 @@ pub(crate) unsafe fn stop_supervisor_owned(
                 if unsafe { claim_nested_supervisor_for_detach(pointer, token) } {
                     // SAFETY: this claim owns the nested teardown exactly once.
                     unsafe {
-                        stop_supervisor_with_teardown_authority(pointer, teardown.clone(), true);
+                        stop_supervisor_with_teardown_authority(
+                            pointer,
+                            teardown.clone(),
+                            crate::lifetime::local_handles::TeardownClaim::Won,
+                        );
                     }
                 }
                 if !wait_for_retiring_children(

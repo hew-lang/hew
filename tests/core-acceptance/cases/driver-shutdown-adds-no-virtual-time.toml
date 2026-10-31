@@ -1,0 +1,13 @@
+[[case]]
+id = "driver-shutdown-adds-no-virtual-time"
+intent = "Under the deterministic driver, a shutdown drain that converges confirms quiescence without advancing the virtual clock, so a stop hook observes no time passing."
+source = "cases/driver-shutdown-adds-no-virtual-time.hew"
+suites = ["acceptance"]
+timeout_seconds = 10
+
+[case.env]
+HEW_DETERMINISTIC = ""
+
+[case.expected]
+stdout = "ping\nmain done\nstop after 0ms\n"
+exit = 0

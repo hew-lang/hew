@@ -445,7 +445,7 @@ pub(crate) unsafe fn restart_child_supervisor_after_failure(
             .child_supervisor_specs
             .get_mut(failed_index)
             .and_then(Option::as_mut)
-            .filter(|spec| spec.backoff.selected && spec.restart_policy != RESTART_TEMPORARY)
+            .filter(|spec| spec.backoff.selected() && spec.restart_policy != RESTART_TEMPORARY)
             .map(|spec| {
                 // SAFETY: restart window is immutable throughout the parent lifetime.
                 let window = u64::try_from(unsafe { (*sup).window_secs })
@@ -733,7 +733,7 @@ unsafe fn decide_child_failure(
             return FaultRuling::Unrecovered;
         };
 
-        if crashed && (spec.backoff.selected || spec.backoff.delay_ns > 0) {
+        if crashed {
             // SAFETY: the restart window is immutable while this parent lives.
             let window_ns = u64::try_from(unsafe { (*sup).window_secs })
                 .unwrap_or(0)
@@ -755,21 +755,13 @@ unsafe fn decide_child_failure(
             return FaultRuling::Unrecovered;
         }
         if restart_delay_allows_restart(spec) {
-            if crashed && spec.backoff.delay_ns == 0 {
-                spec.backoff.delay_ns = INITIAL_RESTART_DELAY_MS * 1_000_000;
-            }
             None
         } else {
-            let remaining = spec
-                .backoff
-                .next_restart_time_ns
-                .saturating_sub(monotonic_time_ns());
-            Some(if spec.backoff.selected {
-                remaining
-            } else {
-                // Preserve the established implicit policy's millisecond rounding.
-                (remaining / 1_000_000).max(1) * 1_000_000
-            })
+            Some(
+                spec.backoff
+                    .next_restart_time_ns
+                    .saturating_sub(monotonic_time_ns()),
+            )
         }
     };
 

@@ -1,6 +1,6 @@
 [[case]]
 id = "actor-restarted-role"
-intent = "With one scheduler worker, a role restart wait parks while another actor completes timed work, then resumes on the replacement."
+intent = "With one scheduler worker, a role restart wait parks through a declared backoff while another actor completes timed work, then resumes on the replacement."
 source = "cases/actor-restarted-role.hew"
 suites = ["acceptance", "safety"]
 timeout_seconds = 20

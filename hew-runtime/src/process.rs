@@ -456,7 +456,7 @@ pub unsafe extern "C" fn hew_process_take_pipe(
     let mut state = unsafe { &*proc }.state.lock_or_recover();
     #[cfg(windows)]
     if which == 1 || which == 2 {
-        return state.output[(which - 1) as usize]
+        return state.output[usize::from(which == 2)]
             .take()
             .map_or(std::ptr::null_mut(), crate::stream::child_pipe_stream);
     }
@@ -1130,17 +1130,13 @@ mod tests {
             .try_clone_to_owned()
             .unwrap();
         // SAFETY: the retained handle names the live child process.
-        assert_eq!(
-            unsafe { WaitForSingleObject(process.as_raw_handle(), 0) },
-            WAIT_TIMEOUT
-        );
+        let running = unsafe { WaitForSingleObject(process.as_raw_handle(), 0) };
+        assert_eq!(running, WAIT_TIMEOUT);
         // SAFETY: drop consumes the owned child exactly once.
         unsafe { hew_process_drop(child) };
         // SAFETY: the duplicate remains valid after the child's owner closes.
-        assert_eq!(
-            unsafe { WaitForSingleObject(process.as_raw_handle(), 0) },
-            WAIT_OBJECT_0
-        );
+        let exited = unsafe { WaitForSingleObject(process.as_raw_handle(), 0) };
+        assert_eq!(exited, WAIT_OBJECT_0);
     }
 
     #[test]

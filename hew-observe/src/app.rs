@@ -218,10 +218,6 @@ pub struct App {
 
     /// When true, periodically re-scan the discovery directory and
     /// reconnect if the current profiler is gone or a new one appears.
-    #[cfg_attr(
-        not(unix),
-        expect(dead_code, reason = "read only by the unix discovery rescan")
-    )]
     auto_discover: bool,
     #[cfg_attr(
         not(unix),
@@ -360,17 +356,10 @@ impl App {
     }
 
     /// Returns `true` when the app was started with no initial connection and
-    /// is waiting for a profiler to appear via auto-discovery.
-    #[cfg(unix)]
+    /// is waiting for a profiler to appear via auto-discovery. Only the Unix
+    /// constructors enable auto-discovery.
     pub fn is_waiting(&self) -> bool {
         self.cluster.is_none() && self.auto_discover
-    }
-
-    /// Non-Unix stub — auto-discovery is unavailable so waiting mode never
-    /// occurs on these platforms.
-    #[cfg(not(unix))]
-    pub fn is_waiting(&self) -> bool {
-        false
     }
 
     pub fn configured_node_count(&self) -> usize {

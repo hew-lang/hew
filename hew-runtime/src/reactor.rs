@@ -146,9 +146,18 @@ fn listener_readable(listener: &TcpListener) -> bool {
     fd_readable(listener.as_raw_fd())
 }
 
+/// The Winsock `SOCKET` behind `socket`.
+#[cfg(windows)]
+#[allow(
+    clippy::cast_possible_truncation,
+    reason = "a SOCKET is pointer-sized; RawSocket only widens it to u64"
+)]
+fn raw_socket(socket: &impl std::os::windows::io::AsRawSocket) -> usize {
+    socket.as_raw_socket() as usize
+}
+
 #[cfg(windows)]
 fn listener_readable(listener: &TcpListener) -> bool {
-    use std::os::windows::io::AsRawSocket;
     #[repr(C)]
     struct WsaPollFd {
         fd: usize,
@@ -162,7 +171,7 @@ fn listener_readable(listener: &TcpListener) -> bool {
     /// `POLLRDNORM`: a connection is pending.
     const POLL_READ_NORMAL: i16 = 0x0100;
     let mut poll = WsaPollFd {
-        fd: listener.as_raw_socket() as usize,
+        fd: raw_socket(listener),
         events: POLL_READ_NORMAL,
         revents: 0,
     };
@@ -363,11 +372,14 @@ impl Slot {
         matches!(self.object, IoObject::Stdin)
     }
 
-    fn is_child_exit(&self) -> bool {
-        #[cfg(unix)]
-        return matches!(self.object, IoObject::ChildExit(_));
-        #[cfg(not(unix))]
-        false
+    /// Whether the slot holds a child process's pipe or exit watch.
+    fn is_child_process(&self) -> bool {
+        match self.object {
+            IoObject::Pipe(_) => true,
+            #[cfg(unix)]
+            IoObject::ChildExit(_) => true,
+            _ => false,
+        }
     }
 
     /// What the slot holds, as its failures name it.
@@ -790,10 +802,9 @@ pub(crate) fn register(object: IoObject) -> c_int {
 fn new_slot(handle: c_int, object: IoObject) -> Slot {
     #[cfg(windows)]
     let afd = {
-        use std::os::windows::io::AsRawSocket;
         let socket = match &object {
-            IoObject::TcpStream(stream) => stream.as_raw_socket() as usize,
-            IoObject::TcpListener(listener) => listener.as_raw_socket() as usize,
+            IoObject::TcpStream(stream) => raw_socket(stream),
+            IoObject::TcpListener(listener) => raw_socket(listener),
             // Never armed through AFD.
             IoObject::Stdin | IoObject::Pipe(_) => usize::MAX,
         };
@@ -1025,6 +1036,10 @@ fn dispatch(event: Event) {
 }
 
 #[cfg(windows)]
+#[allow(
+    clippy::cast_possible_truncation,
+    reason = "the token is a slot pointer the poller widened to u64"
+)]
 fn dispatch(event: Event) {
     // SAFETY: the arm retained exactly this slot reference as its context.
     let slot = unsafe { Arc::from_raw(event.token as usize as *const Slot) };
@@ -1073,7 +1088,7 @@ pub(crate) fn cancel_all() -> usize {
 pub(crate) fn reactor_cancel_parked_waits_for_shutdown() -> usize {
     let mut cancelled = 0;
     for slot in slots() {
-        if matches!(slot.object, IoObject::Pipe(_)) || slot.is_child_exit() {
+        if slot.is_child_process() {
             continue;
         }
         for operation in slot.waiters_holding_drain() {
@@ -1122,7 +1137,7 @@ fn drain_windows_io() {
     let mut events = Vec::new();
     while WINDOWS_IO_IN_FLIGHT.load(Ordering::SeqCst) != 0 {
         if poller
-            .wait_for(Some(Duration::from_millis(1000)), &mut events)
+            .wait_for(Some(Duration::from_secs(1)), &mut events)
             .is_err()
         {
             break;

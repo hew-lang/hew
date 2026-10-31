@@ -12,8 +12,6 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 #[cfg(test)]
-use hew_observe_protocol::Envelope;
-#[cfg(test)]
 pub use hew_observe_protocol::OBSERVE_SCHEMA_VERSION;
 use hew_observe_protocol::{decode_envelope, DecodeError};
 pub use hew_observe_protocol::{
@@ -780,6 +778,7 @@ impl ClusterClient {
 #[cfg(all(test, unix))]
 mod tests {
     use super::*;
+    use hew_observe_protocol::Envelope;
     use std::os::unix::net::UnixListener;
     use std::sync::{Arc, Mutex};
 

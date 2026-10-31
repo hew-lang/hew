@@ -441,14 +441,14 @@ mod platform {
         let root_handle = open_entry(root, true)?;
         validate_metadata(&root_handle.metadata, ".", true)?;
         let mut files = Vec::new();
-        collect_dir(root, "", root_handle, &mut files)?;
+        collect_dir(root, "", &root_handle, &mut files)?;
         Ok(files)
     }
 
     fn collect_dir(
         dir: &Path,
         prefix: &str,
-        dir_handle: OpenedEntry,
+        dir_handle: &OpenedEntry,
         files: &mut Vec<PackageFile>,
     ) -> io::Result<()> {
         for entry in std::fs::read_dir(dir)? {
@@ -472,7 +472,7 @@ mod platform {
                 return Err(changed_during_snapshot(&path));
             }
             if is_dir {
-                collect_dir(&entry_path, &path, opened, files)?;
+                collect_dir(&entry_path, &path, &opened, files)?;
             } else {
                 let mut contents = Vec::new();
                 opened.file.read_to_end(&mut contents)?;

@@ -15,10 +15,24 @@ A child declaration accepts its own `backoff:` clause beside `restart:` and
 `stop:`, replacing the supervisor's policy for that child:
 
 ```hew
-supervisor Gateway {
+import std.restart;
+
+actor Client {
+    let url: string;
+}
+
+actor Cache {}
+
+supervisor Gateway(url: string) {
     backoff: restart.exponential(initial: 100ms, maximum: 5s);
     child upstream: Client { url } restart: permanent backoff: restart.exponential(initial: 1s, maximum: 1m);
     child cache: Cache restart: permanent backoff: restart.immediate();
+}
+
+fn main() {
+    let gateway = spawn Gateway { url: "https://example.test" };
+    stop(gateway);
+    stopped(gateway);
 }
 ```
 

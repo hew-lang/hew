@@ -1970,9 +1970,10 @@ fn fallible_chain_builds_results_without_budget_materialization() {
         }
         "#,
     );
-    let triple = TargetMachine::get_default_triple();
-    let layout = TargetLayout::for_llvm_triple(triple.as_str().to_str().unwrap());
-    let physical = hew_mir::lower_physical(&semantic, layout).unwrap();
+    let triple = native_emission_triple();
+    let inventory = hew_mir::physical::physical_type_inventory(&semantic);
+    let target = physical_target_for_inventory(&triple, &inventory).unwrap();
+    let physical = hew_mir::lower_physical_module(&semantic, target).unwrap();
     let ctx = Context::create();
     let machine =
         crate::llvm::target_machine_for_triple_with_opt_level(&triple, OptLevel::O0).unwrap();

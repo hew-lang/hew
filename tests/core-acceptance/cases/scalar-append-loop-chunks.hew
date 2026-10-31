@@ -46,5 +46,8 @@ fn main() {
         assert(grown[index + 2] == index);
     }
     let (tx, rx): (stream.Sink<i64>, stream.Stream<i64>) = stream.pipe(1).expect("pipe");
-    println(await race [growing(tx), peer(rx)]);
+    println(await race [
+        growing(tx),
+        peer(rx),
+    ]);
 }

@@ -107,9 +107,10 @@ impl Drop for FramePool {
 }
 
 /// Cache class for a block of `total` bytes, or `None` beyond the cached range.
+/// Sanitizer builds cache nothing, so a use of a released frame still faults.
 fn frame_class(total: usize) -> Option<usize> {
     let class = total.div_ceil(FRAME_CLASS_BYTES).checked_sub(1)?;
-    (class < FRAME_CLASSES).then_some(class)
+    (class < FRAME_CLASSES && !cfg!(hew_sanitized)).then_some(class)
 }
 
 fn frame_class_layout(class: usize) -> Layout {
@@ -2594,6 +2595,7 @@ mod tests {
     /// the same worker, the cache stays bounded, and observed frame bytes
     /// balance across reuse.
     #[test]
+    #[cfg(not(hew_sanitized))]
     fn frame_cache_reuses_bounded_blocks_and_balances_accounting() {
         let before = crate::observe::coroutine_frame_bytes_live_for_test();
         // SAFETY: every block below is released exactly once.

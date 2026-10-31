@@ -3766,6 +3766,23 @@ impl<'a> Formatter<'a> {
         self.write("}");
     }
 
+    fn format_let_pattern(&mut self, pattern: &Spanned<Pattern>) {
+        // The parser represents `_ = value;` as a wildcard let statement.
+        // Preserve its spelling rather than introducing a keyword, including
+        // inside inline generator blocks.
+        let bare_discard = !self.source.is_empty()
+            && matches!(pattern.0, Pattern::Wildcard)
+            && self
+                .token_at_or_after(pattern.1.start)
+                .checked_sub(1)
+                .and_then(|index| self.tokens.get(index))
+                .is_some_and(|(token, _)| !matches!(token, hew_lexer::Token::Let));
+        if !bare_discard {
+            self.write("let ");
+        }
+        self.format_pattern(pattern);
+    }
+
     fn format_stmt_inline(&mut self, stmt: &Stmt) {
         match stmt {
             Stmt::Let {
@@ -3774,8 +3791,7 @@ impl<'a> Formatter<'a> {
                 value,
                 else_block,
             } => {
-                self.write("let ");
-                self.format_pattern(pattern);
+                self.format_let_pattern(pattern);
                 if let Some(ty) = ty {
                     self.write(": ");
                     self.format_type_expr(&ty.0);
@@ -3873,8 +3889,7 @@ impl<'a> Formatter<'a> {
                 else_block,
             } => {
                 self.write_indent();
-                self.write("let ");
-                self.format_pattern(pattern);
+                self.format_let_pattern(pattern);
                 if let Some(ty) = ty {
                     self.write(": ");
                     self.format_type_expr(&ty.0);

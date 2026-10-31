@@ -23,6 +23,13 @@ fn assert_faithful(source: &str) {
 }
 
 #[test]
+fn explicit_discards_keep_their_spelling() {
+    assert_faithful("fn main() {\n    let s = \"hello\";\n    _ = s;\n    let _ = s;\n}\n");
+    assert_faithful("fn main() { let values = gen { _ = 1; yield 2; }; }\n");
+    assert_faithful("fn main() { _ /* discard */ = 1; let /* binding */ _ = 2; }\n");
+}
+
+#[test]
 fn issue_repro_keeps_comment_in_main_and_hook_before_handler() {
     assert_faithful(
         "actor W {\n    var n: i64;\n    #[on(start)]\n    fn started() {\n        println(\"s\");\n    }\n    receive fn boom() {\n        panic(\"x\");\n    }\n}\n\nfn main() {\n    let w = spawn W { n: 1 };\n    // note about the next line\n    let _ = w.boom();\n}\n",

@@ -2756,7 +2756,13 @@ mod utf8_floor_tests {
             "#,
             true,
         );
-        let checked = Checker::new(ModuleRegistry::new(vec![])).check_program(&program);
+        // The floor module names the checkout's shipped source: the checkout
+        // is the std root this check is given.
+        let repo = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .expect("hew-hir lives below the repository root")
+            .to_path_buf();
+        let checked = Checker::new(ModuleRegistry::new(vec![repo])).check_program(&program);
         assert!(checked.errors.is_empty(), "{:?}", checked.errors);
         let lowered = lower_program_host_target(&program, &checked, &ResolutionCtx);
         assert!(lowered.diagnostics.is_empty(), "{:?}", lowered.diagnostics);

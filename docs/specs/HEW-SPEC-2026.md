@@ -7932,6 +7932,20 @@ Hew uses an **M:N work-stealing scheduler** inspired by Go, Tokio, and BEAM:
 - Each worker has a local run queue of ready actors
 - Idle workers steal from busy workers' queues
 - Actors are scheduled as units (process messages until yield/await)
+- A worker that runs out of work, and a thread blocked on a reply outside the
+  pool, spins briefly before it parks. The spin adapts per thread: a spin that
+  finds work lengthens the next one, and a wasted spin shortens it to nothing,
+  with a periodic retry.
+  Spinning is off on a single hardware thread or when the workers outnumber
+  the hardware threads, and it stops when the runtime shuts down. A parked
+  worker uses no CPU until work arrives.
+
+**Environment:**
+
+- `HEW_WORKERS` sets the worker count (default: available hardware threads).
+- `HEW_SPIN` sets the maximum spin iterations before a park (default 512, at
+  most 16384);
+  `0` or `off` parks at once.
 
 **Fairness and suspension:**
 

@@ -73,9 +73,14 @@ pub struct FrontendOptions {
     /// When unset, use the nearest manifest above the input file, or the
     /// input's directory when it belongs to no package.
     pub project_dir: Option<PathBuf>,
-    /// Exact roots used to resolve `std.*` modules. When unset, use `HEW_STD`
+    /// Exact roots used to resolve `std.*` modules, and the only roots whose
+    /// sources are the canonical standard library. When unset, use `HEW_STD`
     /// or the standard library shipped with the compiler. In-memory hosts can
-    /// set these roots to match their retained source paths.
+    /// set these roots to match their retained source paths. Read them
+    /// through [`FrontendOptions::std_roots`].
+    ///
+    /// Every root given here is trusted as the standard library: the std
+    /// authority is exactly these roots, with no other root consulted.
     pub module_search_paths: Option<Vec<PathBuf>>,
     /// Treat warning-severity diagnostics as hard errors.
     ///
@@ -120,6 +125,21 @@ pub struct FrontendOptions {
     /// Every source read the frontend performs consults this set first, so an
     /// unsaved buffer checks against its saved siblings. Empty for the CLI.
     pub documents: SourceSet,
+}
+
+impl FrontendOptions {
+    /// The standard-library roots of this run: `module_search_paths` when
+    /// given, otherwise `HEW_STD` or the compiler's shipped std. Each root
+    /// holds a `std/` directory. Import resolution, the checker's canonical-std
+    /// provenance and diagnostic ownership all read this one answer. Every
+    /// returned root is trusted as the std; the std authority is exactly
+    /// these roots.
+    #[must_use]
+    pub fn std_roots(&self) -> Vec<PathBuf> {
+        self.module_search_paths
+            .clone()
+            .unwrap_or_else(hew_types::module_registry::stdlib_search_paths)
+    }
 }
 
 /// Source text that overrides the filesystem for one frontend run.
@@ -1496,9 +1516,7 @@ pub fn paths_name_same_file(left: &Path, right: &Path) -> bool {
 
 fn configured_stdlib_roots(options: &FrontendOptions) -> Vec<PathBuf> {
     options
-        .module_search_paths
-        .clone()
-        .unwrap_or_else(hew_types::module_registry::stdlib_search_paths)
+        .std_roots()
         .into_iter()
         .map(|root| root.join("std"))
         .collect()
@@ -1596,7 +1614,8 @@ pub struct ImportResolutionContext<'a> {
     pub locked_versions: Option<&'a [(String, String)]>,
     pub package_name: Option<&'a str>,
     pub project_dir: &'a Path,
-    pub module_search_paths: Option<&'a [PathBuf]>,
+    /// The run's standard-library roots, from [`FrontendOptions::std_roots`].
+    pub std_roots: &'a [PathBuf],
     /// Open buffers that override on-disk content while resolving imports.
     pub documents: &'a SourceSet,
 }
@@ -1696,7 +1715,7 @@ fn undeclared_imports(
     let Some(manifest_deps) = ctx.manifest_deps else {
         return Ok(Vec::new());
     };
-    let std_roots = stdlib_roots(ctx.module_search_paths);
+    let std_roots = comparable_std_roots(ctx.std_roots);
     let anchor = importer_anchor(source_file, ctx, &std_roots)?;
     let mut errors = Vec::new();
     for (item, _) in items {
@@ -1961,7 +1980,8 @@ fn resolve_imports_internal(
     inject_implicit_imports(&mut program.items, source);
 
     let input_path = Path::new(input);
-    inject_prelude_module_loads(&mut program.items, input_path);
+    let std_roots = options.std_roots();
+    inject_prelude_module_loads(&mut program.items, input_path, &std_roots);
     let mut import_ctx = ImportResolutionContext {
         in_progress_imports: HashSet::new(),
         resolved_imports: HashMap::new(),
@@ -1970,7 +1990,7 @@ fn resolve_imports_internal(
         locked_versions: project.locked_versions.as_deref(),
         package_name: project.package_name.as_deref(),
         project_dir: &project.project_dir,
-        module_search_paths: options.module_search_paths.as_deref(),
+        std_roots: &std_roots,
         documents: &options.documents,
     };
     let input_canonical = resolve_candidate(&options.documents, input_path)
@@ -2283,15 +2303,6 @@ pub fn ownership_diagnostics_to_frontend(
         .collect()
 }
 
-/// Resolve the checker's module search paths for one type-checking pass: the
-/// configured paths, or the standard-library root.
-fn checker_search_paths(options: &FrontendOptions) -> Vec<PathBuf> {
-    options
-        .module_search_paths
-        .clone()
-        .unwrap_or_else(hew_types::module_registry::stdlib_search_paths)
-}
-
 fn typecheck_program_with_diagnostics(
     program: &Program,
     source: &str,
@@ -2310,8 +2321,8 @@ fn typecheck_program_with_dependency_cache(
     entry_selection: Option<hew_types::DeclarationOccurrence>,
     cache: Option<&mut hew_types::check::DependencyAnalysisCache>,
 ) -> (TypeCheckResult, Vec<FrontendDiagnostic>) {
-    let search_paths = checker_search_paths(options);
-    let module_registry = hew_types::module_registry::ModuleRegistry::new(search_paths);
+    let std_roots = options.std_roots();
+    let module_registry = hew_types::module_registry::ModuleRegistry::new(std_roots.clone());
 
     let module_source_map = Arc::new(build_module_source_map(
         program,
@@ -2337,7 +2348,7 @@ fn typecheck_program_with_dependency_cache(
     checker.set_input_provider(Arc::new(compile_time::Inputs::new(
         input,
         options.documents.clone(),
-        hew_types::module_registry::stdlib_search_paths(),
+        std_roots.clone(),
     )));
     if options.enable_wasm_target {
         checker.enable_wasm_target();
@@ -2347,7 +2358,9 @@ fn typecheck_program_with_dependency_cache(
     }
     if !options.test_entry_selections.is_empty() {
         checker.set_test_entry_selections(options.test_entry_selections.clone());
-        if let Some(module) = canonical_direct_stdlib_module_for_source(Path::new(input)) {
+        if let Some(module) =
+            canonical_direct_stdlib_module_for_source(Path::new(input), &std_roots)
+        {
             checker.set_test_entry_module(module);
         }
     } else if let Some(entry_selection) = entry_selection {
@@ -2577,8 +2590,12 @@ pub fn inject_implicit_imports(items: &mut Vec<Spanned<Item>>, source: &str) {
 /// source methods also belong to every program, including programs that obtain
 /// a Stream from an actor without importing std.stream. Loading it through the
 /// normal resolver retains its transitive codec declarations and identities.
-fn inject_prelude_module_loads(items: &mut Vec<Spanned<Item>>, input: &Path) {
-    if canonical_direct_stdlib_module_for_source(input).is_some() {
+fn inject_prelude_module_loads(
+    items: &mut Vec<Spanned<Item>>,
+    input: &Path,
+    std_roots: &[PathBuf],
+) {
+    if canonical_direct_stdlib_module_for_source(input, std_roots).is_some() {
         return;
     }
     for leaf in hew_types::stdlib_authority::IMPLICIT_PRELUDE_MODULE_LOADS {
@@ -2677,16 +2694,12 @@ fn escaped_file_module_segment(kind: &str, component: &std::ffi::OsStr) -> Strin
     segment
 }
 
-/// The standard-library roots a run resolves `std.*` from, in the spelling
-/// resolved sources are compared in.
-fn stdlib_roots(module_search_paths: Option<&[PathBuf]>) -> Vec<PathBuf> {
-    module_search_paths
-        .map_or_else(
-            hew_types::module_registry::stdlib_search_paths,
-            <[PathBuf]>::to_vec,
-        )
-        .into_iter()
-        .map(|root| compile_time::normalize(&root.canonicalize().unwrap_or(root)))
+/// A run's standard-library roots in the spelling resolved sources are
+/// compared in.
+fn comparable_std_roots(std_roots: &[PathBuf]) -> Vec<PathBuf> {
+    std_roots
+        .iter()
+        .map(|root| compile_time::normalize(&root.canonicalize().unwrap_or_else(|_| root.clone())))
         .collect()
 }
 
@@ -2792,7 +2805,7 @@ pub fn module_membership(
     options: &FrontendOptions,
 ) -> Option<hew_types::module_registry::ModuleMembership> {
     let path = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
-    let std_roots = stdlib_roots(options.module_search_paths.as_deref());
+    let std_roots = comparable_std_roots(&options.std_roots());
     membership_of(&path, &std_roots, &options.documents).ok()
 }
 
@@ -2826,6 +2839,7 @@ pub fn resolve_module_import(
     } else {
         load_lockfile_from(&project_dir, &options.documents).ok()?
     };
+    let std_roots = options.std_roots();
     let ctx = ImportResolutionContext {
         in_progress_imports: HashSet::new(),
         resolved_imports: HashMap::new(),
@@ -2834,10 +2848,10 @@ pub fn resolve_module_import(
         locked_versions: locked_versions.as_deref(),
         package_name: package_name.as_deref(),
         project_dir: &project_dir,
-        module_search_paths: options.module_search_paths.as_deref(),
+        std_roots: &std_roots,
         documents: &options.documents,
     };
-    let std_roots = stdlib_roots(ctx.module_search_paths);
+    let std_roots = comparable_std_roots(ctx.std_roots);
     let anchor = anchor_for(&importer, &std_roots, &options.documents).ok()?;
     let mut resolved = module_candidates(path, &importer, &anchor, &ctx, &std_roots)
         .candidates
@@ -2919,7 +2933,7 @@ fn run_directory_module_frontend(
             entry.display()
         )));
     };
-    if let Some(module) = canonical_direct_stdlib_module_for_source(entry) {
+    if let Some(module) = canonical_direct_stdlib_module_for_source(entry, &options.std_roots()) {
         state.program.items.push((
             Item::Import(ImportDecl {
                 path: hew_parser::ast::Path::from_spellings(
@@ -2970,8 +2984,9 @@ fn import_segments(path: &hew_parser::ast::Path) -> Vec<&'static str> {
 
 fn canonical_direct_stdlib_module_for_source(
     source_file: &Path,
+    std_roots: &[PathBuf],
 ) -> Option<hew_parser::module::ModulePath> {
-    hew_types::module_registry::canonical_stdlib_module_for_source(source_file)
+    hew_types::module_registry::canonical_stdlib_module_for_source(source_file, std_roots)
 }
 
 /// Render a module-graph [`CycleError`](hew_parser::module::CycleError) into a
@@ -3096,7 +3111,7 @@ fn rewrite_direct_stdlib_module_root(
 ) -> Result<(), FrontendFailure> {
     use hew_parser::module::Module;
 
-    let Some(stdlib_id) = canonical_direct_stdlib_module_for_source(source_file) else {
+    let Some(stdlib_id) = canonical_direct_stdlib_module_for_source(source_file, std_roots) else {
         return Ok(());
     };
 
@@ -3154,6 +3169,7 @@ fn build_module_graph_with_diagnostics(
         &input_canonical,
         &root_id,
         ctx.documents,
+        ctx.std_roots,
         &mut graph,
         &mut seen_ids,
     );
@@ -3173,7 +3189,7 @@ fn build_module_graph_with_diagnostics(
         return Err(cycle_error_to_frontend_failure(
             &graph,
             &cycle_err,
-            &stdlib_roots(ctx.module_search_paths),
+            &comparable_std_roots(ctx.std_roots),
             ctx.documents,
         ));
     }
@@ -3186,7 +3202,7 @@ fn build_module_graph_with_diagnostics(
         &mut graph,
         items,
         &input_canonical,
-        &stdlib_roots(ctx.module_search_paths),
+        &comparable_std_roots(ctx.std_roots),
         ctx.documents,
     )?;
 
@@ -3302,20 +3318,15 @@ fn add_prelude_std_modules(
     Ok(())
 }
 
-/// Resolve the prelude source `std/<name>.hew` from the standard-library
-/// root a `std` import uses: the configured search path, or
-/// [`hew_types::module_registry::stdlib_search_paths`]. The module carries the
-/// path its diagnostics belong to.
+/// Resolve the prelude source `std/<name>.hew` from the run's
+/// standard-library roots, the ones a `std` import uses. The module carries
+/// the path its diagnostics belong to.
 fn resolve_prelude_std_source(
     ctx: &ImportResolutionContext<'_>,
     name: &str,
 ) -> Result<(PathBuf, Arc<str>), FrontendFailure> {
-    let search_paths = ctx.module_search_paths.map_or_else(
-        hew_types::module_registry::stdlib_search_paths,
-        <[PathBuf]>::to_vec,
-    );
-    search_paths
-        .into_iter()
+    ctx.std_roots
+        .iter()
         .find_map(|root| {
             let candidate = root.join("std").join(format!("{name}.hew"));
             let path = resolve_candidate(ctx.documents, &candidate)?;
@@ -3323,21 +3334,36 @@ fn resolve_prelude_std_source(
             Some((path, source))
         })
         .ok_or_else(|| {
-            let tried = if ctx.module_search_paths.is_some() {
-                String::new()
+            // With no std root at all, name where the toolchain looked for
+            // its own.
+            let probed = if ctx.std_roots.is_empty() {
+                hew_types::module_registry::compiler_stdlib_root_candidates()
             } else {
-                let candidates = hew_types::module_registry::compiler_stdlib_root_candidates()
-                    .iter()
-                    .map(|root| display_path(&root.join("std")))
-                    .collect::<Vec<_>>()
-                    .join(", ");
-                format!(" (tried: {candidates})")
+                ctx.std_roots.to_vec()
             };
+            let tried = probed
+                .iter()
+                .map(|root| display_path(&root.join("std")))
+                .collect::<Vec<_>>()
+                .join(", ");
+            let cause = misnamed_hew_std_cause()
+                .unwrap_or_else(|| "set HEW_STD to a std/ directory".to_string());
             FrontendFailure::message_only(format!(
                 "Error: std not found: `std/{name}.hew` is not in the toolchain's standard \
-                 library{tried}; set HEW_STD to a std/ directory"
+                 library (tried: {tried}); {cause}"
             ))
         })
+}
+
+/// Why `std.*` resolves nowhere when `HEW_STD` names a directory not called
+/// `std`: its parent is the std root, so the std it names is never read.
+fn misnamed_hew_std_cause() -> Option<String> {
+    hew_types::module_registry::misnamed_hew_std().map(|std_dir| {
+        format!(
+            "HEW_STD names `{}`, but it must name a directory called `std`",
+            display_path(&std_dir)
+        )
+    })
 }
 
 fn check_ambiguous_module_import_bindings(
@@ -3451,9 +3477,9 @@ fn graph_module_for_source(
 #[expect(
     clippy::too_many_arguments,
     reason = "one module-graph frame: the source being walked, its directory, \
-              the root it belongs to, the open documents, and the graph and \
-              seen-id state the walk threads; grouping them would hide which \
-              of the three paths each argument comes from"
+              the root it belongs to, the open documents, the std roots, and the \
+              graph and seen-id state the walk threads; grouping them would hide \
+              which of the three paths each argument comes from"
 )]
 fn extract_module_info(
     items: &[Spanned<Item>],
@@ -3462,6 +3488,7 @@ fn extract_module_info(
     root_source: &Path,
     root_id: &hew_parser::module::ModulePath,
     documents: &SourceSet,
+    std_roots: &[PathBuf],
     graph: &mut hew_parser::module::ModuleGraph,
     seen_ids: &mut HashSet<hew_parser::module::ModulePath>,
 ) -> Vec<hew_parser::module::ModuleImport> {
@@ -3485,6 +3512,7 @@ fn extract_module_info(
                 hew_types::module_registry::canonical_source_module_identity(
                     &ModulePath::new(import_segments(&decl.path)),
                     &decl.resolved_source_paths,
+                    std_roots,
                 )
             });
             (module_id, None)
@@ -3520,6 +3548,7 @@ fn extract_module_info(
                     root_source,
                     root_id,
                     documents,
+                    std_roots,
                     graph,
                     seen_ids,
                 );
@@ -3947,7 +3976,7 @@ fn resolve_file_imports_internal(
         return Ok(());
     }
 
-    let std_roots = stdlib_roots(ctx.module_search_paths);
+    let std_roots = comparable_std_roots(ctx.std_roots);
     let anchor = importer_anchor(source_file, ctx, &std_roots)?;
 
     for idx in &import_indices {
@@ -4108,8 +4137,12 @@ fn resolve_file_imports_internal(
                         "\n  hint: this dependency is declared in hew.toml — run `hew install`"
                             .to_string()
                     } else if is_std_import {
-                        nearest_std_module(last, &std_roots)
-                            .map(|nearest| format!("\n  did you mean `{nearest}`?"))
+                        misnamed_hew_std_cause()
+                            .map(|cause| format!("\n  hint: {cause}"))
+                            .or_else(|| {
+                                nearest_std_module(last, &std_roots)
+                                    .map(|nearest| format!("\n  did you mean `{nearest}`?"))
+                            })
                             .unwrap_or_default()
                     } else {
                         let hints = module_not_found_hints(source_file, &anchor, &segments, ctx);
@@ -4197,7 +4230,7 @@ fn build_resolved_import_internal(
     import_item: &Item,
     diagnostics: &mut Vec<FrontendDiagnostic>,
 ) -> Result<ResolvedImport, FrontendFailure> {
-    let std_roots = stdlib_roots(ctx.module_search_paths);
+    let std_roots = comparable_std_roots(ctx.std_roots);
     let membership = membership_of(canonical, &std_roots, ctx.documents)?;
     let peer_files = if membership.role == hew_types::module_registry::MembershipRole::Entry {
         membership.peers.clone()
@@ -5147,9 +5180,9 @@ fn load_dependencies(dir: &Path) -> Result<Option<Vec<String>>, FrontendFailure>
 #[cfg(test)]
 mod tests {
     use super::{
-        build_module_graph, check_file, check_file_with_state, check_program, checker_search_paths,
-        display_path, hir_diagnostics_to_frontend, load_dependencies, load_lockfile,
-        load_package_name, parse_source, retain_user_facing_diagnostics, run_document_frontend,
+        build_module_graph, check_file, check_file_with_state, check_program, display_path,
+        hir_diagnostics_to_frontend, load_dependencies, load_lockfile, load_package_name,
+        parse_source, retain_user_facing_diagnostics, run_document_frontend,
         run_file_frontend_to_typecheck, run_source_frontend, DiagnosticPolicy, FrontendDiagnostic,
         FrontendDiagnosticKind, FrontendOptions, ImportResolutionContext, Session, SessionTarget,
         SourceSet,
@@ -5663,14 +5696,14 @@ mod tests {
     /// inside a directory shaped like a Hew checkout still resolves std from
     /// the toolchain's root, never from that directory.
     #[test]
-    fn checker_search_paths_ignore_a_std_beside_the_source() {
+    fn default_std_roots_ignore_a_std_beside_the_source() {
         let root = tempfile::tempdir().expect("create lookalike checkout root");
         fs::create_dir_all(root.path().join("std")).expect("create std dir");
         fs::write(root.path().join("std/builtins.hew"), "// marker\n")
             .expect("write builtins marker");
         write_source(root.path(), "main.hew", "fn main() {}\n");
 
-        let paths = checker_search_paths(&FrontendOptions::default());
+        let paths = FrontendOptions::default().std_roots();
 
         assert!(
             !paths.contains(&root.path().to_path_buf()),
@@ -6037,7 +6070,7 @@ mod tests {
             locked_versions: None,
             package_name: None,
             project_dir: dir.path(),
-            module_search_paths: Some(&roots),
+            std_roots: &roots,
             documents,
         };
         let graph = build_module_graph(
@@ -6151,7 +6184,7 @@ mod tests {
                 locked_versions: None,
                 package_name: None,
                 project_dir: Path::new("."),
-                module_search_paths: Some(&roots),
+                std_roots: &roots,
                 documents: &documents,
             };
             let graph = build_module_graph(
@@ -6205,7 +6238,7 @@ mod tests {
             locked_versions: None,
             package_name: package_name.as_deref(),
             project_dir: dir.path(),
-            module_search_paths: None,
+            std_roots: &hew_types::module_registry::stdlib_search_paths(),
             documents: &documents,
         };
         let input = Path::new(&input).canonicalize().expect("main exists");
@@ -6297,7 +6330,7 @@ mod tests {
                 locked_versions: None,
                 package_name: None,
                 project_dir: dir.path(),
-                module_search_paths: Some(std::slice::from_ref(&repo_root)),
+                std_roots: std::slice::from_ref(&repo_root),
                 documents: &documents,
             };
 
@@ -6493,7 +6526,7 @@ mod tests {
             locked_versions: None,
             package_name: None,
             project_dir: dir.path(),
-            module_search_paths: None,
+            std_roots: &hew_types::module_registry::stdlib_search_paths(),
             documents: &documents,
         };
 
@@ -7969,9 +8002,10 @@ fn main() {
         let repo_root = Path::new(env!("CARGO_MANIFEST_DIR"))
             .parent()
             .expect("hew-compile lives below the repository root");
+        let std_roots = [repo_root.to_path_buf()];
         let shipped = repo_root.join("std/stream.hew");
         assert_eq!(
-            super::canonical_direct_stdlib_module_for_source(&shipped)
+            super::canonical_direct_stdlib_module_for_source(&shipped, &std_roots)
                 .map(|module| module.dotted()),
             Some("std.stream".to_string()),
             "direct compilation of the shipped stream module must retain std.stream identity"
@@ -7984,13 +8018,14 @@ fn main() {
             "type Sink<T> {\n    value: T;\n}\n\ntype Stream<T> {\n    value: T;\n}\n",
         );
         assert!(
-            super::canonical_direct_stdlib_module_for_source(Path::new(&user_stream)).is_none(),
+            super::canonical_direct_stdlib_module_for_source(Path::new(&user_stream), &std_roots)
+                .is_none(),
             "a same-named user file must not acquire compiler-owned std.stream provenance"
         );
 
         let shipped_net = repo_root.join("std/net/net.hew");
         assert_eq!(
-            super::canonical_direct_stdlib_module_for_source(&shipped_net)
+            super::canonical_direct_stdlib_module_for_source(&shipped_net, &std_roots)
                 .map(|module| module.dotted()),
             Some("std.net".to_string()),
             "direct compilation of the shipped TCP module must retain std.net identity"
@@ -7998,7 +8033,7 @@ fn main() {
 
         let shipped_lifecycle = repo_root.join("std/concurrency/lifecycle.hew");
         assert_eq!(
-            super::canonical_direct_stdlib_module_for_source(&shipped_lifecycle)
+            super::canonical_direct_stdlib_module_for_source(&shipped_lifecycle, &std_roots)
                 .map(|module| module.dotted()),
             Some("std.concurrency.lifecycle".to_string()),
             "a direct check of a shipped nested std module must retain its identity"
@@ -8010,12 +8045,17 @@ fn main() {
             "pub type Marker {}\n",
         );
         assert!(
-            super::canonical_direct_stdlib_module_for_source(Path::new(&user_lifecycle)).is_none(),
+            super::canonical_direct_stdlib_module_for_source(
+                Path::new(&user_lifecycle),
+                &std_roots
+            )
+            .is_none(),
             "a same-named user file must not acquire std.concurrency.lifecycle provenance"
         );
         let user_net = write_source(dir.path(), "net.hew", "fn main() {}\n");
         assert!(
-            super::canonical_direct_stdlib_module_for_source(Path::new(&user_net)).is_none(),
+            super::canonical_direct_stdlib_module_for_source(Path::new(&user_net), &std_roots)
+                .is_none(),
             "a same-named user file must not acquire compiler-owned std.net provenance"
         );
 
@@ -8341,6 +8381,133 @@ extern "C" { fn hew_tcp_read(foo: Foo); }
             !resolved.starts_with(&pkg_root),
             "std::fs must not resolve from colliding --pkg-path file {}",
             resolved.display()
+        );
+    }
+
+    fn copy_tree(from: &Path, to: &Path) {
+        fs::create_dir_all(to).expect("create copied directory");
+        for entry in fs::read_dir(from).expect("read source directory") {
+            let entry = entry.expect("read source entry");
+            let target = to.join(entry.file_name());
+            if entry.file_type().expect("source entry type").is_dir() {
+                copy_tree(&entry.path(), &target);
+            } else {
+                fs::copy(entry.path(), &target).expect("copy source file");
+            }
+        }
+    }
+
+    /// The std roots a run is given are the canonical std, whatever
+    /// process-wide default exists (`HEW_STD`, the toolchain's own std). A
+    /// copy of the std outside the toolchain checks and lowers as the std: its
+    /// prelude declarations stay the builtin prelude rather than colliding
+    /// with it as a second, user-owned declaration, and its intrinsic floor
+    /// and directory modules import as the std.
+    #[test]
+    fn given_std_roots_are_the_canonical_std() {
+        let dir = tempfile::tempdir().expect("create temp dir");
+        let toolchain = dir.path().join("toolchain");
+        let repo_root = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .expect("hew-compile lives below the repository root");
+        copy_tree(&repo_root.join("std"), &toolchain.join("std"));
+        let project_dir = dir.path().join("project");
+        fs::create_dir(&project_dir).expect("create project");
+        let input = write_source(
+            &project_dir,
+            "main.hew",
+            "import std.math;\nimport std.encoding.json;\n\nfn main() {\n    \
+             let values = [1, 2, 3];\n    var total = 0;\n    \
+             for value in values {\n        total = total + value;\n    }\n    \
+             println(f\"{total} {math.sqrt(16.0)}\");\n    \
+             match json.parse(\"[1]\") {\n        .Ok(_) => println(\"parsed\"),\n        \
+             .Err(_) => println(\"invalid\"),\n    }\n}\n",
+        );
+        let options = FrontendOptions {
+            project_dir: Some(project_dir),
+            module_search_paths: Some(vec![toolchain.clone()]),
+            ..Default::default()
+        };
+
+        let state = run_file_frontend_to_typecheck(&input, &options)
+            .unwrap_or_else(|failure| panic!("{}: {:#?}", failure.message, failure.diagnostics));
+
+        assert_eq!(
+            state.typecheck_result.module_registry.std_roots(),
+            [toolchain]
+        );
+        let tco = state
+            .typecheck_result
+            .tco
+            .as_ref()
+            .expect("checked program");
+        assert!(
+            tco.canonical_std_modules
+                .contains(&hew_parser::module::ModulePath::new(["std", "builtins"])),
+            "the given std's builtins are the canonical builtins"
+        );
+        for module in [["std", "math"].as_slice(), &["std", "encoding", "json"]] {
+            assert!(
+                tco.canonical_std_modules
+                    .contains(&hew_parser::module::ModulePath::new(module.iter().copied())),
+                "the given std's {module:?} is canonical"
+            );
+        }
+        Session::from_frontend_options(SessionTarget::native(), &options)
+            .lower_program(&state.program, tco)
+            .expect("the program lowers against the given std");
+    }
+
+    /// A given std whose `std/builtins.hew` lacks a declaration the prelude
+    /// publishes is refused with a diagnostic naming that file, not a panic.
+    /// The control is the same copy with the shipped builtins intact.
+    #[test]
+    fn an_incomplete_std_builtins_is_a_diagnostic() {
+        let dir = tempfile::tempdir().expect("create temp dir");
+        let toolchain = dir.path().join("toolchain");
+        let repo_root = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .expect("hew-compile lives below the repository root");
+        copy_tree(&repo_root.join("std"), &toolchain.join("std"));
+        let project_dir = dir.path().join("project");
+        fs::create_dir(&project_dir).expect("create project");
+        let input = write_source(
+            &project_dir,
+            "main.hew",
+            "fn main() {\n    println(1);\n}\n",
+        );
+        let options = FrontendOptions {
+            project_dir: Some(project_dir),
+            module_search_paths: Some(vec![toolchain.clone()]),
+            ..Default::default()
+        };
+        run_file_frontend_to_typecheck(&input, &options)
+            .unwrap_or_else(|failure| panic!("intact std: {:#?}", failure.diagnostics));
+
+        fs::write(toolchain.join("std/builtins.hew"), "pub fn nothing() {}\n")
+            .expect("replace builtins");
+        let Err(failure) = run_file_frontend_to_typecheck(&input, &options) else {
+            panic!("an incomplete std must be refused");
+        };
+        let missing = failure
+            .diagnostics
+            .iter()
+            .filter_map(|diagnostic| match &diagnostic.kind {
+                FrontendDiagnosticKind::Type(error)
+                    if error.kind == hew_types::error::TypeErrorKind::MalformedStdSource =>
+                {
+                    Some(error)
+                }
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert!(
+            missing.iter().any(
+                |error| error.message.contains("does not declare `LinkError`")
+                    && error.message.contains("builtins.hew")
+            ),
+            "{:#?}",
+            failure.diagnostics
         );
     }
 

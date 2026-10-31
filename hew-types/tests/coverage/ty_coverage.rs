@@ -43,6 +43,15 @@ fn display_var() {
 }
 
 #[test]
+fn user_facing_var_is_a_placeholder() {
+    // Variable numbers are checker-internal and vary with allocation order;
+    // a diagnostic names an unresolved type the way source writes it.
+    let ty = Ty::Tuple(vec![Ty::Var(TypeVar(7)), Ty::Var(TypeVar(8))]);
+    assert_eq!(ty.user_facing().to_string(), "(_, _)");
+    assert_eq!(ty.to_string(), "(?T7, ?T8)");
+}
+
+#[test]
 fn display_tuple_single_element() {
     assert_eq!(Ty::Tuple(vec![Ty::Bool]).to_string(), "(bool)");
 }

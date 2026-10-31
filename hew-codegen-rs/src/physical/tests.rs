@@ -1377,6 +1377,139 @@ fn build_info_record_survives_optimization_only_when_requested() {
 }
 
 #[test]
+fn scalar_push_appends_inline_and_reaches_runtime_only_to_grow_or_detach() {
+    use std::cell::Cell;
+    thread_local! {
+        static RUNTIME_PUSHES: Cell<u32> = const { Cell::new(0) };
+        static BUDGET: Cell<u32> = const { Cell::new(0) };
+        static POLLS: Cell<u32> = const { Cell::new(0) };
+        static CANCELLING: Cell<bool> = const { Cell::new(false) };
+        static VECTOR_RELEASES: Cell<u32> = const { Cell::new(0) };
+    }
+    unsafe extern "C" fn counted_push(
+        vector: *mut hew_runtime::vec::HewVec,
+        data: *const std::ffi::c_void,
+        moved: u32,
+        state: *const hew_runtime::coro_state::HewCoroState,
+    ) -> i32 {
+        RUNTIME_PUSHES.set(RUNTIME_PUSHES.get() + 1);
+        // SAFETY: forwards the generated call's live operands unchanged.
+        unsafe { hew_runtime::vec::hew_vec_push_managed(vector, data, moved, state) }
+    }
+    unsafe extern "C" fn countdown(_: *mut std::ffi::c_void, _: u32) -> *mut u32 {
+        BUDGET.with(Cell::as_ptr)
+    }
+    unsafe extern "C" fn poll(state: *mut std::ffi::c_void, budget: u32) -> i32 {
+        BUDGET.set(budget);
+        POLLS.set(POLLS.get() + 1);
+        if !CANCELLING.get() {
+            return 0;
+        }
+        // SAFETY: generated polling borrows the live invocation state; its
+        // execution owner retains the token throughout this call.
+        unsafe {
+            let token = hew_runtime::coro_state::hew_coro_state_token(state.cast());
+            hew_runtime::cancel_token::hew_cancel_token_cancel(
+                token,
+                hew_runtime::fault::HEW_FAULT_CANCELLED,
+            );
+        }
+        2
+    }
+    unsafe extern "C-unwind" fn release_vector(vector: *mut std::ffi::c_void) {
+        VECTOR_RELEASES.set(VECTOR_RELEASES.get() + 1);
+        // SAFETY: vector cleanup transfers one live owner to the walk.
+        unsafe { hew_runtime::vec::hew_vec_free_owned_walk(vector.cast()) };
+    }
+    // The append loop runs as a physical chunk; the copy appends outside it.
+    let semantic = lower_source(
+        r"
+        fn main() -> i64 {
+            var values: Vec<i64> = Vec.new();
+            for i in 0..10 { values.push(i); }
+            var copy = clone values;
+            copy.push(100);
+            var sum: i64 = 0;
+            for i in 0..values.len() { sum += values[i]; }
+            values.len() * 1000 + copy.len() * 100 + copy[10] + sum
+        }
+        ",
+    );
+    let triple = native_emission_triple();
+    let target = physical_target_for_inventory(
+        &triple,
+        &hew_mir::physical::physical_type_inventory(&semantic),
+    )
+    .unwrap();
+    let verified = hew_mir::lower_physical_module(&semantic, target).unwrap();
+    for opt in [OptLevel::O0, OptLevel::O2] {
+        let ctx = Context::create();
+        let machine = crate::llvm::target_machine_for_triple_with_opt_level(&triple, opt).unwrap();
+        let llvm = build_module(&ctx, verified.module(), "inline_scalar_push", &machine).unwrap();
+        crate::llvm::run_module_pipeline(&llvm, &machine, opt).unwrap();
+        let engine = llvm
+            .create_jit_execution_engine(inkwell::OptimizationLevel::None)
+            .unwrap();
+        super::test_runtime::bind_runtime(&llvm, &engine);
+        for (name, address) in [
+            ("hew_vec_push_managed", counted_push as *const () as usize),
+            ("hew_coro_safepoint_budget", countdown as *const () as usize),
+            ("hew_coro_safepoint", poll as *const () as usize),
+            (
+                "hew_vec_free_owned_walk",
+                release_vector as *const () as usize,
+            ),
+        ] {
+            engine.add_global_mapping(
+                &llvm
+                    .get_function(name)
+                    .unwrap_or_else(|| panic!("missing runtime boundary {name}")),
+                address,
+            );
+        }
+        type Main = unsafe extern "C" fn(*mut i64, *mut *mut hew_runtime::fault::HewFault) -> i32;
+        // SAFETY: the generated main wrapper has the physical result/fault ABI.
+        let main = unsafe { engine.get_function::<Main>("__hew_main_body").unwrap() };
+        // A spent budget inside the append loop returns to the coroutine to
+        // poll, then resumes the same vector.
+        for initial in [4000, 5] {
+            BUDGET.set(initial);
+            POLLS.set(0);
+            RUNTIME_PUSHES.set(0);
+            VECTOR_RELEASES.set(0);
+            let mut result = 0;
+            let mut fault = std::ptr::null_mut();
+            // SAFETY: output carriers remain live through the synchronous root.
+            assert_eq!(unsafe { main.call(&raw mut result, &raw mut fault) }, 0);
+            assert!(fault.is_null());
+            // The shared copy detaches; the original keeps its ten elements.
+            assert_eq!(result, 10_000 + 1_100 + 100 + 45, "{opt:?} {initial}");
+            // Growth at lengths 0, 4 and 8, then the shared buffer's detachment.
+            assert_eq!(RUNTIME_PUSHES.get(), 4, "{opt:?} {initial}");
+            assert_eq!(POLLS.get(), u32::from(initial == 5), "{opt:?} {initial}");
+            assert_eq!(VECTOR_RELEASES.get(), 2, "{opt:?} {initial}");
+        }
+        // Cancellation at a poll inside the append loop releases the partly
+        // built vector exactly once.
+        BUDGET.set(5);
+        VECTOR_RELEASES.set(0);
+        CANCELLING.set(true);
+        let mut result = -77;
+        let mut fault = std::ptr::null_mut();
+        // SAFETY: output carriers remain live through the synchronous root.
+        assert_eq!(
+            unsafe { main.call(&raw mut result, &raw mut fault) },
+            hew_runtime::fault::HEW_FAULT_CANCELLED
+        );
+        assert_eq!(result, -77);
+        assert_eq!(VECTOR_RELEASES.get(), 1, "{opt:?}");
+        // SAFETY: the cancelled call published one owned fault.
+        unsafe { hew_runtime::fault::hew_fault_drop(fault) };
+        CANCELLING.set(false);
+    }
+}
+
+#[test]
 fn scalar_and_vector_loop_chunks_preserve_the_shared_budget_across_serial_calls() {
     use std::cell::Cell;
     thread_local! {
@@ -1539,6 +1672,61 @@ fn scalar_and_vector_loop_chunks_preserve_the_shared_budget_across_serial_calls(
 }
 
 #[test]
+fn loop_chunk_bodies_keep_a_local_symbol_in_the_object() {
+    use object::{Object, ObjectSymbol};
+    // Profilers and debuggers attribute samples by symbol; a chunk emitted
+    // under an assembler-private label has machine code but no name.
+    let semantic = lower_source(
+        r"
+        fn probe(limit: i64) -> i64 {
+            var sum: i64 = 0;
+            for index in 0..limit { sum += index; }
+            sum
+        }
+        fn main() -> i64 { probe(4) }
+        ",
+    );
+    let triple = native_emission_triple();
+    let target = physical_target_for_inventory(
+        &triple,
+        &hew_mir::physical::physical_type_inventory(&semantic),
+    )
+    .unwrap();
+    let verified = hew_mir::lower_physical_module(&semantic, target).unwrap();
+    for opt_level in [OptLevel::O0, OptLevel::O2] {
+        let dir = tempfile::tempdir().expect("loop chunk output directory");
+        let artefacts = emit_physical_object(
+            &verified,
+            &PhysicalEmitOptions {
+                module_name: "loop_chunk_symbols",
+                out_dir: dir.path(),
+                target_triple: Some(&triple),
+                opt_level,
+                emit_llvm: false,
+                address_sanitizer: false,
+                debug_source: None,
+                link_freestanding_wasm: false,
+                build_info: None,
+            },
+        )
+        .expect("emit loop chunk object");
+        let object = std::fs::read(artefacts.native_obj_path.expect("native object"))
+            .expect("read loop chunk object");
+        let object = object::File::parse(&*object).expect("parse loop chunk object");
+        // A private label still reaches Mach-O and COFF symbol tables under an
+        // assembler-temporary prefix (`l`, `.L`), which tools do not name.
+        let named = object.symbols().any(|symbol| {
+            let name = symbol.name().unwrap_or_default();
+            symbol.kind() == object::SymbolKind::Text
+                && name.contains(".loop.")
+                && !name.starts_with(".L")
+                && !name.starts_with('l')
+        });
+        assert!(named, "{opt_level:?}: loop chunk body has no symbol");
+    }
+}
+
+#[test]
 fn vector_loop_chunks_preserve_empty_scans_bounds_and_overflow_at_o0_o2() {
     let semantic = lower_source(
         r"
@@ -1694,4 +1882,62 @@ fn active_operation_root_uses_the_split_coroutine_owner_slot() {
             hew_runtime::coro_state::hew_coro_state_free(state);
         }
     }
+}
+
+/// A borrowed callable's carrier retains its defining code for the whole call,
+/// so calling it takes no code-root lease; a consuming call hands the carrier
+/// to the callee and leases the code for the call's duration.
+#[test]
+fn only_consuming_callable_calls_lease_their_code() {
+    use inkwell::values::AnyValue;
+
+    let semantic = lower_source(
+        r#"
+        fn apply_all(f: fn(i64) -> i64, count: i64) -> i64 {
+            var total = 0;
+            for r in 0..count {
+                total += f(r);
+            }
+            total
+        }
+        fn apply_once(consume f: fn[once](i64) -> i64) -> i64 {
+            f(1)
+        }
+        fn main() -> i64 {
+            let offset = 3;
+            let shift = |value: i64| -> i64 { value + offset };
+            apply_all(shift, 4) + apply_once(|value: i64| -> i64 { value * offset })
+        }
+        "#,
+    );
+    let triple = native_emission_triple();
+    let inventory = hew_mir::physical::physical_type_inventory(&semantic);
+    let target = physical_target_for_inventory(&triple, &inventory).unwrap();
+    let physical = hew_mir::lower_physical_module(&semantic, target).unwrap();
+    let ctx = Context::create();
+    let machine =
+        crate::llvm::target_machine_for_triple_with_opt_level(&triple, OptLevel::O0).unwrap();
+    let llvm = build_module(&ctx, physical.module(), "callable_code", &machine).unwrap();
+    llvm.verify().unwrap();
+    let leases = |name: &str| {
+        let symbol = physical
+            .module()
+            .callables
+            .iter()
+            .map(|callable| emitted_symbol(physical.module(), callable))
+            .find(|symbol| symbol.ends_with(name))
+            .expect("emitted callable");
+        llvm.get_functions()
+            .filter(|function| function.get_name().to_string_lossy().starts_with(&symbol))
+            .map(|function| {
+                function
+                    .print_to_string()
+                    .to_string()
+                    .matches("call ptr @hew_code_root_acquire(")
+                    .count()
+            })
+            .sum::<usize>()
+    };
+    assert_eq!(leases("_apply_all"), 0);
+    assert_eq!(leases("_apply_once"), 1);
 }

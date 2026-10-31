@@ -281,9 +281,10 @@ impl Reader<'_> {
                 return Ok(Value::Int(value));
             }
         }
-        lexeme
-            .parse::<f64>()
-            .map(Value::Float)
-            .map_err(|_| self.error_at(start, "invalid number"))
+        match lexeme.parse::<f64>() {
+            Ok(value) if value.is_finite() => Ok(Value::Float(value)),
+            Ok(_) => Err(self.error_at(start, "number out of range for a float")),
+            Err(_) => Err(self.error_at(start, "invalid number")),
+        }
     }
 }

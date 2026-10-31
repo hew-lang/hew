@@ -99,6 +99,30 @@ fn quarantine_insert_blocks_then_evict_clears() {
     );
 }
 
+/// A member retired after its burial takes its quarantine entry with it, so
+/// a rejoin admitted as a new member at incarnation 1 in the same session is
+/// sendable. Counterfactual: the entry at the buried incarnation blocks it.
+#[test]
+fn retired_member_leaves_no_quarantine_behind() {
+    let _guard = crate::runtime_test_guard();
+    let config = crate::cluster::ClusterConfig {
+        local_node_id: 1,
+        ..crate::cluster::ClusterConfig::default()
+    };
+    // SAFETY: the test owns the cluster until the matching free.
+    let cluster = unsafe { crate::cluster::hew_cluster_new(&raw const config) };
+    // SAFETY: allocated above and live until the free below.
+    let members = unsafe { &*cluster };
+    members.apply_swim_gossip(&[(7, 1, crate::cluster::MEMBER_DEAD, 5)]);
+    quarantine_insert(7, Some(1), 5);
+    members.retire_buried(0);
+    assert!(quarantine_is_blocked(7, Some(1), 1));
+    assert_eq!(members.retire_buried(1_000_000).len(), 1);
+    assert!(!quarantine_is_blocked(7, Some(1), 1));
+    // SAFETY: allocated above; nothing borrows it any more.
+    unsafe { crate::cluster::hew_cluster_free(cluster) };
+}
+
 #[test]
 fn registry_repoint_changes_future_lookup_without_rewriting_old_location() {
     let registry = HewRegistry::default();
@@ -1010,4 +1034,48 @@ fn register_emits_gossip_event() {
         assert_eq!(hew_node_stop(node.as_ptr()), 0);
     }
     crate::registry::hew_registry_clear();
+}
+
+/// A peer that connects and then stalls (a frozen process, a half-open
+/// socket) leaves the accept thread blocked mid-handshake. Stopping the node
+/// must cancel that read rather than wait on the peer.
+#[test]
+fn node_stop_cancels_inbound_handshake_from_stalled_peer() {
+    use std::io::Read;
+
+    let _guard = crate::runtime_test_guard();
+    let dir = tempfile::tempdir().expect("stalled-peer keydir");
+    let path = dir.path().join("node.key");
+    let identity =
+        crate::encryption::noise_identity_load_or_create(&path).expect("mint node identity");
+    let (node, port) = start_tcp_node_pinning(131, identity, &path, &[]);
+
+    let mut stalled = std::net::TcpStream::connect(("127.0.0.1", port)).expect("dial node");
+    // The node sends its handshake record before reading the peer's, so a
+    // complete record proves the accept thread is now waiting on this socket.
+    let mut header = [0u8; 4];
+    stalled.read_exact(&mut header).expect("handshake header");
+    let mut record = vec![0u8; u32::from_le_bytes(header) as usize];
+    stalled.read_exact(&mut record).expect("handshake record");
+
+    let (stopped_tx, stopped_rx) = std::sync::mpsc::channel();
+    let node_addr = node.as_ptr() as usize;
+    let stopper = thread::spawn(move || {
+        // SAFETY: the node stays allocated until this thread is joined.
+        let rc = unsafe { hew_node_stop(node_addr as *mut HewNode) };
+        let _ = stopped_tx.send(rc);
+    });
+    // The stalled socket stays open: closing it would wake the read with EOF
+    // and hide the missing cancellation.
+    let Ok(rc) = stopped_rx.recv_timeout(Duration::from_secs(30)) else {
+        // Freeing the node would contend with the blocked stop; leak it.
+        std::mem::forget(node);
+        panic!("hew_node_stop must cancel an inbound handshake blocked on a stalled peer");
+    };
+    assert_eq!(rc, 0);
+    stopper.join().expect("stop thread");
+    drop(node);
+    // The node closed its side; the stalled peer now observes the end.
+    let mut rest = Vec::new();
+    let _ = stalled.read_to_end(&mut rest);
 }

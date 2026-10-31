@@ -22,7 +22,7 @@ struct DependencyKey {
     program: Program,
     next_default_span: usize,
     sources: Vec<(String, std::sync::Arc<str>, String)>,
-    registry: (Vec<PathBuf>, Option<PathBuf>),
+    registry: Vec<PathBuf>,
     lint_levels: Vec<LintLevel>,
 }
 
@@ -81,7 +81,7 @@ impl DependencyAnalysisCache {
         program: &Program,
         mut sources: Vec<(String, std::sync::Arc<str>, String)>,
     ) -> TypeCheckOutput {
-        if dependency_program(program).is_none() {
+        if dependency_program(program, checker.module_registry.std_roots()).is_none() {
             return checker.check_program(program);
         }
         let Some(registry) = checker.module_registry.dependency_analysis_context() else {
@@ -105,7 +105,8 @@ impl DependencyAnalysisCache {
         let program = normalized_program
             .as_ref()
             .map_or(program, |normalized| &normalized.program);
-        let Some(dependencies) = dependency_program(program) else {
+        let Some(dependencies) = dependency_program(program, checker.module_registry.std_roots())
+        else {
             return checker.check_program(source_program);
         };
         sources.sort();
@@ -267,7 +268,7 @@ fn ordinary_function_or_import(item: &Item) -> bool {
     }
 }
 
-fn dependency_program(program: &Program) -> Option<Program> {
+fn dependency_program(program: &Program, std_roots: &[std::path::PathBuf]) -> Option<Program> {
     let graph = program.module_graph.as_ref()?;
     let root = graph.modules.get(&graph.root)?;
     // Directory roots and source-less/synthetic roots retain their existing
@@ -282,7 +283,8 @@ fn dependency_program(program: &Program) -> Option<Program> {
         return None;
     }
     let root_source = &root.source_paths[0];
-    if crate::module_registry::canonical_stdlib_module_for_source(root_source).is_some() {
+    if crate::module_registry::canonical_stdlib_module_for_source(root_source, std_roots).is_some()
+    {
         return None;
     }
     let root_physical = root_source
@@ -306,7 +308,11 @@ fn dependency_program(program: &Program) -> Option<Program> {
         let prelude_floor = automatic_prelude.contains(id)
             && !module.source_paths.is_empty()
             && module.source_paths.iter().all(|source| {
-                crate::module_registry::is_canonical_stdlib_module_source(source, &id.dotted())
+                crate::module_registry::is_canonical_stdlib_module_source(
+                    source,
+                    &id.dotted(),
+                    std_roots,
+                )
             });
         if (!prelude_floor
             && !module

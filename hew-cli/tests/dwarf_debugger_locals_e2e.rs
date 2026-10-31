@@ -257,9 +257,11 @@ fn build_debug_fixture(slug: &str, source: &str) -> DebugFixture {
 
 /// Read the fixture's debug info once before anything is measured.
 ///
-/// A debugger parses the whole `.debug_*` section the first time it opens a
-/// binary, and on a cold cache that costs tens of seconds against a fixture
-/// this size - more than the deadline the measured commands run under, so the
+/// A debugger indexes the whole program's debug info the first time it opens a
+/// binary. Under the split-DWARF `dev` profile that means opening every
+/// runtime `.dwo` file in the target directory, thousands of them; on a cold
+/// cache that is I/O-bound and can take minutes - more than the deadline the
+/// measured commands run under, so the
 /// test would fail on the parse rather than on what it asserts. Opening and
 /// quitting here pays that once, outside any measurement, and leaves every
 /// later invocation answering its query in well under a second.
@@ -453,32 +455,12 @@ fn read_first_at_line(debugger: &str, binary: &Path, src: &Path, line: u32) -> S
 fn debugger_reads_shadowed_local_by_innermost_binding() {
     require_codegen();
     let dbg = require_debugger();
-
-    let dir = workspace();
-    let src = dir.path().join("shadow.hew");
-    std::fs::write(&src, SHADOW_SRC).expect("write source");
-    let binary = hew_testutil::compiled_binary_path(dir.path(), "shadow");
-
-    let build = Command::new(hew_binary())
-        .args([
-            "build",
-            "-g",
-            src.to_str().unwrap(),
-            "-o",
-            binary.to_str().unwrap(),
-        ])
-        .output()
-        .expect("run hew build -g");
-    assert!(
-        build.status.success(),
-        "hew build -g failed:\n{}",
-        String::from_utf8_lossy(&build.stderr)
-    );
-    assert!(binary.exists(), "binary not produced");
+    let fixture = build_debug_fixture("shadow", SHADOW_SRC);
+    let (binary, src) = (&fixture.binary, &fixture.src);
 
     // Inner breakpoint (the `println(first)` line) must report the INNER
     // binding's value 43 (selector + 2), not the outer 42 (selector + 1).
-    let inner = read_first_at_line(dbg, &binary, &src, 5);
+    let inner = read_first_at_line(dbg, binary, src, 5);
     assert!(
         inner.contains("43"),
         "inner breakpoint must read the shadowed inner `first` = 43 (selector+2); \
@@ -491,7 +473,7 @@ fn debugger_reads_shadowed_local_by_innermost_binding() {
 
     // Outer breakpoint (after the inner block closes) must report the OUTER
     // binding's value 42.
-    let outer = read_first_at_line(dbg, &binary, &src, 7);
+    let outer = read_first_at_line(dbg, binary, src, 7);
     assert!(
         outer.contains("42"),
         "outer breakpoint must read the outer `first` = 42 (selector+1); got:\n{outer}"

@@ -60,6 +60,13 @@ impl HewRoutingTable {
     pub(crate) fn route_count(&self) -> u64 {
         self.state.read_or_recover().by_node.len() as u64
     }
+
+    /// Identities this table keeps any record of, live or departed.
+    #[cfg(test)]
+    pub(crate) fn remembered_count(&self) -> usize {
+        let state = self.state.read_or_recover();
+        state.known_sessions.len() + state.retired_nodes.len()
+    }
 }
 
 /// Test-only handshake before a route-registration attempt.
@@ -244,6 +251,29 @@ pub(crate) unsafe fn hew_routing_remove_route_if_conn(
     true
 }
 
+/// Forget a departed identity whose membership was retired.
+///
+/// Drops the admitted session and any slot-reuse tombstone, so a discovered
+/// peer that left for good resolves as `StaleRef` rather than `Partition`
+/// forever, and a configured one is again merely partitioned. A live route
+/// means the identity was readmitted; it is left untouched.
+///
+/// # Safety
+///
+/// `table` must be null or point to a live routing table.
+pub(crate) unsafe fn hew_routing_forget_node(table: *mut HewRoutingTable, node_id: NodeId) {
+    // SAFETY: caller guarantees `table` is null or live.
+    let Some(table) = (unsafe { table.as_ref() }) else {
+        return;
+    };
+    let mut state = table.state.write_or_recover();
+    if state.by_node.contains_key(&node_id) {
+        return;
+    }
+    state.known_sessions.remove(&node_id);
+    state.retired_nodes.remove(&node_id);
+}
+
 /// Resolve an exact carried location.
 ///
 /// # Safety
@@ -287,12 +317,17 @@ pub(crate) unsafe fn hew_routing_lookup_location(
     if state.retired_nodes.contains(&location.node()) {
         return LocationRoute::StaleRef;
     }
-    if !table.configured_nodes.contains(&location.node()) {
-        return LocationRoute::StaleRef;
-    }
-    match state.known_sessions.get(&location.node()).copied() {
-        Some(session) if session != location.incarnation() => LocationRoute::StaleRef,
-        Some(_) | None => LocationRoute::Partition,
+    // A session this table admitted stays current between its connections,
+    // whether the peer was configured or discovered: a reconnect window is a
+    // partition, not a dead target.
+    let current = match state.known_sessions.get(&location.node()).copied() {
+        Some(session) => session == location.incarnation(),
+        None => table.configured_nodes.contains(&location.node()),
+    };
+    if current {
+        LocationRoute::Partition
+    } else {
+        LocationRoute::StaleRef
     }
 }
 
@@ -432,6 +467,32 @@ mod tests {
             assert!(hew_routing_add_route(table, remote, 9, 6, 56, 2));
             assert_eq!(
                 hew_routing_lookup_location(table, location(remote, 42, 5)),
+                LocationRoute::StaleRef
+            );
+            hew_routing_table_free(table);
+        }
+    }
+
+    /// A peer discovered through the cluster rather than configured keeps its
+    /// admitted session while it reconnects. Counterfactual: classifying it by
+    /// the configured set alone reports a live target as gone for the whole
+    /// window between two connections.
+    #[test]
+    fn discovered_peer_between_connections_is_partitioned_not_stale() {
+        let local = node(1);
+        let discovered = node(2);
+        let table = hew_routing_table_new(7, Some(local), Some(1), &[]);
+
+        // SAFETY: table is live for the test.
+        unsafe {
+            assert!(hew_routing_add_route(table, discovered, 9, 5, 55, 1));
+            assert!(hew_routing_remove_route_if_conn(table, discovered, 55, 1));
+            assert_eq!(
+                hew_routing_lookup_location(table, location(discovered, 42, 5)),
+                LocationRoute::Partition
+            );
+            assert_eq!(
+                hew_routing_lookup_location(table, location(discovered, 42, 4)),
                 LocationRoute::StaleRef
             );
             hew_routing_table_free(table);

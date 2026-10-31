@@ -59,7 +59,13 @@ fn lower_encoding(format: &str, body: &str) -> hew_sir::SemModule {
     graph.topo_order = vec![encoding, root];
     let mut program = imported.program;
     program.module_graph = Some(graph);
-    let checked = Checker::new(ModuleRegistry::new(vec![])).check_program(&program);
+    // The import names the checkout's shipped source, so the checkout is the
+    // std root this check is given.
+    let repo_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .unwrap()
+        .to_path_buf();
+    let checked = Checker::new(ModuleRegistry::new(vec![repo_root])).check_program(&program);
     assert!(checked.errors.is_empty(), "{:?}", checked.errors);
     let hir = lower_program_host_target(&program, &checked, &ResolutionCtx);
     assert!(hir.diagnostics.is_empty(), "{:?}", hir.diagnostics);

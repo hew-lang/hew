@@ -255,15 +255,12 @@ fn lower_file_to_semantics(
             DiagChannel::User
         })?;
     }
-    let std_roots = options
-        .module_search_paths
-        .clone()
-        .unwrap_or_else(hew_types::module_registry::stdlib_search_paths);
-    let inputs = native_link::ProgramInputs::collect(&state.program, input_path, &std_roots)
-        .map_err(|error| {
-            diagnostic::emit_plain_diagnostic_line(&format!("Error: {error}"));
-            DiagChannel::User
-        })?;
+    let inputs =
+        native_link::ProgramInputs::collect(&state.program, input_path, &fopts.std_roots())
+            .map_err(|error| {
+                diagnostic::emit_plain_diagnostic_line(&format!("Error: {error}"));
+                DiagChannel::User
+            })?;
     source_paths::register_packages(inputs.packages.iter().map(|package| package.root.as_path()));
     Ok((output, inputs, state.typecheck_result.sources))
 }

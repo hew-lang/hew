@@ -558,6 +558,9 @@ struct ActorStateLockState {
     held: bool,
     owner: Option<ThreadId>,
     poisoned: bool,
+    /// Threads blocked in `available.wait`. A release notifies only when one
+    /// is waiting, so an uncontended handler return makes no futex wake.
+    waiters: usize,
 }
 
 #[derive(Debug, Default)]
@@ -638,10 +641,12 @@ fn acquire_actor_state_lock_ref(lock: &ActorStateLock) -> c_int {
             crate::set_last_error("actor-state lock acquire: lock already held by this dispatch");
             return HEW_ACTOR_STATE_LOCK_ERR;
         }
+        state.waiters += 1;
         state = lock
             .available
             .wait(state)
             .unwrap_or_else(recover_runtime_mutex);
+        state.waiters -= 1;
     }
 }
 
@@ -659,8 +664,11 @@ fn release_actor_state_lock_ref(lock: &ActorStateLock) -> c_int {
 
     state.held = false;
     state.owner = None;
+    let waiting = state.waiters != 0;
     drop(state);
-    lock.available.notify_one();
+    if waiting {
+        lock.available.notify_one();
+    }
     HEW_ACTOR_STATE_LOCK_OK
 }
 
@@ -774,8 +782,11 @@ unsafe fn actor_state_lock_release_after_panic_impl(actor: *mut HewActor, poison
     state.held = false;
     state.owner = None;
     state.poisoned |= poison;
+    let waiting = state.waiters != 0;
     drop(state);
-    lock.available.notify_one();
+    if waiting {
+        lock.available.notify_one();
+    }
     HEW_ACTOR_STATE_LOCK_OK
 }
 

@@ -7455,3 +7455,44 @@ fn spawn_at_the_last_representable_serial_still_succeeds() {
     // SAFETY: actor is a valid pointer from hew_actor_spawn.
     assert_eq!(unsafe { hew_actor_free(actor) }, 0);
 }
+
+/// A release wakes a thread blocked on the actor-state lock: the waiter count
+/// that lets an uncontended release skip its notify must see the blocked
+/// acquirer.
+#[test]
+fn state_lock_release_wakes_a_blocked_acquirer() {
+    let lock = std::sync::Arc::new(ActorStateLock::default());
+    assert_eq!(acquire_actor_state_lock_ref(&lock), HEW_ACTOR_STATE_LOCK_OK);
+
+    let contender = std::sync::Arc::clone(&lock);
+    let blocked = std::thread::spawn(move || {
+        assert_eq!(
+            acquire_actor_state_lock_ref(&contender),
+            HEW_ACTOR_STATE_LOCK_OK
+        );
+        assert_eq!(
+            release_actor_state_lock_ref(&contender),
+            HEW_ACTOR_STATE_LOCK_OK
+        );
+    });
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while lock
+        .state
+        .lock()
+        .unwrap_or_else(recover_runtime_mutex)
+        .waiters
+        == 0
+    {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "contender never blocked"
+        );
+        std::thread::yield_now();
+    }
+
+    assert_eq!(release_actor_state_lock_ref(&lock), HEW_ACTOR_STATE_LOCK_OK);
+    blocked.join().expect("blocked acquirer wakes and finishes");
+    let state = lock.state.lock().unwrap_or_else(recover_runtime_mutex);
+    assert!(!state.held);
+    assert_eq!(state.waiters, 0);
+}

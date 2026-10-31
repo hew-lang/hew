@@ -111,6 +111,49 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             .frame
             .as_ref()
             .map_or(pointer.const_null(), |frame| frame.state);
+        // A string literal is its own whole payload: one runtime step reserves,
+        // builds and adopts it, keeping every literal site small enough to inline.
+        if let [PhysicalOp::Const {
+            dest,
+            value: PhysicalConst::String(literal),
+        }] = operations
+        {
+            if *dest == plan.result && plan.inputs.is_empty() && !plan.start_task {
+                let bytes = self.module.string_literals.get(literal).ok_or_else(|| {
+                    CodegenError::FailClosed("checked string literal is absent".into())
+                })?;
+                let (data, len) = self.literal_data(bytes.as_bytes())?;
+                let layout = self.managed_value_layout(&self.storage(*dest)?.ty)?;
+                let literal = get_or_declare_external(
+                    self.llvm,
+                    "hew_budget_string_literal",
+                    self.ctx.i32_type().fn_type(
+                        &[
+                            pointer.into(),
+                            pointer.into(),
+                            self.ctx.i32_type().into(),
+                            pointer.into(),
+                            pointer.into(),
+                        ],
+                        false,
+                    ),
+                )?;
+                let status = self
+                    .runtime_call_value(
+                        literal,
+                        &[
+                            state.into(),
+                            data.into(),
+                            len.into(),
+                            layout.into(),
+                            self.slots[dest.0 as usize].into(),
+                        ],
+                        "budget.literal",
+                    )?
+                    .into_int_value();
+                return self.route_acquisition(status, normal, failure);
+            }
+        }
         let permit = self
             .value_emitter()
             .entry_scratch(pointer.into(), "budget.permit")?;
@@ -277,6 +320,34 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             let task = self.load(plan.result, "budget.task")?;
             self.runtime_call_void(start, &[task.into()], "")?;
         }
+        self.emit_edge(normal)
+    }
+
+    /// Continue on an accepted acquisition; a refusal leaves through `failure`
+    /// with nothing published or consumed.
+    fn route_acquisition(
+        &self,
+        status: IntValue<'ctx>,
+        normal: &PhysicalEdge,
+        failure: &PhysicalEdge,
+    ) -> CodegenResult<()> {
+        let accepted = self.ctx.append_basic_block(self.value, "budget.accepted");
+        let refused = self.ctx.append_basic_block(self.value, "budget.refused");
+        let success = self
+            .builder
+            .build_int_compare(
+                IntPredicate::EQ,
+                status,
+                self.ctx.i32_type().const_zero(),
+                "budget.ok",
+            )
+            .llvm_ctx("classify managed acquisition")?;
+        self.builder
+            .build_conditional_branch(success, accepted, refused)
+            .llvm_ctx("route checked acquisition")?;
+        self.builder.position_at_end(refused);
+        self.emit_edge(failure)?;
+        self.builder.position_at_end(accepted);
         self.emit_edge(normal)
     }
 }

@@ -190,6 +190,7 @@ impl Checker {
                             crate::module_registry::is_canonical_stdlib_module_source(
                                 source,
                                 &canonical_module,
+                                self.module_registry.std_roots(),
                             )
                         })
                     });
@@ -298,7 +299,11 @@ impl Checker {
             _ => return,
         };
         if !decl.resolved_source_paths.iter().any(|source| {
-            crate::module_registry::is_canonical_stdlib_module_source(source, &module_name)
+            crate::module_registry::is_canonical_stdlib_module_source(
+                source,
+                &module_name,
+                self.module_registry.std_roots(),
+            )
         }) {
             return;
         }
@@ -680,6 +685,7 @@ impl Checker {
                 &crate::module_registry::canonical_source_module_identity(
                     &requested_owner,
                     &decl.resolved_source_paths,
+                    self.module_registry.std_roots(),
                 )
                 .dotted(),
                 &decl.resolved_source_paths,
@@ -752,6 +758,7 @@ impl Checker {
                                 crate::module_registry::canonical_source_module_identity(
                                     &import_module_path(decl),
                                     std::slice::from_ref(source_path),
+                                    self.module_registry.std_roots(),
                                 )
                                 .dotted()
                             },

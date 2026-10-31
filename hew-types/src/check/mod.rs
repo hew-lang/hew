@@ -1054,6 +1054,7 @@ impl Checker {
             let canonical = crate::module_registry::canonical_source_module_identity(
                 mod_id,
                 &module.source_paths,
+                self.module_registry.std_roots(),
             );
             let minted = self
                 .defs
@@ -1078,6 +1079,7 @@ impl Checker {
             let canonical = crate::module_registry::canonical_source_module_identity(
                 mod_id,
                 &module.source_paths,
+                self.module_registry.std_roots(),
             )
             .dotted();
             for source in module.source_paths.iter().skip(1) {
@@ -2847,7 +2849,11 @@ impl Checker {
             self.defs
                 .module_source(module)
                 .is_some_and(|source| {
-                    crate::module_registry::is_canonical_stdlib_module_source(source, owner)
+                    crate::module_registry::is_canonical_stdlib_module_source(
+                        source,
+                        owner,
+                        self.module_registry.std_roots(),
+                    )
                 })
                 .then_some(builtin)
         })
@@ -2963,6 +2969,7 @@ impl Checker {
                             crate::module_registry::is_canonical_stdlib_module_source(
                                 source,
                                 "std.builtins",
+                                self.module_registry.std_roots(),
                             )
                         })
                     })
@@ -3056,6 +3063,7 @@ impl Checker {
             extern_method_signatures: self.extern_method_signatures.clone(),
             registration_origin_module: self.registration_origin_module.clone(),
             canonical_std_module_sources: self.canonical_std_module_sources.clone(),
+            canonical_std_graph_modules: self.canonical_std_graph_modules.clone(),
             module_source_paths: self.module_source_paths.clone(),
             module_item_sources: self.module_item_sources.clone(),
             current_item_source: self.current_item_source.clone(),
@@ -3367,6 +3375,7 @@ impl Checker {
         // spelling is not authority: only the source selected by the stdlib
         // search-path resolver may receive Stream/Sink runtime identity.
         self.canonical_std_module_sources.clear();
+        self.canonical_std_graph_modules.clear();
         self.canonical_std_root_sources.clear();
         self.module_source_paths.clear();
         self.module_item_sources.clear();
@@ -3396,9 +3405,11 @@ impl Checker {
                     crate::module_registry::is_canonical_stdlib_module_source(
                         source,
                         &module_full_path,
+                        self.module_registry.std_roots(),
                     )
                 }) {
                     self.canonical_std_module_sources.insert(module_full_path);
+                    self.canonical_std_graph_modules.insert(module_id.clone());
                 }
                 // A shipped stdlib file can be checked directly as the graph
                 // root (`hew check std/string.hew`). Its root module has no
@@ -3406,8 +3417,11 @@ impl Checker {
                 // source path. A user root cannot obtain this authority.
                 if directly_checked_stdlib {
                     for owner in module.source_paths.iter().filter_map(|source| {
-                        crate::module_registry::canonical_stdlib_module_for_source(source)
-                            .map(|owner| owner.dotted())
+                        crate::module_registry::canonical_stdlib_module_for_source(
+                            source,
+                            self.module_registry.std_roots(),
+                        )
+                        .map(|owner| owner.dotted())
                     }) {
                         self.canonical_std_module_sources.insert(owner.clone());
                         self.canonical_std_root_sources.insert(owner);
@@ -4230,6 +4244,7 @@ impl Checker {
         let mut output = TypeCheckOutput {
             file_span_indices: std::sync::Arc::clone(&self.file_span_indices),
             selected_builtin_program: self.selected_builtin_program.clone(),
+            canonical_std_modules: self.canonical_std_graph_modules.clone(),
             input_references: std::mem::take(&mut self.input_references),
             inputs: self
                 .input_provider

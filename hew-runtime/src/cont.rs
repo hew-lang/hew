@@ -207,6 +207,11 @@ struct CrashCleanupRegistry {
     /// intentional traps, and unwind attempts in this interval are all
     /// process-fatal; no actor recovery may abandon indeterminate authority.
     state_finalizer_critical: bool,
+    /// An escrow buffer from an earlier normal dispatch on this thread, free
+    /// for reuse when the next state has the same size and alignment.
+    spare_snapshot: *mut u8,
+    spare_size: u64,
+    spare_align: u64,
 }
 
 /// Process-wide non-reusing crash-cleanup identity source.
@@ -238,6 +243,84 @@ thread_local! {
     /// cannot attach to, or accidentally pop, an older dispatch scope.
     static CRASH_CLEANUP_DRAIN_DEPTH: Cell<u32> = const { Cell::new(0) };
 
+    /// One normally completed dispatch registry, with its escrow buffer, kept
+    /// for this thread's next dispatch so a turn does not allocate either.
+    static SPARE_DISPATCH_REGISTRY: SpareDispatchRegistry =
+        const { SpareDispatchRegistry(Cell::new(ptr::null_mut())) };
+}
+
+/// Owner of the thread's spare registry; frees it at thread exit.
+struct SpareDispatchRegistry(Cell<*mut CrashCleanupRegistry>);
+
+impl Drop for SpareDispatchRegistry {
+    fn drop(&mut self) {
+        let spare = self.0.replace(ptr::null_mut());
+        if !spare.is_null() {
+            // SAFETY: the slot exclusively owns a reset registry box.
+            let mut spare = unsafe { Box::from_raw(spare) };
+            // SAFETY: the spare escrow was allocated with its recorded layout.
+            unsafe { release_spare_snapshot(&mut spare) };
+        }
+    }
+}
+
+/// Free a spare escrow buffer kept by a recycled registry.
+unsafe fn release_spare_snapshot(registry: &mut CrashCleanupRegistry) {
+    let spare = std::mem::replace(&mut registry.spare_snapshot, ptr::null_mut());
+    if !spare.is_null() {
+        // SAFETY: the buffer was allocated with exactly this size/alignment.
+        unsafe { hew_dealloc(spare, registry.spare_size, registry.spare_align) };
+    }
+}
+
+/// Take this thread's spare registry, or a new one.
+#[expect(
+    clippy::unnecessary_box_returns,
+    reason = "the registry is published by address to the dispatch scope stack"
+)]
+fn take_dispatch_registry() -> Box<CrashCleanupRegistry> {
+    let spare = SPARE_DISPATCH_REGISTRY
+        .try_with(|slot| slot.0.replace(ptr::null_mut()))
+        .unwrap_or(ptr::null_mut());
+    if spare.is_null() {
+        Box::default()
+    } else {
+        // SAFETY: the slot held the sole owner of a reset registry box.
+        unsafe { Box::from_raw(spare) }
+    }
+}
+
+/// Keep a normally discarded registry and its escrow buffer for reuse, or
+/// free them when this thread already holds a spare.
+fn recycle_dispatch_registry(mut registry: Box<CrashCleanupRegistry>) {
+    let spare_snapshot = registry.spare_snapshot;
+    let (spare_size, spare_align) = (registry.spare_size, registry.spare_align);
+    let entries = std::mem::take(&mut registry.entries);
+    debug_assert!(entries.is_empty());
+    *registry = CrashCleanupRegistry {
+        entries,
+        spare_snapshot,
+        spare_size,
+        spare_align,
+        ..CrashCleanupRegistry::default()
+    };
+    let raw = Box::into_raw(registry);
+    let kept = SPARE_DISPATCH_REGISTRY
+        .try_with(|slot| {
+            if slot.0.get().is_null() {
+                slot.0.set(raw);
+                true
+            } else {
+                false
+            }
+        })
+        .unwrap_or(false);
+    if !kept {
+        // SAFETY: the registry was not published to the slot; reclaim it.
+        let mut registry = unsafe { Box::from_raw(raw) };
+        // SAFETY: the spare escrow was allocated with its recorded layout.
+        unsafe { release_spare_snapshot(&mut registry) };
+    }
 }
 
 struct CrashCleanupDrainGuard;
@@ -532,10 +615,26 @@ unsafe fn free_crash_cleanup_registry(
         // SAFETY: detachment transferred the sole typed authority here.
         faulted |= unsafe { free_crash_cleanup_entry(entry, run_entries) };
     }
+    if !run_entries && !run_state {
+        // A normal discard runs no finalizer: keep the escrow buffer and the
+        // registry for this thread's next dispatch.
+        let snapshot = std::mem::replace(&mut registry.state_snapshot, ptr::null_mut());
+        if !snapshot.is_null() {
+            // SAFETY: any older spare was allocated with its recorded layout.
+            unsafe { release_spare_snapshot(&mut registry) };
+            registry.spare_snapshot = snapshot;
+            registry.spare_size = registry.state_size;
+            registry.spare_align = registry.state_align;
+        }
+        recycle_dispatch_registry(registry);
+        return faulted;
+    }
     // Actor state predates every lexical owner, so it is released last.
     // SAFETY: detachment transferred sole ownership of the escrow allocation
     // and generated typed drop metadata to this drain.
     faulted |= unsafe { free_dispatch_state_snapshot(&mut registry, run_state) };
+    // SAFETY: a spare escrow carried by a recycled registry is unowned here.
+    unsafe { release_spare_snapshot(&mut registry) };
     faulted
 }
 
@@ -856,7 +955,7 @@ pub(crate) unsafe fn begin_dispatch_crash_cleanup(
     if crash_cleanup_drain_active() {
         return false;
     }
-    let mut registry = Box::new(CrashCleanupRegistry::default());
+    let mut registry = take_dispatch_registry();
     if !state.is_null() && state_size != 0 {
         let Ok(state_size_u64) = u64::try_from(state_size) else {
             return false;
@@ -879,9 +978,20 @@ pub(crate) unsafe fn begin_dispatch_crash_cleanup(
         let Ok(state_align_u64) = u64::try_from(state_align) else {
             return false;
         };
-        // SAFETY: hew_alloc validates this non-zero, power-of-two layout.
-        let snapshot = unsafe { hew_alloc(state_size_u64, state_align_u64) };
+        let snapshot =
+            if registry.spare_size == state_size_u64 && registry.spare_align == state_align_u64 {
+                std::mem::replace(&mut registry.spare_snapshot, ptr::null_mut())
+            } else {
+                ptr::null_mut()
+            };
+        let snapshot = if snapshot.is_null() {
+            // SAFETY: hew_alloc validates this non-zero, power-of-two layout.
+            unsafe { hew_alloc(state_size_u64, state_align_u64) }
+        } else {
+            snapshot
+        };
         if snapshot.is_null() {
+            recycle_dispatch_registry(registry);
             return false;
         }
         // SAFETY: caller guarantees the source range; snapshot is a distinct

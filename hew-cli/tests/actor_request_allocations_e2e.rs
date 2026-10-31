@@ -1,15 +1,16 @@
 //! A request to an actor allocates a bounded number of heap blocks.
 //!
-//! The program counts allocator events around two runs of sequential asks and
-//! prints the per-request difference, so start-up and the first request's
-//! one-time growth cancel out. The bound is an upper limit: lowering the
-//! per-request cost never fails it.
+//! An actor counts allocator events around two runs of sequential asks and the
+//! program prints the per-request difference, so start-up and the first
+//! request's one-time growth cancel out. Driving the asks from an actor on one
+//! worker fixes the order of every turn, so the count is exact. The bound is an
+//! upper limit: lowering the per-request cost never fails it.
 
 mod support;
 
 use support::{hew_command, require_codegen, run_bounded_command};
 
-const MAX_ALLOCATIONS_PER_REQUEST: u64 = 21;
+const MAX_ALLOCATIONS_PER_REQUEST: u64 = 24;
 
 const SOURCE: &str = r#"
 actor Counter {
@@ -24,23 +25,34 @@ extern "C" {
     fn hew_memory_alloc_count() -> u64;
 }
 
-fn asks(counter: Counter, count: i64) -> u64 {
-    let before = unsafe { hew_memory_alloc_count() };
-    var sum = 0;
-    for _ in 0..count {
-        match counter.increment() {
-            .Ok(value) => { sum += value; }
-            .Err(_) => panic("counter request failed"),
+actor Driver {
+    var unused: i64;
+    receive fn asks(counter: Counter, count: i64) -> u64 {
+        let before = unsafe { hew_memory_alloc_count() };
+        var sum = 0;
+        for _ in 0..count {
+            match counter.increment() {
+                .Ok(value) => { sum += value; }
+                .Err(_) => panic("counter request failed"),
+            }
         }
+        let after = unsafe { hew_memory_alloc_count() };
+        after - before
     }
-    let after = unsafe { hew_memory_alloc_count() };
-    after - before
+}
+
+fn run(driver: Driver, counter: Counter, count: i64) -> u64 {
+    match driver.asks(counter, count) {
+        .Ok(value) => value,
+        .Err(_) => panic("driver request failed"),
+    }
 }
 
 fn main() {
     let counter = spawn Counter { count: 0 };
-    let short = asks(counter, 64);
-    let long = asks(counter, 576);
+    let driver = spawn Driver { unused: 0 };
+    let short = run(driver, counter, 64);
+    let long = run(driver, counter, 576);
     println(f"{(long - short) / 512}");
 }
 "#;

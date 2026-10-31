@@ -172,6 +172,26 @@ pub unsafe fn transfer_waker(
         .clone()
 }
 
+/// Whether moving a value of `layout` from `source` to `destination` has
+/// nothing to freeze, account or rebind: neither side keeps a value account
+/// and the value's descriptor has no managed parts to visit.
+///
+/// # Safety
+/// `layout` is null or a live value layout.
+pub(crate) unsafe fn is_inert(
+    source: Option<&ValueOwner>,
+    destination: Option<&ValueOwner>,
+    layout: *const HewValueLayout,
+) -> bool {
+    source.is_none()
+        && destination.is_none()
+        // SAFETY: the caller retains the layout.
+        && unsafe { layout.as_ref() }
+            // SAFETY: a live layout retains its managed descriptor.
+            .and_then(|layout| unsafe { layout.managed.as_ref() })
+            .is_some_and(|managed| managed.visit.is_none())
+}
+
 /// Frozen typed graph with destination acquisition held until actual admission.
 /// Dropping a refused/waiting attempt restores every provider's original gate.
 #[derive(Debug)]

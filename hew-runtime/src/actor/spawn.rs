@@ -1191,11 +1191,17 @@ unsafe fn admit_bound_native_request(
             {
                 env.transfer.take();
             }
-            if env.transfer.is_none() {
-                let destination = a
-                    .native_completion
-                    .as_ref()
-                    .and_then(|completion| completion.cleanup.value_owner.clone());
+            let destination = a
+                .native_completion
+                .as_ref()
+                .and_then(|completion| completion.cleanup.value_owner.clone());
+            if env.transfer.is_none()
+                && !crate::owned_value_budget::transfer::is_inert(
+                    env.value_owner.as_ref(),
+                    destination.as_ref(),
+                    env.layout,
+                )
+            {
                 let mut value = crate::owned_value_budget::transfer::ValueTransfer::begin(
                     env.value_owner.clone(),
                     destination,
@@ -1212,10 +1218,15 @@ unsafe fn admit_bound_native_request(
                     pending: false,
                 });
             }
-            let transfer = env.transfer.as_mut().unwrap();
-            let frozen = transfer.value.poll_freeze();
-            transfer.pending = matches!(frozen, Ok(false));
-            frozen
+            // An inert transfer has no graph to freeze or commit.
+            match env.transfer.as_mut() {
+                Some(transfer) => {
+                    let frozen = transfer.value.poll_freeze();
+                    transfer.pending = matches!(frozen, Ok(false));
+                    frozen
+                }
+                None => Ok(true),
+            }
         }
     };
     if matches!(frozen, Ok(false)) {

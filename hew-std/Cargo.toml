@@ -12,6 +12,11 @@ categories = ["compilers"]
 [lib]
 crate-type = ["staticlib", "lib"]
 
+[features]
+# Exposes the crate-private configuration the cargo-fuzz targets in `fuzz/`
+# must share with production code. Never enabled by a shipped build.
+fuzzing = []
+
 # Wasm + native deps. The wasm32 build (browser playground wire codecs)
 # compiles only the json/yaml/toml/pure modules, so only their crates may
 # appear here. Every native-only crate lives in the cfg(not(wasm)) block below

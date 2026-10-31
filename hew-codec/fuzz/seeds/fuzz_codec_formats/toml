@@ -1,0 +1,19 @@
+name = "edge"
+port = 8080
+tags = ["a", "b"]
+blob = "AAEC"
+timeout = 30
+ratio = 0.5
+pair = [1, 2.5]
+ids = [3, 1, 2]
+grade = "A"
+small = 1.5
+triple = [1, -2, 3]
+[limits]
+x = 1
+y = -2
+[outcome]
+Ok = 7
+[tree]
+value = 1
+children = []

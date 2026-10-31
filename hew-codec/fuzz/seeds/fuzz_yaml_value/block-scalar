@@ -1,0 +1,5 @@
+a: &a [x]
+b: |
+  don't # here
+  "quoted
+c: [*a, *a, *a]

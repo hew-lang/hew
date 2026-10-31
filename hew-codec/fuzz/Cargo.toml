@@ -1,0 +1,40 @@
+[package]
+name = "hew-codec-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+
+[workspace]
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4.13"
+hew-codec = { path = ".." }
+serde_json = { version = "1", features = ["float_roundtrip"] }
+serde_yaml = "0.9"
+
+[[bin]]
+name = "fuzz_codec_formats"
+path = "fuzz_targets/fuzz_codec_formats.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "fuzz_codec_json"
+path = "fuzz_targets/fuzz_codec_json.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "fuzz_codec_typed"
+path = "fuzz_targets/fuzz_codec_typed.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "fuzz_yaml_value"
+path = "fuzz_targets/fuzz_yaml_value.rs"
+test = false
+doc = false

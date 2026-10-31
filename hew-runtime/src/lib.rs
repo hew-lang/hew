@@ -511,8 +511,9 @@ pub mod profiler {
 }
 
 // Global allocator — only on native targets. On WASM, the default Rust
-// allocator is used (via wasi-libc's malloc).
-#[cfg(all(not(target_arch = "wasm32"), not(test)))]
+// allocator is used (via wasi-libc's malloc). Fuzz targets install their own
+// counting allocator.
+#[cfg(all(not(target_arch = "wasm32"), not(test), not(feature = "fuzzing")))]
 #[global_allocator]
 static GLOBAL: profiler::allocator::ProfilingAllocator = profiler::allocator::ProfilingAllocator;
 
@@ -722,6 +723,10 @@ pub mod transport_checked;
 // gate enforces this and excludes wasm32 per HEW-DIST-SPEC §15.
 #[cfg(all(not(target_arch = "wasm32"), any(test, feature = "sim-transport")))]
 pub mod sim_transport;
+// libFuzzer entry points for hew-runtime/fuzz; never in a release runtime.
+#[cfg(all(not(target_arch = "wasm32"), feature = "fuzzing"))]
+#[doc(hidden)]
+pub mod fuzzing;
 
 /// The suspending queue behind an in-memory pipe. Ungated: a parked producer
 /// or consumer is resumed through [`resume`], so the native scheduler and the

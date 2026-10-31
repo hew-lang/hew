@@ -94,21 +94,24 @@ pub(crate) fn push_json_diagnostic(mut diagnostic: JsonDiagnostic) {
 /// Called once at the end of a command's diagnostic phase, only when JSON
 /// output is active.
 pub(crate) fn flush_json_diagnostics() {
+    println!("{}", take_json_diagnostics());
+}
+
+/// The accumulated JSON diagnostics as the array `--format=json` prints,
+/// clearing the accumulator.
+pub(crate) fn take_json_diagnostics() -> String {
     let diagnostics = JSON_DIAGNOSTICS.with(|d| std::mem::take(&mut *d.borrow_mut()));
     // The array always serializes; `JsonDiagnostic` has no failing variants.
-    match serde_json::to_string_pretty(&diagnostics) {
-        Ok(rendered) => println!("{rendered}"),
-        Err(error) => {
-            // Fail closed: never silently drop diagnostics. Emit a minimal
-            // valid JSON envelope describing the serialization failure so a
-            // consuming agent still sees machine-parseable output.
-            println!(
-                "[{{\"code\":\"E_JSON_SERIALIZE\",\"severity\":\"error\",\"message\":{}}}]",
-                serde_json::to_string(&error.to_string())
-                    .unwrap_or_else(|_| "\"diagnostic serialization failed\"".to_string())
-            );
-        }
-    }
+    serde_json::to_string_pretty(&diagnostics).unwrap_or_else(|error| {
+        // Fail closed: never silently drop diagnostics. Emit a minimal
+        // valid JSON envelope describing the serialization failure so a
+        // consuming agent still sees machine-parseable output.
+        format!(
+            "[{{\"code\":\"E_JSON_SERIALIZE\",\"severity\":\"error\",\"message\":{}}}]",
+            serde_json::to_string(&error.to_string())
+                .unwrap_or_else(|_| "\"diagnostic serialization failed\"".to_string())
+        )
+    })
 }
 
 // ---------------------------------------------------------------------------

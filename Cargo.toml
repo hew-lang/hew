@@ -27,9 +27,15 @@ members = [
   "hew-codegen-rs",
   "hew-capability-gen",
   "hew-testutil",
+  "hew-parity-gen",
   "xtask",
 ]
-exclude = ["hew-parser/fuzz"]
+exclude = [
+  "hew-parser/fuzz",
+  "hew-runtime/fuzz",
+  "hew-std/fuzz",
+  "hew-codec/fuzz",
+]
 resolver = "2"
 
 [workspace.package]

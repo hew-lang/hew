@@ -1,0 +1,89 @@
+[package]
+name = "hew-std-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+
+[workspace]
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4.13"
+hew-std = { path = "..", features = ["fuzzing"] }
+hew-cabi = { path = "../../hew-cabi" }
+hew-calendar = { path = "../../hew-calendar" }
+flate2 = "1"
+ipnet = "2"
+rmp-serde = "1"
+serde = "1"
+serde_json = { version = "1", features = ["float_roundtrip"] }
+tungstenite = "0.30"
+uuid = "1"
+
+[[bin]]
+name = "fuzz_value_formats"
+path = "fuzz_targets/fuzz_value_formats.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "fuzz_msgpack"
+path = "fuzz_targets/fuzz_msgpack.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "fuzz_protobuf"
+path = "fuzz_targets/fuzz_protobuf.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "fuzz_xml"
+path = "fuzz_targets/fuzz_xml.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "fuzz_compress"
+path = "fuzz_targets/fuzz_compress.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "fuzz_markdown"
+path = "fuzz_targets/fuzz_markdown.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "fuzz_websocket"
+path = "fuzz_targets/fuzz_websocket.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "fuzz_jwt"
+path = "fuzz_targets/fuzz_jwt.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "fuzz_regex"
+path = "fuzz_targets/fuzz_regex.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "fuzz_calendar"
+path = "fuzz_targets/fuzz_calendar.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "fuzz_net_text"
+path = "fuzz_targets/fuzz_net_text.rs"
+test = false
+doc = false

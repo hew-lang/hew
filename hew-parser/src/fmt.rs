@@ -553,9 +553,9 @@ impl<'a> Formatter<'a> {
     }
 
     /// Write `open`, the items separated by commas, then `close`. When the
-    /// source list between the bracket tokens `bounds` holds comments, the
-    /// list breaks one item per line so every comment stays beside the item
-    /// it annotates; `angles` counts `<…>` as nesting (type lists). The
+    /// source list between the bracket tokens `bounds` breaks across lines,
+    /// keep one item per line. Nested groups lay out their own line breaks;
+    /// `angles` counts `<…>` as nesting (type lists). The
     /// broken layout ends the last item with a comma when `last_comma`.
     #[expect(
         clippy::too_many_arguments,
@@ -572,9 +572,9 @@ impl<'a> Formatter<'a> {
         mut fmt_item: impl FnMut(&mut Self, &T),
     ) {
         let layout = bounds.and_then(|(open_token, close_token)| {
-            let commented = self.list_has_line_comment(open_token, close_token);
+            let multiline = self.list_has_line_break(open_token, close_token);
             let starts = self.list_item_starts(open_token, close_token, angles);
-            (commented && starts.len() == items.len()).then_some((starts, open_token, close_token))
+            (multiline && starts.len() == items.len()).then_some((starts, open_token, close_token))
         });
         let Some((starts, open_token, close_token)) = layout else {
             self.write(open);
@@ -611,12 +611,9 @@ impl<'a> Formatter<'a> {
         self.write(close.trim_start().trim_start_matches(','));
     }
 
-    /// Whether a line comment (or a block comment spanning lines) sits
-    /// directly in the list between the bracket tokens `open` and `close`,
-    /// outside any nested bracket group, which lays out its own comments.
-    /// A block comment on one line stays inline beside its item.
-    fn list_has_line_comment(&self, open: usize, close: usize) -> bool {
-        let breaks_line = |c: &Comment| c.text.starts_with("//") || c.text.contains('\n');
+    /// Whether the list has a line break outside its nested bracket groups,
+    /// including any line or multiline comments between its items.
+    fn list_has_line_break(&self, open: usize, close: usize) -> bool {
         let mut index = open;
         while index < close {
             // `index` is a token at the list's own level; the next one
@@ -628,11 +625,7 @@ impl<'a> Formatter<'a> {
                 .copied()
                 .unwrap_or(index);
             let gap = self.tokens[after].1.end..self.tokens[after + 1].1.start;
-            let commented = self.comments[self.next_comment..]
-                .iter()
-                .take_while(|c| c.span.start < gap.end)
-                .any(|c| gap.contains(&c.span.start) && breaks_line(c));
-            if commented {
+            if self.source[gap].contains('\n') {
                 return true;
             }
             index = after + 1;
@@ -3766,6 +3759,23 @@ impl<'a> Formatter<'a> {
         self.write("}");
     }
 
+    fn format_let_pattern(&mut self, pattern: &Spanned<Pattern>) {
+        // The parser represents `_ = value;` as a wildcard let statement.
+        // Preserve its spelling rather than introducing a keyword, including
+        // inside inline generator blocks.
+        let bare_discard = !self.source.is_empty()
+            && matches!(pattern.0, Pattern::Wildcard)
+            && self
+                .token_at_or_after(pattern.1.start)
+                .checked_sub(1)
+                .and_then(|index| self.tokens.get(index))
+                .is_some_and(|(token, _)| !matches!(token, hew_lexer::Token::Let));
+        if !bare_discard {
+            self.write("let ");
+        }
+        self.format_pattern(pattern);
+    }
+
     fn format_stmt_inline(&mut self, stmt: &Stmt) {
         match stmt {
             Stmt::Let {
@@ -3774,8 +3784,7 @@ impl<'a> Formatter<'a> {
                 value,
                 else_block,
             } => {
-                self.write("let ");
-                self.format_pattern(pattern);
+                self.format_let_pattern(pattern);
                 if let Some(ty) = ty {
                     self.write(": ");
                     self.format_type_expr(&ty.0);
@@ -3873,8 +3882,7 @@ impl<'a> Formatter<'a> {
                 else_block,
             } => {
                 self.write_indent();
-                self.write("let ");
-                self.format_pattern(pattern);
+                self.format_let_pattern(pattern);
                 if let Some(ty) = ty {
                     self.write(": ");
                     self.format_type_expr(&ty.0);

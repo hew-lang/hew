@@ -1659,8 +1659,21 @@ pub enum SemOpKind {
 impl SemOpKind {
     /// Operations whose owned result can allocate or acquire managed backing
     /// storage. They require a checked control boundary before publication.
+    ///
+    /// A direct variant, like an aggregate, stores its fields inline: moving an
+    /// owned field into it keeps the same backing identities, so it allocates
+    /// and acquires nothing. Only an indirect variant boxes its payload.
     #[must_use]
-    pub const fn is_managed_materialization(&self) -> bool {
+    pub fn is_managed_materialization(&self, variant_shapes: &[SemVariantShape]) -> bool {
+        match self {
+            Self::VariantMake { shape, .. } => variant_shapes
+                .get(shape.0 as usize)
+                .is_none_or(|shape| shape.is_indirect),
+            _ => self.acquires_managed_storage(),
+        }
+    }
+
+    const fn acquires_managed_storage(&self) -> bool {
         matches!(
             self,
             Self::ConstStr(_)
@@ -1672,7 +1685,6 @@ impl SemOpKind {
                 | Self::VariantProjectCopy { .. }
                 | Self::ClosureMake { .. }
                 | Self::DynMake { .. }
-                | Self::VariantMake { .. }
                 | Self::ArrayRepeat { .. }
                 | Self::ArrayMake { .. }
                 | Self::GeneratorMake { .. }

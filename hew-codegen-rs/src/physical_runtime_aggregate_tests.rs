@@ -16,9 +16,25 @@ thread_local! {
     static INVALID: RefCell<Vec<usize>> = const { RefCell::new(Vec::new()) };
 }
 
-unsafe extern "C" fn literal(data: *const u8, len: u32, out: *mut *mut c_void) {
-    // SAFETY: generated literal calls supply valid UTF-8 and a writable result.
-    unsafe { hew_runtime::string::hew_string_literal_new(data, len, out.cast()) };
+unsafe extern "C" fn literal(
+    state: *const c_void,
+    data: *const u8,
+    len: u32,
+    layout: *const c_void,
+    out: *mut *mut c_void,
+) -> i32 {
+    // SAFETY: generated literal calls supply valid UTF-8, a string layout and a
+    // writable result; the unbounded test owner never refuses.
+    let status = unsafe {
+        hew_runtime::owned_value_budget::materialize::hew_budget_string_literal(
+            state.cast(),
+            data,
+            len,
+            layout.cast(),
+            out.cast(),
+        )
+    };
+    assert_eq!(status, 0);
     // SAFETY: the runtime just initialized this output slot.
     let pointer = unsafe { out.read() };
     OWNERS.with_borrow_mut(|owners| {
@@ -30,6 +46,7 @@ unsafe extern "C" fn literal(data: *const u8, len: u32, out: *mut *mut c_void) {
             },
         );
     });
+    status
 }
 
 unsafe extern "C" fn copy(pointer: *const c_void) -> *mut c_void {
@@ -167,7 +184,7 @@ fn run_index(map: bool, failed: bool) {
                 .set_linkage(Linkage::External);
             let engine = engine(&llvm, optimized);
             for (name, address) in [
-                ("hew_string_literal_new", literal as *const () as usize),
+                ("hew_budget_string_literal", literal as *const () as usize),
                 ("hew_string_clone", copy as *const () as usize),
                 ("hew_string_drop_managed", drop_string as *const () as usize),
             ] {

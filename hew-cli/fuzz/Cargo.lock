@@ -1689,6 +1689,7 @@ dependencies = [
  "quinn",
  "rand 0.10.3",
  "rcgen",
+ "rustc-hash",
  "rustls",
  "rustls-pki-types",
  "rustls-webpki",

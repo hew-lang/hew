@@ -15,6 +15,10 @@ workspace = true
 [dependencies]
 arbitrary = "1"
 
+[dev-dependencies]
+hew-parser = { path = "../hew-parser" }
+hew-types = { path = "../hew-types" }
+
 [[bin]]
 name = "parity_gen"
 path = "src/bin/parity_gen.rs"

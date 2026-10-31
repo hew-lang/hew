@@ -42,7 +42,8 @@ pub fn generate(u: &mut Unstructured<'_>, only: Option<&[usize]>) -> Result<Prog
     if u.ratio(1u8, 4u8)? {
         cases.push(case(u, count, true)?);
     }
-    let mut source = String::new();
+    // Sequence cases use the iterator adapter methods supplied by this module.
+    let mut source = String::from("import std.iter;\n\n");
     let mut main = String::from("fn main() {\n");
     let mut stdout = String::new();
     let mut trap = None;

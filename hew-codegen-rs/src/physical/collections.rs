@@ -21,6 +21,18 @@ pub(super) fn vector_header_type<'ctx>(
 }
 
 impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
+    /// The invocation that owns managed storage charged by this body: its
+    /// coroutine frame's, a loop chunk's caller's, or none in a plain body.
+    fn invocation_state(&self) -> PointerValue<'ctx> {
+        self.frame.as_ref().map_or_else(
+            || {
+                self.chunk_invocation
+                    .unwrap_or_else(|| self.ctx.ptr_type(AddressSpace::default()).const_null())
+            },
+            |frame| frame.state,
+        )
+    }
+
     fn make_vector_unique(
         &self,
         vector: PointerValue<'ctx>,
@@ -118,10 +130,7 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                 .i32_type()
                 .fn_type(&[vector.get_type().into(), vector.get_type().into()], false),
         )?;
-        let state = self
-            .frame
-            .as_ref()
-            .map_or(vector.get_type().const_null(), |frame| frame.state);
+        let state = self.invocation_state();
         let status = self
             .runtime_call_value(
                 function,
@@ -504,10 +513,7 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                             false,
                         ),
                     )?;
-                    let state = self
-                        .frame
-                        .as_ref()
-                        .map_or(pointer.const_null(), |frame| frame.state);
+                    let state = self.invocation_state();
                     let status = self
                         .runtime_call_value(
                             function,
@@ -605,10 +611,7 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                         false,
                     ),
                 )?;
-                let state = self
-                    .frame
-                    .as_ref()
-                    .map_or(pointer.const_null(), |frame| frame.state);
+                let state = self.invocation_state();
                 let status = self
                     .runtime_call_value(
                         function,
@@ -669,10 +672,7 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                         operation,
                         PhysicalVectorOp::GetBorrow { .. } | PhysicalVectorOp::IndexBorrow
                     );
-                    let state = self
-                        .frame
-                        .as_ref()
-                        .map_or(pointer.const_null(), |frame| frame.state);
+                    let state = self.invocation_state();
                     let mut arguments = vec![vector.into(), index.into(), output.into()];
                     let status = if borrowed {
                         None
@@ -765,10 +765,7 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                 let source_vector = self
                     .load(source(1)?, "vector.append.source")?
                     .into_pointer_value();
-                let state = self
-                    .frame
-                    .as_ref()
-                    .map_or(pointer.const_null(), |frame| frame.state);
+                let state = self.invocation_state();
                 let status = self
                     .runtime_call_value(
                         function,

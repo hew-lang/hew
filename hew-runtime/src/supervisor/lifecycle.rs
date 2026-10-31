@@ -831,7 +831,9 @@ pub(crate) unsafe fn stop_supervisor_with_teardown_authority(
     teardown: crate::lifetime::local_handles::SupervisorTeardownLease,
     preclaimed: bool,
 ) {
-    request_supervisor_shutdown(sup);
+    // Claim before cancelling. Cancellation can complete a pending restart
+    // construction as declined, and the declined restart starts a token-owned
+    // root's own stop; claiming first leaves that stop nothing to win.
     if !preclaimed && !claim_supervisor_teardown(sup) {
         // Another owner holds teardown. One that handed the allocation back
         // to canonical cleanup keeps its claim, and the caller may have taken
@@ -846,6 +848,7 @@ pub(crate) unsafe fn stop_supervisor_with_teardown_authority(
         }
         return;
     }
+    request_supervisor_shutdown(sup);
     // Retire the public route before the teardown handoff, while leaving pin
     // reclamation to the owner after its constructor cleanup has completed.
     // SAFETY: the claimed teardown owner retains this parent through closure.

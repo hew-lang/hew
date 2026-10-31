@@ -705,7 +705,8 @@ pub(crate) unsafe fn dispatch_result(
 }
 
 /// Complete a refused delivery after the wrapper has released its owned values.
-/// Cleanup faults retain their ordinary actor-failure behaviour.
+/// Cleanup faults retain their ordinary actor-failure behaviour; a cleanup
+/// fault that only records an expected stop leaves the refusal to the caller.
 ///
 /// # Safety
 /// The caller exclusively owns this installed activation and its fault.
@@ -724,7 +725,9 @@ pub(crate) unsafe fn normalize_dispatch_completion(
     }
     if let Some(fault) = fault.without_primary() {
         // SAFETY: this activation owns the remaining cleanup failure.
-        return unsafe { normalize_stopped_turn((*ctx).actor, Box::new(fault)) };
+        if let Some(fault) = unsafe { normalize_stopped_turn((*ctx).actor, Box::new(fault)) } {
+            return Some(fault);
+        }
     }
     // SAFETY: the context retains its current reply sender until publication.
     let channel: *mut crate::reply_channel::HewReplyChannel =
@@ -1106,6 +1109,84 @@ mod tests {
             assert_eq!(
                 crate::reply_channel::hew_reply_channel_failure_kind(channel),
                 crate::internal::types::HEW_REPLY_FAIL_CANCELLED
+            );
+            crate::reply_channel::hew_reply_channel_free(channel);
+            crate::mailbox::hew_mailbox_free(mailbox);
+        }
+        assert_eq!(crate::reply_channel::active_channel_count(), baseline);
+        assert!(crate::execution_context::current_context().is_null());
+    }
+
+    unsafe extern "C-unwind" fn refused_with_shutdown_cleanup(
+        ctx: *mut HewExecutionContext,
+        _state: *mut c_void,
+        _message: i32,
+        _data: *mut c_void,
+        _size: usize,
+        _borrow_mode: i32,
+    ) -> *mut c_void {
+        // A refused delivery whose argument cleanup observed the shutdown's
+        // cancellation: the refusal carries it as its only cleanup diagnostic.
+        // SAFETY: the fixture supplies a live dispatch context and transfers
+        // two distinct fresh fault owners.
+        unsafe {
+            hew_actor_dispatch_set_fault(
+                ctx,
+                crate::fault::hew_fault_combine(
+                    crate::fault::hew_fault_new(crate::fault::HEW_FAULT_REFUSED),
+                    crate::fault::hew_fault_new(crate::fault::HEW_FAULT_CANCELLED),
+                ),
+            );
+        }
+        ptr::null_mut()
+    }
+
+    /// Counterfactual: normalizing the expected cleanup cancellation completed
+    /// the refused turn as an ordinary return, which publishes nothing, so its
+    /// caller waited forever.
+    #[test]
+    fn refused_turn_with_expected_cleanup_cancellation_resolves_its_caller() {
+        let _guard = crate::runtime_test_guard();
+        let _scheduler = crate::scheduler::NoWorkerSchedulerForTest::install();
+        crate::runtime::rt_current()
+            .shutdown_phase
+            .store(crate::shutdown::PHASE_DRAIN, Ordering::Release);
+        let baseline = crate::reply_channel::active_channel_count();
+        let channel = crate::reply_channel::hew_reply_channel_new();
+        assert!(!channel.is_null());
+        let mut state = 3_i64;
+        let mut actor = crate::test_actor::stub_actor();
+        actor.state = (&raw mut state).cast();
+        actor.state_size = std::mem::size_of::<i64>();
+        actor.dispatch = Some(refused_with_shutdown_cleanup);
+        // SAFETY: all allocations and both reply references remain live until
+        // this single synchronous scheduler activation finishes.
+        unsafe {
+            let mailbox = crate::mailbox::hew_mailbox_new();
+            assert!(!mailbox.is_null());
+            actor.mailbox = mailbox.cast();
+            crate::reply_channel::hew_reply_channel_retain(channel);
+            assert_eq!(
+                crate::mailbox::hew_mailbox_send_with_reply(
+                    mailbox.cast(),
+                    1,
+                    ptr::null_mut(),
+                    0,
+                    channel.cast(),
+                ),
+                0
+            );
+            crate::scheduler::activate_actor_for_test(&raw mut actor);
+            assert_ne!(
+                actor.actor_state.load(Ordering::Acquire),
+                crate::internal::types::HewActorState::Crashed as i32,
+                "an expected cleanup cancellation is not a crash"
+            );
+            assert_eq!(crate::reply_channel::ref_count_for_test(channel), 1);
+            assert!(crate::reply_channel::hew_reply_channel_is_ready(channel));
+            assert_eq!(
+                crate::reply_channel::hew_reply_channel_failure_kind(channel),
+                crate::internal::types::HEW_REPLY_FAIL_REFUSED
             );
             crate::reply_channel::hew_reply_channel_free(channel);
             crate::mailbox::hew_mailbox_free(mailbox);

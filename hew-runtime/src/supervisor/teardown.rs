@@ -47,6 +47,14 @@ pub(crate) fn request_supervisor_shutdown(sup: *mut HewSupervisor) {
     unsafe { (*sup).running.store(0, Ordering::Release) };
 }
 
+#[cfg(all(test, not(target_arch = "wasm32")))]
+thread_local! {
+    /// Runs once on the installing thread after its cancellation reaches a
+    /// pending constructor, before the rest of the publication.
+    pub(crate) static CONSTRUCTION_CANCELLED_HOOK: std::cell::Cell<Option<Box<dyn FnOnce()>>> =
+        const { std::cell::Cell::new(None) };
+}
+
 pub(crate) fn publish_supervisor_cancellation(sup: *mut HewSupervisor) {
     // Publish the wait-free mirror first. Timer callbacks that already own the
     // control mutex observe this bit and skip their send; acquiring the control
@@ -65,6 +73,10 @@ pub(crate) fn publish_supervisor_cancellation(sup: *mut HewSupervisor) {
             })
     {
         completion.cancel_construction(crate::fault::HEW_FAULT_CANCELLED);
+        #[cfg(all(test, not(target_arch = "wasm32")))]
+        if let Some(hook) = CONSTRUCTION_CANCELLED_HOOK.take() {
+            hook();
+        }
     }
     // A pending group restart will never run. Its stopped incarnations stay
     // with the roster until teardown frees them; its records settle now.

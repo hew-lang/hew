@@ -847,7 +847,8 @@ its body. It is an ordinary trap, not a hardware fault:
   the process writes `hew: failure: StackOverflow (215)` and exits 1 (§5.8).
 
 It is never a signal, an abort or memory corruption, on any engine. Other
-actors, and the process, continue.
+actors, and the process, continue. Frames that are not calls of Hew functions,
+and so are not checked, are described in §5.7.
 
 The depth at which a stack is exhausted is a resource limit, like
 `#[max_heap]`. It depends on the engine, the optimization level and the size
@@ -6748,8 +6749,9 @@ of an arbitrary instruction or resumes a potentially corrupted process.
 Stack exhaustion in Hew code is not a hardware fault: every function that calls
 another checks its frame on entry and fails with the ordinary trap
 `StackOverflow` (§2.2), which crashes only the actor that recursed. Only frames
-the check does not cover, in foreign code or the runtime itself, can still
-reach a thread's stack guard. Such a fault is reported as `StackOverflow`, and
+the check does not cover can still reach a thread's stack guard: foreign code,
+the runtime itself (such as a wake relayed through deeply nested generators),
+and the generated drop and copy glue that walks a deeply nested recursive value. Such a fault is reported as `StackOverflow`, and
 the process then dies by the original signal or exception, so the operating
 system's crash artefacts (cores, crash reports, dumps) are still produced.
 

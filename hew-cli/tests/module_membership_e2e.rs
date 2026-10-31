@@ -386,6 +386,36 @@ fn a_user_module_beside_the_std_root_is_not_importable() {
     assert_eq!(String::from_utf8_lossy(&hex.stdout), "6869\n");
 }
 
+/// `HEW_STD` names the `std/` directory itself, so a directory under any
+/// other name is refused with that rule rather than a bare "std not found".
+/// The control is the same program checked with the real `std/`.
+#[test]
+fn hew_std_must_name_a_directory_called_std() {
+    let workspace = support::tempdir();
+    let misnamed = workspace.path().join("mystd");
+    fs::create_dir(&misnamed).expect("create misnamed std directory");
+    let program = workspace.path().join("program");
+    write(&program, "main.hew", "fn main() {\n    println(1);\n}\n");
+    let check = |std_dir: &Path| {
+        let mut command = Command::new(hew_binary());
+        command
+            .args(["check", "main.hew"])
+            .current_dir(&program)
+            .env("HEW_STD", std_dir);
+        run_bounded_command(command, "hew check main.hew")
+    };
+
+    let refused = check(&misnamed);
+    assert!(!refused.status.success(), "{}", describe_output(&refused));
+    assert!(
+        text(&refused).contains("but it must name a directory called `std`"),
+        "{}",
+        text(&refused)
+    );
+    let accepted = check(&repo_root().join("std"));
+    assert!(accepted.status.success(), "{}", describe_output(&accepted));
+}
+
 #[test]
 fn a_dotted_package_imports_itself_by_its_whole_name() {
     require_codegen();

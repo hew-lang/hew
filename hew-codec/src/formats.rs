@@ -78,7 +78,8 @@ fn position(cursor: &Cursor<&[u8]>) -> usize {
 }
 
 fn parse_yaml(text: &str) -> Result<Value, DecodeError> {
-    serde_yaml::from_str::<Document>(text)
+    crate::yaml_value::check_alias_expansion(text)
+        .and_then(|()| serde_yaml::from_str::<Document>(text))
         .map(|document| document.0)
         .map_err(|e| {
             let offset = e.location().map_or(text.len(), |location| location.index());

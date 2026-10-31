@@ -463,6 +463,23 @@ fn quarantine_evict(node_id: u16, session: Option<u32>, incarnation: u64) {
     }
 }
 
+/// Drop the quarantine entry of a member the membership table retired, so the
+/// route slot carries nothing into its next identity. The retired session is
+/// the member's latest, so any entry at or below it is the member's. A no-op
+/// when no runtime is installed.
+pub(crate) fn retire_member_quarantine(node_id: u16, session: Option<u32>) {
+    if let Some(rt) = crate::runtime::rt_current_opt() {
+        rt.node.quarantine.access(|set| {
+            if set
+                .get(&node_id)
+                .is_some_and(|entry| entry.session <= session)
+            {
+                set.remove(&node_id);
+            }
+        });
+    }
+}
+
 /// Whether the current dispatch's partition policy is `Quarantine` AND a send/ask
 /// to `target_node_id` must fail closed because the peer is quarantined at a still-
 /// stale incarnation.
@@ -1014,6 +1031,11 @@ fn ask_error_from_code(code: i32) -> Option<AskError> {
         x if x == AskError::MessageTooLarge as i32 => Some(AskError::MessageTooLarge),
         _ => None,
     }
+}
+
+/// The wire reason a node gives for a request it refused unread.
+pub(crate) fn refusal_reason_code() -> u8 {
+    AskRejectionReasonCode::encode(AskError::Refused).expect("Refused has a wire code")
 }
 
 #[repr(u8)]
@@ -2038,6 +2060,11 @@ pub unsafe extern "C" fn hew_node_stop(node: *mut HewNode) -> c_int {
                 }
             });
         }
+        // Admission is closed: wake every thread still blocked on a peer (the
+        // accept thread mid-handshake, a seed dial, a probe send) so the joins
+        // below wait only on local work.
+        // SAFETY: the node still owns its manager; it is freed below.
+        unsafe { connection::hew_connmgr_cancel_io(node.conn_mgr) };
         stop_node_accept_thread(node);
 
         // Stop and JOIN the SWIM ticker before freeing the cluster / conn_mgr

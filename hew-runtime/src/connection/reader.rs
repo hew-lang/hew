@@ -6,12 +6,13 @@ use std::sync::Arc;
 
 use crate::envelope::{decode_wire_frame, WireFrame};
 use crate::set_last_error;
+use crate::util::MutexExt;
 
 use super::admission::hew_connmgr_remove;
 use super::channel::ChannelProtection;
 use super::control::{
     authenticated_peer_identity, handle_control_frame, location_matches_local_session,
-    location_matches_node_session,
+    location_matches_node_session, refuse_unadmitted_request,
 };
 use super::gossip::retry_pending_registry_flush;
 use super::peer::deposit_reply_envelope;
@@ -19,6 +20,37 @@ use super::reconnect::{reconnect_plan, spawn_reconnect_worker};
 use super::{ConnectionTransport, HewConnMgr, InboundRouter, SendConnMgr};
 
 // ── Reader thread ──────────────────────────────────────────────────────
+
+/// Frames a buried peer's refuting connection may carry before it closes. The
+/// peer does not know it was buried, so its ordinary traffic is dropped rather
+/// than refused, and counts here; its refutation needs a handful of SWIM frames.
+const REFUTING_FRAME_CAP: u32 = 1024;
+
+/// Initial read buffer, and the largest frame a refuting connection may carry.
+const READ_BUFFER_BYTES: usize = 64 * 1024;
+
+/// Close a buried peer's refuting connection from its own reader, as an
+/// expected stop: nothing reconnects to a peer that broke its bounds.
+fn close_refuting(mgr: *mut HewConnMgr, conn_id: c_int, claim_token: u64, stop_flag: &AtomicI32) {
+    stop_flag.store(1, Ordering::Release);
+    // SAFETY: reader_loop owns a live manager pointer for this connection.
+    if let Some(mgr) = unsafe { mgr.as_ref() } {
+        let _ = super::admission::remove_connection(mgr, conn_id, Some(claim_token));
+    }
+}
+
+/// Whether this admission's claim is published: a refuting claim becomes so
+/// when its peer's refutation readmits it.
+fn claim_published(mgr: *mut HewConnMgr, conn_id: c_int, claim_token: u64) -> bool {
+    // SAFETY: reader_loop owns a live manager pointer for this connection.
+    unsafe { mgr.as_ref() }.is_some_and(|mgr| {
+        mgr.claims.0.lock_or_recover().values().any(|claim| {
+            claim.conn_id == conn_id
+                && claim.publication_token == claim_token
+                && claim.state == crate::peer_binding::ClaimState::Published
+        })
+    })
+}
 
 /// Reader thread: loops calling transport recv, decodes envelopes,
 /// and routes to local actors via the inbound router callback.
@@ -72,10 +104,13 @@ pub(super) fn reader_loop(
     router: Option<InboundRouter>,
     peer_feature_flags: u32,
     channel: Arc<ChannelProtection>,
+    buried: bool,
 ) {
     let mgr = mgr.0;
     let transport_ptr = transport.as_ptr();
-    let mut buf = vec![0u8; 65536]; // 64KiB read buffer (heap-allocated)
+    let mut buf = vec![0u8; READ_BUFFER_BYTES];
+    // Frames read while the peer refutes its burial; `None` once published.
+    let mut refuting = buried.then_some(0_u32);
 
     while stop_flag.load(Ordering::Acquire) == 0 {
         // SAFETY: transport is valid for the manager's lifetime; conn_id
@@ -101,6 +136,14 @@ pub(super) fn reader_loop(
         #[expect(clippy::cast_sign_loss, reason = "bytes_read > 0 checked above")]
         let read_len = bytes_read as usize;
         if read_len > buf.len() {
+            if refuting.is_some() {
+                set_last_error(format!(
+                    "connection reader: buried peer on conn {conn_id} sent a frame larger \
+                     than {READ_BUFFER_BYTES} bytes"
+                ));
+                close_refuting(mgr, conn_id, claim_token, &stop_flag);
+                break;
+            }
             if read_len > crate::transport::MAX_FRAME_SIZE {
                 set_last_error(
                     "connection reader: requested frame capacity exceeds transport limit",
@@ -124,6 +167,18 @@ pub(super) fn reader_loop(
         };
         let payload_ptr = buf.as_mut_ptr();
 
+        if let Some(frames) = refuting.as_mut() {
+            *frames += 1;
+            if *frames > REFUTING_FRAME_CAP {
+                set_last_error(format!(
+                    "connection reader: buried peer on conn {conn_id} exceeded \
+                     {REFUTING_FRAME_CAP} frames without refuting"
+                ));
+                close_refuting(mgr, conn_id, claim_token, &stop_flag);
+                break;
+            }
+        }
+
         // Update heartbeat.
         // SAFETY: hew_now_ms has no preconditions.
         let now = unsafe { crate::clock::hew_now_ms() };
@@ -142,6 +197,29 @@ pub(super) fn reader_loop(
                 continue;
             }
         };
+
+        // A buried peer's connection carries SWIM alone until its refutation
+        // publishes the claim; everything else it sends is dropped.
+        if refuting.is_some() {
+            match wire_frame {
+                WireFrame::Control(control) if control.ctrl_kind == crate::envelope::CTRL_SWIM => {
+                    handle_control_frame(mgr, peer_feature_flags, conn_id, claim_token, &control);
+                    if claim_published(mgr, conn_id, claim_token) {
+                        refuting = None;
+                    }
+                }
+                frame => {
+                    set_last_error(format!(
+                        "connection reader dropped a non-SWIM frame from buried peer on conn {conn_id}"
+                    ));
+                    if !mgr.is_null() {
+                        // SAFETY: reader_loop owns a live manager pointer for this connection.
+                        refuse_unadmitted_request(unsafe { &*mgr }, conn_id, claim_token, &frame);
+                    }
+                }
+            }
+            continue;
+        }
 
         match wire_frame {
             WireFrame::Control(control) => {

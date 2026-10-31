@@ -499,6 +499,11 @@ pub mod profiler {
     }
     /// No-op: profiler feature is disabled.
     pub fn maybe_start() {}
+    /// No profile consumer exists without the profiler feature.
+    #[must_use]
+    pub fn consumer_configured() -> bool {
+        false
+    }
     /// No-op: profiler feature is disabled.
     pub fn maybe_write_on_exit() {}
     /// No-op: profiler feature is disabled.

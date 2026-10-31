@@ -15,7 +15,35 @@ struct TransferWalk {
     destination: Option<ValueOwner>,
     binding: Option<DestinationBinding>,
     waker: Option<crate::wake::OwnedWaker>,
-    seen: HashSet<usize>,
+    seen: SeenStorage,
+}
+
+/// Storage identities already visited in one phase. Most transfers reach a
+/// single backing block, so the first identity is kept inline and the set
+/// allocates only for a value with shared or several blocks.
+#[derive(Debug, Default)]
+struct SeenStorage {
+    first: Option<usize>,
+    rest: HashSet<usize>,
+}
+
+impl SeenStorage {
+    fn clear(&mut self) {
+        self.first = None;
+        self.rest.clear();
+    }
+
+    /// Record `identity`; false when this phase already visited it.
+    fn insert(&mut self, identity: usize) -> bool {
+        match self.first {
+            None => {
+                self.first = Some(identity);
+                true
+            }
+            Some(first) if first == identity => false,
+            Some(_) => self.rest.insert(identity),
+        }
+    }
 }
 
 /// Execution ownership already retained by the destination incarnation.
@@ -144,6 +172,26 @@ pub unsafe fn transfer_waker(
         .clone()
 }
 
+/// Whether moving a value of `layout` from `source` to `destination` has
+/// nothing to freeze, account or rebind: neither side keeps a value account
+/// and the value's descriptor has no managed parts to visit.
+///
+/// # Safety
+/// `layout` is null or a live value layout.
+pub(crate) unsafe fn is_inert(
+    source: Option<&ValueOwner>,
+    destination: Option<&ValueOwner>,
+    layout: *const HewValueLayout,
+) -> bool {
+    source.is_none()
+        && destination.is_none()
+        // SAFETY: the caller retains the layout.
+        && unsafe { layout.as_ref() }
+            // SAFETY: a live layout retains its managed descriptor.
+            .and_then(|layout| unsafe { layout.managed.as_ref() })
+            .is_some_and(|managed| managed.visit.is_none())
+}
+
 /// Frozen typed graph with destination acquisition held until actual admission.
 /// Dropping a refused/waiting attempt restores every provider's original gate.
 #[derive(Debug)]
@@ -193,7 +241,7 @@ impl ValueTransfer {
                 binding: destination.as_ref().and_then(ValueOwner::execution_binding),
                 destination,
                 waker: None,
-                seen: HashSet::new(),
+                seen: SeenStorage::default(),
             }),
             layout,
             slot,

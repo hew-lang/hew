@@ -163,14 +163,26 @@ for (const format of ['json', 'yaml', 'toml']) {
   });
 }
 
+// `c` holds `refs` copies of `b`, which holds `refs` copies of the `items`-element anchor `a`.
+const yamlFanOut = (items, refs) =>
+  `a: &a [${Array(items).fill('x').join(', ')}]\nb: &b [${Array(refs).fill('*a').join(', ')}]\nc: [${Array(refs).fill('*b').join(', ')}]\n`;
+
 test('YAML Value Wasm parsing preserves native input guards', () => {
   const parse = text => JSON.parse(compiler.executeCodec(JSON.stringify({encoding_value: {format: 'Yaml', operation: 'parse', text}})));
   for (const [text, reason] of [
     ['a'.repeat(2 * 1024 * 1024), 'size limit'],
-    [Array.from({length: 201}, (_, i) => `k${i}: &a${i} value`).join('\n'), 'anchor limit'],
-    ['a: &a 1\nb: [' + Array(1025).fill('*a').join(',') + ']\n', 'alias limit'],
+    [yamlFanOut(400, 400), 'alias expansion limit'],
   ]) assert.match(parse(text).error, new RegExp(reason));
   assert.ok(parse('title: "AT&T"\nurl: "https://example.com?a=1&b=2"').value);
+});
+
+test('JSON Value Wasm parsing refuses numbers beyond f64 and rounds underflow to zero', () => {
+  const parse = (format, text) => JSON.parse(compiler.executeCodec(JSON.stringify({encoding_value: {format, operation: 'parse', text}})));
+  for (const text of ['[1e400]', '[-1e400]', `[${'9'.repeat(400)}]`]) {
+    assert.match(parse('Json', text).error, /out of range/, text);
+  }
+  assert.ok(parse('Toml', 'a = [1e400]').error);
+  assert.ok(parse('Json', '[1e-400]').value);
 });
 
 test('JSON parsing errors and recovery execute in separate actors', async () => {

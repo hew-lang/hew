@@ -30,7 +30,11 @@ impl Checker {
                 .modules
                 .get(&hew_parser::module::ModulePath::new(["std", "builtins"]))?;
             let canonical = module.source_paths.iter().any(|source| {
-                crate::module_registry::is_canonical_stdlib_module_source(source, "std.builtins")
+                crate::module_registry::is_canonical_stdlib_module_source(
+                    source,
+                    "std.builtins",
+                    self.module_registry.std_roots(),
+                )
             });
             canonical.then(|| {
                 std::sync::Arc::new(Program {
@@ -289,7 +293,11 @@ impl Checker {
             .module_for_path("std.builtins")
             .is_some_and(|module| {
                 self.defs.module_source(module).is_none_or(|path| {
-                    crate::module_registry::is_canonical_stdlib_module_source(path, "std.builtins")
+                    crate::module_registry::is_canonical_stdlib_module_source(
+                        path,
+                        "std.builtins",
+                        self.module_registry.std_roots(),
+                    )
                 })
             });
         if trusted_owner {
@@ -689,10 +697,10 @@ impl Checker {
                 .map(|known| known.path().trim_start_matches("std.builtins.")),
         ) {
             let canonical = format!("std.builtins.{name}");
-            debug_assert!(
-                self.type_def_at(&canonical).is_some(),
-                "builtins prelude binding requires its source declaration: {canonical}"
-            );
+            if self.type_def_at(&canonical).is_none() {
+                self.report_missing_builtins_declaration(name);
+                continue;
+            }
             self.known_types.insert(name.to_string());
             self.record_published_bare_type(name, &canonical);
             self.unqualified_to_module.insert(
@@ -704,6 +712,32 @@ impl Checker {
                 "std.builtins".to_string(),
             );
         }
+    }
+
+    /// The selected `std.builtins` source does not declare a type the prelude
+    /// publishes: the std the compilation was given is incomplete.
+    fn report_missing_builtins_declaration(&mut self, name: &str) {
+        let file = self
+            .defs
+            .module_for_path("std.builtins")
+            .and_then(|module| self.defs.module_source(module))
+            .map_or_else(
+                || "std/builtins.hew".to_string(),
+                |source| source.display().to_string(),
+            );
+        let mut error = TypeError::new(
+            TypeErrorKind::MalformedStdSource,
+            0..0,
+            format!(
+                "the standard library is incomplete: `{file}` does not declare `{name}`, \
+                 which the prelude requires"
+            ),
+        )
+        .with_suggestion(
+            "restore the toolchain's std/builtins.hew, or set HEW_STD to a complete std/ directory",
+        );
+        error.source_module = Some("std.builtins".to_string());
+        self.errors.push(error);
     }
 
     pub(in crate::check) fn register_builtin_fn(

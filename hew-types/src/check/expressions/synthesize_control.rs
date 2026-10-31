@@ -813,10 +813,11 @@ impl Checker {
                     operand,
                 },
                 ty,
-            ) if ty.is_integer()
+            ) if (ty.is_integer()
                 && !ty.is_integer_literal()
                 && !(*op == UnaryOp::Negate
-                    && matches!(operand.0, Expr::Literal(Literal::Integer { .. }))) =>
+                    && matches!(operand.0, Expr::Literal(Literal::Integer { .. }))))
+                || (*op == UnaryOp::Negate && matches!(ty, Ty::F32 | Ty::F64)) =>
             {
                 // Complement and negation both use the contextual width for
                 // their operand and result, including nested literal
@@ -828,10 +829,19 @@ impl Checker {
                 // arm below, which negates before the range check so the
                 // most-negative value of each width (`-128i8`, `i32::MIN`,
                 // …) is admitted even though the positive literal alone
-                // would overflow.
+                // would overflow. A float negation likewise checks its
+                // operand at the contextual width, so `-(1.0)` against `f32`
+                // does not default the literal to `f64`.
                 let operand_ty = self.check_against(&operand.0, &operand.1, expected);
                 if matches!(operand_ty, Ty::Never | Ty::Error) {
                     operand_ty
+                } else if *op == UnaryOp::Negate && ty.is_unsigned() {
+                    self.report_error(
+                        TypeErrorKind::InvalidOperation,
+                        span,
+                        format!("cannot negate type `{}`", ty.user_facing()),
+                    );
+                    Ty::Error
                 } else {
                     self.record_type(span, expected);
                     expected.clone()

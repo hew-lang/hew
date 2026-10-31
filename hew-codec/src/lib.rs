@@ -46,8 +46,10 @@ pub use table::{Member, Table};
 pub use value::Value;
 
 /// The deepest container nesting any parser accepts. Every format applies
-/// the same bound, so a document is refused identically in each.
-pub const MAX_DEPTH: usize = 128;
+/// the same bound, so a document is refused identically in each. It is the
+/// depth `serde_json` reads back (it refuses a 128th nested container), so a
+/// document the codec or `msgpack.to_json` accepts is one `json.parse` reads.
+pub const MAX_DEPTH: usize = 127;
 
 /// A serialization format.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

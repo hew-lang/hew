@@ -248,3 +248,362 @@ fn alive_node_is_not_falsely_killed_by_driven_swim() {
     }
     crate::registry::hew_registry_clear();
 }
+
+/// Advance simulated time one protocol period at a time until `done` holds,
+/// failing after far more simulated periods than any retention window needs.
+fn advance_periods_until(mut done: impl FnMut() -> bool) {
+    poll_until(|period| {
+        if done() {
+            return true;
+        }
+        assert!(
+            period < 1_000,
+            "condition not reached in 1000 protocol periods"
+        );
+        crate::deterministic::hew_simtime_advance_ms(SWIM_TEST_PERIOD_MS.cast_signed());
+        thread::sleep(Duration::from_millis(2));
+        false
+    });
+}
+
+/// The SWIM driver thread applies a node's membership effects in the runtime
+/// that started the node. A published peer buried by the detector is
+/// quarantined there, and a disconnected buried peer retired after its window
+/// takes its quarantine entry with it. Counterfactual: the ticker thread
+/// resolves the process default runtime, so the insert lands in another
+/// runtime's set and the retired peer's entry stays blocking its slot.
+#[test]
+fn swim_driver_quarantines_and_retires_in_its_nodes_runtime() {
+    const NODE: u16 = 360;
+    const BURIED: u16 = 361;
+    const RETIRED: u16 = 362;
+    let _guard = crate::runtime_test_guard();
+    let _swim_env = SwimTimingEnv::fast();
+    let runtime = Box::new(crate::runtime::RuntimeInner::new(
+        crate::scheduler::worker_less_scheduler(),
+    ));
+    // SAFETY: `runtime` outlives the entered scope, which ends after the node
+    // and its driver are stopped and freed.
+    let entered = unsafe { crate::runtime::enter(&runtime) };
+    let bind = CString::new("127.0.0.1:0").expect("bind address");
+    // SAFETY: the test owns this node until the free below.
+    let node = unsafe { hew_node_new(NODE, bind.as_ptr()) };
+    // SAFETY: the node is new and stopped.
+    unsafe {
+        install_test_auth(node, NODE);
+        assert_eq!(hew_node_start(node), 0);
+    }
+    // SAFETY: the running node owns its cluster.
+    let cluster = unsafe { &*(*node).cluster };
+
+    // A published peer the detector will bury.
+    assert!(cluster.admit_authenticated_session(BURIED, 4));
+    let sync = Arc::new(Mutex::new(()));
+    let removed = Arc::new(AtomicBool::new(false));
+    // SAFETY: the live cluster and publication guards outlive the call.
+    let published = unsafe {
+        crate::cluster::hew_cluster_notify_connection_established_for_token_if_not_removed(
+            (*node).cluster,
+            BURIED,
+            4,
+            77,
+            &sync,
+            &removed,
+        )
+    };
+    assert_eq!(published, 1);
+    cluster.seed_member_for_test(BURIED, crate::cluster::MEMBER_SUSPECT, 1);
+
+    // A disconnected peer already buried and quarantined here.
+    cluster.apply_swim_gossip(&[(RETIRED, 2, crate::cluster::MEMBER_DEAD, 3)]);
+    quarantine_insert(RETIRED, Some(2), 3);
+
+    advance_periods_until(|| quarantine_is_blocked(BURIED, Some(4), 1));
+    assert_eq!(
+        cluster.member_state(BURIED),
+        crate::cluster::MEMBER_DEAD,
+        "a buried peer whose connection is published is retained"
+    );
+    // Retirement removes the member before it drops the quarantine entry, so
+    // wait for both rather than reading the second the moment the first lands.
+    advance_periods_until(|| {
+        cluster.member_state(RETIRED) == -1 && !quarantine_is_blocked(RETIRED, Some(2), 1)
+    });
+
+    // SAFETY: the node was started above and is freed exactly once.
+    unsafe {
+        assert_eq!(hew_node_stop(node), 0);
+        hew_node_free(node);
+    }
+    drop(entered);
+}
+
+/// After both nodes retire each other's burial, a reconnect worker for the
+/// buried peer is admitted as a fresh member through the full authenticated
+/// admission. Counterfactual: the retired claim leaves the retry no
+/// predecessor to match, so it is refused for good.
+#[test]
+fn reconnect_after_retirement_is_admitted_end_to_end() {
+    const NODE_A: u16 = 370;
+    const NODE_B: u16 = 371;
+    let _guard = crate::runtime_test_guard();
+    let _swim_env = SwimTimingEnv::fast();
+    crate::registry::hew_registry_clear();
+    let (node_a, _, node_b, port_b) = start_authorized_tcp_pair(NODE_A, NODE_B);
+    let addr_b = format!("127.0.0.1:{port_b}");
+    let connect_addr = CString::new(addr_b.as_str()).unwrap();
+    // SAFETY: both nodes run until the stops below.
+    unsafe {
+        connect_with_retry(node_a.as_ptr(), &connect_addr);
+        wait_for_handshake(node_a.as_ptr(), node_b.as_ptr());
+    }
+    // SAFETY: the running nodes own their managers and clusters.
+    let (mgr_a, cluster_a, cluster_b) = unsafe {
+        (
+            (*node_a.as_ptr()).conn_mgr,
+            &*(*node_a.as_ptr()).cluster,
+            &*(*node_b.as_ptr()).cluster,
+        )
+    };
+    // SAFETY: node A is live.
+    let identity_b = unsafe { identity_for_route_slot(&*node_a.as_ptr(), NODE_B) }.expect("B");
+    let owner = || {
+        // SAFETY: A's manager is live.
+        unsafe { &*mgr_a }
+            .claims
+            .0
+            .lock_or_recover()
+            .get(&identity_b)
+            .map(|claim| {
+                (
+                    claim.state,
+                    claim.session_incarnation,
+                    claim.publication_token,
+                )
+            })
+    };
+    let (_, session, token) = owner().expect("B's claim");
+
+    // Drop the connection, then bury B at its session.
+    // SAFETY: A's manager is live.
+    let conn = unsafe { connection::first_active_connection_for_test(mgr_a, NODE_B) };
+    // SAFETY: A owns this connection.
+    assert_eq!(unsafe { connection::hew_connmgr_remove(mgr_a, conn) }, 0);
+    poll_until(|_| {
+        thread::sleep(Duration::from_millis(2));
+        owner().is_some_and(|(state, ..)| state == crate::peer_binding::ClaimState::Retired)
+    });
+    let incarnation = cluster_a.member_incarnation(NODE_B).expect("B");
+    cluster_a.apply_swim_gossip(&[(
+        NODE_B,
+        session,
+        crate::cluster::MEMBER_DEAD,
+        incarnation + 1,
+    )]);
+    assert_eq!(cluster_a.member_state(NODE_B), crate::cluster::MEMBER_DEAD);
+
+    advance_periods_until(|| {
+        owner().is_none()
+            && cluster_a.member_state(NODE_B) == -1
+            && cluster_b.member_state(NODE_A) == -1
+    });
+    assert!(connection::reconnect_successor_for_test(
+        mgr_a, identity_b, session, token, &addr_b
+    ));
+    assert!(owner().is_some_and(|(state, current, _)| {
+        state == crate::peer_binding::ClaimState::Published && current == session
+    }));
+    assert_eq!(cluster_a.member_state(NODE_B), crate::cluster::MEMBER_ALIVE);
+
+    // SAFETY: both nodes were started by the pair helper.
+    unsafe {
+        assert_eq!(hew_node_stop(node_a.as_ptr()), 0);
+        assert_eq!(hew_node_stop(node_b.as_ptr()), 0);
+    }
+    crate::registry::hew_registry_clear();
+}
+
+/// Freeing a runtime joins the SWIM ticker of a node it started, even when the
+/// program never stopped the node, as `hew_runtime_cleanup` does. The ticker
+/// runs with that runtime entered, so it must not outlive it. Counterfactual:
+/// the ticker keeps running and its next retirement reads the freed runtime
+/// (an invalid read under valgrind in `retire_member_quarantine`).
+#[test]
+fn freeing_a_runtime_joins_its_running_nodes_ticker() {
+    const CHILD: &str = "HEW_SWIM_RUNTIME_FREED_CHILD";
+    const NODE: u16 = 380;
+    const RETIRED: u16 = 381;
+    if std::env::var_os(CHILD).is_none() {
+        // The node is leaked running, so isolate it from other cases.
+        let output = std::process::Command::new(std::env::current_exe().expect("test binary"))
+            .args([
+                "hew_node::tests::swim::freeing_a_runtime_joins_its_running_nodes_ticker",
+                "--exact",
+                "--nocapture",
+                "--test-threads=1",
+            ])
+            .env(CHILD, "1")
+            .output()
+            .expect("isolated runtime-free case");
+        assert!(
+            output.status.success(),
+            "runtime-free case failed:\n{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        return;
+    }
+
+    let _guard = crate::runtime_test_guard();
+    let _swim_env = SwimTimingEnv::fast();
+    let runtime = Box::new(crate::runtime::RuntimeInner::new(
+        crate::scheduler::worker_less_scheduler(),
+    ));
+    // SAFETY: the entered scope ends before the runtime is dropped.
+    let entered = unsafe { crate::runtime::enter(&runtime) };
+    let bind = CString::new("127.0.0.1:0").expect("bind address");
+    // SAFETY: the node is new; it is deliberately left running.
+    let node = unsafe { hew_node_new(NODE, bind.as_ptr()) };
+    // SAFETY: the node is new and stopped.
+    unsafe {
+        install_test_auth(node, NODE);
+        assert_eq!(hew_node_start(node), 0);
+    }
+    // SAFETY: the running node owns its cluster.
+    let cluster = unsafe { &*(*node).cluster };
+    cluster.apply_swim_gossip(&[(RETIRED, 2, crate::cluster::MEMBER_DEAD, 3)]);
+    drop(entered);
+    assert!(crate::swim_driver::driver_running_for_test(node));
+
+    drop(runtime);
+    assert!(!crate::swim_driver::driver_running_for_test(node));
+    for _ in 0..100 {
+        crate::deterministic::hew_simtime_advance_ms(SWIM_TEST_PERIOD_MS.cast_signed());
+    }
+    thread::sleep(Duration::from_millis(20));
+    assert_eq!(
+        cluster.member_state(RETIRED),
+        crate::cluster::MEMBER_DEAD,
+        "no ticker runs against the freed runtime"
+    );
+    // Stopping the node would consult a runtime's node slot; it is leaked.
+    std::process::exit(0);
+}
+
+/// A peer this node buried while it was still alive reconnects at the same
+/// session. It is admitted to refute over SWIM alone, learns of its burial
+/// from the obituary, refutes, and is readmitted with its connection
+/// published and its names restored. Counterfactual: the same-session
+/// reconnect is refused at reservation for good and the peer stays DEAD.
+#[test]
+fn buried_peer_reconnecting_at_same_session_is_readmitted() {
+    reconnect_buried_peer(380, 381, false);
+}
+
+/// Two nodes that buried each other never probe each other, so the node
+/// admitting the refuting connection opens it with a PING that carries the
+/// obituary: each learns of its burial, refutes, and readmits the other.
+#[test]
+fn mutually_buried_peers_reconnecting_at_same_session_are_readmitted() {
+    reconnect_buried_peer(382, 383, true);
+}
+
+fn reconnect_buried_peer(id_a: u16, id_b: u16, mutual: bool) {
+    use crate::peer_binding::ClaimState;
+    let _guard = crate::runtime_test_guard();
+    let _swim_env = SwimTimingEnv::fast();
+    crate::registry::hew_registry_clear();
+    let (node_a, port_a, node_b, port_b) = start_authorized_tcp_pair(id_a, id_b);
+    let (a, b) = (node_a.as_ptr(), node_b.as_ptr());
+
+    // B registers a name that A learns over the connection.
+    crate::pid::hew_pid_set_local_node(id_b);
+    let actor = spawn_remote_test_actor(noop_dispatch);
+    crate::pid::hew_pid_set_local_node(id_a);
+    // SAFETY: the actor was just spawned.
+    let actor_id = unsafe { (*actor).id };
+    let name = CString::new("buried-peer").expect("name");
+    let addr_b = CString::new(format!("127.0.0.1:{port_b}")).expect("address");
+    // SAFETY: both nodes run until the stops below.
+    unsafe {
+        assert_eq!(hew_node_register(b, name.as_ptr(), actor_id), 0);
+        connect_with_retry(a, &addr_b);
+        wait_for_handshake(a, b);
+    }
+    let named_at_a = || {
+        // SAFETY: node A and the name are live.
+        unsafe { lookup_exact(a, name.as_ptr()) }.is_some()
+    };
+    poll_until(|_| {
+        thread::sleep(Duration::from_millis(2));
+        named_at_a()
+    });
+
+    // SAFETY: the running nodes own their managers and clusters.
+    let (mgr_a, cluster_a, cluster_b) = unsafe { ((*a).conn_mgr, &*(*a).cluster, &*(*b).cluster) };
+    let claim = |node: *mut HewNode, peer: *mut HewNode| {
+        // SAFETY: both nodes are live.
+        let (manager, identity) = unsafe { (&*(*node).conn_mgr, (*peer).auth.node_identity()) };
+        identity.and_then(|identity| {
+            manager
+                .claims
+                .0
+                .lock_or_recover()
+                .get(&identity)
+                .map(|claim| claim.state)
+        })
+    };
+    let bury = |cluster: &crate::cluster::HewCluster, peer: *mut HewNode, slot: u16| {
+        // SAFETY: the peer node is live.
+        let session = unsafe { (*peer).auth.session_incarnation() }.expect("session");
+        let incarnation = cluster.member_incarnation(slot).expect("member") + 1;
+        cluster.apply_swim_gossip(&[(slot, session, crate::cluster::MEMBER_DEAD, incarnation)]);
+        assert_eq!(cluster.member_state(slot), crate::cluster::MEMBER_DEAD);
+        incarnation
+    };
+
+    // A drops the connection and buries B, which is still running.
+    // SAFETY: A owns this connection.
+    unsafe {
+        let conn = connection::first_active_connection_for_test(mgr_a, id_b);
+        assert_eq!(connection::hew_connmgr_remove(mgr_a, conn), 0);
+    }
+    poll_until(|_| {
+        thread::sleep(Duration::from_millis(2));
+        claim(a, b) == Some(ClaimState::Retired) && claim(b, a) == Some(ClaimState::Retired)
+    });
+    let buried_at = bury(cluster_a, b, id_b);
+    if mutual {
+        bury(cluster_b, a, id_a);
+    }
+
+    // B reconnects at the same session.
+    let addr_a = CString::new(format!("127.0.0.1:{port_a}")).expect("address");
+    // SAFETY: both nodes run until the stops below.
+    unsafe { connect_with_retry(b, &addr_a) };
+    poll_until(|_| {
+        thread::sleep(Duration::from_millis(2));
+        claim(a, b) == Some(ClaimState::Published)
+            && claim(b, a) == Some(ClaimState::Published)
+            && cluster_a.member_state(id_b) == crate::cluster::MEMBER_ALIVE
+            && cluster_b.member_state(id_a) == crate::cluster::MEMBER_ALIVE
+    });
+    assert!(
+        cluster_a.member_incarnation(id_b).expect("member") > buried_at,
+        "B returned by refuting its burial"
+    );
+    // SAFETY: both nodes are live.
+    unsafe { wait_for_handshake(a, b) };
+    poll_until(|_| {
+        thread::sleep(Duration::from_millis(2));
+        named_at_a()
+    });
+
+    // SAFETY: the actor and nodes were created in this test.
+    unsafe {
+        let _ = crate::actor::hew_actor_free(actor);
+        assert_eq!(hew_node_stop(a), 0);
+        assert_eq!(hew_node_stop(b), 0);
+    }
+    crate::registry::hew_registry_clear();
+}

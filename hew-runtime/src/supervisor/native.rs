@@ -1165,6 +1165,8 @@ mod tests {
             stop_ns: 0,
             startup_rank: 0,
             dispatch: None,
+            backoff_initial_ns: 0,
+            backoff_maximum_ns: 0,
         };
         // SAFETY: this test owns initial invocation, then transfers the
         // published parent to its ordinary restart and teardown owners.
@@ -1185,9 +1187,6 @@ mod tests {
                 Some(drop_config),
                 &raw const child,
                 1,
-                0,
-                0,
-                0,
                 0,
                 waker.descriptor(),
                 ptr::null(),

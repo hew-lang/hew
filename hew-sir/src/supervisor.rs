@@ -62,6 +62,8 @@ pub struct SemSupervisorChild {
     /// A checked count callable over borrowed config, evaluated once before
     /// bootstrap. `None` identifies an ordinary single child.
     pub pool_count: Option<CallableId>,
+    /// The child's own checked restart policy, replacing the supervisor's.
+    pub backoff: Option<CallableId>,
     /// `fn(supervisor, config...) -> handle`: evaluates the declared init arguments against
     /// the supervisor's config and spawns one incarnation. The supervisor calls
     /// it for the initial spawn and for every restart.
@@ -197,8 +199,29 @@ impl SemSupervisor {
         Ok(())
     }
 
+    /// The policy that governs one child's restart delay: its own `backoff:`
+    /// clause, otherwise the supervisor's. `None` restarts without delay.
+    #[must_use]
+    pub fn child_backoff(&self, child: usize) -> Option<CallableId> {
+        self.children
+            .get(child)
+            .and_then(|declared| declared.backoff)
+            .or(self.backoff)
+    }
+
+    /// Children whose construction transfers an evaluated delay policy, in
+    /// declaration order. Each contributes an `(initial, maximum)` pair of
+    /// spawn arguments after the config.
+    pub fn backoff_children(&self) -> impl Iterator<Item = usize> + '_ {
+        (0..self.children.len()).filter(|&child| self.child_backoff(child).is_some())
+    }
+
     fn validate_backoff(&self, module: &SemModule) -> Result<(), String> {
-        if let Some(backoff) = self.backoff {
+        for backoff in self
+            .backoff
+            .into_iter()
+            .chain(self.children.iter().filter_map(|child| child.backoff))
+        {
             let callable = module
                 .callable(backoff)
                 .ok_or("backoff has no configuration callable")?;

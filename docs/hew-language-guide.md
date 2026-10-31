@@ -2205,7 +2205,47 @@ window, its next crash starts at the initial delay again. Waiting for recovery
 does not count as healthy execution, and the restart budget still applies.
 The policy expression runs once when the supervisor is constructed and may
 use its configuration parameters. Stopping the supervisor cancels pending
-delays. Omit `backoff` to retain the established restart behaviour.
+delays. `maximum` is optional and defaults to 30 seconds; the delay never drops below
+`initial`, so `restart.exponential(initial: 1m)` waits one minute each time. Without `backoff`, a
+crashed child restarts immediately and only the restart budget limits a crash
+loop.
+
+A child can replace its supervisor's policy with its own `backoff:` clause,
+beside `restart:` and `stop:`. `restart.immediate()` switches the delay off for
+one child:
+
+```hew
+import std.restart;
+
+actor Client {
+    let url: string;
+    receive fn fail() { panic("upstream failed"); }
+}
+
+actor Cache {
+    receive fn fail() { panic("cache failed"); }
+}
+
+supervisor Gateway(url: string) {
+    strategy: one_for_one;
+    intensity: 10 within 60s;
+    backoff: restart.exponential(initial: 100ms, maximum: 5s);
+    child upstream: Client { url } restart: permanent backoff: restart.exponential(initial: 1s, maximum: 1m);
+    child cache: Cache restart: permanent backoff: restart.immediate();
+}
+
+fn main() {
+    let gateway = spawn Gateway { url: "https://example.com" };
+    let _ = gateway.cache.fail();
+    restarted(gateway.cache);
+    stop(gateway);
+    stopped(gateway);
+}
+```
+
+`upstream` waits one second after its first crash and doubles to a minute;
+`cache` restarts at once. A child without a clause uses the supervisor's
+policy, and every child still draws on the supervisor's one restart budget.
 
 ### Free functions callable from receive fns
 

@@ -1,0 +1,69 @@
+import std.restart;
+
+actor Worker {
+    receive fn fail() {
+        panic("restart with default maximum");
+    }
+}
+
+supervisor Short {
+    intensity: 10 within 1h;
+    backoff: restart.exponential(initial: 20s);
+    child worker: Worker;
+}
+
+supervisor Long {
+    intensity: 10 within 1h;
+    backoff: restart.exponential(initial: 1m);
+    child worker: Worker;
+}
+
+supervisor Pinned {
+    intensity: 10 within 1h;
+    backoff: restart.exponential(initial: 1m, maximum: 5s);
+    child worker: Worker;
+}
+
+fn refused(initial: duration, maximum: duration) -> bool {
+    scope {
+        let _ = restart.exponential(initial: initial, maximum: maximum);
+        false
+    } handle failure {
+        match failure {
+            .Fault { message } => true,
+            .Deadline { message } => panic(message),
+        }
+    }
+}
+
+fn main() {
+    // Zero and negative durations are refused; a maximum below initial is not.
+    println(refused(0ns, 1s) && refused(0ns - 1ms, 1s) && refused(1ms, 0ns) && refused(1ms, 0ns - 2ns) && !refused(1s, 1ms));
+    let short = spawn Short;
+    for _ in 0..3 {
+        let started = instant.now();
+        let _ = short.worker.fail();
+        restarted(short.worker);
+        println(started.elapsed().millis());
+    }
+    stop(short);
+    stopped(short);
+    let long = spawn Long;
+    for _ in 0..2 {
+        let started = instant.now();
+        let _ = long.worker.fail();
+        restarted(long.worker);
+        println(started.elapsed().millis());
+    }
+    stop(long);
+    stopped(long);
+    let pinned = spawn Pinned;
+    for _ in 0..2 {
+        let started = instant.now();
+        let _ = pinned.worker.fail();
+        restarted(pinned.worker);
+        println(started.elapsed().millis());
+    }
+    stop(pinned);
+    stopped(pinned);
+}

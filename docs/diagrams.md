@@ -379,8 +379,7 @@ stateDiagram-v2
         STRATEGY_ONE_FOR_ALL (1) — restart all children
         STRATEGY_REST_FOR_ONE (2) — restart failed + later children
 
-        Backoff: INITIAL_RESTART_DELAY_MS = 100
-        Max: DEFAULT_MAX_RESTART_DELAY_MS = 30,000
+        Backoff: none unless declared (immediate restart)
     end note
 ```
 

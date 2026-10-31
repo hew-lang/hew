@@ -204,11 +204,28 @@ struct SupervisorStopConstraint {
     deadline_ms: Option<u64>,
 }
 
+/// What a stop learned when it raced for a supervisor's teardown authority.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum TeardownClaim {
+    /// This stop owns teardown and the allocation.
+    Won,
+    /// A live owner holds teardown and may free the allocation at any time.
+    /// The losing stop must not touch it.
+    Held,
+    /// The owner handed the live allocation back to canonical cleanup as a
+    /// root and kept its claim. A stop that took that root must restore it.
+    HandedBack,
+}
+
 pub(crate) struct SupervisorControl {
     supervisor_addr: usize,
     direct_id: HewLocalPidId,
     runtime_id: RuntimeId,
     pins: PinState,
+    /// The claimed teardown owner gave the live allocation back to canonical
+    /// cleanup as a root and kept its claim. A losing stop reads this through
+    /// its control reference, never through the allocation.
+    handed_back: AtomicBool,
     /// Forceful request remains reachable after the direct route closes so a
     /// terminate can escalate an in-progress graceful supervisor stop.
     terminate_requested: AtomicBool,
@@ -231,6 +248,7 @@ impl SupervisorControl {
             direct_id,
             runtime_id,
             pins: PinState::new(),
+            handed_back: AtomicBool::new(false),
             terminate_requested: AtomicBool::new(false),
             stop_constraint: Mutex::new(None),
             completion: Arc::default(),
@@ -352,12 +370,25 @@ impl SupervisorControl {
     }
 
     /// Claim the exact-once destructor authority for this allocation.
-    pub(crate) fn claim_teardown(&self) -> bool {
-        self.pins.claim_teardown()
+    pub(crate) fn claim_teardown(&self) -> TeardownClaim {
+        if self.pins.claim_teardown() {
+            TeardownClaim::Won
+        } else if self.handed_back.load(Ordering::Acquire) {
+            TeardownClaim::HandedBack
+        } else {
+            TeardownClaim::Held
+        }
+    }
+
+    /// Record that the claimed owner restored the allocation as a cleanup
+    /// root and keeps its claim until canonical cleanup reclaims it.
+    pub(crate) fn hand_teardown_back(&self) {
+        self.handed_back.store(true, Ordering::Release);
     }
 
     /// Roll back a claimed teardown after a failed ownership handoff.
     pub(crate) fn release_teardown(&self) {
+        self.handed_back.store(false, Ordering::Release);
         self.pins.release_teardown();
     }
 

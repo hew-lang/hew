@@ -260,7 +260,8 @@ interface SupervisorInstance {
   teardownChild: VmValue | null;
   teardownCancelTimer: (() => void) | null;
   restartTimes: number[];
-  backoff: { initial: bigint; maximum: bigint } | null;
+  /// Effective restart delay per slot; `null` or a zero initial restarts at once.
+  backoffs: Array<{ initial: bigint; maximum: bigint } | null>;
   restartDelays: Map<number, { delay: bigint; publishedAt: number | null }>;
   restartTimers: Map<number, () => void>;
   specs: SupervisorShape["children"];
@@ -268,7 +269,12 @@ interface SupervisorInstance {
   recovering: Set<number>;
   restartBusy: boolean;
   constructor: FrameContext | null;
-  pendingRestarts: Array<{ child: number; debts: number[] }>;
+  /// Crashes queued behind a busy restart, with the incarnation that crashed.
+  pendingRestarts: Array<{
+    child: number;
+    debts: number[];
+    incarnation: VmValue | null;
+  }>;
   spent: Set<number>;
   completed: boolean;
   supervisor?: { owner: SupervisorInstance; child: number };
@@ -5769,22 +5775,27 @@ class ExecutorV1 {
         if (isPool && count?.kind !== "i64")
           throw new Error("pool construction has no count");
         const configured = isPool ? args.slice(0, -1) : args;
-        const initial = layout.backoff
-          ? configured[configured.length - 2]
-          : undefined;
-        const maximum = layout.backoff
-          ? configured[configured.length - 1]
-          : undefined;
-        const backoff =
-          initial?.kind === "i64" && maximum?.kind === "i64"
+        // Config, then each backoff child's `(initial, maximum)` pair in
+        // declaration order.
+        const pairs = layout.children.filter((child) => child.backoff).length;
+        const config = configured.slice(0, configured.length - 2 * pairs);
+        let pair = config.length;
+        const declared = layout.children.map((child) => {
+          if (!child.backoff) return null;
+          const initial = configured[pair];
+          const maximum = configured[pair + 1];
+          pair += 2;
+          return initial?.kind === "i64" && maximum?.kind === "i64"
             ? { initial: initial.value, maximum: maximum.value }
-            : null;
-        const validBackoff =
-          !layout.backoff ||
-          (backoff !== null &&
-            backoff.initial > 0n &&
-            backoff.maximum >= backoff.initial);
-        const config = layout.backoff ? configured.slice(0, -2) : configured;
+            : undefined;
+        });
+        const validBackoff = declared.every(
+          (backoff) =>
+            backoff === null ||
+            (backoff !== undefined &&
+              ((backoff.initial === 0n && backoff.maximum === 0n) ||
+                (backoff.initial > 0n && backoff.maximum >= backoff.initial))),
+        );
         if (
           !validBackoff ||
           (count?.kind === "i64" &&
@@ -5793,7 +5804,7 @@ class ExecutorV1 {
           const fault: Fault = {
             kind: "panic",
             message: !validBackoff
-              ? "supervisor backoff requires positive initial and maximum >= initial"
+              ? "supervisor backoff requires positive initial and maximum >= initial, or both zero"
               : "supervisor pool count must be between 1 and 2147483647",
           };
           this.running = false;
@@ -5836,7 +5847,9 @@ class ExecutorV1 {
           teardownChild: null,
           teardownCancelTimer: null,
           restartTimes: [],
-          backoff,
+          backoffs: declared.flatMap((backoff) =>
+            Array.from({ length: members }, () => backoff ?? null),
+          ),
           restartDelays: new Map(),
           restartTimers: new Map(),
           closed: [],
@@ -6957,28 +6970,41 @@ class ExecutorV1 {
       return;
     }
     if (owner.restartBusy) {
-      owner.pendingRestarts.push({ child, debts });
+      owner.pendingRestarts.push({
+        child,
+        debts,
+        incarnation: owner.children[child] ?? null,
+      });
       return;
     }
     const now = this.trace.virtualTimeMs;
-    if (owner.backoff && debts.length > 0 && !delayElapsed) {
+    const backoff = owner.backoffs[child];
+    if (backoff && backoff.initial > 0n && debts.length > 0 && !delayElapsed) {
       const previous = owner.restartDelays.get(child);
       const healthy =
         previous?.publishedAt != null &&
         now - previous.publishedAt >= owner.layout.window_secs * 1000;
-      const doubled = previous ? previous.delay * 2n : owner.backoff.initial;
+      const doubled = previous ? previous.delay * 2n : backoff.initial;
       const delay =
         !previous || healthy
-          ? owner.backoff.initial
-          : doubled < owner.backoff.maximum
+          ? backoff.initial
+          : doubled < backoff.maximum
             ? doubled
-            : owner.backoff.maximum;
+            : backoff.maximum;
       owner.restartDelays.set(child, { delay, publishedAt: null });
       owner.recovering.add(child);
       owner.restartTimers.set(
         child,
         this.scheduler.after(delay, () => {
           owner.restartTimers.delete(child);
+          // A group restart that already replaced this role recovered its
+          // fault; restarting again would tear down a healthy group and
+          // charge the budget twice.
+          if (owner.restartDelays.get(child)?.publishedAt != null) {
+            for (const debt of debts) this.faultDebts.delete(debt);
+            this.wakeRoles();
+            return;
+          }
           this.restartChild(owner, child, debts, true);
         }),
       );
@@ -7031,13 +7057,17 @@ class ExecutorV1 {
       const index = starting.shift();
       if (index === undefined) {
         for (const debt of debts) this.faultDebts.delete(debt);
-        for (const pending of owner.pendingRestarts.filter((pending) =>
-          affected.includes(pending.child),
-        )) {
+        // This group replaced a queued crash's incarnation, which recovers it.
+        // A replacement that crashed after its own publication still needs
+        // its restart.
+        const replaced = (pending: (typeof owner.pendingRestarts)[number]) =>
+          affected.includes(pending.child) &&
+          owner.children[pending.child] !== pending.incarnation;
+        for (const pending of owner.pendingRestarts.filter(replaced)) {
           for (const debt of pending.debts) this.faultDebts.delete(debt);
         }
         owner.pendingRestarts = owner.pendingRestarts.filter(
-          (pending) => !affected.includes(pending.child),
+          (pending) => !replaced(pending),
         );
         owner.restartBusy = false;
         this.wakeRoles();
@@ -7051,6 +7081,11 @@ class ExecutorV1 {
         () => {
           const delay = owner.restartDelays.get(index);
           if (delay) delay.publishedAt = this.trace.virtualTimeMs;
+          // The crashed role's replacement is the recovery that settles its
+          // fault, as natively; a later sibling's cancelled start does not
+          // reopen it.
+          if (index === child)
+            for (const debt of debts) this.faultDebts.delete(debt);
           start();
         },
         () => {

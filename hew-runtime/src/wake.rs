@@ -167,6 +167,31 @@ pub mod blocking {
             self.blocked.store(false, Ordering::Relaxed);
         }
 
+        /// Consume one readiness notification like [`Self::wait`], giving up
+        /// at `deadline`. Returns whether a notification was consumed.
+        #[cfg(test)]
+        pub fn wait_until(&self, deadline: std::time::Instant) -> bool {
+            if crate::driver::active() {
+                while self.scheduled.load(Ordering::Acquire) || !self.take_ready() {
+                    if std::time::Instant::now() >= deadline {
+                        return false;
+                    }
+                    crate::driver::step();
+                }
+                return true;
+            }
+            let mut pending = self.pending.lock_or_recover();
+            while !*pending {
+                let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+                if remaining.is_zero() {
+                    return false;
+                }
+                pending = self.changed.wait_timeout_or_recover(pending, remaining).0;
+            }
+            *pending = false;
+            true
+        }
+
         /// Consume an already pending notification without blocking.
         pub fn take_ready(&self) -> bool {
             self.pending.swap(false, Ordering::AcqRel)

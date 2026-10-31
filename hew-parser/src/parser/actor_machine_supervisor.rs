@@ -1434,14 +1434,30 @@ impl Parser<'_> {
                     // Per-child suffix clauses, accepted in any order:
                     //   restart: permanent | transient | temporary
                     //   stop: <duration>
+                    //   backoff: <std.restart.Backoff>
                     //   wired_to: { param: sibling, bare_sibling }
                     //   count: <expr>            (pool children only)
                     let mut restart: Option<RestartPolicy> = None;
                     let mut count: Option<Spanned<Expr>> = None;
                     let mut stop: Option<Spanned<Expr>> = None;
-                    let mut wired_to: Option<std::collections::HashMap<String, String>> = None;
+                    let mut child_backoff: Option<Spanned<Expr>> = None;
+                    let mut wired_to: Option<Vec<(String, String)>> = None;
                     let mut seen_wired_to = false;
+                    let mut clause_order = Vec::new();
                     loop {
+                        let clause = match self.peek() {
+                            Some(Token::Restart) => Some(ChildClause::Restart),
+                            Some(Token::Identifier("backoff")) => Some(ChildClause::Backoff),
+                            Some(Token::Identifier("stop")) => Some(ChildClause::Stop),
+                            Some(Token::Identifier("wired_to")) => Some(ChildClause::WiredTo),
+                            Some(Token::Identifier("count")) => Some(ChildClause::Count),
+                            _ => None,
+                        };
+                        if let Some(clause) = clause {
+                            if !clause_order.contains(&clause) {
+                                clause_order.push(clause);
+                            }
+                        }
                         match self.peek() {
                             // `restart: <policy>` clause (the only restart spelling).
                             Some(Token::Restart) => {
@@ -1507,6 +1523,21 @@ impl Parser<'_> {
                                 }
                                 stop = value;
                             }
+                            // `backoff: <policy>` replaces the supervisor's
+                            // restart delay for this child alone.
+                            Some(Token::Identifier("backoff")) => {
+                                let clause_start = self.peek_span().start;
+                                self.advance();
+                                self.expect(&Token::Colon)?;
+                                let value = self.parse_expr()?;
+                                if child_backoff.is_some() {
+                                    self.error_at(
+                                        "duplicate supervisor child `backoff:` clause".to_string(),
+                                        clause_start..value.1.end,
+                                    );
+                                }
+                                child_backoff = Some(value);
+                            }
                             // `wired_to: { key: sibling, bare_sibling }` clause.
                             Some(Token::Identifier(s)) if *s == "wired_to" => {
                                 if seen_wired_to {
@@ -1518,7 +1549,7 @@ impl Parser<'_> {
                                 self.advance(); // consume `wired_to`
                                 self.expect(&Token::Colon)?;
                                 self.expect(&Token::LeftBrace)?;
-                                let mut map = std::collections::HashMap::new();
+                                let mut map: Vec<(String, String)> = Vec::new();
                                 while !self.at_end() && self.peek() != Some(&Token::RightBrace) {
                                     let key = self.expect_ident()?.to_string();
                                     let value = if self.eat(&Token::Colon) {
@@ -1526,7 +1557,9 @@ impl Parser<'_> {
                                     } else {
                                         key.clone()
                                     };
-                                    if map.insert(key.clone(), value).is_some() {
+                                    let repeated = map.iter().any(|(seen, _)| *seen == key);
+                                    map.push((key.clone(), value));
+                                    if repeated {
                                         self.error(format!(
                                             "duplicate supervisor wiring key `{key}`"
                                         ));
@@ -1604,8 +1637,10 @@ impl Parser<'_> {
                         arg_labels,
                         restart,
                         wired_to,
+                        clause_order,
                         is_pool,
                         stop,
+                        backoff: child_backoff,
                         count,
                         span: child_start..self.last_token_end,
                     });

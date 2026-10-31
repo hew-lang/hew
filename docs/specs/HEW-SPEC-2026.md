@@ -6461,8 +6461,10 @@ fn main() {
   within the rolling `<duration>` window. The window is a duration literal
   (`60s`, `5m`, `1h`), not a bare integer. Default `10 within 5s`.
 - `backoff: <expression>`: an optional `std.restart.Backoff`, usually
-  `restart.exponential(initial: 100ms, maximum: 5s)`. The expression runs once
-  during supervisor construction and can use its configuration parameters.
+  `restart.exponential(initial: 100ms, maximum: 5s)`; `maximum` defaults to
+  `30s`. The expression runs once during supervisor construction and can use
+  its configuration parameters. Without `backoff`, a crashed child restarts
+  immediately. A child's own `backoff:` clause replaces it for that child.
 
 **Child specifications:**
 
@@ -6478,6 +6480,11 @@ fn main() {
   - `restart: permanent | transient | temporary` (optional, default
     `permanent`). This is the only restart spelling — bare `T permanent` and
     `with restart:` are not accepted.
+  - `backoff: <expression>` (optional) — this child's `std.restart.Backoff`,
+    replacing the supervisor's `backoff` for this child alone; refused on a
+    `restart: temporary` child, which never restarts;
+    `restart.immediate()` restarts it without delay under a supervisor that
+    declares one. A child without the clause inherits the supervisor's policy.
   - `stop: <duration>` (optional) — the graceful-stop deadline (default
     `5s`). `stop: 0s` terminates immediately. A child still running when the
     deadline passes is terminated and its `#[on(stop)]` hook does not run.
@@ -6543,16 +6550,35 @@ The supervisor's `intensity: N within <window>` budget caps restarts; exceeding 
 
 An optional `backoff` delays crash recovery per stable child role, including
 nested supervisors and individual pool members. Its first delay is `initial`;
-later failures double it up to `maximum`. Both values are durations, `initial`
-must be positive, and `maximum` must be at least `initial`. Invalid policies
-fail supervisor construction before any child starts.
+later failures double it up to `maximum` and never decrease, so a `maximum`
+below `initial` holds the delay at `initial`. `restart.exponential` defaults
+`maximum` to 30 seconds; both durations must be positive.
+`restart.immediate()` sets both to zero and selects no delay. Any other
+`Backoff` value built directly must have a positive `initial` and a `maximum`
+of at least `initial`. A child whose effective policy holds an invalid value
+fails supervisor construction before any child starts.
+
+A child's `backoff:` clause replaces the supervisor's policy for that child; a
+child without one inherits it. The supervisor's expression runs first, then
+each child's in declaration order, each once per construction. Every member of
+a pool carries its declaration's policy. Under `one_for_all` and
+`rest_for_one`, the crashing child's policy delays the group restart. A
+group restart that replaces a role whose own delayed restart is still pending
+recovers that role's fault and cancels the pending restart, so the group is
+restarted and the budget charged once. A
+`temporary` child never restarts, so a `backoff:` clause on it is a compile
+error; a `transient` child's applies to its restarts after `Terminated` or
+`Crashed`. A child inheriting the supervisor's policy is unaffected by its
+restart kind.
 
 After a replacement runs without failure for the supervisor's existing restart
 window, its next crash uses `initial` again. That healthy interval begins when
 the replacement is published; time spent waiting or constructing it does not
-count. This reset does not change the restart intensity budget. Stopping a
-supervisor cancels pending delays and waits for their cleanup. Omitting
-`backoff` retains the established restart behaviour.
+count. Each role resets on its own window. Delays never change the restart
+intensity budget, which stays one per supervisor and counts each restart when
+it is applied. Stopping a supervisor cancels pending delays and waits for their
+cleanup. A child with no effective `backoff` restarts immediately; the
+intensity budget alone bounds its crash loop.
 
 Circuit-breaker configuration remains outside the source restart contract;
 runtime support alone does not imply a source API.
@@ -6795,6 +6821,13 @@ work, listeners and periodic handlers; *drain* lets accepted actor turns,
 including the peer calls they make, finish within a bounded window (5s);
 *terminate* stops supervisors bottom-up and joins the workers. Returning from
 `main` drains without closing root admission, since the root has finished.
+
+The drain window is measured on the runtime clock. Under the deterministic
+driver that is virtual time: a drain poll with nothing ready and no timer due
+advances the clock by its poll interval, and a pending timer moves it to that
+timer's deadline. A drain whose remaining work waits on a timer due after the
+window therefore ends as a failed shutdown at once, rather than running the
+timer; on the threaded scheduler the same drain fails when the window elapses.
 
 Once quiesce closes root admission, the destination actor is still alive, so a
 refused call never reports `Dead`. A bare or `.Wait` completion call reports

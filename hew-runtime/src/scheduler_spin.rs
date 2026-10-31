@@ -29,6 +29,10 @@ use std::sync::atomic::{AtomicU64, Ordering};
 /// microseconds: a few futex wake round trips.
 pub(crate) const DEFAULT_SPIN_LIMIT: u32 = 512;
 
+/// Largest accepted `HEW_SPIN`; a larger value is clamped so a misconfigured
+/// limit cannot make an idle worker spin for milliseconds.
+const MAX_SPIN_LIMIT: u32 = 16 * 1024;
+
 /// Spin-loop hints between probes. Probing less often keeps spinners from
 /// pulling the queues' cache lines away from the threads pushing to them.
 const PAUSES_PER_PROBE: u32 = 8;
@@ -74,7 +78,10 @@ fn parse_spin_limit(value: &str) -> Option<u32> {
     if value.eq_ignore_ascii_case("off") {
         return Some(0);
     }
-    value.parse::<u32>().ok()
+    value
+        .parse::<u32>()
+        .ok()
+        .map(|limit| limit.min(MAX_SPIN_LIMIT))
 }
 
 fn spin_limit_for(requested: u32, worker_count: usize, cores: usize) -> u32 {
@@ -250,6 +257,7 @@ mod tests {
         assert_eq!(parse_spin_limit("OFF"), Some(0));
         assert_eq!(parse_spin_limit(" 512 "), Some(512));
         assert_eq!(parse_spin_limit("lots"), None);
+        assert_eq!(parse_spin_limit("4000000000"), Some(MAX_SPIN_LIMIT));
         assert_eq!(spin_limit_for(512, 4, 8), 512);
         assert_eq!(spin_limit_for(512, 8, 8), 512);
         assert_eq!(spin_limit_for(512, 9, 8), 0, "oversubscribed workers");
@@ -259,6 +267,9 @@ mod tests {
 
     #[test]
     fn spin_until_reports_ready_stop_and_exhaustion() {
+        // The episode counter is process-wide; keep these episodes out of the
+        // scheduler's idle-runtime test.
+        let _sched_lock = crate::scheduler::SchedTestLock::acquire();
         let mut polls = 0;
         assert_eq!(
             spin_until(

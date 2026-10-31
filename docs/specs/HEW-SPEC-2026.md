@@ -7865,7 +7865,8 @@ Hew uses an **M:N work-stealing scheduler** inspired by Go, Tokio, and BEAM:
 **Environment:**
 
 - `HEW_WORKERS` sets the worker count (default: available hardware threads).
-- `HEW_SPIN` sets the maximum spin iterations before a park (default 512);
+- `HEW_SPIN` sets the maximum spin iterations before a park (default 512, at
+  most 16384);
   `0` or `off` parks at once.
 
 **Fairness and suspension:**

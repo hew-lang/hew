@@ -1272,7 +1272,7 @@ fn notify_parked_worker(sched: &Scheduler, start: usize) -> Option<usize> {
     // A spinning worker takes the work, or stops spinning before its final
     // under-lock probe and observes it there; the same SeqCst total order as
     // `parked_workers` below covers it. A spinner that takes work while more
-    // remains wakes a peer itself (`leave_spin`).
+    // remains wakes a peer itself (`wake_peer_if_work_remains`).
     if sched.spinning_workers.load(Ordering::SeqCst) != 0 {
         return None;
     }
@@ -2792,6 +2792,9 @@ mod tests {
     /// on to a parked peer.
     #[test]
     fn wake_skipped_for_a_spinner_is_observed_and_passed_on() {
+        // Serialize with tests that install the global pre-park hook or read
+        // the process-wide wake counter.
+        let _sched_lock = SchedTestLock::acquire();
         let parker = |parked: bool| Parker {
             mutex: Mutex::new(()),
             cond: Condvar::new(),

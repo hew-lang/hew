@@ -79,6 +79,7 @@ pub(super) struct ValueOrigin {
     pub(super) actuals: usize,
 }
 
+#[derive(Clone)]
 struct OriginEnvironment {
     bindings: Actuals,
     parent: Option<usize>,
@@ -92,7 +93,7 @@ enum OriginCarrierQuery {
     Effects,
 }
 
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub(super) struct OriginEnvironments {
     incomplete: usize,
     values: Vec<OriginEnvironment>,
@@ -100,13 +101,21 @@ pub(super) struct OriginEnvironments {
     task_carriers: HashMap<crate::Ty, bool>,
     effect_carriers: HashMap<crate::Ty, bool>,
     formal_sources: HashMap<TypeBindingId, Vec<IndirectCallCandidates>>,
+    /// Formals whose context-free sources some query has read.
+    read_formals: HashSet<TypeBindingId>,
     origins: OriginGraph,
     recursive_sources: HashMap<(TypeBindingId, usize), HashSet<ActualSource>>,
     prepared_captures: HashSet<ValueOrigin>,
     recursive_parents: HashMap<usize, HashSet<usize>>,
 }
 
-#[derive(Default)]
+impl OriginEnvironments {
+    pub(super) fn read_formals(&self) -> &HashSet<TypeBindingId> {
+        &self.read_formals
+    }
+}
+
+#[derive(Clone, Default)]
 struct OriginGraph {
     // Origin sets grow monotonically. Callee discoveries add dependencies,
     // and changes wake only dependent queries until every cycle is settled.
@@ -119,6 +128,7 @@ struct OriginGraph {
     call_contexts: HashMap<usize, HashMap<(EffectBody, usize), usize>>,
 }
 
+#[derive(Clone)]
 struct OriginNode {
     query: Visit,
     origins: HashSet<ValueOrigin>,
@@ -337,7 +347,15 @@ impl Checker {
         flows: &HashMap<SpanKey, Vec<CallableArgumentFlow>>,
         environments: &mut OriginEnvironments,
     ) {
-        for flow in flows.values().flatten() {
+        Self::extend_value_sources(flows.values().flatten(), environments);
+    }
+
+    /// Add callable arguments to their formals' context-free sources.
+    pub(super) fn extend_value_sources<'f>(
+        flows: impl IntoIterator<Item = &'f CallableArgumentFlow>,
+        environments: &mut OriginEnvironments,
+    ) {
+        for flow in flows {
             environments
                 .formal_sources
                 .entry(flow.formal)
@@ -717,7 +735,23 @@ impl Checker {
                 .push(flow.candidates.clone());
         }
         let actuals = environments.intern(Actuals::new(), None);
-        let escapes = std::mem::take(&mut self.task_lifetimes.escapes);
+        let mut escapes = std::mem::take(&mut self.task_lifetimes.escapes);
+        // A checkpoint's dependencies settled their own escapes without an
+        // error. Unless a root callable reaches a dependency formal, a root
+        // escape is the only one whose origins can differ.
+        let memo = self.finalization_memo.shared();
+        if let Some(memo) = memo
+            .as_ref()
+            .filter(|memo| memo.effects.flows_hold_for(flows))
+        {
+            escapes.drain(..memo.task_escapes);
+            self.finalization_memo
+                .reused(|reused| reused.task_lifetimes += 1);
+            self.task_lifetimes
+                .scope_results
+                .extend(memo.task_scope_results.iter().cloned());
+        }
+        let recorded_escapes = escapes.len();
         if !self.task_lifetimes.producers.is_empty() {
             // Settle every root before emitting diagnostics. A later root may
             // contribute another incoming edge to a shared recursive context.
@@ -774,6 +808,11 @@ impl Checker {
             );
             error.source_module = module;
             self.errors.push(error);
+        }
+        if let Some(memo) = self.finalization_memo.record() {
+            memo.task_escapes = recorded_escapes;
+            memo.task_scope_results
+                .clone_from(&self.task_lifetimes.scope_results);
         }
     }
 
@@ -1350,6 +1389,7 @@ impl Checker {
                             .unwrap_or_default();
                         parents.extend(environments.values[actuals].parent);
                         if parents.is_empty() {
+                            environments.read_formals.insert(*formal);
                             environments
                                 .formal_sources
                                 .get(formal)

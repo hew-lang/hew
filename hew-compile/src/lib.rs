@@ -4554,6 +4554,18 @@ impl SourceAnalysisBatch {
         self.dependencies.bootstraps()
     }
 
+    /// Dependency-only finalizations recorded for this batch's checkpoints.
+    #[must_use]
+    pub fn dependency_finalizations(&self) -> usize {
+        self.dependencies.finalizations()
+    }
+
+    /// Finalization passes roots extended from their checkpoint's memo.
+    #[must_use]
+    pub fn finalization_reuse(&self) -> hew_types::check::FinalizationReuse {
+        self.dependencies.finalization_reuse()
+    }
+
     /// Roots using an already retained dependency checkpoint.
     #[must_use]
     pub fn dependency_cache_hits(&self) -> usize {
@@ -10100,6 +10112,12 @@ mod source_analysis_batch_tests {
                 .iter()
                 .map(|(span, escape)| format!("escape:{span:?}:{escape:?}")),
         );
+        facts.extend(output.type_facts.iter().map(|(key, row)| {
+            format!(
+                "type-fact:{}:{row:?}",
+                checked_type(output, &key.ty().to_ty())
+            )
+        }));
         facts.sort();
         facts
     }
@@ -10333,6 +10351,57 @@ fn main() {
         assert_eq!(batch.reused_roots(), 2);
         assert_eq!(batch.dependency_bootstraps(), 1);
         assert_eq!(batch.dependency_cache_hits(), 1);
+    }
+
+    /// The dependencies' finalization runs once for a checkpoint; each root
+    /// extends it with its own facts and still matches a complete check,
+    /// including roots whose callables reach a dependency's formals or carry
+    /// suspension obligations, which finalize their effects in full.
+    #[test]
+    fn dependency_finalization_runs_once_across_roots() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(
+            dir.path().join("util.hew"),
+            "pub fn greet() -> i32 { 1 }\n\
+             pub fn apply(f: fn(i32) -> i32, value: i32) -> i32 { f(value) }\n\
+             pub fn same<T>(left: T, right: T) -> bool { left == right }\n\
+             pub fn pause() { sleep(1ms); }\n\
+             pub fn run<T>(value: T) -> i32 { let call: fn() -> i32 = || 1; call() }\n",
+        )
+        .unwrap();
+        let mut options = test_options();
+        options.project_dir = Some(dir.path().to_path_buf());
+        let mut batch = SourceAnalysisBatch::new(options.clone());
+        let roots = [
+            "import util;\npub fn read_0() -> i32 { util.greet() }\n",
+            "import util;\npub fn read_1() -> i32 { util.greet() + util.greet() }\n",
+            "import util;\npub fn compare_2() -> bool { util.same(1, 2) && util.same(\"a\", \"b\") }\n",
+            "import util;\npub fn rest_3() { util.pause(); }\n",
+            "import util;\npub fn twice_4() -> i32 { util.apply(|value: i32| value * 2, 3) }\n",
+            "import util;\npub fn pair_5() -> bool { util.same((1, \"a\"), (2, \"b\")) }\n",
+            "import util;\npub fn run_6() -> i32 { util.run(6) }\n",
+        ];
+        for (index, source) in roots.iter().enumerate() {
+            let label = dir.path().join(format!("consumer_{index}.hew"));
+            let state = assert_equivalent(source, label.to_str().unwrap(), &options, &mut batch);
+            assert!(state.stopped.is_none(), "{:?}", state.diagnostics);
+        }
+        assert_eq!(batch.dependency_bootstraps(), 1);
+        assert_eq!(batch.dependency_finalizations(), 1);
+        assert_eq!(batch.reused_roots(), roots.len());
+        // The closure passed to `apply` carries a suspension obligation of its
+        // own and `run` constructs a dependency obligation in a new context:
+        // both finalize their effects in full. Every root passing an argument
+        // to a dependency's formal also finalizes its task lifetimes in full.
+        assert_eq!(
+            batch.finalization_reuse(),
+            hew_types::check::FinalizationReuse {
+                effects: roots.len() - 2,
+                type_facts: roots.len(),
+                generic_requirements: roots.len(),
+                task_lifetimes: 3,
+            }
+        );
     }
 
     #[test]

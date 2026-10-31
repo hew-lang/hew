@@ -2512,6 +2512,53 @@ pub(super) struct GenericCallEdge {
     pub(super) substitution: HashMap<crate::ParamHead, Ty>,
 }
 
+/// The dependency prefix of a checkpoint's generic requirement discharge.
+///
+/// A root records its requirements and instantiation sites after the
+/// dependencies' own, and no dependency calls a root function, so the root
+/// discharges only its own entries against the dependencies' generic demands
+/// and call edges.
+#[derive(Debug, Default)]
+pub(super) struct GenericRequirementMemo {
+    /// Dependency demands per owner and dependency instantiation sites, by
+    /// the place that recorded them. Finalization itself records demands
+    /// after a root's, so a root's entries are not a positional suffix.
+    pub(super) requirements: HashMap<Option<crate::DefId>, Vec<GenericRequirementSite>>,
+    pub(super) sites: HashSet<GenericInstantiationSiteKey>,
+    /// Dependency demands that stay generic, and the call edges reaching them.
+    pub(super) generic: HashMap<Option<crate::DefId>, Vec<GenericRequirement>>,
+    pub(super) edges: HashMap<crate::DefId, Vec<GenericCallEdge>>,
+    /// Receivers the dependency discharge proved for each close method.
+    pub(super) checked_receivers: Vec<(crate::DefId, HashSet<crate::ResolvedTy>)>,
+}
+
+/// Where a generic requirement was recorded, independent of its inferred type.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct GenericRequirementSite {
+    kind: GenericRequirementKind,
+    span: Span,
+    source_module: Option<String>,
+}
+
+impl GenericRequirementSite {
+    pub(super) fn of(requirement: &GenericRequirement) -> Self {
+        Self {
+            kind: requirement.kind.clone(),
+            span: requirement.span.clone(),
+            source_module: requirement.source_module.clone(),
+        }
+    }
+}
+
+/// A generic application's callee, enclosing declaration and span.
+pub(super) type GenericInstantiationSiteKey = (crate::DefId, Option<crate::DefId>, usize, usize);
+
+impl GenericFnInstantiationSite {
+    pub(super) fn key(&self) -> GenericInstantiationSiteKey {
+        (self.callee, self.caller, self.span.start, self.span.end)
+    }
+}
+
 /// One instantiation queued for type-requirement discharge.
 #[derive(Debug, Clone)]
 pub(super) struct PendingInstantiation {
@@ -4217,6 +4264,8 @@ pub struct Checker {
     /// Caller-seeded configuration remains available to the first program;
     /// every later program starts from structurally fresh program-owned state.
     pub(super) has_checked_program: bool,
+    /// Dependency-only finalization shared by roots forked from one checkpoint.
+    pub(super) finalization_memo: super::dependency_analysis::FinalizationMemo,
     /// Tracks (span, feature) pairs we've already warned about for WASM limits.
     pub(super) wasm_warning_spans: HashSet<(SpanKey, WasmUnsupportedFeature)>,
     /// Tracks (span, feature) pairs we've already rejected as errors for WASM.
@@ -4716,6 +4765,7 @@ impl Checker {
             selected_builtin_program: None,
             must_use_types: HashSet::new(),
             has_checked_program: false,
+            finalization_memo: super::dependency_analysis::FinalizationMemo::default(),
             wasm_warning_spans: HashSet::new(),
             wasm_reject_spans: HashSet::new(),
             const_values: HashMap::new(),

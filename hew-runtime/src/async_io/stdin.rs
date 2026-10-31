@@ -80,24 +80,11 @@ fn line(bytes: Vec<u8>) -> IoValue {
 /// Take the next line, or `None` when the buffer needs input it cannot get
 /// without waiting. End of input is reported once per read that meets it, so
 /// a terminal can deliver more input after an end-of-file keystroke.
+#[cfg(not(windows))]
 fn attempt(buffer: &mut Buffer) -> Option<Result<IoValue, IoFailure>> {
     loop {
-        if let Some(end) = buffer.data.iter().position(|&byte| byte == b'\n') {
-            let bytes = buffer.data.drain(..=end).collect();
-            return Some(Ok(line(bytes)));
-        }
-        if buffer.eof || buffer.error.is_some() {
-            if !buffer.data.is_empty() {
-                let bytes = std::mem::take(&mut buffer.data);
-                return Some(Ok(line(bytes)));
-            }
-            if let Some(error) = buffer.error.take() {
-                #[cfg(windows)]
-                ROOM.notify_all();
-                return Some(Err(IoFailure::from_io("read standard input", &error)));
-            }
-            buffer.eof = false;
-            return Some(Ok(line(Vec::new())));
+        if let Some(result) = take_buffered(buffer) {
+            return Some(result);
         }
         #[cfg(unix)]
         match fill(buffer) {
@@ -105,15 +92,40 @@ fn attempt(buffer: &mut Buffer) -> Option<Result<IoValue, IoFailure>> {
             Ok(false) => return None,
             Err(error) => buffer.error = Some(error),
         }
-        #[cfg(windows)]
-        {
-            return None;
-        }
         #[cfg(target_arch = "wasm32")]
         if let Err(error) = fill_blocking(buffer) {
             buffer.error = Some(error);
         }
     }
+}
+
+/// Windows fills the buffer from a reader thread, so a read only takes what
+/// is already there.
+#[cfg(windows)]
+fn attempt(buffer: &mut Buffer) -> Option<Result<IoValue, IoFailure>> {
+    take_buffered(buffer)
+}
+
+/// A line, end of input or error the buffer already holds.
+fn take_buffered(buffer: &mut Buffer) -> Option<Result<IoValue, IoFailure>> {
+    if let Some(end) = buffer.data.iter().position(|&byte| byte == b'\n') {
+        let bytes = buffer.data.drain(..=end).collect();
+        return Some(Ok(line(bytes)));
+    }
+    if buffer.eof || buffer.error.is_some() {
+        if !buffer.data.is_empty() {
+            let bytes = std::mem::take(&mut buffer.data);
+            return Some(Ok(line(bytes)));
+        }
+        if let Some(error) = buffer.error.take() {
+            #[cfg(windows)]
+            ROOM.notify_all();
+            return Some(Err(IoFailure::from_io("read standard input", &error)));
+        }
+        buffer.eof = false;
+        return Some(Ok(line(Vec::new())));
+    }
+    None
 }
 
 /// Read once from standard input, waiting for it.
@@ -202,7 +214,7 @@ fn ensure_reader() -> Result<(), IoFailure> {
                 .map(drop)
         })
         .as_ref()
-        .map(|()| ())
+        .copied()
         .map_err(|error| IoFailure::from_io("start standard input reader", error))
 }
 

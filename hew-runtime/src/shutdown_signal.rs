@@ -82,6 +82,13 @@ fn deliver(signal: c_int) {
 }
 
 /// Register a new subscriber queue, holding at most one unread request.
+#[cfg_attr(
+    not(unix),
+    allow(
+        clippy::unnecessary_wraps,
+        reason = "only the Unix dispatcher start can fail"
+    )
+)]
 fn subscribe() -> Result<Arc<ChannelCore>, String> {
     install();
     #[cfg(unix)]

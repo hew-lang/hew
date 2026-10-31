@@ -330,7 +330,7 @@ impl SocketSlots {
                                 };
                                 if cancelled == 0 {
                                     let error = std::io::Error::last_os_error();
-                                    if error.raw_os_error() != Some(ERROR_NOT_FOUND as i32) {
+                                    if error.raw_os_error() != Some(ERROR_NOT_FOUND.cast_signed()) {
                                         let message = format!(
                                             "transport socket cancellation failed: {error}"
                                         );

@@ -656,7 +656,7 @@ where
     #[cfg(target_os = "windows")]
     {
         let _ = target;
-        return Err(windows_missing_clang_error());
+        Err(windows_missing_clang_error())
     }
 
     #[cfg(not(target_os = "windows"))]
@@ -2856,6 +2856,6 @@ mod tests {
 
     #[cfg(windows)]
     fn exit_status(code: i32) -> std::process::ExitStatus {
-        std::process::ExitStatus::from_raw(code as u32)
+        std::process::ExitStatus::from_raw(code.cast_unsigned())
     }
 }

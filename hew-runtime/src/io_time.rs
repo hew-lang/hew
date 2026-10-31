@@ -400,8 +400,7 @@ mod platform {
             let mut events: [libc::kevent; MAX_EVENTS] = unsafe { std::mem::zeroed() };
             let spec = timeout.map(|duration| libc::timespec {
                 tv_sec: libc::time_t::try_from(duration.as_secs()).unwrap_or(libc::time_t::MAX),
-                // Duration fractions are below 1e9 and fit a 32-bit c_long.
-                tv_nsec: duration.subsec_nanos() as libc::c_long,
+                tv_nsec: libc::c_long::from(duration.subsec_nanos()),
             });
             let timeout = spec.as_ref().map_or(std::ptr::null(), std::ptr::from_ref);
             // SAFETY: the buffer holds MAX_EVENTS entries.

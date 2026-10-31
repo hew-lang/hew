@@ -3,7 +3,9 @@
 actor Child {
     var born: instant = instant.now();
 
-    receive fn hi() { println("child hi"); }
+    receive fn hi() {
+        println("child hi");
+    }
 
     #[on(stop)]
     fn finish() {
@@ -15,7 +17,9 @@ actor Child {
 actor Parent {
     var started: instant = instant.now();
 
-    receive fn ping() { println("ping"); }
+    receive fn ping() {
+        println("ping");
+    }
 
     #[on(stop)]
     fn finish() {

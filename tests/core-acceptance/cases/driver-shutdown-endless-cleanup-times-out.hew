@@ -3,7 +3,9 @@
 actor Link {
     var n: i64 = 0;
 
-    receive fn set(k: i64) { n = k; }
+    receive fn set(k: i64) {
+        n = k;
+    }
 
     #[on(stop)]
     fn finish() {

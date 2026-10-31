@@ -22,11 +22,7 @@ fn refused(message: string) -> bool {
 }
 
 fn main() {
-    let invalid = [
-        restart.Backoff { initial: 0ns, maximum: 1s },
-        restart.Backoff { initial: 0ns - 1ns, maximum: 1s },
-        restart.Backoff { initial: 2s, maximum: 1s },
-    ];
+    let invalid = [restart.Backoff { initial: 0ns, maximum: 1s }, restart.Backoff { initial: 0ns - 1ns, maximum: 1s }, restart.Backoff { initial: 2s, maximum: 1s }];
     for policy in invalid {
         let declared = scope {
             let _ = spawn Team { policy: policy };

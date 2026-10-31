@@ -822,7 +822,7 @@ pub(crate) fn activate_queued_actor(actor: *mut HewActor) {
                 // Time the turn only for a configured consumer; reading the
                 // clock twice per message is not free on every host.
                 let t0 = (crate::observe::observe_hot_tier_enabled()
-                    || crate::profiler::turn_timing_enabled())
+                    || crate::profiler::consumer_configured())
                 .then(std::time::Instant::now);
                 // SAFETY: `msg` is exclusively owned by this worker.
                 let msg_ref = unsafe { &*msg };

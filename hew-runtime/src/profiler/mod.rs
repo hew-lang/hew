@@ -147,33 +147,34 @@ pub(crate) fn register_reset_hooks() {
     });
 }
 
+/// Whether a profile consumer (the `HEW_PPROF` server or the
+/// `HEW_PROF_OUTPUT` exit report) is configured. Fixed at scheduler startup,
+/// before any program code runs.
+static CONSUMER_CONFIGURED: AtomicBool = AtomicBool::new(false);
+
+/// Per-actor turn timing and the live Rc census cost work on hot paths; only
+/// pay it when something will read the result.
+#[must_use]
+pub fn consumer_configured() -> bool {
+    CONSUMER_CONFIGURED.load(Ordering::Relaxed)
+}
+
+fn configure_consumer() {
+    let requested = |name| std::env::var_os(name).is_some_and(|value| !value.is_empty());
+    CONSUMER_CONFIGURED.store(
+        requested("HEW_PPROF") || requested("HEW_PROF_OUTPUT"),
+        Ordering::Relaxed,
+    );
+}
+
 /// Check `HEW_PPROF` and start the profiler if set.
 ///
 /// Called from [`hew_sched_init`](crate::scheduler::hew_sched_init) during
 /// scheduler startup. If `HEW_PPROF` is not set, this is a no-op.
 ///
 /// Distributed endpoints read the current node through its lifetime guard.
-/// Whether a per-actor profile consumer (the `HEW_PPROF` server or the
-/// `HEW_PROF_OUTPUT` exit report) is configured, so dispatch times each turn.
-static TURN_TIMING: AtomicBool = AtomicBool::new(false);
-
-/// Per-actor turn timing reads the clock twice per message; only time turns
-/// when something will read the result.
-#[must_use]
-pub fn turn_timing_enabled() -> bool {
-    TURN_TIMING.load(Ordering::Relaxed)
-}
-
-fn configure_turn_timing() {
-    let requested = |name| std::env::var_os(name).is_some_and(|value| !value.is_empty());
-    TURN_TIMING.store(
-        requested("HEW_PPROF") || requested("HEW_PROF_OUTPUT"),
-        Ordering::Relaxed,
-    );
-}
-
 pub fn maybe_start() {
-    configure_turn_timing();
+    configure_consumer();
     let env_val = match std::env::var("HEW_PPROF") {
         Ok(val) if !val.is_empty() => val,
         _ => return,

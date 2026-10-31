@@ -20291,8 +20291,8 @@
       "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
-        "native": "fn hew_supervisor_native_spawn_new( c_int, c_int, c_int, *mut c_void, Option<unsafe extern \"C\" fn(*mut c_void)>, *const HewNativeChildSpec, usize, c_int, i64, i64, i64, *const HewWaker, *const hew_cabi::code::HewCodeLeaseSlot, ) -> *mut HewSupervisorConstruction",
-        "wasm32-wasip1": "fn hew_supervisor_native_spawn_new( c_int, c_int, c_int, *mut c_void, Option<unsafe extern \"C\" fn(*mut c_void)>, *const HewNativeChildSpec, usize, c_int, i64, i64, i64, *const HewWaker, *const hew_cabi::code::HewCodeLeaseSlot, ) -> *mut HewSupervisorConstruction"
+        "native": "fn hew_supervisor_native_spawn_new( c_int, c_int, c_int, *mut c_void, Option<unsafe extern \"C\" fn(*mut c_void)>, *const HewNativeChildSpec, usize, i64, *const HewWaker, *const hew_cabi::code::HewCodeLeaseSlot, ) -> *mut HewSupervisorConstruction",
+        "wasm32-wasip1": "fn hew_supervisor_native_spawn_new( c_int, c_int, c_int, *mut c_void, Option<unsafe extern \"C\" fn(*mut c_void)>, *const HewNativeChildSpec, usize, i64, *const HewWaker, *const hew_cabi::code::HewCodeLeaseSlot, ) -> *mut HewSupervisorConstruction"
       },
       "symbol": "hew_supervisor_native_spawn_new"
     },

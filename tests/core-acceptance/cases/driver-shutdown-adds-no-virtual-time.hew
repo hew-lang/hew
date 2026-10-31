@@ -1,0 +1,21 @@
+// A drain that converges only confirms quiescence: the stop hook that runs
+// during shutdown sees no virtual time added by the drain's polls.
+actor Watch {
+    var started: instant = instant.now();
+
+    receive fn ping() {
+        println("ping");
+    }
+
+    #[on(stop)]
+    fn finish() {
+        let d: duration = instant.now().duration_since(started);
+        println(f"stop after {d.millis()}ms");
+    }
+}
+
+fn main() {
+    let w = spawn Watch;
+    let _ = w.ping();
+    println("main done");
+}

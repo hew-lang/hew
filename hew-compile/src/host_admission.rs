@@ -1527,7 +1527,7 @@ fn opaque_extern_diagnostic(
     if let crate::FrontendDiagnosticKind::Message(detail) = &mut diagnostic.kind {
         detail.help.push(match admission {
             HostAdmission::ProcessEntry => {
-                "run without `--deterministic` or remove the user extern call".to_string()
+                "run without `--deterministic` or `HEW_DETERMINISTIC`, or remove the user extern call".to_string()
             }
             HostAdmission::Tests(_) => {
                 format!("mark `{name}` `#[real_time]` or remove the user extern call")
@@ -2530,7 +2530,7 @@ fn check_profile(
                         if let crate::FrontendDiagnosticKind::Message(detail) = &mut diagnostic.kind
                         {
                             let help = match options.host_admission {
-                                HostAdmission::ProcessEntry => "run without `--deterministic` or remove the host operation from reachable calls".to_string(),
+                                HostAdmission::ProcessEntry => "run without `--deterministic` or `HEW_DETERMINISTIC`, or remove the host operation from reachable calls".to_string(),
                                 HostAdmission::Tests(_) => format!("mark `{name}` `#[real_time]` or remove the host operation from its reachable calls"),
                                 HostAdmission::Generate => "remove the host operation from the generator's reachable calls".to_string(),
                                 HostAdmission::Off => unreachable!("admission has no selected roots when off"),
@@ -2582,7 +2582,7 @@ fn check_profile(
                                         "supply a callable whose transitive authority is known at the confined boundary".to_string()
                                     } else {
                                         match options.host_admission {
-                                        HostAdmission::ProcessEntry => "run without `--deterministic` or call a locally known function".to_string(),
+                                        HostAdmission::ProcessEntry => "run without `--deterministic` or `HEW_DETERMINISTIC`, or call a locally known function".to_string(),
                                         HostAdmission::Tests(_) => format!("mark `{name}` `#[real_time]` or call a locally known function"),
                                         HostAdmission::Generate => "call a function whose target is known during generator admission".to_string(),
                                         HostAdmission::Off => unreachable!("admission has no selected roots when off"),

@@ -1,0 +1,37 @@
+// Work a stop hook starts during shutdown runs inside the drain: neither hook
+// observes virtual time added by the drain's polls.
+actor Child {
+    var born: instant = instant.now();
+
+    receive fn hi() {
+        println("child hi");
+    }
+
+    #[on(stop)]
+    fn finish() {
+        let d: duration = instant.now().duration_since(born);
+        println(f"child stop after {d.millis()}ms");
+    }
+}
+
+actor Parent {
+    var started: instant = instant.now();
+
+    receive fn ping() {
+        println("ping");
+    }
+
+    #[on(stop)]
+    fn finish() {
+        let d: duration = instant.now().duration_since(started);
+        println(f"parent stop after {d.millis()}ms");
+        let c = spawn Child;
+        let _ = mailbox(c, on_full: .Wait).hi();
+    }
+}
+
+fn main() {
+    let p = spawn Parent;
+    let _ = p.ping();
+    println("main done");
+}

@@ -6778,9 +6778,6 @@
     "Supervisor": {
       "description": "One demanded supervisor: its restart policy and the children it starts.",
       "properties": {
-        "backoff": {
-          "type": "boolean"
-        },
         "children": {
           "items": {
             "$ref": "#/$defs/SupervisorChild"
@@ -6822,6 +6819,10 @@
     },
     "SupervisorChild": {
       "properties": {
+        "backoff": {
+          "description": "Construction transfers this child's effective restart delay as an\n`(initial, maximum)` argument pair after the config, in declaration order.",
+          "type": "boolean"
+        },
         "dependencies": {
           "items": {
             "format": "uint",

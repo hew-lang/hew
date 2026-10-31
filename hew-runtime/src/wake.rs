@@ -167,6 +167,33 @@ pub mod blocking {
             self.blocked.store(false, Ordering::Relaxed);
         }
 
+        /// Consume one readiness notification like [`Self::wait`], giving up
+        /// at `deadline`. Returns whether a notification was consumed.
+        #[cfg(test)]
+        pub fn wait_until(&self, deadline: std::time::Instant) -> bool {
+            if crate::driver::active() {
+                while self.scheduled.load(Ordering::Acquire) || !self.take_ready() {
+                    if std::time::Instant::now() >= deadline {
+                        return false;
+                    }
+                    crate::driver::step();
+                }
+                return true;
+            }
+            let mut guard = self.lock.lock_or_recover();
+            self.blocked.store(true, Ordering::SeqCst);
+            while !self.pending.swap(false, Ordering::SeqCst) {
+                let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+                if remaining.is_zero() {
+                    self.blocked.store(false, Ordering::Relaxed);
+                    return false;
+                }
+                guard = self.changed.wait_timeout_or_recover(guard, remaining).0;
+            }
+            self.blocked.store(false, Ordering::Relaxed);
+            true
+        }
+
         /// Consume an already pending notification without blocking.
         pub fn take_ready(&self) -> bool {
             self.pending.swap(false, Ordering::AcqRel)
@@ -222,6 +249,25 @@ mod tests {
     use std::ffi::c_void;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
+
+    #[test]
+    fn timed_readiness_wait_consumes_wakes_and_recovers_after_timeout() {
+        let _runtime = crate::runtime_test_guard();
+        let (readiness, waker) = blocking::Readiness::new();
+        assert!(!readiness.wait_until(std::time::Instant::now()));
+        waker.wake();
+        assert!(readiness.wait_until(std::time::Instant::now()));
+        assert!(
+            !readiness.take_ready(),
+            "the wait consumes its notification"
+        );
+        assert!(!readiness.wait_until(std::time::Instant::now()));
+        std::thread::spawn(move || waker.wake())
+            .join()
+            .expect("readiness worker");
+        assert!(readiness.wait_until(std::time::Instant::now()));
+        assert!(!readiness.take_ready());
+    }
 
     unsafe extern "C" fn retain(context: *mut c_void) {
         // SAFETY: context was produced by Arc::into_raw below.

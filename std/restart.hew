@@ -1,6 +1,10 @@
 //! Restart delay policies for supervisor declarations.
+//!
+//! A supervisor without `backoff` restarts a crashed child immediately; the
+//! restart intensity budget alone bounds a crash loop. A child's own
+//! `backoff:` clause replaces its supervisor's policy for that child.
 
-/// Per-role exponential delay, evaluated once when its supervisor is spawned.
+/// Per-role restart delay, evaluated once when its supervisor is spawned.
 /// The first crash waits `initial`; subsequent crashes double the delay up to
 /// `maximum`. After a replacement runs for a healthy supervisor restart window,
 /// the next crash starts at `initial` again. Waiting for a replacement does not
@@ -10,9 +14,17 @@ pub type Backoff {
     maximum: duration;
 }
 
-/// Construct a bounded exponential restart delay.
-pub fn exponential(initial: duration, maximum: duration) -> Backoff {
+/// Construct a bounded exponential restart delay. The delay doubles from
+/// `initial` up to `maximum` and never decreases, so a `maximum` below
+/// `initial` holds the delay at `initial`.
+pub fn exponential(initial: duration, maximum: duration = 30s) -> Backoff {
     assert(initial > 0ns, "restart backoff initial delay must be positive");
-    assert(maximum >= initial, "restart backoff maximum must be at least initial");
-    Backoff { initial: initial, maximum: maximum }
+    assert(maximum > 0ns, "restart backoff maximum must be positive");
+    Backoff { initial: initial, maximum: if maximum < initial { initial } else { maximum } }
+}
+
+/// Restart without delay. On a child declaration it switches off the
+/// supervisor's `backoff` for that child alone.
+pub fn immediate() -> Backoff {
+    Backoff { initial: 0ns, maximum: 0ns }
 }

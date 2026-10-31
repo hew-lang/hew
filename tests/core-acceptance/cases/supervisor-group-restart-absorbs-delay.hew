@@ -1,0 +1,43 @@
+import std.restart;
+
+actor Worker {
+    let name: string;
+    let value: i64 = 7;
+    #[on(start)]
+    fn start() {
+        println(f"start {name}");
+    }
+    receive fn read() -> i64 {
+        value
+    }
+    receive fn fail() {
+        panic("group restart");
+    }
+}
+
+// One restart in the window: a second group restart would exhaust the budget.
+supervisor Group {
+    strategy: one_for_all;
+    intensity: 1 within 60s;
+    child slow: Worker { name: "slow" } backoff: restart.exponential(initial: 500ms, maximum: 500ms);
+    child quick: Worker { name: "quick" } backoff: restart.immediate();
+}
+
+fn main() {
+    let group = spawn Group;
+    let started = instant.now();
+    // `slow` arms a 500ms delay, then `quick` restarts the whole group at once.
+    let _ = group.slow.fail();
+    let _ = group.quick.fail();
+    restarted(group.quick);
+    assert(group.slow.read().expect("slow replaced by the group restart") == 7);
+    println(started.elapsed().millis());
+    // Past the delay, the absorbed timer neither restarts the healthy group
+    // nor charges the budget.
+    sleep(2s);
+    assert(group.slow.read().expect("slow still healthy") == 7);
+    assert(group.quick.read().expect("quick still healthy") == 7);
+    println("one group restart");
+    stop(group);
+    stopped(group);
+}

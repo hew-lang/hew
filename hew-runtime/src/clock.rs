@@ -125,12 +125,48 @@ pub unsafe extern "C" fn hew_instant_now() -> i64 {
     if crate::generator::enabled() {
         return 0;
     }
+    i64::try_from(runtime_now_ns()).unwrap_or(i64::MAX)
+}
+
+/// Nanoseconds on the runtime clock: the simulated clock while it is enabled,
+/// otherwise the process-wide monotonic clock.
+pub(crate) fn runtime_now_ns() -> u64 {
     crate::driver::initialize_clock();
-    let nanos = crate::deterministic::simtime_now()
-        .map_or_else(crate::monotonic::monotonic_ns, |ms| {
-            ms.saturating_mul(1_000_000)
-        });
-    i64::try_from(nanos).unwrap_or(i64::MAX)
+    crate::deterministic::simtime_now().map_or_else(crate::monotonic::monotonic_ns, |ms| {
+        ms.saturating_mul(1_000_000)
+    })
+}
+
+/// A bounded wait's deadline on the runtime clock, so a simulated clock (the
+/// deterministic driver's, or one a test enables) decides when it expires.
+///
+/// The wait also expires once its polls have waited out the whole window. The
+/// driver advances its clock only when a poll is stuck, so a wait it keeps busy
+/// with fresh work would otherwise never see the clock move.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct RuntimeDeadline {
+    at: u64,
+    unpolled: std::time::Duration,
+}
+
+impl RuntimeDeadline {
+    pub(crate) fn after(timeout: std::time::Duration) -> Self {
+        let nanos = u64::try_from(timeout.as_nanos()).unwrap_or(u64::MAX);
+        Self {
+            at: runtime_now_ns().saturating_add(nanos),
+            unpolled: timeout,
+        }
+    }
+
+    /// Time left before the deadline; zero once it has passed.
+    pub(crate) fn remaining(self) -> std::time::Duration {
+        std::time::Duration::from_nanos(self.at.saturating_sub(runtime_now_ns())).min(self.unpolled)
+    }
+
+    /// Record one poll that waited `interval` for outstanding work.
+    pub(crate) fn polled(&mut self, interval: std::time::Duration) {
+        self.unpolled = self.unpolled.saturating_sub(interval);
+    }
 }
 
 /// Return elapsed nanoseconds since `instant_ns`.

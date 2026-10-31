@@ -264,6 +264,9 @@ impl<'a> Control<'a> {
                     if let Some(value) = &mut child.stop {
                         self.expr(value)?;
                     }
+                    if let Some(value) = &mut child.backoff {
+                        self.expr(value)?;
+                    }
                     if let Some(value) = &mut child.count {
                         self.expr(value)?;
                     }

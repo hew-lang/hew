@@ -1235,11 +1235,21 @@ impl Builder<'_, '_> {
             }
             values.push(value);
         }
-        let backoff = match &operation {
+        // The supervisor's policy first, then each child's override, each
+        // evaluated once. Every child with an effective policy then receives
+        // its `(initial, maximum)` pair in declaration order.
+        let (backoff, child_backoffs) = match &operation {
             crate::ActorOperation::SupervisorSpawn(id) => {
-                self.service.supervisors[id.0 as usize].backoff
+                let supervisor = &self.service.supervisors[id.0 as usize];
+                (
+                    supervisor.backoff,
+                    supervisor
+                        .backoff_children()
+                        .map(|child| supervisor.children[child].backoff)
+                        .collect::<Vec<_>>(),
+                )
             }
-            _ => None,
+            _ => (None, Vec::new()),
         };
         let pool_count = match &operation {
             crate::ActorOperation::SupervisorSpawn(id) => self.service.supervisors[id.0 as usize]
@@ -1248,9 +1258,7 @@ impl Builder<'_, '_> {
                 .find_map(|child| child.pool_count),
             _ => None,
         };
-        if argument_order.len()
-            + 2 * usize::from(backoff.is_some())
-            + usize::from(pool_count.is_some())
+        if argument_order.len() + 2 * child_backoffs.len() + usize::from(pool_count.is_some())
             != signature.params.len()
         {
             return Err("actor argument count differs from its protocol".into());
@@ -1298,8 +1306,19 @@ impl Builder<'_, '_> {
                 Provenance::Site(expression.site),
             )?);
         }
-        if let Some(backoff) = backoff {
-            let value = self.lower_supervisor_configuration(expression, backoff, &args)?;
+        let config_count = args.len();
+        let inherited = backoff
+            .map(|policy| {
+                self.lower_supervisor_configuration(expression, policy, &args[..config_count])
+            })
+            .transpose()?;
+        for own in child_backoffs {
+            let value = match own {
+                Some(policy) => {
+                    self.lower_supervisor_configuration(expression, policy, &args[..config_count])?
+                }
+                None => inherited.ok_or(SirLoweringError::from("backoff child has no policy"))?,
+            };
             let ty = self
                 .value_ty(value)
                 .ok_or(SirLoweringError::from("backoff value has no type"))?;
@@ -1317,7 +1336,6 @@ impl Builder<'_, '_> {
             }
         }
         if let Some(count) = pool_count {
-            let config_count = args.len() - 2 * usize::from(backoff.is_some());
             let count =
                 self.lower_supervisor_pool_count(expression, count, &args[..config_count])?;
             args.push(count);

@@ -299,11 +299,66 @@ The receiver MUST reject:
 - a missing, forged or foreign-authority enrolment, or one for a different
   proved transport credential;
 - a lower-session replay;
-- an equal-session attempt to revive a buried member.
+- an equal-session attempt to revive a member that left.
 
-An equal-session reconnect is valid only for a live, non-buried member. A
-strictly higher durable session can replace an earlier connection and readmit a
-buried member.
+An equal-session reconnect is admitted for a live member. For a member buried
+DEAD at that session it is admitted to refute: the connection carries SWIM
+alone and publishes nothing for the peer (see section 11). A strictly higher
+durable session can replace an earlier connection and readmit a buried
+member. Once membership retires a buried member (§11), its identity is
+unknown again and any session is admitted as a new member.
+
+### 4.1 One connection per peer
+
+Two nodes can dial each other at once. Both ends MUST keep the same connection
+and close the other, and neither may lose the other's member while they switch.
+The node whose `NodeId` sorts lower (bytewise) is the pair's *initiator*, as it
+is for Noise; the other is the *responder*. In a crossing, the connection the
+initiator dialled is kept.
+
+The responder settles a same-session admission against the peer's published
+connection by this crossing rule: if the two were opened from opposite ends
+and their admissions overlapped on the responder, the initiator's dial is
+kept; otherwise the newer connection replaces the older, so a redial still
+replaces a half-open connection. A relayed circuit is not a crossing. Only one
+end applies the rule: each end's overlap is measured on its own clock, and two
+ends measuring separately can each keep the connection the other closed.
+
+Feature bit `4` (responder commit) settles the pair through the responder. It
+is the minimum cluster protocol: a node MUST refuse a peer whose record lacks
+it, closing the connection once the records are exchanged and reporting that
+the peer requires cluster protocol feature 4. Both ends see both records, so
+both refuse, and neither keeps a connection or a claim for the other. Cluster
+members are upgraded together: a node that predates the bit cannot join a
+cluster of nodes that require it. Between two nodes that set it:
+
+1. Once the channel is established and the peer authenticated, the responder
+   reserves the peer's claim by the crossing rule and §4. If it yields or
+   refuses, it closes the connection without sending a frame. Otherwise its
+   first channel frame is its commit: an 8-byte big-endian, non-zero commit
+   order that increases with each reservation the responder makes.
+2. The initiator reserves nothing until the commit arrives, and closes the
+   connection if it does not. Of its same-session connections to the
+   responder, it keeps the one with the highest commit order, in whatever order
+   the commits arrive; a lower one yields. Once its claim has moved to the
+   connection, its first channel frame echoes the commit order. It then
+   publishes and closes the connection it superseded.
+3. The commit is provisional until the echo arrives. The responder publishes
+   the connection, and closes the one it superseded, only after the echo. If
+   the connection ends first, or its first frame is anything else, the
+   initiator never switched: the responder abandons the reservation and keeps
+   the connection it would have superseded. Until the reservation settles,
+   that connection keeps carrying the peer's traffic at both ends.
+
+So the responder switches before the initiator settles, and the initiator
+switches before the responder closes anything; neither end closes a
+connection the other still owns. The initiator never waits on the network
+while holding a reservation, so the two ends cannot wait on each other. The
+step costs the initiator half a round trip and the responder a round trip.
+
+The records are bound into the channel transcript, so the bit cannot be
+removed without failing the handshake. Feature bit `2` is reserved; bit `3` is
+retired and is not reused.
 
 ## 5. Wire framing and schema
 
@@ -706,14 +761,57 @@ becomes DEAD at the first period strictly past `suspect_timeout_ms` after its
 last contact, and never in the period that suspected it.
 
 A DEAD or LEFT member is buried. Within its durable session it returns only
-through its own SWIM traffic or gossip at a strictly higher incarnation; an
-equal-session reconnect, or any claim at or below the buried incarnation,
-cannot revive it. A strictly higher durable session can be admitted. Either
-readmission clears quarantine and then resumes registry and routing
-publication; a member returning from DEAD re-announces its registered names.
+through its own SWIM traffic or gossip at a strictly higher incarnation; a
+reconnect, or any claim at or below the buried incarnation, cannot revive it.
+A strictly higher durable session can be admitted. Either readmission clears
+quarantine and then resumes registry and routing publication.
+
+A member buried DEAD while it was still running does not know it was buried.
+When it reconnects at the same session, the burying node admits the
+connection to refute: it carries SWIM frames alone, with no route, membership,
+name, service or actor traffic published in either direction, and every other
+frame the member sends is dropped. The burying node opens it with a `PING`,
+since a member that buried it in turn never probes it. The member learns of
+its burial from the obituary, refutes, and its refuting frame readmits it and
+publishes the connection. A refuting connection closes when it carries more
+than 1024 frames or a frame larger than 64 KiB, when the member is not
+readmitted within `suspect_timeout_ms`, or when the burial is retired.
+
+A member told by a peer that it is DEAD answers once per local incarnation on
+that connection: a SWIM frame carrying its refutation, then its registered
+names, which the peer dropped. The refutation goes first, so the peer has
+readmitted the member before the names arrive.
 
 Quarantine blocks sends, asks, monitors, and links until a valid readmission.
 SWIM frames are not blocked, so the protocol can reach a buried member.
+
+A buried member is retained, then retired. Retention starts when the node first
+sees the member DEAD or LEFT: a LEFT member is retained for one
+`suspect_timeout_ms`, long enough for its departure to be gossiped, and a DEAD
+member for ten (30 s by default), the window in which the burial rules above
+apply. At most 64 buried members are retained, the size of the gossip window;
+beyond that the oldest burial is retired first, so churn through node ids that
+never return uses bounded memory. A buried member whose connection is still
+published is never retired: that connection carries its obituary and can
+readmit it.
+
+Retirement forgets the member: its membership entry, durable session, failure
+detector, pending gossip and quarantine, its identity claim and session replay
+fence, and its admitted routing session. Its receiver-local route slot can then
+be assigned to another identity. A location on a retired discovered peer
+resolves as a stale reference rather than a partition. Retirement wakes node
+observers once and reports no second departure: an observer already saw the
+member DEAD or LEFT, and now sees it absent. A retired node that returns,
+whatever its session, is admitted as a new member at incarnation 1 and
+refutes any burial other nodes still hold through the usual SWIM rules.
+
+This includes a node that left. A node leaves as it stops, so a redial
+normally finds nothing listening. If it is still reachable, for example
+because its leave was gossiped while it kept running, a redial at the same
+session is refused during the LEFT grace. After the grace, the redial
+succeeds and the node is admitted as a new member. A longer DEAD window would
+not help a disconnected buried member: its gossip is not accepted without a
+published connection, so the window would only lengthen its outage.
 
 ## 12. Native-only target posture
 

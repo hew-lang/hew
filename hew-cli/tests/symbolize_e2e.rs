@@ -161,7 +161,7 @@ fn stripped_release_build_resolves_frames_from_the_hew_tables() {
         stderr.contains("hew: failure: UserPanic (212) at "),
         "{stderr}"
     );
-    assert!(stderr.contains("p.hew:3:9: too big"), "{stderr}");
+    assert!(stderr.contains("p.hew:3:15: too big"), "{stderr}");
     assert!(stderr.contains("hew:   at level2 ("), "{stderr}");
     assert!(stderr.contains("p.hew:1)"), "{stderr}");
 

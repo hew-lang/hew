@@ -402,3 +402,70 @@ fn ask_prefix_call_form_rejects() {
         "`ask foo()` should not parse as a valid expression"
     );
 }
+
+/// Unclosed blocks past the nesting limit report the limit once and the end
+/// of input once, not once per open block.
+#[test]
+fn unclosed_deep_nesting_reports_each_failure_once() {
+    let source = format!("fn main() {}\n", "{".repeat(400));
+    // The compiler parses on a large stack; so does this test.
+    let errors = std::thread::Builder::new()
+        .stack_size(64 * 1024 * 1024)
+        .spawn(move || hew_parser::parse(&source).errors)
+        .unwrap()
+        .join()
+        .unwrap();
+    assert!(!errors.is_empty());
+    assert!(errors.len() <= 3, "{} errors: {errors:?}", errors.len());
+}
+
+/// A run of characters the lexer rejects is one diagnostic covering the run.
+#[test]
+fn a_run_of_rejected_characters_is_one_error() {
+    let source = "fn main() {}\n\u{1}\u{2}\u{3}\u{4}\n";
+    let errors = hew_parser::parse(source).errors;
+    assert_eq!(errors.len(), 1, "{errors:?}");
+    assert_eq!(errors[0].span, 13..17);
+}
+
+/// A run of stray closing braces after an item is one error.
+#[test]
+fn a_run_of_stray_closers_is_one_error() {
+    let source = format!("fn main() {{}}{}\n", "}".repeat(300));
+    let errors = hew_parser::parse(&source).errors;
+    assert_eq!(errors.len(), 1, "{errors:?}");
+}
+
+/// A run of one stray token in a block or an argument list (`;;;`, `,,,`)
+/// is one error, not one or two per token.
+#[test]
+fn a_run_of_stray_tokens_in_a_block_is_one_error() {
+    for source in [
+        format!("fn main() {{ {} }}\n", ";".repeat(300)),
+        format!("fn main() {{ f({}) }}\n", ",".repeat(300)),
+    ] {
+        let errors = hew_parser::parse(&source).errors;
+        assert!(!errors.is_empty());
+        assert!(errors.len() <= 3, "{} errors: {errors:?}", errors.len());
+    }
+}
+
+/// Recovery from a failed expression consumes only the `}` it failed at, so
+/// the following members report no cascade.
+#[test]
+fn recovery_keeps_the_closing_brace_of_the_block() {
+    let source = "actor A {\n    receive fn go() {\n        1 +\n    }}\n    receive fn stop() {}\n}\nfn bad( {}\n";
+    let failed_at = source.find("}}").unwrap();
+    let bad_at = source.find("fn bad").unwrap();
+    let errors = hew_parser::parse(source).errors;
+    assert!(
+        errors.iter().any(|e| e.span.start == failed_at),
+        "{errors:?}"
+    );
+    assert!(
+        errors
+            .iter()
+            .all(|e| e.span.start == failed_at || e.span.start >= bad_at),
+        "{errors:?}"
+    );
+}

@@ -44,6 +44,9 @@ thread_local! {
 
 static HOT_TIER_ENABLED: AtomicBool = AtomicBool::new(false);
 
+#[cfg(not(target_arch = "wasm32"))]
+static SHARDS_IN_USE: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(1);
+
 // Keep the counters written by one worker together, away from other workers'
 // cache lines. Heap accounting is hot enough that packed atomic arrays cause
 // false sharing even when every worker uses a distinct index.
@@ -91,44 +94,48 @@ static POOL_SATURATIONS_TOTAL: AtomicU64 = AtomicU64::new(0);
 
 // Counts domain blocks, not references or pointers. Weak-only headers remain
 // allocated; unlike session counters this gauge is cleared only by final free.
+// Rows are keyed by the payload's immutable label address so the allocation
+// path neither decodes nor copies the label. A label stays readable while its
+// row is non-zero: every counted header retains the code that owns it.
 #[cfg(all(feature = "profiler", not(target_arch = "wasm32")))]
-static RC_LIVE_BY_TYPE: PoisonSafe<BTreeMap<String, u64>> = PoisonSafe::new(BTreeMap::new());
+static RC_LIVE_BY_LABEL: PoisonSafe<BTreeMap<usize, u64>> = PoisonSafe::new(BTreeMap::new());
 
 #[cfg(all(feature = "profiler", not(target_arch = "wasm32")))]
-pub(crate) fn record_rc_allocation(type_name: &str) {
-    RC_LIVE_BY_TYPE.access(|counts| {
-        if let Some(count) = counts.get_mut(type_name) {
-            *count += 1;
-        } else {
-            counts.insert(type_name.to_owned(), 1);
-        }
-    });
+pub(crate) fn record_rc_allocation(label: *const std::ffi::c_char) {
+    RC_LIVE_BY_LABEL.access(|counts| *counts.entry(label as usize).or_default() += 1);
 }
 
 #[cfg(all(feature = "profiler", not(target_arch = "wasm32")))]
-pub(crate) fn record_rc_free(type_name: &str) {
-    RC_LIVE_BY_TYPE.access(|counts| {
+pub(crate) fn record_rc_free(label: *const std::ffi::c_char) {
+    RC_LIVE_BY_LABEL.access(|counts| {
         let count = counts
-            .get_mut(type_name)
-            .expect("allocated Rc type is registered");
+            .get_mut(&(label as usize))
+            .expect("allocated Rc label is registered");
         *count -= 1;
         if *count == 0 {
-            counts.remove(type_name);
+            counts.remove(&(label as usize));
         }
     });
 }
 
+/// Live Rc blocks by payload type name, merging labels that render alike.
 #[cfg(all(feature = "profiler", not(target_arch = "wasm32")))]
 pub(crate) fn rc_live_by_type() -> Vec<hew_observe_protocol::RcSurvivorType> {
-    RC_LIVE_BY_TYPE.access(|counts| {
-        counts
-            .iter()
-            .map(|(type_name, &count)| hew_observe_protocol::RcSurvivorType {
-                type_name: type_name.clone(),
-                count,
-            })
-            .collect()
-    })
+    let mut by_name = BTreeMap::<String, u64>::new();
+    RC_LIVE_BY_LABEL.access(|counts| {
+        for (&label, &count) in counts.iter() {
+            // SAFETY: a non-zero row's headers retain this NUL-terminated label,
+            // and the lock orders this read before the final free's removal.
+            let name = unsafe { std::ffi::CStr::from_ptr(label as *const std::ffi::c_char) };
+            *by_name
+                .entry(name.to_string_lossy().into_owned())
+                .or_default() += count;
+        }
+    });
+    by_name
+        .into_iter()
+        .map(|(type_name, count)| hew_observe_protocol::RcSurvivorType { type_name, count })
+        .collect()
 }
 
 static ATTRIBUTED_TURNS: PoisonSafe<Option<HashMap<(usize, i32), AttributedTurn>>> =
@@ -241,11 +248,20 @@ pub fn set_hot_tier_enabled(enabled: bool) {
 /// `clear_active_dispatch_ticket`. With every worker left on shard 0 they would
 /// overwrite each other's in-flight tickets, `computed_dispatch_watermark`
 /// would advance past live dispatches, and `hew_observe_barrier` could return
-/// OK while work is still running.
+/// OK while work is still running. The profiling allocator relies on the same
+/// exclusivity: a worker shard's counters are written only by that worker.
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn set_current_worker_shard(worker_id: usize) {
     let shard = worker_id.saturating_add(1).min(SHARD_COUNT - 1);
+    SHARDS_IN_USE.fetch_max(shard + 1, Ordering::Relaxed);
     WORKER_SHARD.with(|slot| slot.set(shard));
+}
+
+/// One past the highest shard any thread has been pinned to; shards at or
+/// above it have never been written, so readers can stop summing there.
+#[cfg(all(feature = "profiler", not(target_arch = "wasm32")))]
+pub(crate) fn shards_in_use() -> usize {
+    SHARDS_IN_USE.load(Ordering::Relaxed)
 }
 
 // `current_shard`/`shard_add` carry no target gate and no `profiler` gate:
@@ -431,6 +447,11 @@ pub(crate) fn record_scheduler_park() {
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn record_scheduler_unpark() {
     SCHEDULER_UNPARKS_TOTAL.fetch_add(1, Ordering::Relaxed);
+}
+
+#[cfg(test)]
+pub(crate) fn coroutine_frame_bytes_live_for_test() -> u64 {
+    COROUTINES_FRAME_BYTES_LIVE.load(Ordering::Relaxed)
 }
 
 pub(crate) fn record_coroutine_frame_alloc(frame_bytes: u64) {

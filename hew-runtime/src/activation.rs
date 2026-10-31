@@ -819,7 +819,11 @@ pub(crate) fn activate_queued_actor(actor: *mut HewActor) {
             // Dispatch the message (with profiling and crash recovery).
             {
                 let dispatch = dispatch_target;
-                let t0 = std::time::Instant::now();
+                // Time the turn only for a configured consumer; reading the
+                // clock twice per message is not free on every host.
+                let t0 = (crate::observe::observe_hot_tier_enabled()
+                    || crate::profiler::consumer_configured())
+                .then(std::time::Instant::now);
                 // SAFETY: `msg` is exclusively owned by this worker.
                 let msg_ref = unsafe { &*msg };
                 #[cfg(not(target_arch = "wasm32"))]
@@ -1298,7 +1302,7 @@ pub(crate) fn activate_queued_actor(actor: *mut HewActor) {
                     clippy::cast_possible_truncation,
                     reason = "single message dispatch will never exceed u64::MAX nanoseconds"
                 )]
-                let elapsed_ns = t0.elapsed().as_nanos() as u64;
+                let elapsed_ns = t0.map_or(0, |t0| t0.elapsed().as_nanos() as u64);
                 msgs_processed += 1;
                 a.prof_messages_processed.fetch_add(1, Ordering::Relaxed);
                 a.prof_processing_time_ns

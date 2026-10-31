@@ -39,6 +39,94 @@ struct FrameHeader {
 const FRAME_HEADER: usize = size_of::<FrameHeader>();
 const _: () = assert!(align_of::<FrameHeader>() == FRAME_ALIGN);
 
+/// Frame blocks (header included) are cached per worker in classes of this
+/// many bytes. Ordinary calls to resumable bodies allocate and release one
+/// frame each, so recursion and loops calling such bodies reuse a block
+/// instead of round-tripping the global allocator on every call.
+const FRAME_CLASS_BYTES: usize = 64;
+/// Blocks larger than `FRAME_CLASSES * FRAME_CLASS_BYTES` bypass the cache.
+const FRAME_CLASSES: usize = 16;
+/// Cached blocks retained per class; a release beyond this frees the block.
+const FRAME_CLASS_DEPTH: u32 = 32;
+
+/// Cached blocks are linked through their first word. Each block's header is
+/// rewritten on reuse, so a cached block carries no other state.
+struct FramePool {
+    heads: [Cell<*mut u8>; FRAME_CLASSES],
+    counts: [Cell<u32>; FRAME_CLASSES],
+}
+
+impl FramePool {
+    /// Pop a cached block of `class`, or null when the class is empty.
+    #[expect(
+        clippy::cast_ptr_alignment,
+        reason = "cached blocks keep the frame alignment, which exceeds a pointer's"
+    )]
+    fn take(&self, class: usize) -> *mut u8 {
+        let head = self.heads[class].get();
+        if !head.is_null() {
+            // SAFETY: a cached block is a live, exclusively owned allocation
+            // whose first word links the next cached block of its class.
+            self.heads[class].set(unsafe { head.cast::<*mut u8>().read() });
+            self.counts[class].set(self.counts[class].get() - 1);
+        }
+        head
+    }
+
+    /// Cache `base` unless its class is full; returns whether it was retained.
+    #[expect(
+        clippy::cast_ptr_alignment,
+        reason = "cached blocks keep the frame alignment, which exceeds a pointer's"
+    )]
+    fn give(&self, class: usize, base: *mut u8) -> bool {
+        if self.counts[class].get() >= FRAME_CLASS_DEPTH {
+            return false;
+        }
+        // SAFETY: the released block is at least one class long and aligned
+        // for a pointer; the cache now owns it exclusively.
+        unsafe { base.cast::<*mut u8>().write(self.heads[class].get()) };
+        self.heads[class].set(base);
+        self.counts[class].set(self.counts[class].get() + 1);
+        true
+    }
+}
+
+impl Drop for FramePool {
+    fn drop(&mut self) {
+        for class in 0..FRAME_CLASSES {
+            loop {
+                let base = self.take(class);
+                if base.is_null() {
+                    break;
+                }
+                // SAFETY: every cached block was allocated with its class layout.
+                unsafe { dealloc(base, frame_class_layout(class)) }; // ALLOCATOR-PAIRING: GlobalAlloc
+            }
+        }
+    }
+}
+
+/// Cache class for a block of `total` bytes, or `None` beyond the cached range.
+/// Sanitizer builds cache nothing, so a use of a released frame still faults.
+fn frame_class(total: usize) -> Option<usize> {
+    let class = total.div_ceil(FRAME_CLASS_BYTES).checked_sub(1)?;
+    (class < FRAME_CLASSES && !cfg!(hew_sanitized)).then_some(class)
+}
+
+fn frame_class_layout(class: usize) -> Layout {
+    // SAFETY: class sizes are small non-zero multiples of the frame alignment.
+    unsafe { Layout::from_size_align_unchecked((class + 1) * FRAME_CLASS_BYTES, FRAME_ALIGN) }
+}
+
+thread_local! {
+    static FRAME_POOL: FramePool = const {
+        FramePool {
+            heads: [const { Cell::new(ptr::null_mut()) }; FRAME_CLASSES],
+            counts: [const { Cell::new(0) }; FRAME_CLASSES],
+        }
+    };
+}
+
 /// `hew_cont_crash_cleanup_arm` result indicating malformed relocation input
 /// or a snapshot allocation that could not be represented. Zero is reserved
 /// for the ordinary "no active dispatch scope" no-op.
@@ -119,6 +207,11 @@ struct CrashCleanupRegistry {
     /// intentional traps, and unwind attempts in this interval are all
     /// process-fatal; no actor recovery may abandon indeterminate authority.
     state_finalizer_critical: bool,
+    /// An escrow buffer from an earlier normal dispatch on this thread, free
+    /// for reuse when the next state has the same size and alignment.
+    spare_snapshot: *mut u8,
+    spare_size: u64,
+    spare_align: u64,
 }
 
 /// Process-wide non-reusing crash-cleanup identity source.
@@ -150,6 +243,84 @@ thread_local! {
     /// cannot attach to, or accidentally pop, an older dispatch scope.
     static CRASH_CLEANUP_DRAIN_DEPTH: Cell<u32> = const { Cell::new(0) };
 
+    /// One normally completed dispatch registry, with its escrow buffer, kept
+    /// for this thread's next dispatch so a turn does not allocate either.
+    static SPARE_DISPATCH_REGISTRY: SpareDispatchRegistry =
+        const { SpareDispatchRegistry(Cell::new(ptr::null_mut())) };
+}
+
+/// Owner of the thread's spare registry; frees it at thread exit.
+struct SpareDispatchRegistry(Cell<*mut CrashCleanupRegistry>);
+
+impl Drop for SpareDispatchRegistry {
+    fn drop(&mut self) {
+        let spare = self.0.replace(ptr::null_mut());
+        if !spare.is_null() {
+            // SAFETY: the slot exclusively owns a reset registry box.
+            let mut spare = unsafe { Box::from_raw(spare) };
+            // SAFETY: the spare escrow was allocated with its recorded layout.
+            unsafe { release_spare_snapshot(&mut spare) };
+        }
+    }
+}
+
+/// Free a spare escrow buffer kept by a recycled registry.
+unsafe fn release_spare_snapshot(registry: &mut CrashCleanupRegistry) {
+    let spare = std::mem::replace(&mut registry.spare_snapshot, ptr::null_mut());
+    if !spare.is_null() {
+        // SAFETY: the buffer was allocated with exactly this size/alignment.
+        unsafe { hew_dealloc(spare, registry.spare_size, registry.spare_align) };
+    }
+}
+
+/// Take this thread's spare registry, or a new one.
+#[expect(
+    clippy::unnecessary_box_returns,
+    reason = "the registry is published by address to the dispatch scope stack"
+)]
+fn take_dispatch_registry() -> Box<CrashCleanupRegistry> {
+    let spare = SPARE_DISPATCH_REGISTRY
+        .try_with(|slot| slot.0.replace(ptr::null_mut()))
+        .unwrap_or(ptr::null_mut());
+    if spare.is_null() {
+        Box::default()
+    } else {
+        // SAFETY: the slot held the sole owner of a reset registry box.
+        unsafe { Box::from_raw(spare) }
+    }
+}
+
+/// Keep a normally discarded registry and its escrow buffer for reuse, or
+/// free them when this thread already holds a spare.
+fn recycle_dispatch_registry(mut registry: Box<CrashCleanupRegistry>) {
+    let spare_snapshot = registry.spare_snapshot;
+    let (spare_size, spare_align) = (registry.spare_size, registry.spare_align);
+    let entries = std::mem::take(&mut registry.entries);
+    debug_assert!(entries.is_empty());
+    *registry = CrashCleanupRegistry {
+        entries,
+        spare_snapshot,
+        spare_size,
+        spare_align,
+        ..CrashCleanupRegistry::default()
+    };
+    let raw = Box::into_raw(registry);
+    let kept = SPARE_DISPATCH_REGISTRY
+        .try_with(|slot| {
+            if slot.0.get().is_null() {
+                slot.0.set(raw);
+                true
+            } else {
+                false
+            }
+        })
+        .unwrap_or(false);
+    if !kept {
+        // SAFETY: the registry was not published to the slot; reclaim it.
+        let mut registry = unsafe { Box::from_raw(raw) };
+        // SAFETY: the spare escrow was allocated with its recorded layout.
+        unsafe { release_spare_snapshot(&mut registry) };
+    }
 }
 
 struct CrashCleanupDrainGuard;
@@ -242,6 +413,7 @@ pub enum ResumePoll {
 ///
 /// Codegen supplies the concrete layout size. A private allocation header
 /// records the validated layout for the matching [`hew_cont_frame_free`].
+/// Small blocks come from, and return to, the current worker's frame cache.
 /// The returned frame starts after that header with [`FRAME_ALIGN`] alignment.
 /// Returns null for zero or unrepresentable sizes. A valid request that exhausts
 /// memory uses the global allocator's allocation-error handler.
@@ -269,19 +441,34 @@ pub unsafe extern "C" fn hew_cont_frame_alloc(size: u64) -> *mut c_void {
         // allocation; fail closed rather than wrap.
         return ptr::null_mut();
     };
-    let Ok(layout) = Layout::from_size_align(total, FRAME_ALIGN) else {
-        return ptr::null_mut();
+    let (layout, cached) = if let Some(class) = frame_class(total) {
+        let cached = FRAME_POOL
+            .try_with(|pool| pool.take(class))
+            .unwrap_or(ptr::null_mut());
+        (frame_class_layout(class), cached)
+    } else {
+        let Ok(layout) = Layout::from_size_align(total, FRAME_ALIGN) else {
+            return ptr::null_mut();
+        };
+        (layout, ptr::null_mut())
     };
-    // SAFETY: the validated layout includes a nonempty aligned frame header.
-    let base = unsafe { alloc(layout) }; // ALLOCATOR-PAIRING: GlobalAlloc
-    if base.is_null() {
-        handle_alloc_error(layout);
-    }
+    let base = if cached.is_null() {
+        // SAFETY: the validated layout includes a nonempty aligned frame header.
+        let base = unsafe { alloc(layout) }; // ALLOCATOR-PAIRING: GlobalAlloc
+        if base.is_null() {
+            handle_alloc_error(layout);
+        }
+        base
+    } else {
+        cached
+    };
     // SAFETY: the fresh allocation is aligned for and contains this header.
     unsafe { base.cast::<FrameHeader>().write(FrameHeader { layout }) };
-    crate::observe::record_coroutine_frame_alloc(size as u64);
-    // SAFETY: the allocation is total = FRAME_HEADER + size bytes, so advancing
-    // by FRAME_HEADER lands within the block with `size` usable bytes ahead.
+    // A cached block may exceed the request; account its usable bytes so the
+    // matching release subtracts the same amount.
+    crate::observe::record_coroutine_frame_alloc((layout.size() - FRAME_HEADER) as u64);
+    // SAFETY: the block holds at least FRAME_HEADER + size bytes, so advancing
+    // by FRAME_HEADER lands within it with `size` usable bytes ahead.
     unsafe { base.add(FRAME_HEADER).cast::<c_void>() }
 }
 
@@ -311,6 +498,15 @@ pub unsafe extern "C" fn hew_cont_frame_free(frame: *mut c_void) {
     // SAFETY: the live aligned header owns the layout recorded at allocation.
     let layout = unsafe { base.cast::<FrameHeader>().read().layout };
     crate::observe::record_coroutine_frame_free((layout.size() - FRAME_HEADER) as u64);
+    if let Some(class) = frame_class(layout.size()) {
+        // A thread past its local teardown frees the block below instead.
+        if FRAME_POOL
+            .try_with(|pool| pool.give(class, base))
+            .unwrap_or(false)
+        {
+            return;
+        }
+    }
     // SAFETY: this is the exact allocation base and its original layout.
     unsafe { dealloc(base, layout) }; // ALLOCATOR-PAIRING: GlobalAlloc
 }
@@ -419,10 +615,26 @@ unsafe fn free_crash_cleanup_registry(
         // SAFETY: detachment transferred the sole typed authority here.
         faulted |= unsafe { free_crash_cleanup_entry(entry, run_entries) };
     }
+    if !run_entries && !run_state {
+        // A normal discard runs no finalizer: keep the escrow buffer and the
+        // registry for this thread's next dispatch.
+        let snapshot = std::mem::replace(&mut registry.state_snapshot, ptr::null_mut());
+        if !snapshot.is_null() {
+            // SAFETY: any older spare was allocated with its recorded layout.
+            unsafe { release_spare_snapshot(&mut registry) };
+            registry.spare_snapshot = snapshot;
+            registry.spare_size = registry.state_size;
+            registry.spare_align = registry.state_align;
+        }
+        recycle_dispatch_registry(registry);
+        return faulted;
+    }
     // Actor state predates every lexical owner, so it is released last.
     // SAFETY: detachment transferred sole ownership of the escrow allocation
     // and generated typed drop metadata to this drain.
     faulted |= unsafe { free_dispatch_state_snapshot(&mut registry, run_state) };
+    // SAFETY: a spare escrow carried by a recycled registry is unowned here.
+    unsafe { release_spare_snapshot(&mut registry) };
     faulted
 }
 
@@ -743,7 +955,7 @@ pub(crate) unsafe fn begin_dispatch_crash_cleanup(
     if crash_cleanup_drain_active() {
         return false;
     }
-    let mut registry = Box::new(CrashCleanupRegistry::default());
+    let mut registry = take_dispatch_registry();
     if !state.is_null() && state_size != 0 {
         let Ok(state_size_u64) = u64::try_from(state_size) else {
             return false;
@@ -766,9 +978,20 @@ pub(crate) unsafe fn begin_dispatch_crash_cleanup(
         let Ok(state_align_u64) = u64::try_from(state_align) else {
             return false;
         };
-        // SAFETY: hew_alloc validates this non-zero, power-of-two layout.
-        let snapshot = unsafe { hew_alloc(state_size_u64, state_align_u64) };
+        let snapshot =
+            if registry.spare_size == state_size_u64 && registry.spare_align == state_align_u64 {
+                std::mem::replace(&mut registry.spare_snapshot, ptr::null_mut())
+            } else {
+                ptr::null_mut()
+            };
+        let snapshot = if snapshot.is_null() {
+            // SAFETY: hew_alloc validates this non-zero, power-of-two layout.
+            unsafe { hew_alloc(state_size_u64, state_align_u64) }
+        } else {
+            snapshot
+        };
         if snapshot.is_null() {
+            recycle_dispatch_registry(registry);
             return false;
         }
         // SAFETY: caller guarantees the source range; snapshot is a distinct
@@ -2476,6 +2699,48 @@ mod tests {
             // would surface under MallocScribble in the exec test.
             hew_cont_frame_free(frame);
         }
+    }
+
+    /// A released small frame is reused by the next request of its class on
+    /// the same worker, the cache stays bounded, and observed frame bytes
+    /// balance across reuse.
+    #[test]
+    #[cfg(not(hew_sanitized))]
+    fn frame_cache_reuses_bounded_blocks_and_balances_accounting() {
+        let before = crate::observe::coroutine_frame_bytes_live_for_test();
+        // SAFETY: every block below is released exactly once.
+        unsafe {
+            let first = hew_cont_frame_alloc(100);
+            hew_cont_frame_free(first);
+            // 100 and 90 bytes share a 128-byte class block.
+            let reused = hew_cont_frame_alloc(90);
+            assert_eq!(
+                reused, first,
+                "a same-class request reuses the cached block"
+            );
+            ptr::write_bytes(reused.cast::<u8>(), 0xCD, 90);
+            hew_cont_frame_free(reused);
+
+            let depth = FRAME_CLASS_DEPTH as usize + 4;
+            let frames: Vec<_> = (0..depth).map(|_| hew_cont_frame_alloc(100)).collect();
+            for frame in &frames {
+                hew_cont_frame_free(*frame);
+            }
+            let class = frame_class(100 + FRAME_HEADER).unwrap();
+            FRAME_POOL.with(|pool| {
+                assert_eq!(pool.counts[class].get(), FRAME_CLASS_DEPTH);
+            });
+
+            // Beyond the cached range, blocks bypass the cache.
+            let large = hew_cont_frame_alloc((FRAME_CLASSES * FRAME_CLASS_BYTES) as u64);
+            assert!(!large.is_null());
+            hew_cont_frame_free(large);
+        }
+        assert_eq!(
+            crate::observe::coroutine_frame_bytes_live_for_test(),
+            before,
+            "frame accounting balances across cached reuse"
+        );
     }
 
     /// Invalid sizes return null before attempting a heap allocation.

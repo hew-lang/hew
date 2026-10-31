@@ -7854,6 +7854,20 @@ Hew uses an **M:N work-stealing scheduler** inspired by Go, Tokio, and BEAM:
 - Each worker has a local run queue of ready actors
 - Idle workers steal from busy workers' queues
 - Actors are scheduled as units (process messages until yield/await)
+- A worker that runs out of work, and a thread blocked on a reply outside the
+  pool, spins briefly before it parks. The spin adapts per thread: a spin that
+  finds work lengthens the next one, and a wasted spin shortens it to nothing,
+  with a periodic retry.
+  Spinning is off on a single hardware thread or when the workers outnumber
+  the hardware threads, and it stops when the runtime shuts down. A parked
+  worker uses no CPU until work arrives.
+
+**Environment:**
+
+- `HEW_WORKERS` sets the worker count (default: available hardware threads).
+- `HEW_SPIN` sets the maximum spin iterations before a park (default 512, at
+  most 16384);
+  `0` or `off` parks at once.
 
 **Fairness and suspension:**
 
@@ -8398,20 +8412,23 @@ The methods `.try_to_i8()`, `.try_to_i16()`, `.try_to_i32()`, `.try_to_i64()`, `
 ### 12.2 Operator Precedence (highest to lowest)
 
 1. Postfix: `?`, `.field`, `(args)`, `[index]`
-2. Unary: `!` (logical NOT, bool-only), `-` (negate), `~` (bitwise complement, integer-only), `await`, `clone` (contextual prefix — see §3.4.4)
-3. Multiplicative: `*`, `/`, `%`, `&*` (wrapping multiply)
-4. Additive: `+`, `-` (`+` also concatenates strings), `&+` (wrapping add), `&-` (wrapping subtract)
-5. Shift: `<<`, `>>`
-6. Bitwise AND: `&`
-7. Bitwise XOR: `^`
-8. Bitwise OR: `|`
-9. Relational: `<`, `<=`, `>`, `>=`
-10. Equality: `==`, `!=`, `is` (`is` is **handle identity only** — it admits the pid, counted, opaque, and resource handle categories of §3.4.3 and answers whether two names denote the same actor, count, or resource. Every value-category and callable-category operand is rejected with `E_IS_VALUE_TYPE`, including scalars, `string`, `bytes`, tuples, records, enums, `Vec`, `HashMap`, and `HashSet`: these are copy-on-write values with no identity to compare, so `==` is their comparison. On an actor reference `==` and `!=` compare that same handle identity, so `a == b` agrees with `a is b`, and a record, option, tuple or result that carries actor references compares them by identity; an actor's state is never compared. There is no `expr is TypeName` form; regex matching is via `Pattern.is_match`)
-11. Logical AND: `&&`
-12. Logical OR: `||`
-13. Range: `..`, `..=`. Bounded integer ranges are ordinary `Range<T>` values that can be stored, passed to functions and iterated. `.rev()` and `.step_by(positive_step)` transform their selected sequence in source order. The `.start` and `.end` properties expose the original bounds and are read-only; construct a new range to change its bounds. Open endpoints are admitted for range selectors, including indexing and string `get(range)`. At the start of a literal item, `..expr` is the spread of §3.1
-14. Coalescing: `??`
-15. Assignment: `=`, `+=`, `-=`, `*=`, `/=`, `%=`, `&=`, `|=`, `^=`, `<<=`, `>>=`. A compound assignment `x op= v` updates `x` with `op` and `v`. It applies to these targets: every operator to an integer; `+=`, `-=`, `*=`, `/=` and `%=` to a float, `duration` or `instant`; `&=`, `|=` and `^=` to a `bool`; and `+=` alone to a `string` or `bytes`. Any other target is refused at compile time
+2. Unary: `!` (logical NOT, bool-only), `-` (negate), `~` (bitwise complement, integer-only), `await`, `fork`, `clone` (contextual prefix — see §3.4.4)
+3. Cast: `as` (left-associative: `x as T as U` is `(x as T) as U`)
+4. Multiplicative: `*`, `/`, `%`, `&*` (wrapping multiply)
+5. Additive: `+`, `-` (`+` also concatenates strings), `&+` (wrapping add), `&-` (wrapping subtract)
+6. Shift: `<<`, `>>`
+7. Bitwise AND: `&`
+8. Bitwise XOR: `^`
+9. Bitwise OR: `|`
+10. Relational: `<`, `<=`, `>`, `>=`
+11. Equality: `==`, `!=`, `is` (`is` is **handle identity only** — it admits the pid, counted, opaque, and resource handle categories of §3.4.3 and answers whether two names denote the same actor, count, or resource. Every value-category and callable-category operand is rejected with `E_IS_VALUE_TYPE`, including scalars, `string`, `bytes`, tuples, records, enums, `Vec`, `HashMap`, and `HashSet`: these are copy-on-write values with no identity to compare, so `==` is their comparison. On an actor reference `==` and `!=` compare that same handle identity, so `a == b` agrees with `a is b`, and a record, option, tuple or result that carries actor references compares them by identity; an actor's state is never compared. There is no `expr is TypeName` form; regex matching is via `Pattern.is_match`)
+12. Logical AND: `&&`
+13. Logical OR: `||`
+14. Range: `..`, `..=`. Bounded integer ranges are ordinary `Range<T>` values that can be stored, passed to functions and iterated. `.rev()` and `.step_by(positive_step)` transform their selected sequence in source order. The `.start` and `.end` properties expose the original bounds and are read-only; construct a new range to change its bounds. Open endpoints are admitted for range selectors, including indexing and string `get(range)`. At the start of a literal item, `..expr` is the spread of §3.1
+15. Coalescing: `??`
+16. Assignment: `=`, `+=`, `-=`, `*=`, `/=`, `%=`, `&=`, `|=`, `^=`, `<<=`, `>>=`. A compound assignment `x op= v` updates `x` with `op` and `v`. It applies to these targets: every operator to an integer; `+=`, `-=`, `*=`, `/=` and `%=` to a float, `duration` or `instant`; `&=`, `|=` and `^=` to a `bool`; and `+=` alone to a `string` or `bytes`. Any other target is refused at compile time
+
+> **Prefix operators and casts:** a prefix operator applies before `as`, so `-x as i64` is `(-x) as i64`, `-1.5 as u32` is `(-1.5) as u32`, and `!flag as i32` is `(!flag) as i32`. Postfix forms still bind first: `-v.len() as i32` is `(-(v.len())) as i32`. A cast applies to the operand next to it, so `a * b as i64` is `a * (b as i64)`. Write `-(x as i64)` to negate after widening: with `x: i8 = -128`, `-x as i64` traps on the `i8` negation while `-(x as i64)` yields `128`.
 
 > **Bool bitwise operators:** `&`, `^` and `|` take two integers of one type, or two `bool`s. On `bool` they are logical operators that always evaluate both operands and yield `bool`; `&&` and `||` are the short-circuiting forms. A `bool` mixed with an integer is refused.
 

@@ -17,6 +17,10 @@ pub struct NativeActorCompletion {
     pub(crate) cleanup: super::cleanup::Cleanup,
     pub(crate) crash: Option<crate::actor::HewNativeCrashFn>,
     pub(crate) crash_action: AtomicI32,
+    /// Wake target shared by every turn of this incarnation, created on the
+    /// first turn instead of once per message.
+    pub(crate) turn_wake:
+        std::sync::OnceLock<std::sync::Arc<crate::lifetime::live_actors::ActorIncarnation>>,
     pub(crate) construction: Mutex<Option<crate::coro_state::RetainedCancellation>>,
     pub(crate) construction_budget:
         Mutex<Option<crate::owned_value_budget::actor::ConstructionBudget>>,

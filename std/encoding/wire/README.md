@@ -66,3 +66,9 @@ fields remain tolerated. `Option<Option<T>>` is outside the wire-body floor
 because null cannot preserve all of its states. TOML has no null, so
 `toml.encode` and `toml.decode` refuse a `#[wire]` record with a required
 `Option` field (`E_FORMAT_CANNOT_REPRESENT`); mark it `optional`.
+
+Every format bounds container nesting at 127 levels. JSON and TOML
+numbers beyond the `f64` range, such as `1e400`, are refused with a parse
+error rather than read as infinity; underflow (`1e-400`) rounds to zero.
+Infinity and NaN encode as the strings `"Infinity"`, `"-Infinity"` and
+`"NaN"` and decode back where a float is expected.

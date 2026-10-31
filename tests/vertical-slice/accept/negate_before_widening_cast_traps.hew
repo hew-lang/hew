@@ -1,0 +1,11 @@
+// `-x as i64` negates the i8 before widening (§12.2), so negating i8::MIN
+// traps IntegerOverflow; `-(x as i64)` widens first and yields 128.
+fn main() -> i64 {
+    let x: i8 = min_i8();
+    println(-(x as i64));
+    -x as i64
+}
+
+fn min_i8() -> i8 {
+    -128
+}

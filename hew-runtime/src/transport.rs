@@ -310,35 +310,7 @@ impl SocketSlots {
                         // socket alive, causing join() on the reader thread to
                         // deadlock.
                         if let Some(ref sock) = conns[idx] {
-                            let _ = sock.shutdown(Shutdown::Both);
-                            #[cfg(windows)]
-                            {
-                                use std::os::windows::io::AsRawSocket;
-                                use windows_sys::Win32::Foundation::ERROR_NOT_FOUND;
-                                use windows_sys::Win32::System::IO::CancelIoEx;
-
-                                // Winsock shutdown refuses future reads but does
-                                // not wake an already-blocking recv. Cancel its
-                                // pending I/O after shutdown closes that race.
-                                // SAFETY: the table owns this live socket, and
-                                // each in-flight read retains its own duplicate.
-                                let cancelled = unsafe {
-                                    CancelIoEx(
-                                        sock.as_raw_socket() as *mut c_void,
-                                        std::ptr::null(),
-                                    )
-                                };
-                                if cancelled == 0 {
-                                    let error = std::io::Error::last_os_error();
-                                    if error.raw_os_error() != Some(ERROR_NOT_FOUND as i32) {
-                                        let message = format!(
-                                            "transport socket cancellation failed: {error}"
-                                        );
-                                        tracing::error!("{message}");
-                                        set_last_error(message);
-                                    }
-                                }
-                            }
+                            wake_blocked_io(sock);
                         }
                         conns[idx] = None;
                     })
@@ -350,6 +322,54 @@ impl SocketSlots {
                     "removing conn",
                     Some(id),
                 );
+            }
+        }
+    }
+
+    /// Wake every blocked read and write on this table's sockets without
+    /// releasing a slot: each owner still closes its own handle, so no id can
+    /// be recycled under it. Holding the write lock orders this sweep against
+    /// [`Self::store_conn`]; a socket stored afterwards belongs to an
+    /// admission that next observes the manager's shutdown flag.
+    fn cancel_all(&self) {
+        if self
+            .conns
+            .write(|conns| conns.iter().flatten().for_each(wake_blocked_io))
+            .is_err()
+        {
+            report_conn_table_poison(
+                self.transport,
+                &self.conn_poison_reported,
+                "cancelling conns",
+                None,
+            );
+        }
+    }
+}
+
+/// Refuse further traffic on `sock` and wake any thread blocked on one of its
+/// duplicates, which shares the open file description.
+fn wake_blocked_io(sock: &Socket) {
+    let _ = sock.shutdown(Shutdown::Both);
+    #[cfg(windows)]
+    {
+        use std::os::windows::io::AsRawSocket;
+        use windows_sys::Win32::Foundation::ERROR_NOT_FOUND;
+        use windows_sys::Win32::System::IO::CancelIoEx;
+
+        // Winsock shutdown refuses future reads but does not wake an
+        // already-blocking recv. Cancel its pending I/O after shutdown closes
+        // that race.
+        // SAFETY: the caller holds this live socket, and each in-flight read
+        // retains its own duplicate.
+        let cancelled =
+            unsafe { CancelIoEx(sock.as_raw_socket() as *mut c_void, std::ptr::null()) };
+        if cancelled == 0 {
+            let error = std::io::Error::last_os_error();
+            if error.raw_os_error() != Some(ERROR_NOT_FOUND as i32) {
+                let message = format!("transport socket cancellation failed: {error}");
+                tracing::error!("{message}");
+                set_last_error(message);
             }
         }
     }
@@ -766,6 +786,35 @@ pub(crate) unsafe fn hew_transport_tcp_bound_port(transport: *mut HewTransport) 
         .ok()?
         .as_socket()
         .map(|addr| addr.port())
+}
+
+/// Wake every thread blocked on one of this transport's connections, including
+/// an admission that has not been handed to a connection manager yet. Slots stay
+/// allocated until their owners close them. Node stop calls this so a stalled
+/// peer cannot hold teardown. TCP, Unix and `quic_mesh` transports are swept.
+///
+/// # Safety
+/// `transport` is null or valid for the duration of the call.
+pub(crate) unsafe fn hew_transport_cancel_io(transport: *mut HewTransport) {
+    if transport.is_null() {
+        return;
+    }
+    // SAFETY: caller guarantees `transport` is valid for the duration of this call.
+    let transport = unsafe { &*transport };
+    if transport.r#impl.is_null() {
+        return;
+    }
+    if std::ptr::eq(transport.ops, &raw const TCP_OPS) {
+        // SAFETY: the TCP ops check guarantees the impl pointer is a TcpTransport.
+        unsafe { &*transport.r#impl.cast::<TcpTransport>() }
+            .slots
+            .cancel_all();
+        return;
+    }
+    #[cfg(unix)]
+    unix_transport::cancel_io(transport);
+    #[cfg(feature = "quic")]
+    crate::quic_mesh::cancel_io(transport);
 }
 
 /// Classify a connection's remote endpoint for per-connection posture
@@ -2117,6 +2166,32 @@ mod tests {
         assert!(slots.get_conn(id).unwrap().is_none());
     }
 
+    #[test]
+    fn tcp_slot_cancel_wakes_blocked_reader_and_keeps_its_slot() {
+        let (server, peer) = connected_streams();
+        let slots = SocketSlots::new("tcp");
+        let id = slots.store_conn(server.into());
+        let socket = slots.get_conn(id).unwrap().unwrap();
+        let (done_tx, done_rx) = std::sync::mpsc::channel();
+        let reader = std::thread::spawn(move || {
+            let mut bytes = [0u8; 8];
+            done_tx.send(framed_recv(&socket, &mut bytes)).unwrap();
+        });
+        // The reader has no read timeout and the peer stays open, so only the
+        // cancellation can complete it.
+        slots.cancel_all();
+        let woken = done_rx.recv_timeout(std::time::Duration::from_secs(30));
+        drop(peer);
+        reader.join().unwrap();
+        assert_eq!(woken, Ok(-1));
+        // The owner still holds its handle: the slot is not recycled until it
+        // closes it.
+        assert!(slots.get_conn(id).unwrap().is_some());
+        assert_ne!(slots.store_conn(unconnected_test_socket()), id);
+        slots.remove_conn(id);
+        assert!(slots.get_conn(id).unwrap().is_none());
+    }
+
     #[cfg(unix)]
     fn assert_slot_removal_shuts_down_clones(
         transport: &'static str,
@@ -3291,6 +3366,17 @@ mod unix_transport {
         cabi_guard!(impl_ptr.is_null());
         // SAFETY: impl_ptr was created by Box::into_raw in hew_transport_unix_new.
         let _ = unsafe { Box::from_raw(impl_ptr.cast::<UnixTransport>()) }; // ALLOCATOR-PAIRING: GlobalAlloc
+    }
+
+    /// The Unix-socket arm of [`super::hew_transport_cancel_io`].
+    pub(super) fn cancel_io(transport: &HewTransport) {
+        if std::ptr::eq(transport.ops, &raw const UNIX_OPS) {
+            // SAFETY: the Unix ops check guarantees the impl pointer is a
+            // UnixTransport, and the caller checked it non-null.
+            unsafe { &*transport.r#impl.cast::<UnixTransport>() }
+                .slots
+                .cancel_all();
+        }
     }
 
     static UNIX_OPS: HewTransportOps = HewTransportOps {

@@ -40,3 +40,4 @@ hew-hir = { path = "../hew-hir" }
 hew-sir = { path = "../hew-sir" }
 hew-types = { path = "../hew-types", features = ["test"] }
 tempfile.workspace = true
+object = "0.40"

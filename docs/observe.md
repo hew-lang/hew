@@ -170,7 +170,7 @@ value only increments when `HEW_OBSERVE` enables the hot tier.
 | `coroutines.suspended` | gauge | no | Suspended coroutine count. |
 | `coroutines.resumes_total` | counter | no | Coroutine resume count. |
 | `coroutines.suspends_total` | counter | no | Coroutine suspend count. |
-| `coroutines.frame_bytes_live` | gauge | no | Bytes held by live coroutine frames. |
+| `coroutines.frame_bytes_live` | gauge | no | Bytes held by live coroutine frames; small frames count their 64-byte size class. |
 | `threads.blocking_count` | gauge | no | Blocking-pool jobs running now. |
 | `reactor.registrations_live` | gauge | no | Operations currently waiting on socket readiness. |
 | `reactor.ready_events_total` | counter | no | Readiness reports handed to waiting operations. |

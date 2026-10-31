@@ -5,7 +5,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use crate::node_identity::NodeId;
-use crate::peer_binding::{ClaimState, LiveClaim, PeerCredential};
+use crate::peer_binding::{ClaimState, ConnectionOrigin, LiveClaim, PeerCredential};
 use crate::routing::{
     hew_routing_add_route, hew_routing_can_add_route, hew_routing_remove_route_if_conn,
 };
@@ -15,7 +15,6 @@ use crate::util::{CondvarExt, MutexExt};
 use super::admission::remove_connection;
 use super::gossip::flush_registry_gossip_to_connection;
 use super::handshake::close_transport_conn;
-#[cfg(test)]
 use super::reconnect::next_publication_token;
 use super::{HewConnMgr, ReconnectOwner};
 
@@ -26,12 +25,132 @@ pub(super) const CLAIM_RESERVE_WAIT_MS: u64 = 5_000;
 /// Outcome of reserving a `NodeId` claim during admission (issue #2652, D3).
 pub(super) enum ClaimReservation {
     /// The reservation succeeded. Carries the superseded same-credential
-    /// `Published` claim (if any) to demote after our publish.
-    Reserved { superseded: Option<LiveClaim> },
+    /// `Published` claim (if any) to demote after our publish, and whether
+    /// the peer returned at the session this node buried, which publishes the
+    /// claim as [`ClaimState::Refuting`] instead.
+    Reserved {
+        superseded: Option<LiveClaim>,
+        buried: bool,
+    },
+    /// This admission crossed the peer's own dial and lost the tie-break: the
+    /// peer stays connected through the published owner named here, and the
+    /// caller closes its own unpublished connection.
+    Yielded(ReconnectOwner),
     /// The reservation was rejected fail-closed (a live different-credential
     /// owner, or an in-flight reservation that did not resolve in time). Carries
     /// the diagnostic detail.
     Rejected(String),
+}
+
+/// Where an admission came from and when it began, which together decide a
+/// crossing dial.
+#[derive(Clone, Copy, Debug)]
+pub(super) struct AdmissionStart {
+    pub(super) origin: ConnectionOrigin,
+    /// The manager's admission order when this admission began. A claim that
+    /// published at this order or later published while it was in flight.
+    pub(super) began_at: u64,
+}
+
+impl AdmissionStart {
+    pub(super) fn now(mgr: &HewConnMgr, origin: ConnectionOrigin) -> Self {
+        Self {
+            origin,
+            began_at: mgr.next_publication_token.load(Ordering::Relaxed),
+        }
+    }
+}
+
+/// The node with the lower `NodeId` opens the connection both ends keep.
+/// A relayed circuit uses the same order to pick its initiator.
+pub(super) fn local_dials_first(local: NodeId, peer: NodeId) -> bool {
+    local.to_bytes() < peer.to_bytes()
+}
+
+/// This end's part in settling which same-session connection a pair keeps.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum Commit {
+    /// This end is the responder: it settles the pair, and a reservation
+    /// draws the order it commits the connection in.
+    Responder,
+    /// This end is the initiator: it keeps whichever connection the responder
+    /// committed last, given this connection's commit order.
+    Initiator(u64),
+}
+
+impl Commit {
+    /// The role this end takes once the records are exchanged. The node with
+    /// the lower `NodeId` initiates, as it does the Noise handshake.
+    pub(super) fn negotiate(local: NodeId, peer: NodeId) -> Self {
+        if local_dials_first(local, peer) {
+            // The order arrives with the responder's commit.
+            Self::Initiator(0)
+        } else {
+            Self::Responder
+        }
+    }
+}
+
+/// How a same-session admission settles against the peer's published
+/// connection when the two were dialled from opposite ends.
+enum CrossingDial {
+    /// The newcomer was dialled by the lower `NodeId`: it replaces the other.
+    Replace,
+    /// The existing connection was dialled by the lower `NodeId`: keep it.
+    Yield,
+}
+
+/// Decide a crossing dial under the responder-commit step. The responder
+/// decides: two direct, same-session connections opened from opposite ends
+/// whose admissions overlapped on the responder keep the one dialled by the
+/// lower `NodeId`. The initiator keeps whichever the responder committed last.
+///
+/// The overlap is structural: the existing claim published after this
+/// admission began, both drawn from the manager's one admission order. A
+/// published connection therefore pins nothing beyond the admissions already
+/// in flight when it published, each bounded by the connection-attempt
+/// budget, and a half-open connection published before a redial began is
+/// still replaced by it.
+fn crossing_dial(
+    mgr: &HewConnMgr,
+    peer: NodeId,
+    existing: &LiveClaim,
+    admission: AdmissionStart,
+    commit: Commit,
+) -> Option<CrossingDial> {
+    // The initiator follows the responder's commits: the later one is the
+    // connection the responder kept, whatever order they arrive in here.
+    if let Commit::Initiator(order) = commit {
+        if existing.commit_order != 0 {
+            if order > existing.commit_order {
+                return Some(CrossingDial::Replace);
+            }
+            if existing.state.holds_connection() {
+                return Some(CrossingDial::Yield);
+            }
+        }
+    }
+    // Only the responder decides by overlap: it is the one clock both ends
+    // follow. Two ends deciding by their own clocks can disagree about
+    // whether the admissions overlapped and each close the other's keeper.
+    if commit != Commit::Responder {
+        return None;
+    }
+    let local = mgr.local_identity?;
+    if !existing.state.holds_connection() || existing.published_at < admission.began_at {
+        return None;
+    }
+    let preferred = if local_dials_first(local, peer) {
+        ConnectionOrigin::Dialled
+    } else {
+        ConnectionOrigin::Accepted
+    };
+    match (existing.origin, admission.origin) {
+        (ConnectionOrigin::Relayed, _) | (_, ConnectionOrigin::Relayed) => None,
+        (existing, newcomer) if existing == newcomer => None,
+        (existing, _) if existing == preferred => Some(CrossingDial::Yield),
+        _ => Some(CrossingDial::Replace),
+    }
 }
 
 /// Select under the claims lock; retained identities keep their existing alias.
@@ -60,11 +179,14 @@ pub(super) fn select_route_alias(
 /// reserve/publish handoff.
 ///
 /// On an existing entry for `node_id`:
-/// - `Published` with a **different** credential ⇒ reject fail-closed (a live
-///   authenticated owner is never taken over by a different credential).
-/// - `Published` with the **same** credential ⇒ same-peer reconnect: supersede.
 /// - `Reserved` (another admission in flight) ⇒ wait on the condvar until it
 ///   publishes/aborts, then re-evaluate; on timeout ⇒ reject.
+/// - `Published` with a **different** credential ⇒ reject fail-closed (a live
+///   authenticated owner is never taken over by a different credential).
+/// - `Published` by a crossing dial under the responder-commit step (see
+///   [`crossing_dial`]) ⇒ the responder keeps the lower `NodeId`'s dial and the
+///   initiator the responder's last commit, whatever the reconnect predecessor.
+/// - `Published` with the **same** credential ⇒ same-peer reconnect: supersede.
 /// - absent ⇒ insert `Reserved`; no supersede.
 #[expect(
     clippy::too_many_arguments,
@@ -80,6 +202,8 @@ pub(super) fn reserve_identity_claim(
     conn_id: c_int,
     publication_token: u64,
     predecessor: Option<&ReconnectOwner>,
+    admission: AdmissionStart,
+    commit: Commit,
 ) -> ClaimReservation {
     if (route_slot == 0 && mgr.auth.admission().is_none()) || session_incarnation == 0 {
         return ClaimReservation::Rejected(format!(
@@ -98,97 +222,168 @@ pub(super) fn reserve_identity_claim(
         {
             return ClaimReservation::Rejected("connection attempt cancelled or expired".into());
         }
-        // A provisional admission may abort and restore the exact retired
-        // predecessor. Let it use the bounded wait below before deciding
-        // whether this retry lost its publication authority.
-        let reserved = map
+        if map
             .get(&node_id)
-            .is_some_and(|claim| claim.state == ClaimState::Reserved);
-        if !reserved
-            && predecessor.is_some_and(|owner| {
-                owner.node_id != node_id
-                    || !map.get(&node_id).is_some_and(|claim| owner.matches(claim))
-            })
+            .is_some_and(|claim| claim.state == ClaimState::Reserved)
         {
-            return ClaimReservation::Rejected(format!(
-                "stale reconnect predecessor for NodeId {node_id}"
-            ));
-        }
-        match map.get(&node_id) {
-            Some(existing) if existing.state != ClaimState::Reserved => {
-                if existing.credential.as_ref() == credential && existing.route_slot == route_slot {
-                    if session_incarnation < existing.session_incarnation {
-                        return ClaimReservation::Rejected(format!(
-                            "lower-session replay for NodeId {node_id}: received {session_incarnation}, current {}",
-                            existing.session_incarnation
-                        ));
-                    }
-                    if session_incarnation == existing.session_incarnation
-                        && !mgr.cluster.is_null()
-                        && matches!(
-                            // SAFETY: cluster is owned by the live manager.
-                            unsafe { (&*mgr.cluster).member_state(route_slot) },
-                            crate::cluster::MEMBER_DEAD | crate::cluster::MEMBER_LEFT
-                        )
-                    {
-                        return ClaimReservation::Rejected(format!(
-                            "equal session {session_incarnation} cannot revive buried NodeId {node_id}"
-                        ));
-                    }
-                    // Same-credential reconnect or a higher durable session.
-                    let superseded = Some(existing.clone());
-                    map.insert(
-                        node_id,
-                        LiveClaim {
-                            credential: credential.cloned(),
-                            route_slot,
-                            session_incarnation,
-                            conn_id,
-                            publication_token,
-                            state: ClaimState::Reserved,
-                        },
-                    );
-                    return ClaimReservation::Reserved { superseded };
-                }
-                // A NodeId is key-derived, so another credential or route slot is
-                // either a collision or a wrong local pin.
+            // Another admission is mid-flight for this NodeId. Wait for it to
+            // publish or abort, then re-evaluate. Bounded to avoid wedging. A
+            // provisional admission may also abort and restore the exact
+            // retired predecessor a reconnect is waiting to replace.
+            let (guard, timeout) = condvar.wait_timeout_or_recover(
+                map,
+                crate::transport::connection_attempt_remaining().map_or(
+                    std::time::Duration::from_millis(CLAIM_RESERVE_WAIT_MS),
+                    |remaining| {
+                        remaining.min(std::time::Duration::from_millis(CLAIM_RESERVE_WAIT_MS))
+                    },
+                ),
+            );
+            map = guard;
+            if timeout.timed_out() {
                 return ClaimReservation::Rejected(format!(
-                    "NodeId {node_id} is already bound to another credential or route slot (conn {conn_id})"
+                    "timed out waiting on in-flight reservation for node id {node_id} (conn {conn_id})"
                 ));
             }
-            Some(_reserved) => {
-                // Another admission is mid-flight for this NodeId. Wait for it to
-                // publish or abort, then re-evaluate. Bounded to avoid wedging.
-                let (guard, timeout) = condvar.wait_timeout_or_recover(
-                    map,
-                    crate::transport::connection_attempt_remaining().map_or(
-                        std::time::Duration::from_millis(CLAIM_RESERVE_WAIT_MS),
-                        |remaining| {
-                            remaining.min(std::time::Duration::from_millis(CLAIM_RESERVE_WAIT_MS))
-                        },
-                    ),
-                );
-                map = guard;
-                if timeout.timed_out() {
+            continue;
+        }
+        let claim = LiveClaim {
+            credential: credential.cloned(),
+            route_slot,
+            session_incarnation,
+            conn_id,
+            publication_token,
+            state: ClaimState::Reserved,
+            origin: admission.origin,
+            published_at: 0,
+            commit_order: match commit {
+                // Drawn under the claims lock, so it orders the reservations.
+                Commit::Responder => next_publication_token(mgr).unwrap_or(u64::MAX),
+                Commit::Initiator(order) => order,
+            },
+            superseding: None,
+        };
+        // A peer back at the session this node buried is admitted to refute
+        // the burial over SWIM, and is published only once it has.
+        let buried = !mgr.cluster.is_null() && {
+            // SAFETY: cluster is owned by the live manager.
+            let cluster = unsafe { &*mgr.cluster };
+            cluster.member_session(route_slot) == Some(session_incarnation)
+                && cluster.member_state(route_slot) == crate::cluster::MEMBER_DEAD
+        };
+        let Some(existing) = map.get(&node_id) else {
+            // A predecessor whose claim is gone was retired with its member:
+            // the retry is a fresh admission.
+            if predecessor.is_some_and(|owner| owner.node_id != node_id) {
+                return ClaimReservation::Rejected(format!(
+                    "stale reconnect predecessor for NodeId {node_id}"
+                ));
+            }
+            map.insert(node_id, claim);
+            return ClaimReservation::Reserved {
+                superseded: None,
+                buried,
+            };
+        };
+        // A NodeId is key-derived, so another credential or route slot is
+        // either a collision or a wrong local pin.
+        if existing.credential.as_ref() != credential || existing.route_slot != route_slot {
+            return ClaimReservation::Rejected(format!(
+                "NodeId {node_id} is already bound to another credential or route slot (conn {conn_id})"
+            ));
+        }
+        if session_incarnation < existing.session_incarnation {
+            return ClaimReservation::Rejected(format!(
+                "lower-session replay for NodeId {node_id}: received {session_incarnation}, current {}",
+                existing.session_incarnation
+            ));
+        }
+        if session_incarnation == existing.session_incarnation
+            && !mgr.cluster.is_null()
+            // SAFETY: cluster is owned by the live manager.
+            && unsafe { (&*mgr.cluster).member_state(route_slot) } == crate::cluster::MEMBER_LEFT
+        {
+            return ClaimReservation::Rejected(format!(
+                "equal session {session_incarnation} cannot revive departed NodeId {node_id}"
+            ));
+        }
+        let crossing = (session_incarnation == existing.session_incarnation)
+            .then(|| crossing_dial(mgr, node_id, existing, admission, commit))
+            .flatten();
+        match crossing {
+            Some(CrossingDial::Yield) => {
+                return ClaimReservation::Yielded(ReconnectOwner {
+                    node_id,
+                    session_incarnation: existing.session_incarnation,
+                    publication_token: existing.publication_token,
+                });
+            }
+            Some(CrossingDial::Replace) => {}
+            None => {
+                if predecessor
+                    .is_some_and(|owner| owner.node_id != node_id || !owner.matches(existing))
+                {
                     return ClaimReservation::Rejected(format!(
-                        "timed out waiting on in-flight reservation for node id {node_id} (conn {conn_id})"
+                        "stale reconnect predecessor for NodeId {node_id}"
                     ));
                 }
-                // Loop and re-evaluate the (possibly changed) entry.
             }
-            None => {
-                map.insert(
+        }
+        // Same-credential reconnect, a higher durable session, or the winning
+        // side of a crossing dial. A connection replaced at the same session
+        // keeps carrying the peer's traffic until this reservation settles; one
+        // from an earlier session belongs to an incarnation that has gone.
+        let claim = LiveClaim {
+            superseding: existing
+                .carrier()
+                .filter(|_| existing.session_incarnation == session_incarnation),
+            ..claim
+        };
+        let superseded = map.insert(node_id, claim);
+        return ClaimReservation::Reserved { superseded, buried };
+    }
+}
+
+/// The later same-session admission that took `node_id`'s claim from the one
+/// published as `own_token`, once it has published. `None` when
+/// no such connection holds the claim: the peer is not connected through it.
+pub(super) fn replacing_owner(
+    mgr: &HewConnMgr,
+    node_id: NodeId,
+    session_incarnation: u32,
+    own_token: u64,
+) -> Option<ReconnectOwner> {
+    let (lock, condvar) = &mgr.claims;
+    let mut map = lock.lock_or_recover();
+    loop {
+        let claim = map.get(&node_id)?;
+        // A later admission holds a later token; an earlier one is a restored
+        // predecessor, not a replacement.
+        if claim.publication_token <= own_token || claim.session_incarnation != session_incarnation
+        {
+            return None;
+        }
+        match claim.state {
+            ClaimState::Published | ClaimState::Refuting { .. } => {
+                return Some(ReconnectOwner {
                     node_id,
-                    LiveClaim {
-                        credential: credential.cloned(),
-                        route_slot,
-                        session_incarnation,
-                        conn_id,
-                        publication_token,
-                        state: ClaimState::Reserved,
+                    session_incarnation,
+                    publication_token: claim.publication_token,
+                });
+            }
+            ClaimState::Retired => return None,
+            ClaimState::Reserved => {
+                let wait = crate::transport::connection_attempt_remaining().map_or(
+                    std::time::Duration::from_millis(CLAIM_RESERVE_WAIT_MS),
+                    |remaining| {
+                        remaining.min(std::time::Duration::from_millis(CLAIM_RESERVE_WAIT_MS))
                     },
                 );
-                return ClaimReservation::Reserved { superseded: None };
+                let (guard, timeout) = condvar.wait_timeout_or_recover(map, wait);
+                map = guard;
+                if timeout.timed_out() {
+                    return None;
+                }
             }
         }
     }
@@ -229,28 +424,58 @@ pub(super) fn abort_identity_claim(
 /// Returns `true` iff `claims[node_id]` is still our exact reservation (so the
 /// caller may write route + cluster token under the same lock). A superseding
 /// claim arriving meanwhile ⇒ `false` (abort publish, write nothing).
+#[cfg(test)]
 pub(super) fn publish_identity_claim(
     mgr: &HewConnMgr,
     node_id: NodeId,
     conn_id: c_int,
     publication_token: u64,
 ) -> bool {
+    settle_identity_claim(
+        mgr,
+        node_id,
+        conn_id,
+        publication_token,
+        |state| state == ClaimState::Reserved,
+        ClaimState::Published,
+    )
+}
+
+/// Move this admission's claim to `to`, iff it still holds it in a state
+/// `from` accepts. Leaving `Reserved` stamps the admission order the claim
+/// settled at; entering `Published` clears the names a predecessor taught
+/// this node first.
+fn settle_identity_claim(
+    mgr: &HewConnMgr,
+    node_id: NodeId,
+    conn_id: c_int,
+    publication_token: u64,
+    from: impl Fn(ClaimState) -> bool,
+    to: ClaimState,
+) -> bool {
     let (lock, condvar) = &mgr.claims;
     let mut map = lock.lock_or_recover();
-    let still_ours = map.get(&node_id).is_some_and(|c| {
-        c.state == ClaimState::Reserved
-            && c.conn_id == conn_id
-            && c.publication_token == publication_token
-    });
+    let held = map
+        .get(&node_id)
+        .filter(|c| c.conn_id == conn_id && c.publication_token == publication_token)
+        .map(|c| c.state)
+        .filter(|state| from(*state));
+    let still_ours = held.is_some();
     // Clear predecessor discovery before exposing Published to the new reader.
     // Holding the claim lock fences an old publication's final name mutation.
     // SAFETY: the node retains its canonical registry through all manager users.
     let registry = unsafe { mgr.registry.as_ref() };
-    let names_changed =
-        still_ours && registry.is_some_and(|registry| registry.forget_origin_names(node_id));
+    let names_changed = still_ours
+        && to == ClaimState::Published
+        && registry.is_some_and(|registry| registry.forget_origin_names(node_id));
     if still_ours {
+        let published_at = (held == Some(ClaimState::Reserved))
+            .then(|| next_publication_token(mgr).unwrap_or(u64::MAX));
         if let Some(claim) = map.get_mut(&node_id) {
-            claim.state = ClaimState::Published;
+            claim.state = to;
+            if let Some(published_at) = published_at {
+                claim.published_at = published_at;
+            }
         }
     }
     drop(map);
@@ -309,13 +534,24 @@ pub(super) fn reserve_unverified_identity_claim(
         conn_id,
         token,
         None,
+        TEST_ADMISSION,
+        Commit::Initiator(0),
     ) {
-        ClaimReservation::Reserved { superseded } => superseded,
+        ClaimReservation::Reserved { superseded, .. } => superseded,
+        ClaimReservation::Yielded(_) => panic!("unexpected crossing-dial yield in test"),
         ClaimReservation::Rejected(detail) => {
             panic!("unexpected claim rejection in test (node {node_id}, conn {conn_id}): {detail}")
         }
     }
 }
+
+/// A dialled admission that began after every claim reserved, so it never
+/// meets a crossing dial.
+#[cfg(test)]
+pub(super) const TEST_ADMISSION: AdmissionStart = AdmissionStart {
+    origin: ConnectionOrigin::Dialled,
+    began_at: u64::MAX,
+};
 
 #[cfg(test)]
 pub(super) fn test_node_identity(route_slot: u16) -> NodeId {
@@ -341,6 +577,8 @@ pub(super) fn reserve_claim(
         conn_id,
         publication_token,
         None,
+        TEST_ADMISSION,
+        Commit::Initiator(0),
     )
 }
 
@@ -520,16 +758,33 @@ pub(super) fn publish_identity_connection_established(
     publication_sync: &Arc<Mutex<()>>,
     publication_removed: &Arc<AtomicBool>,
     superseded: Option<LiveClaim>,
+    buried: bool,
 ) -> bool {
     if publication_removed.load(Ordering::Acquire) {
         set_last_error("connection publication cancelled before establishment");
         return false;
     }
 
-    // Transition our reservation Reserved → Published (issue #2652, D3 step 3).
-    // A superseding admission arriving in the reserve window ⇒ we are no longer
-    // the map owner ⇒ abort publish (write no route / cluster token / gossip).
-    if !publish_identity_claim(mgr, peer_identity, conn_id, publication_token) {
+    // Transition our reservation Reserved → Published (issue #2652, D3 step 3),
+    // or to Refuting for a buried peer, which publishes nothing until it
+    // refutes. A superseding admission arriving in the reserve window ⇒ we are
+    // no longer the map owner ⇒ abort publish (write no route / cluster token /
+    // gossip).
+    let settled = if buried {
+        ClaimState::Refuting {
+            expires_ms: refutation_deadline(mgr),
+        }
+    } else {
+        ClaimState::Published
+    };
+    if !settle_identity_claim(
+        mgr,
+        peer_identity,
+        conn_id,
+        publication_token,
+        |state| state == ClaimState::Reserved,
+        settled,
+    ) {
         set_last_error("connection publication no longer owns the peer claim");
         return false;
     }
@@ -567,6 +822,74 @@ pub(super) fn publish_identity_connection_established(
         );
     }
 
+    if !buried
+        && !expose_publication(
+            mgr,
+            peer_identity,
+            peer_route_slot,
+            peer_session_incarnation,
+            conn_id,
+            peer_feature_flags,
+            publication_token,
+            publication_sync,
+            publication_removed,
+        )
+    {
+        return false;
+    }
+
+    // Publication is COMPLETE: clear the actor's stashed superseded claim
+    // before closing the superseded connection below, so a later remove of
+    // THIS connection can never restore a claim for a connection whose
+    // transport is closed here. The stash is restorable state only while the
+    // publication is still pending or suppressed.
+    clear_superseded_claim_if_current(mgr, conn_id, publication_token);
+
+    // Same-credential reconnect (issue #2652, D3 step 3): our claim overwrote a
+    // live Published claim from the same peer credential. The superseded
+    // connection already lost its authority at the map overwrite (D9 owner
+    // check); close its transport so it can no longer emit SWIM/gossip/control
+    // frames. Its actor tears down via the normal reader-exit path.
+    if let Some(superseded) = superseded {
+        if superseded.state.holds_connection() && superseded.conn_id != conn_id {
+            close_superseded_connection_once(mgr, superseded.conn_id, superseded.publication_token);
+        }
+    }
+    if buried {
+        // A peer that also buried this node never probes it, so open the
+        // exchange: the PING leads with the peer's obituary.
+        // SAFETY: the manager is live for this call; SWIM sends only read it.
+        let _ = unsafe {
+            super::swim::hew_connmgr_send_swim(
+                std::ptr::from_ref(mgr).cast_mut(),
+                peer_route_slot,
+                crate::cluster::SWIM_MSG_PING,
+                0,
+            )
+        };
+    }
+    true
+}
+
+/// Expose an admission whose claim just became `Published`: its cluster
+/// membership token, its route, its service session and this node's names.
+/// Fails closed, tearing the connection down, when the cluster refuses the
+/// session or no route can be registered.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "exposure threads the publication's route, session and cancellation guards"
+)]
+fn expose_publication(
+    mgr: &HewConnMgr,
+    peer_identity: NodeId,
+    peer_route_slot: u16,
+    peer_session_incarnation: u32,
+    conn_id: c_int,
+    peer_feature_flags: u32,
+    publication_token: u64,
+    publication_sync: &Arc<Mutex<()>>,
+    publication_removed: &Arc<AtomicBool>,
+) -> bool {
     let published = if mgr.cluster.is_null() {
         true
     } else {
@@ -656,25 +979,112 @@ pub(super) fn publish_identity_connection_established(
         });
 
     flush_registry_gossip_to_connection(mgr, conn_id, publication_token, peer_feature_flags);
+    true
+}
 
-    // Publication is COMPLETE: clear the actor's stashed superseded claim
-    // before closing the superseded connection below, so a later remove of
-    // THIS connection can never restore a claim for a connection whose
-    // transport is closed here. The stash is restorable state only while the
-    // publication is still pending or suppressed.
-    clear_superseded_claim_if_current(mgr, conn_id, publication_token);
+/// When a buried peer's refuting connection lapses: one suspicion window, the
+/// time any suspected member has to refute before it is buried.
+fn refutation_deadline(mgr: &HewConnMgr) -> u64 {
+    // SAFETY: hew_now_ms has no preconditions.
+    let now = unsafe { crate::clock::hew_now_ms() };
+    if mgr.cluster.is_null() {
+        return now;
+    }
+    // SAFETY: cluster is owned by the live manager.
+    now.saturating_add(unsafe { &*mgr.cluster }.suspect_timeout_ms())
+}
 
-    // Same-credential reconnect (issue #2652, D3 step 3): our claim overwrote a
-    // live Published claim from the same peer credential. The superseded
-    // connection already lost its authority at the map overwrite (D9 owner
-    // check); close its transport so it can no longer emit SWIM/gossip/control
-    // frames. Its actor tears down via the normal reader-exit path.
-    if let Some(superseded) = superseded {
-        if superseded.state == ClaimState::Published && superseded.conn_id != conn_id {
-            close_superseded_connection_once(mgr, superseded.conn_id, superseded.publication_token);
+/// Publish the refuting claim of `conn_id`'s admission once the membership
+/// table has readmitted its peer: the peer refuted its burial at a higher
+/// incarnation, so the connection now carries everything a published one
+/// does.
+pub(super) fn publish_refuted_claim(mgr: &HewConnMgr, conn_id: c_int, publication_token: u64) {
+    if mgr.cluster.is_null() {
+        return;
+    }
+    let admission = mgr.connections.access(|connections| {
+        connections
+            .iter()
+            .find(|connection| {
+                connection.conn_id == conn_id && connection.publication_token == publication_token
+            })
+            .and_then(|connection| {
+                Some((
+                    connection.peer_identity?,
+                    connection.peer_node_id,
+                    connection.peer_session_incarnation,
+                    connection.peer_feature_flags,
+                    Arc::clone(&connection.publication_sync),
+                    Arc::clone(&connection.publication_removed),
+                ))
+            })
+    });
+    let Some((identity, route_slot, session, feature_flags, sync, removed)) = admission else {
+        return;
+    };
+    // SAFETY: cluster is owned by the live manager.
+    if unsafe { &*mgr.cluster }.member_state(route_slot) != crate::cluster::MEMBER_ALIVE
+        || removed.load(Ordering::Acquire)
+        || !settle_identity_claim(
+            mgr,
+            identity,
+            conn_id,
+            publication_token,
+            |state| matches!(state, ClaimState::Refuting { .. }),
+            ClaimState::Published,
+        )
+    {
+        return;
+    }
+    expose_publication(
+        mgr,
+        identity,
+        route_slot,
+        session,
+        conn_id,
+        feature_flags,
+        publication_token,
+        &sync,
+        &removed,
+    );
+}
+
+/// Close each refuting connection whose peer has not refuted by its deadline,
+/// or whose buried member the membership table has since retired: the peer
+/// is then admitted afresh when it next connects.
+pub(crate) fn expire_refuting_claims(mgr: &HewConnMgr, now_ms: u64) {
+    if mgr.cluster.is_null() {
+        return;
+    }
+    // SAFETY: cluster is owned by the live manager.
+    let cluster = unsafe { &*mgr.cluster };
+    let lapsed: Vec<(NodeId, c_int, u64)> = mgr
+        .claims
+        .0
+        .lock_or_recover()
+        .iter()
+        .filter(|(_, claim)| match claim.state {
+            ClaimState::Refuting { expires_ms } => {
+                expires_ms <= now_ms || cluster.member_state(claim.route_slot) == -1
+            }
+            _ => false,
+        })
+        .map(|(identity, claim)| (*identity, claim.conn_id, claim.publication_token))
+        .collect();
+    for (identity, conn_id, publication_token) in lapsed {
+        // Retire the claim only while it is still refuting: a refutation read
+        // since the scan has published the connection, which stays open.
+        if settle_identity_claim(
+            mgr,
+            identity,
+            conn_id,
+            publication_token,
+            |state| matches!(state, ClaimState::Refuting { .. }),
+            ClaimState::Retired,
+        ) {
+            let _ = remove_connection(mgr, conn_id, Some(publication_token));
         }
     }
-    true
 }
 
 /// Clear the restorable predecessor claim only from the exact admission whose
@@ -789,6 +1199,7 @@ pub(super) fn publish_connection_established(
         publication_sync,
         publication_removed,
         superseded,
+        false,
     );
 }
 
@@ -866,4 +1277,43 @@ pub(super) fn retire_connection_publication(
         publication_token,
         publication_sync,
     );
+}
+
+/// The commit order of the connection that holds `peer`'s claim.
+#[cfg(test)]
+pub(crate) fn commit_order_for_test(mgr: &HewConnMgr, peer: NodeId) -> Option<u64> {
+    mgr.claims
+        .0
+        .lock_or_recover()
+        .get(&peer)
+        .map(|claim| claim.commit_order)
+}
+
+/// A test's view of one peer on this manager.
+#[cfg(test)]
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) struct PeerConnectionView {
+    /// Connections to the peer still installed.
+    pub(crate) installed: usize,
+    /// The peer claim's state and the origin of the connection that holds it.
+    pub(crate) owner: Option<(ClaimState, ConnectionOrigin)>,
+}
+
+#[cfg(test)]
+pub(crate) fn peer_connection_view(mgr: &HewConnMgr, peer: NodeId) -> PeerConnectionView {
+    let owner = mgr
+        .claims
+        .0
+        .lock_or_recover()
+        .get(&peer)
+        .map(|claim| (claim.state, claim.origin));
+    PeerConnectionView {
+        installed: mgr.connections.access(|connections| {
+            connections
+                .iter()
+                .filter(|connection| connection.peer_identity == Some(peer))
+                .count()
+        }),
+        owner,
+    }
 }

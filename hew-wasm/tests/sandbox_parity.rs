@@ -113,6 +113,12 @@ const PARITY_CASES: &[ParityCase] = &[
         source_rel: "examples/sandbox-graduation/float_classification.hew",
     },
     ParityCase {
+        // Negation at each signed width, at a width settled after the
+        // negation, and at the contextual float width.
+        test_name: "signed_negation",
+        source_rel: "examples/sandbox-graduation/signed_negation.hew",
+    },
+    ParityCase {
         // Integer bit methods and wrapping, saturating and checked arithmetic
         // at narrow, signed and unsigned receiver widths.
         test_name: "integer_bit_methods",
@@ -2013,6 +2019,9 @@ fn assert_exact_stdout(case: &ParityCase, native: &Output) {
         )),
         "failure_edges" => Some(include_str!(
             "../../tests/core-acceptance/cases/failure-edges.toml"
+        )),
+        "signed_negation" => Some(include_str!(
+            "../../tests/core-acceptance/cases/signed-negation.toml"
         )),
         _ => None,
     }

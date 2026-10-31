@@ -423,6 +423,10 @@ pub struct TypeCheckOutput {
     /// effect checking and HIR must share its exact declaration occurrences.
     /// Present after program preparation; absent only in unprepared fixtures.
     pub selected_builtin_program: Option<std::sync::Arc<hew_parser::ast::Program>>,
+    /// Module-graph modules whose resolved source is the canonical std below
+    /// the std roots this compilation was given. Lowering consumes this
+    /// instead of judging source provenance itself.
+    pub canonical_std_modules: HashSet<hew_parser::module::ModulePath>,
     pub input_references: HashMap<SpanKey, crate::compile_time::InputReference>,
     pub inputs: Vec<crate::compile_time::CompilationInput>,
     pub compile_time_values: HashMap<SpanKey, crate::compile_time::ConstantValue>,
@@ -3225,6 +3229,16 @@ pub(super) struct DeferredInferenceHole {
     pub(super) source_module: Option<String>,
 }
 
+/// A negation whose operand type was still an inference variable when the
+/// expression was checked; an unsigned resolution is refused after inference.
+#[derive(Debug, Clone)]
+pub(super) struct DeferredNegateCheck {
+    pub(super) span: Span,
+    pub(super) operand: Ty,
+    /// Diagnostic routing token captured while the source item was active.
+    pub(super) source_module: Option<String>,
+}
+
 #[derive(Debug, Clone)]
 pub(super) struct DeferredCastCheck {
     pub(super) span: Span,
@@ -3352,6 +3366,10 @@ pub struct Checker {
     /// stdlib search-path authority for this check. A `std.*` spelling alone
     /// is not trusted: user packages may use the same path.
     pub(super) canonical_std_module_sources: HashSet<String>,
+    /// Graph modules whose resolved source is the canonical std below the
+    /// compilation's std roots; published to lowering as
+    /// [`TypeCheckOutput::canonical_std_modules`].
+    pub(super) canonical_std_graph_modules: HashSet<hew_parser::module::ModulePath>,
     /// Source files assembled into each module of this check's graph.
     ///
     /// A directory module owns its primary file plus every peer `.hew` file in
@@ -3623,6 +3641,7 @@ pub struct Checker {
     pub(super) fn_sig_inference_holes: HashMap<String, Vec<TypeVar>>,
     pub(super) deferred_inference_holes: Vec<DeferredInferenceHole>,
     pub(super) deferred_cast_checks: Vec<DeferredCastCheck>,
+    pub(super) deferred_negate_checks: Vec<DeferredNegateCheck>,
     /// `is` obligations recorded while an operand type was still an
     /// inference variable, keyed by the `is` expression so a body checked more
     /// than once records one obligation.
@@ -4503,6 +4522,7 @@ impl Checker {
             extern_method_signatures: HashMap::new(),
             registration_origin_module: None,
             canonical_std_module_sources: HashSet::new(),
+            canonical_std_graph_modules: HashSet::new(),
             module_source_paths: HashMap::new(),
             module_item_sources: HashMap::new(),
             current_item_source: None,
@@ -4608,6 +4628,7 @@ impl Checker {
             fn_sig_inference_holes: HashMap::new(),
             deferred_inference_holes: Vec::new(),
             deferred_cast_checks: Vec::new(),
+            deferred_negate_checks: Vec::new(),
             deferred_is_checks: BTreeMap::new(),
             deferred_monomorphic_sites: Vec::new(),
             fn_def_spans: HashMap::new(),

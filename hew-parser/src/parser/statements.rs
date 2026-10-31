@@ -212,13 +212,25 @@ impl Parser<'_> {
 
     /// Parse an expression or assignment in a block.
     fn parse_block_expr_item(&mut self, stmts: &mut Vec<Spanned<Stmt>>) -> BlockExprItem {
+        let errors_before = self.errors.len();
         let Some(expr) = self.parse_expr() else {
-            let found = match self.peek() {
-                Some(tok) => format!("{tok}"),
-                None => "end of file".to_string(),
-            };
-            self.error(format!("unexpected {found} in block"));
-            self.advance();
+            // One report covers the failed token and any run of the same
+            // token after it (`;;;`, `,,,`): the expression parser's own
+            // error when it gave one, else this.
+            if self.errors.len() == errors_before {
+                let found = match self.peek() {
+                    Some(tok) => format!("{tok}"),
+                    None => "end of file".to_string(),
+                };
+                self.error(format!("unexpected {found} in block"));
+            }
+            // A `}` closes an enclosing construct: consume only the one the
+            // expression could not use.
+            if let Some((failed, _)) = self.advance() {
+                while failed != Token::RightBrace && self.peek() == Some(&failed) {
+                    self.advance();
+                }
+            }
             return BlockExprItem::Statement;
         };
 

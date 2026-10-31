@@ -1,22 +1,7 @@
 //! Compiler-owned live slot views for suspended invocation payloads.
 
 use crate::coro_state::HewCoroState;
-use hew_cabi::managed::{
-    visit_value, HewManagedFrame, HewManagedStorageVisitor, HewManagedWalkKind,
-};
-
-/// Bind the frame's typed live roots after its parameter storage is initialized.
-///
-/// # Safety
-/// State and view belong to the same invocation; the frame pins all view data.
-#[no_mangle]
-pub unsafe extern "C" fn hew_budget_bind_frame(
-    state: *mut HewCoroState,
-    frame: *const HewManagedFrame,
-) {
-    // SAFETY: HewCoroState transparently embeds this canonical ABI record.
-    unsafe { (*state.cast::<hew_cabi::coro::HewCoroInvocation>()).managed_frame = frame };
-}
+use hew_cabi::managed::{visit_value, HewManagedStorageVisitor, HewManagedWalkKind};
 
 /// Visit retained language values, never native coroutine or Rust frame bytes.
 /// The provider serializes execution before requesting this view.
@@ -99,7 +84,9 @@ mod tests {
     use super::*;
     use crate::owned_value_budget::ValueOwner;
     use core::ffi::c_void;
-    use hew_cabi::managed::{HewManagedFrameSlot, HewManagedValueDescriptor, HEAP_EXCEEDED};
+    use hew_cabi::managed::{
+        HewManagedFrame, HewManagedFrameSlot, HewManagedValueDescriptor, HEAP_EXCEEDED,
+    };
     use hew_cabi::value::{HewTypeOwnershipKind, HewValueLayout};
 
     unsafe extern "C" fn visit(
@@ -163,8 +150,10 @@ mod tests {
                 count: entries.len(),
                 child: &raw const child_record,
             };
-            hew_budget_bind_frame(root, &raw const view);
-            hew_budget_bind_frame(child, &raw const child_view);
+            // Generated code publishes each view directly in its ABI record.
+            (*root.cast::<hew_cabi::coro::HewCoroInvocation>()).managed_frame = &raw const view;
+            (*child.cast::<hew_cabi::coro::HewCoroInvocation>()).managed_frame =
+                &raw const child_view;
             let managed = HewManagedValueDescriptor {
                 slot_bytes: 0,
                 visit: Some(visit),
@@ -195,8 +184,8 @@ mod tests {
                 .release_value(&layout, (&raw const root).cast())
                 .unwrap();
             assert_eq!(exact.live_bytes(), 0);
-            hew_budget_bind_frame(root, core::ptr::null());
-            hew_budget_bind_frame(child, core::ptr::null());
+            (*root.cast::<hew_cabi::coro::HewCoroInvocation>()).managed_frame = core::ptr::null();
+            (*child.cast::<hew_cabi::coro::HewCoroInvocation>()).managed_frame = core::ptr::null();
             crate::coro_state::hew_coro_state_free(child);
             crate::coro_state::hew_coro_state_free(root);
             hew_cabi::string::string_release(text);

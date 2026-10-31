@@ -39,7 +39,6 @@ pub(super) fn bind_runtime<'ctx>(llvm: &Module<'ctx>, engine: &ExecutionEngine<'
         }
     }
     bind_budget!(
-        frame::hew_budget_bind_frame,
         frame::hew_managed_visit_invocation,
         materialize::hew_budget_materialize_begin,
         materialize::hew_budget_materialize_commit,
@@ -94,7 +93,6 @@ pub(super) fn bind_runtime<'ctx>(llvm: &Module<'ctx>, engine: &ExecutionEngine<'
         coro_state::hew_coro_safepoint_budget,
         coro_state::hew_coro_safepoint_suppress,
         coro_state::hew_coro_safepoint_restore,
-        coro_state::hew_coro_state_init_child,
         coro_state::hew_coro_state_init_construction,
         coro_state::hew_coro_state_rc_sweep,
         coro_state::hew_coro_state_cleanup_child,

@@ -1,0 +1,11 @@
+[[case]]
+id = "scalar-append-loop-chunks"
+intent = "Batched scalar appends preserve empty loops, shared buffers with consumed prefixes, growth contents and the live vector during cancellation cleanup."
+source = "cases/scalar-append-loop-chunks.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 30
+env = { HEW_DETERMINISTIC = "schedule=fifo,seed=0,budget=100000", HEW_ACTOR_LEAK_CHECK = "1" }
+
+[case.expected]
+stdout = "append cancelled\n7\n"
+exit = 0

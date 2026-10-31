@@ -1,0 +1,50 @@
+import std.stream;
+
+fn append(var values: Vec<i64>, count: i64) -> Vec<i64> {
+    for index in 0..count {
+        values.push(index);
+    }
+    values
+}
+
+fn growing(consume ready: stream.Sink<i64>) -> i64 {
+    var values: Vec<i64> = Vec.new();
+    ready.send(1).expect("ready");
+    defer {
+        assert(values.len() > 0);
+        assert(values[values.len() - 1] == values.len() - 1);
+        println("append cancelled");
+    }
+    for index in 0..1000000 {
+        values.push(index);
+    }
+    panic("append did not yield");
+}
+
+fn peer(consume ready: stream.Stream<i64>) -> i64 {
+    ready.recv().expect("ready");
+    ready.close();
+    7
+}
+
+fn main() {
+    let empty: Vec<i64> = Vec.new();
+    assert(append(empty, 0).len() == 0);
+    var original: Vec<i64> = Vec.new();
+    original.push(90);
+    original.push(91);
+    original.push(92);
+    assert(original.remove(0) == 90);
+    let grown = append(original, 300);
+    assert(original.len() == 2);
+    assert(original[0] == 91);
+    assert(original[1] == 92);
+    assert(grown.len() == 302);
+    assert(grown[0] == 91);
+    assert(grown[1] == 92);
+    for index in 0..300 {
+        assert(grown[index + 2] == index);
+    }
+    let (tx, rx): (stream.Sink<i64>, stream.Stream<i64>) = stream.pipe(1).expect("pipe");
+    println(await race [growing(tx), peer(rx)]);
+}

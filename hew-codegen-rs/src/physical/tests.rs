@@ -1978,6 +1978,8 @@ fn fallible_chain_builds_results_without_budget_materialization() {
         crate::llvm::target_machine_for_triple_with_opt_level(&triple, OptLevel::O0).unwrap();
     let llvm = build_module(&ctx, physical.module(), "fallible_chain", &machine).unwrap();
     llvm.verify().unwrap();
+    assert!(llvm.get_function("hew_budget_bind_frame").is_none());
+    assert!(llvm.get_function("hew_coro_state_init_child").is_none());
     let body = |name: &str| {
         let callable = physical
             .module()

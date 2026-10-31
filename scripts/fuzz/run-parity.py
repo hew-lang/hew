@@ -201,6 +201,7 @@ class VmHost:
             try:
                 os.killpg(self.proc.pid, 9)
             except ProcessLookupError:
+                # Process group is already gone; close() is best-effort and idempotent.
                 pass
             self.proc.wait()
             self.proc = None

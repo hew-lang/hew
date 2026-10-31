@@ -34,9 +34,13 @@ const HARD_RESERVE: usize = 16 * 1024;
 
 /// Stack every thread that runs Hew code gets, sized so 10,000 nested calls of
 /// an ordinary function fit at O0 (HEW-SPEC-2026 §2.2): scheduler workers are
-/// spawned with it, and the main thread grows to it.
-#[cfg(not(target_arch = "wasm32"))]
+/// spawned with it, and the main thread grows to it. AddressSanitizer redzones
+/// roughly double an O0 frame, so instrumented builds get twice the stack to
+/// keep the same floor.
+#[cfg(all(not(target_arch = "wasm32"), not(hew_sanitized)))]
 pub(crate) const HEW_STACK_BYTES: usize = 16 * 1024 * 1024;
+#[cfg(all(not(target_arch = "wasm32"), hew_sanitized))]
+pub(crate) const HEW_STACK_BYTES: usize = 32 * 1024 * 1024;
 
 /// Let the process entry thread's stack grow to [`HEW_STACK_BYTES`]. Linux and
 /// FreeBSD grow the main stack on demand up to the soft `RLIMIT_STACK`, so

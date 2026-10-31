@@ -445,6 +445,11 @@ pub(crate) fn record_scheduler_unpark() {
     SCHEDULER_UNPARKS_TOTAL.fetch_add(1, Ordering::Relaxed);
 }
 
+#[cfg(test)]
+pub(crate) fn coroutine_frame_bytes_live_for_test() -> u64 {
+    COROUTINES_FRAME_BYTES_LIVE.load(Ordering::Relaxed)
+}
+
 pub(crate) fn record_coroutine_frame_alloc(frame_bytes: u64) {
     COROUTINES_LIVE.fetch_add(1, Ordering::Relaxed);
     COROUTINES_FRAME_BYTES_LIVE.fetch_add(frame_bytes, Ordering::Relaxed);

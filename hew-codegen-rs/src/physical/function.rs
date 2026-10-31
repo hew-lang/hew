@@ -248,6 +248,7 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
             value_callbacks: &module.value_callbacks,
             ramps: &module.ramps,
             frame,
+            chunk_invocation: None,
             task_scopes,
             debug,
         })

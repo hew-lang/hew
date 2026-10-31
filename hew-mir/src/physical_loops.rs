@@ -1,4 +1,5 @@
-//! Bounded, call-free scalar and read-only vector regions that can execute outside a coroutine frame.
+//! Bounded, call-free scalar regions that read vectors or append scalars to
+//! one vector, executing outside a coroutine frame.
 
 use hew_sir::{compute_indexed_dominators, CfgIndex, EdgeRef, SuccessorSlot};
 
@@ -12,8 +13,10 @@ use std::collections::{BTreeMap, BTreeSet};
 
 /// A natural loop with one scheduling boundary. Its checked failures leave the
 /// region before raising a fault; no call or resource operation can observe
-/// its private scalar storage. Vector handles are invariant borrowed inputs. This is an optimization eligibility
-/// decision over physical CFG facts, not a change to suspension semantics.
+/// its private scalar storage. Read vector handles are invariant borrowed
+/// inputs; an appended vector's handle stays in its place across the region.
+/// This is an optimization eligibility decision over physical CFG facts, not a
+/// change to suspension semantics.
 #[derive(Debug)]
 pub struct PhysicalLoopChunk {
     pub header: BlockId,
@@ -119,6 +122,11 @@ impl PhysicalFunction {
         // the coroutine; the chunk only carries an invariant borrowed handle.
         let mut readers = BTreeSet::new();
         let mut borrows = BTreeMap::new();
+        // A scalar push moves its vector handle through the call and back
+        // into its place. The handle never changes identity and no glue runs,
+        // so the chunk carries the owner without cleanup authority.
+        let mut handles = BTreeSet::new();
+        let mut pushed = None;
         for id in &region {
             for op in &blocks[id].ops {
                 if let PhysicalOp::Borrow { dest, source } = op {
@@ -132,27 +140,80 @@ impl PhysicalFunction {
                 ..
             } = &blocks[id].terminator
             {
-                let PhysicalRuntimeCarrier::Vector {
-                    operation: PhysicalVectorOp::Index | PhysicalVectorOp::IndexBorrow,
-                    glue,
-                } = action.carrier
-                else {
+                let PhysicalRuntimeCarrier::Vector { operation, glue } = action.carrier else {
                     return None;
                 };
+                let glue_id = glue;
                 let glue = &module.vector_glue[glue.0 as usize];
-                if !glue.has_inline_scalar_access(module.target.layout(&glue.element.ty)?)
-                    || !matches!(
-                        self.storage[result.0 as usize].layout.repr,
-                        PhysicalRepr::Integer { .. }
-                    )
-                {
+                let element = module.target.layout(&glue.element.ty)?;
+                if !glue.has_inline_scalar_access(element) {
                     return None;
                 }
-                let [ArgumentTransfer::Borrow(receiver), _] = &args[..] else {
-                    return None;
-                };
-                readers.insert(*receiver);
+                match operation {
+                    PhysicalVectorOp::Index | PhysicalVectorOp::IndexBorrow => {
+                        if !matches!(
+                            self.storage[result.0 as usize].layout.repr,
+                            PhysicalRepr::Integer { .. }
+                        ) {
+                            return None;
+                        }
+                        let [ArgumentTransfer::Borrow(receiver), _] = &args[..] else {
+                            return None;
+                        };
+                        readers.insert(*receiver);
+                    }
+                    PhysicalVectorOp::Push => {
+                        let [ArgumentTransfer::Move(receiver), ArgumentTransfer::Borrow(value) | ArgumentTransfer::Move(value)] =
+                            &args[..]
+                        else {
+                            return None;
+                        };
+                        if self.storage[value.0 as usize].layout.repr != element.repr
+                            || pushed.is_some_and(|pushed| pushed != glue_id)
+                        {
+                            return None;
+                        }
+                        pushed = Some(glue_id);
+                        handles.extend([*receiver, *result]);
+                    }
+                    _ => return None,
+                }
             }
+        }
+        // Follow the handle through the transfers that move it out of and back
+        // into its place.
+        loop {
+            let before = handles.len();
+            for id in &region {
+                let block = blocks[id];
+                for op in &block.ops {
+                    if let PhysicalOp::Transfer { dest, source } = op {
+                        if handles.contains(dest) || handles.contains(source) {
+                            handles.extend([*dest, *source]);
+                        }
+                    }
+                }
+                for edge in edges(&block.terminator) {
+                    for (source, dest) in &edge.transfers {
+                        if handles.contains(dest) || handles.contains(source) {
+                            handles.extend([*dest, *source]);
+                        }
+                    }
+                }
+            }
+            if handles.len() == before {
+                break;
+            }
+        }
+        let pushed_ty = pushed.map(|glue| &module.vector_glue[glue.0 as usize].ty);
+        // Exactly one place owns the handle; the chunk restores it at every exit.
+        let places = handles
+            .iter()
+            .copied()
+            .filter(|id| matches!(self.storage[id.0 as usize].origin, StorageOrigin::Local(_)))
+            .collect::<BTreeSet<_>>();
+        if !handles.is_empty() && places.len() != 1 {
+            return None;
         }
         let mut pending = readers.iter().copied().collect::<Vec<_>>();
         while let Some(id) = pending.pop() {
@@ -254,6 +315,9 @@ impl PhysicalFunction {
         storage.extend(destinations.iter().copied());
         let mut inputs = used.difference(&defined).copied().collect::<BTreeSet<_>>();
         inputs.extend(&blocks[&header].arguments);
+        // The handle's place is live at the header and holds the same handle
+        // at every exit, so it is carried in and restored like a mutable local.
+        inputs.extend(&places);
         // An escaping SSA result needs an explicit exit carrier. Mutable locals
         // already reside in inputs; internal values remain private to the chunk.
         for block in self
@@ -273,13 +337,42 @@ impl PhysicalFunction {
                 operation_storage(op, &mut outside, &mut outputs, &mut live);
             }
             terminator_storage(&block.terminator, &mut outside);
-            outside.retain(|id| !outputs.contains(id) && !block.arguments.contains(id));
-            if outside.iter().any(|id| defined.contains(id)) {
-                return None;
+            outside.retain(|id| {
+                !outputs.contains(id)
+                    && !block.arguments.contains(id)
+                    && !inputs.contains(id)
+                    && defined.contains(id)
+            });
+            if outside.is_empty() {
+                continue;
+            }
+            // A refused push leaves through its failure edge holding the
+            // handle in a temporary; that exit restores it before cleanup.
+            match exits.get_mut(&block.id) {
+                Some(carried) if outside.is_subset(&handles) => carried.extend(outside),
+                _ => return None,
             }
         }
         if storage.iter().any(|id| {
             let slot = &self.storage[id.0 as usize];
+            if handles.contains(id) {
+                return readers.contains(id)
+                    || Some(&slot.ty) != pushed_ty
+                    || !matches!(slot.layout.repr, PhysicalRepr::Pointer)
+                    || slot.borrow_parent.is_some()
+                    || !matches!(
+                        slot.origin,
+                        StorageOrigin::BlockArgument(_)
+                            | StorageOrigin::Value(_)
+                            | StorageOrigin::Local(_)
+                    )
+                    || self.place_storage.get(id).is_some_and(|place| {
+                        place.root != *id
+                            || !place.path.is_empty()
+                            || place.leaves.len() != 1
+                            || place.leaves[0].storage != *id
+                    });
+            }
             if readers.contains(id) {
                 return !matches!(slot.layout.repr, PhysicalRepr::Pointer)
                     || destinations.contains(id)

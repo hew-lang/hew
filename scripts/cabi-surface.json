@@ -2754,21 +2754,6 @@
       "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
-        "native": "fn hew_budget_bind_frame( *mut HewCoroState, *const HewManagedFrame, )",
-        "wasm32-wasip1": "fn hew_budget_bind_frame( *mut HewCoroState, *const HewManagedFrame, )"
-      },
-      "symbol": "hew_budget_bind_frame"
-    },
-    {
-      "availability": [
-        "native",
-        "wasm32-wasip1"
-      ],
-      "classification": "non-declarable",
-      "extent": "no-in-signature-extent",
-      "nul": "not-applicable",
-      "ownership": "unmeasured",
-      "signature": {
         "native": "fn hew_budget_materialize_abort( *mut MaterializationPermit)",
         "wasm32-wasip1": "fn hew_budget_materialize_abort( *mut MaterializationPermit)"
       },
@@ -5445,21 +5430,6 @@
         "wasm32-wasip1": "fn hew_coro_state_free( *mut HewCoroState)"
       },
       "symbol": "hew_coro_state_free"
-    },
-    {
-      "availability": [
-        "native",
-        "wasm32-wasip1"
-      ],
-      "classification": "non-declarable",
-      "extent": "no-in-signature-extent",
-      "nul": "not-applicable",
-      "ownership": "unmeasured",
-      "signature": {
-        "native": "fn hew_coro_state_init_child( *mut HewCoroState, *const HewCoroState, )",
-        "wasm32-wasip1": "fn hew_coro_state_init_child( *mut HewCoroState, *const HewCoroState, )"
-      },
-      "symbol": "hew_coro_state_init_child"
     },
     {
       "availability": [

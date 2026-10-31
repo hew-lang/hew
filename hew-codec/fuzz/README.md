@@ -15,6 +15,10 @@ light half of the standard-library fuzzing; the rest is in `hew-std/fuzz`.
 A metering global allocator in `fuzz_targets/support.rs` records the peak
 live heap of each parse, so a declared length or alias fan-out that
 preallocates fails the run even when its pages are never touched.
+Ordinary YAML permits expansion up to its absolute budget, independently of
+input size. Its heap allowance includes container overhead for that budget;
+the typed wire targets retain their stricter input-relative bound. Seeds
+exercise both an admitted expanded tree and a refused alias bomb.
 
 ## Running
 

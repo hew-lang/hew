@@ -148,6 +148,9 @@ YAML_SEEDS = {
     "plain": DOC_YAML,
     "laughs": laughs(9, 10),
     "wide-alias": wide_alias(400, 400),
+    # A small source whose admitted tree approaches the absolute expansion
+    # budget; unlike the larger bomb above, this must fit the heap oracle.
+    "wide-alias-admitted": wide_alias(300, 50),
     "quoted-alias": b"a: &a [x]\nb: 'it''s *a'\nc: [*a, *a]\n",
     "comment-alias": b"a: &a [x] # it's\nb: [*a, *a]\r# '\rc: *a\n",
     "block-scalar": b"a: &a [x]\nb: |\n  don't # here\n  \"quoted\nc: [*a, *a, *a]\n",

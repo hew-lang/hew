@@ -4,7 +4,7 @@ intent = "Cancelling a role restart observer parked on a declared backoff releas
 source = "cases/actor-restarted-role-cancel.hew"
 suites = ["acceptance", "safety"]
 timeout_seconds = 20
-env = { HEW_WORKERS = "1" }
+env = { HEW_WORKERS = "1", HEW_DETERMINISTIC = "" }
 
 [case.expected]
 stdout = "waiting\nreleased\n"

@@ -1,0 +1,13 @@
+[[case]]
+id = "supervisor-group-restart-repeated"
+intent = "Repeated crashes under one_for_all and rest_for_one, including a crash of a replacement while its group restart is still starting siblings, each restart the group, settle their fault and exit cleanly."
+source = "cases/supervisor-group-restart-repeated.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 10
+
+[case.env]
+HEW_DETERMINISTIC = ""
+
+[case.expected]
+stdout = "repeated group restarts recovered\n"
+exit = 0

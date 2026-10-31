@@ -248,9 +248,6 @@ pub unsafe extern "C" fn hew_supervisor_native_spawn_new(
     config_drop: Option<unsafe extern "C" fn(*mut c_void)>,
     children: *const HewNativeChildSpec,
     child_count: usize,
-    has_backoff: c_int,
-    backoff_initial_ns: i64,
-    backoff_maximum_ns: i64,
     pool_count: i64,
     waker: *const HewWaker,
     code_owner: *const hew_cabi::code::HewCodeLeaseSlot,
@@ -288,10 +285,7 @@ pub unsafe extern "C" fn hew_supervisor_native_spawn_new(
         } else {
             pool_count == 0
         };
-        let valid_backoff = has_backoff == 0
-            || (has_backoff == 1
-                && backoff_initial_ns > 0
-                && backoff_maximum_ns >= backoff_initial_ns);
+        let valid_backoff = op.children.iter().all(HewNativeChildSpec::valid_backoff);
         if !valid_count || !valid_backoff {
             // SAFETY: the operation still owns the unadopted config.
             pool::release_unadopted_config(config, config_drop);
@@ -300,7 +294,7 @@ pub unsafe extern "C" fn hew_supervisor_native_spawn_new(
                 if valid_backoff {
                     "supervisor pool count must be between 1 and 2147483647"
                 } else {
-                    "supervisor backoff requires positive initial and maximum >= initial"
+                    "supervisor backoff requires positive initial and maximum >= initial, or both zero"
                 }
                 .into(),
             )));
@@ -332,10 +326,6 @@ pub unsafe extern "C" fn hew_supervisor_native_spawn_new(
         let slots = {
             // SAFETY: the operation exclusively owns this fresh parent.
             let mut roster = (*op.supervisor).roster.lock_or_recover();
-            roster.backoff = (has_backoff == 1).then_some((
-                backoff_initial_ns.cast_unsigned(),
-                backoff_maximum_ns.cast_unsigned(),
-            ));
             roster.config_buf = config;
             roster.config_drop_fn = config_drop;
             roster.native_code = Some(op.code.clone());
@@ -819,9 +809,6 @@ pub(crate) unsafe fn native_spawn_for_test(
             config_drop,
             children,
             child_count,
-            0,
-            0,
-            0,
             pool_count,
             waker.descriptor(),
             ptr::null(),
@@ -1012,6 +999,8 @@ mod tests {
                 stop_ns: 0,
                 startup_rank: 0,
                 dispatch: None,
+                backoff_initial_ns: 0,
+                backoff_maximum_ns: 0,
             };
             // SAFETY: the operation adopts one initialized config and all
             // descriptors remain live through begin; this host serializes polls.
@@ -1033,9 +1022,6 @@ mod tests {
                     Some(drop_config),
                     &raw const child,
                     1,
-                    0,
-                    0,
-                    0,
                     0,
                     waker.descriptor(),
                     ptr::null(),
@@ -1091,6 +1077,8 @@ mod tests {
                 stop_ns: 0,
                 startup_rank: 0,
                 dispatch: None,
+                backoff_initial_ns: 0,
+                backoff_maximum_ns: 0,
             };
             // SAFETY: this test owns initial invocation, then transfers the
             // published parent to its ordinary restart and teardown owners.
@@ -1112,9 +1100,6 @@ mod tests {
                     Some(drop_config),
                     &raw const child,
                     1,
-                    0,
-                    0,
-                    0,
                     0,
                     waker.descriptor(),
                     ptr::null(),

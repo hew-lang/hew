@@ -1,0 +1,13 @@
+[[case]]
+id = "supervisor-child-backoff"
+intent = "A child's backoff clause replaces its supervisor's restart delay: an overriding child keeps its own exponent, restart.immediate() restarts at once, an inheriting sibling keeps the supervisor's policy, each resets after its own healthy window, and pool members carry their declaration's policy. Policies evaluate once, supervisor first, then children in declaration order."
+source = "cases/supervisor-child-backoff.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 10
+
+[case.env]
+HEW_DETERMINISTIC = ""
+
+[case.expected]
+stdout = "supervisor\nupstream\nchild backoff\n"
+exit = 0

@@ -4953,7 +4953,6 @@ const schema19 = {
       description:
         "One demanded supervisor: its restart policy and the children it starts.",
       properties: {
-        backoff: { type: "boolean" },
         children: { items: { $ref: "#/$defs/SupervisorChild" }, type: "array" },
         id: {
           format: "uint32",
@@ -4984,6 +4983,11 @@ const schema19 = {
     },
     SupervisorChild: {
       properties: {
+        backoff: {
+          description:
+            "Construction transfers this child's effective restart delay as an\n`(initial, maximum)` argument pair after the config, in declaration order.",
+          type: "boolean",
+        },
         dependencies: {
           items: { format: "uint", minimum: 0, type: "integer" },
           type: "array",
@@ -72316,7 +72320,6 @@ const schema112 = {
   description:
     "One demanded supervisor: its restart policy and the children it starts.",
   properties: {
-    backoff: { type: "boolean" },
     children: { items: { $ref: "#/$defs/SupervisorChild" }, type: "array" },
     id: { format: "uint32", maximum: 4294967295, minimum: 0, type: "integer" },
     max_restarts: {
@@ -72342,6 +72345,11 @@ const schema112 = {
 };
 const schema113 = {
   properties: {
+    backoff: {
+      description:
+        "Construction transfers this child's effective restart delay as an\n`(initial, maximum)` argument pair after the config, in declaration order.",
+      type: "boolean",
+    },
     dependencies: {
       items: { format: "uint", minimum: 0, type: "integer" },
       type: "array",
@@ -72799,103 +72807,104 @@ function validate329(
         ];
         return false;
       } else {
-        if (data.dependencies !== undefined) {
-          let data0 = data.dependencies;
+        if (data.backoff !== undefined) {
           const _errs1 = errors;
-          if (errors === _errs1) {
-            if (Array.isArray(data0)) {
-              var valid1 = true;
-              const len0 = data0.length;
-              for (let i0 = 0; i0 < len0; i0++) {
-                let data1 = data0[i0];
-                const _errs3 = errors;
-                if (
-                  !(
-                    typeof data1 == "number" &&
-                    !(data1 % 1) &&
-                    !isNaN(data1) &&
-                    isFinite(data1)
-                  )
-                ) {
-                  validate329.errors = [
-                    {
-                      instancePath: instancePath + "/dependencies/" + i0,
-                      schemaPath: "#/properties/dependencies/items/type",
-                      keyword: "type",
-                      params: { type: "integer" },
-                      message: "must be integer",
-                    },
-                  ];
-                  return false;
-                }
-                if (errors === _errs3) {
-                  if (typeof data1 == "number" && isFinite(data1)) {
-                    if (data1 < 0 || isNaN(data1)) {
-                      validate329.errors = [
-                        {
-                          instancePath: instancePath + "/dependencies/" + i0,
-                          schemaPath: "#/properties/dependencies/items/minimum",
-                          keyword: "minimum",
-                          params: { comparison: ">=", limit: 0 },
-                          message: "must be >= 0",
-                        },
-                      ];
-                      return false;
-                    }
-                  }
-                }
-                var valid1 = _errs3 === errors;
-                if (!valid1) {
-                  break;
-                }
-              }
-            } else {
-              validate329.errors = [
-                {
-                  instancePath: instancePath + "/dependencies",
-                  schemaPath: "#/properties/dependencies/type",
-                  keyword: "type",
-                  params: { type: "array" },
-                  message: "must be array",
-                },
-              ];
-              return false;
-            }
+          if (typeof data.backoff !== "boolean") {
+            validate329.errors = [
+              {
+                instancePath: instancePath + "/backoff",
+                schemaPath: "#/properties/backoff/type",
+                keyword: "type",
+                params: { type: "boolean" },
+                message: "must be boolean",
+              },
+            ];
+            return false;
           }
           var valid0 = _errs1 === errors;
         } else {
           var valid0 = true;
         }
         if (valid0) {
-          if (data.is_pool !== undefined) {
-            const _errs5 = errors;
-            if (typeof data.is_pool !== "boolean") {
-              validate329.errors = [
-                {
-                  instancePath: instancePath + "/is_pool",
-                  schemaPath: "#/properties/is_pool/type",
-                  keyword: "type",
-                  params: { type: "boolean" },
-                  message: "must be boolean",
-                },
-              ];
-              return false;
+          if (data.dependencies !== undefined) {
+            let data1 = data.dependencies;
+            const _errs3 = errors;
+            if (errors === _errs3) {
+              if (Array.isArray(data1)) {
+                var valid1 = true;
+                const len0 = data1.length;
+                for (let i0 = 0; i0 < len0; i0++) {
+                  let data2 = data1[i0];
+                  const _errs5 = errors;
+                  if (
+                    !(
+                      typeof data2 == "number" &&
+                      !(data2 % 1) &&
+                      !isNaN(data2) &&
+                      isFinite(data2)
+                    )
+                  ) {
+                    validate329.errors = [
+                      {
+                        instancePath: instancePath + "/dependencies/" + i0,
+                        schemaPath: "#/properties/dependencies/items/type",
+                        keyword: "type",
+                        params: { type: "integer" },
+                        message: "must be integer",
+                      },
+                    ];
+                    return false;
+                  }
+                  if (errors === _errs5) {
+                    if (typeof data2 == "number" && isFinite(data2)) {
+                      if (data2 < 0 || isNaN(data2)) {
+                        validate329.errors = [
+                          {
+                            instancePath: instancePath + "/dependencies/" + i0,
+                            schemaPath:
+                              "#/properties/dependencies/items/minimum",
+                            keyword: "minimum",
+                            params: { comparison: ">=", limit: 0 },
+                            message: "must be >= 0",
+                          },
+                        ];
+                        return false;
+                      }
+                    }
+                  }
+                  var valid1 = _errs5 === errors;
+                  if (!valid1) {
+                    break;
+                  }
+                }
+              } else {
+                validate329.errors = [
+                  {
+                    instancePath: instancePath + "/dependencies",
+                    schemaPath: "#/properties/dependencies/type",
+                    keyword: "type",
+                    params: { type: "array" },
+                    message: "must be array",
+                  },
+                ];
+                return false;
+              }
             }
-            var valid0 = _errs5 === errors;
+            var valid0 = _errs3 === errors;
           } else {
             var valid0 = true;
           }
           if (valid0) {
-            if (data.name !== undefined) {
+            if (data.is_pool !== undefined) {
               const _errs7 = errors;
-              if (typeof data.name !== "string") {
+              if (typeof data.is_pool !== "boolean") {
                 validate329.errors = [
                   {
-                    instancePath: instancePath + "/name",
-                    schemaPath: "#/properties/name/type",
+                    instancePath: instancePath + "/is_pool",
+                    schemaPath: "#/properties/is_pool/type",
                     keyword: "type",
-                    params: { type: "string" },
-                    message: "must be string",
+                    params: { type: "boolean" },
+                    message: "must be boolean",
                   },
                 ];
                 return false;
@@ -72905,108 +72914,71 @@ function validate329(
               var valid0 = true;
             }
             if (valid0) {
-              if (data.restart !== undefined) {
+              if (data.name !== undefined) {
                 const _errs9 = errors;
-                if (
-                  !validate330(data.restart, {
-                    instancePath: instancePath + "/restart",
-                    parentData: data,
-                    parentDataProperty: "restart",
-                    rootData,
-                    dynamicAnchors,
-                  })
-                ) {
-                  vErrors =
-                    vErrors === null
-                      ? validate330.errors
-                      : vErrors.concat(validate330.errors);
-                  errors = vErrors.length;
+                if (typeof data.name !== "string") {
+                  validate329.errors = [
+                    {
+                      instancePath: instancePath + "/name",
+                      schemaPath: "#/properties/name/type",
+                      keyword: "type",
+                      params: { type: "string" },
+                      message: "must be string",
+                    },
+                  ];
+                  return false;
                 }
                 var valid0 = _errs9 === errors;
               } else {
                 var valid0 = true;
               }
               if (valid0) {
-                if (data.role !== undefined) {
-                  const _errs10 = errors;
+                if (data.restart !== undefined) {
+                  const _errs11 = errors;
                   if (
-                    !validate332(data.role, {
-                      instancePath: instancePath + "/role",
+                    !validate330(data.restart, {
+                      instancePath: instancePath + "/restart",
                       parentData: data,
-                      parentDataProperty: "role",
+                      parentDataProperty: "restart",
                       rootData,
                       dynamicAnchors,
                     })
                   ) {
                     vErrors =
                       vErrors === null
-                        ? validate332.errors
-                        : vErrors.concat(validate332.errors);
+                        ? validate330.errors
+                        : vErrors.concat(validate330.errors);
                     errors = vErrors.length;
                   }
-                  var valid0 = _errs10 === errors;
+                  var valid0 = _errs11 === errors;
                 } else {
                   var valid0 = true;
                 }
                 if (valid0) {
-                  if (data.spawn !== undefined) {
-                    let data6 = data.spawn;
-                    const _errs11 = errors;
+                  if (data.role !== undefined) {
+                    const _errs12 = errors;
                     if (
-                      !(
-                        typeof data6 == "number" &&
-                        !(data6 % 1) &&
-                        !isNaN(data6) &&
-                        isFinite(data6)
-                      )
+                      !validate332(data.role, {
+                        instancePath: instancePath + "/role",
+                        parentData: data,
+                        parentDataProperty: "role",
+                        rootData,
+                        dynamicAnchors,
+                      })
                     ) {
-                      validate329.errors = [
-                        {
-                          instancePath: instancePath + "/spawn",
-                          schemaPath: "#/properties/spawn/type",
-                          keyword: "type",
-                          params: { type: "integer" },
-                          message: "must be integer",
-                        },
-                      ];
-                      return false;
+                      vErrors =
+                        vErrors === null
+                          ? validate332.errors
+                          : vErrors.concat(validate332.errors);
+                      errors = vErrors.length;
                     }
-                    if (errors === _errs11) {
-                      if (typeof data6 == "number" && isFinite(data6)) {
-                        if (data6 > 4294967295 || isNaN(data6)) {
-                          validate329.errors = [
-                            {
-                              instancePath: instancePath + "/spawn",
-                              schemaPath: "#/properties/spawn/maximum",
-                              keyword: "maximum",
-                              params: { comparison: "<=", limit: 4294967295 },
-                              message: "must be <= 4294967295",
-                            },
-                          ];
-                          return false;
-                        } else {
-                          if (data6 < 0 || isNaN(data6)) {
-                            validate329.errors = [
-                              {
-                                instancePath: instancePath + "/spawn",
-                                schemaPath: "#/properties/spawn/minimum",
-                                keyword: "minimum",
-                                params: { comparison: ">=", limit: 0 },
-                                message: "must be >= 0",
-                              },
-                            ];
-                            return false;
-                          }
-                        }
-                      }
-                    }
-                    var valid0 = _errs11 === errors;
+                    var valid0 = _errs12 === errors;
                   } else {
                     var valid0 = true;
                   }
                   if (valid0) {
-                    if (data.stop_config !== undefined) {
-                      let data7 = data.stop_config;
+                    if (data.spawn !== undefined) {
+                      let data7 = data.spawn;
                       const _errs13 = errors;
                       if (
                         !(
@@ -73014,35 +72986,45 @@ function validate329(
                           !(data7 % 1) &&
                           !isNaN(data7) &&
                           isFinite(data7)
-                        ) &&
-                        data7 !== null
+                        )
                       ) {
                         validate329.errors = [
                           {
-                            instancePath: instancePath + "/stop_config",
-                            schemaPath: "#/properties/stop_config/type",
+                            instancePath: instancePath + "/spawn",
+                            schemaPath: "#/properties/spawn/type",
                             keyword: "type",
-                            params: {
-                              type: schema113.properties.stop_config.type,
-                            },
-                            message: "must be integer,null",
+                            params: { type: "integer" },
+                            message: "must be integer",
                           },
                         ];
                         return false;
                       }
                       if (errors === _errs13) {
                         if (typeof data7 == "number" && isFinite(data7)) {
-                          if (data7 < 0 || isNaN(data7)) {
+                          if (data7 > 4294967295 || isNaN(data7)) {
                             validate329.errors = [
                               {
-                                instancePath: instancePath + "/stop_config",
-                                schemaPath: "#/properties/stop_config/minimum",
-                                keyword: "minimum",
-                                params: { comparison: ">=", limit: 0 },
-                                message: "must be >= 0",
+                                instancePath: instancePath + "/spawn",
+                                schemaPath: "#/properties/spawn/maximum",
+                                keyword: "maximum",
+                                params: { comparison: "<=", limit: 4294967295 },
+                                message: "must be <= 4294967295",
                               },
                             ];
                             return false;
+                          } else {
+                            if (data7 < 0 || isNaN(data7)) {
+                              validate329.errors = [
+                                {
+                                  instancePath: instancePath + "/spawn",
+                                  schemaPath: "#/properties/spawn/minimum",
+                                  keyword: "minimum",
+                                  params: { comparison: ">=", limit: 0 },
+                                  message: "must be >= 0",
+                                },
+                              ];
+                              return false;
+                            }
                           }
                         }
                       }
@@ -73051,8 +73033,8 @@ function validate329(
                       var valid0 = true;
                     }
                     if (valid0) {
-                      if (data.stop_ns !== undefined) {
-                        let data8 = data.stop_ns;
+                      if (data.stop_config !== undefined) {
+                        let data8 = data.stop_config;
                         const _errs15 = errors;
                         if (
                           !(
@@ -73065,11 +73047,11 @@ function validate329(
                         ) {
                           validate329.errors = [
                             {
-                              instancePath: instancePath + "/stop_ns",
-                              schemaPath: "#/properties/stop_ns/type",
+                              instancePath: instancePath + "/stop_config",
+                              schemaPath: "#/properties/stop_config/type",
                               keyword: "type",
                               params: {
-                                type: schema113.properties.stop_ns.type,
+                                type: schema113.properties.stop_config.type,
                               },
                               message: "must be integer,null",
                             },
@@ -73078,39 +73060,88 @@ function validate329(
                         }
                         if (errors === _errs15) {
                           if (typeof data8 == "number" && isFinite(data8)) {
-                            if (data8 > 9223372036854776000 || isNaN(data8)) {
+                            if (data8 < 0 || isNaN(data8)) {
                               validate329.errors = [
                                 {
-                                  instancePath: instancePath + "/stop_ns",
-                                  schemaPath: "#/properties/stop_ns/maximum",
-                                  keyword: "maximum",
-                                  params: {
-                                    comparison: "<=",
-                                    limit: 9223372036854776000,
-                                  },
-                                  message: "must be <= 9223372036854776000",
+                                  instancePath: instancePath + "/stop_config",
+                                  schemaPath:
+                                    "#/properties/stop_config/minimum",
+                                  keyword: "minimum",
+                                  params: { comparison: ">=", limit: 0 },
+                                  message: "must be >= 0",
                                 },
                               ];
                               return false;
-                            } else {
-                              if (data8 < 0 || isNaN(data8)) {
-                                validate329.errors = [
-                                  {
-                                    instancePath: instancePath + "/stop_ns",
-                                    schemaPath: "#/properties/stop_ns/minimum",
-                                    keyword: "minimum",
-                                    params: { comparison: ">=", limit: 0 },
-                                    message: "must be >= 0",
-                                  },
-                                ];
-                                return false;
-                              }
                             }
                           }
                         }
                         var valid0 = _errs15 === errors;
                       } else {
                         var valid0 = true;
+                      }
+                      if (valid0) {
+                        if (data.stop_ns !== undefined) {
+                          let data9 = data.stop_ns;
+                          const _errs17 = errors;
+                          if (
+                            !(
+                              typeof data9 == "number" &&
+                              !(data9 % 1) &&
+                              !isNaN(data9) &&
+                              isFinite(data9)
+                            ) &&
+                            data9 !== null
+                          ) {
+                            validate329.errors = [
+                              {
+                                instancePath: instancePath + "/stop_ns",
+                                schemaPath: "#/properties/stop_ns/type",
+                                keyword: "type",
+                                params: {
+                                  type: schema113.properties.stop_ns.type,
+                                },
+                                message: "must be integer,null",
+                              },
+                            ];
+                            return false;
+                          }
+                          if (errors === _errs17) {
+                            if (typeof data9 == "number" && isFinite(data9)) {
+                              if (data9 > 9223372036854776000 || isNaN(data9)) {
+                                validate329.errors = [
+                                  {
+                                    instancePath: instancePath + "/stop_ns",
+                                    schemaPath: "#/properties/stop_ns/maximum",
+                                    keyword: "maximum",
+                                    params: {
+                                      comparison: "<=",
+                                      limit: 9223372036854776000,
+                                    },
+                                    message: "must be <= 9223372036854776000",
+                                  },
+                                ];
+                                return false;
+                              } else {
+                                if (data9 < 0 || isNaN(data9)) {
+                                  validate329.errors = [
+                                    {
+                                      instancePath: instancePath + "/stop_ns",
+                                      schemaPath:
+                                        "#/properties/stop_ns/minimum",
+                                      keyword: "minimum",
+                                      params: { comparison: ">=", limit: 0 },
+                                      message: "must be >= 0",
+                                    },
+                                  ];
+                                  return false;
+                                }
+                              }
+                            }
+                          }
+                          var valid0 = _errs17 === errors;
+                        } else {
+                          var valid0 = true;
+                        }
                       }
                     }
                   }
@@ -73138,6 +73169,7 @@ function validate329(
 }
 validate329.evaluated = {
   props: {
+    backoff: true,
     dependencies: true,
     is_pool: true,
     name: true,
@@ -73248,74 +73280,111 @@ function validate328(
         ];
         return false;
       } else {
-        if (data.backoff !== undefined) {
+        if (data.children !== undefined) {
+          let data0 = data.children;
           const _errs1 = errors;
-          if (typeof data.backoff !== "boolean") {
-            validate328.errors = [
-              {
-                instancePath: instancePath + "/backoff",
-                schemaPath: "#/properties/backoff/type",
-                keyword: "type",
-                params: { type: "boolean" },
-                message: "must be boolean",
-              },
-            ];
-            return false;
+          if (errors === _errs1) {
+            if (Array.isArray(data0)) {
+              var valid1 = true;
+              const len0 = data0.length;
+              for (let i0 = 0; i0 < len0; i0++) {
+                const _errs3 = errors;
+                if (
+                  !validate329(data0[i0], {
+                    instancePath: instancePath + "/children/" + i0,
+                    parentData: data0,
+                    parentDataProperty: i0,
+                    rootData,
+                    dynamicAnchors,
+                  })
+                ) {
+                  vErrors =
+                    vErrors === null
+                      ? validate329.errors
+                      : vErrors.concat(validate329.errors);
+                  errors = vErrors.length;
+                }
+                var valid1 = _errs3 === errors;
+                if (!valid1) {
+                  break;
+                }
+              }
+            } else {
+              validate328.errors = [
+                {
+                  instancePath: instancePath + "/children",
+                  schemaPath: "#/properties/children/type",
+                  keyword: "type",
+                  params: { type: "array" },
+                  message: "must be array",
+                },
+              ];
+              return false;
+            }
           }
           var valid0 = _errs1 === errors;
         } else {
           var valid0 = true;
         }
         if (valid0) {
-          if (data.children !== undefined) {
-            let data1 = data.children;
-            const _errs3 = errors;
-            if (errors === _errs3) {
-              if (Array.isArray(data1)) {
-                var valid1 = true;
-                const len0 = data1.length;
-                for (let i0 = 0; i0 < len0; i0++) {
-                  const _errs5 = errors;
-                  if (
-                    !validate329(data1[i0], {
-                      instancePath: instancePath + "/children/" + i0,
-                      parentData: data1,
-                      parentDataProperty: i0,
-                      rootData,
-                      dynamicAnchors,
-                    })
-                  ) {
-                    vErrors =
-                      vErrors === null
-                        ? validate329.errors
-                        : vErrors.concat(validate329.errors);
-                    errors = vErrors.length;
-                  }
-                  var valid1 = _errs5 === errors;
-                  if (!valid1) {
-                    break;
+          if (data.id !== undefined) {
+            let data2 = data.id;
+            const _errs4 = errors;
+            if (
+              !(
+                typeof data2 == "number" &&
+                !(data2 % 1) &&
+                !isNaN(data2) &&
+                isFinite(data2)
+              )
+            ) {
+              validate328.errors = [
+                {
+                  instancePath: instancePath + "/id",
+                  schemaPath: "#/properties/id/type",
+                  keyword: "type",
+                  params: { type: "integer" },
+                  message: "must be integer",
+                },
+              ];
+              return false;
+            }
+            if (errors === _errs4) {
+              if (typeof data2 == "number" && isFinite(data2)) {
+                if (data2 > 4294967295 || isNaN(data2)) {
+                  validate328.errors = [
+                    {
+                      instancePath: instancePath + "/id",
+                      schemaPath: "#/properties/id/maximum",
+                      keyword: "maximum",
+                      params: { comparison: "<=", limit: 4294967295 },
+                      message: "must be <= 4294967295",
+                    },
+                  ];
+                  return false;
+                } else {
+                  if (data2 < 0 || isNaN(data2)) {
+                    validate328.errors = [
+                      {
+                        instancePath: instancePath + "/id",
+                        schemaPath: "#/properties/id/minimum",
+                        keyword: "minimum",
+                        params: { comparison: ">=", limit: 0 },
+                        message: "must be >= 0",
+                      },
+                    ];
+                    return false;
                   }
                 }
-              } else {
-                validate328.errors = [
-                  {
-                    instancePath: instancePath + "/children",
-                    schemaPath: "#/properties/children/type",
-                    keyword: "type",
-                    params: { type: "array" },
-                    message: "must be array",
-                  },
-                ];
-                return false;
               }
             }
-            var valid0 = _errs3 === errors;
+            var valid0 = _errs4 === errors;
           } else {
             var valid0 = true;
           }
           if (valid0) {
-            if (data.id !== undefined) {
-              let data3 = data.id;
+            if (data.max_restarts !== undefined) {
+              let data3 = data.max_restarts;
               const _errs6 = errors;
               if (
                 !(
@@ -73327,8 +73396,8 @@ function validate328(
               ) {
                 validate328.errors = [
                   {
-                    instancePath: instancePath + "/id",
-                    schemaPath: "#/properties/id/type",
+                    instancePath: instancePath + "/max_restarts",
+                    schemaPath: "#/properties/max_restarts/type",
                     keyword: "type",
                     params: { type: "integer" },
                     message: "must be integer",
@@ -73341,8 +73410,8 @@ function validate328(
                   if (data3 > 4294967295 || isNaN(data3)) {
                     validate328.errors = [
                       {
-                        instancePath: instancePath + "/id",
-                        schemaPath: "#/properties/id/maximum",
+                        instancePath: instancePath + "/max_restarts",
+                        schemaPath: "#/properties/max_restarts/maximum",
                         keyword: "maximum",
                         params: { comparison: "<=", limit: 4294967295 },
                         message: "must be <= 4294967295",
@@ -73353,8 +73422,8 @@ function validate328(
                     if (data3 < 0 || isNaN(data3)) {
                       validate328.errors = [
                         {
-                          instancePath: instancePath + "/id",
-                          schemaPath: "#/properties/id/minimum",
+                          instancePath: instancePath + "/max_restarts",
+                          schemaPath: "#/properties/max_restarts/minimum",
                           keyword: "minimum",
                           params: { comparison: ">=", limit: 0 },
                           message: "must be >= 0",
@@ -73370,171 +73439,28 @@ function validate328(
               var valid0 = true;
             }
             if (valid0) {
-              if (data.max_restarts !== undefined) {
-                let data4 = data.max_restarts;
+              if (data.startup_order !== undefined) {
+                let data4 = data.startup_order;
                 const _errs8 = errors;
-                if (
-                  !(
-                    typeof data4 == "number" &&
-                    !(data4 % 1) &&
-                    !isNaN(data4) &&
-                    isFinite(data4)
-                  )
-                ) {
-                  validate328.errors = [
-                    {
-                      instancePath: instancePath + "/max_restarts",
-                      schemaPath: "#/properties/max_restarts/type",
-                      keyword: "type",
-                      params: { type: "integer" },
-                      message: "must be integer",
-                    },
-                  ];
-                  return false;
-                }
                 if (errors === _errs8) {
-                  if (typeof data4 == "number" && isFinite(data4)) {
-                    if (data4 > 4294967295 || isNaN(data4)) {
-                      validate328.errors = [
-                        {
-                          instancePath: instancePath + "/max_restarts",
-                          schemaPath: "#/properties/max_restarts/maximum",
-                          keyword: "maximum",
-                          params: { comparison: "<=", limit: 4294967295 },
-                          message: "must be <= 4294967295",
-                        },
-                      ];
-                      return false;
-                    } else {
-                      if (data4 < 0 || isNaN(data4)) {
-                        validate328.errors = [
-                          {
-                            instancePath: instancePath + "/max_restarts",
-                            schemaPath: "#/properties/max_restarts/minimum",
-                            keyword: "minimum",
-                            params: { comparison: ">=", limit: 0 },
-                            message: "must be >= 0",
-                          },
-                        ];
-                        return false;
-                      }
-                    }
-                  }
-                }
-                var valid0 = _errs8 === errors;
-              } else {
-                var valid0 = true;
-              }
-              if (valid0) {
-                if (data.startup_order !== undefined) {
-                  let data5 = data.startup_order;
-                  const _errs10 = errors;
-                  if (errors === _errs10) {
-                    if (Array.isArray(data5)) {
-                      var valid2 = true;
-                      const len1 = data5.length;
-                      for (let i1 = 0; i1 < len1; i1++) {
-                        let data6 = data5[i1];
-                        const _errs12 = errors;
-                        if (
-                          !(
-                            typeof data6 == "number" &&
-                            !(data6 % 1) &&
-                            !isNaN(data6) &&
-                            isFinite(data6)
-                          )
-                        ) {
-                          validate328.errors = [
-                            {
-                              instancePath:
-                                instancePath + "/startup_order/" + i1,
-                              schemaPath:
-                                "#/properties/startup_order/items/type",
-                              keyword: "type",
-                              params: { type: "integer" },
-                              message: "must be integer",
-                            },
-                          ];
-                          return false;
-                        }
-                        if (errors === _errs12) {
-                          if (typeof data6 == "number" && isFinite(data6)) {
-                            if (data6 < 0 || isNaN(data6)) {
-                              validate328.errors = [
-                                {
-                                  instancePath:
-                                    instancePath + "/startup_order/" + i1,
-                                  schemaPath:
-                                    "#/properties/startup_order/items/minimum",
-                                  keyword: "minimum",
-                                  params: { comparison: ">=", limit: 0 },
-                                  message: "must be >= 0",
-                                },
-                              ];
-                              return false;
-                            }
-                          }
-                        }
-                        var valid2 = _errs12 === errors;
-                        if (!valid2) {
-                          break;
-                        }
-                      }
-                    } else {
-                      validate328.errors = [
-                        {
-                          instancePath: instancePath + "/startup_order",
-                          schemaPath: "#/properties/startup_order/type",
-                          keyword: "type",
-                          params: { type: "array" },
-                          message: "must be array",
-                        },
-                      ];
-                      return false;
-                    }
-                  }
-                  var valid0 = _errs10 === errors;
-                } else {
-                  var valid0 = true;
-                }
-                if (valid0) {
-                  if (data.strategy !== undefined) {
-                    const _errs14 = errors;
-                    if (
-                      !validate335(data.strategy, {
-                        instancePath: instancePath + "/strategy",
-                        parentData: data,
-                        parentDataProperty: "strategy",
-                        rootData,
-                        dynamicAnchors,
-                      })
-                    ) {
-                      vErrors =
-                        vErrors === null
-                          ? validate335.errors
-                          : vErrors.concat(validate335.errors);
-                      errors = vErrors.length;
-                    }
-                    var valid0 = _errs14 === errors;
-                  } else {
-                    var valid0 = true;
-                  }
-                  if (valid0) {
-                    if (data.window_secs !== undefined) {
-                      let data8 = data.window_secs;
-                      const _errs15 = errors;
+                  if (Array.isArray(data4)) {
+                    var valid2 = true;
+                    const len1 = data4.length;
+                    for (let i1 = 0; i1 < len1; i1++) {
+                      let data5 = data4[i1];
+                      const _errs10 = errors;
                       if (
                         !(
-                          typeof data8 == "number" &&
-                          !(data8 % 1) &&
-                          !isNaN(data8) &&
-                          isFinite(data8)
+                          typeof data5 == "number" &&
+                          !(data5 % 1) &&
+                          !isNaN(data5) &&
+                          isFinite(data5)
                         )
                       ) {
                         validate328.errors = [
                           {
-                            instancePath: instancePath + "/window_secs",
-                            schemaPath: "#/properties/window_secs/type",
+                            instancePath: instancePath + "/startup_order/" + i1,
+                            schemaPath: "#/properties/startup_order/items/type",
                             keyword: "type",
                             params: { type: "integer" },
                             message: "must be integer",
@@ -73542,40 +73468,123 @@ function validate328(
                         ];
                         return false;
                       }
-                      if (errors === _errs15) {
-                        if (typeof data8 == "number" && isFinite(data8)) {
-                          if (data8 > 4294967295 || isNaN(data8)) {
+                      if (errors === _errs10) {
+                        if (typeof data5 == "number" && isFinite(data5)) {
+                          if (data5 < 0 || isNaN(data5)) {
                             validate328.errors = [
                               {
-                                instancePath: instancePath + "/window_secs",
-                                schemaPath: "#/properties/window_secs/maximum",
-                                keyword: "maximum",
-                                params: { comparison: "<=", limit: 4294967295 },
-                                message: "must be <= 4294967295",
+                                instancePath:
+                                  instancePath + "/startup_order/" + i1,
+                                schemaPath:
+                                  "#/properties/startup_order/items/minimum",
+                                keyword: "minimum",
+                                params: { comparison: ">=", limit: 0 },
+                                message: "must be >= 0",
                               },
                             ];
                             return false;
-                          } else {
-                            if (data8 < 0 || isNaN(data8)) {
-                              validate328.errors = [
-                                {
-                                  instancePath: instancePath + "/window_secs",
-                                  schemaPath:
-                                    "#/properties/window_secs/minimum",
-                                  keyword: "minimum",
-                                  params: { comparison: ">=", limit: 0 },
-                                  message: "must be >= 0",
-                                },
-                              ];
-                              return false;
-                            }
                           }
                         }
                       }
-                      var valid0 = _errs15 === errors;
-                    } else {
-                      var valid0 = true;
+                      var valid2 = _errs10 === errors;
+                      if (!valid2) {
+                        break;
+                      }
                     }
+                  } else {
+                    validate328.errors = [
+                      {
+                        instancePath: instancePath + "/startup_order",
+                        schemaPath: "#/properties/startup_order/type",
+                        keyword: "type",
+                        params: { type: "array" },
+                        message: "must be array",
+                      },
+                    ];
+                    return false;
+                  }
+                }
+                var valid0 = _errs8 === errors;
+              } else {
+                var valid0 = true;
+              }
+              if (valid0) {
+                if (data.strategy !== undefined) {
+                  const _errs12 = errors;
+                  if (
+                    !validate335(data.strategy, {
+                      instancePath: instancePath + "/strategy",
+                      parentData: data,
+                      parentDataProperty: "strategy",
+                      rootData,
+                      dynamicAnchors,
+                    })
+                  ) {
+                    vErrors =
+                      vErrors === null
+                        ? validate335.errors
+                        : vErrors.concat(validate335.errors);
+                    errors = vErrors.length;
+                  }
+                  var valid0 = _errs12 === errors;
+                } else {
+                  var valid0 = true;
+                }
+                if (valid0) {
+                  if (data.window_secs !== undefined) {
+                    let data7 = data.window_secs;
+                    const _errs13 = errors;
+                    if (
+                      !(
+                        typeof data7 == "number" &&
+                        !(data7 % 1) &&
+                        !isNaN(data7) &&
+                        isFinite(data7)
+                      )
+                    ) {
+                      validate328.errors = [
+                        {
+                          instancePath: instancePath + "/window_secs",
+                          schemaPath: "#/properties/window_secs/type",
+                          keyword: "type",
+                          params: { type: "integer" },
+                          message: "must be integer",
+                        },
+                      ];
+                      return false;
+                    }
+                    if (errors === _errs13) {
+                      if (typeof data7 == "number" && isFinite(data7)) {
+                        if (data7 > 4294967295 || isNaN(data7)) {
+                          validate328.errors = [
+                            {
+                              instancePath: instancePath + "/window_secs",
+                              schemaPath: "#/properties/window_secs/maximum",
+                              keyword: "maximum",
+                              params: { comparison: "<=", limit: 4294967295 },
+                              message: "must be <= 4294967295",
+                            },
+                          ];
+                          return false;
+                        } else {
+                          if (data7 < 0 || isNaN(data7)) {
+                            validate328.errors = [
+                              {
+                                instancePath: instancePath + "/window_secs",
+                                schemaPath: "#/properties/window_secs/minimum",
+                                keyword: "minimum",
+                                params: { comparison: ">=", limit: 0 },
+                                message: "must be >= 0",
+                              },
+                            ];
+                            return false;
+                          }
+                        }
+                      }
+                    }
+                    var valid0 = _errs13 === errors;
+                  } else {
+                    var valid0 = true;
                   }
                 }
               }
@@ -73601,7 +73610,6 @@ function validate328(
 }
 validate328.evaluated = {
   props: {
-    backoff: true,
     children: true,
     id: true,
     max_restarts: true,

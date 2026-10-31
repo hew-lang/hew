@@ -730,6 +730,9 @@ pub struct HirSupervisorChild {
     /// Per-child graceful-stop deadline from the `stop:` clause.
     /// `None` means the supervisor default applies.
     pub stop: Option<HirExpr>,
+    /// Per-child restart delay from the `backoff:` clause, evaluated once
+    /// against construction config. `None` inherits the supervisor's policy.
+    pub backoff: Option<HirExpr>,
     /// Real, verifier-registered site for this child declaration, minted from
     /// the same monotonic allocator as every other HIR site
     /// (`self.ids.site()`). MIR diagnostics that have no specific

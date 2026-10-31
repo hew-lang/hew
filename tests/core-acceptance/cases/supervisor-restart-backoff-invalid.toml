@@ -1,6 +1,6 @@
 [[case]]
 id = "supervisor-restart-backoff-invalid"
-intent = "Invalid ordinary backoff values are refused before any child starts, including zero, negative and inverted bounds."
+intent = "Invalid ordinary backoff values, at supervisor or child level, are refused before any child starts: a zero initial with a positive maximum, a negative initial and inverted bounds. Both zero is restart.immediate() and is accepted."
 source = "cases/supervisor-restart-backoff-invalid.hew"
 suites = ["acceptance", "safety"]
 timeout_seconds = 10

@@ -2001,11 +2001,17 @@ fn verify_callable_table<'a>(
                     }));
                 }
             }
-            CallableInstance::SupervisorBackoff { supervisor } => {
-                if module
-                    .supervisor(*supervisor)
-                    .is_none_or(|owner| owner.backoff != Some(callable.id))
-                {
+            CallableInstance::SupervisorBackoff { supervisor, child } => {
+                if module.supervisor(*supervisor).is_none_or(|owner| {
+                    let declared = match child {
+                        None => owner.backoff,
+                        Some(child) => owner
+                            .children
+                            .get(*child as usize)
+                            .and_then(|declared| declared.backoff),
+                    };
+                    declared != Some(callable.id)
+                }) {
                     diagnostics.push(module_diag(SirDiagnosticKind::InvalidCallable {
                         callable: callable.id,
                         reason: "backoff body is not its declaration's checked policy".into(),

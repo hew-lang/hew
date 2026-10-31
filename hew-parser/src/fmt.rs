@@ -8,16 +8,16 @@ use std::ops::Range;
 use finl_unicode::categories::CharacterCategories;
 
 use crate::ast::{
-    sym, ActorDecl, ActorInit, Attribute, AttributeArg, BinaryOp, Block, CallArg, ChildSpec,
-    CompoundAssignOp, ConditionItem, ConstDecl, ElseBlock, Expr, ExternBlock, ExternFnDecl,
-    FieldDecl, FieldLabel, FnDecl, Ident, ImplDecl, ImportDecl, ImportSpec, IntRadix, Item,
-    LambdaParam, Literal, MachineDecl, MachineState, MachineTransition, MachineTransitionBodyForm,
-    MachineTrigger, MatchArm, NamingCase, NominalPatternPayload, OverflowPolicy, Param,
-    ParameterOwnership, Path, Pattern, PatternField, Program, ReceiveFnDecl, RecordDecl,
-    RecordKind, RestartPolicy, SelectArm, Span, Spanned, Stmt, StringPart, SupervisorDecl,
-    SupervisorStrategy, TimeoutClause, TraitBound, TraitDecl, TraitItem, TraitMethod,
-    TypeAliasDecl, TypeBodyItem, TypeDecl, TypeDeclKind, TypeExpr, TypeParam, UnaryOp, VariantDecl,
-    VariantKind, Visibility, WhereClause, WireMetadata, WireReserved,
+    sym, ActorDecl, ActorInit, Attribute, AttributeArg, BinaryOp, Block, CallArg, ChildClause,
+    ChildSpec, CompoundAssignOp, ConditionItem, ConstDecl, ElseBlock, Expr, ExternBlock,
+    ExternFnDecl, FieldDecl, FieldLabel, FnDecl, Ident, ImplDecl, ImportDecl, ImportSpec, IntRadix,
+    Item, LambdaParam, Literal, MachineDecl, MachineState, MachineTransition,
+    MachineTransitionBodyForm, MachineTrigger, MatchArm, NamingCase, NominalPatternPayload,
+    OverflowPolicy, Param, ParameterOwnership, Path, Pattern, PatternField, Program, ReceiveFnDecl,
+    RecordDecl, RecordKind, RestartPolicy, SelectArm, Span, Spanned, Stmt, StringPart,
+    SupervisorDecl, SupervisorStrategy, TimeoutClause, TraitBound, TraitDecl, TraitItem,
+    TraitMethod, TypeAliasDecl, TypeBodyItem, TypeDecl, TypeDeclKind, TypeExpr, TypeParam, UnaryOp,
+    VariantDecl, VariantKind, Visibility, WhereClause, WireMetadata, WireReserved,
 };
 
 /// Format a duration in nanoseconds to the most natural unit suffix.
@@ -2992,46 +2992,72 @@ impl<'a> Formatter<'a> {
         if !spec.args.is_empty() {
             self.format_record_literal_body(&spec.args, &spec.arg_labels, None, None);
         }
-        // Pool arity is a clause, so it prints outside the braces. It comes
-        // first among the clauses because arity binds to the template the
-        // braces just described.
-        if let Some(count) = &spec.count {
-            self.write(" count: ");
-            self.format_expr(count);
-        }
-        if let Some(restart) = &spec.restart {
-            self.write(" restart: ");
-            match restart {
-                RestartPolicy::Permanent => self.write("permanent"),
-                RestartPolicy::Transient => self.write("transient"),
-                RestartPolicy::Temporary => self.write("temporary"),
-            }
-        }
-        if let Some(stop) = &spec.stop {
-            self.write(" stop: ");
-            if matches!(&stop.0, Expr::Literal(Literal::Duration(0))) {
-                self.write("0s");
-            } else {
-                self.format_expr(stop);
-            }
-        }
-        // `wired_to:` was silently dropped by the old formatter — preserve it.
-        // HashMap iteration order is non-deterministic, so emit keys sorted to
-        // keep the round-trip stable and idempotent.
-        if let Some(wired_to) = &spec.wired_to {
-            if !wired_to.is_empty() {
-                let mut entries: Vec<(&String, &String)> = wired_to.iter().collect();
-                entries.sort_by(|a, b| a.0.cmp(b.0));
-                self.write(" wired_to: { ");
-                self.comma_sep(&entries, |f, (key, sibling)| {
-                    f.write(key);
-                    f.write(": ");
-                    f.write(sibling);
-                });
-                self.write(" }");
-            }
+        // Suffix clauses are order-independent; reprint them as written. A
+        // child built without a recorded order prints arity first, since it
+        // binds to the template the braces just described.
+        let order: &[ChildClause] = if spec.clause_order.is_empty() {
+            &[
+                ChildClause::Count,
+                ChildClause::Restart,
+                ChildClause::Backoff,
+                ChildClause::Stop,
+                ChildClause::WiredTo,
+            ]
+        } else {
+            &spec.clause_order
+        };
+        for clause in order {
+            self.format_child_clause(spec, *clause);
         }
         self.write(";\n");
+    }
+
+    fn format_child_clause(&mut self, spec: &ChildSpec, clause: ChildClause) {
+        match clause {
+            ChildClause::Count => {
+                if let Some(count) = &spec.count {
+                    self.write(" count: ");
+                    self.format_expr(count);
+                }
+            }
+            ChildClause::Restart => {
+                if let Some(restart) = &spec.restart {
+                    self.write(" restart: ");
+                    self.write(match restart {
+                        RestartPolicy::Permanent => "permanent",
+                        RestartPolicy::Transient => "transient",
+                        RestartPolicy::Temporary => "temporary",
+                    });
+                }
+            }
+            ChildClause::Backoff => {
+                if let Some(backoff) = &spec.backoff {
+                    self.write(" backoff: ");
+                    self.format_expr(backoff);
+                }
+            }
+            ChildClause::Stop => {
+                if let Some(stop) = &spec.stop {
+                    self.write(" stop: ");
+                    if matches!(&stop.0, Expr::Literal(Literal::Duration(0))) {
+                        self.write("0s");
+                    } else {
+                        self.format_expr(stop);
+                    }
+                }
+            }
+            ChildClause::WiredTo => {
+                if let Some(wired_to) = spec.wired_to.as_ref().filter(|w| !w.is_empty()) {
+                    self.write(" wired_to: { ");
+                    self.comma_sep(wired_to, |f, (key, sibling)| {
+                        f.write(key);
+                        f.write(": ");
+                        f.write(sibling);
+                    });
+                    self.write(" }");
+                }
+            }
+        }
     }
 
     fn format_fn(&mut self, decl: &FnDecl, span_end: usize) {
@@ -7431,6 +7457,14 @@ impl<T> Vec<T> {
     fn supervisor_backoff_expression_roundtrips_in_source_order() {
         let source = "supervisor Team(config: Config) {\n    intensity: 5 within 60s;\n    backoff: restart.exponential(initial: config.initial, maximum: 5s);\n\n    child worker: Worker;\n}\n";
         assert_eq!(roundtrip(source), source);
+    }
+
+    #[test]
+    fn child_clauses_reprint_in_source_order() {
+        let canonical = "supervisor Gateway {\n    backoff: restart.exponential(initial: 100ms, maximum: 5s);\n\n    child upstream: Client { url: url } restart: permanent backoff: restart.exponential(initial: 1s, maximum: 1m);\n    child cache: Cache restart: transient backoff: restart.immediate() stop: 5s;\n}\n";
+        assert_eq!(roundtrip(canonical), canonical);
+        let reordered = "supervisor Gateway {\n    backoff: restart.exponential(initial: 100ms, maximum: 5s);\n\n    child upstream: Client { url: url } backoff: restart.exponential(initial: 1s, maximum: 1m) restart: permanent;\n    child cache: Cache stop: 5s wired_to: { z: upstream, a: upstream } backoff: restart.immediate() restart: transient;\n}\n";
+        assert_eq!(roundtrip(reordered), reordered);
     }
 
     #[test]

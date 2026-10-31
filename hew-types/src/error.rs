@@ -659,6 +659,8 @@ pub enum SupervisorErrorKind {
     IntensityWindow,
     /// A restart delay configuration must use the ordinary stdlib policy value.
     BackoffType,
+    /// A `restart: temporary` child declares `backoff:`, which it never uses.
+    TemporaryBackoff,
     /// `E_SUPERVISOR_DUPLICATE_CHILD`: two children share a name.
     DuplicateChild,
     /// `E_SUPERVISOR_STRATEGY_POOL_MISMATCH`: `pool` children and the chosen
@@ -689,6 +691,7 @@ impl SupervisorErrorKind {
             Self::IntensityRestarts => "SupervisorIntensityRestarts",
             Self::IntensityWindow => "SupervisorIntensityWindow",
             Self::BackoffType => "SupervisorBackoffType",
+            Self::TemporaryBackoff => "SupervisorTemporaryBackoff",
             Self::DuplicateChild => "SupervisorDuplicateChild",
             Self::StrategyPoolMismatch => "SupervisorStrategyPoolMismatch",
             Self::WiredToUnknownSibling => "SupervisorWiredToUnknownSibling",
@@ -2209,6 +2212,7 @@ mod tests {
             SupervisorErrorKind::IntensityRestarts,
             SupervisorErrorKind::IntensityWindow,
             SupervisorErrorKind::BackoffType,
+            SupervisorErrorKind::TemporaryBackoff,
             SupervisorErrorKind::DuplicateChild,
             SupervisorErrorKind::StrategyPoolMismatch,
             SupervisorErrorKind::WiredToUnknownSibling,

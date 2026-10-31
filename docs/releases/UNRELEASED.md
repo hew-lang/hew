@@ -10,3 +10,19 @@ previous implicit delay of 100 milliseconds, doubling to 30 seconds from the
 second crash, stalled tight restart loops. Declare
 `backoff: restart.exponential(initial: 100ms)` to keep a delay; `maximum`
 defaults to 30 seconds, and the delay never drops below `initial`.
+
+A child declaration accepts its own `backoff:` clause beside `restart:` and
+`stop:`, replacing the supervisor's policy for that child:
+
+```hew
+supervisor Gateway {
+    backoff: restart.exponential(initial: 100ms, maximum: 5s);
+    child upstream: Client { url } restart: permanent backoff: restart.exponential(initial: 1s, maximum: 1m);
+    child cache: Cache restart: permanent backoff: restart.immediate();
+}
+```
+
+`restart.immediate()` restarts its child without delay. It is the policy with
+both durations zero, so a hand-written
+`restart.Backoff { initial: 0ns, maximum: 0ns }` is now accepted with the same
+meaning instead of failing construction.

@@ -174,6 +174,54 @@ unsafe fn defer_construction_event(
     }
 }
 
+/// Rule on an elapsed restart delay for one stable role.
+///
+/// # Safety
+///
+/// `sup` is the live supervisor retained by the current dispatch.
+unsafe fn dispatch_delayed_restart(sup: *mut HewSupervisor, event: &DelayedRestartEvent) {
+    // S3: establish a sampled root for the delayed-restart span too
+    // (this dispatch was woken by a timer-thread sys-send, which may
+    // carry a zero trace context).
+    crate::tracing::ensure_supervisor_trace_root();
+    let record = FaultRecord::from_raw(event.fault_record);
+    // SAFETY: the stable identity is resolved under the roster lock;
+    // retired dynamic children are ignored. The armed timer transferred
+    // the record here; the restart's EFFECT is the ruling.
+    let (nested, absorbed) = {
+        // SAFETY: dispatch retains this parent while resolving the stable roster identity.
+        let roster = unsafe { &(*sup).roster }.lock_or_recover();
+        let nested = roster.child_supervisor_specs.iter().position(|spec| {
+            spec.as_ref()
+                .is_some_and(|spec| spec.identity == event.child_identity)
+        });
+        // A group restart that already replaced this role recovered
+        // its fault; restarting it again would tear down a healthy
+        // group and charge the budget twice.
+        let absorbed = match nested {
+            Some(index) => roster.child_supervisor_specs[index]
+                .as_ref()
+                .is_some_and(|spec| spec.backoff.replaced_since_armed()),
+            None => roster
+                .child_specs
+                .iter()
+                .find(|spec| spec.identity == event.child_identity)
+                .is_some_and(|spec| spec.backoff.replaced_since_armed()),
+        };
+        (nested, absorbed)
+    };
+    let ruling = if absorbed {
+        FaultRuling::Handled
+    } else if let Some(index) = nested {
+        // SAFETY: the captured identity belongs to this retained parent.
+        unsafe { restart_child_supervisor_with_budget(sup, index, record) }
+    } else {
+        // SAFETY: actor restart resolves the stable identity under its roster guard.
+        unsafe { restart_with_budget_and_strategy(sup, event.child_identity, record) }
+    };
+    crate::exit_status::settle_supervised_fault(record, ruling);
+}
+
 pub(crate) unsafe fn supervisor_sys_dispatch_impl(
     _ctx: *mut crate::execution_context::HewExecutionContext,
     state: *mut c_void,
@@ -290,32 +338,9 @@ pub(crate) unsafe fn supervisor_sys_dispatch_impl(
             if data.is_null() || data_size < std::mem::size_of::<DelayedRestartEvent>() {
                 return;
             }
-            // SAFETY: data is valid for at least sizeof(DelayedRestartEvent).
-            let event = unsafe { &*data.cast::<DelayedRestartEvent>() };
-            // S3: establish a sampled root for the delayed-restart span too
-            // (this dispatch was woken by a timer-thread sys-send, which may
-            // carry a zero trace context).
-            crate::tracing::ensure_supervisor_trace_root();
-            let record = FaultRecord::from_raw(event.fault_record);
-            // SAFETY: the stable identity is resolved under the roster lock;
-            // retired dynamic children are ignored. The armed timer transferred
-            // the record here; the restart's EFFECT is the ruling.
-            let nested = {
-                // SAFETY: dispatch retains this parent while resolving the stable roster identity.
-                let roster = unsafe { &(*sup).roster }.lock_or_recover();
-                roster.child_supervisor_specs.iter().position(|spec| {
-                    spec.as_ref()
-                        .is_some_and(|spec| spec.identity == event.child_identity)
-                })
-            };
-            let ruling = if let Some(index) = nested {
-                // SAFETY: the captured identity belongs to this retained parent.
-                unsafe { restart_child_supervisor_with_budget(sup, index, record) }
-            } else {
-                // SAFETY: actor restart resolves the stable identity under its roster guard.
-                unsafe { restart_with_budget_and_strategy(sup, event.child_identity, record) }
-            };
-            crate::exit_status::settle_supervised_fault(record, ruling);
+            // SAFETY: data is valid for at least sizeof(DelayedRestartEvent),
+            // and this dispatch retains `sup`.
+            unsafe { dispatch_delayed_restart(sup, &*data.cast::<DelayedRestartEvent>()) };
             wake_restart_waiters(sup);
         }
         HewSysMsg::GroupRestart => {
@@ -376,7 +401,6 @@ pub unsafe extern "C" fn hew_supervisor_new(
             child_count: 0,
             next_child_spec_identity: 1,
             native_startup_order: Vec::new(),
-            backoff: None,
             construction_events: Vec::new(),
             child_supervisors: Vec::new(),
             child_supervisor_tokens: Vec::new(),
@@ -4105,7 +4129,7 @@ mod tests {
                 // Restartable by policy with a declared delay, so the crash
                 // takes the DELAYED path rather than restarting in line.
                 spec.restart_policy = RESTART_PERMANENT;
-                spec.backoff = RestartBackoff::configured(Some((200_000_000, 200_000_000)));
+                spec.backoff = RestartBackoff::configured(200_000_000, 200_000_000);
             }
 
             actor::hew_actor_trap(child, 1);

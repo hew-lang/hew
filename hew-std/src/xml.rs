@@ -82,6 +82,7 @@ enum ParseXmlError {
     MismatchedClose { expected: String, found: String },
     UnexpectedClose(String),
     InvalidAttribute(String),
+    InvalidName(String),
     UnknownEntity(String),
 }
 
@@ -105,11 +106,41 @@ impl ParseXmlError {
             Self::InvalidAttribute(tag) => {
                 format!("xml: element `{tag}` has a malformed attribute")
             }
+            Self::InvalidName(name) => format!("xml: `{name}` is not a valid XML name"),
             Self::UnknownEntity(name) => {
                 format!("xml: `&{name};` is not a known entity reference")
             }
         }
     }
+}
+
+/// Decode an element or attribute name, refusing what XML 1.0 §2.3 does not
+/// call a `Name`. The reader splits names on whitespace and `/` alone, so it
+/// hands back an empty name for `<\t/>` and quotes or `=` inside others;
+/// keeping one would print a document no reader accepts.
+fn name(text: &str) -> Result<String, ParseXmlError> {
+    let mut chars = text.chars();
+    let valid = chars.next().is_some_and(is_name_start) && chars.all(is_name_char);
+    if valid {
+        Ok(text.to_owned())
+    } else {
+        Err(ParseXmlError::InvalidName(text.to_owned()))
+    }
+}
+
+fn is_name_start(ch: char) -> bool {
+    matches!(ch,
+        ':' | 'A'..='Z' | '_' | 'a'..='z'
+        | '\u{C0}'..='\u{D6}' | '\u{D8}'..='\u{F6}' | '\u{F8}'..='\u{2FF}'
+        | '\u{370}'..='\u{37D}' | '\u{37F}'..='\u{1FFF}' | '\u{200C}'..='\u{200D}'
+        | '\u{2070}'..='\u{218F}' | '\u{2C00}'..='\u{2FEF}' | '\u{3001}'..='\u{D7FF}'
+        | '\u{F900}'..='\u{FDCF}' | '\u{FDF0}'..='\u{FFFD}' | '\u{10000}'..='\u{EFFFF}')
+}
+
+fn is_name_char(ch: char) -> bool {
+    is_name_start(ch)
+        || matches!(ch,
+            '-' | '.' | '0'..='9' | '\u{B7}' | '\u{300}'..='\u{36F}' | '\u{203F}'..='\u{2040}')
 }
 
 /// Extract tag name and attributes from a [`BytesStart`] event.
@@ -120,13 +151,13 @@ impl ParseXmlError {
 fn extract_tag_and_attrs(
     e: &BytesStart<'_>,
 ) -> Result<(String, Vec<(String, String)>), ParseXmlError> {
-    let tag = e.name().as_ref().to_string();
+    let tag = name(e.name().as_ref())?;
     let mut attributes = Vec::new();
     for attribute in e.attributes() {
         let Ok(a) = attribute else {
             return Err(ParseXmlError::InvalidAttribute(tag));
         };
-        let key = a.key.as_ref().to_string();
+        let key = name(a.key.as_ref())?;
         let Ok(val) = a.normalized_value(quick_xml::XmlVersion::Implicit1_0) else {
             return Err(ParseXmlError::InvalidAttribute(tag));
         };
@@ -250,8 +281,10 @@ fn parse_xml(xml: &str) -> Result<XmlNodeKind, ParseXmlError> {
                 };
                 push_node(&mut stack, &mut top_level, node);
             }
+            // Literal line breaks read as XML 1.0 defines them: CRLF and a
+            // lone CR become LF. A `&#13;` reference keeps its CR.
             Ok(Event::Text(ref e)) => {
-                text_buf.push_str(e.as_ref());
+                text_buf.push_str(&e.xml_content(quick_xml::XmlVersion::Implicit1_0));
             }
             Ok(Event::GeneralRef(ref e)) => match &**e {
                 "lt" => text_buf.push('<'),
@@ -271,7 +304,9 @@ fn parse_xml(xml: &str) -> Result<XmlNodeKind, ParseXmlError> {
             },
             Ok(Event::CData(ref e)) => {
                 flush_text(&mut text_buf, &mut stack, &mut top_level);
-                let text = e.as_ref().to_string();
+                let text = e
+                    .xml_content(quick_xml::XmlVersion::Implicit1_0)
+                    .into_owned();
                 if !text.is_empty() {
                     push_node(&mut stack, &mut top_level, XmlNodeKind::Text(text));
                 }
@@ -341,18 +376,37 @@ fn write_node(buf: &mut String, node: &XmlNodeKind) {
 }
 
 /// Escape special characters in text content.
+///
+/// A carriage return is written as a reference: a reader normalizes a
+/// literal one to a line feed, which would change the text.
 fn escape_text(s: &str) -> String {
-    s.replace('&', "&amp;")
-        .replace('<', "&lt;")
-        .replace('>', "&gt;")
+    escape(s, false)
 }
 
 /// Escape special characters in attribute values.
+///
+/// Tab, line feed and carriage return are written as references: a reader
+/// normalizes literal whitespace in an attribute value to spaces, so a value
+/// that holds them would not survive a round trip.
 fn escape_attr(s: &str) -> String {
-    s.replace('&', "&amp;")
-        .replace('<', "&lt;")
-        .replace('>', "&gt;")
-        .replace('"', "&quot;")
+    escape(s, true)
+}
+
+fn escape(s: &str, attribute: bool) -> String {
+    let mut out = String::with_capacity(s.len());
+    for ch in s.chars() {
+        match ch {
+            '&' => out.push_str("&amp;"),
+            '<' => out.push_str("&lt;"),
+            '>' => out.push_str("&gt;"),
+            '\r' => out.push_str("&#13;"),
+            '"' if attribute => out.push_str("&quot;"),
+            '\t' if attribute => out.push_str("&#9;"),
+            '\n' if attribute => out.push_str("&#10;"),
+            _ => out.push(ch),
+        }
+    }
+    out
 }
 
 /// Recursively collect text content from a node tree.
@@ -679,6 +733,51 @@ mod tests {
     }
 
     #[test]
+    fn whitespace_references_survive_a_round_trip() {
+        // Character references put a tab, line feed and carriage return into
+        // an attribute and a carriage return into text. Written back
+        // literally, a reader turns the first three into spaces and the last
+        // into a line feed.
+        let source = "<r a=\"x&#9;y&#10;z&#13;\">p&#13;q</r>";
+        let node = parse(source);
+        assert!(!node.is_null());
+        // SAFETY: node and every reparsed tree are live until freed below.
+        unsafe {
+            let printed = read_and_free_string(hew_xml_to_string(node));
+            let reparsed = parse(&printed);
+            assert!(!reparsed.is_null(), "{printed:?}");
+            for tree in [node, reparsed] {
+                let name = ManagedString::new("a");
+                let attr = read_and_free_string(hew_xml_get_attribute(tree, name.as_ptr()));
+                assert_eq!(attr, "x\ty\nz\r");
+                assert_eq!(read_and_free_string(hew_xml_get_text(tree)), "p\rq");
+            }
+            assert_eq!(read_and_free_string(hew_xml_to_string(reparsed)), printed);
+            hew_xml_free(reparsed);
+            hew_xml_free(node);
+        }
+    }
+
+    #[test]
+    fn literal_line_breaks_read_as_line_feeds() {
+        // XML 1.0 reads a literal CRLF or lone CR as LF, in text and CDATA
+        // alike, so a Windows-line-ending file writes back without `&#13;`.
+        for (source, text, printed) in [
+            ("<r>a\r\nb\rc</r>", "a\nb\nc", "<r>a\nb\nc</r>"),
+            ("<r><![CDATA[a\r\nb\rc]]></r>", "a\nb\nc", "<r>a\nb\nc</r>"),
+        ] {
+            let node = parse(source);
+            assert!(!node.is_null(), "{source:?}");
+            // SAFETY: node is a live tree until freed below.
+            unsafe {
+                assert_eq!(read_and_free_string(hew_xml_get_text(node)), text);
+                assert_eq!(read_and_free_string(hew_xml_to_string(node)), printed);
+                hew_xml_free(node);
+            }
+        }
+    }
+
+    #[test]
     fn parse_simple_element() {
         let node = parse("<greeting>Hello</greeting>");
         assert!(!node.is_null());
@@ -691,6 +790,37 @@ mod tests {
             let text = read_and_free_string(hew_xml_get_text(node));
             assert_eq!(text, "Hello");
             hew_xml_free(node);
+        }
+    }
+
+    #[test]
+    fn invalid_names_are_refused() {
+        // `<\t/>` reaches the tree builder as an element with an empty name,
+        // which used to print as `</>`.
+        for source in [
+            "<\t/>",
+            "<r><\t/></r>",
+            "<r a\"b=\"1\"/>",
+            "<1r/>",
+            "<r -a=\"1\"/>",
+        ] {
+            assert!(parse(source).is_null(), "{source:?} parsed");
+            // SAFETY: reads and releases this thread's error slot.
+            let error = unsafe { read_and_free_optional_string(hew_xml_last_error()) };
+            assert!(error.is_some(), "{source:?} left no error");
+        }
+        assert!(parse("<\t/>").is_null());
+        // SAFETY: as above.
+        let error = unsafe { read_and_free_optional_string(hew_xml_last_error()) };
+        assert_eq!(error.as_deref(), Some("xml: `` is not a valid XML name"));
+        for source in [
+            "<r:x xmlns:r=\"u\" _a=\"1\" b.c-d=\"2\"/>",
+            "<\u{e9}t\u{e9}/>",
+        ] {
+            let node = parse(source);
+            assert!(!node.is_null(), "{source:?} refused");
+            // SAFETY: node is live and released once.
+            unsafe { hew_xml_free(node) };
         }
     }
 

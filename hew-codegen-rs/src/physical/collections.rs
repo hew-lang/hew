@@ -26,6 +26,46 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
         vector: PointerValue<'ctx>,
         failure: &PhysicalEdge,
     ) -> CodegenResult<()> {
+        let unique = self.vector_buffer_unique(vector)?;
+        let ready = self
+            .ctx
+            .append_basic_block(self.value, "vector.mutation.ready");
+        let detach = self
+            .ctx
+            .append_basic_block(self.value, "vector.buffer.detach");
+        self.builder
+            .build_conditional_branch(unique, ready, detach)
+            .llvm_ctx("select vector buffer detachment")?;
+        self.builder.position_at_end(detach);
+        let function = get_or_declare_external(
+            self.llvm,
+            "hew_vec_make_unique_managed",
+            self.ctx
+                .i32_type()
+                .fn_type(&[vector.get_type().into(), vector.get_type().into()], false),
+        )?;
+        let state = self
+            .frame
+            .as_ref()
+            .map_or(vector.get_type().const_null(), |frame| frame.state);
+        let status = self
+            .runtime_call_value(
+                function,
+                &[vector.into(), state.into()],
+                "vector.detach.status",
+            )?
+            .into_int_value();
+        self.check_budget_status(status, failure)?;
+        self.builder
+            .build_unconditional_branch(ready)
+            .llvm_ctx("continue with unique vector storage")?;
+        self.builder.position_at_end(ready);
+        Ok(())
+    }
+
+    /// Whether an allocated vector buffer has no other header sharing it.
+    /// The vector must have a non-null buffer.
+    fn vector_buffer_unique(&self, vector: PointerValue<'ctx>) -> CodegenResult<IntValue<'ctx>> {
         let target = self.target_data;
         let word = self.ctx.ptr_sized_int_type(target, None);
         let data = self
@@ -92,48 +132,96 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
             .ok_or_else(|| CodegenError::FailClosed("vector reference count is not a load".into()))?
             .set_atomic_ordering(inkwell::AtomicOrdering::Acquire)
             .llvm_ctx("synchronize vector buffer ownership")?;
-        let unique = self
-            .builder
+        self.builder
             .build_int_compare(
                 IntPredicate::EQ,
                 references.into_int_value(),
                 word.const_int(1, false),
                 "vector.buffer.unique",
             )
-            .llvm_ctx("test vector buffer uniqueness")?;
-        let ready = self
+            .llvm_ctx("test vector buffer uniqueness")
+    }
+
+    /// Append a scalar in place when the unique buffer has spare capacity.
+    /// Branches to `slow` otherwise, leaving the vector and element untouched.
+    /// A scalar element has no clone, release or managed-storage effect, so
+    /// only buffer growth and detachment need the runtime.
+    fn emit_vector_scalar_push(
+        &self,
+        vector: PointerValue<'ctx>,
+        element: StorageId,
+        element_ty: BasicTypeEnum<'ctx>,
+        done: inkwell::basic_block::BasicBlock<'ctx>,
+        slow: inkwell::basic_block::BasicBlock<'ctx>,
+    ) -> CodegenResult<()> {
+        let target = self.target_data;
+        let word = self.ctx.ptr_sized_int_type(target, None);
+        let header = vector_header_type(self.ctx, target);
+        let field = |index: u32, name: &str| -> CodegenResult<IntValue<'ctx>> {
+            let slot = self
+                .builder
+                .build_struct_gep(header, vector, index, "vector.header.slot")
+                .llvm_ctx("address vector header field")?;
+            Ok(self
+                .builder
+                .build_load(word, slot, name)
+                .llvm_ctx("load vector header field")?
+                .into_int_value())
+        };
+        let len = field(1, "vector.push.len")?;
+        let front = field(2, "vector.push.front")?;
+        let cap = field(3, "vector.push.cap")?;
+        // A null buffer has zero capacity, so the uniqueness read below only
+        // runs for an allocated buffer.
+        let used = self
+            .builder
+            .build_int_nuw_add(len, front, "vector.push.used")
+            .llvm_ctx("count occupied vector slots")?;
+        let room = self
+            .builder
+            .build_int_compare(IntPredicate::ULT, used, cap, "vector.push.room")
+            .llvm_ctx("test spare vector capacity")?;
+        let owned = self
             .ctx
-            .append_basic_block(self.value, "vector.mutation.ready");
-        let detach = self
+            .append_basic_block(self.value, "vector.push.check.unique");
+        let inline = self
             .ctx
-            .append_basic_block(self.value, "vector.buffer.detach");
+            .append_basic_block(self.value, "vector.push.inline");
         self.builder
-            .build_conditional_branch(unique, ready, detach)
-            .llvm_ctx("select vector buffer detachment")?;
-        self.builder.position_at_end(detach);
-        let function = get_or_declare_external(
-            self.llvm,
-            "hew_vec_make_unique_managed",
-            self.ctx
-                .i32_type()
-                .fn_type(&[vector.get_type().into(), vector.get_type().into()], false),
-        )?;
-        let state = self
-            .frame
-            .as_ref()
-            .map_or(vector.get_type().const_null(), |frame| frame.state);
-        let status = self
-            .runtime_call_value(
-                function,
-                &[vector.into(), state.into()],
-                "vector.detach.status",
-            )?
-            .into_int_value();
-        self.check_budget_status(status, failure)?;
+            .build_conditional_branch(room, owned, slow)
+            .llvm_ctx("select inline vector append")?;
+        self.builder.position_at_end(owned);
+        let unique = self.vector_buffer_unique(vector)?;
         self.builder
-            .build_unconditional_branch(ready)
-            .llvm_ctx("continue with unique vector storage")?;
-        self.builder.position_at_end(ready);
+            .build_conditional_branch(unique, inline, slow)
+            .llvm_ctx("select unshared vector append")?;
+        self.builder.position_at_end(inline);
+        let value = self
+            .builder
+            .build_load(
+                element_ty,
+                self.slots[element.0 as usize],
+                "vector.push.value",
+            )
+            .llvm_ctx("read scalar vector element")?;
+        let slot = self.vector_element_slot(vector, len, element_ty)?;
+        self.builder
+            .build_store(slot, value)
+            .llvm_ctx("append scalar vector element")?;
+        let next = self
+            .builder
+            .build_int_nuw_add(len, word.const_int(1, false), "vector.push.next")
+            .llvm_ctx("extend vector length")?;
+        let len_slot = self
+            .builder
+            .build_struct_gep(header, vector, 1, "vector.push.len.out")
+            .llvm_ctx("address vector length")?;
+        self.builder
+            .build_store(len_slot, next)
+            .llvm_ctx("publish vector length")?;
+        self.builder
+            .build_unconditional_branch(done)
+            .llvm_ctx("finish inline vector append")?;
         Ok(())
     }
 
@@ -491,6 +579,22 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
             PhysicalVectorOp::Push | PhysicalVectorOp::Clear => {
                 if operation == PhysicalVectorOp::Push {
                     let moved = matches!(transfers.get(1), Some(ArgumentTransfer::Move(_)));
+                    let accepted = self
+                        .ctx
+                        .append_basic_block(self.value, "vector.push.accepted");
+                    if scalar {
+                        let runtime = self
+                            .ctx
+                            .append_basic_block(self.value, "vector.push.runtime");
+                        self.emit_vector_scalar_push(
+                            vector,
+                            source(1)?,
+                            llvm_type(self.ctx, &element_layout.repr)?,
+                            accepted,
+                            runtime,
+                        )?;
+                        self.builder.position_at_end(runtime);
+                    }
                     let function = get_or_declare_external(
                         self.llvm,
                         "hew_vec_push_managed",
@@ -523,9 +627,6 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                             "vector.push.status",
                         )?
                         .into_int_value();
-                    let accepted = self
-                        .ctx
-                        .append_basic_block(self.value, "vector.push.accepted");
                     let refused = self
                         .ctx
                         .append_basic_block(self.value, "vector.push.refused");

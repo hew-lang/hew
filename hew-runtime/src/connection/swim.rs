@@ -12,12 +12,14 @@ use crate::node_identity::NodeId;
 use crate::set_last_error;
 use crate::util::MutexExt;
 
-use super::control::authenticated_peer_identity;
+use super::control::admitted_peer_identity;
 use super::gossip::reannounce_local_names;
 use super::handshake::supports_gossip;
+use super::identity_claim::publish_refuted_claim;
 use super::peer::authenticated_peer_node_id_for_conn;
-use super::send::{claim_send_to_route, hew_connmgr_feature_flags_for_node};
+use super::send::{claim_swim_send_to_route, hew_connmgr_feature_flags_for_node};
 use super::{HewConnMgr, CONN_STATE_ACTIVE};
+use crate::peer_binding::ClaimState;
 
 /// Encode a SWIM control frame from a payload.
 pub(super) fn encode_swim_control(payload: &SwimControlPayload) -> Option<Vec<u8>> {
@@ -207,7 +209,7 @@ pub(crate) unsafe fn hew_connmgr_send_swim(
     if !supports_gossip(flags) {
         return -1;
     }
-    let Some(send_claim) = claim_send_to_route(mgr_ref, peer_node_id, None) else {
+    let Some(send_claim) = claim_swim_send_to_route(mgr_ref, peer_node_id) else {
         return -1;
     };
 
@@ -273,6 +275,12 @@ pub(crate) unsafe fn hew_connmgr_active_swim_peers(mgr: *const HewConnMgr) -> Ve
 /// 4. Run the SWIM state machine via [`HewCluster::receive_swim`] and send the
 ///    replies it returns: PING -> ACK; `PING_REQ` -> PING to the probed member
 ///    (C4); the probed member's ACK -> ACK naming it to each requester.
+/// 5. Publish a buried peer's refuting connection once its refutation has
+///    readmitted it, and answer a burial of this node over this connection.
+#[expect(
+    clippy::too_many_lines,
+    reason = "one authenticated SWIM frame runs gossip import, replies, readmission and the burial answer in order"
+)]
 pub(super) fn handle_swim_control_frame(
     mgr: *mut HewConnMgr,
     peer_feature_flags: u32,
@@ -309,12 +317,18 @@ pub(super) fn handle_swim_control_frame(
     // identity of the connection it arrived on. An `Unverified` (delivery-only)
     // connection resolves to 0 here and is rejected — it cannot inject SWIM
     // membership state. Waiting variant: the first inbound SWIM frame can race
-    // this connection's own Reserved → Published publication.
-    let Some((authenticated, peer_identity)) =
-        authenticated_peer_identity(mgr, conn_id, claim_token, "SWIM")
-    else {
+    // this connection's own Reserved → Published publication. A buried peer's
+    // refuting connection carries SWIM too, so the peer can refute its burial.
+    let Some((authenticated, peer_identity)) = admitted_peer_identity(
+        mgr,
+        conn_id,
+        claim_token,
+        "SWIM",
+        ClaimState::holds_connection,
+    ) else {
         return;
     };
+    let refuting = holds_refuting_claim(mgr_ref, peer_identity.node_id, conn_id, claim_token);
     if payload.from != peer_identity {
         set_last_error("connection reader SWIM sender does not match authenticated peer");
         return;
@@ -327,7 +341,8 @@ pub(super) fn handle_swim_control_frame(
         let route_slot = route_slot_for_identity(mgr_ref, entry.member.node_id);
         let admitted_session = admitted_gossip_session(mgr_ref, entry.member.node_id);
         if admitted_session != Some(entry.member.session_incarnation) {
-            if entry.state == crate::cluster::MEMBER_ALIVE {
+            // A buried peer carries no relay authority until readmitted.
+            if entry.state == crate::cluster::MEMBER_ALIVE && !refuting {
                 super::relay::observe_hint(
                     mgr,
                     super::relay::Carrier {
@@ -373,40 +388,115 @@ pub(super) fn handle_swim_control_frame(
     // C6: fold piggybacked membership gossip into our view.
     mgr_ref.record_gossip_received();
     cluster.apply_swim_gossip(&gossip);
-    // SAFETY: manager is live for this call.
-    unsafe { refute_claims_about_self(mgr, cluster, &gossip) };
+    // C5: if any gossip suspects us, refute by bumping our incarnation. The
+    // refutation rides out on our next PING/ACK as an ALIVE-about-self event.
+    cluster.refute_if_suspected(&gossip);
 
+    let mut answered_sender = false;
     for reply in cluster.receive_swim(
         payload.msg_type,
         authenticated,
         payload.incarnation,
         target_node,
     ) {
+        answered_sender |= reply.to == authenticated;
         // SAFETY: manager is live for this call. A reply with no active
         // connection to its peer is dropped like any lost frame.
         let _ = unsafe { hew_connmgr_send_swim(mgr, reply.to, reply.msg_type, reply.target) };
     }
+
+    // A buried peer that refuted at a higher incarnation has been readmitted
+    // by the frame just processed: publish its connection.
+    if refuting {
+        publish_refuted_claim(mgr_ref, conn_id, claim_token);
+    }
+
+    // SAFETY: manager is live for this call.
+    unsafe {
+        answer_burial(
+            mgr,
+            &gossip,
+            conn_id,
+            claim_token,
+            authenticated,
+            answered_sender,
+        );
+    }
 }
 
-/// C5: if any gossip suspects us, refute by bumping our incarnation. The
-/// refutation rides out on our next PING/ACK as an ALIVE-about-self event.
-/// A peer that declared us dead also dropped our names, and our return
-/// readmits this session without a new admission flush, so they are sent
-/// again, once per local incarnation.
+/// Answer a peer whose `gossip` tells this node it is DEAD. The peer dropped
+/// this node's names, and readmitting this session repeats no admission
+/// flush, so they are sent again over this connection, once per local
+/// incarnation. The refutation goes first, unless a reply already carried it:
+/// the peer readmits this node on it, so the names reach a published claim.
 ///
 /// # Safety
 ///
-/// `mgr` must be the live manager that owns `cluster`.
-unsafe fn refute_claims_about_self(
+/// `mgr` must be the live manager that owns this connection.
+unsafe fn answer_burial(
     mgr: *mut HewConnMgr,
-    cluster: &HewCluster,
     gossip: &[(u16, u32, i32, u64)],
+    conn_id: c_int,
+    claim_token: u64,
+    peer_route: u16,
+    refutation_sent: bool,
 ) {
-    cluster.refute_if_suspected(gossip);
-    if cluster.claim_burial_answer(gossip) {
-        // SAFETY: caller guarantees manager pointer validity.
-        unsafe { reannounce_local_names(mgr) };
+    // SAFETY: caller guarantees manager pointer validity.
+    let mgr_ref = unsafe { &*mgr };
+    if !gossip.iter().any(|&(slot, _, state, _)| {
+        slot == mgr_ref.local_node_id && state == crate::cluster::MEMBER_DEAD
+    }) {
+        return;
     }
+    // SAFETY: the manager pins its cluster.
+    let incarnation = unsafe { &*mgr_ref.cluster }.local_incarnation();
+    if !claim_burial_answer(mgr_ref, conn_id, claim_token, incarnation) {
+        return;
+    }
+    if !refutation_sent {
+        // SAFETY: caller guarantees manager pointer validity.
+        let _ = unsafe { hew_connmgr_send_swim(mgr, peer_route, crate::cluster::SWIM_MSG_PING, 0) };
+    }
+    reannounce_local_names(mgr_ref, conn_id, claim_token);
+}
+
+/// Whether this connection's admission holds `peer`'s claim as a buried peer
+/// refuting its burial.
+fn holds_refuting_claim(mgr: &HewConnMgr, peer: NodeId, conn_id: c_int, claim_token: u64) -> bool {
+    mgr.claims
+        .0
+        .lock_or_recover()
+        .get(&peer)
+        .is_some_and(|claim| {
+            claim.conn_id == conn_id
+                && claim.publication_token == claim_token
+                && matches!(claim.state, ClaimState::Refuting { .. })
+        })
+}
+
+/// Whether this connection has yet to answer a burial of this node at its
+/// current `incarnation`, claiming the answer if so. The obituary leads every
+/// frame from a burying peer until it readmits this node, so one answer per
+/// connection and incarnation bounds the cost.
+fn claim_burial_answer(
+    mgr: &HewConnMgr,
+    conn_id: c_int,
+    claim_token: u64,
+    incarnation: u64,
+) -> bool {
+    mgr.connections.access(|connections| {
+        connections
+            .iter()
+            .find(|connection| {
+                connection.conn_id == conn_id && connection.publication_token == claim_token
+            })
+            .is_some_and(|connection| {
+                connection
+                    .burial_answered
+                    .fetch_max(incarnation, Ordering::SeqCst)
+                    < incarnation
+            })
+    })
 }
 
 fn admitted_gossip_session(

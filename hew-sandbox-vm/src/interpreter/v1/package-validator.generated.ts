@@ -5863,6 +5863,7 @@ const schema19 = {
         "heap_exceeded",
         "integer_overflow",
         "divide_by_zero",
+        "signed_min_div_neg_one",
         "shift_out_of_range",
         "vector_bounds",
         "actor_refused",
@@ -27929,6 +27930,7 @@ const schema52 = {
     "heap_exceeded",
     "integer_overflow",
     "divide_by_zero",
+    "signed_min_div_neg_one",
     "shift_out_of_range",
     "vector_bounds",
     "actor_refused",
@@ -27971,6 +27973,7 @@ function validate129(
       data === "heap_exceeded" ||
       data === "integer_overflow" ||
       data === "divide_by_zero" ||
+      data === "signed_min_div_neg_one" ||
       data === "shift_out_of_range" ||
       data === "vector_bounds" ||
       data === "actor_refused"

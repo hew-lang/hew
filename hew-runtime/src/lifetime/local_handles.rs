@@ -1,5 +1,6 @@
 //! Stable identities for process-local actor and supervisor handles.
 
+use rustc_hash::FxHashMap;
 use std::cell::Cell;
 use std::collections::HashMap;
 use std::sync::atomic::AtomicBool;
@@ -118,8 +119,8 @@ pub(crate) enum ObservedActorTarget {
 
 #[derive(Default)]
 struct LocalHandleState {
-    routes: HashMap<HewLocalPidId, Route>,
-    actor_tokens: HashMap<u64, HewLocalPidId>,
+    routes: FxHashMap<HewLocalPidId, Route>,
+    actor_tokens: FxHashMap<u64, HewLocalPidId>,
     controls: HashMap<HewLocalPidId, Arc<SupervisorControl>>,
     supervisor_tokens: HashMap<usize, HewLocalPidId>,
     supervisor_roles: HashMap<HewLocalPidId, SupervisorRole>,

@@ -83,9 +83,27 @@ pub mod blocking {
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::{Arc, Condvar, Mutex};
 
+    #[cfg(not(target_arch = "wasm32"))]
+    use crate::scheduler::spin::{SpinBudget, DEFAULT_SPIN_LIMIT};
+
+    #[cfg(not(target_arch = "wasm32"))]
+    thread_local! {
+        /// Adaptive spin budget of the synchronous waiter on this thread.
+        static WAITER_SPIN: std::cell::Cell<SpinBudget> =
+            const { std::cell::Cell::new(SpinBudget::new(DEFAULT_SPIN_LIMIT)) };
+    }
+
+    /// `pending` and `blocked` form a Dekker pair under `SeqCst`: the waiter
+    /// publishes `blocked` before its last `pending` check under `lock`, and a
+    /// waker publishes `pending` before reading `blocked`, so a waker that sees
+    /// no blocked waiter skips the lock and the futex wake, and the waiter then
+    /// observes `pending` itself.
     #[derive(Debug, Default)]
     pub struct Readiness {
-        pending: Mutex<bool>,
+        pending: AtomicBool,
+        /// The waiter is blocking (or about to block) on `changed`.
+        blocked: AtomicBool,
+        lock: Mutex<()>,
         changed: Condvar,
         /// On the single-thread driver: the set latch is on the ready list and
         /// its waiter resumes only once the driver picks it.
@@ -122,16 +140,36 @@ pub mod blocking {
                 }
                 return;
             }
-            let mut pending = self.pending.lock_or_recover();
-            while !*pending {
-                pending = self.changed.wait_or_recover(pending);
+            if self.take_ready() {
+                return;
             }
-            *pending = false;
+            // A reply usually lands within a futex round trip; spin for it
+            // first so neither side makes a syscall.
+            #[cfg(not(target_arch = "wasm32"))]
+            {
+                let spun = WAITER_SPIN.with(|budget| {
+                    let mut current = budget.get();
+                    let spun = crate::scheduler::spin_waiter(&mut current, || {
+                        self.pending.load(Ordering::Acquire)
+                    });
+                    budget.set(current);
+                    spun
+                });
+                if spun && self.take_ready() {
+                    return;
+                }
+            }
+            let mut guard = self.lock.lock_or_recover();
+            self.blocked.store(true, Ordering::SeqCst);
+            while !self.pending.swap(false, Ordering::SeqCst) {
+                guard = self.changed.wait_or_recover(guard);
+            }
+            self.blocked.store(false, Ordering::Relaxed);
         }
 
         /// Consume an already pending notification without blocking.
         pub fn take_ready(&self) -> bool {
-            std::mem::take(&mut *self.pending.lock_or_recover())
+            self.pending.swap(false, Ordering::AcqRel)
         }
 
         /// The driver picked this latch's ready-list entry.
@@ -143,9 +181,16 @@ pub mod blocking {
     unsafe extern "C" fn wake(context: *mut c_void) {
         // SAFETY: descriptor holders retain this Arc allocation.
         let readiness = unsafe { &*context.cast::<Readiness>() };
-        let was_pending = std::mem::replace(&mut *readiness.pending.lock_or_recover(), true);
+        let was_pending = readiness.pending.swap(true, Ordering::SeqCst);
         if !crate::driver::active() {
-            readiness.changed.notify_one();
+            if readiness.blocked.load(Ordering::SeqCst) {
+                // Passing through the lock orders this notify after the
+                // waiter's under-lock `pending` check or after it entered the
+                // wait. Notify after unlocking so the woken waiter does not
+                // contend on the lock this thread still holds.
+                drop(readiness.lock.lock_or_recover());
+                readiness.changed.notify_one();
+            }
             return;
         }
         if was_pending || readiness.scheduled.swap(true, Ordering::AcqRel) {

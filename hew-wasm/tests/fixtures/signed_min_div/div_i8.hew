@@ -1,0 +1,6 @@
+fn main() {
+    let a: i8 = (-128);
+    let b: i8 = -1;
+    println("start");
+    println(a / b);
+}

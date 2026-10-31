@@ -472,6 +472,82 @@ fn supervised_actor_lifecycle_runs_under_wasi() {
     ]);
 }
 
+/// Signed division and remainder of the minimum by -1 trap with
+/// `SignedMinDivNegOne` at every width, optimization level and target, while
+/// the neighbouring operations stay representable. The sandbox VM checks the
+/// same sources against native in `hew-wasm`'s parity suite.
+#[test]
+fn signed_min_div_neg_one_traps_on_native_and_wasi() {
+    const NEIGHBOURS: &str = "-128 0 127 0 -64 0\n-32768 0 32767 0 -16384 0\n\
+        -2147483648 0 2147483647 0 -1073741824 0\n\
+        -9223372036854775808 0 9223372036854775807 0 -4611686018427387904 0\n";
+    require_codegen();
+    require_wasi_runner();
+    let output_dir = tempdir();
+    let fixtures = repo_root().join("hew-wasm/tests/fixtures/signed_min_div");
+    let mut cases = vec![("neighbours", NEIGHBOURS, 0, "")];
+    for name in [
+        "div_i8",
+        "div_i16",
+        "div_i32",
+        "div_i64",
+        "rem_i8",
+        "rem_i16",
+        "rem_i32",
+        "rem_i64",
+        "assign_div_i32",
+        "assign_rem_i16",
+    ] {
+        cases.push((
+            name,
+            "start\n",
+            1,
+            "hew: failure: SignedMinDivNegOne (203)\n",
+        ));
+    }
+    for (name, stdout, exit, stderr) in cases {
+        let source = fixtures.join(name).with_extension("hew");
+        for level in ["0", "2"] {
+            for target in ["native", "wasm32-wasi"] {
+                let label = format!("{name} {target} O{level}");
+                let extension = if target == "native" {
+                    std::env::consts::EXE_SUFFIX
+                } else {
+                    ".wasm"
+                };
+                let binary = output_dir
+                    .path()
+                    .join(format!("{name}-{target}-{level}{extension}"));
+                let mut build = support::hew_command();
+                build.current_dir(repo_root()).args([
+                    "build",
+                    source.to_str().expect("source path"),
+                    "--opt-level",
+                    level,
+                    "-o",
+                    binary.to_str().expect("binary path"),
+                ]);
+                if target != "native" {
+                    build.args(["--target", target]);
+                }
+                let compiled = support::run_bounded_command(build, format!("build {label}"));
+                support::assert_success(&compiled, &format!("build {label}"));
+                let run = if target == "native" {
+                    Command::new(&binary)
+                } else {
+                    let mut command = Command::new(support::find_wasmtime().expect("WASI runner"));
+                    command.arg("run").arg(&binary);
+                    command
+                };
+                let output = support::run_bounded_command(run, format!("run {label}"));
+                assert_eq!(String::from_utf8_lossy(&output.stdout), stdout, "{label}");
+                assert_eq!(String::from_utf8_lossy(&output.stderr), stderr, "{label}");
+                assert_eq!(output.status.code(), Some(exit), "{label}");
+            }
+        }
+    }
+}
+
 /// Actual host files are visible only through an explicit WASI preopen. Unix
 /// supplies the escape symlinks; the same WASI module also runs without grants.
 #[test]

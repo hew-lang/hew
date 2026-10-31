@@ -44,6 +44,9 @@ thread_local! {
 
 static HOT_TIER_ENABLED: AtomicBool = AtomicBool::new(false);
 
+#[cfg(not(target_arch = "wasm32"))]
+static SHARDS_IN_USE: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(1);
+
 // Keep the counters written by one worker together, away from other workers'
 // cache lines. Heap accounting is hot enough that packed atomic arrays cause
 // false sharing even when every worker uses a distinct index.
@@ -241,11 +244,20 @@ pub fn set_hot_tier_enabled(enabled: bool) {
 /// `clear_active_dispatch_ticket`. With every worker left on shard 0 they would
 /// overwrite each other's in-flight tickets, `computed_dispatch_watermark`
 /// would advance past live dispatches, and `hew_observe_barrier` could return
-/// OK while work is still running.
+/// OK while work is still running. The profiling allocator relies on the same
+/// exclusivity: a worker shard's counters are written only by that worker.
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn set_current_worker_shard(worker_id: usize) {
     let shard = worker_id.saturating_add(1).min(SHARD_COUNT - 1);
+    SHARDS_IN_USE.fetch_max(shard + 1, Ordering::Relaxed);
     WORKER_SHARD.with(|slot| slot.set(shard));
+}
+
+/// One past the highest shard any thread has been pinned to; shards at or
+/// above it have never been written, so readers can stop summing there.
+#[cfg(all(feature = "profiler", not(target_arch = "wasm32")))]
+pub(crate) fn shards_in_use() -> usize {
+    SHARDS_IN_USE.load(Ordering::Relaxed)
 }
 
 // `current_shard`/`shard_add` carry no target gate and no `profiler` gate:
@@ -431,6 +443,11 @@ pub(crate) fn record_scheduler_park() {
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn record_scheduler_unpark() {
     SCHEDULER_UNPARKS_TOTAL.fetch_add(1, Ordering::Relaxed);
+}
+
+#[cfg(test)]
+pub(crate) fn coroutine_frame_bytes_live_for_test() -> u64 {
+    COROUTINES_FRAME_BYTES_LIVE.load(Ordering::Relaxed)
 }
 
 pub(crate) fn record_coroutine_frame_alloc(frame_bytes: u64) {

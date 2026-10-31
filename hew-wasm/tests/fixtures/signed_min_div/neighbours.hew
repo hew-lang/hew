@@ -1,0 +1,31 @@
+// Division and remainder beside the signed-minimum-by-minus-one trap: each of
+// these is representable and stays on the normal path at every width.
+fn main() {
+    let a8: i8 = (-128);
+    let b8: i8 = (-127);
+    let one8: i8 = 1;
+    let two8: i8 = 2;
+    let neg8: i8 = -1;
+    println(f"{a8 / one8} {a8 % one8} {b8 / neg8} {b8 % neg8} {a8 / two8} {a8 % two8}");
+
+    let a16: i16 = (-32768);
+    let b16: i16 = (-32767);
+    let one16: i16 = 1;
+    let two16: i16 = 2;
+    let neg16: i16 = -1;
+    println(f"{a16 / one16} {a16 % one16} {b16 / neg16} {b16 % neg16} {a16 / two16} {a16 % two16}");
+
+    let a32: i32 = (-2147483648);
+    let b32: i32 = (-2147483647);
+    let one32: i32 = 1;
+    let two32: i32 = 2;
+    let neg32: i32 = -1;
+    println(f"{a32 / one32} {a32 % one32} {b32 / neg32} {b32 % neg32} {a32 / two32} {a32 % two32}");
+
+    let a64: i64 = (-9223372036854775808);
+    let b64: i64 = (-9223372036854775807);
+    let one64: i64 = 1;
+    let two64: i64 = 2;
+    let neg64: i64 = -1;
+    println(f"{a64 / one64} {a64 % one64} {b64 / neg64} {b64 % neg64} {a64 / two64} {a64 % two64}");
+}

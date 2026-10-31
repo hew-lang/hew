@@ -32,6 +32,8 @@ pub fn prepare(paths: &[String]) -> Result<PreparedDocTests, String> {
     }
     files.sort();
     files.dedup();
+    // Doc tests compile against the default std roots, as `hew test` does.
+    let std_roots = hew_compile::FrontendOptions::default().std_roots();
 
     let mut tests = Vec::new();
     for file in files {
@@ -55,7 +57,7 @@ pub fn prepare(paths: &[String]) -> Result<PreparedDocTests, String> {
             let selector = format!("{}::doc({})#{}", file.display(), fence.item, number);
             let generated_path = generated.path().join(format!("doc_{}.hew", tests.len()));
             let entry_name = format!("__hew_doc_example_{}", tests.len());
-            let generated_source = example_source(&source, &fence, &file, &entry_name);
+            let generated_source = example_source(&source, &fence, &file, &entry_name, &std_roots);
             std::fs::write(&generated_path, generated_source)
                 .map_err(|error| format!("write {}: {error}", generated_path.display()))?;
             let path = generated_path.display().to_string();
@@ -259,7 +261,13 @@ fn expected_output(code: &str) -> Option<String> {
     })
 }
 
-fn example_source(module: &str, fence: &Fence, path: &Path, entry_name: &str) -> String {
+fn example_source(
+    module: &str,
+    fence: &Fence,
+    path: &Path,
+    entry_name: &str,
+    std_roots: &[PathBuf],
+) -> String {
     if fence.ignored {
         return format!("#[test]\nfn {entry_name}() {{}}\n");
     }
@@ -278,7 +286,7 @@ fn example_source(module: &str, fence: &Fence, path: &Path, entry_name: &str) ->
     });
     let standalone = path.extension().is_some_and(|ext| ext == "md")
         || main.is_some()
-        || imports_own_module(&parsed.program, path);
+        || imports_own_module(&parsed.program, path, std_roots);
     let base = if standalone { "" } else { module };
     if let Some(main) = main {
         let call = if main
@@ -328,8 +336,14 @@ fn example_source(module: &str, fence: &Fence, path: &Path, entry_name: &str) ->
     }
 }
 
-fn imports_own_module(program: &hew_parser::ast::Program, path: &Path) -> bool {
-    let Some(module) = hew_types::module_registry::canonical_stdlib_module_for_source(path) else {
+fn imports_own_module(
+    program: &hew_parser::ast::Program,
+    path: &Path,
+    std_roots: &[PathBuf],
+) -> bool {
+    let Some(module) =
+        hew_types::module_registry::canonical_stdlib_module_for_source(path, std_roots)
+    else {
         return false;
     };
     program.items.iter().any(|(item, _)| {
@@ -350,7 +364,7 @@ mod tests {
         assert_eq!(examples[0].item, "split");
         assert_eq!(examples[0].expected_stdout.as_deref(), Some("3\n"));
         assert!(
-            example_source(source, &examples[0], Path::new("split.hew"), "__doc")
+            example_source(source, &examples[0], Path::new("split.hew"), "__doc", &[])
                 .contains("pub fn split()")
         );
     }

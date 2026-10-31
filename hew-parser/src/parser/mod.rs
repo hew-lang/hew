@@ -49,8 +49,8 @@ pub use fragments::{
 // `use super::*` (the Pratt parser in `expressions` and the clone-prefix probe
 // in `core` call them as bare names).
 pub(crate) use precedence::{
-    infix_bp, prefix_bp, token_begins_clone_operand, token_to_binop, CLONE_PREFIX_BP,
-    CONDITION_OPERAND_BP,
+    infix_bp, prefix_bp, token_begins_clone_operand, token_to_binop, CAST_BP, CONDITION_OPERAND_BP,
+    TASK_PREFIX_BP, UNARY_BP,
 };
 
 // `break`'s statement-vs-expression terminator selector lives in `statements`
@@ -797,6 +797,10 @@ pub struct Parser<'src> {
     pub(crate) pos: usize,
     pub(crate) errors: Vec<ParseError>,
     pub(crate) depth: Rc<Cell<usize>>,
+    /// Index in `errors` of the one "maximum nesting depth exceeded" report.
+    /// Past the limit every nested construct fails, so later failures add
+    /// nothing; an index past `errors.len()` was rolled back with them.
+    pub(crate) depth_error: Option<usize>,
     /// Stack of token mutations performed by `eat_closing_angle`, so they can
     /// be rolled back on speculative-parse backtrack.
     pub(crate) angle_mutations: Vec<(usize, (Token<'src>, Span))>,

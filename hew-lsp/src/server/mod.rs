@@ -459,7 +459,10 @@ pub struct HewLanguageServer {
     client: Client,
     /// Document states shared with spawned analysis tasks via `Arc`.
     documents: Arc<DashMap<Url, DocumentState>>,
-    open_documents: RwLock<HashMap<Url, OpenDocument>>,
+    open_documents: Arc<RwLock<HashMap<Url, OpenDocument>>>,
+    /// Advanced under the `open_documents` write lock on every editor change,
+    /// so a running rename can recheck its snapshot only after an edit.
+    open_generation: Arc<std::sync::atomic::AtomicU64>,
     analysis_contexts: RwLock<context::AnalysisContexts>,
     rename_document_changes: RwLock<bool>,
     watched_files_supported: RwLock<bool>,
@@ -496,7 +499,8 @@ impl HewLanguageServer {
         Self {
             client,
             documents: Arc::new(DashMap::new()),
-            open_documents: RwLock::new(HashMap::new()),
+            open_documents: Arc::new(RwLock::new(HashMap::new())),
+            open_generation: Arc::new(std::sync::atomic::AtomicU64::new(0)),
             analysis_contexts: RwLock::new(HashMap::new()),
             rename_document_changes: RwLock::new(false),
             watched_files_supported: RwLock::new(false),
@@ -521,6 +525,12 @@ impl HewLanguageServer {
     #[must_use]
     pub fn new(client: Client) -> Self {
         Self::new_with_options(client, vec![])
+    }
+
+    /// Record an editor change; the caller holds the `open_documents` write lock.
+    fn advance_open_generation(&self) {
+        self.open_generation
+            .fetch_add(1, std::sync::atomic::Ordering::Release);
     }
 
     fn workspace_root(&self) -> Option<PathBuf> {

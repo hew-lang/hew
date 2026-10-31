@@ -2147,6 +2147,7 @@ dependencies = [
  "hew-types",
  "inkwell",
  "llvm-sys",
+ "object 0.40.0",
  "serde_json",
  "tempfile",
 ]
@@ -2351,6 +2352,7 @@ dependencies = [
  "quinn",
  "rand 0.10.3",
  "rcgen",
+ "rustc-hash",
  "rustls",
  "rustls-pki-types",
  "rustls-webpki",

@@ -309,7 +309,8 @@ struct FreeBsdSysctl;
 #[cfg(target_os = "freebsd")]
 impl FreeBsdSysctl {
     fn current_process_mib() -> [libc::c_int; 4] {
-        let pid = std::process::id() as libc::c_int;
+        // SAFETY: getpid has no preconditions and cannot fail.
+        let pid = unsafe { libc::getpid() };
         [libc::CTL_KERN, libc::KERN_PROC, libc::KERN_PROC_ARGS, pid]
     }
 
@@ -329,14 +330,14 @@ impl FreeBsdArgvReader for FreeBsdSysctl {
         // CTL_KERN=1, KERN_PROC=14, KERN_PROC_ARGS=7
         let mut mib = Self::current_process_mib();
 
-        // SAFETY: sysctl with null oldp and valid &mut len returns the buffer size.
         let mut len: libc::size_t = 0;
+        // SAFETY: sysctl with null oldp and valid &mut len returns the buffer size.
         let rc = unsafe {
             libc::sysctl(
                 mib.as_mut_ptr(),
                 4,
                 std::ptr::null_mut(),
-                &mut len,
+                &raw mut len,
                 std::ptr::null(),
                 0,
             )
@@ -358,7 +359,7 @@ impl FreeBsdArgvReader for FreeBsdSysctl {
                 mib.as_mut_ptr(),
                 4,
                 buffer.as_mut_ptr().cast(),
-                &mut len,
+                &raw mut len,
                 std::ptr::null(),
                 0,
             )

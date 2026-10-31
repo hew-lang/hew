@@ -210,7 +210,9 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                 ],
                 false,
             ),
-            Some(Linkage::Private),
+            // Internal, not private: the chunk stays local but keeps a symbol,
+            // so profilers and debuggers can name its machine code.
+            Some(Linkage::Internal),
         );
         // Inlining into a resumable body would make CoroSplit spill the loop's
         // PHIs again. This boundary runs once per remaining shared budget.

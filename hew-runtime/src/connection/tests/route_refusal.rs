@@ -415,6 +415,7 @@ fn publication_refuses_peer_the_cluster_rejects() {
             &established_sync,
             &established_removed,
             superseded,
+            false,
         );
         assert_eq!(
             crate::routing::hew_routing_lookup(
@@ -467,6 +468,7 @@ fn publication_refuses_peer_the_cluster_rejects() {
             &refused_sync,
             &refused_removed,
             refused_superseded,
+            false,
         );
 
         let reported_ptr = crate::hew_last_error();

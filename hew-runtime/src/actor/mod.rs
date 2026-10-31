@@ -10,7 +10,6 @@
 
 use crate::lifetime::live_actors;
 use std::cell::Cell;
-use std::collections::HashMap;
 #[cfg(not(target_arch = "wasm32"))]
 use std::collections::HashSet;
 use std::ffi::{c_int, c_void};
@@ -567,9 +566,11 @@ struct ActorStateLock {
     available: Condvar,
 }
 
-fn actor_state_locks() -> &'static Mutex<HashMap<usize, std::sync::Arc<ActorStateLock>>> {
-    static LOCKS: OnceLock<Mutex<HashMap<usize, std::sync::Arc<ActorStateLock>>>> = OnceLock::new();
-    LOCKS.get_or_init(|| Mutex::new(HashMap::new()))
+fn actor_state_locks(
+) -> &'static Mutex<rustc_hash::FxHashMap<usize, std::sync::Arc<ActorStateLock>>> {
+    static LOCKS: OnceLock<Mutex<rustc_hash::FxHashMap<usize, std::sync::Arc<ActorStateLock>>>> =
+        OnceLock::new();
+    LOCKS.get_or_init(|| Mutex::new(rustc_hash::FxHashMap::default()))
 }
 
 fn recover_runtime_mutex<T>(

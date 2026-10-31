@@ -56,22 +56,31 @@ mod control;
 mod gossip;
 mod handshake;
 mod identity_claim;
+pub(crate) use identity_claim::expire_refuting_claims;
 mod manager;
 mod peer;
 mod reader;
 mod reconnect;
 mod relay;
-pub(crate) use reconnect::start_seed;
+pub(crate) use reconnect::{add_dialled_connection, start_seed};
+#[cfg(test)]
+pub(crate) use reconnect::{
+    install_stand_in_for_test, reconnect_successor_for_test, reconnect_targets_for_test,
+};
 mod send;
 mod swim;
 mod transport;
 use transport::ConnectionTransport;
 
+#[cfg(test)]
+pub(crate) use admission::admission_script;
 pub use admission::*;
 #[cfg(test)]
 pub(crate) use channel::ChannelRefusal;
 pub(crate) use gossip::*;
 pub(crate) use handshake::*;
+#[cfg(test)]
+pub(crate) use identity_claim::{commit_order_for_test, peer_connection_view, PeerConnectionView};
 pub use manager::*;
 pub(crate) use peer::*;
 pub use send::*;
@@ -97,7 +106,12 @@ const HEW_FEATURE_SUPPORTS_ENCRYPTION: u32 = 1 << 0;
 const HEW_FEATURE_SUPPORTS_GOSSIP: u32 = 1 << 1;
 // Bit 2 (HEW_FEATURE_SUPPORTS_REMOTE_SPAWN) is reserved; not advertised until a
 // bootstrap-based remote-spawn path is implemented.
-// Bit 3 was the v2 ask-rejection capability; replies now always carry status.
+// Bit 3 was the v2 ask-rejection capability and is retired, not reused;
+// replies now always carry status.
+// Both ends advertise this bit to settle admission through the responder's
+// commit (`handshake::send_commit`); otherwise each end keeps the newer
+// same-session connection.
+const HEW_FEATURE_RESPONDER_COMMIT: u32 = 1 << 4;
 const MAX_REGISTRY_GOSSIP_FLUSH_EVENTS: usize = 64;
 
 /// Ceiling on retry ATTEMPTS for a parked registry-gossip flush (finding:
@@ -227,6 +241,9 @@ struct ConnectionActor {
     /// remove-side abort is guarded by the exact `(conn_id, token, Reserved)`
     /// owner check, so a published or superseded claim never restores from it.
     superseded_claim: Mutex<Option<LiveClaim>>,
+    /// The highest local incarnation at which this connection's peer was
+    /// answered for burying this node (see `swim::claim_burial_answer`).
+    burial_answered: AtomicU64,
     /// Optional reconnect settings for this connection.
     reconnect: Option<ReconnectSettings>,
     /// Transport pointer for defense-in-depth close in `Drop`.
@@ -297,6 +314,8 @@ pub struct HewConnMgr {
     /// `hew_connmgr_free` waits on this lifecycle before the manager's owner
     /// frees routing/cluster state that reader cleanup may still touch.
     reader_lifecycle: Arc<ReaderLifecycle>,
+    /// Counts inbound admissions still authenticating on their own workers.
+    inbound_admissions: Arc<ReaderLifecycle>,
     /// Monotonic token generator for connection-lifecycle publications.
     next_publication_token: AtomicU64,
     gossip_in: AtomicU64,
@@ -403,8 +422,12 @@ impl ReaderLifecycle {
     }
 
     fn wait_for_idle(&self) {
+        self.wait_below(1);
+    }
+
+    fn wait_below(&self, limit: usize) {
         let mut active = self.active.lock_or_recover();
-        while *active > 0 {
+        while *active >= limit {
             active = self.idle.wait_or_recover(active);
         }
     }
@@ -420,9 +443,7 @@ impl Drop for ReaderLifecycleGuard {
         *active = active
             .checked_sub(1)
             .expect("reader lifecycle active count underflow");
-        if *active == 0 {
-            self.lifecycle.idle.notify_all();
-        }
+        self.lifecycle.idle.notify_all();
     }
 }
 
@@ -615,6 +636,7 @@ impl ConnectionActor {
             reader_handle: None,
             reader_stop: Arc::new(AtomicI32::new(0)),
             superseded_claim: Mutex::new(None),
+            burial_answered: AtomicU64::new(0),
             reconnect: None,
             transport: ConnectionTransport::borrowed(std::ptr::null_mut()),
             transport_close: Arc::new(TransportClose::default()),

@@ -202,13 +202,17 @@ pub(crate) fn install_drop_probe_for_test(
     probe
 }
 
-/// Test-only drop observer. Production builds compile no `Drop` impl, so the
-/// inner frees by field-drop; the `#[cfg(test)]` impl only records that the
-/// field-drop happened (into an optional per-instance probe), then lets the
-/// fields drop normally as it returns.
-#[cfg(test)]
+/// Join what still runs inside this runtime before any field frees.
+///
+/// A distributed node's SWIM ticker runs with its node's runtime entered, and
+/// cleanup frees the runtime without stopping a node the program never shut
+/// down; the ticker is joined here so it cannot resolve a freed runtime. Under
+/// test the drop is also recorded into an optional per-instance probe.
 impl Drop for RuntimeInner {
     fn drop(&mut self) {
+        #[cfg(not(target_arch = "wasm32"))]
+        crate::swim_driver::stop_drivers_for_runtime(self);
+        #[cfg(test)]
         if let Ok(mut guard) = self.drop_probe.lock() {
             if let Some(probe) = guard.take() {
                 probe.fetch_add(1, std::sync::atomic::Ordering::SeqCst);

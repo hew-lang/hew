@@ -100,6 +100,7 @@ pub(super) fn collect_published_diagnostics(
     }
 
     let mut published: Vec<_> = diagnostics_by_uri.into_iter().collect();
+    published.sort_by(|left, right| left.0.cmp(&right.0));
     for (_, diagnostics) in &mut published {
         sort_and_dedup_diagnostics(diagnostics);
     }

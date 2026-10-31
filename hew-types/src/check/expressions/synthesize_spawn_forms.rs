@@ -1731,7 +1731,7 @@ impl Checker {
             } else {
                 // No base: all fields must be explicitly provided.
                 let provided: HashSet<&str> = fields.iter().map(|(n, _)| n.name.as_str()).collect();
-                for declared in td.fields.keys() {
+                for declared in &td.field_order {
                     if !provided.contains(declared.as_str()) {
                         self.report_error(
                             TypeErrorKind::UndefinedField,

@@ -220,8 +220,8 @@ fn checker_actor_handler_rejects_another_instances_payload() {
 /// a spurious "not Send" error.
 ///
 /// Regression for the bug where `check_spawn` called `synthesize` without an
-/// expected type, leaving `HashMap<?T, ?U>` unbound and producing:
-///   "cannot send `HashMap<?T22, ?T23>` to actor: type is not Send"
+/// expected type, leaving `HashMap<_, _>` unbound and producing:
+///   "cannot send `HashMap<_, _>` to actor: type is not Send"
 ///   "cannot infer type for expression type at checker output boundary"
 #[test]
 fn checker_spawn_hashmap_new_infers_from_field_type() {

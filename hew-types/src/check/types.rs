@@ -3720,7 +3720,7 @@ pub struct Checker {
     pub(super) trait_super: HashMap<crate::DefId, Vec<TraitRef>>,
     /// Declared trait impls: the receiver with its type arguments erased and
     /// the trait, to the trait arguments of each impl.
-    pub(super) trait_impls: HashMap<(ResolvedTy, crate::DefId), Vec<TraitImplArgs>>,
+    pub(super) trait_impls: BTreeMap<(ResolvedTy, crate::DefId), Vec<TraitImplArgs>>,
     /// Ordinary trait obligations currently being proven, with applied arguments.
     pub(super) active_trait_proofs: Vec<(TraitProofKind, Ty, TraitRef)>,
     /// Abort remaining candidates after this root proof exhausts its budget.
@@ -4606,7 +4606,7 @@ impl Checker {
             checking_declaration: None,
             trait_defs: HashMap::new(),
             trait_super: HashMap::new(),
-            trait_impls: HashMap::new(),
+            trait_impls: BTreeMap::new(),
             active_trait_proofs: Vec::new(),
             trait_proof_limit_reached: false,
             source_impl_declarations: HashMap::new(),

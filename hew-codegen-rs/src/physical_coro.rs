@@ -104,6 +104,190 @@ fn invocation_type(ctx: &Context) -> inkwell::types::StructType<'_> {
     )
 }
 
+/// Publish or retire an invocation's managed root view in its ABI record.
+/// The executing invocation owns this field; providers read it only while
+/// execution is frozen.
+fn bind_managed_frame<'ctx>(
+    ctx: &'ctx Context,
+    builder: &Builder<'ctx>,
+    state: PointerValue<'ctx>,
+    view: PointerValue<'ctx>,
+) -> CodegenResult<()> {
+    let field = builder
+        .build_struct_gep(invocation_type(ctx), state, 8, "invocation.managed.frame")
+        .llvm_ctx("address invocation root view")?;
+    builder
+        .build_store(field, view)
+        .llvm_ctx("publish invocation root view")?;
+    Ok(())
+}
+
+/// Publish a checked invocation's terminal outcome, as
+/// `hew_coro_state_finish` does: record the private status, then move the
+/// public status from pending to its terminal value once.
+pub(super) fn publish_outcome<'ctx>(
+    ctx: &'ctx Context,
+    builder: &Builder<'ctx>,
+    state: PointerValue<'ctx>,
+    status: IntValue<'ctx>,
+) -> CodegenResult<()> {
+    use hew_runtime::coro_state::CoroStatus;
+    let record = invocation_type(ctx);
+    let i32_ty = ctx.i32_type();
+    let public = builder
+        .build_struct_gep(record, state, 1, "invocation.status.slot")
+        .llvm_ctx("address invocation status")?;
+    let private = builder
+        .build_struct_gep(record, state, 2, "invocation.private.slot")
+        .llvm_ctx("address invocation private status")?;
+    let current = builder
+        .build_load(i32_ty, public, "invocation.status")
+        .llvm_ctx("read invocation status")?;
+    current
+        .as_instruction_value()
+        .ok_or_else(|| CodegenError::FailClosed("invocation status is not a load".into()))?
+        .set_atomic_ordering(inkwell::AtomicOrdering::Acquire)
+        .llvm_ctx("observe invocation status")?;
+    let pending = builder
+        .build_int_compare(
+            IntPredicate::EQ,
+            current.into_int_value(),
+            i32_ty.const_int(CoroStatus::Pending as u64, false),
+            "invocation.pending",
+        )
+        .llvm_ctx("test pending invocation")?;
+    let function = builder
+        .get_insert_block()
+        .and_then(BasicBlock::get_parent)
+        .ok_or_else(|| CodegenError::FailClosed("outcome publication lacks a function".into()))?;
+    let publish = ctx.append_basic_block(function, "invocation.publish");
+    let published = ctx.append_basic_block(function, "invocation.published");
+    builder
+        .build_conditional_branch(pending, publish, published)
+        .llvm_ctx("publish a pending invocation once")?;
+    builder.position_at_end(publish);
+    let store = builder
+        .build_store(private, status)
+        .llvm_ctx("record invocation private status")?;
+    store
+        .set_atomic_ordering(inkwell::AtomicOrdering::Monotonic)
+        .llvm_ctx("order invocation private status")?;
+    let complete = builder
+        .build_int_compare(
+            IntPredicate::EQ,
+            status,
+            i32_ty.const_zero(),
+            "invocation.complete",
+        )
+        .llvm_ctx("test completed invocation")?;
+    let cancelled = builder
+        .build_int_compare(
+            IntPredicate::EQ,
+            status,
+            i32_ty.const_int(
+                u64::from(hew_runtime::fault::HEW_FAULT_CANCELLED.cast_unsigned()),
+                false,
+            ),
+            "invocation.cancelled",
+        )
+        .llvm_ctx("test cancelled invocation")?;
+    let failed = builder
+        .build_select(
+            cancelled,
+            i32_ty.const_int(CoroStatus::Cancelled as u64, false),
+            i32_ty.const_int(CoroStatus::Fault as u64, false),
+            "invocation.failed",
+        )
+        .llvm_ctx("classify failed invocation")?
+        .into_int_value();
+    let terminal = builder
+        .build_select(
+            complete,
+            i32_ty.const_int(CoroStatus::Complete as u64, false),
+            failed,
+            "invocation.terminal",
+        )
+        .llvm_ctx("classify terminal invocation")?
+        .into_int_value();
+    builder
+        .build_cmpxchg(
+            public,
+            i32_ty.const_int(CoroStatus::Pending as u64, false),
+            terminal,
+            inkwell::AtomicOrdering::Release,
+            inkwell::AtomicOrdering::Monotonic,
+        )
+        .llvm_ctx("publish invocation outcome")?;
+    builder
+        .build_unconditional_branch(published)
+        .llvm_ctx("finish outcome publication")?;
+    builder.position_at_end(published);
+    Ok(())
+}
+
+/// Release a completed child invocation record. A record without owned
+/// context, heap storage or entered lexical scopes has nothing to release.
+pub(super) fn release_invocation<'ctx>(
+    ctx: &'ctx Context,
+    module: &Module<'ctx>,
+    builder: &Builder<'ctx>,
+    state: PointerValue<'ctx>,
+) -> CodegenResult<()> {
+    let record = invocation_type(ctx);
+    let depth_slot = builder
+        .build_struct_gep(record, state, 4, "invocation.depth.slot")
+        .llvm_ctx("address invocation scope depth")?;
+    let flags_slot = builder
+        .build_struct_gep(record, state, 5, "invocation.flags.slot")
+        .llvm_ctx("address invocation ownership flags")?;
+    let depth = builder
+        .build_load(ctx.i32_type(), depth_slot, "invocation.depth")
+        .llvm_ctx("read invocation scope depth")?
+        .into_int_value();
+    let flags = builder
+        .build_load(ctx.i8_type(), flags_slot, "invocation.flags")
+        .llvm_ctx("read invocation ownership flags")?
+        .into_int_value();
+    let widened = builder
+        .build_int_z_extend(flags, ctx.i32_type(), "invocation.flags.wide")
+        .llvm_ctx("widen invocation ownership flags")?;
+    let owned = builder
+        .build_or(depth, widened, "invocation.owned")
+        .llvm_ctx("combine invocation release facts")?;
+    let trivial = builder
+        .build_int_compare(
+            IntPredicate::EQ,
+            owned,
+            ctx.i32_type().const_zero(),
+            "invocation.trivial",
+        )
+        .llvm_ctx("test trivial invocation release")?;
+    let function = builder
+        .get_insert_block()
+        .and_then(BasicBlock::get_parent)
+        .ok_or_else(|| CodegenError::FailClosed("invocation release lacks a function".into()))?;
+    let release = ctx.append_basic_block(function, "invocation.release");
+    let released = ctx.append_basic_block(function, "invocation.released");
+    builder
+        .build_conditional_branch(trivial, released, release)
+        .llvm_ctx("select invocation release")?;
+    builder.position_at_end(release);
+    let free = get_or_declare_external(
+        module,
+        "hew_coro_state_free",
+        ctx.void_type()
+            .fn_type(&[ctx.ptr_type(AddressSpace::default()).into()], false),
+    )?;
+    builder
+        .build_call(free, &[state.into()], "")
+        .llvm_ctx("release child invocation record")?;
+    builder
+        .build_unconditional_branch(released)
+        .llvm_ctx("finish child invocation release")?;
+    builder.position_at_end(released);
+    Ok(())
+}
+
 /// Checked child ramps publish a private result on every terminal exit. Acquire
 /// completion before observing outputs; after completion or synchronous child
 /// destruction, the private result needs only a relaxed load.
@@ -248,14 +432,7 @@ pub(super) fn begin<'ctx>(
         ))
     };
     builder.position_at_end(finish);
-    let unbind = get_or_declare_external(
-        module,
-        "hew_budget_bind_frame",
-        ctx.void_type().fn_type(&[pointer.into(); 2], false),
-    )?;
-    builder
-        .build_call(unbind, &[state.into(), pointer.const_null().into()], "")
-        .llvm_ctx("retire the completed invocation root view")?;
+    bind_managed_frame(ctx, builder, state, pointer.const_null())?;
     let is_destroying = builder
         .build_load(ctx.bool_type(), destroying, "frame.is.destroying")
         .llvm_ctx("inspect destruction entry")?
@@ -349,7 +526,7 @@ pub(super) fn begin<'ctx>(
         managed_operation: Cell::new(None),
         managed_frame_type: managed_frame_type(ctx, target_data),
     };
-    frame.bind_managed_roots(ctx, module, builder, pointer.const_null(), 0)?;
+    frame.bind_managed_roots(ctx, builder, pointer.const_null(), 0)?;
     Ok(frame)
 }
 
@@ -375,27 +552,14 @@ impl<'ctx> Frame<'ctx> {
         builder
             .build_store(view, row.into_struct_value())
             .llvm_ctx("initialize the completion invocation view")?;
-        let bind = get_or_declare_external(
-            module,
-            "hew_budget_bind_frame",
-            ctx.void_type().fn_type(&[pointer.into(); 2], false),
-        )?;
-        builder
-            .build_call(bind, &[self.completion_state.into(), view.into()], "")
-            .llvm_ctx("publish authored cleanup execution to its caller")?;
+        bind_managed_frame(ctx, builder, self.completion_state, view)?;
         let finish = ctx.create_builder();
         finish.position_before(
             &self.finish.get_terminator().ok_or_else(|| {
                 CodegenError::FailClosed("cleanup finish lacks its branch".into())
             })?,
         );
-        finish
-            .build_call(
-                bind,
-                &[self.completion_state.into(), pointer.const_null().into()],
-                "",
-            )
-            .llvm_ctx("retire completed authored cleanup linkage")?;
+        bind_managed_frame(ctx, &finish, self.completion_state, pointer.const_null())?;
         let free = get_or_declare_external(
             module,
             "hew_coro_state_free",
@@ -410,7 +574,6 @@ impl<'ctx> Frame<'ctx> {
     pub(super) fn bind_root_entries(
         &self,
         ctx: &'ctx Context,
-        llvm: &Module<'ctx>,
         builder: &Builder<'ctx>,
         roots: &[(PointerValue<'ctx>, PointerValue<'ctx>, PointerValue<'ctx>)],
     ) -> CodegenResult<()> {
@@ -448,19 +611,17 @@ impl<'ctx> Frame<'ctx> {
                     .llvm_ctx("bind typed root metadata")?;
             }
         }
-        self.bind_managed_roots(ctx, llvm, builder, table, u64::from(count))?;
+        self.bind_managed_roots(ctx, builder, table, u64::from(count))?;
         Ok(())
     }
 
     pub(super) fn bind_managed_roots(
         &self,
         ctx: &'ctx Context,
-        module: &Module<'ctx>,
         builder: &Builder<'ctx>,
         table: PointerValue<'ctx>,
         count: u64,
     ) -> CodegenResult<()> {
-        let pointer = ctx.ptr_type(AddressSpace::default());
         let view_ty = self.managed_frame_type;
         let size = view_ty.get_field_type_at_index(1).unwrap().into_int_type();
         let view = if let Some(view) = self.managed_view.get() {
@@ -486,15 +647,7 @@ impl<'ctx> Frame<'ctx> {
                 .build_store(field, entry)
                 .llvm_ctx("bind canonical invocation roots")?;
         }
-        let bind = get_or_declare_external(
-            module,
-            "hew_budget_bind_frame",
-            ctx.void_type().fn_type(&[pointer.into(); 2], false),
-        )?;
-        builder
-            .build_call(bind, &[self.state.into(), view.into()], "")
-            .llvm_ctx("publish canonical invocation roots")?;
-        Ok(())
+        bind_managed_frame(ctx, builder, self.state, view)
     }
 
     fn operation_storage(
@@ -574,13 +727,69 @@ impl<'ctx> Frame<'ctx> {
         self.bind_operation(ctx, builder, pointer.const_null(), pointer.const_null())
     }
 
+    fn child_invocation_storage(&self, ctx: &'ctx Context) -> CodegenResult<PointerValue<'ctx>> {
+        if let Some(storage) = self.child_invocation.get() {
+            return Ok(storage);
+        }
+        let storage = self.storage(ctx, invocation_type(ctx).into(), "call.child.invocation")?;
+        self.child_invocation.set(Some(storage));
+        Ok(storage)
+    }
+
+    /// Initialize an ordinary child invocation in this frame. The child
+    /// borrows this invocation's execution context and inherits its poll
+    /// suppression; it owns nothing the release must free.
     pub fn init_child(
         &self,
         ctx: &'ctx Context,
-        module: &Module<'ctx>,
         builder: &Builder<'ctx>,
     ) -> CodegenResult<PointerValue<'ctx>> {
-        self.init_child_with(ctx, module, builder, "hew_coro_state_init_child")
+        let storage = self.child_invocation_storage(ctx)?;
+        let record = invocation_type(ctx);
+        let parent_field = |index: u32, ty: BasicTypeEnum<'ctx>, name: &str| {
+            let field = builder
+                .build_struct_gep(record, self.state, index, name)
+                .llvm_ctx("address parent invocation field")?;
+            builder
+                .build_load(ty, field, name)
+                .llvm_ctx("read parent invocation field")
+        };
+        let context = parent_field(
+            0,
+            ctx.ptr_type(AddressSpace::default()).into(),
+            "parent.context",
+        )?;
+        let suppression = parent_field(3, ctx.i32_type().into(), "parent.poll.suppression")?;
+        let i32_ty = ctx.i32_type();
+        let i8_ty = ctx.i8_type();
+        let fields: [BasicValueEnum<'ctx>; 9] = [
+            context,
+            i32_ty
+                .const_int(hew_runtime::coro_state::CoroStatus::Pending as u64, false)
+                .into(),
+            // A private status of one is "not yet completed".
+            i32_ty.const_int(1, false).into(),
+            suppression,
+            i32_ty.const_zero().into(),
+            i8_ty.const_zero().into(),
+            i8_ty.const_zero().into(),
+            i8_ty.const_zero().into(),
+            ctx.ptr_type(AddressSpace::default()).const_null().into(),
+        ];
+        for (index, value) in fields.into_iter().enumerate() {
+            let field = builder
+                .build_struct_gep(
+                    record,
+                    storage,
+                    u32::try_from(index).expect("nine invocation fields"),
+                    "child.invocation.field",
+                )
+                .llvm_ctx("address child invocation field")?;
+            builder
+                .build_store(field, value)
+                .llvm_ctx("initialize child invocation field")?;
+        }
+        Ok(storage)
     }
 
     pub fn init_child_with(
@@ -591,14 +800,7 @@ impl<'ctx> Frame<'ctx> {
         init_symbol: &str,
     ) -> CodegenResult<PointerValue<'ctx>> {
         let pointer = ctx.ptr_type(AddressSpace::default());
-        let storage = if let Some(storage) = self.child_invocation.get() {
-            storage
-        } else {
-            let record = invocation_type(ctx);
-            let storage = self.storage(ctx, record.into(), "call.child.invocation")?;
-            self.child_invocation.set(Some(storage));
-            storage
-        };
+        let storage = self.child_invocation_storage(ctx)?;
         let init = get_or_declare_external(
             module,
             init_symbol,

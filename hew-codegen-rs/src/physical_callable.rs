@@ -1316,7 +1316,7 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
             let child = frame
                 .as_ref()
                 .expect("borrowed adapter owns a frame")
-                .init_child(self.ctx, &self.llvm, &builder)?;
+                .init_child(self.ctx, &builder)?;
             arguments.push(child.into());
             let child_frame =
                 suspend::call_value(&builder, self.ramps[&body.id], &arguments, "invoke.frame")?
@@ -2042,7 +2042,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             .build_unconditional_branch(complete)
             .llvm_ctx("finish synchronous invocation")?;
         self.builder.position_at_end(resumable);
-        let child = frame.init_child(self.ctx, self.llvm, &self.builder)?;
+        let child = frame.init_child(self.ctx, &self.builder)?;
         let child_frame = self
             .builder
             .build_indirect_call(

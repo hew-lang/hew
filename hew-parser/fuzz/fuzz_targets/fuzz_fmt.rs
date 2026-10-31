@@ -7,8 +7,8 @@
 
 #![no_main]
 
-use hew_parser::Severity;
 use hew_parser::fmt::{fidelity, format_source};
+use hew_parser::Severity;
 use libfuzzer_sys::fuzz_target;
 
 fn parse_clean(source: &str) -> Option<hew_parser::ParseResult> {

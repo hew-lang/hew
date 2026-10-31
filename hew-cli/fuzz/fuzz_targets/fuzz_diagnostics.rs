@@ -99,25 +99,6 @@ fn check_span(source_of: &mut impl FnMut(&str) -> Option<String>, file: &str, sp
     );
 }
 
-/// The diagnostics in emission order, with the unused-variable warnings set
-/// apart and sorted.
-///
-/// Deviation: the checker emits unused-variable and unused-`var` warnings in
-/// hash order, which
-/// is a known defect being fixed separately. Until it lands they are compared
-/// as a set so the target can reach other differences. Compare the whole
-/// array in order once the emission order is fixed.
-fn unused_variables_as_a_set(diagnostics: &[Value]) -> (Vec<&Value>, Vec<String>) {
-    let unused = |d: &&Value| d["code"] == "UnusedVariable" || d["code"] == "UnusedMut";
-    let mut set: Vec<String> = diagnostics
-        .iter()
-        .filter(unused)
-        .map(Value::to_string)
-        .collect();
-    set.sort();
-    (diagnostics.iter().filter(|d| !unused(d)).collect(), set)
-}
-
 fuzz_target!(|data: &[u8]| {
     let Ok(source) = std::str::from_utf8(data) else {
         return;
@@ -132,12 +113,10 @@ fuzz_target!(|data: &[u8]| {
     let diagnostics = parsed.as_array().expect("JSON diagnostics are an array");
     let again_parsed: Value = serde_json::from_str(&again.json).expect("JSON diagnostics parse");
     assert_eq!(
-        unused_variables_as_a_set(diagnostics),
-        unused_variables_as_a_set(
-            again_parsed
-                .as_array()
-                .expect("JSON diagnostics are an array")
-        ),
+        diagnostics,
+        again_parsed
+            .as_array()
+            .expect("JSON diagnostics are an array"),
         "JSON diagnostics differ between two runs\n--- source ---\n{source}"
     );
     assert_eq!(json_run.exit_code, again.exit_code);
@@ -190,11 +169,7 @@ fuzz_target!(|data: &[u8]| {
             ));
         }
     }
-    let mut printed = text_locations(&text_run.text);
-    // Deviation: sorted for the unused-variable order (see
-    // `unused_variables_as_a_set`); compare in order once that is fixed.
-    printed.sort();
-    located.sort();
+    let printed = text_locations(&text_run.text);
     assert_eq!(
         printed, located,
         "text and JSON disagree on diagnostic locations\n--- source ---\n{source}\n--- text ---\n{}\n--- json ---\n{}",

@@ -1,9 +1,7 @@
 //! Checker determinism and declaration-order independence.
 //!
 //! Two fresh checkers over the same parse-clean program must publish the same
-//! diagnostics, in the same order, and the same resolved type facts. Raw
-//! expression types are not compared: their inference variables number from
-//! a process-wide counter. The
+//! diagnostics, in the same order, and the same resolved type facts. The
 //! specification makes constant references independent of declaration order
 //! (§3.2), so reordering the module's `const` items among their own slots must
 //! not change whether the program checks.
@@ -12,11 +10,10 @@
 
 mod support;
 
-use hew_parser::Severity;
 use hew_parser::ast::Item;
-use hew_types::TypeCheckOutput;
+use hew_parser::Severity;
 use hew_types::error::Severity as CheckSeverity;
-use hew_types::error::TypeErrorKind;
+use hew_types::TypeCheckOutput;
 use libfuzzer_sys::fuzz_target;
 
 /// The observable content of one diagnostic, in emission order.
@@ -47,30 +44,6 @@ fn diagnostics(errors: &[hew_types::TypeError]) -> Vec<DiagnosticView<'_>> {
         .collect()
 }
 
-/// Warnings in emission order, with the unused-binding warnings set apart
-/// and sorted by span.
-///
-/// Deviation: the checker emits unused-variable and unused-`var` warnings in
-/// hash order, which
-/// is a known defect being fixed separately. Until it lands they are compared
-/// as a set so the target can reach other differences. Compare the whole list
-/// in order once the emission order is fixed.
-fn warnings(
-    warnings: &[hew_types::TypeError],
-) -> (Vec<DiagnosticView<'_>>, Vec<DiagnosticView<'_>>) {
-    let unused = |e: &&DiagnosticView<'_>| {
-        matches!(
-            e.0,
-            TypeErrorKind::UnusedVariable | TypeErrorKind::UnusedMut
-        )
-    };
-    let all = diagnostics(warnings);
-    let mut unused_set: Vec<_> = all.iter().filter(unused).cloned().collect();
-    unused_set.sort_by_key(|e| (e.2.start, e.2.end));
-    let rest = all.iter().filter(|e| !unused(e)).cloned().collect();
-    (rest, unused_set)
-}
-
 fn assert_same(source: &str, first: &TypeCheckOutput, second: &TypeCheckOutput) {
     assert_eq!(
         diagnostics(&first.errors),
@@ -78,8 +51,8 @@ fn assert_same(source: &str, first: &TypeCheckOutput, second: &TypeCheckOutput) 
         "errors differ between two checks\n--- source ---\n{source}"
     );
     assert_eq!(
-        warnings(&first.warnings),
-        warnings(&second.warnings),
+        diagnostics(&first.warnings),
+        diagnostics(&second.warnings),
         "warnings differ between two checks\n--- source ---\n{source}"
     );
     assert!(

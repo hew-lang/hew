@@ -282,33 +282,70 @@ fn retirement_wakes_observers_once_without_reporting_again() {
     drop(unsafe { Box::from_raw(events) });
 }
 
-/// Resident-set growth allowed across the measured half of the soak. The
-/// resident set moves in allocator-sized steps, and one 512 KiB step has been
-/// seen there with retirement in place; retaining every departed id instead
-/// grew it by about 6 MiB over the same span.
+/// Live-heap growth allowed across the measured half of the soak. Retaining
+/// every departed id instead grew the live heap by several MiB over the same
+/// span; the margin covers the buried entries still held at the cap.
 const SOAK_GROWTH_BOUND_BYTES: u64 = 1024 * 1024;
 
-/// This process's resident set, in bytes.
-#[cfg(target_os = "linux")]
-fn resident_bytes() -> u64 {
-    let status = std::fs::read_to_string("/proc/self/status").expect("process status");
-    let kib = status
-        .lines()
-        .find_map(|line| line.strip_prefix("VmRSS:"))
-        .and_then(|value| value.trim().strip_suffix("kB"))
-        .and_then(|value| value.trim().parse::<u64>().ok())
-        .expect("VmRSS");
-    kib * 1024
+/// Counts the bytes currently allocated through the global allocator, so the
+/// soak measures what the cluster retains rather than where the system
+/// allocator happens to place and release pages.
+struct LiveBytesAllocator;
+
+static LIVE_BYTES: AtomicUsize = AtomicUsize::new(0);
+
+// SAFETY: every call is forwarded unchanged to the system allocator; the
+// counter only observes sizes.
+unsafe impl std::alloc::GlobalAlloc for LiveBytesAllocator {
+    unsafe fn alloc(&self, layout: std::alloc::Layout) -> *mut u8 {
+        // SAFETY: caller upholds the `GlobalAlloc` contract.
+        let ptr = unsafe { std::alloc::System.alloc(layout) };
+        if !ptr.is_null() {
+            LIVE_BYTES.fetch_add(layout.size(), Ordering::Relaxed);
+        }
+        ptr
+    }
+
+    unsafe fn alloc_zeroed(&self, layout: std::alloc::Layout) -> *mut u8 {
+        // SAFETY: caller upholds the `GlobalAlloc` contract.
+        let ptr = unsafe { std::alloc::System.alloc_zeroed(layout) };
+        if !ptr.is_null() {
+            LIVE_BYTES.fetch_add(layout.size(), Ordering::Relaxed);
+        }
+        ptr
+    }
+
+    unsafe fn dealloc(&self, ptr: *mut u8, layout: std::alloc::Layout) {
+        LIVE_BYTES.fetch_sub(layout.size(), Ordering::Relaxed);
+        // SAFETY: caller upholds the `GlobalAlloc` contract.
+        unsafe { std::alloc::System.dealloc(ptr, layout) }
+    }
+
+    unsafe fn realloc(&self, ptr: *mut u8, layout: std::alloc::Layout, new_size: usize) -> *mut u8 {
+        // SAFETY: caller upholds the `GlobalAlloc` contract.
+        let new = unsafe { std::alloc::System.realloc(ptr, layout, new_size) };
+        if !new.is_null() {
+            LIVE_BYTES.fetch_sub(layout.size(), Ordering::Relaxed);
+            LIVE_BYTES.fetch_add(new_size, Ordering::Relaxed);
+        }
+        new
+    }
+}
+
+#[global_allocator]
+static TEST_ALLOCATOR: LiveBytesAllocator = LiveBytesAllocator;
+
+/// Bytes currently allocated by this process.
+fn live_bytes() -> u64 {
+    LIVE_BYTES.load(Ordering::Relaxed) as u64
 }
 
 /// Three clusters churning 2000 node ids through join, burial and departure
-/// keep every per-slot map within the cap, and the resident set stays within
-/// [`SOAK_GROWTH_BOUND_BYTES`] of its level after a 1000-id warm-up, by
-/// which time the allocator has reached its working set.
+/// keep every per-slot map within the cap, and the live heap stays within
+/// [`SOAK_GROWTH_BOUND_BYTES`] of its level after a 1000-id warm-up.
 ///
-/// Runs in its own process: the resident set is process-wide, so other
+/// Runs in its own process: the heap counter is process-wide, so other
 /// libtest cases would otherwise move it.
-#[cfg(target_os = "linux")]
 #[test]
 fn soak_three_clusters_with_2000_departing_ids_stays_flat() {
     const CHILD: &str = "HEW_CLUSTER_RETENTION_SOAK_CHILD";
@@ -334,7 +371,7 @@ fn soak_three_clusters_with_2000_departing_ids_stays_flat() {
         return;
     }
 
-    let live = resident_bytes;
+    let live = live_bytes;
     let clusters = (1..=3)
         .map(|local| HewCluster::new(make_config(local)))
         .collect::<Vec<_>>();
@@ -362,7 +399,7 @@ fn soak_three_clusters_with_2000_departing_ids_stays_flat() {
     println!("retention soak: warm {warm} B, highest {highest} B, growth {growth} B");
     assert!(
         growth <= SOAK_GROWTH_BOUND_BYTES,
-        "resident set grew {growth} bytes after warm-up"
+        "live heap grew {growth} bytes after warm-up"
     );
     for cluster in &clusters {
         let members = cluster.members.lock_or_recover().len();

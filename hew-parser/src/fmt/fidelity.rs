@@ -208,10 +208,7 @@ pub fn check(source: &str, formatted: &str) -> Result<(), FidelityError> {
 /// so is a carriage return inside a comment that ends no line.
 fn check_line_endings(formatted: &str, crlf: bool) -> Result<(), FidelityError> {
     let mut gap_start = 0;
-    let spans = hew_lexer::Lexer::new(formatted)
-        .map(|(_, span)| (span.start, span.end))
-        .chain(std::iter::once((formatted.len(), formatted.len())));
-    for (start, end) in spans {
+    for (start, end) in super::line_ending_spans(formatted) {
         let gap = &formatted.as_bytes()[gap_start..start];
         let mut line_comment = false;
         let mut block_comments = 0usize;

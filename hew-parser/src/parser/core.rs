@@ -1316,7 +1316,11 @@ impl<'src> Parser<'src> {
     ) -> Option<String> {
         let mut lines = Vec::new();
         while let Some(s) = self.peek().and_then(is_match) {
-            let content = s.strip_prefix(prefix).unwrap_or(s);
+            // A trailing CR belongs to the line ending, including a final
+            // unterminated doc line. Match the formatter's comment spelling
+            // so LF and CRLF files expose the same documentation content.
+            let line = s.trim_end_matches('\r');
+            let content = line.strip_prefix(prefix).unwrap_or(line);
             // Strip one leading space if present (conventional formatting)
             let content = content.strip_prefix(' ').unwrap_or(content);
             lines.push(content.to_string());

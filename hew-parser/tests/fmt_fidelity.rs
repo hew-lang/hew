@@ -23,6 +23,48 @@ fn assert_faithful(source: &str) {
 }
 
 #[test]
+fn raw_macro_line_endings_stay_verbatim() {
+    for source in [
+        "p!(\r)",
+        "p!(\r)\r\n",
+        "p!(/* keep\rthis */\r)",
+        "p!(\r\n/// doc\r\n1)",
+        "p!(r\"keep\rthis\"\r)",
+        "fn main() { let s = stringify!(p!(\r)); }",
+        "fn main() { let s = stringify!(m.stringify!(\r)); }",
+        "macro p { (\r$x:expr) => expr {\r$x } }",
+        "macro after { (\r$x:expr) => expr {\r$x } }",
+    ] {
+        assert_faithful(source);
+    }
+}
+
+#[test]
+fn raw_macro_line_endings_are_program_content() {
+    for (source, changed) in [
+        ("p!(\r1)", "p!(\n2)\n"),
+        ("p!(\r1)", "p!(\n1)\n"),
+        ("p!(r\"keep\rthis\"\r)", "p!(r\"keep\nthis\"\n)\n"),
+        ("p!(/* keep\rthis */\r)", "p!(/* keep\nthis */\n)\n"),
+        ("p!(\r/* before */1)", "p!(\n1/* before */)\n"),
+    ] {
+        assert!(check(source, changed).is_err(), "{source:?} -> {changed:?}");
+    }
+}
+
+#[test]
+fn doc_comment_carriage_returns_round_trip() {
+    for source in [
+        "//!\r",
+        "//! text\r\n",
+        "//! text\r\r\n",
+        "/// text\r\nfn main() {}\r\n",
+    ] {
+        assert_faithful(source);
+    }
+}
+
+#[test]
 fn explicit_discards_keep_their_spelling() {
     assert_faithful("fn main() {\n    let s = \"hello\";\n    _ = s;\n    let _ = s;\n}\n");
     assert_faithful("fn main() { let values = gen { _ = 1; yield 2; }; }\n");

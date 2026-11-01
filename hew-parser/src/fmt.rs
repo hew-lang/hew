@@ -110,10 +110,7 @@ pub fn format_source(source: &str, program: &Program) -> String {
 fn with_line_endings(text: &str, crlf: bool) -> String {
     let mut out = String::with_capacity(text.len());
     let mut gap_start = 0;
-    let spans = hew_lexer::Lexer::new(text)
-        .map(|(_, span)| (span.start, span.end))
-        .chain(std::iter::once((text.len(), text.len())));
-    for (start, end) in spans {
+    for (start, end) in line_ending_spans(text) {
         let gap = text[gap_start..start].replace("\r\n", "\n");
         if crlf {
             out.push_str(&gap.replace('\n', "\r\n"));
@@ -124,6 +121,63 @@ fn with_line_endings(text: &str, crlf: bool) -> String {
         gap_start = end;
     }
     out
+}
+
+/// Contents protected from layout normalization. Raw macro token trees are
+/// observable through `stringify!`, so their line endings must stay verbatim,
+/// just like a string literal. Doc tokens, however, include a terminal CR
+/// that belongs to their following line break.
+fn line_ending_spans(text: &str) -> Vec<(usize, usize)> {
+    use hew_lexer::Token;
+
+    let tokens: Vec<_> = hew_lexer::Lexer::new(text).collect();
+    let mut spans = Vec::with_capacity(tokens.len() + 1);
+    let mut index = 0;
+    while index < tokens.len() {
+        let raw_macro = match tokens.get(index..index + 3) {
+            Some([(Token::Identifier(name), _), (Token::Bang, _), (Token::LeftParen, _)]) => {
+                !crate::macro_syntax::is_builtin_macro(name)
+                    || index > 0 && matches!(tokens[index - 1].0, Token::Dot)
+            }
+            Some([(Token::Macro, _), (name, _), (Token::LeftBrace, _)]) => {
+                crate::parser::Parser::is_ident_token(name)
+            }
+            _ => false,
+        };
+        if raw_macro {
+            let mut depth = 0usize;
+            let close = tokens[index + 2..].iter().position(|(token, _)| {
+                match token {
+                    Token::LeftParen
+                    | Token::LeftBrace
+                    | Token::LeftBracket
+                    | Token::HashBracket => depth += 1,
+                    Token::RightParen | Token::RightBrace | Token::RightBracket => {
+                        depth = depth.saturating_sub(1);
+                    }
+                    _ => {}
+                }
+                depth == 0
+            });
+            if let Some(close) = close {
+                let close = index + 2 + close;
+                spans.push((tokens[index].1.start, tokens[close].1.end));
+                index = close + 1;
+                continue;
+            }
+        }
+        let (token, span) = &tokens[index];
+        let end = match token {
+            Token::DocComment(t) | Token::InnerDocComment(t) => {
+                span.start + t.trim_end_matches('\r').len()
+            }
+            _ => span.end,
+        };
+        spans.push((span.start, end));
+        index += 1;
+    }
+    spans.push((text.len(), text.len()));
+    spans
 }
 
 /// Format `program` with the comments of `source`, refusing any output that

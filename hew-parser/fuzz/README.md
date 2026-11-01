@@ -30,8 +30,10 @@ HEW_STD=$PWD/../std cargo +nightly fuzz run fuzz_diagnostics  # text and JSON di
 
 `hew-cli/fuzz` links the whole driver, including `hew-codegen-rs` (inkwell and
 `llvm-sys`), so building it needs LLVM 22 and about 4 GB of target directory.
-It stays out of the Cargo workspace and the continuous service, which builds
-only `hew-parser/fuzz`. Where LLVM is installed, `cargo fuzz list --fuzz-dir
+On Debian/Ubuntu, install the matching `libpolly-22-dev` alongside
+`llvm-22-dev`: `llvm-sys` links LLVM's static libraries, including Polly.
+It stays out of the Cargo workspace. Where LLVM is installed,
+`cargo fuzz list --fuzz-dir
 hew-cli/fuzz` from the repository root lists its targets. It runs three full
 `hew check`s per input, about one input a second, so its seed set is a sample.
 

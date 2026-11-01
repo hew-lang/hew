@@ -23,22 +23,26 @@ fn assert_faithful(source: &str) {
 }
 
 #[test]
-fn bare_carriage_returns_in_macro_layout_are_normalized() {
+fn raw_macro_line_endings_stay_verbatim() {
     for source in [
         "p!(\r)",
         "p!(\r)\r\n",
         "p!(/* keep\rthis */\r)",
         "p!(\r\n/// doc\r\n1)",
         "p!(r\"keep\rthis\"\r)",
+        "fn main() { let s = stringify!(p!(\r)); }",
+        "fn main() { let s = stringify!(m.stringify!(\r)); }",
+        "macro p { (\r$x:expr) => expr {\r$x } }",
     ] {
         assert_faithful(source);
     }
 }
 
 #[test]
-fn macro_line_ending_normalization_does_not_hide_content_changes() {
+fn raw_macro_line_endings_are_program_content() {
     for (source, changed) in [
         ("p!(\r1)", "p!(\n2)\n"),
+        ("p!(\r1)", "p!(\n1)\n"),
         ("p!(r\"keep\rthis\"\r)", "p!(r\"keep\nthis\"\n)\n"),
         ("p!(/* keep\rthis */\r)", "p!(/* keep\nthis */\n)\n"),
         ("p!(\r/* before */1)", "p!(\n1/* before */)\n"),

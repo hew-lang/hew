@@ -107,29 +107,11 @@ pub fn format_source(source: &str, program: &Program) -> String {
 
 /// `text` with every line break between its tokens written as `\r\n` when
 /// `crlf`, else `\n`. Breaks inside literals are program content and stay.
-pub(crate) fn with_line_endings(text: &str, crlf: bool) -> String {
+fn with_line_endings(text: &str, crlf: bool) -> String {
     let mut out = String::with_capacity(text.len());
     let mut gap_start = 0;
     for (start, end) in line_ending_spans(text) {
-        let mut comments = Vec::new();
-        trivia_comments(text, gap_start, start, &mut comments);
-        let mut gap = String::new();
-        let mut cursor = gap_start;
-        for comment in comments {
-            gap.push_str(
-                &text[cursor..comment.span.start]
-                    .replace("\r\n", "\n")
-                    .replace('\r', "\n"),
-            );
-            // A bare CR inside a comment is content, rather than layout.
-            gap.push_str(&comment.text.replace("\r\n", "\n"));
-            cursor = comment.span.end;
-        }
-        gap.push_str(
-            &text[cursor..start]
-                .replace("\r\n", "\n")
-                .replace('\r', "\n"),
-        );
+        let gap = text[gap_start..start].replace("\r\n", "\n");
         if crlf {
             out.push_str(&gap.replace('\n', "\r\n"));
         } else {
@@ -141,20 +123,59 @@ pub(crate) fn with_line_endings(text: &str, crlf: bool) -> String {
     out
 }
 
-/// Token contents protected from layout normalization. The lexer includes
-/// a doc line's terminal CR in its token; it belongs to the following break.
-fn line_ending_spans(text: &str) -> impl Iterator<Item = (usize, usize)> + '_ {
-    hew_lexer::Lexer::new(text)
-        .map(|(token, span)| {
-            let end = match token {
-                hew_lexer::Token::DocComment(t) | hew_lexer::Token::InnerDocComment(t) => {
-                    span.start + t.trim_end_matches('\r').len()
+/// Contents protected from layout normalization. Raw macro token trees are
+/// observable through `stringify!`, so their line endings must stay verbatim,
+/// just like a string literal. Doc tokens, however, include a terminal CR
+/// that belongs to their following line break.
+fn line_ending_spans(text: &str) -> Vec<(usize, usize)> {
+    use hew_lexer::Token;
+
+    let tokens: Vec<_> = hew_lexer::Lexer::new(text).collect();
+    let mut spans = Vec::with_capacity(tokens.len() + 1);
+    let mut index = 0;
+    while index < tokens.len() {
+        let raw_macro = match tokens.get(index..index + 3) {
+            Some([(Token::Identifier(name), _), (Token::Bang, _), (Token::LeftParen, _)]) => {
+                !crate::macro_syntax::is_builtin_macro(name)
+                    || index > 0 && matches!(tokens[index - 1].0, Token::Dot)
+            }
+            Some([(Token::Macro, _), (Token::Identifier(_), _), (Token::LeftBrace, _)]) => true,
+            _ => false,
+        };
+        if raw_macro {
+            let mut depth = 0usize;
+            let close = tokens[index + 2..].iter().position(|(token, _)| {
+                match token {
+                    Token::LeftParen
+                    | Token::LeftBrace
+                    | Token::LeftBracket
+                    | Token::HashBracket => depth += 1,
+                    Token::RightParen | Token::RightBrace | Token::RightBracket => {
+                        depth = depth.saturating_sub(1);
+                    }
+                    _ => {}
                 }
-                _ => span.end,
-            };
-            (span.start, end)
-        })
-        .chain(std::iter::once((text.len(), text.len())))
+                depth == 0
+            });
+            if let Some(close) = close {
+                let close = index + 2 + close;
+                spans.push((tokens[index].1.start, tokens[close].1.end));
+                index = close + 1;
+                continue;
+            }
+        }
+        let (token, span) = &tokens[index];
+        let end = match token {
+            Token::DocComment(t) | Token::InnerDocComment(t) => {
+                span.start + t.trim_end_matches('\r').len()
+            }
+            _ => span.end,
+        };
+        spans.push((span.start, end));
+        index += 1;
+    }
+    spans.push((text.len(), text.len()));
+    spans
 }
 
 /// Format `program` with the comments of `source`, refusing any output that

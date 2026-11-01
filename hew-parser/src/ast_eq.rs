@@ -8,14 +8,15 @@
 //! This module provides [`program_eq_ignoring_spans`] which serialises both
 //! programs via `serde_json`, walks the resulting tree, and normalises every
 //! span (represented as `{"start": N, "end": M}`) to a sentinel before
-//! comparing. Simple, correct, and fast enough for the ~1000-file corpus.
+//! comparing. Macro token trees also retain source trivia; normalize its
+//! line endings, while preserving token spellings and comment contents.
 
 use crate::ast::Program;
 use serde_json::Value;
 
 /// Return `true` iff two programs are structurally equal after all span fields
-/// are normalised away. Use for round-trip property assertions where byte
-/// offsets naturally differ between parses of differently-formatted sources.
+/// are normalised away and macro trivia has canonical line endings. Use for
+/// round-trip property assertions where layout differs between parses.
 ///
 /// # Panics
 ///
@@ -71,6 +72,24 @@ fn strip_spans(v: &mut Value) {
             if is_span_object(map) {
                 *v = Value::Null;
                 return;
+            }
+            // TokenTree payloads keep raw source trivia for expansion. A
+            // formatter may normalize layout line endings, but must keep
+            // every token's spelling and the contents of every comment.
+            if map.contains_key("span")
+                && map.contains_key("leading")
+                && (map.contains_key("spelling") || map.contains_key("delimiter"))
+            {
+                for key in ["leading", "closing"] {
+                    if let Some(Value::String(text)) = map.get_mut(key) {
+                        *text = crate::fmt::with_line_endings(text, false);
+                    }
+                }
+                if let Some(Value::String(text)) = map.get_mut("spelling") {
+                    if text.starts_with("///") || text.starts_with("//!") {
+                        text.truncate(text.trim_end_matches('\r').len());
+                    }
+                }
             }
             for child in map.values_mut() {
                 strip_spans(child);

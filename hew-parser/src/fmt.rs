@@ -107,14 +107,29 @@ pub fn format_source(source: &str, program: &Program) -> String {
 
 /// `text` with every line break between its tokens written as `\r\n` when
 /// `crlf`, else `\n`. Breaks inside literals are program content and stay.
-fn with_line_endings(text: &str, crlf: bool) -> String {
+pub(crate) fn with_line_endings(text: &str, crlf: bool) -> String {
     let mut out = String::with_capacity(text.len());
     let mut gap_start = 0;
-    let spans = hew_lexer::Lexer::new(text)
-        .map(|(_, span)| (span.start, span.end))
-        .chain(std::iter::once((text.len(), text.len())));
-    for (start, end) in spans {
-        let gap = text[gap_start..start].replace("\r\n", "\n");
+    for (start, end) in line_ending_spans(text) {
+        let mut comments = Vec::new();
+        trivia_comments(text, gap_start, start, &mut comments);
+        let mut gap = String::new();
+        let mut cursor = gap_start;
+        for comment in comments {
+            gap.push_str(
+                &text[cursor..comment.span.start]
+                    .replace("\r\n", "\n")
+                    .replace('\r', "\n"),
+            );
+            // A bare CR inside a comment is content, rather than layout.
+            gap.push_str(&comment.text.replace("\r\n", "\n"));
+            cursor = comment.span.end;
+        }
+        gap.push_str(
+            &text[cursor..start]
+                .replace("\r\n", "\n")
+                .replace('\r', "\n"),
+        );
         if crlf {
             out.push_str(&gap.replace('\n', "\r\n"));
         } else {
@@ -124,6 +139,22 @@ fn with_line_endings(text: &str, crlf: bool) -> String {
         gap_start = end;
     }
     out
+}
+
+/// Token contents protected from layout normalization. The lexer includes
+/// a doc line's terminal CR in its token; it belongs to the following break.
+fn line_ending_spans(text: &str) -> impl Iterator<Item = (usize, usize)> + '_ {
+    hew_lexer::Lexer::new(text)
+        .map(|(token, span)| {
+            let end = match token {
+                hew_lexer::Token::DocComment(t) | hew_lexer::Token::InnerDocComment(t) => {
+                    span.start + t.trim_end_matches('\r').len()
+                }
+                _ => span.end,
+            };
+            (span.start, end)
+        })
+        .chain(std::iter::once((text.len(), text.len())))
 }
 
 /// Format `program` with the comments of `source`, refusing any output that

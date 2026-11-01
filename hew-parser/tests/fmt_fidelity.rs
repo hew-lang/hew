@@ -33,6 +33,7 @@ fn raw_macro_line_endings_stay_verbatim() {
         "fn main() { let s = stringify!(p!(\r)); }",
         "fn main() { let s = stringify!(m.stringify!(\r)); }",
         "macro p { (\r$x:expr) => expr {\r$x } }",
+        "macro after { (\r$x:expr) => expr {\r$x } }",
     ] {
         assert_faithful(source);
     }

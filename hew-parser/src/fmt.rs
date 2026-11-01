@@ -139,7 +139,9 @@ fn line_ending_spans(text: &str) -> Vec<(usize, usize)> {
                 !crate::macro_syntax::is_builtin_macro(name)
                     || index > 0 && matches!(tokens[index - 1].0, Token::Dot)
             }
-            Some([(Token::Macro, _), (Token::Identifier(_), _), (Token::LeftBrace, _)]) => true,
+            Some([(Token::Macro, _), (name, _), (Token::LeftBrace, _)]) => {
+                crate::parser::Parser::is_ident_token(name)
+            }
             _ => false,
         };
         if raw_macro {

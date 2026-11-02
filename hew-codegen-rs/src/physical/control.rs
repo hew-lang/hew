@@ -95,8 +95,22 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                 cancel,
                 unwind,
             } => self.emit_offload(*function, args, *result, normal, cancel, unwind),
-            PhysicalTerminator::Safepoint { normal, cancel } => {
+            PhysicalTerminator::Safepoint {
+                normal,
+                cancel,
+                checks_stack,
+            } => {
+                if *checks_stack {
+                    let overflow = cancel.as_ref().ok_or_else(|| {
+                        CodegenError::FailClosed("stack check has no fault exit".into())
+                    })?;
+                    self.emit_stack_check(overflow)?;
+                }
                 self.emit_safepoint(normal, cancel.as_ref())
+            }
+            PhysicalTerminator::StackCheck { normal, overflow } => {
+                self.emit_stack_check(overflow)?;
+                self.emit_edge(normal)
             }
             PhysicalTerminator::Sleep {
                 duration,
@@ -1224,6 +1238,117 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
         self.store_active_fault(fault, HEW_TRAP_USER_PANIC)?;
         self.attach_active_fault_site(site)?;
         self.emit_edge(cleanup)
+    }
+
+    /// Fail this frame with `StackOverflow` when it lies below the thread's
+    /// stack limit, leaving through `overflow`; otherwise continue in a fresh
+    /// block. The limit slot starts at the all-ones sentinel, so a thread's
+    /// first check always asks the runtime, which installs the real limit.
+    pub(super) fn emit_stack_check(&self, overflow: &PhysicalEdge) -> CodegenResult<()> {
+        let pointer = self.ctx.ptr_type(AddressSpace::default());
+        let word = self.ctx.ptr_sized_int_type(self.target_data, None);
+        let slot = stack_limit_slot(self.llvm, word);
+        let frame = if self.module.target.triple.starts_with("wasm32") {
+            // A wasm function keeps most locals off the linear-memory stack, so
+            // its stack pointer need not move between nested calls. A marker
+            // slot gives every checked frame a footprint there, so recursion
+            // always reaches the limit. The marker is written but never
+            // captured, so a coroutine body keeps it on the stack rather than
+            // in its heap frame; the check reads the stack pointer itself.
+            let marker = self
+                .builder
+                .build_alloca(self.ctx.i8_type().array_type(16), "stack.marker")
+                .llvm_ctx("reserve the frame's stack marker")?;
+            self.builder
+                .build_store(marker, self.ctx.i8_type().const_zero())
+                .llvm_ctx("touch the frame's stack marker")?
+                .set_volatile(true)
+                .map_err(|error| CodegenError::FailClosed(error.to_string()))?;
+            let stack_save = Intrinsic::find("llvm.stacksave")
+                .and_then(|intrinsic| intrinsic.get_declaration(self.llvm, &[pointer.into()]))
+                .ok_or_else(|| {
+                    CodegenError::FailClosed(
+                        "LLVM intrinsic `llvm.stacksave` is unavailable".into(),
+                    )
+                })?;
+            super::suspend::call_value(&self.builder, stack_save, &[], "stack.pointer")?
+                .into_pointer_value()
+        } else {
+            let frame_address = Intrinsic::find("llvm.frameaddress")
+                .and_then(|intrinsic| intrinsic.get_declaration(self.llvm, &[pointer.into()]))
+                .ok_or_else(|| {
+                    CodegenError::FailClosed(
+                        "LLVM intrinsic `llvm.frameaddress` is unavailable".into(),
+                    )
+                })?;
+            super::suspend::call_value(
+                &self.builder,
+                frame_address,
+                &[self.ctx.i32_type().const_zero().into()],
+                "stack.frame",
+            )?
+            .into_pointer_value()
+        };
+        let frame = self
+            .builder
+            .build_ptr_to_int(frame, word, "stack.sp")
+            .llvm_ctx("read the frame address")?;
+        let limit = self
+            .builder
+            .build_load(word, slot.as_pointer_value(), "stack.limit")
+            .llvm_ctx("read the thread's stack limit")?
+            .into_int_value();
+        let below = self
+            .builder
+            .build_int_compare(IntPredicate::ULT, frame, limit, "stack.below")
+            .llvm_ctx("compare the frame with the stack limit")?;
+        let slow = self.ctx.append_basic_block(self.value, "stack.slow");
+        let failed = self.ctx.append_basic_block(self.value, "stack.overflow");
+        let ok = self.ctx.append_basic_block(self.value, "stack.ok");
+        let cold = self.ctx.metadata_node(&[
+            self.ctx.metadata_string("branch_weights").into(),
+            self.ctx.i32_type().const_int(1, false).into(),
+            self.ctx.i32_type().const_int(1 << 20, false).into(),
+        ]);
+        let branch = self
+            .builder
+            .build_conditional_branch(below, slow, ok)
+            .llvm_ctx("branch on the stack limit")?;
+        branch
+            .set_metadata(cold, self.ctx.get_kind_id("prof"))
+            .map_err(|error| CodegenError::FailClosed(error.to_string()))?;
+        self.builder.position_at_end(slow);
+        let check = get_or_declare_external(
+            self.llvm,
+            "hew_stack_check",
+            self.ctx
+                .i32_type()
+                .fn_type(&[pointer.into(), word.into()], false),
+        )?;
+        let status = super::suspend::call_value(
+            &self.builder,
+            check,
+            &[slot.as_pointer_value().into(), frame.into()],
+            "stack.status",
+        )?
+        .into_int_value();
+        let exhausted = self
+            .builder
+            .build_int_compare(
+                IntPredicate::NE,
+                status,
+                self.ctx.i32_type().const_zero(),
+                "stack.exhausted",
+            )
+            .llvm_ctx("test the runtime stack verdict")?;
+        self.builder
+            .build_conditional_branch(exhausted, failed, ok)
+            .llvm_ctx("branch on the runtime stack verdict")?;
+        self.builder.position_at_end(failed);
+        self.initialize_active_fault(HEW_TRAP_STACK_OVERFLOW)?;
+        self.emit_edge(overflow)?;
+        self.builder.position_at_end(ok);
+        Ok(())
     }
 
     pub(super) fn initialize_active_fault(&self, code: i32) -> CodegenResult<()> {

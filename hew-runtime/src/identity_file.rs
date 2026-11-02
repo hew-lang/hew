@@ -85,6 +85,13 @@ pub(crate) fn load(path: &Path, maximum: usize) -> io::Result<Zeroizing<Vec<u8>>
     read(file, maximum)
 }
 
+#[cfg_attr(
+    not(unix),
+    allow(
+        clippy::unnecessary_wraps,
+        reason = "only Unix syncs the parent directory"
+    )
+)]
 fn sync_parent(path: &Path) -> io::Result<()> {
     #[cfg(unix)]
     File::open(parent(path))?.sync_all()?;

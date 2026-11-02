@@ -784,7 +784,7 @@ fn fields<'ctx>(
         roots.push((descriptor, field, initialized));
         fields.push((recipe, action, field, initialized));
     }
-    frame.bind_root_entries(values.ctx, values.llvm, values.builder, &roots)?;
+    frame.bind_root_entries(values.ctx, values.builder, &roots)?;
     for (recipe, action, field, initialized) in fields.into_iter().rev() {
         // The selected child's own invocation takes over its live descendants.
         values

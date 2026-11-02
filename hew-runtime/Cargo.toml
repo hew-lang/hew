@@ -66,6 +66,11 @@ clone-failure-test = []
 # Never enabled by `default` or `full`.
 composition-test = []
 
+# libFuzzer entry points for the untrusted-input decoders and the control-frame
+# handler (hew-runtime/fuzz). Exposes `hew_runtime::fuzzing` only; never
+# enabled by `default` or `full`. Adds no dependencies.
+fuzzing = []
+
 [dependencies]
 rand = "0.10.1"
 # CBOR envelope framing (ciborium, RFC 8949); CDDL schema in schemas/envelope.cddl.
@@ -149,6 +154,7 @@ windows-sys = { version = "0.61.2", features = [
   "Win32_System_Diagnostics_Debug",
   "Win32_System_IO",
   "Win32_System_Kernel",
+  "Win32_System_Memory",
   "Win32_System_Pipes",
   "Win32_System_Threading",
 ] }

@@ -19,7 +19,7 @@ use windows_sys::Win32::System::IO::{CancelIoEx, GetOverlappedResult, OVERLAPPED
 
 use crate::util::MutexExt;
 
-const READ_CAPACITY: usize = 64 * 1024;
+const READ_CAPACITY: u32 = 64 * 1024;
 
 pub(super) fn output_pipe() -> io::Result<(File, File)> {
     let name: Vec<u16> = format!(
@@ -38,7 +38,7 @@ pub(super) fn output_pipe() -> io::Result<(File, File)> {
             PIPE_REJECT_REMOTE_CLIENTS,
             1,
             0,
-            READ_CAPACITY as u32,
+            READ_CAPACITY,
             0,
             ptr::null(),
         )
@@ -70,7 +70,7 @@ pub(super) fn output_pipe() -> io::Result<(File, File)> {
     // SAFETY: both ends are live and already connected.
     if unsafe { ConnectNamedPipe(parent.as_raw_handle(), ptr::null_mut()) } == 0 {
         let error = io::Error::last_os_error();
-        if error.raw_os_error() != Some(ERROR_PIPE_CONNECTED as i32) {
+        if error.raw_os_error() != Some(ERROR_PIPE_CONNECTED.cast_signed()) {
             return Err(error);
         }
     }
@@ -81,7 +81,7 @@ pub(super) fn output_pipe() -> io::Result<(File, File)> {
 pub(crate) struct PipeRead {
     overlapped: OVERLAPPED,
     context: usize,
-    buffer: [u8; READ_CAPACITY],
+    buffer: [u8; READ_CAPACITY as usize],
 }
 
 impl PipeRead {
@@ -137,7 +137,7 @@ impl WindowsPipe {
         let mut state = self.state.lock_or_recover();
         match state.result {
             None => Err(io::ErrorKind::WouldBlock.into()),
-            Some(Err(code)) if code == ERROR_BROKEN_PIPE as i32 => Ok(0),
+            Some(Err(code)) if code == ERROR_BROKEN_PIPE.cast_signed() => Ok(0),
             Some(Err(code)) => Err(io::Error::from_raw_os_error(code)),
             Some(Ok(0)) => Ok(0),
             Some(Ok(count)) => {
@@ -175,7 +175,7 @@ impl WindowsPipe {
             ReadFile(
                 self.file.as_raw_handle(),
                 read.buffer.as_mut_ptr(),
-                READ_CAPACITY as u32,
+                READ_CAPACITY,
                 ptr::null_mut(),
                 &raw mut read.overlapped,
             )
@@ -185,7 +185,7 @@ impl WindowsPipe {
             return Ok(());
         }
         let error = io::Error::last_os_error();
-        if error.raw_os_error() == Some(ERROR_IO_PENDING as i32) {
+        if error.raw_os_error() == Some(ERROR_IO_PENDING.cast_signed()) {
             state.pending = true;
             return Ok(());
         }

@@ -310,7 +310,7 @@ impl FileCancellation {
         // SAFETY: the registered duplicate belongs only to this producer;
         // clearing registration uses this same lock before releasing its loan.
         (unsafe { CancelIoEx(handle.as_raw_handle(), std::ptr::null()) }) == 0
-            && std::io::Error::last_os_error().raw_os_error() == Some(ERROR_NOT_FOUND as i32)
+            && std::io::Error::last_os_error().raw_os_error() == Some(ERROR_NOT_FOUND.cast_signed())
     }
 }
 

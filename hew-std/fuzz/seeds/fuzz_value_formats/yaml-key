@@ -1,0 +1,4 @@
+? [complex, key]
+: value
+? {a: 1}
+: b

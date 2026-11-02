@@ -1,0 +1,10 @@
+[[case]]
+id = "stack-overflow-unsupervised-root"
+intent = "Stack exhaustion in main unwinds through cleanup and exits 1 with StackOverflow instead of a signal."
+source = "cases/stack-overflow-unsupervised-root.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 60
+
+[case.expected]
+stdout = "descending\nmain cleanup ran\n"
+exit = 1

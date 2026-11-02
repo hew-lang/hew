@@ -78,4 +78,6 @@ pub enum CrashKind {
     HandlerFailed;
     /// An actor-owned timer was discarded or missed its handler-start deadline.
     TimerOverdue;
+    /// A call exhausted the actor's stack.
+    StackOverflow;
 }

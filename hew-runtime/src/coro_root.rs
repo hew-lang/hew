@@ -163,6 +163,10 @@ pub unsafe extern "C" fn hew_coro_run_root(
     result_out: *mut c_void,
     fault_out: *mut *mut HewFault,
 ) -> i32 {
+    // A program with no actors never starts the scheduler, so the process
+    // thread's first root is where its faults become reportable.
+    #[cfg(not(target_arch = "wasm32"))]
+    crate::signal::init_crash_handling();
     // SAFETY: the root closure drains and destroys its frame before returning.
     unsafe {
         with_root_invocation(|state, readiness| {
@@ -196,7 +200,10 @@ unsafe fn drive_root(
     let mut ready = false;
     loop {
         // SAFETY: this driver owns the frame/state and consumes one wake per poll.
-        if let Some(status) = unsafe { poll_root(&mut frame, state, ready) } {
+        let polled = unsafe { poll_root(&mut frame, state, ready) };
+        // Each poll returns with no Hew frame live on the process thread.
+        crate::stack_limit::rearm();
+        if let Some(status) = polled {
             return status;
         }
         readiness.wait();

@@ -516,7 +516,7 @@ pub(super) fn retire_identity_claim(
 /// admission does before `publish_connection_established`. Returns the
 /// superseded claim (if any) to thread into publish. Panics on rejection — the
 /// unit tests below only reserve fresh or same-`NodeId` reconnect claims.
-#[cfg(test)]
+#[cfg(any(test, feature = "fuzzing"))]
 pub(super) fn reserve_unverified_identity_claim(
     mgr: &HewConnMgr,
     node_id: NodeId,
@@ -547,13 +547,13 @@ pub(super) fn reserve_unverified_identity_claim(
 
 /// A dialled admission that began after every claim reserved, so it never
 /// meets a crossing dial.
-#[cfg(test)]
+#[cfg(any(test, feature = "fuzzing"))]
 pub(super) const TEST_ADMISSION: AdmissionStart = AdmissionStart {
     origin: ConnectionOrigin::Dialled,
     began_at: u64::MAX,
 };
 
-#[cfg(test)]
+#[cfg(any(test, feature = "fuzzing"))]
 pub(super) fn test_node_identity(route_slot: u16) -> NodeId {
     let mut bytes = [0_u8; 16];
     bytes[14..].copy_from_slice(&route_slot.to_be_bytes());
@@ -657,7 +657,7 @@ pub(super) fn test_reserve_unverified(
 /// [`ConnectionActor`](super::ConnectionActor) by hand (bypassing `hew_connmgr_add`) must seed this so
 /// the issue #2652 exact-owner gate ([`authenticated_peer_node_id_for_conn`](super::peer::authenticated_peer_node_id_for_conn))
 /// recognises the connection as the current published owner of its `NodeId`.
-#[cfg(test)]
+#[cfg(any(test, feature = "fuzzing"))]
 pub(super) fn test_publish_claim(mgr: &HewConnMgr, route_slot: u16, conn_id: c_int) -> u64 {
     let node_id = test_node_identity(route_slot);
     let token = next_publication_token(mgr).expect("the publication token space is not exhausted");

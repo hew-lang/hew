@@ -1294,9 +1294,20 @@ pub enum PhysicalTerminator {
         unwind: PhysicalEdge,
     },
     /// A structural scheduling poll with SIR-authored cancellation cleanup.
+    /// At a function's entry it is also the stack check: a frame below the
+    /// thread's stack limit leaves through `cancel` with a `StackOverflow`
+    /// fault.
     Safepoint {
         normal: PhysicalEdge,
         cancel: Option<PhysicalEdge>,
+        checks_stack: bool,
+    },
+    /// The entry check of a function that cannot suspend. A frame below the
+    /// thread's stack limit leaves through `overflow` with an active
+    /// `StackOverflow` fault and the entry safepoint's cancellation cleanup.
+    StackCheck {
+        normal: PhysicalEdge,
+        overflow: PhysicalEdge,
     },
     Sleep {
         duration: StorageId,

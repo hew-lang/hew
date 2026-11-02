@@ -496,6 +496,10 @@ fn sync_directory(target: &std::path::Path) -> std::io::Result<()> {
 }
 
 #[cfg(not(unix))]
+#[allow(
+    clippy::unnecessary_wraps,
+    reason = "shares the fallible Unix signature"
+)]
 fn sync_directory(_target: &std::path::Path) -> std::io::Result<()> {
     Ok(())
 }

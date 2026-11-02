@@ -159,7 +159,7 @@ impl BoundedChild {
                 // Job creation failed: spawn normally and rely on taskkill fallback.
                 let child = spawn_with_retry(|| command.spawn())
                     .map_err(|e| format!("cannot spawn child process: {e}"))?;
-                return Ok(Self { child, job: None });
+                Ok(Self { child, job: None })
             }
             Ok(job) => {
                 // Spawn suspended: the child holds no locks and has spawned no
@@ -220,26 +220,23 @@ impl BoundedChild {
     /// all pipe write-end handles are released before we join drain threads.
     #[cfg(windows)]
     fn terminate_process_group(&mut self) -> Result<bool, String> {
-        match self.job.as_ref() {
-            Some(job) => {
-                job.terminate()?;
-                // Reap the root child. It may have already exited on its own
-                // (that is the scenario where the Job Object path is essential
-                // — the root is gone but descendants may still be alive).
-                self.child
-                    .wait()
-                    .map_err(|e| format!("cannot reap timed-out child process: {e}"))?;
-                Ok(true)
-            }
-            None => {
-                // Job assignment failed at spawn time; fall back to taskkill.
-                // Only exit 0 counts as proof of tree termination.
-                let tree_killed = windows_kill_taskkill(&mut self.child)?;
-                self.child
-                    .wait()
-                    .map_err(|e| format!("cannot reap timed-out child process: {e}"))?;
-                Ok(tree_killed)
-            }
+        if let Some(job) = self.job.as_ref() {
+            job.terminate()?;
+            // Reap the root child. It may have already exited on its own
+            // (that is the scenario where the Job Object path is essential
+            // — the root is gone but descendants may still be alive).
+            self.child
+                .wait()
+                .map_err(|e| format!("cannot reap timed-out child process: {e}"))?;
+            Ok(true)
+        } else {
+            // Job assignment failed at spawn time; fall back to taskkill.
+            // Only exit 0 counts as proof of tree termination.
+            let tree_killed = windows_kill_taskkill(&mut self.child)?;
+            self.child
+                .wait()
+                .map_err(|e| format!("cannot reap timed-out child process: {e}"))?;
+            Ok(tree_killed)
         }
     }
 
@@ -420,31 +417,44 @@ fn terminating_signal(status: ExitStatus) -> Option<i32> {
     status.signal()
 }
 
+/// Synchronous fault signals the Hew runtime reports itself before the program
+/// dies by them; see `hew-runtime/src/signal/unix.rs`.
+#[cfg(unix)]
+const RUNTIME_REPORTED_SIGNALS: [i32; 5] = [
+    libc::SIGSEGV,
+    libc::SIGBUS,
+    libc::SIGFPE,
+    libc::SIGILL,
+    libc::SIGTRAP,
+];
+
 /// Preserve explicit program exits and report abnormal native termination.
 ///
-/// OS signals do not identify a language trap, so use the runtime's
-/// `UnknownFault` category rather than guessing a source-level cause.
-/// Windows reports exceptions and explicit exits through the same integer;
-/// preserve that integer because the two cannot be distinguished here.
+/// A synchronous fault signal was already reported by the runtime's fault
+/// boundary, which then let the program die by that signal; the wrapper adds
+/// no second record and exits as a shell reports the death, `128 + signal`.
+/// Any other signal (`SIGKILL`, `SIGABRT`, `SIGTERM`, ...) reached the program
+/// from outside or from `abort`, so no Hew record exists: report it as
+/// `UnknownFault` and exit 1. Windows reports exceptions and explicit exits
+/// through the same integer; preserve that integer because the two cannot be
+/// distinguished here.
 pub(crate) fn native_run_exit_code(status: ExitStatus, stderr: &mut impl std::io::Write) -> i32 {
     if let Some(code) = status.code() {
         return code;
     }
     #[cfg(unix)]
     if let Some(signal) = terminating_signal(status) {
+        if RUNTIME_REPORTED_SIGNALS.contains(&signal) {
+            return 128 + signal;
+        }
         let name = match signal {
             libc::SIGABRT => "SIGABRT",
-            libc::SIGBUS => "SIGBUS",
-            libc::SIGFPE => "SIGFPE",
-            libc::SIGILL => "SIGILL",
             libc::SIGINT => "SIGINT",
             libc::SIGHUP => "SIGHUP",
             libc::SIGKILL => "SIGKILL",
             libc::SIGPIPE => "SIGPIPE",
             libc::SIGQUIT => "SIGQUIT",
-            libc::SIGSEGV => "SIGSEGV",
             libc::SIGTERM => "SIGTERM",
-            libc::SIGTRAP => "SIGTRAP",
             _ => "unknown signal",
         };
         // An unavailable stderr must not turn a child failure into a CLI panic.
@@ -936,21 +946,21 @@ mod windows_job {
     use std::os::windows::io::AsRawHandle;
     use std::process::Child;
 
-    type HANDLE = *mut core::ffi::c_void;
-    type BOOL = i32;
-    type DWORD = u32;
+    type Handle = *mut core::ffi::c_void;
+    type Bool = i32;
+    type Dword = u32;
 
-    const FALSE: BOOL = 0;
+    const FALSE: Bool = 0;
 
     extern "system" {
         fn CreateJobObjectW(
             lp_job_attributes: *mut core::ffi::c_void,
             lp_name: *const u16,
-        ) -> HANDLE;
-        fn AssignProcessToJobObject(h_job: HANDLE, h_process: HANDLE) -> BOOL;
-        fn TerminateJobObject(h_job: HANDLE, u_exit_code: u32) -> BOOL;
-        fn CloseHandle(h_object: HANDLE) -> BOOL;
-        fn GetLastError() -> DWORD;
+        ) -> Handle;
+        fn AssignProcessToJobObject(h_job: Handle, h_process: Handle) -> Bool;
+        fn TerminateJobObject(h_job: Handle, u_exit_code: u32) -> Bool;
+        fn CloseHandle(h_object: Handle) -> Bool;
+        fn GetLastError() -> Dword;
     }
 
     // NtResumeProcess is not in the Win32 SDK headers but is a stable
@@ -961,7 +971,7 @@ mod windows_job {
     // thread handle that CreateProcess returns.
     #[link(name = "ntdll")]
     extern "system" {
-        fn NtResumeProcess(process_handle: HANDLE) -> i32; // NTSTATUS
+        fn NtResumeProcess(process_handle: Handle) -> i32; // NTSTATUS
     }
 
     /// Resume all threads in a child process that was created suspended.
@@ -970,11 +980,12 @@ mod windows_job {
     /// thread.  For a freshly `CREATE_SUSPENDED` process this unblocks the
     /// primary thread and lets the process start executing.
     pub(super) fn resume_child_process(child: &Child) -> Result<(), String> {
-        let handle = child.as_raw_handle() as HANDLE;
+        let handle = child.as_raw_handle() as Handle;
         // SAFETY: handle is valid for the lifetime of child.
         // NTSTATUS: values < 0 are errors; >= 0 are success codes.
         let status = unsafe { NtResumeProcess(handle) };
         if status < 0 {
+            // SAFETY: GetLastError is always safe to call.
             let code = unsafe { GetLastError() };
             Err(format!(
                 "NtResumeProcess failed: NTSTATUS {status:#010x} (last error {code})"
@@ -984,11 +995,12 @@ mod windows_job {
         }
     }
 
-    pub(super) struct WindowsJob(HANDLE);
+    pub(super) struct WindowsJob(Handle);
 
-    // SAFETY: The HANDLE is valid until `CloseHandle` is called in `Drop`.
-    // We never share the HANDLE across threads without synchronisation.
+    // SAFETY: The handle is valid until `CloseHandle` is called in `Drop`.
+    // We never share the handle across threads without synchronisation.
     unsafe impl Send for WindowsJob {}
+    // SAFETY: every operation on the handle is a thread-safe kernel call.
     unsafe impl Sync for WindowsJob {}
 
     impl WindowsJob {
@@ -1010,7 +1022,7 @@ mod windows_job {
         /// Must be called immediately after spawn, before the child can itself
         /// spawn grandchildren (which would otherwise not be in the job).
         pub(super) fn assign(&self, child: &Child) -> Result<(), String> {
-            let process_handle = child.as_raw_handle() as HANDLE;
+            let process_handle = child.as_raw_handle() as Handle;
             // SAFETY: both handles are valid at this point.
             let ok = unsafe { AssignProcessToJobObject(self.0, process_handle) };
             if ok == FALSE {
@@ -1166,20 +1178,41 @@ mod tests {
         );
     }
 
-    #[test]
-    fn native_run_reports_signalled_child() {
+    #[cfg(unix)]
+    fn status_of_signalled_shell(signal: &str) -> ExitStatus {
         let mut command = Command::new("sh");
-        command.args(["-c", "ulimit -c 0; kill -SEGV $$"]);
-        let status = BoundedChild::spawn(&mut command)
+        command.args(["-c", &format!("ulimit -c 0; kill -{signal} $$")]);
+        BoundedChild::spawn(&mut command)
             .unwrap()
             .child
             .wait()
-            .unwrap();
+            .unwrap()
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn native_run_adds_nothing_to_a_runtime_reported_fault() {
+        // The runtime already wrote the fault record; the wrapper exits as a
+        // shell reports the death and writes nothing more.
+        for (name, signal) in [("SEGV", libc::SIGSEGV), ("BUS", libc::SIGBUS)] {
+            let mut stderr = Vec::new();
+            let code = native_run_exit_code(status_of_signalled_shell(name), &mut stderr);
+            assert_eq!(code, 128 + signal);
+            assert!(stderr.is_empty(), "{}", String::from_utf8_lossy(&stderr));
+        }
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn native_run_reports_an_unreported_signal_once() {
         let mut stderr = Vec::new();
-        assert_eq!(native_run_exit_code(status, &mut stderr), 1);
+        let code = native_run_exit_code(status_of_signalled_shell("TERM"), &mut stderr);
+        assert_eq!(code, 1);
         let stderr = String::from_utf8(stderr).unwrap();
-        assert!(stderr.contains("hew: failure: UnknownFault"), "{stderr}");
-        assert!(stderr.contains("SIGSEGV"), "{stderr}");
+        assert_eq!(
+            stderr,
+            "hew: failure: UnknownFault (15): native program terminated by signal 15 (SIGTERM)\n"
+        );
     }
 
     #[test]

@@ -1,0 +1,32 @@
+[package]
+name = "hew-runtime-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+
+[workspace]
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4.13"
+# The default `full` feature pulls tokio, quinn, rustls and hyper; the
+# targets need none of them.
+hew-runtime = { path = "..", default-features = false, features = ["fuzzing"] }
+
+[[bin]]
+name = "fuzz_wire_frames"
+path = "fuzz_targets/fuzz_wire_frames.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "fuzz_control_handler"
+path = "fuzz_targets/fuzz_control_handler.rs"
+test = false
+doc = false
+
+[[test]]
+name = "seeds"
+path = "tests/seeds.rs"

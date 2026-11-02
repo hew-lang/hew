@@ -11,6 +11,15 @@ use super::value_kinds::*;
 use super::{declared, ArrayValueOp, FileReadOp, SupervisorPoolOp};
 use crate::BuiltinType;
 
+/// Failures of an element read or replacement through the physical vector
+/// form, shared by `Vec` and fixed arrays: the bounds guard materializes a
+/// detailed bounds fault and a refused managed copy raises `HeapExceeded`, so
+/// the failure edge always carries the fault.
+const VECTOR_ELEMENT_FAILURES: &[RuntimeLogicalFailure] = &[
+    RuntimeLogicalFailure::IndexOutOfBounds,
+    RuntimeLogicalFailure::HeapExceeded,
+];
+
 impl RuntimeCallFamily {
     /// The one row describing this runtime operation.
     #[must_use]
@@ -7352,10 +7361,7 @@ impl RuntimeCallFamily {
                         },
                     ],
                     result: R::IndependentValue(K::TypeArgument(0)),
-                    failures: &[
-                        RuntimeLogicalFailure::IndexOutOfBounds,
-                        RuntimeLogicalFailure::HeapExceeded,
-                    ],
+                    failures: VECTOR_ELEMENT_FAILURES,
                 }),
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
@@ -7428,10 +7434,7 @@ impl RuntimeCallFamily {
                         },
                     ],
                     result: R::UpdatedReceiver(K::Receiver(BuiltinType::Vec)),
-                    failures: &[
-                        RuntimeLogicalFailure::IndexOutOfBounds,
-                        RuntimeLogicalFailure::HeapExceeded,
-                    ],
+                    failures: VECTOR_ELEMENT_FAILURES,
                 }),
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
@@ -7725,7 +7728,7 @@ impl RuntimeCallFamily {
                         },
                     ],
                     result: R::IndependentValue(K::ArrayElement),
-                    failures: &[RuntimeLogicalFailure::IndexOutOfBounds],
+                    failures: VECTOR_ELEMENT_FAILURES,
                 }),
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
@@ -7773,7 +7776,7 @@ impl RuntimeCallFamily {
                         },
                     ],
                     result: R::UpdatedReceiver(K::FixedArray),
-                    failures: &[RuntimeLogicalFailure::IndexOutOfBounds],
+                    failures: VECTOR_ELEMENT_FAILURES,
                 }),
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,

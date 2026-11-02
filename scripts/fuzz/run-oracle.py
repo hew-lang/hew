@@ -45,6 +45,9 @@ _RUNTIME_ABORT_MARKERS = (
     "thread '",
 )
 
+# Verdicts that a raw fuzz input may legitimately produce.
+_ACCEPTED = frozenset({"clean", "frontend-reject", "not-a-program"})
+
 # Pattern that parses the leading // EXPECT: <stdout> annotation.
 _EXPECT_RE = re.compile(r"^//\s*EXPECT:\s*(.*)", re.MULTILINE)
 _EXIT_RE = re.compile(r"^//\s*EXIT:\s*(\d+)", re.MULTILINE)
@@ -158,11 +161,9 @@ def _classify_build_failure(combined_output: str) -> str:
         return "build-ice"
     if _contains_any(combined_output, _NYI_MARKERS):
         return "nyi-codegen"
-    # Linker "undefined symbol: main" → this is a library file (no entry point),
-    # not a runnable program.  Classify as frontend-reject so library fixtures
-    # (checked with `hew check` only, not `hew build`) are not spurious failures.
-    if "undefined symbol: main" in combined_output:
-        return "frontend-reject"
+    # A checked source without `fn main` is a library, not a program to run.
+    if "E_NO_MAIN" in combined_output:
+        return "not-a-program"
     # Non-zero without known markers: treat as build-ice (fail-closed).
     return "build-ice"
 
@@ -177,8 +178,9 @@ def _run_binary(
     timeout_s: float,
     output_cap: int,
     hew_std: Optional[str],
+    args: tuple[str, ...] = (),
 ) -> tuple[int, str, str, bool, bool]:
-    """Execute the binary directly (NOT `hew run`).
+    """Execute the binary directly (NOT `hew run`), followed by `args`.
 
     Returns (returncode, stdout_text, stderr_text, timed_out, output_capped).
 
@@ -193,7 +195,7 @@ def _run_binary(
 
     try:
         proc = subprocess.Popen(
-            [str(bin_path)],
+            [str(bin_path), *args],
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             start_new_session=True,
@@ -386,7 +388,7 @@ def main() -> int:
                 args.hew_std,
                 Path(directory),
             )
-            if verdict.classification not in {"clean", "frontend-reject"}:
+            if verdict.classification not in _ACCEPTED:
                 failed += 1
                 print(f"FAIL {source}: {verdict.classification}: {verdict.detail}")
     print(f"Raw fuzz replay: {len(candidates)} inputs, {failed} failures")

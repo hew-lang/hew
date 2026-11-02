@@ -2,6 +2,17 @@
 
 use inkwell::{execution_engine::ExecutionEngine, module::Module};
 
+/// MCJIT cannot relocate thread-local storage, so a JIT oracle runs with the
+/// stack-limit slot as an ordinary global at zero, which no frame is below.
+/// Native executables exercise the check itself.
+pub(super) fn disable_stack_check_for_jit(llvm: &Module<'_>) {
+    if let Some(slot) = llvm.get_global("__hew_stack_limit") {
+        slot.set_thread_local(false);
+        let word = slot.get_value_type().into_int_type();
+        slot.set_initializer(&word.const_zero());
+    }
+}
+
 /// Bind the actual runtime ABI shared by the physical JIT oracles.
 pub(super) fn bind_runtime<'ctx>(llvm: &Module<'ctx>, engine: &ExecutionEngine<'ctx>) {
     macro_rules! bind {
@@ -39,7 +50,6 @@ pub(super) fn bind_runtime<'ctx>(llvm: &Module<'ctx>, engine: &ExecutionEngine<'
         }
     }
     bind_budget!(
-        frame::hew_budget_bind_frame,
         frame::hew_managed_visit_invocation,
         materialize::hew_budget_materialize_begin,
         materialize::hew_budget_materialize_commit,
@@ -58,6 +68,7 @@ pub(super) fn bind_runtime<'ctx>(llvm: &Module<'ctx>, engine: &ExecutionEngine<'
         visit::hew_managed_visit_dynamic,
     );
     bind!(
+        stack_limit::hew_stack_check,
         release_walker::hew_managed_visit_release_driver_slot,
         bytes::hew_bytes_literal_capacity,
         bytes::hew_bytes_push_checked,
@@ -94,7 +105,6 @@ pub(super) fn bind_runtime<'ctx>(llvm: &Module<'ctx>, engine: &ExecutionEngine<'
         coro_state::hew_coro_safepoint_budget,
         coro_state::hew_coro_safepoint_suppress,
         coro_state::hew_coro_safepoint_restore,
-        coro_state::hew_coro_state_init_child,
         coro_state::hew_coro_state_init_construction,
         coro_state::hew_coro_state_rc_sweep,
         coro_state::hew_coro_state_cleanup_child,

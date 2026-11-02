@@ -9,6 +9,46 @@ type Actuals = HashMap<crate::ParamHead, Ty>;
 type Boundary = (Actuals, Option<(SpanKey, Option<String>)>);
 
 impl Checker {
+    /// Generic declarations whose call sites can construct an obligation's
+    /// context: the same upward walk `effect_construction_contexts` takes.
+    pub(super) fn obligation_context_declarations(
+        &self,
+        graph: &EffectGraph,
+    ) -> HashSet<crate::DefId> {
+        let mut declarations = HashSet::new();
+        let mut visited = HashSet::new();
+        let mut pending: Vec<_> = graph
+            .obligations
+            .iter()
+            .filter_map(|obligation| obligation.owner.clone())
+            .collect();
+        while let Some(body) = pending.pop() {
+            if !visited.insert(body.clone()) {
+                continue;
+            }
+            match &body {
+                EffectBody::Declaration(declaration)
+                    if self
+                        .fn_sigs
+                        .get(declaration)
+                        .is_some_and(|sig| !sig.type_params.is_empty()) =>
+                {
+                    declarations.insert(*declaration);
+                    pending.extend(graph.calls.iter().filter_map(|(site, call)| {
+                        matches!(self.effect_call_target(site), Some(CallTarget::User(id) | CallTarget::ImplMethod(id)) if id == declaration)
+                            .then(|| call.owner.clone())
+                            .flatten()
+                    }));
+                }
+                EffectBody::Closure(span) => {
+                    pending.extend(graph.expression_owners.get(span).cloned());
+                }
+                _ => {}
+            }
+        }
+        declarations
+    }
+
     pub(super) fn effect_construction_contexts(
         &self,
         body: &EffectBody,

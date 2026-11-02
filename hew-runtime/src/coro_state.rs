@@ -330,7 +330,7 @@ pub unsafe extern "C" fn hew_coro_state_new(
 ///
 /// # Safety
 /// `state` is null or live, allocated by `hew_coro_state_new`/`cleanup_child` or
-/// initialized in caller-owned storage by `hew_coro_state_init_child`. Release
+/// initialized in caller-owned storage by generated code. Release
 /// exactly once, without concurrent access; borrowed parent context stays live.
 #[no_mangle]
 pub unsafe extern "C" fn hew_coro_state_free(state: *mut HewCoroState) {
@@ -346,15 +346,16 @@ pub unsafe extern "C" fn hew_coro_state_free(state: *mut HewCoroState) {
     }
 }
 
-/// Initialize an ordinary invocation in the caller's LLVM frame.
+/// Initialize an ordinary invocation the way generated code does in the
+/// caller's LLVM frame: it borrows the parent's context and suppression.
 ///
 /// # Safety
 /// `storage` is writable and aligned for `HewCoroInvocation`, and uninitialized
 /// or previously released. `parent` stays live and suspended throughout the
 /// child invocation. Destroy the child's LLVM frame, then release its record,
 /// before reusing this storage or resuming/releasing its parent.
-#[no_mangle]
-pub unsafe extern "C" fn hew_coro_state_init_child(
+#[cfg(test)]
+pub(crate) unsafe fn hew_coro_state_init_child(
     storage: *mut HewCoroState,
     parent: *const HewCoroState,
 ) {
@@ -373,7 +374,7 @@ pub unsafe extern "C" fn hew_coro_state_init_child(
 /// Its allocation list is transferred unchanged when the actor is published.
 ///
 /// # Safety
-/// The storage and parent obey `hew_coro_state_init_child`'s lifetime contract.
+/// The storage and parent obey an ordinary child invocation's lifetime contract.
 #[no_mangle]
 pub unsafe extern "C" fn hew_coro_state_init_construction(
     storage: *mut HewCoroState,
@@ -599,7 +600,7 @@ pub(crate) unsafe fn cleanup_abandons_io(state: *const HewCoroState) -> bool {
 ///
 /// # Safety
 /// `state` is live and was created by `hew_coro_state_new` or
-/// `hew_coro_state_cleanup_child`, never `hew_coro_state_init_child`.
+/// `hew_coro_state_cleanup_child`, never an ordinary child invocation.
 /// The caller excludes concurrent execution and teardown, keeping its current
 /// lexical context stable. External cancellers use the retained token instead.
 #[no_mangle]

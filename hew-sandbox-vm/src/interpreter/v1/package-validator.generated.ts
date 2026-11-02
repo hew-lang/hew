@@ -5863,16 +5863,26 @@ const schema19 = {
     TimerSendPolicy: { enum: ["reject", "drop_newest"], type: "string" },
     TimestampBinaryOp: { enum: ["Add", "Subtract"], type: "string" },
     TrapName: {
-      enum: [
-        "heap_exceeded",
-        "integer_overflow",
-        "divide_by_zero",
-        "signed_min_div_neg_one",
-        "shift_out_of_range",
-        "vector_bounds",
-        "actor_refused",
+      oneOf: [
+        {
+          enum: [
+            "heap_exceeded",
+            "integer_overflow",
+            "divide_by_zero",
+            "signed_min_div_neg_one",
+            "shift_out_of_range",
+            "vector_bounds",
+            "actor_refused",
+          ],
+          type: "string",
+        },
+        {
+          const: "stack_overflow",
+          description:
+            "Raised by a function's entry safepoint when its activation is deeper\nthan the VM's frame limit, never named by an emitted package.",
+          type: "string",
+        },
       ],
-      type: "string",
     },
     ValueCapabilityPlan: {
       description:
@@ -6130,6 +6140,12 @@ const schema19 = {
               type: "integer",
             },
             CrashKindPartitionDetected: {
+              format: "uint32",
+              maximum: 4294967295,
+              minimum: 0,
+              type: "integer",
+            },
+            CrashKindStackOverflow: {
               format: "uint32",
               maximum: 4294967295,
               minimum: 0,
@@ -27930,16 +27946,26 @@ const schema51 = {
   type: "object",
 };
 const schema52 = {
-  enum: [
-    "heap_exceeded",
-    "integer_overflow",
-    "divide_by_zero",
-    "signed_min_div_neg_one",
-    "shift_out_of_range",
-    "vector_bounds",
-    "actor_refused",
+  oneOf: [
+    {
+      enum: [
+        "heap_exceeded",
+        "integer_overflow",
+        "divide_by_zero",
+        "signed_min_div_neg_one",
+        "shift_out_of_range",
+        "vector_bounds",
+        "actor_refused",
+      ],
+      type: "string",
+    },
+    {
+      const: "stack_overflow",
+      description:
+        "Raised by a function's entry safepoint when its activation is deeper\nthan the VM's frame limit, never named by an emitted package.",
+      type: "string",
+    },
   ],
-  type: "string",
 };
 function validate129(
   data,
@@ -27960,17 +27986,24 @@ function validate129(
   if (evaluated0.dynamicItems) {
     evaluated0.items = undefined;
   }
+  const _errs0 = errors;
+  let valid0 = false;
+  let passing0 = null;
+  const _errs1 = errors;
   if (typeof data !== "string") {
-    validate129.errors = [
-      {
-        instancePath,
-        schemaPath: "#/type",
-        keyword: "type",
-        params: { type: "string" },
-        message: "must be string",
-      },
-    ];
-    return false;
+    const err0 = {
+      instancePath,
+      schemaPath: "#/oneOf/0/type",
+      keyword: "type",
+      params: { type: "string" },
+      message: "must be string",
+    };
+    if (vErrors === null) {
+      vErrors = [err0];
+    } else {
+      vErrors.push(err0);
+    }
+    errors++;
   }
   if (
     !(
@@ -27983,16 +28016,91 @@ function validate129(
       data === "actor_refused"
     )
   ) {
-    validate129.errors = [
-      {
-        instancePath,
-        schemaPath: "#/enum",
-        keyword: "enum",
-        params: { allowedValues: schema52.enum },
-        message: "must be equal to one of the allowed values",
-      },
-    ];
+    const err1 = {
+      instancePath,
+      schemaPath: "#/oneOf/0/enum",
+      keyword: "enum",
+      params: { allowedValues: schema52.oneOf[0].enum },
+      message: "must be equal to one of the allowed values",
+    };
+    if (vErrors === null) {
+      vErrors = [err1];
+    } else {
+      vErrors.push(err1);
+    }
+    errors++;
+  }
+  var _valid0 = _errs1 === errors;
+  if (_valid0) {
+    valid0 = true;
+    passing0 = 0;
+  }
+  const _errs3 = errors;
+  if (typeof data !== "string") {
+    const err2 = {
+      instancePath,
+      schemaPath: "#/oneOf/1/type",
+      keyword: "type",
+      params: { type: "string" },
+      message: "must be string",
+    };
+    if (vErrors === null) {
+      vErrors = [err2];
+    } else {
+      vErrors.push(err2);
+    }
+    errors++;
+  }
+  if ("stack_overflow" !== data) {
+    const err3 = {
+      instancePath,
+      schemaPath: "#/oneOf/1/const",
+      keyword: "const",
+      params: { allowedValue: "stack_overflow" },
+      message: "must be equal to constant",
+    };
+    if (vErrors === null) {
+      vErrors = [err3];
+    } else {
+      vErrors.push(err3);
+    }
+    errors++;
+  }
+  var _valid0 = _errs3 === errors;
+  if (_valid0 && valid0) {
+    valid0 = false;
+    passing0 = [passing0, 1];
+  } else {
+    if (_valid0) {
+      valid0 = true;
+      passing0 = 1;
+    }
+  }
+  if (!valid0) {
+    const err4 = {
+      instancePath,
+      schemaPath: "#/oneOf",
+      keyword: "oneOf",
+      params: { passingSchemas: passing0 },
+      message: "must match exactly one schema in oneOf",
+    };
+    if (vErrors === null) {
+      vErrors = [err4];
+    } else {
+      vErrors.push(err4);
+    }
+    errors++;
+    validate129.errors = vErrors;
     return false;
+  } else {
+    errors = _errs0;
+    if (vErrors !== null) {
+      if (_errs0) {
+        vErrors.length = _errs0;
+      } else {
+        vErrors = null;
+      }
+    }
   }
   validate129.errors = vErrors;
   return errors === 0;
@@ -74812,6 +74920,12 @@ const schema122 = {
           minimum: 0,
           type: "integer",
         },
+        CrashKindStackOverflow: {
+          format: "uint32",
+          maximum: 4294967295,
+          minimum: 0,
+          type: "integer",
+        },
         CrashKindTimerOverdue: {
           format: "uint32",
           maximum: 4294967295,
@@ -77012,11 +77126,11 @@ function validate349(
                                                             }
                                                             if (valid2) {
                                                               if (
-                                                                data4.CrashKindTimerOverdue !==
+                                                                data4.CrashKindStackOverflow !==
                                                                 undefined
                                                               ) {
                                                                 let data25 =
-                                                                  data4.CrashKindTimerOverdue;
+                                                                  data4.CrashKindStackOverflow;
                                                                 const _errs51 =
                                                                   errors;
                                                                 if (
@@ -77039,9 +77153,9 @@ function validate349(
                                                                       {
                                                                         instancePath:
                                                                           instancePath +
-                                                                          "/runtime_tags/CrashKindTimerOverdue",
+                                                                          "/runtime_tags/CrashKindStackOverflow",
                                                                         schemaPath:
-                                                                          "#/properties/runtime_tags/properties/CrashKindTimerOverdue/type",
+                                                                          "#/properties/runtime_tags/properties/CrashKindStackOverflow/type",
                                                                         keyword:
                                                                           "type",
                                                                         params:
@@ -77077,9 +77191,9 @@ function validate349(
                                                                           {
                                                                             instancePath:
                                                                               instancePath +
-                                                                              "/runtime_tags/CrashKindTimerOverdue",
+                                                                              "/runtime_tags/CrashKindStackOverflow",
                                                                             schemaPath:
-                                                                              "#/properties/runtime_tags/properties/CrashKindTimerOverdue/maximum",
+                                                                              "#/properties/runtime_tags/properties/CrashKindStackOverflow/maximum",
                                                                             keyword:
                                                                               "maximum",
                                                                             params:
@@ -77106,9 +77220,9 @@ function validate349(
                                                                             {
                                                                               instancePath:
                                                                                 instancePath +
-                                                                                "/runtime_tags/CrashKindTimerOverdue",
+                                                                                "/runtime_tags/CrashKindStackOverflow",
                                                                               schemaPath:
-                                                                                "#/properties/runtime_tags/properties/CrashKindTimerOverdue/minimum",
+                                                                                "#/properties/runtime_tags/properties/CrashKindStackOverflow/minimum",
                                                                               keyword:
                                                                                 "minimum",
                                                                               params:
@@ -77134,11 +77248,11 @@ function validate349(
                                                               }
                                                               if (valid2) {
                                                                 if (
-                                                                  data4.DeliveryAccepted !==
+                                                                  data4.CrashKindTimerOverdue !==
                                                                   undefined
                                                                 ) {
                                                                   let data26 =
-                                                                    data4.DeliveryAccepted;
+                                                                    data4.CrashKindTimerOverdue;
                                                                   const _errs53 =
                                                                     errors;
                                                                   if (
@@ -77162,9 +77276,9 @@ function validate349(
                                                                         {
                                                                           instancePath:
                                                                             instancePath +
-                                                                            "/runtime_tags/DeliveryAccepted",
+                                                                            "/runtime_tags/CrashKindTimerOverdue",
                                                                           schemaPath:
-                                                                            "#/properties/runtime_tags/properties/DeliveryAccepted/type",
+                                                                            "#/properties/runtime_tags/properties/CrashKindTimerOverdue/type",
                                                                           keyword:
                                                                             "type",
                                                                           params:
@@ -77200,9 +77314,9 @@ function validate349(
                                                                             {
                                                                               instancePath:
                                                                                 instancePath +
-                                                                                "/runtime_tags/DeliveryAccepted",
+                                                                                "/runtime_tags/CrashKindTimerOverdue",
                                                                               schemaPath:
-                                                                                "#/properties/runtime_tags/properties/DeliveryAccepted/maximum",
+                                                                                "#/properties/runtime_tags/properties/CrashKindTimerOverdue/maximum",
                                                                               keyword:
                                                                                 "maximum",
                                                                               params:
@@ -77229,9 +77343,9 @@ function validate349(
                                                                               {
                                                                                 instancePath:
                                                                                   instancePath +
-                                                                                  "/runtime_tags/DeliveryAccepted",
+                                                                                  "/runtime_tags/CrashKindTimerOverdue",
                                                                                 schemaPath:
-                                                                                  "#/properties/runtime_tags/properties/DeliveryAccepted/minimum",
+                                                                                  "#/properties/runtime_tags/properties/CrashKindTimerOverdue/minimum",
                                                                                 keyword:
                                                                                   "minimum",
                                                                                 params:
@@ -77257,11 +77371,11 @@ function validate349(
                                                                 }
                                                                 if (valid2) {
                                                                   if (
-                                                                    data4.DeliveryDiscarded !==
+                                                                    data4.DeliveryAccepted !==
                                                                     undefined
                                                                   ) {
                                                                     let data27 =
-                                                                      data4.DeliveryDiscarded;
+                                                                      data4.DeliveryAccepted;
                                                                     const _errs55 =
                                                                       errors;
                                                                     if (
@@ -77285,9 +77399,9 @@ function validate349(
                                                                           {
                                                                             instancePath:
                                                                               instancePath +
-                                                                              "/runtime_tags/DeliveryDiscarded",
+                                                                              "/runtime_tags/DeliveryAccepted",
                                                                             schemaPath:
-                                                                              "#/properties/runtime_tags/properties/DeliveryDiscarded/type",
+                                                                              "#/properties/runtime_tags/properties/DeliveryAccepted/type",
                                                                             keyword:
                                                                               "type",
                                                                             params:
@@ -77323,9 +77437,9 @@ function validate349(
                                                                               {
                                                                                 instancePath:
                                                                                   instancePath +
-                                                                                  "/runtime_tags/DeliveryDiscarded",
+                                                                                  "/runtime_tags/DeliveryAccepted",
                                                                                 schemaPath:
-                                                                                  "#/properties/runtime_tags/properties/DeliveryDiscarded/maximum",
+                                                                                  "#/properties/runtime_tags/properties/DeliveryAccepted/maximum",
                                                                                 keyword:
                                                                                   "maximum",
                                                                                 params:
@@ -77352,9 +77466,9 @@ function validate349(
                                                                                 {
                                                                                   instancePath:
                                                                                     instancePath +
-                                                                                    "/runtime_tags/DeliveryDiscarded",
+                                                                                    "/runtime_tags/DeliveryAccepted",
                                                                                   schemaPath:
-                                                                                    "#/properties/runtime_tags/properties/DeliveryDiscarded/minimum",
+                                                                                    "#/properties/runtime_tags/properties/DeliveryAccepted/minimum",
                                                                                   keyword:
                                                                                     "minimum",
                                                                                   params:
@@ -77380,11 +77494,11 @@ function validate349(
                                                                   }
                                                                   if (valid2) {
                                                                     if (
-                                                                      data4.LinkErrorNoContext !==
+                                                                      data4.DeliveryDiscarded !==
                                                                       undefined
                                                                     ) {
                                                                       let data28 =
-                                                                        data4.LinkErrorNoContext;
+                                                                        data4.DeliveryDiscarded;
                                                                       const _errs57 =
                                                                         errors;
                                                                       if (
@@ -77408,9 +77522,9 @@ function validate349(
                                                                             {
                                                                               instancePath:
                                                                                 instancePath +
-                                                                                "/runtime_tags/LinkErrorNoContext",
+                                                                                "/runtime_tags/DeliveryDiscarded",
                                                                               schemaPath:
-                                                                                "#/properties/runtime_tags/properties/LinkErrorNoContext/type",
+                                                                                "#/properties/runtime_tags/properties/DeliveryDiscarded/type",
                                                                               keyword:
                                                                                 "type",
                                                                               params:
@@ -77446,9 +77560,9 @@ function validate349(
                                                                                 {
                                                                                   instancePath:
                                                                                     instancePath +
-                                                                                    "/runtime_tags/LinkErrorNoContext",
+                                                                                    "/runtime_tags/DeliveryDiscarded",
                                                                                   schemaPath:
-                                                                                    "#/properties/runtime_tags/properties/LinkErrorNoContext/maximum",
+                                                                                    "#/properties/runtime_tags/properties/DeliveryDiscarded/maximum",
                                                                                   keyword:
                                                                                     "maximum",
                                                                                   params:
@@ -77475,9 +77589,9 @@ function validate349(
                                                                                   {
                                                                                     instancePath:
                                                                                       instancePath +
-                                                                                      "/runtime_tags/LinkErrorNoContext",
+                                                                                      "/runtime_tags/DeliveryDiscarded",
                                                                                     schemaPath:
-                                                                                      "#/properties/runtime_tags/properties/LinkErrorNoContext/minimum",
+                                                                                      "#/properties/runtime_tags/properties/DeliveryDiscarded/minimum",
                                                                                     keyword:
                                                                                       "minimum",
                                                                                     params:
@@ -77505,11 +77619,11 @@ function validate349(
                                                                       valid2
                                                                     ) {
                                                                       if (
-                                                                        data4.OptionNone !==
+                                                                        data4.LinkErrorNoContext !==
                                                                         undefined
                                                                       ) {
                                                                         let data29 =
-                                                                          data4.OptionNone;
+                                                                          data4.LinkErrorNoContext;
                                                                         const _errs59 =
                                                                           errors;
                                                                         if (
@@ -77533,9 +77647,9 @@ function validate349(
                                                                               {
                                                                                 instancePath:
                                                                                   instancePath +
-                                                                                  "/runtime_tags/OptionNone",
+                                                                                  "/runtime_tags/LinkErrorNoContext",
                                                                                 schemaPath:
-                                                                                  "#/properties/runtime_tags/properties/OptionNone/type",
+                                                                                  "#/properties/runtime_tags/properties/LinkErrorNoContext/type",
                                                                                 keyword:
                                                                                   "type",
                                                                                 params:
@@ -77571,9 +77685,9 @@ function validate349(
                                                                                   {
                                                                                     instancePath:
                                                                                       instancePath +
-                                                                                      "/runtime_tags/OptionNone",
+                                                                                      "/runtime_tags/LinkErrorNoContext",
                                                                                     schemaPath:
-                                                                                      "#/properties/runtime_tags/properties/OptionNone/maximum",
+                                                                                      "#/properties/runtime_tags/properties/LinkErrorNoContext/maximum",
                                                                                     keyword:
                                                                                       "maximum",
                                                                                     params:
@@ -77600,9 +77714,9 @@ function validate349(
                                                                                     {
                                                                                       instancePath:
                                                                                         instancePath +
-                                                                                        "/runtime_tags/OptionNone",
+                                                                                        "/runtime_tags/LinkErrorNoContext",
                                                                                       schemaPath:
-                                                                                        "#/properties/runtime_tags/properties/OptionNone/minimum",
+                                                                                        "#/properties/runtime_tags/properties/LinkErrorNoContext/minimum",
                                                                                       keyword:
                                                                                         "minimum",
                                                                                       params:
@@ -77630,11 +77744,11 @@ function validate349(
                                                                         valid2
                                                                       ) {
                                                                         if (
-                                                                          data4.OptionSome !==
+                                                                          data4.OptionNone !==
                                                                           undefined
                                                                         ) {
                                                                           let data30 =
-                                                                            data4.OptionSome;
+                                                                            data4.OptionNone;
                                                                           const _errs61 =
                                                                             errors;
                                                                           if (
@@ -77658,9 +77772,9 @@ function validate349(
                                                                                 {
                                                                                   instancePath:
                                                                                     instancePath +
-                                                                                    "/runtime_tags/OptionSome",
+                                                                                    "/runtime_tags/OptionNone",
                                                                                   schemaPath:
-                                                                                    "#/properties/runtime_tags/properties/OptionSome/type",
+                                                                                    "#/properties/runtime_tags/properties/OptionNone/type",
                                                                                   keyword:
                                                                                     "type",
                                                                                   params:
@@ -77696,9 +77810,9 @@ function validate349(
                                                                                     {
                                                                                       instancePath:
                                                                                         instancePath +
-                                                                                        "/runtime_tags/OptionSome",
+                                                                                        "/runtime_tags/OptionNone",
                                                                                       schemaPath:
-                                                                                        "#/properties/runtime_tags/properties/OptionSome/maximum",
+                                                                                        "#/properties/runtime_tags/properties/OptionNone/maximum",
                                                                                       keyword:
                                                                                         "maximum",
                                                                                       params:
@@ -77725,9 +77839,9 @@ function validate349(
                                                                                       {
                                                                                         instancePath:
                                                                                           instancePath +
-                                                                                          "/runtime_tags/OptionSome",
+                                                                                          "/runtime_tags/OptionNone",
                                                                                         schemaPath:
-                                                                                          "#/properties/runtime_tags/properties/OptionSome/minimum",
+                                                                                          "#/properties/runtime_tags/properties/OptionNone/minimum",
                                                                                         keyword:
                                                                                           "minimum",
                                                                                         params:
@@ -77755,11 +77869,11 @@ function validate349(
                                                                           valid2
                                                                         ) {
                                                                           if (
-                                                                            data4.ResultErr !==
+                                                                            data4.OptionSome !==
                                                                             undefined
                                                                           ) {
                                                                             let data31 =
-                                                                              data4.ResultErr;
+                                                                              data4.OptionSome;
                                                                             const _errs63 =
                                                                               errors;
                                                                             if (
@@ -77783,9 +77897,9 @@ function validate349(
                                                                                   {
                                                                                     instancePath:
                                                                                       instancePath +
-                                                                                      "/runtime_tags/ResultErr",
+                                                                                      "/runtime_tags/OptionSome",
                                                                                     schemaPath:
-                                                                                      "#/properties/runtime_tags/properties/ResultErr/type",
+                                                                                      "#/properties/runtime_tags/properties/OptionSome/type",
                                                                                     keyword:
                                                                                       "type",
                                                                                     params:
@@ -77821,9 +77935,9 @@ function validate349(
                                                                                       {
                                                                                         instancePath:
                                                                                           instancePath +
-                                                                                          "/runtime_tags/ResultErr",
+                                                                                          "/runtime_tags/OptionSome",
                                                                                         schemaPath:
-                                                                                          "#/properties/runtime_tags/properties/ResultErr/maximum",
+                                                                                          "#/properties/runtime_tags/properties/OptionSome/maximum",
                                                                                         keyword:
                                                                                           "maximum",
                                                                                         params:
@@ -77850,9 +77964,9 @@ function validate349(
                                                                                         {
                                                                                           instancePath:
                                                                                             instancePath +
-                                                                                            "/runtime_tags/ResultErr",
+                                                                                            "/runtime_tags/OptionSome",
                                                                                           schemaPath:
-                                                                                            "#/properties/runtime_tags/properties/ResultErr/minimum",
+                                                                                            "#/properties/runtime_tags/properties/OptionSome/minimum",
                                                                                           keyword:
                                                                                             "minimum",
                                                                                           params:
@@ -77880,11 +77994,11 @@ function validate349(
                                                                             valid2
                                                                           ) {
                                                                             if (
-                                                                              data4.ResultOk !==
+                                                                              data4.ResultErr !==
                                                                               undefined
                                                                             ) {
                                                                               let data32 =
-                                                                                data4.ResultOk;
+                                                                                data4.ResultErr;
                                                                               const _errs65 =
                                                                                 errors;
                                                                               if (
@@ -77908,9 +78022,9 @@ function validate349(
                                                                                     {
                                                                                       instancePath:
                                                                                         instancePath +
-                                                                                        "/runtime_tags/ResultOk",
+                                                                                        "/runtime_tags/ResultErr",
                                                                                       schemaPath:
-                                                                                        "#/properties/runtime_tags/properties/ResultOk/type",
+                                                                                        "#/properties/runtime_tags/properties/ResultErr/type",
                                                                                       keyword:
                                                                                         "type",
                                                                                       params:
@@ -77946,9 +78060,9 @@ function validate349(
                                                                                         {
                                                                                           instancePath:
                                                                                             instancePath +
-                                                                                            "/runtime_tags/ResultOk",
+                                                                                            "/runtime_tags/ResultErr",
                                                                                           schemaPath:
-                                                                                            "#/properties/runtime_tags/properties/ResultOk/maximum",
+                                                                                            "#/properties/runtime_tags/properties/ResultErr/maximum",
                                                                                           keyword:
                                                                                             "maximum",
                                                                                           params:
@@ -77975,9 +78089,9 @@ function validate349(
                                                                                           {
                                                                                             instancePath:
                                                                                               instancePath +
-                                                                                              "/runtime_tags/ResultOk",
+                                                                                              "/runtime_tags/ResultErr",
                                                                                             schemaPath:
-                                                                                              "#/properties/runtime_tags/properties/ResultOk/minimum",
+                                                                                              "#/properties/runtime_tags/properties/ResultErr/minimum",
                                                                                             keyword:
                                                                                               "minimum",
                                                                                             params:
@@ -78005,11 +78119,11 @@ function validate349(
                                                                               valid2
                                                                             ) {
                                                                               if (
-                                                                                data4.SendErrorBackpressure !==
+                                                                                data4.ResultOk !==
                                                                                 undefined
                                                                               ) {
                                                                                 let data33 =
-                                                                                  data4.SendErrorBackpressure;
+                                                                                  data4.ResultOk;
                                                                                 const _errs67 =
                                                                                   errors;
                                                                                 if (
@@ -78033,9 +78147,9 @@ function validate349(
                                                                                       {
                                                                                         instancePath:
                                                                                           instancePath +
-                                                                                          "/runtime_tags/SendErrorBackpressure",
+                                                                                          "/runtime_tags/ResultOk",
                                                                                         schemaPath:
-                                                                                          "#/properties/runtime_tags/properties/SendErrorBackpressure/type",
+                                                                                          "#/properties/runtime_tags/properties/ResultOk/type",
                                                                                         keyword:
                                                                                           "type",
                                                                                         params:
@@ -78071,9 +78185,9 @@ function validate349(
                                                                                           {
                                                                                             instancePath:
                                                                                               instancePath +
-                                                                                              "/runtime_tags/SendErrorBackpressure",
+                                                                                              "/runtime_tags/ResultOk",
                                                                                             schemaPath:
-                                                                                              "#/properties/runtime_tags/properties/SendErrorBackpressure/maximum",
+                                                                                              "#/properties/runtime_tags/properties/ResultOk/maximum",
                                                                                             keyword:
                                                                                               "maximum",
                                                                                             params:
@@ -78100,9 +78214,9 @@ function validate349(
                                                                                             {
                                                                                               instancePath:
                                                                                                 instancePath +
-                                                                                                "/runtime_tags/SendErrorBackpressure",
+                                                                                                "/runtime_tags/ResultOk",
                                                                                               schemaPath:
-                                                                                                "#/properties/runtime_tags/properties/SendErrorBackpressure/minimum",
+                                                                                                "#/properties/runtime_tags/properties/ResultOk/minimum",
                                                                                               keyword:
                                                                                                 "minimum",
                                                                                               params:
@@ -78130,11 +78244,11 @@ function validate349(
                                                                                 valid2
                                                                               ) {
                                                                                 if (
-                                                                                  data4.SendErrorCancelled !==
+                                                                                  data4.SendErrorBackpressure !==
                                                                                   undefined
                                                                                 ) {
                                                                                   let data34 =
-                                                                                    data4.SendErrorCancelled;
+                                                                                    data4.SendErrorBackpressure;
                                                                                   const _errs69 =
                                                                                     errors;
                                                                                   if (
@@ -78158,9 +78272,9 @@ function validate349(
                                                                                         {
                                                                                           instancePath:
                                                                                             instancePath +
-                                                                                            "/runtime_tags/SendErrorCancelled",
+                                                                                            "/runtime_tags/SendErrorBackpressure",
                                                                                           schemaPath:
-                                                                                            "#/properties/runtime_tags/properties/SendErrorCancelled/type",
+                                                                                            "#/properties/runtime_tags/properties/SendErrorBackpressure/type",
                                                                                           keyword:
                                                                                             "type",
                                                                                           params:
@@ -78196,9 +78310,9 @@ function validate349(
                                                                                             {
                                                                                               instancePath:
                                                                                                 instancePath +
-                                                                                                "/runtime_tags/SendErrorCancelled",
+                                                                                                "/runtime_tags/SendErrorBackpressure",
                                                                                               schemaPath:
-                                                                                                "#/properties/runtime_tags/properties/SendErrorCancelled/maximum",
+                                                                                                "#/properties/runtime_tags/properties/SendErrorBackpressure/maximum",
                                                                                               keyword:
                                                                                                 "maximum",
                                                                                               params:
@@ -78225,9 +78339,9 @@ function validate349(
                                                                                               {
                                                                                                 instancePath:
                                                                                                   instancePath +
-                                                                                                  "/runtime_tags/SendErrorCancelled",
+                                                                                                  "/runtime_tags/SendErrorBackpressure",
                                                                                                 schemaPath:
-                                                                                                  "#/properties/runtime_tags/properties/SendErrorCancelled/minimum",
+                                                                                                  "#/properties/runtime_tags/properties/SendErrorBackpressure/minimum",
                                                                                                 keyword:
                                                                                                   "minimum",
                                                                                                 params:
@@ -78255,11 +78369,11 @@ function validate349(
                                                                                   valid2
                                                                                 ) {
                                                                                   if (
-                                                                                    data4.SendErrorClosed !==
+                                                                                    data4.SendErrorCancelled !==
                                                                                     undefined
                                                                                   ) {
                                                                                     let data35 =
-                                                                                      data4.SendErrorClosed;
+                                                                                      data4.SendErrorCancelled;
                                                                                     const _errs71 =
                                                                                       errors;
                                                                                     if (
@@ -78283,9 +78397,9 @@ function validate349(
                                                                                           {
                                                                                             instancePath:
                                                                                               instancePath +
-                                                                                              "/runtime_tags/SendErrorClosed",
+                                                                                              "/runtime_tags/SendErrorCancelled",
                                                                                             schemaPath:
-                                                                                              "#/properties/runtime_tags/properties/SendErrorClosed/type",
+                                                                                              "#/properties/runtime_tags/properties/SendErrorCancelled/type",
                                                                                             keyword:
                                                                                               "type",
                                                                                             params:
@@ -78321,9 +78435,9 @@ function validate349(
                                                                                               {
                                                                                                 instancePath:
                                                                                                   instancePath +
-                                                                                                  "/runtime_tags/SendErrorClosed",
+                                                                                                  "/runtime_tags/SendErrorCancelled",
                                                                                                 schemaPath:
-                                                                                                  "#/properties/runtime_tags/properties/SendErrorClosed/maximum",
+                                                                                                  "#/properties/runtime_tags/properties/SendErrorCancelled/maximum",
                                                                                                 keyword:
                                                                                                   "maximum",
                                                                                                 params:
@@ -78350,9 +78464,9 @@ function validate349(
                                                                                                 {
                                                                                                   instancePath:
                                                                                                     instancePath +
-                                                                                                    "/runtime_tags/SendErrorClosed",
+                                                                                                    "/runtime_tags/SendErrorCancelled",
                                                                                                   schemaPath:
-                                                                                                    "#/properties/runtime_tags/properties/SendErrorClosed/minimum",
+                                                                                                    "#/properties/runtime_tags/properties/SendErrorCancelled/minimum",
                                                                                                   keyword:
                                                                                                     "minimum",
                                                                                                   params:
@@ -78380,11 +78494,11 @@ function validate349(
                                                                                     valid2
                                                                                   ) {
                                                                                     if (
-                                                                                      data4.SendErrorDead !==
+                                                                                      data4.SendErrorClosed !==
                                                                                       undefined
                                                                                     ) {
                                                                                       let data36 =
-                                                                                        data4.SendErrorDead;
+                                                                                        data4.SendErrorClosed;
                                                                                       const _errs73 =
                                                                                         errors;
                                                                                       if (
@@ -78408,9 +78522,9 @@ function validate349(
                                                                                             {
                                                                                               instancePath:
                                                                                                 instancePath +
-                                                                                                "/runtime_tags/SendErrorDead",
+                                                                                                "/runtime_tags/SendErrorClosed",
                                                                                               schemaPath:
-                                                                                                "#/properties/runtime_tags/properties/SendErrorDead/type",
+                                                                                                "#/properties/runtime_tags/properties/SendErrorClosed/type",
                                                                                               keyword:
                                                                                                 "type",
                                                                                               params:
@@ -78446,9 +78560,9 @@ function validate349(
                                                                                                 {
                                                                                                   instancePath:
                                                                                                     instancePath +
-                                                                                                    "/runtime_tags/SendErrorDead",
+                                                                                                    "/runtime_tags/SendErrorClosed",
                                                                                                   schemaPath:
-                                                                                                    "#/properties/runtime_tags/properties/SendErrorDead/maximum",
+                                                                                                    "#/properties/runtime_tags/properties/SendErrorClosed/maximum",
                                                                                                   keyword:
                                                                                                     "maximum",
                                                                                                   params:
@@ -78475,9 +78589,9 @@ function validate349(
                                                                                                   {
                                                                                                     instancePath:
                                                                                                       instancePath +
-                                                                                                      "/runtime_tags/SendErrorDead",
+                                                                                                      "/runtime_tags/SendErrorClosed",
                                                                                                     schemaPath:
-                                                                                                      "#/properties/runtime_tags/properties/SendErrorDead/minimum",
+                                                                                                      "#/properties/runtime_tags/properties/SendErrorClosed/minimum",
                                                                                                     keyword:
                                                                                                       "minimum",
                                                                                                     params:
@@ -78505,11 +78619,11 @@ function validate349(
                                                                                       valid2
                                                                                     ) {
                                                                                       if (
-                                                                                        data4.SendErrorFull !==
+                                                                                        data4.SendErrorDead !==
                                                                                         undefined
                                                                                       ) {
                                                                                         let data37 =
-                                                                                          data4.SendErrorFull;
+                                                                                          data4.SendErrorDead;
                                                                                         const _errs75 =
                                                                                           errors;
                                                                                         if (
@@ -78533,9 +78647,9 @@ function validate349(
                                                                                               {
                                                                                                 instancePath:
                                                                                                   instancePath +
-                                                                                                  "/runtime_tags/SendErrorFull",
+                                                                                                  "/runtime_tags/SendErrorDead",
                                                                                                 schemaPath:
-                                                                                                  "#/properties/runtime_tags/properties/SendErrorFull/type",
+                                                                                                  "#/properties/runtime_tags/properties/SendErrorDead/type",
                                                                                                 keyword:
                                                                                                   "type",
                                                                                                 params:
@@ -78571,9 +78685,9 @@ function validate349(
                                                                                                   {
                                                                                                     instancePath:
                                                                                                       instancePath +
-                                                                                                      "/runtime_tags/SendErrorFull",
+                                                                                                      "/runtime_tags/SendErrorDead",
                                                                                                     schemaPath:
-                                                                                                      "#/properties/runtime_tags/properties/SendErrorFull/maximum",
+                                                                                                      "#/properties/runtime_tags/properties/SendErrorDead/maximum",
                                                                                                     keyword:
                                                                                                       "maximum",
                                                                                                     params:
@@ -78600,9 +78714,9 @@ function validate349(
                                                                                                     {
                                                                                                       instancePath:
                                                                                                         instancePath +
-                                                                                                        "/runtime_tags/SendErrorFull",
+                                                                                                        "/runtime_tags/SendErrorDead",
                                                                                                       schemaPath:
-                                                                                                        "#/properties/runtime_tags/properties/SendErrorFull/minimum",
+                                                                                                        "#/properties/runtime_tags/properties/SendErrorDead/minimum",
                                                                                                       keyword:
                                                                                                         "minimum",
                                                                                                       params:
@@ -78630,11 +78744,11 @@ function validate349(
                                                                                         valid2
                                                                                       ) {
                                                                                         if (
-                                                                                          data4.SendErrorInvalidMessage !==
+                                                                                          data4.SendErrorFull !==
                                                                                           undefined
                                                                                         ) {
                                                                                           let data38 =
-                                                                                            data4.SendErrorInvalidMessage;
+                                                                                            data4.SendErrorFull;
                                                                                           const _errs77 =
                                                                                             errors;
                                                                                           if (
@@ -78658,9 +78772,9 @@ function validate349(
                                                                                                 {
                                                                                                   instancePath:
                                                                                                     instancePath +
-                                                                                                    "/runtime_tags/SendErrorInvalidMessage",
+                                                                                                    "/runtime_tags/SendErrorFull",
                                                                                                   schemaPath:
-                                                                                                    "#/properties/runtime_tags/properties/SendErrorInvalidMessage/type",
+                                                                                                    "#/properties/runtime_tags/properties/SendErrorFull/type",
                                                                                                   keyword:
                                                                                                     "type",
                                                                                                   params:
@@ -78696,9 +78810,9 @@ function validate349(
                                                                                                     {
                                                                                                       instancePath:
                                                                                                         instancePath +
-                                                                                                        "/runtime_tags/SendErrorInvalidMessage",
+                                                                                                        "/runtime_tags/SendErrorFull",
                                                                                                       schemaPath:
-                                                                                                        "#/properties/runtime_tags/properties/SendErrorInvalidMessage/maximum",
+                                                                                                        "#/properties/runtime_tags/properties/SendErrorFull/maximum",
                                                                                                       keyword:
                                                                                                         "maximum",
                                                                                                       params:
@@ -78725,9 +78839,9 @@ function validate349(
                                                                                                       {
                                                                                                         instancePath:
                                                                                                           instancePath +
-                                                                                                          "/runtime_tags/SendErrorInvalidMessage",
+                                                                                                          "/runtime_tags/SendErrorFull",
                                                                                                         schemaPath:
-                                                                                                          "#/properties/runtime_tags/properties/SendErrorInvalidMessage/minimum",
+                                                                                                          "#/properties/runtime_tags/properties/SendErrorFull/minimum",
                                                                                                         keyword:
                                                                                                           "minimum",
                                                                                                         params:
@@ -78755,11 +78869,11 @@ function validate349(
                                                                                           valid2
                                                                                         ) {
                                                                                           if (
-                                                                                            data4.SendErrorLocalShutdown !==
+                                                                                            data4.SendErrorInvalidMessage !==
                                                                                             undefined
                                                                                           ) {
                                                                                             let data39 =
-                                                                                              data4.SendErrorLocalShutdown;
+                                                                                              data4.SendErrorInvalidMessage;
                                                                                             const _errs79 =
                                                                                               errors;
                                                                                             if (
@@ -78783,9 +78897,9 @@ function validate349(
                                                                                                   {
                                                                                                     instancePath:
                                                                                                       instancePath +
-                                                                                                      "/runtime_tags/SendErrorLocalShutdown",
+                                                                                                      "/runtime_tags/SendErrorInvalidMessage",
                                                                                                     schemaPath:
-                                                                                                      "#/properties/runtime_tags/properties/SendErrorLocalShutdown/type",
+                                                                                                      "#/properties/runtime_tags/properties/SendErrorInvalidMessage/type",
                                                                                                     keyword:
                                                                                                       "type",
                                                                                                     params:
@@ -78821,9 +78935,9 @@ function validate349(
                                                                                                       {
                                                                                                         instancePath:
                                                                                                           instancePath +
-                                                                                                          "/runtime_tags/SendErrorLocalShutdown",
+                                                                                                          "/runtime_tags/SendErrorInvalidMessage",
                                                                                                         schemaPath:
-                                                                                                          "#/properties/runtime_tags/properties/SendErrorLocalShutdown/maximum",
+                                                                                                          "#/properties/runtime_tags/properties/SendErrorInvalidMessage/maximum",
                                                                                                         keyword:
                                                                                                           "maximum",
                                                                                                         params:
@@ -78850,9 +78964,9 @@ function validate349(
                                                                                                         {
                                                                                                           instancePath:
                                                                                                             instancePath +
-                                                                                                            "/runtime_tags/SendErrorLocalShutdown",
+                                                                                                            "/runtime_tags/SendErrorInvalidMessage",
                                                                                                           schemaPath:
-                                                                                                            "#/properties/runtime_tags/properties/SendErrorLocalShutdown/minimum",
+                                                                                                            "#/properties/runtime_tags/properties/SendErrorInvalidMessage/minimum",
                                                                                                           keyword:
                                                                                                             "minimum",
                                                                                                           params:
@@ -78880,11 +78994,11 @@ function validate349(
                                                                                             valid2
                                                                                           ) {
                                                                                             if (
-                                                                                              data4.SendErrorMessageTooLarge !==
+                                                                                              data4.SendErrorLocalShutdown !==
                                                                                               undefined
                                                                                             ) {
                                                                                               let data40 =
-                                                                                                data4.SendErrorMessageTooLarge;
+                                                                                                data4.SendErrorLocalShutdown;
                                                                                               const _errs81 =
                                                                                                 errors;
                                                                                               if (
@@ -78908,9 +79022,9 @@ function validate349(
                                                                                                     {
                                                                                                       instancePath:
                                                                                                         instancePath +
-                                                                                                        "/runtime_tags/SendErrorMessageTooLarge",
+                                                                                                        "/runtime_tags/SendErrorLocalShutdown",
                                                                                                       schemaPath:
-                                                                                                        "#/properties/runtime_tags/properties/SendErrorMessageTooLarge/type",
+                                                                                                        "#/properties/runtime_tags/properties/SendErrorLocalShutdown/type",
                                                                                                       keyword:
                                                                                                         "type",
                                                                                                       params:
@@ -78946,9 +79060,9 @@ function validate349(
                                                                                                         {
                                                                                                           instancePath:
                                                                                                             instancePath +
-                                                                                                            "/runtime_tags/SendErrorMessageTooLarge",
+                                                                                                            "/runtime_tags/SendErrorLocalShutdown",
                                                                                                           schemaPath:
-                                                                                                            "#/properties/runtime_tags/properties/SendErrorMessageTooLarge/maximum",
+                                                                                                            "#/properties/runtime_tags/properties/SendErrorLocalShutdown/maximum",
                                                                                                           keyword:
                                                                                                             "maximum",
                                                                                                           params:
@@ -78975,9 +79089,9 @@ function validate349(
                                                                                                           {
                                                                                                             instancePath:
                                                                                                               instancePath +
-                                                                                                              "/runtime_tags/SendErrorMessageTooLarge",
+                                                                                                              "/runtime_tags/SendErrorLocalShutdown",
                                                                                                             schemaPath:
-                                                                                                              "#/properties/runtime_tags/properties/SendErrorMessageTooLarge/minimum",
+                                                                                                              "#/properties/runtime_tags/properties/SendErrorLocalShutdown/minimum",
                                                                                                             keyword:
                                                                                                               "minimum",
                                                                                                             params:
@@ -79005,11 +79119,11 @@ function validate349(
                                                                                               valid2
                                                                                             ) {
                                                                                               if (
-                                                                                                data4.SendErrorPartition !==
+                                                                                                data4.SendErrorMessageTooLarge !==
                                                                                                 undefined
                                                                                               ) {
                                                                                                 let data41 =
-                                                                                                  data4.SendErrorPartition;
+                                                                                                  data4.SendErrorMessageTooLarge;
                                                                                                 const _errs83 =
                                                                                                   errors;
                                                                                                 if (
@@ -79033,9 +79147,9 @@ function validate349(
                                                                                                       {
                                                                                                         instancePath:
                                                                                                           instancePath +
-                                                                                                          "/runtime_tags/SendErrorPartition",
+                                                                                                          "/runtime_tags/SendErrorMessageTooLarge",
                                                                                                         schemaPath:
-                                                                                                          "#/properties/runtime_tags/properties/SendErrorPartition/type",
+                                                                                                          "#/properties/runtime_tags/properties/SendErrorMessageTooLarge/type",
                                                                                                         keyword:
                                                                                                           "type",
                                                                                                         params:
@@ -79071,9 +79185,9 @@ function validate349(
                                                                                                           {
                                                                                                             instancePath:
                                                                                                               instancePath +
-                                                                                                              "/runtime_tags/SendErrorPartition",
+                                                                                                              "/runtime_tags/SendErrorMessageTooLarge",
                                                                                                             schemaPath:
-                                                                                                              "#/properties/runtime_tags/properties/SendErrorPartition/maximum",
+                                                                                                              "#/properties/runtime_tags/properties/SendErrorMessageTooLarge/maximum",
                                                                                                             keyword:
                                                                                                               "maximum",
                                                                                                             params:
@@ -79100,9 +79214,9 @@ function validate349(
                                                                                                             {
                                                                                                               instancePath:
                                                                                                                 instancePath +
-                                                                                                                "/runtime_tags/SendErrorPartition",
+                                                                                                                "/runtime_tags/SendErrorMessageTooLarge",
                                                                                                               schemaPath:
-                                                                                                                "#/properties/runtime_tags/properties/SendErrorPartition/minimum",
+                                                                                                                "#/properties/runtime_tags/properties/SendErrorMessageTooLarge/minimum",
                                                                                                               keyword:
                                                                                                                 "minimum",
                                                                                                               params:
@@ -79130,11 +79244,11 @@ function validate349(
                                                                                                 valid2
                                                                                               ) {
                                                                                                 if (
-                                                                                                  data4.SendErrorStaleRef !==
+                                                                                                  data4.SendErrorPartition !==
                                                                                                   undefined
                                                                                                 ) {
                                                                                                   let data42 =
-                                                                                                    data4.SendErrorStaleRef;
+                                                                                                    data4.SendErrorPartition;
                                                                                                   const _errs85 =
                                                                                                     errors;
                                                                                                   if (
@@ -79158,9 +79272,9 @@ function validate349(
                                                                                                         {
                                                                                                           instancePath:
                                                                                                             instancePath +
-                                                                                                            "/runtime_tags/SendErrorStaleRef",
+                                                                                                            "/runtime_tags/SendErrorPartition",
                                                                                                           schemaPath:
-                                                                                                            "#/properties/runtime_tags/properties/SendErrorStaleRef/type",
+                                                                                                            "#/properties/runtime_tags/properties/SendErrorPartition/type",
                                                                                                           keyword:
                                                                                                             "type",
                                                                                                           params:
@@ -79196,9 +79310,9 @@ function validate349(
                                                                                                             {
                                                                                                               instancePath:
                                                                                                                 instancePath +
-                                                                                                                "/runtime_tags/SendErrorStaleRef",
+                                                                                                                "/runtime_tags/SendErrorPartition",
                                                                                                               schemaPath:
-                                                                                                                "#/properties/runtime_tags/properties/SendErrorStaleRef/maximum",
+                                                                                                                "#/properties/runtime_tags/properties/SendErrorPartition/maximum",
                                                                                                               keyword:
                                                                                                                 "maximum",
                                                                                                               params:
@@ -79225,9 +79339,9 @@ function validate349(
                                                                                                               {
                                                                                                                 instancePath:
                                                                                                                   instancePath +
-                                                                                                                  "/runtime_tags/SendErrorStaleRef",
+                                                                                                                  "/runtime_tags/SendErrorPartition",
                                                                                                                 schemaPath:
-                                                                                                                  "#/properties/runtime_tags/properties/SendErrorStaleRef/minimum",
+                                                                                                                  "#/properties/runtime_tags/properties/SendErrorPartition/minimum",
                                                                                                                 keyword:
                                                                                                                   "minimum",
                                                                                                                 params:
@@ -79255,11 +79369,11 @@ function validate349(
                                                                                                   valid2
                                                                                                 ) {
                                                                                                   if (
-                                                                                                    data4.SendErrorTimedOut !==
+                                                                                                    data4.SendErrorStaleRef !==
                                                                                                     undefined
                                                                                                   ) {
                                                                                                     let data43 =
-                                                                                                      data4.SendErrorTimedOut;
+                                                                                                      data4.SendErrorStaleRef;
                                                                                                     const _errs87 =
                                                                                                       errors;
                                                                                                     if (
@@ -79283,9 +79397,9 @@ function validate349(
                                                                                                           {
                                                                                                             instancePath:
                                                                                                               instancePath +
-                                                                                                              "/runtime_tags/SendErrorTimedOut",
+                                                                                                              "/runtime_tags/SendErrorStaleRef",
                                                                                                             schemaPath:
-                                                                                                              "#/properties/runtime_tags/properties/SendErrorTimedOut/type",
+                                                                                                              "#/properties/runtime_tags/properties/SendErrorStaleRef/type",
                                                                                                             keyword:
                                                                                                               "type",
                                                                                                             params:
@@ -79321,9 +79435,9 @@ function validate349(
                                                                                                               {
                                                                                                                 instancePath:
                                                                                                                   instancePath +
-                                                                                                                  "/runtime_tags/SendErrorTimedOut",
+                                                                                                                  "/runtime_tags/SendErrorStaleRef",
                                                                                                                 schemaPath:
-                                                                                                                  "#/properties/runtime_tags/properties/SendErrorTimedOut/maximum",
+                                                                                                                  "#/properties/runtime_tags/properties/SendErrorStaleRef/maximum",
                                                                                                                 keyword:
                                                                                                                   "maximum",
                                                                                                                 params:
@@ -79350,9 +79464,9 @@ function validate349(
                                                                                                                 {
                                                                                                                   instancePath:
                                                                                                                     instancePath +
-                                                                                                                    "/runtime_tags/SendErrorTimedOut",
+                                                                                                                    "/runtime_tags/SendErrorStaleRef",
                                                                                                                   schemaPath:
-                                                                                                                    "#/properties/runtime_tags/properties/SendErrorTimedOut/minimum",
+                                                                                                                    "#/properties/runtime_tags/properties/SendErrorStaleRef/minimum",
                                                                                                                   keyword:
                                                                                                                     "minimum",
                                                                                                                   params:
@@ -79380,11 +79494,11 @@ function validate349(
                                                                                                     valid2
                                                                                                   ) {
                                                                                                     if (
-                                                                                                      data4.SendErrorUnauthorized !==
+                                                                                                      data4.SendErrorTimedOut !==
                                                                                                       undefined
                                                                                                     ) {
                                                                                                       let data44 =
-                                                                                                        data4.SendErrorUnauthorized;
+                                                                                                        data4.SendErrorTimedOut;
                                                                                                       const _errs89 =
                                                                                                         errors;
                                                                                                       if (
@@ -79408,9 +79522,9 @@ function validate349(
                                                                                                             {
                                                                                                               instancePath:
                                                                                                                 instancePath +
-                                                                                                                "/runtime_tags/SendErrorUnauthorized",
+                                                                                                                "/runtime_tags/SendErrorTimedOut",
                                                                                                               schemaPath:
-                                                                                                                "#/properties/runtime_tags/properties/SendErrorUnauthorized/type",
+                                                                                                                "#/properties/runtime_tags/properties/SendErrorTimedOut/type",
                                                                                                               keyword:
                                                                                                                 "type",
                                                                                                               params:
@@ -79446,9 +79560,9 @@ function validate349(
                                                                                                                 {
                                                                                                                   instancePath:
                                                                                                                     instancePath +
-                                                                                                                    "/runtime_tags/SendErrorUnauthorized",
+                                                                                                                    "/runtime_tags/SendErrorTimedOut",
                                                                                                                   schemaPath:
-                                                                                                                    "#/properties/runtime_tags/properties/SendErrorUnauthorized/maximum",
+                                                                                                                    "#/properties/runtime_tags/properties/SendErrorTimedOut/maximum",
                                                                                                                   keyword:
                                                                                                                     "maximum",
                                                                                                                   params:
@@ -79475,9 +79589,9 @@ function validate349(
                                                                                                                   {
                                                                                                                     instancePath:
                                                                                                                       instancePath +
-                                                                                                                      "/runtime_tags/SendErrorUnauthorized",
+                                                                                                                      "/runtime_tags/SendErrorTimedOut",
                                                                                                                     schemaPath:
-                                                                                                                      "#/properties/runtime_tags/properties/SendErrorUnauthorized/minimum",
+                                                                                                                      "#/properties/runtime_tags/properties/SendErrorTimedOut/minimum",
                                                                                                                     keyword:
                                                                                                                       "minimum",
                                                                                                                     params:
@@ -79505,11 +79619,11 @@ function validate349(
                                                                                                       valid2
                                                                                                     ) {
                                                                                                       if (
-                                                                                                        data4.SendErrorVersionMismatch !==
+                                                                                                        data4.SendErrorUnauthorized !==
                                                                                                         undefined
                                                                                                       ) {
                                                                                                         let data45 =
-                                                                                                          data4.SendErrorVersionMismatch;
+                                                                                                          data4.SendErrorUnauthorized;
                                                                                                         const _errs91 =
                                                                                                           errors;
                                                                                                         if (
@@ -79533,9 +79647,9 @@ function validate349(
                                                                                                               {
                                                                                                                 instancePath:
                                                                                                                   instancePath +
-                                                                                                                  "/runtime_tags/SendErrorVersionMismatch",
+                                                                                                                  "/runtime_tags/SendErrorUnauthorized",
                                                                                                                 schemaPath:
-                                                                                                                  "#/properties/runtime_tags/properties/SendErrorVersionMismatch/type",
+                                                                                                                  "#/properties/runtime_tags/properties/SendErrorUnauthorized/type",
                                                                                                                 keyword:
                                                                                                                   "type",
                                                                                                                 params:
@@ -79571,9 +79685,9 @@ function validate349(
                                                                                                                   {
                                                                                                                     instancePath:
                                                                                                                       instancePath +
-                                                                                                                      "/runtime_tags/SendErrorVersionMismatch",
+                                                                                                                      "/runtime_tags/SendErrorUnauthorized",
                                                                                                                     schemaPath:
-                                                                                                                      "#/properties/runtime_tags/properties/SendErrorVersionMismatch/maximum",
+                                                                                                                      "#/properties/runtime_tags/properties/SendErrorUnauthorized/maximum",
                                                                                                                     keyword:
                                                                                                                       "maximum",
                                                                                                                     params:
@@ -79600,9 +79714,9 @@ function validate349(
                                                                                                                     {
                                                                                                                       instancePath:
                                                                                                                         instancePath +
-                                                                                                                        "/runtime_tags/SendErrorVersionMismatch",
+                                                                                                                        "/runtime_tags/SendErrorUnauthorized",
                                                                                                                       schemaPath:
-                                                                                                                        "#/properties/runtime_tags/properties/SendErrorVersionMismatch/minimum",
+                                                                                                                        "#/properties/runtime_tags/properties/SendErrorUnauthorized/minimum",
                                                                                                                       keyword:
                                                                                                                         "minimum",
                                                                                                                       params:
@@ -79630,11 +79744,11 @@ function validate349(
                                                                                                         valid2
                                                                                                       ) {
                                                                                                         if (
-                                                                                                          data4.SendErrorWriteTimedOut !==
+                                                                                                          data4.SendErrorVersionMismatch !==
                                                                                                           undefined
                                                                                                         ) {
                                                                                                           let data46 =
-                                                                                                            data4.SendErrorWriteTimedOut;
+                                                                                                            data4.SendErrorVersionMismatch;
                                                                                                           const _errs93 =
                                                                                                             errors;
                                                                                                           if (
@@ -79658,9 +79772,9 @@ function validate349(
                                                                                                                 {
                                                                                                                   instancePath:
                                                                                                                     instancePath +
-                                                                                                                    "/runtime_tags/SendErrorWriteTimedOut",
+                                                                                                                    "/runtime_tags/SendErrorVersionMismatch",
                                                                                                                   schemaPath:
-                                                                                                                    "#/properties/runtime_tags/properties/SendErrorWriteTimedOut/type",
+                                                                                                                    "#/properties/runtime_tags/properties/SendErrorVersionMismatch/type",
                                                                                                                   keyword:
                                                                                                                     "type",
                                                                                                                   params:
@@ -79696,9 +79810,9 @@ function validate349(
                                                                                                                     {
                                                                                                                       instancePath:
                                                                                                                         instancePath +
-                                                                                                                        "/runtime_tags/SendErrorWriteTimedOut",
+                                                                                                                        "/runtime_tags/SendErrorVersionMismatch",
                                                                                                                       schemaPath:
-                                                                                                                        "#/properties/runtime_tags/properties/SendErrorWriteTimedOut/maximum",
+                                                                                                                        "#/properties/runtime_tags/properties/SendErrorVersionMismatch/maximum",
                                                                                                                       keyword:
                                                                                                                         "maximum",
                                                                                                                       params:
@@ -79725,9 +79839,9 @@ function validate349(
                                                                                                                       {
                                                                                                                         instancePath:
                                                                                                                           instancePath +
-                                                                                                                          "/runtime_tags/SendErrorWriteTimedOut",
+                                                                                                                          "/runtime_tags/SendErrorVersionMismatch",
                                                                                                                         schemaPath:
-                                                                                                                          "#/properties/runtime_tags/properties/SendErrorWriteTimedOut/minimum",
+                                                                                                                          "#/properties/runtime_tags/properties/SendErrorVersionMismatch/minimum",
                                                                                                                         keyword:
                                                                                                                           "minimum",
                                                                                                                         params:
@@ -79750,6 +79864,132 @@ function validate349(
                                                                                                             errors;
                                                                                                         } else {
                                                                                                           var valid2 = true;
+                                                                                                        }
+                                                                                                        if (
+                                                                                                          valid2
+                                                                                                        ) {
+                                                                                                          if (
+                                                                                                            data4.SendErrorWriteTimedOut !==
+                                                                                                            undefined
+                                                                                                          ) {
+                                                                                                            let data47 =
+                                                                                                              data4.SendErrorWriteTimedOut;
+                                                                                                            const _errs95 =
+                                                                                                              errors;
+                                                                                                            if (
+                                                                                                              !(
+                                                                                                                typeof data47 ==
+                                                                                                                  "number" &&
+                                                                                                                !(
+                                                                                                                  data47 %
+                                                                                                                  1
+                                                                                                                ) &&
+                                                                                                                !isNaN(
+                                                                                                                  data47,
+                                                                                                                ) &&
+                                                                                                                isFinite(
+                                                                                                                  data47,
+                                                                                                                )
+                                                                                                              )
+                                                                                                            ) {
+                                                                                                              validate349.errors =
+                                                                                                                [
+                                                                                                                  {
+                                                                                                                    instancePath:
+                                                                                                                      instancePath +
+                                                                                                                      "/runtime_tags/SendErrorWriteTimedOut",
+                                                                                                                    schemaPath:
+                                                                                                                      "#/properties/runtime_tags/properties/SendErrorWriteTimedOut/type",
+                                                                                                                    keyword:
+                                                                                                                      "type",
+                                                                                                                    params:
+                                                                                                                      {
+                                                                                                                        type: "integer",
+                                                                                                                      },
+                                                                                                                    message:
+                                                                                                                      "must be integer",
+                                                                                                                  },
+                                                                                                                ];
+                                                                                                              return false;
+                                                                                                            }
+                                                                                                            if (
+                                                                                                              errors ===
+                                                                                                              _errs95
+                                                                                                            ) {
+                                                                                                              if (
+                                                                                                                typeof data47 ==
+                                                                                                                  "number" &&
+                                                                                                                isFinite(
+                                                                                                                  data47,
+                                                                                                                )
+                                                                                                              ) {
+                                                                                                                if (
+                                                                                                                  data47 >
+                                                                                                                    4294967295 ||
+                                                                                                                  isNaN(
+                                                                                                                    data47,
+                                                                                                                  )
+                                                                                                                ) {
+                                                                                                                  validate349.errors =
+                                                                                                                    [
+                                                                                                                      {
+                                                                                                                        instancePath:
+                                                                                                                          instancePath +
+                                                                                                                          "/runtime_tags/SendErrorWriteTimedOut",
+                                                                                                                        schemaPath:
+                                                                                                                          "#/properties/runtime_tags/properties/SendErrorWriteTimedOut/maximum",
+                                                                                                                        keyword:
+                                                                                                                          "maximum",
+                                                                                                                        params:
+                                                                                                                          {
+                                                                                                                            comparison:
+                                                                                                                              "<=",
+                                                                                                                            limit: 4294967295,
+                                                                                                                          },
+                                                                                                                        message:
+                                                                                                                          "must be <= 4294967295",
+                                                                                                                      },
+                                                                                                                    ];
+                                                                                                                  return false;
+                                                                                                                } else {
+                                                                                                                  if (
+                                                                                                                    data47 <
+                                                                                                                      0 ||
+                                                                                                                    isNaN(
+                                                                                                                      data47,
+                                                                                                                    )
+                                                                                                                  ) {
+                                                                                                                    validate349.errors =
+                                                                                                                      [
+                                                                                                                        {
+                                                                                                                          instancePath:
+                                                                                                                            instancePath +
+                                                                                                                            "/runtime_tags/SendErrorWriteTimedOut",
+                                                                                                                          schemaPath:
+                                                                                                                            "#/properties/runtime_tags/properties/SendErrorWriteTimedOut/minimum",
+                                                                                                                          keyword:
+                                                                                                                            "minimum",
+                                                                                                                          params:
+                                                                                                                            {
+                                                                                                                              comparison:
+                                                                                                                                ">=",
+                                                                                                                              limit: 0,
+                                                                                                                            },
+                                                                                                                          message:
+                                                                                                                            "must be >= 0",
+                                                                                                                        },
+                                                                                                                      ];
+                                                                                                                    return false;
+                                                                                                                  }
+                                                                                                                }
+                                                                                                              }
+                                                                                                            }
+                                                                                                            var valid2 =
+                                                                                                              _errs95 ===
+                                                                                                              errors;
+                                                                                                          } else {
+                                                                                                            var valid2 = true;
+                                                                                                          }
                                                                                                         }
                                                                                                       }
                                                                                                     }

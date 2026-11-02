@@ -395,7 +395,9 @@ pub struct RunArgs {
     /// Execution timeout (`500ms`, `30s`, `1m`; bare integers mean seconds).
     #[arg(long, value_name = "DURATION")]
     pub timeout: Option<String>,
-    /// Run on the single-thread driver with a virtual clock.
+    /// Run on the single-thread driver with a virtual clock. Without the flag,
+    /// a `HEW_DETERMINISTIC` environment variable selects the same driver and
+    /// passes its configuration through unchanged.
     #[arg(long)]
     pub deterministic: bool,
     /// Choose how the deterministic driver picks ready work.
@@ -427,7 +429,7 @@ impl RunArgs {
     pub fn to_compile_options(&self) -> crate::compile::CompileOptions {
         crate::compile::CompileOptions {
             target: self.target.clone(),
-            host_admission: if self.deterministic {
+            host_admission: if self.deterministic_env().is_some() {
                 hew_compile::HostAdmission::ProcessEntry
             } else {
                 hew_compile::HostAdmission::Off
@@ -436,15 +438,21 @@ impl RunArgs {
         }
     }
 
-    /// Runtime driver configuration for this run, if deterministic mode was requested.
+    /// Runtime driver configuration for this run: the `--deterministic`
+    /// options when the flag is given, otherwise an inherited
+    /// `HEW_DETERMINISTIC` value (empty selects the driver's defaults).
     pub fn deterministic_env(&self) -> Option<String> {
-        self.deterministic.then(|| {
-            let schedule = match self.schedule.unwrap_or(TestSchedule::Fifo) {
-                TestSchedule::Fifo => "fifo",
-                TestSchedule::Random => "random",
-            };
-            format!("schedule={schedule},seed={:#x}", self.seed.unwrap_or(0))
-        })
+        if !self.deterministic {
+            return std::env::var("HEW_DETERMINISTIC").ok();
+        }
+        let schedule = match self.schedule.unwrap_or(TestSchedule::Fifo) {
+            TestSchedule::Fifo => "fifo",
+            TestSchedule::Random => "random",
+        };
+        Some(format!(
+            "schedule={schedule},seed={:#x}",
+            self.seed.unwrap_or(0)
+        ))
     }
 }
 

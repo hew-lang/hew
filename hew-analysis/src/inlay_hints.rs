@@ -125,6 +125,9 @@ fn collect_inlay_hints_from_item(
                 for (_field_name, arg) in &child.args {
                     collect_inlay_hints_from_expr(source, &arg.0, tc, hints);
                 }
+                if let Some(backoff) = &child.backoff {
+                    collect_inlay_hints_from_expr(source, &backoff.0, tc, hints);
+                }
             }
         }
         Item::Machine(m) => {

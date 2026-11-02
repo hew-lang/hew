@@ -417,8 +417,12 @@ pub(crate) fn safepoint_tick() {
 }
 
 /// Move the clock to the earliest pending timer and fire what is due there.
-/// Returns false when no timer is pending.
+/// Returns false when no timer is pending, or when the clock cannot move: a
+/// generator's clock reads zero throughout, so none of its timers can come due.
 fn advance_to_next_timer() -> bool {
+    if crate::generator::enabled() {
+        return false;
+    }
     let wheel = global_wheel();
     // SAFETY: the live process-owned wheel; the query takes its own lock.
     let Some(deadline) = (unsafe { crate::timer_wheel::timer_wheel_next_deadline(wheel) }) else {
@@ -474,7 +478,7 @@ pub(crate) fn step() {
         wait_for_host();
         return;
     }
-    fail("deadlock: nothing is runnable and no timer is pending");
+    fail("deadlock: nothing is runnable and no timer can come due");
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -495,15 +499,21 @@ fn wait_for_host() {}
 ///
 /// A periodic handler re-arms its timer, so the wheel is never permanently
 /// empty while one is live; quiescence is therefore "nothing ready and no timer
-/// due now".
-pub(crate) fn run_to_quiescence() {
+/// due now". Returns whether anything ran.
+pub(crate) fn run_to_quiescence() -> bool {
+    let mut progressed = false;
     loop {
         if let Some(participant) = pick() {
             run_participant(participant);
+            progressed = true;
             continue;
         }
-        if fire_due_timers() == 0 && !has_queued_work() {
-            return;
+        if fire_due_timers() == 0 {
+            if !has_queued_work() {
+                return progressed;
+            }
+        } else {
+            progressed = true;
         }
     }
 }
@@ -589,15 +599,43 @@ pub extern "C" fn hew_guest_resume() {
 /// The shutdown drain's poll: where the threaded runtime sleeps while workers
 /// finish, the driver runs the work itself, moving the clock to the next timer
 /// once nothing is ready so cleanup that sleeps still completes.
-pub(crate) fn drain_poll(interval: std::time::Duration) {
+///
+/// Shutdown waits measure their windows on the runtime clock. While that clock
+/// is simulated, the poll's wait passes in simulated time. On the driver the
+/// clock moves by `interval` only when the drain is stuck: the caller's last
+/// sample found work outstanding (`idle` is false), and this poll ran nothing,
+/// found no timer to move to and no host work to wait for. A drain that cannot
+/// converge then reaches its deadline instead of spinning on a frozen clock,
+/// while one that is converging or confirming quiescence adds no virtual time
+/// the program could observe. Without the driver, a simulated clock (a test
+/// harness's) advances in place of sleeping unless the caller is idle.
+pub(crate) fn drain_poll(interval: std::time::Duration, idle: bool) {
     if !active() {
-        std::thread::sleep(interval);
+        if crate::deterministic::simtime_now().is_some() {
+            if !idle {
+                advance_simulated_clock(interval);
+            }
+            std::thread::yield_now();
+        } else {
+            std::thread::sleep(interval);
+        }
         return;
     }
-    run_to_quiescence();
-    if !advance_to_next_timer() && host_work_in_flight() {
+    if run_to_quiescence() || advance_to_next_timer() {
+        return;
+    }
+    if host_work_in_flight() {
         #[cfg(not(target_arch = "wasm32"))]
         wait_for_host();
+    } else if !idle && active_config().virtual_clock {
+        advance_simulated_clock(interval);
+    }
+}
+
+fn advance_simulated_clock(interval: std::time::Duration) {
+    let millis = i64::try_from(interval.as_nanos().div_ceil(1_000_000)).unwrap_or(i64::MAX);
+    if millis > 0 {
+        let _ = crate::deterministic::hew_simtime_advance_ms(millis);
     }
 }
 

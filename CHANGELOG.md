@@ -14,6 +14,11 @@
   the typed wire decoder with an ordinary parse error, as `json.parse` already
   does. Underflow (`1e-400`) still rounds to 0.
 - Read JSON floats back to the value they were printed from.
+- Restart crashed supervised children immediately unless the supervisor
+  declares `backoff`; default the backoff maximum to 30 seconds and never
+  delay less than the initial delay.
+- Override a supervisor's restart delay per child with a `backoff:` clause, and
+  switch it off for one child with `restart.immediate()`.
 
 ## [0.10.0-rc1] - 2026-10-26
 

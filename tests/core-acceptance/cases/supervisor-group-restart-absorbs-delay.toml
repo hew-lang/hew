@@ -1,0 +1,13 @@
+[[case]]
+id = "supervisor-group-restart-absorbs-delay"
+intent = "A one_for_all restart triggered by an immediate child replaces a sibling whose own delayed restart is still pending; the pending timer is absorbed, so the healthy group is not restarted again and the one-restart budget is charged once."
+source = "cases/supervisor-group-restart-absorbs-delay.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 10
+
+[case.env]
+HEW_DETERMINISTIC = ""
+
+[case.expected]
+stdout = "start slow\nstart quick\nstart slow\nstart quick\n0\none group restart\n"
+exit = 0

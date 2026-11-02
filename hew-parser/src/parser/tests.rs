@@ -133,6 +133,44 @@ fn supervisor_stop_clause_carries_a_duration_expression() {
     ));
 }
 
+/// A child's `backoff:` clause is an ordinary expression beside `restart:` and
+/// `stop:`, in either order, and stays separate from the supervisor's own.
+#[test]
+fn supervisor_child_backoff_clause_parses_beside_restart() {
+    for clauses in [
+        "restart: permanent backoff: restart.immediate()",
+        "backoff: restart.immediate() restart: permanent",
+    ] {
+        let source = format!(
+            "supervisor Team {{\n    backoff: restart.exponential(initial: 100ms);\n    child worker: Worker {clauses};\n    child other: Worker;\n}}\n"
+        );
+        let result = parse(&source);
+        assert!(result.errors.is_empty(), "{clauses}: {:?}", result.errors);
+        let Item::Supervisor(supervisor) = &result.program.items[0].0 else {
+            panic!("expected supervisor");
+        };
+        assert!(supervisor.backoff.is_some());
+        let child = &supervisor.children[0];
+        assert_eq!(child.restart, Some(RestartPolicy::Permanent));
+        assert!(child.backoff.is_some());
+        assert!(supervisor.children[1].backoff.is_none());
+    }
+}
+
+#[test]
+fn supervisor_child_backoff_clause_is_declared_once() {
+    let result = parse(
+        "supervisor Team { child worker: Worker backoff: restart.immediate() backoff: restart.immediate(); }",
+    );
+    assert!(
+        result.errors.iter().any(|error| error
+            .message
+            .contains("duplicate supervisor child `backoff:`")),
+        "{:?}",
+        result.errors
+    );
+}
+
 #[test]
 fn supervisor_child_accepts_only_the_stop_clause() {
     for old in ["shutdown: 50ms", "shutdown: brutal_kill"] {

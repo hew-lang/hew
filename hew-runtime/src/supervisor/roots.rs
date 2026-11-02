@@ -107,14 +107,69 @@ pub unsafe extern "C" fn hew_shutdown_unregister_supervisor(sup: *mut HewSupervi
     with_supervisor_roots(|sups| sups.retain(|s| s.0 != sup));
 }
 
+/// One root taken out of the cleanup set with the authority needed to stop it.
+pub(crate) struct TakenSupervisorRoot {
+    supervisor: *mut HewSupervisor,
+    control: Option<std::sync::Arc<crate::lifetime::local_handles::SupervisorControl>>,
+    teardown: Option<crate::lifetime::local_handles::SupervisorTeardownLease>,
+}
+
+impl TakenSupervisorRoot {
+    /// Stop the taken root. Once the roots lock is released, a token stop
+    /// that already claimed teardown may free the allocation at any moment,
+    /// so the claim is taken through the control read under the lock and the
+    /// allocation is touched only when that claim is won.
+    pub(crate) fn stop(self) {
+        let Some(teardown) = self.teardown else {
+            return;
+        };
+        let claim = self.control.as_deref().map_or(
+            crate::lifetime::local_handles::TeardownClaim::Held,
+            crate::lifetime::local_handles::SupervisorControl::claim_teardown,
+        );
+        // Reclamation drops the registry's final control reference.
+        drop(self.control);
+        // SAFETY: the root was live when taken; the claim outcome decides
+        // whether this stop may touch it.
+        unsafe { super::stop_supervisor_with_teardown_authority(self.supervisor, teardown, claim) };
+    }
+}
+
+/// Take every registered root for shutdown. Every destructor unregisters a
+/// root before freeing it, so membership under the roots lock proves the
+/// allocation live: read its stop authority here, while that proof holds.
+pub(crate) fn take_supervisor_roots() -> Vec<TakenSupervisorRoot> {
+    with_supervisor_roots(|roots| {
+        std::mem::take(roots)
+            .into_iter()
+            .filter(|root| !root.0.is_null())
+            .map(|root| {
+                let supervisor = root.0;
+                // SAFETY: the roots lock retains the registered allocation.
+                let (handles, token) =
+                    unsafe { ((*supervisor).handles, (*supervisor).local_pid_id) };
+                // SAFETY: cleanup retains this authority until admitted
+                // teardown leases drain.
+                let handles = unsafe { handles.as_ref() };
+                TakenSupervisorRoot {
+                    supervisor,
+                    control: handles
+                        .and_then(|handles| handles.supervisor_control_for_raw(token, supervisor)),
+                    teardown: handles.and_then(
+                        crate::lifetime::local_handles::LocalHandles::begin_supervisor_teardown,
+                    ),
+                }
+            })
+            .collect()
+    })
+}
+
 /// Stop roots in reverse registration order while the process driver can
 /// still resume suspended child construction and terminal hooks.
 #[cfg(target_arch = "wasm32")]
 pub(crate) fn stop_registered_supervisors() -> bool {
-    let roots = with_supervisor_roots(std::mem::take);
-    for supervisor in roots.into_iter().rev() {
-        // SAFETY: removing the root transfers its live allocation into this stop.
-        unsafe { super::hew_supervisor_stop(supervisor.0) };
+    for root in take_supervisor_roots().into_iter().rev() {
+        root.stop();
     }
     with_supervisor_roots(|roots| roots.is_empty())
 }

@@ -472,23 +472,43 @@ impl Checker {
         // `count: config.workers` expr resolves.
         self.check_supervisor_pool_count(sd, span);
         if let Some(backoff) = &sd.backoff {
-            let ty = self.synthesize(&backoff.0, &backoff.1);
-            let ty = self.subst.resolve(&ty);
-            if !is_canonical_lifecycle_source_type(&ty, "std.restart.Backoff") && ty != Ty::Error {
-                self.errors.push(TypeError::new(
-                    TypeErrorKind::SupervisorError { subkind: SupervisorErrorKind::BackoffType },
-                    backoff.1.clone(),
-                    "supervisor `backoff:` requires a std.restart.Backoff value; use restart.exponential(initial: 100ms, maximum: 5s)",
-                ));
-            }
+            self.check_supervisor_backoff(backoff);
         }
         for child in &sd.children {
             if let Some(duration) = &child.stop {
                 self.check_against(&duration.0, &duration.1, &Ty::Duration);
             }
+            if let Some(backoff) = &child.backoff {
+                self.check_supervisor_backoff(backoff);
+                if child.restart == Some(hew_parser::ast::RestartPolicy::Temporary) {
+                    self.errors.push(TypeError::new(
+                        TypeErrorKind::SupervisorError {
+                            subkind: SupervisorErrorKind::TemporaryBackoff,
+                        },
+                        backoff.1.clone(),
+                        format!(
+                            "child `{}` is `restart: temporary` and never restarts, so its `backoff:` has no effect; remove the clause or use `restart: transient`",
+                            child.name
+                        ),
+                    ));
+                }
+            }
         }
 
         self.env.pop_scope();
+    }
+
+    /// A supervisor or child `backoff:` clause is an ordinary `std.restart.Backoff`.
+    fn check_supervisor_backoff(&mut self, backoff: &Spanned<Expr>) {
+        let ty = self.synthesize(&backoff.0, &backoff.1);
+        let ty = self.subst.resolve(&ty);
+        if !is_canonical_lifecycle_source_type(&ty, "std.restart.Backoff") && ty != Ty::Error {
+            self.errors.push(TypeError::new(
+                TypeErrorKind::SupervisorError { subkind: SupervisorErrorKind::BackoffType },
+                backoff.1.clone(),
+                "`backoff:` requires a std.restart.Backoff value; use restart.exponential(initial: 100ms, maximum: 5s) or restart.immediate()",
+            ));
+        }
     }
 
     /// Bind explicit values and typed wiring operands through ordinary spawn rules.
@@ -796,9 +816,7 @@ impl Checker {
         for (index, child) in sd.children.iter().enumerate() {
             let mut bindings = Vec::new();
             if let Some(wiring) = &child.wired_to {
-                let mut entries: Vec<_> = wiring.iter().collect();
-                entries.sort_unstable_by_key(|(key, _)| *key);
-                for (key, sibling) in entries {
+                for (key, sibling) in wiring {
                     if let Some(target) = sd
                         .children
                         .iter()

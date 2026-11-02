@@ -508,6 +508,9 @@ impl TemplateNames<'_> {
                     if let Some(value) = &mut child.stop {
                         self.expr(value)?;
                     }
+                    if let Some(value) = &mut child.backoff {
+                        self.expr(value)?;
+                    }
                     if let Some(value) = &mut child.count {
                         self.expr(value)?;
                     }

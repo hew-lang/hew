@@ -1,0 +1,14 @@
+[[case]]
+id = "generator-shutdown-drain-times-out"
+intent = "In generator mode the clock cannot reach a sleeping actor's timer; the shutdown drain still expires on the runtime clock and fails promptly instead of spinning."
+source = "cases/generator-shutdown-drain-times-out.hew"
+suites = ["acceptance"]
+timeout_seconds = 10
+
+[case.env]
+HEW_DETERMINISTIC = "schedule=fifo,seed=0"
+HEW_GENERATE_POLICY = "x"
+
+[case.expected]
+stdout = "main done\n"
+exit = 1

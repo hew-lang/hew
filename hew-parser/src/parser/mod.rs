@@ -7,11 +7,11 @@
 // `pub(crate)` so each area submodule picks them up through `use super::*`.
 pub(crate) use crate::ast::{
     ActorDecl, ActorInit, ArrayElement, AssocTypeBinding, Attribute, AttributeArg, BinaryOp, Block,
-    CallArg, ChildSpec, CompositeGroup, CompoundAssignOp, ConditionItem, ConstDecl, ConstParam,
-    ConstParamTy, ContextVariantExpr, ContextVariantPattern, ContextVariantRecord, ElseBlock, Expr,
-    ExternBlock, ExternFnDecl, FieldDecl, FieldLabel, FnDecl, Ident, ImplDecl, ImplTypeAlias,
-    ImportDecl, ImportName, ImportSpec, IntRadix, Intensity, Item, LambdaParam, Literal,
-    MachineDecl, MachineEvent, MachineRegion, MachineState, MachineTransition,
+    CallArg, ChildClause, ChildSpec, CompositeGroup, CompoundAssignOp, ConditionItem, ConstDecl,
+    ConstParam, ConstParamTy, ContextVariantExpr, ContextVariantPattern, ContextVariantRecord,
+    ElseBlock, Expr, ExternBlock, ExternFnDecl, FieldDecl, FieldLabel, FnDecl, Ident, ImplDecl,
+    ImplTypeAlias, ImportDecl, ImportName, ImportSpec, IntRadix, Intensity, Item, LambdaParam,
+    Literal, MachineDecl, MachineEvent, MachineRegion, MachineState, MachineTransition,
     MachineTransitionBodyForm, MachineTrigger, MatchArm, NamingCase, NominalPatternPayload,
     OverflowFallback, OverflowPolicy, Param, Path, Pattern, PatternField, Program,
     QualifiedAssocExpr, QualifiedAssocPath, ReceiveFnDecl, RecordDecl, RecordKind, ResourceMarker,

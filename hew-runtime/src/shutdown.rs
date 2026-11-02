@@ -531,9 +531,9 @@ fn drain_until_idle(timeout: Duration) -> bool {
     if timeout.is_zero() {
         return true;
     }
-    let deadline = Instant::now() + timeout;
+    let mut deadline = crate::clock::RuntimeDeadline::after(timeout);
     let mut idle_polls = 0;
-    while Instant::now() < deadline {
+    while !deadline.remaining().is_zero() {
         // Sample scheduler idleness on both sides of the reactor probe. A
         // readiness delivery can remove its registration and enqueue a resume
         // between observations; the second scheduler sample closes that window.
@@ -548,11 +548,15 @@ fn drain_until_idle(timeout: Duration) -> bool {
             idle_polls = 0;
         }
 
-        let remaining = deadline.saturating_duration_since(Instant::now());
+        let remaining = deadline.remaining();
         if remaining.is_zero() {
             break;
         }
-        crate::driver::drain_poll(DRAIN_POLL_INTERVAL.min(remaining));
+        let interval = DRAIN_POLL_INTERVAL.min(remaining);
+        crate::driver::drain_poll(interval, idle);
+        if !idle {
+            deadline.polled(interval);
+        }
     }
     // Covers the case where the deadline expired while sleeping but the runtime
     // became idle before the final observation.
@@ -569,7 +573,7 @@ pub(crate) fn drain_native_actor_cleanup(timeout: Duration) -> bool {
     runtime.shutdown_ingress.close();
     crate::timer_periodic::quiesce_periodic_timers();
     reactor::close_listener_admission();
-    let deadline = Instant::now() + timeout;
+    let mut deadline = crate::clock::RuntimeDeadline::after(timeout);
     let mut requested = std::collections::HashSet::new();
     let mut completions = Vec::new();
     let mut idle_polls = 0;
@@ -623,7 +627,7 @@ pub(crate) fn drain_native_actor_cleanup(timeout: Duration) -> bool {
         } else {
             idle_polls = 0;
         }
-        let remaining = deadline.saturating_duration_since(Instant::now());
+        let remaining = deadline.remaining();
         if remaining.is_zero() {
             eprintln!("hew: actor cleanup timed out after {timeout:?}; retaining live runtime");
             crate::set_last_error("actor cleanup did not complete before scheduler shutdown");
@@ -631,7 +635,11 @@ pub(crate) fn drain_native_actor_cleanup(timeout: Duration) -> bool {
             shutdown_phase_store(PHASE_FAILED, Ordering::Release);
             return false;
         }
-        crate::driver::drain_poll(DRAIN_POLL_INTERVAL.min(remaining));
+        let interval = DRAIN_POLL_INTERVAL.min(remaining);
+        crate::driver::drain_poll(interval, settled);
+        if !settled {
+            deadline.polled(interval);
+        }
     }
 }
 
@@ -709,23 +717,13 @@ fn shutdown_orchestrate_mode(drain_timeout: Duration, cancel_parked_waits: bool)
 
     // Drain converged — all workers are parked.  The join below is instant.
 
-    // Stop registered supervisors in reverse order (bottom-up).
-    // Extract the supervisor list to avoid holding the mutex while stopping them.
-    // This prevents deadlock when hew_supervisor_stop calls hew_shutdown_unregister_supervisor.
-    let supervisors_to_stop = with_supervisor_roots(|sups| {
-        // Reverse: last registered (innermost) first.
-        sups.reverse();
-        std::mem::take(sups) // Extract all supervisors, leaving empty vec
-    });
-
-    // Stop supervisors without holding the mutex.
-    for s in &supervisors_to_stop {
-        if !s.0.is_null() {
-            // SAFETY: supervisor was registered, drain converged so no worker
-            // is actively dispatching into supervisor-owned actors, and the
-            // pointer remains valid until this call frees it.
-            unsafe { crate::supervisor::hew_supervisor_stop(s.0) };
-        }
+    // Stop registered supervisors in reverse order (bottom-up: last
+    // registered first), outside the roots lock their stops re-enter.
+    for root in crate::supervisor::roots::take_supervisor_roots()
+        .into_iter()
+        .rev()
+    {
+        root.stop();
     }
 
     // State and queued-payload destructors may suspend. They must finish before
@@ -775,13 +773,8 @@ mod tests {
         );
         ingress.0.store(0, Ordering::Release);
 
-        let to_stop = with_supervisor_roots(std::mem::take);
-        for supervisor in to_stop {
-            if !supervisor.0.is_null() {
-                // SAFETY: tests only store pointers returned by hew_supervisor_new
-                // and this cleanup runs after each test has finished using them.
-                unsafe { crate::supervisor::hew_supervisor_stop(supervisor.0) };
-            }
+        for root in crate::supervisor::roots::take_supervisor_roots() {
+            root.stop();
         }
     }
 
@@ -1347,29 +1340,47 @@ mod tests {
     }
 
     /// When the drain window expires with a worker still active,
-    /// `shutdown_orchestrate` must set `PHASE_FAILED` promptly (skipping the
-    /// join) rather than claiming successful completion or blocking indefinitely.
+    /// `shutdown_orchestrate` must publish `PHASE_FAILED` and skip the join and
+    /// every post-drain stage rather than claim success or block on the worker.
     ///
-    /// We simulate an un-drainable runtime by holding `ACTIVE_WORKERS` at 1
-    /// for the duration of the drain window, then releasing it after
-    /// `shutdown_orchestrate` returns so that `reset_shutdown_state` can
-    /// complete cleanly.
+    /// `ACTIVE_WORKERS` is held at 1 so the drain cannot converge. The window is
+    /// measured on the simulated clock, which each drain poll advances instead
+    /// of sleeping, so the drain gives up after exactly its window of simulated
+    /// time with no host wait. A registered root left in place shows the
+    /// supervisor sweep was skipped.
     #[test]
     fn shutdown_orchestrate_reports_failure_on_drain_timeout() {
+        struct SimulatedClock;
+        impl Drop for SimulatedClock {
+            fn drop(&mut self) {
+                crate::deterministic::hew_simtime_disable();
+            }
+        }
+        const WINDOW_MS: i64 = 50;
+
         let _guard = shutdown_test_guard();
         reset_shutdown_state();
+        // SAFETY: the test owns this fresh supervisor until the reset below.
+        let sup = unsafe {
+            crate::supervisor::hew_supervisor_new(crate::supervisor::STRATEGY_ONE_FOR_ONE, 1, 1)
+        };
+        assert!(!sup.is_null());
+        // SAFETY: as above.
+        unsafe { hew_shutdown_register_supervisor(sup) };
         shutdown_phase_store(PHASE_QUIESCE, Ordering::Release);
 
+        let _simtime = crate::deterministic::TEST_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        crate::deterministic::hew_simtime_enable(1_000);
+        let clock = SimulatedClock;
         // Keep the drain loop from ever converging.
         scheduler::ACTIVE_WORKERS.fetch_add(1, Ordering::Release);
-
-        let drain_ms = 50u64;
-        let started = Instant::now();
-        shutdown_orchestrate(Duration::from_millis(drain_ms));
-        let elapsed = started.elapsed();
-
+        shutdown_orchestrate(Duration::from_millis(WINDOW_MS.cast_unsigned()));
         // Release the artificial worker count so later teardown is clean.
         scheduler::ACTIVE_WORKERS.fetch_sub(1, Ordering::Release);
+        let elapsed_ms = crate::deterministic::hew_simtime_now_ms() - 1_000;
+        drop(clock);
 
         assert_eq!(
             shutdown_phase_load(Ordering::Acquire),
@@ -1381,10 +1392,13 @@ mod tests {
             -2,
             "a timed-out drain must be observable through the shutdown ABI"
         );
-        // Must complete within ~2× the drain window (drain + small grace).
+        assert_eq!(
+            elapsed_ms, WINDOW_MS,
+            "the drain gives up once its window has passed on the runtime clock"
+        );
         assert!(
-            elapsed < Duration::from_millis(drain_ms * 4),
-            "timed-out drain must not block; elapsed={elapsed:?}"
+            is_supervisor_registered_for_test(sup),
+            "a timed-out drain must leave supervisors to the live runtime"
         );
 
         reset_shutdown_state();

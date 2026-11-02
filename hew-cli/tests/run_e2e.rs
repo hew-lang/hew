@@ -248,6 +248,33 @@ fn run_program_with_simple_arithmetic_succeeds() {
     assert_eq!(String::from_utf8_lossy(&output.stdout), "3\n");
 }
 
+/// An inherited `HEW_DETERMINISTIC` selects the deterministic driver exactly as
+/// `--deterministic` does, so an hour-long sleep completes on the virtual
+/// clock instead of the wall clock.
+#[test]
+fn run_honours_inherited_deterministic_environment() {
+    require_codegen();
+
+    let dir = support::tempdir();
+    let path = dir.path().join("virtual_sleep.hew");
+    std::fs::write(
+        &path,
+        "fn main() {\n    let started = instant.now();\n    sleep(1h);\n    println(started.elapsed() == 1h);\n}\n",
+    )
+    .unwrap();
+
+    let mut command = support::hew_command();
+    command
+        .arg("run")
+        .arg(&path)
+        .current_dir(dir.path())
+        .env("HEW_DETERMINISTIC", "");
+    let output = support::run_bounded_command(command, "hew run with HEW_DETERMINISTIC");
+
+    support::assert_success(&output, "hew run under HEW_DETERMINISTIC");
+    assert_eq!(String::from_utf8_lossy(&output.stdout), "true\n");
+}
+
 /// #3132: `hew run`'s compiled artifact lives under `$TMPDIR/hew-run/<pid>-
 /// <rand>/` and RAII drop removes it on a normal exit. Points the child's
 /// temp root at an isolated directory (via TMPDIR/TMP/TEMP so the check

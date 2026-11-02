@@ -313,8 +313,6 @@ pub struct Supervisor {
     pub strategy: RestartStrategy,
     pub max_restarts: u32,
     pub window_secs: u32,
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub backoff: bool,
     pub children: Vec<SupervisorChild>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub startup_order: Vec<usize>,
@@ -337,6 +335,10 @@ pub struct SupervisorChild {
     pub stop_config: Option<usize>,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub is_pool: bool,
+    /// Construction transfers this child's effective restart delay as an
+    /// `(initial, maximum)` argument pair after the config, in declaration order.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub backoff: bool,
     pub spawn: u32,
 }
 

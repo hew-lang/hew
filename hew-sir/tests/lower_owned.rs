@@ -1014,3 +1014,80 @@ fn checked_arithmetic_failure_creates_exact_fault_before_owner_cleanup() {
         "the verifier must reject a checked failure edge that can loop instead of trapping"
     );
 }
+
+/// A direct variant stores its fields inline, so building one acquires no
+/// managed storage and needs no checked boundary; an indirect variant boxes
+/// its payload and keeps its `HeapExceeded` refusal edge.
+#[test]
+fn only_indirect_variant_construction_is_checked_materialization() {
+    let lowered = lower_source(
+        r#"
+        indirect enum Chain {
+            End;
+            Link(i64, Chain);
+        }
+        fn leaf(value: i64) -> i64 fails string {
+            if value < 0 {
+                return error "negative";
+            }
+            value
+        }
+        fn outer(value: i64) -> i64 fails string {
+            let inner = leaf(value)?;
+            inner + 1
+        }
+        fn label(text: string) -> Option<string> {
+            .Some(text)
+        }
+        fn chain(value: i64) -> Chain {
+            Chain.Link(value, Chain.End)
+        }
+        fn main() {
+            match outer(1) {
+                .Ok(value) => println(value),
+                .Err(text) => println(text),
+            }
+            match label("kept") {
+                .Some(text) => println(text),
+                .None => println("none"),
+            }
+            let _ = chain(1);
+        }
+        "#,
+    );
+    let module = &lowered.module;
+    assert!(
+        verify_module(module).is_empty(),
+        "{:?}",
+        verify_module(module)
+    );
+    let variant_builds = |name: &str| {
+        let function = module
+            .functions
+            .iter()
+            .find(|function| function.name.ends_with(name))
+            .expect("lowered function");
+        let mut checked = 0;
+        let mut direct = 0;
+        for block in &function.blocks {
+            if let SemTerminator::Materialize { operation, .. } = &block.terminator {
+                if matches!(operation.kind, SemOpKind::VariantMake { .. }) {
+                    checked += 1;
+                }
+            }
+            direct += block
+                .ops
+                .iter()
+                .filter(|op| matches!(op.kind, SemOpKind::VariantMake { .. }))
+                .count();
+        }
+        (checked, direct)
+    };
+    // `Ok(value)`, `Err(..)` and `Some(text)` move or copy nothing into new storage.
+    assert_eq!(variant_builds("leaf").0, 0);
+    assert_eq!(variant_builds("outer").0, 0);
+    assert!(variant_builds("outer").1 >= 2);
+    assert_eq!(variant_builds("label"), (0, 1));
+    // Each indirect `Chain` value boxes its payload under a checked acquisition.
+    assert_eq!(variant_builds("chain"), (2, 0));
+}

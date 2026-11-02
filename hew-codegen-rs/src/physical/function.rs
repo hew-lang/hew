@@ -248,6 +248,7 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
             value_callbacks: &module.value_callbacks,
             ramps: &module.ramps,
             frame,
+            chunk_invocation: None,
             task_scopes,
             debug,
         })
@@ -1088,10 +1089,13 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
         }
     }
 
-    fn emit_literal(&self, dest: StorageId, bytes: &[u8], symbol: &str) -> CodegenResult<()> {
-        let len = u32::try_from(bytes.len()).map_err(|_| {
-            CodegenError::FailClosed(format!("{symbol} literal exceeds the u32 runtime ABI"))
-        })?;
+    /// A private constant holding literal bytes, with its runtime ABI length.
+    pub(super) fn literal_data(
+        &self,
+        bytes: &[u8],
+    ) -> CodegenResult<(PointerValue<'ctx>, IntValue<'ctx>)> {
+        let len = u32::try_from(bytes.len())
+            .map_err(|_| CodegenError::FailClosed("literal exceeds the u32 runtime ABI".into()))?;
         let data = self.ctx.const_string(bytes, false);
         let global = self
             .llvm
@@ -1099,6 +1103,14 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
         global.set_linkage(Linkage::Private);
         global.set_initializer(&data);
         global.set_constant(true);
+        Ok((
+            global.as_pointer_value(),
+            self.ctx.i32_type().const_int(u64::from(len), false),
+        ))
+    }
+
+    fn emit_literal(&self, dest: StorageId, bytes: &[u8], symbol: &str) -> CodegenResult<()> {
+        let (global, len) = self.literal_data(bytes)?;
         let ptr = self.ctx.ptr_type(AddressSpace::default());
         let function = get_or_declare_external(
             self.llvm,
@@ -1111,8 +1123,8 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
             .build_call(
                 function,
                 &[
-                    global.as_pointer_value().into(),
-                    self.ctx.i32_type().const_int(u64::from(len), false).into(),
+                    global.into(),
+                    len.into(),
                     self.slots[dest.0 as usize].into(),
                 ],
                 "literal.new",

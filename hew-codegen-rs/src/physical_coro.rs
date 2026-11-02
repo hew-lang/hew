@@ -624,12 +624,14 @@ impl<'ctx> Frame<'ctx> {
     ) -> CodegenResult<()> {
         let view_ty = self.managed_frame_type;
         let size = view_ty.get_field_type_at_index(1).unwrap().into_int_type();
-        let view = if let Some(view) = self.managed_view.get() {
-            view
+        // Entry publishes this view once. Later root tables update that same
+        // view in place, without republishing it to the invocation.
+        let (view, published) = if let Some(view) = self.managed_view.get() {
+            (view, true)
         } else {
             let view = self.storage(ctx, view_ty.into(), "managed.frame")?;
             self.managed_view.set(Some(view));
-            view
+            (view, false)
         };
         let (operation, _) = self.operation_storage(ctx)?;
         let child = self.child_storage(ctx)?.0;
@@ -647,7 +649,11 @@ impl<'ctx> Frame<'ctx> {
                 .build_store(field, entry)
                 .llvm_ctx("bind canonical invocation roots")?;
         }
-        bind_managed_frame(ctx, builder, self.state, view)
+        if published {
+            Ok(())
+        } else {
+            bind_managed_frame(ctx, builder, self.state, view)
+        }
     }
 
     fn operation_storage(

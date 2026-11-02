@@ -210,6 +210,44 @@ pub unsafe extern "C" fn hew_budget_materialize_begin(
     0
 }
 
+/// Reserve, construct and adopt one string literal as a single checked step.
+/// The literal is the materialization's only payload, so this is the same
+/// begin/construct/commit plan without its generic input table.
+///
+/// # Safety
+/// `data` is valid UTF-8 for `len` bytes, `layout` describes a string slot, a
+/// non-null invocation is retained by the current execution, and `out` is
+/// unique writable storage. Nothing is written to `out` on refusal.
+#[no_mangle]
+pub unsafe extern "C" fn hew_budget_string_literal(
+    state: *const HewCoroState,
+    data: *const u8,
+    len: u32,
+    layout: *const HewValueLayout,
+    out: *mut *mut hew_cabi::string::HewString,
+) -> i32 {
+    // SAFETY: the caller retains its optional invocation through publication.
+    let Some(owner) = (unsafe { invocation_owner(state) }) else {
+        // SAFETY: forwarded literal and output obligations.
+        unsafe { crate::string::hew_string_literal_new(data, len, out) };
+        return 0;
+    };
+    // SAFETY: a literal has no typed inputs to keep live.
+    let permit = match unsafe { MaterializationPermit::prepare(owner, u64::from(len), &[]) } {
+        Ok(permit) => permit,
+        Err(status) => return status,
+    };
+    // SAFETY: forwarded literal and output obligations.
+    unsafe { crate::string::hew_string_literal_new(data, len, out) };
+    // SAFETY: the unpublished string matches its retained layout.
+    match unsafe { permit.commit(&*layout, out.cast_const().cast()) } {
+        Ok(()) => 0,
+        // The reservation covered the literal's whole payload before it was
+        // built; a disagreement is an invalid descriptor, as in commit.
+        Err(_) => std::process::abort(),
+    }
+}
+
 /// Refuse canonical payload arithmetic overflow before executing construction.
 ///
 /// # Safety
@@ -345,6 +383,44 @@ mod tests {
                 .unwrap();
             hew_cabi::string::string_release(text);
         }
+    }
+
+    #[test]
+    fn checked_string_literal_charges_its_payload_or_refuses_unbuilt() {
+        let owner = ValueOwner::new(Some(6));
+        let layout = &crate::layout_intrinsics::hew_layout_val_string;
+        let mut out: *mut hew_cabi::string::HewString = core::ptr::null_mut();
+        super::super::with_value_owner(&Some(owner.clone()), || {
+            // SAFETY: literal bytes, string layout and output slot are valid.
+            unsafe {
+                assert_eq!(
+                    hew_budget_string_literal(
+                        core::ptr::null(),
+                        b"budget".as_ptr(),
+                        6,
+                        layout,
+                        &raw mut out
+                    ),
+                    0
+                );
+                assert_eq!(owner.live_bytes(), 6);
+                let mut refused: *mut hew_cabi::string::HewString = core::ptr::null_mut();
+                assert_eq!(
+                    hew_budget_string_literal(
+                        core::ptr::null(),
+                        b"x".as_ptr(),
+                        1,
+                        layout,
+                        &raw mut refused
+                    ),
+                    HEAP_EXCEEDED
+                );
+                assert!(refused.is_null());
+                assert_eq!(owner.live_bytes(), 6);
+                crate::string::hew_string_drop_managed(out);
+            }
+        });
+        assert_eq!(owner.live_bytes(), 0);
     }
 
     #[test]

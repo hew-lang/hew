@@ -2839,6 +2839,21 @@
         "native",
         "wasm32-wasip1"
       ],
+      "classification": "non-declarable",
+      "extent": "length-or-count",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
+        "native": "fn hew_budget_string_literal( *const HewCoroState, *const u8, u32, *const HewValueLayout, *mut *mut hew_cabi::string::HewString, ) -> i32",
+        "wasm32-wasip1": "fn hew_budget_string_literal( *const HewCoroState, *const u8, u32, *const HewValueLayout, *mut *mut hew_cabi::string::HewString, ) -> i32"
+      },
+      "symbol": "hew_budget_string_literal"
+    },
+    {
+      "availability": [
+        "native",
+        "wasm32-wasip1"
+      ],
       "classification": "stable",
       "extent": "not-applicable",
       "nul": "not-applicable",

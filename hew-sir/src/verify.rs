@@ -5627,12 +5627,30 @@ fn verify_terminator_shape(
     cleanup_suffixes: &BTreeMap<BlockId, usize>,
     diagnostics: &mut Vec<SirDiagnostic>,
 ) {
+    // A direct variant constructs outside a checked boundary because it boxes
+    // nothing; an owned indirect variant allocates and must stay checked.
+    for op in &block.ops {
+        if matches!(op.kind, SemOpKind::VariantMake { .. })
+            && op
+                .results
+                .first()
+                .is_some_and(|result| result.own == OwnKind::Owned)
+            && op.kind.is_managed_materialization(variants.shapes)
+        {
+            invalid_operation(
+                function,
+                op.id,
+                "an owned indirect variant must be built by its checked materialization".into(),
+                diagnostics,
+            );
+        }
+    }
     let terminator = &block.terminator;
     match terminator {
         SemTerminator::Materialize {
             operation, failure, ..
         } => {
-            if !operation.kind.is_managed_materialization()
+            if !operation.kind.is_managed_materialization(variants.shapes)
                 || operation.results.len() != 1
                 || !failure_cfg_matches_exit(failure, Some(crate::TrapKind::HeapExceeded), blocks)
             {

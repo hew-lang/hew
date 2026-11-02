@@ -1,0 +1,31 @@
+// A start hook's appending loop runs as a physical loop chunk. Its growth is
+// charged to the bounded actor, so 64 elements exceed the 256-byte budget.
+fn grow(count: i64) -> i64 {
+    var values: Vec<i64> = Vec.new();
+    for i in 0..count {
+        values.push(i);
+    }
+    values.len()
+}
+
+#[max_heap(256)]
+actor Bounded {
+    var count: i64 = 0;
+
+    #[on(start)]
+    fn starting() {
+        count = grow(64);
+    }
+
+    receive fn get() -> i64 {
+        count
+    }
+}
+
+fn main() {
+    let bounded = spawn Bounded;
+    match bounded.get() {
+        .Ok(count) => println(f"start grew {count}"),
+        .Err(_) => println("start refused"),
+    }
+}

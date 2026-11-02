@@ -920,6 +920,9 @@ struct FunctionEmitter<'a, 'ctx> {
     value_callbacks: &'a key::CallbackTable<'ctx>,
     ramps: &'a BTreeMap<CallableId, FunctionValue<'ctx>>,
     frame: Option<coro::Frame<'ctx>>,
+    /// A loop chunk runs outside its coroutine frame but charges managed
+    /// storage to the same invocation, which the caller passes in.
+    chunk_invocation: Option<PointerValue<'ctx>>,
     task_scopes: BTreeMap<hew_mir::physical::TaskScopeId, PointerValue<'ctx>>,
     debug: Option<(
         &'a debug::DebugEmitter<'ctx>,

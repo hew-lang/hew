@@ -765,6 +765,33 @@ fn crlf_source_formats_to_crlf() {
 }
 
 #[test]
+fn layout_newlines_determine_style_around_verbatim_content() {
+    for (source, expected) in [
+        ("\r\np!(\n)", "p!(\n)\r\n"),
+        ("\np!(\r\n)", "p!(\r\n)\n"),
+        ("p!(\r\n)", "p!(\r\n)\n"),
+        ("p!(\n)\r\n", "p!(\n)\r\n"),
+        ("m.stringify!(\n)\r\n", "m.stringify!(\n)\r\n"),
+        (
+            "\r\np!(>>=X\np!(>>=Xz X)z X)",
+            "p!(>>=X\np!(>>=Xz X)z X)\r\n",
+        ),
+    ] {
+        assert_faithful(source);
+        assert_eq!(format_source(source, &parse(source).program), expected);
+    }
+
+    for source in [
+        "const S: string = r\"first\nsecond\";\r\n",
+        "const S: string = r\"first\r\nsecond\";\n",
+        "\r\nmacro p { () => expr {\n1 } }",
+        "\nmacro p { () => expr {\r\n1 } }",
+    ] {
+        assert_faithful(source);
+    }
+}
+
+#[test]
 fn mixed_line_endings_in_output_are_rejected() {
     let source = "fn main() {\r\n    let a = 1;\r\n}\r\n";
     let mixed = "fn main() {\r\n    let a = 1;\n}\r\n";

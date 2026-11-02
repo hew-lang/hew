@@ -145,12 +145,20 @@ impl std::fmt::Display for FidelityError {
 
 impl std::error::Error for FidelityError {}
 
-/// Whether `source` ends its lines with `\r\n`, judged by its first line.
+/// Whether layout uses `\r\n`, judged by the first line break outside
+/// literals and raw macro token trees. Their verbatim contents can use a
+/// different style and must not determine how surrounding layout is printed.
 #[must_use]
 pub fn uses_crlf(source: &str) -> bool {
-    source
-        .find('\n')
-        .is_some_and(|i| source[..i].ends_with('\r'))
+    let mut gap_start = 0;
+    for (start, end) in super::line_ending_spans(source) {
+        let gap = &source[gap_start..start];
+        if let Some(i) = gap.find('\n') {
+            return gap[..i].ends_with('\r');
+        }
+        gap_start = end;
+    }
+    false
 }
 
 /// Prove that `formatted` reprints `source` without changing its program,

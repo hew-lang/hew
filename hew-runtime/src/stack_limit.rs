@@ -34,7 +34,7 @@ const HARD_RESERVE: usize = 16 * 1024;
 
 /// Stack every thread that runs Hew code gets, sized so 10,000 nested calls of
 /// an ordinary function fit at O0 (HEW-SPEC-2026 §2.2): scheduler workers are
-/// spawned with it, and the main thread grows to it. AddressSanitizer redzones
+/// spawned with it, and the main thread grows to it. `AddressSanitizer` redzones
 /// roughly double an O0 frame, so instrumented builds get twice the stack to
 /// keep the same floor.
 #[cfg(all(not(target_arch = "wasm32"), not(hew_sanitized)))]

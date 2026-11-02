@@ -880,7 +880,7 @@ playground-wasi-check: wasm-runtime hew-native
 .PHONY: wasi-actor-lifecycle-check
 wasi-actor-lifecycle-check: wasm-runtime hew-native ## Test: native and WASI actor lifecycle behaviour
 	$(TEST_RUN_ENV) cargo test -p hew-cli --test wasi_run_e2e supervisor_restart_one_for_one_runs_under_wasi -- --exact
-	$(TEST_RUN_ENV) cargo test -p hew-cli --test wasi_run_e2e supervised_actor_lifecycle_runs_under_wasi -- --exact
+	$(TEST_RUN_ENV) cargo test -p hew-cli --test wasi_run_e2e supervised_actor_lifecycle:: -- --test-threads=1
 
 # Standard per-branch gate: validate workflow syntax locally, then run the lint
 # graph, tooling tests, compiler measurements and the three Make-owned Linux

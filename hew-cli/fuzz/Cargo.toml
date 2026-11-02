@@ -1,0 +1,25 @@
+[package]
+name = "hew-cli-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+
+# The text renderer is a Hew component that hew-cli's build script compiles
+# through LLVM, so these targets link the whole driver. They live apart from
+# hew-parser/fuzz, whose targets build on a small host.
+[workspace]
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4.13"
+hew-cli = { path = "..", features = ["fuzzing"] }
+hew-compile = { path = "../../hew-compile" }
+serde_json = "1"
+
+[[bin]]
+name = "fuzz_diagnostics"
+path = "fuzz_targets/fuzz_diagnostics.rs"
+test = false
+doc = false

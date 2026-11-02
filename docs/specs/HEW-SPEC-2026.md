@@ -834,6 +834,75 @@ This actor owns an eight-byte state slot and a 32-byte vector backing after the
 four pushes. Its eight-byte reply fits the remaining budget. A fifth push would
 require a 64-byte vector backing and fault before publishing that growth.
 
+**Stack exhaustion (normative).** A call that finds its thread's stack
+exhausted fails with the trap `StackOverflow` before the callee runs any of
+its body. It is an ordinary trap, not a hardware fault:
+
+- the callee's parameters and every caller's live values follow their usual
+  cleanup, `defer` included, as the failure unwinds;
+- in an actor it is a crash: the actor's supervisor rules on it (§5), and
+  crash hooks, links and monitors observe it with the crash kind
+  `CrashKind.StackOverflow`;
+- in `main`, or anywhere no supervisor recovers it, it is an unrecovered fault:
+  the process writes `hew: failure: StackOverflow (215)` and exits 1 (§5.8).
+
+It is never a signal, an abort or memory corruption, on any engine. Other
+actors, and the process, continue. Frames that are not calls of Hew functions,
+and so are not checked, are described in §5.7.
+
+The depth at which a stack is exhausted is a resource limit, like
+`#[max_heap]`. It depends on the engine, the optimization level and the size
+of each frame; optimization can remove a frame altogether, as when a call in
+tail position becomes a loop. Every engine guarantees a floor: **10,000 nested
+calls of an ordinary function** succeed in `main`, in an actor handler and in
+a task, at every optimization level. An ordinary function here has up to eight
+scalar parameters and locals, may build and pass strings and collections, and
+holds no large fixed-size aggregate; the floor is measured with
+
+```hew
+fn walk(n: i64, label: string, values: Vec<i64>) -> i64 {
+    if n == 0 {
+        return values.len();
+    }
+    let a = n * 3;
+    let b = a + 7;
+    let c = b % 11;
+    let d = if c > 5 { c - 5 } else { c + 5 };
+    let e = f"{label}";
+    let f = e.len() + d;
+    let g = a - b + c * d;
+    let below = walk(n - 1, label, values);
+    below + f + g - g
+}
+```
+
+called as `walk(10000, "x", [1, 2, 3])`. A recursion deeper than the floor
+either completes or fails with `StackOverflow`. The floor counts calls, not
+bytes, so it does not depend on how an engine lays out a frame; a function with
+more live values or temporaries uses more stack per call and reaches the limit
+sooner.
+
+Each engine enforces the same rule at the same point, the entry of a Hew
+function:
+
+- **Native.** Each function that calls another compares its frame address
+  with its thread's stack limit, which lies 256 KiB above the lowest usable
+  address of the stack. A function that calls nothing cannot recurse; its
+  frame, like the failing call's cleanup and the failure report, uses the
+  space reserved below the limit. Every thread that runs Hew code has a
+  16 MiB stack: scheduler workers are created with it, Linux and FreeBSD let
+  the main thread grow to it by raising the process's soft stack limit (a lower
+  hard limit caps it), and macOS and Windows executables link it in. Lowering
+  the limit, for example with `ulimit -Hs`, lowers the depth available.
+- **WASI.** The same functions perform the same check against the module's
+  1 MiB linear-memory stack, where every checked frame occupies at least 16
+  bytes so that recursion always reaches the limit. `hew run` lets the engine
+  use up to 48 MiB of native stack, so the module's own check fails first.
+- **Sandbox VM.** A call more than 20,000 frames below its task's root fails.
+
+Code in foreign functions is not checked. Exhausting the stack inside an
+`extern` call remains a hardware fault (§5.7).
+
 > **Error propagation:** `Result<T, E>` and `Option<T>` are first-class values. `?` on a `Result` leaves through the enclosing callable's failure edge; `?` on an `Option` propagates absence only into an enclosing `Option` return (§2.2.1). Neither converts absence into an error or discards an error as absence.
 
 ### 2.2.1 Error Propagation
@@ -6676,6 +6745,15 @@ Synchronous hardware faults (SEGV, SIGBUS, SIGFPE, and SIGILL) are process-fatal
 Signal handlers run on an alternate signal stack, record the terminal cause
 using async-signal-safe operations, and terminate; the runtime never jumps out
 of an arbitrary instruction or resumes a potentially corrupted process.
+
+Stack exhaustion in Hew code is not a hardware fault: every function that calls
+another checks its frame on entry and fails with the ordinary trap
+`StackOverflow` (§2.2), which crashes only the actor that recursed. Only frames
+the check does not cover can still reach a thread's stack guard: foreign code,
+the runtime itself (such as a wake relayed through deeply nested generators),
+and the generated drop and copy glue that walks a deeply nested recursive value. Such a fault is reported as `StackOverflow`, and
+the process then dies by the original signal or exception, so the operating
+system's crash artefacts (cores, crash reports, dumps) are still produced.
 
 A `panic()` outside an actor unwinds the same way. The generated entry runs
 beneath a runtime-owned catch boundary, so the same LLVM cleanup pads discharge

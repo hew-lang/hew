@@ -1412,3 +1412,37 @@ fn main() {
         );
     }
 }
+
+/// Stack exhaustion fails with `StackOverflow` under WASI as natively: the
+/// module's entry checks fire before wasmtime's own call-stack limit, so a
+/// supervisor restarts the recursing actor and an unsupervised root exits 1.
+#[test]
+fn stack_overflow_is_a_supervisable_failure_under_wasi() {
+    require_codegen();
+    require_wasi_runner();
+    let cases = repo_root().join("tests/core-acceptance/cases");
+    let run = |name: &str| {
+        let source = cases.join(name);
+        let source = source.to_str().expect("case path must be valid UTF-8");
+        run_hew_in(repo_root(), &["run", source, "--target", "wasm32-wasi"])
+    };
+
+    let supervised = run("stack-overflow-supervised-restart.hew");
+    assert!(
+        supervised.status.success(),
+        "stderr:\n{}",
+        String::from_utf8_lossy(&supervised.stderr)
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&supervised.stdout),
+        "10000\n10000\nunbounded cleanup ran\nwalker overflowed\n0\n10000\n10000\nprocess continued\n"
+    );
+
+    let root = run("stack-overflow-unsupervised-root.hew");
+    assert_eq!(root.status.code(), Some(1));
+    assert_eq!(
+        String::from_utf8_lossy(&root.stdout),
+        "descending\nmain cleanup ran\n"
+    );
+    assert!(String::from_utf8_lossy(&root.stderr).contains("hew: failure: StackOverflow (215)"));
+}

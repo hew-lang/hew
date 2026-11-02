@@ -1071,10 +1071,23 @@ impl FunctionLowerer<'_> {
                 cancel: self.lower_edge(cancel)?,
                 unwind: self.lower_edge(unwind)?,
             }),
-            SemTerminator::Safepoint { resume, .. }
+            // The entry safepoint is where a call finds its stack exhausted
+            // (HEW-SPEC-2026 §2.2). A function that calls nothing cannot
+            // recurse, so its bounded frame runs on the reserve below the
+            // limit, as does an authored close, which has no cancellation exit.
+            SemTerminator::Safepoint { resume, cancel }
                 if block.id == self.function.entry && !self.is_resumable =>
             {
-                Ok(PhysicalTerminator::Goto(self.lower_edge(resume)?))
+                let normal = self.lower_edge(resume)?;
+                Ok(match cancel {
+                    Some(cancel) if self.function.blocks.iter().any(enters_code) => {
+                        PhysicalTerminator::StackCheck {
+                            normal,
+                            overflow: self.lower_edge(cancel)?,
+                        }
+                    }
+                    _ => PhysicalTerminator::Goto(normal),
+                })
             }
             SemTerminator::Safepoint { resume, cancel } => Ok(PhysicalTerminator::Safepoint {
                 normal: self.lower_edge(resume)?,
@@ -1082,6 +1095,9 @@ impl FunctionLowerer<'_> {
                     .as_ref()
                     .map(|edge| self.lower_edge(edge))
                     .transpose()?,
+                checks_stack: block.id == self.function.entry
+                    && cancel.is_some()
+                    && self.function.blocks.iter().any(enters_code),
             }),
             SemTerminator::Suspend {
                 kind: hew_sir::SuspendKind::Sleep,
@@ -1888,4 +1904,30 @@ impl FunctionLowerer<'_> {
             ))
         })
     }
+}
+
+/// Whether a block may run further Hew code on this stack: a call of any
+/// form, a runtime operation that can invoke a callback, or a suspension.
+/// Blocks that only branch, compute, raise or return cannot recurse.
+fn enters_code(block: &hew_sir::SemBlock) -> bool {
+    !matches!(
+        block.terminator,
+        SemTerminator::Materialize { .. }
+            | SemTerminator::EnterDefer { .. }
+            | SemTerminator::FinishDefer { .. }
+            | SemTerminator::CleanupDispatch { .. }
+            | SemTerminator::RecoverFault { .. }
+            | SemTerminator::CheckedRaiseFault { .. }
+            | SemTerminator::Return { .. }
+            | SemTerminator::Goto(_)
+            | SemTerminator::Branch { .. }
+            | SemTerminator::SwitchVariant { .. }
+            | SemTerminator::CheckedBinary { .. }
+            | SemTerminator::ExternCall { .. }
+            | SemTerminator::Panic { .. }
+            | SemTerminator::Trap { .. }
+            | SemTerminator::Safepoint { .. }
+            | SemTerminator::ResumeUnwind { .. }
+            | SemTerminator::Unreachable
+    )
 }

@@ -135,6 +135,12 @@ type CallerStamp =
 
 const DEFAULT_ACTOR_STOP_NS = 5_000_000_000;
 
+/// Deepest activation a task may reach below its root before a call fails
+/// with `StackOverflow`. HEW-SPEC-2026 §2.2 guarantees 10,000 frames. Twice
+/// that matches what a native stack admits for small frames and leaves an
+/// unbounded recursion failing well inside the default step budget.
+const MAX_FRAME_DEPTH = 20_000;
+
 interface FrameContext {
   activeFrame?: Activation;
   retainsTransferableFrame?: boolean;
@@ -344,6 +350,8 @@ interface Activation {
   /// `finish_defer` restores the fault the boundary was entered with.
   parked: Array<Fault | null>;
   caller: Activation | null;
+  /// Frames between this activation and its task's root, which is 0.
+  depth: number;
   /// Where the caller binds this activation's return value.
   result: CallResult;
   normal: Edge | undefined;
@@ -805,6 +813,7 @@ class ExecutorV1 {
       fault: null,
       parked: [],
       caller,
+      depth: caller ? caller.depth + 1 : 0,
       result,
       normal: normal ?? undefined,
       unwind,
@@ -3350,6 +3359,10 @@ class ExecutorV1 {
           this.raiseFault(act, fault, term.unwind);
           this.scheduler.enqueue(act.context.id, () => this.runFrame(act));
         },
+        act.context.actor?.rcOwner ?? null,
+        false,
+        undefined,
+        act,
       );
       act.context.cancel = (fault) => callback.cancel?.(fault);
     };
@@ -4131,6 +4144,18 @@ class ExecutorV1 {
         return;
       }
       case "Safepoint": {
+        // A function's entry safepoint is its stack check (HEW-SPEC-2026
+        // §2.2): past the frame limit the call fails with `StackOverflow`
+        // and its parameters follow the cancellation cleanup.
+        if (
+          term.cancel &&
+          act.depth > MAX_FRAME_DEPTH &&
+          act.block.id === act.fn.entry
+        ) {
+          act.fault = { kind: "trap", trap: "stack_overflow" };
+          this.takeEdge(act, term.cancel);
+          return;
+        }
         if (act.context.pollSuppression) {
           this.takeEdge(act, term.resumes[0]!);
           return;
@@ -5091,6 +5116,10 @@ class ExecutorV1 {
     rcOwner: RcOwner | null = actor?.rcOwner ?? null,
     inline = false,
     retainedBy?: Activation,
+    // The activation this frame runs on behalf of. Its depth carries on, so a
+    // recursion through runtime callbacks reaches the frame limit as a direct
+    // one does.
+    invoker: Activation | undefined = retainedBy,
   ): FrameContext {
     const context: FrameContext = {
       id: actor?.id ?? "actor:root",
@@ -5118,6 +5147,7 @@ class ExecutorV1 {
       null,
       context,
     );
+    if (invoker) frame.depth = invoker.depth + 1;
     retainedBy?.managedChildren.add(frame);
     let cancelled: Fault | null = null;
     context.cancel = (
@@ -6741,7 +6771,9 @@ class ExecutorV1 {
                     ? "CrashKindTimerOverdue"
                     : code === 213
                       ? "CrashKindHandlerFailed"
-                      : "CrashKindFault",
+                      : code === 215
+                        ? "CrashKindStackOverflow"
+                        : "CrashKindFault",
               ),
               payload: [],
             },
@@ -7452,6 +7484,7 @@ const TRAP_FAULTS = {
   vector_bounds: [205, "IndexOutOfBounds"],
   actor_refused: [-4, "Refused"],
   heap_exceeded: [200, "HeapExceeded"],
+  stack_overflow: [215, "StackOverflow"],
 } satisfies Record<TrapName, [number, string]>;
 
 function faultApplicationMessage(fault: Fault): string | undefined {
@@ -7732,6 +7765,8 @@ function trapMessage(trap: TrapName): string {
       return "delivery refused by interceptor";
     case "heap_exceeded":
       return "actor heap limit exceeded";
+    case "stack_overflow":
+      return "stack overflow";
   }
 }
 

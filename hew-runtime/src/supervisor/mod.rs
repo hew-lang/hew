@@ -532,7 +532,7 @@ pub const CRASH_ACTION_KILL: i32 = 2;
 pub use crate::internal::types::{
     ExitReason, HEW_TRAP_ACTOR_SEND_FAILED, HEW_TRAP_DIVIDE_BY_ZERO, HEW_TRAP_HEAP_EXCEEDED,
     HEW_TRAP_INDEX_OUT_OF_BOUNDS, HEW_TRAP_INTEGER_OVERFLOW, HEW_TRAP_SHIFT_OUT_OF_RANGE,
-    HEW_TRAP_SIGNED_MIN_DIV_NEG_ONE,
+    HEW_TRAP_SIGNED_MIN_DIV_NEG_ONE, HEW_TRAP_STACK_OVERFLOW,
 };
 
 /// C-unwind trap entry point invoked by generated code for a logical Hew

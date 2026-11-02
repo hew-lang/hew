@@ -87,3 +87,7 @@ scripts/.hew-suite-expected-failures.generated.txt
 
 # Local benchmark output
 /examples/benchmarks/results.csv
+
+# Corpora and artefacts of every cargo-fuzz crate.
+/*/fuzz/corpus/
+/*/fuzz/artifacts/

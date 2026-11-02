@@ -370,7 +370,17 @@ fn write_node(buf: &mut String, node: &XmlNodeKind) {
             }
         }
         XmlNodeKind::Text(text) => {
-            buf.push_str(&escape_text(text));
+            if !text.is_empty() && text.trim().is_empty() {
+                // The reader ignores whitespace-only ordinary text as
+                // indentation, but retains explicit CDATA. Keep that
+                // distinction when printing a whitespace-only text node.
+                // Such nodes originate in CDATA, whose CRs are already LF.
+                buf.push_str("<![CDATA[");
+                buf.push_str(text);
+                buf.push_str("]]>");
+            } else {
+                buf.push_str(&escape_text(text));
+            }
         }
     }
 }
@@ -730,6 +740,39 @@ mod tests {
         // SAFETY: ptr is an owned managed result.
         unsafe { string_release(ptr) };
         Some(s)
+    }
+
+    #[test]
+    fn whitespace_cdata_survives_serialization() {
+        for source in [
+            "<r><![CDATA[\n]]></r>",
+            "<r><![CDATA[ \t\r\n]]></r>",
+            "<r><![CDATA[\u{a0}]]></r>",
+            "<r><![CDATA[ ]]><c/><![CDATA[\t]]></r>",
+            "<r>a<![CDATA[ ]]><c/>b</r>",
+        ] {
+            let node = parse(source);
+            assert!(!node.is_null(), "{source:?}");
+            // SAFETY: both trees remain live until released below.
+            unsafe {
+                let text = read_and_free_string(hew_xml_get_text(node));
+                let printed = read_and_free_string(hew_xml_to_string(node));
+                let reparsed = parse(&printed);
+                assert!(!reparsed.is_null(), "{printed:?}");
+                assert_eq!(
+                    read_and_free_string(hew_xml_get_text(reparsed)),
+                    text,
+                    "{source:?}"
+                );
+                assert_eq!(
+                    read_and_free_string(hew_xml_to_string(reparsed)),
+                    printed,
+                    "{source:?}"
+                );
+                hew_xml_free(reparsed);
+                hew_xml_free(node);
+            }
+        }
     }
 
     #[test]

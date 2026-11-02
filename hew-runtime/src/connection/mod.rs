@@ -53,6 +53,8 @@ use channel::ChannelProtection;
 mod admission;
 mod channel;
 mod control;
+#[cfg(feature = "fuzzing")]
+pub(crate) mod fuzz_fixture;
 mod gossip;
 mod handshake;
 mod identity_claim;

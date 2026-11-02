@@ -1,0 +1,13 @@
+grant_id: 7
+target:
+  node: SAAAAAAAAAAAAAAAAAAAAg==
+  target_id: 4
+  incarnation: 1
+  target_kind: 0
+recipient:
+  node: SAAAAAAAAAAAAAAAAAAAAQ==
+  incarnation: 1
+handlers:
+- tests.Service.read
+- tests.Service.write
+request_id: 3

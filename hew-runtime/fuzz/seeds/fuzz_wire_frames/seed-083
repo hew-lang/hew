@@ -1,0 +1,18 @@
+msg_type = 3
+incarnation = 3
+
+[from]
+node = "SAAAAAAAAAAAAAAAAAAAAg=="
+incarnation = 1
+
+[target]
+node = "SAAAAAAAAAAAAAAAAAAAAw=="
+incarnation = 1
+
+[[gossip]]
+state = 1
+incarnation = 2
+
+[gossip.member]
+node = "SAAAAAAAAAAAAAAAAAAAAw=="
+incarnation = 1

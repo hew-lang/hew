@@ -1,0 +1,13 @@
+[[case]]
+id = "stack-overflow-supervised-restart"
+intent = "Stack exhaustion fails only the recursing actor with StackOverflow; cleanup runs, the crash hook sees the kind, the supervisor restarts it, and the depth floor holds in main, a handler and a task."
+source = "cases/stack-overflow-supervised-restart.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 60
+
+[case.env]
+HEW_WORKERS = "2"
+
+[case.expected]
+stdout = "10000\n10000\nunbounded cleanup ran\nwalker overflowed\n0\n10000\n10000\nprocess continued\n"
+exit = 0

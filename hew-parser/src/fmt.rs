@@ -110,10 +110,7 @@ pub fn format_source(source: &str, program: &Program) -> String {
 fn with_line_endings(text: &str, crlf: bool) -> String {
     let mut out = String::with_capacity(text.len());
     let mut gap_start = 0;
-    let spans = hew_lexer::Lexer::new(text)
-        .map(|(_, span)| (span.start, span.end))
-        .chain(std::iter::once((text.len(), text.len())));
-    for (start, end) in spans {
+    for (start, end) in line_ending_spans(text) {
         let gap = text[gap_start..start].replace("\r\n", "\n");
         if crlf {
             out.push_str(&gap.replace('\n', "\r\n"));
@@ -124,6 +121,63 @@ fn with_line_endings(text: &str, crlf: bool) -> String {
         gap_start = end;
     }
     out
+}
+
+/// Contents protected from layout normalization. Raw macro token trees are
+/// observable through `stringify!`, so their line endings must stay verbatim,
+/// just like a string literal. Doc tokens, however, include a terminal CR
+/// that belongs to their following line break.
+fn line_ending_spans(text: &str) -> Vec<(usize, usize)> {
+    use hew_lexer::Token;
+
+    let tokens: Vec<_> = hew_lexer::Lexer::new(text).collect();
+    let mut spans = Vec::with_capacity(tokens.len() + 1);
+    let mut index = 0;
+    while index < tokens.len() {
+        let raw_macro = match tokens.get(index..index + 3) {
+            Some([(Token::Identifier(name), _), (Token::Bang, _), (Token::LeftParen, _)]) => {
+                !crate::macro_syntax::is_builtin_macro(name)
+                    || index > 0 && matches!(tokens[index - 1].0, Token::Dot)
+            }
+            Some([(Token::Macro, _), (name, _), (Token::LeftBrace, _)]) => {
+                crate::parser::Parser::is_ident_token(name)
+            }
+            _ => false,
+        };
+        if raw_macro {
+            let mut depth = 0usize;
+            let close = tokens[index + 2..].iter().position(|(token, _)| {
+                match token {
+                    Token::LeftParen
+                    | Token::LeftBrace
+                    | Token::LeftBracket
+                    | Token::HashBracket => depth += 1,
+                    Token::RightParen | Token::RightBrace | Token::RightBracket => {
+                        depth = depth.saturating_sub(1);
+                    }
+                    _ => {}
+                }
+                depth == 0
+            });
+            if let Some(close) = close {
+                let close = index + 2 + close;
+                spans.push((tokens[index].1.start, tokens[close].1.end));
+                index = close + 1;
+                continue;
+            }
+        }
+        let (token, span) = &tokens[index];
+        let end = match token {
+            Token::DocComment(t) | Token::InnerDocComment(t) => {
+                span.start + t.trim_end_matches('\r').len()
+            }
+            _ => span.end,
+        };
+        spans.push((span.start, end));
+        index += 1;
+    }
+    spans.push((text.len(), text.len()));
+    spans
 }
 
 /// Format `program` with the comments of `source`, refusing any output that
@@ -553,9 +607,9 @@ impl<'a> Formatter<'a> {
     }
 
     /// Write `open`, the items separated by commas, then `close`. When the
-    /// source list between the bracket tokens `bounds` holds comments, the
-    /// list breaks one item per line so every comment stays beside the item
-    /// it annotates; `angles` counts `<…>` as nesting (type lists). The
+    /// source list between the bracket tokens `bounds` breaks across lines,
+    /// keep one item per line. Nested groups lay out their own line breaks;
+    /// `angles` counts `<…>` as nesting (type lists). The
     /// broken layout ends the last item with a comma when `last_comma`.
     #[expect(
         clippy::too_many_arguments,
@@ -572,9 +626,9 @@ impl<'a> Formatter<'a> {
         mut fmt_item: impl FnMut(&mut Self, &T),
     ) {
         let layout = bounds.and_then(|(open_token, close_token)| {
-            let commented = self.list_has_line_comment(open_token, close_token);
+            let multiline = self.list_has_line_break(open_token, close_token);
             let starts = self.list_item_starts(open_token, close_token, angles);
-            (commented && starts.len() == items.len()).then_some((starts, open_token, close_token))
+            (multiline && starts.len() == items.len()).then_some((starts, open_token, close_token))
         });
         let Some((starts, open_token, close_token)) = layout else {
             self.write(open);
@@ -611,12 +665,9 @@ impl<'a> Formatter<'a> {
         self.write(close.trim_start().trim_start_matches(','));
     }
 
-    /// Whether a line comment (or a block comment spanning lines) sits
-    /// directly in the list between the bracket tokens `open` and `close`,
-    /// outside any nested bracket group, which lays out its own comments.
-    /// A block comment on one line stays inline beside its item.
-    fn list_has_line_comment(&self, open: usize, close: usize) -> bool {
-        let breaks_line = |c: &Comment| c.text.starts_with("//") || c.text.contains('\n');
+    /// Whether the list has a line break outside its nested bracket groups,
+    /// including any line or multiline comments between its items.
+    fn list_has_line_break(&self, open: usize, close: usize) -> bool {
         let mut index = open;
         while index < close {
             // `index` is a token at the list's own level; the next one
@@ -628,11 +679,7 @@ impl<'a> Formatter<'a> {
                 .copied()
                 .unwrap_or(index);
             let gap = self.tokens[after].1.end..self.tokens[after + 1].1.start;
-            let commented = self.comments[self.next_comment..]
-                .iter()
-                .take_while(|c| c.span.start < gap.end)
-                .any(|c| gap.contains(&c.span.start) && breaks_line(c));
-            if commented {
+            if self.source[gap].contains('\n') {
                 return true;
             }
             index = after + 1;
@@ -3766,6 +3813,23 @@ impl<'a> Formatter<'a> {
         self.write("}");
     }
 
+    fn format_let_pattern(&mut self, pattern: &Spanned<Pattern>) {
+        // The parser represents `_ = value;` as a wildcard let statement.
+        // Preserve its spelling rather than introducing a keyword, including
+        // inside inline generator blocks.
+        let bare_discard = !self.source.is_empty()
+            && matches!(pattern.0, Pattern::Wildcard)
+            && self
+                .token_at_or_after(pattern.1.start)
+                .checked_sub(1)
+                .and_then(|index| self.tokens.get(index))
+                .is_some_and(|(token, _)| !matches!(token, hew_lexer::Token::Let));
+        if !bare_discard {
+            self.write("let ");
+        }
+        self.format_pattern(pattern);
+    }
+
     fn format_stmt_inline(&mut self, stmt: &Stmt) {
         match stmt {
             Stmt::Let {
@@ -3774,8 +3838,7 @@ impl<'a> Formatter<'a> {
                 value,
                 else_block,
             } => {
-                self.write("let ");
-                self.format_pattern(pattern);
+                self.format_let_pattern(pattern);
                 if let Some(ty) = ty {
                     self.write(": ");
                     self.format_type_expr(&ty.0);
@@ -3873,8 +3936,7 @@ impl<'a> Formatter<'a> {
                 else_block,
             } => {
                 self.write_indent();
-                self.write("let ");
-                self.format_pattern(pattern);
+                self.format_let_pattern(pattern);
                 if let Some(ty) = ty {
                     self.write(": ");
                     self.format_type_expr(&ty.0);

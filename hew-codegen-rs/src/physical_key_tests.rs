@@ -200,6 +200,7 @@ fn engine<'ctx>(llvm: &Module<'ctx>, optimized: bool) -> ExecutionEngine<'ctx> {
     let machine = crate::llvm::target_machine_for_triple_with_opt_level(&triple, level).unwrap();
     llvm.set_triple(&machine.get_triple());
     crate::llvm::run_module_pipeline(llvm, &machine, level).unwrap();
+    crate::physical::test_runtime::disable_stack_check_for_jit(llvm);
     let engine = llvm
         .create_jit_execution_engine(inkwell::OptimizationLevel::None)
         .unwrap();

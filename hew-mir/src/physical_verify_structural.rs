@@ -799,7 +799,7 @@ pub(crate) fn verify_physical_function(
         for operation in &block.ops {
             verify_operation_storage(module, function, operation)?;
         }
-        verify_terminator(module, function, &block_ids, &block.terminator)?;
+        verify_terminator(module, function, &block_ids, block)?;
     }
     // Compute the suffix facts once, retaining any error. Initialization keeps
     // its existing diagnostic priority over stale physical cleanup sites.

@@ -1588,6 +1588,7 @@ fn scalar_and_vector_loop_chunks_preserve_the_shared_budget_across_serial_calls(
         let machine = crate::llvm::target_machine_for_triple_with_opt_level(&triple, opt).unwrap();
         let llvm = build_module(&ctx, verified.module(), "shared_loop_budget", &machine).unwrap();
         crate::llvm::run_module_pipeline(&llvm, &machine, opt).unwrap();
+        crate::physical::test_runtime::disable_stack_check_for_jit(&llvm);
         let engine = llvm
             .create_jit_execution_engine(inkwell::OptimizationLevel::None)
             .unwrap();
@@ -1752,6 +1753,7 @@ fn vector_loop_chunks_preserve_empty_scans_bounds_and_overflow_at_o0_o2() {
         let machine = crate::llvm::target_machine_for_triple_with_opt_level(&triple, opt).unwrap();
         let llvm = build_module(&ctx, verified.module(), "vector_loop_bounds", &machine).unwrap();
         crate::llvm::run_module_pipeline(&llvm, &machine, opt).unwrap();
+        crate::physical::test_runtime::disable_stack_check_for_jit(&llvm);
         let engine = llvm
             .create_jit_execution_engine(inkwell::OptimizationLevel::None)
             .unwrap();
@@ -1838,6 +1840,7 @@ fn active_operation_root_uses_the_split_coroutine_owner_slot() {
         builder.build_unconditional_branch(frame.finish).unwrap();
         llvm.verify().unwrap();
         crate::llvm::run_module_pipeline(&llvm, &machine, opt).unwrap();
+        crate::physical::test_runtime::disable_stack_check_for_jit(&llvm);
         let engine = llvm
             .create_jit_execution_engine(inkwell::OptimizationLevel::None)
             .unwrap();

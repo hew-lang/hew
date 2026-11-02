@@ -1,0 +1,7 @@
+op: 5
+name: worker café
+location:
+  node: SAAAAAAAAAAAAAAAAAAAAg==
+  target_id: 4
+  incarnation: 1
+  target_kind: 0

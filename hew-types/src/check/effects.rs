@@ -20,7 +20,73 @@ use crate::Ty;
 mod effect_solver;
 #[path = "effect_instances.rs"]
 mod instances;
-use effect_solver::EffectSolver;
+use effect_solver::{EffectProgress, EffectSolver};
+
+/// A checkpoint's solved dependency effects. A root resumes the solver from
+/// this progress and answers only its own bodies and calls.
+#[derive(Debug, Default)]
+pub(super) struct EffectMemo {
+    progress: EffectProgress,
+    /// Every dependency body, call owner and release owner `progress` settled.
+    settled: HashSet<EffectBody>,
+    suspending: HashSet<EffectBody>,
+    calls: HashMap<EffectCallSite, bool>,
+    obligations: usize,
+    /// Generic declarations a root call would give a dependency obligation
+    /// another construction context.
+    obligation_contexts: HashSet<crate::DefId>,
+    flow_sites: HashSet<SpanKey>,
+    /// Every dependency callable formal, and those whose context-free
+    /// sources the dependency solve read.
+    formals: HashSet<TypeBindingId>,
+    read_formals: HashSet<TypeBindingId>,
+}
+
+impl EffectMemo {
+    /// Dependency answers hold for this root only when it adds no obligation
+    /// (its witness would depend on solve order), constructs no dependency
+    /// obligation in a new context, and passes no callable to a dependency
+    /// formal (that formal's context-free sources would grow).
+    fn holds_for(
+        &self,
+        checker: &Checker,
+        graph: &EffectGraph,
+        flows: &HashMap<SpanKey, Vec<super::CallableArgumentFlow>>,
+    ) -> bool {
+        graph.obligations.len() == self.obligations
+            && self.root_flows_avoid(flows, &self.read_formals)
+            && graph.calls.keys().all(|site| {
+                self.calls.contains_key(site)
+                    || !matches!(
+                        checker.effect_call_target(site),
+                        Some(CallTarget::User(id) | CallTarget::ImplMethod(id))
+                            if self.obligation_contexts.contains(id)
+                    )
+            })
+    }
+
+    /// No root argument flows into a dependency formal, so every dependency
+    /// formal keeps exactly the context-free sources it was settled with.
+    pub(super) fn flows_hold_for(
+        &self,
+        flows: &HashMap<SpanKey, Vec<super::CallableArgumentFlow>>,
+    ) -> bool {
+        self.root_flows_avoid(flows, &self.formals)
+    }
+
+    /// Even an argument with no callable candidates settles a formal that had
+    /// no source at all, so any root flow into `formals` invalidates them.
+    fn root_flows_avoid(
+        &self,
+        flows: &HashMap<SpanKey, Vec<super::CallableArgumentFlow>>,
+        formals: &HashSet<TypeBindingId>,
+    ) -> bool {
+        flows.iter().all(|(site, flows)| {
+            self.flow_sites.contains(site)
+                || flows.iter().all(|flow| !formals.contains(&flow.formal))
+        })
+    }
+}
 
 /// The checker-owned contract consumed by lowering.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -1193,24 +1259,81 @@ impl Checker {
         flows: &HashMap<SpanKey, Vec<super::CallableArgumentFlow>>,
     ) -> SuspensionEffects {
         let graph = std::mem::take(&mut self.effect_graph);
-        let mut solver = EffectSolver::new(self, &graph, flows);
-        let mut conservative = HashMap::new();
+        let memo = self
+            .finalization_memo
+            .shared()
+            .filter(|memo| memo.effects.holds_for(self, &graph, flows));
+        if memo.is_some() {
+            self.finalization_memo.reused(|reused| reused.effects += 1);
+        }
+        let memo = memo.as_ref().map(|memo| &memo.effects);
+        let mut solver = match memo {
+            Some(memo) => EffectSolver::resume(
+                self,
+                &graph,
+                flows,
+                memo.progress.clone(),
+                &memo.settled,
+                &memo.flow_sites,
+            ),
+            None => EffectSolver::new(self, &graph, flows),
+        };
+        let mut conservative = HashSet::new();
         for body in graph.bodies.keys() {
-            if let Some(witness) = solver.body(body, true) {
-                conservative.insert(body.clone(), witness);
+            let suspends = match memo {
+                Some(memo) if memo.settled.contains(body) => memo.suspending.contains(body),
+                _ => solver.body(body, true).is_some(),
+            };
+            if suspends {
+                conservative.insert(body.clone());
             }
         }
         let calls: HashMap<_, _> = graph
             .calls
             .iter()
-            .map(|(key, invocation)| (key.clone(), solver.invocation(key, invocation)))
+            .map(|(key, invocation)| {
+                let suspends = memo
+                    .and_then(|memo| memo.calls.get(key).copied())
+                    .unwrap_or_else(|| solver.invocation(key, invocation));
+                (key.clone(), suspends)
+            })
             .collect();
+        // A memo holds only for a root with no obligation of its own, and a
+        // recorded dependency set discharged all of its obligations.
         let failures: Vec<_> = graph
             .obligations
             .iter()
-            .map(|obligation| solver.obligation(obligation))
+            .map(|obligation| {
+                if memo.is_some() {
+                    Vec::new()
+                } else {
+                    solver.obligation(obligation)
+                }
+            })
             .collect();
-        drop(solver);
+        if self.finalization_memo.is_recording() {
+            let mut settled: HashSet<EffectBody> = graph.bodies.keys().cloned().collect();
+            settled.extend(graph.calls.values().filter_map(|call| call.owner.clone()));
+            settled.extend(graph.releases.iter().map(|release| release.owner.clone()));
+            settled.extend(graph.once_releases.keys().cloned());
+            let progress = solver.into_progress();
+            let effects = EffectMemo {
+                read_formals: progress.read_formals().clone(),
+                progress,
+                settled,
+                suspending: conservative.clone(),
+                calls: calls.clone(),
+                obligations: graph.obligations.len(),
+                obligation_contexts: self.obligation_context_declarations(&graph),
+                flow_sites: flows.keys().cloned().collect(),
+                formals: self.callable_formals.values().flatten().copied().collect(),
+            };
+            if let Some(record) = self.finalization_memo.record() {
+                record.effects = effects;
+            }
+        } else {
+            drop(solver);
+        }
         let mut output = SuspensionEffects {
             send_obligations: graph
                 .send_obligations
@@ -1264,7 +1387,7 @@ impl Checker {
         for body in graph.bodies.keys() {
             output.bodies.insert(
                 body.clone(),
-                SuspensionEffect::from_bool(conservative.contains_key(body)),
+                SuspensionEffect::from_bool(conservative.contains(body)),
             );
         }
         for (site, invocation) in &graph.calls {

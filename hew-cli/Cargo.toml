@@ -9,9 +9,18 @@ repository = "https://github.com/hew-lang/hew"
 keywords = ["hew", "compiler", "programming-language"]
 categories = ["compilers", "command-line-utilities"]
 
+[lib]
+name = "hew_cli"
+path = "src/lib.rs"
+doctest = false
+
 [[bin]]
 name = "hew"
 path = "src/main.rs"
+
+[features]
+# In-process entry points for the cargo-fuzz targets in `fuzz/`.
+fuzzing = []
 
 [dependencies]
 hew-runtime = { path = "../hew-runtime", default-features = false, features = [

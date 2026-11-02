@@ -1,0 +1,13 @@
+[[case]]
+id = "stack-overflow-monitor"
+intent = "Links and monitors observe a stack-exhausted actor with CrashKind.StackOverflow."
+source = "cases/stack-overflow-monitor.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 60
+
+[case.env]
+HEW_WORKERS = "2"
+
+[case.expected]
+stdout = "link and monitor saw StackOverflow\n"
+exit = 1

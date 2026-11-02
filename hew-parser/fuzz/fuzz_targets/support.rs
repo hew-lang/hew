@@ -20,7 +20,10 @@ pub fn checker() -> Checker {
     Checker::new(ModuleRegistry::new(module_search_paths()))
 }
 
-#[allow(dead_code, reason = "shared by every fuzz target; each target uses a subset")]
+#[allow(
+    dead_code,
+    reason = "shared by every fuzz target; each target uses a subset"
+)]
 pub fn parse_check_lower(source: &str) -> Option<hew_compile::SessionOutput> {
     let parsed = hew_parser::parse(source);
     if parsed.errors.iter().any(|e| e.severity == Severity::Error) {
@@ -41,7 +44,10 @@ pub fn parse_check_lower(source: &str) -> Option<hew_compile::SessionOutput> {
     .ok()
 }
 
-#[allow(dead_code, reason = "shared by every fuzz target; each target uses a subset")]
+#[allow(
+    dead_code,
+    reason = "shared by every fuzz target; each target uses a subset"
+)]
 pub fn exercise_parse_check_lower(source: &str) {
     let _ = parse_check_lower(source);
 }

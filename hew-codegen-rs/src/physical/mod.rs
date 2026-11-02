@@ -112,7 +112,7 @@ use hew_parser::ast::{BinaryOp, UnaryOp};
 use hew_runtime::internal::types::{
     HEW_TRAP_ACTOR_SEND_FAILED, HEW_TRAP_DIVIDE_BY_ZERO, HEW_TRAP_INDEX_OUT_OF_BOUNDS,
     HEW_TRAP_INTEGER_OVERFLOW, HEW_TRAP_SHIFT_OUT_OF_RANGE, HEW_TRAP_SIGNED_MIN_DIV_NEG_ONE,
-    HEW_TRAP_USER_PANIC,
+    HEW_TRAP_STACK_OVERFLOW, HEW_TRAP_USER_PANIC,
 };
 use hew_runtime::vec::HewTypeOwnershipKind;
 use hew_types::runtime_call::{

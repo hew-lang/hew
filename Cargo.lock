@@ -2284,6 +2284,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "hew-parity-gen"
+version = "0.10.0-rc1"
+dependencies = [
+ "arbitrary",
+ "hew-parser",
+ "hew-types",
+]
+
+[[package]]
 name = "hew-parser"
 version = "0.10.0-rc1"
 dependencies = [

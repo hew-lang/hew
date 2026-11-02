@@ -1,6 +1,25 @@
 use hew_parser::ast::Ident;
 use hew_parser::ast::{CallArg, Expr, Item, Pattern, Stmt};
 
+#[test]
+fn malformed_macro_interpolation_keeps_nested_diagnostics() {
+    for hole in ["[", "(", ")", "]", "{", "([)]"] {
+        // A failure in the interpolation's token-tree parser must not turn
+        // the whole invocation into a silently discarded, parse-clean item.
+        for suffix in ["", ")", "); fn main() {}"] {
+            let source = format!("c!(f\"{{{hole}}}\"{suffix}");
+            let parsed = hew_parser::parse(&source);
+            assert!(
+                parsed
+                    .errors
+                    .iter()
+                    .any(|e| e.severity == hew_parser::Severity::Error),
+                "invalid macro interpolation was accepted: {source:?}"
+            );
+        }
+    }
+}
+
 /// `=~` was removed in v0.5: regex matching now goes through `Pattern.is_match`
 /// or a match arm with a regex literal pattern.  The parser emits
 /// `E_REGEX_OP_REMOVED` with a hint pointing at the match-arm form.

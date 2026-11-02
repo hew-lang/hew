@@ -539,6 +539,10 @@ pub const HEW_TRAP_USER_PANIC: i32 = 212;
 pub const HEW_TRAP_ACTOR_UNHANDLED_FAILURE: i32 = 213;
 /// An actor-owned one-shot request missed its handler-start deadline.
 pub const HEW_TRAP_ACTOR_TIMER_OVERDUE: i32 = 214;
+/// A call found its thread's stack exhausted at the callee's entry check.
+/// The callee took its entry fault exit, so the failure unwinds through
+/// ordinary cleanup like any other trap.
+pub const HEW_TRAP_STACK_OVERFLOW: i32 = 215;
 
 // ── Reply-failure classification ─────────────────────────────────────────
 //
@@ -650,6 +654,8 @@ pub enum ExitReason {
     ActorUnhandledFailure,
     /// An actor-owned one-shot request did not start before its overdue deadline.
     ActorTimerOverdue,
+    /// A call exhausted its thread's stack (error code 215).
+    StackOverflow,
     /// Actor crashed with a hardware signal or via `hew_panic`. The raw
     /// signal number is preserved.
     Signal(i32),
@@ -683,6 +689,7 @@ impl ExitReason {
             ExitReason::UserPanic => "UserPanic",
             ExitReason::ActorUnhandledFailure => "ActorUnhandledFailure",
             ExitReason::ActorTimerOverdue => "ActorTimerOverdue",
+            ExitReason::StackOverflow => "StackOverflow",
             ExitReason::Signal(_) => "Signal",
             ExitReason::Normal => "Normal",
         }
@@ -709,6 +716,7 @@ impl ExitReason {
             HEW_TRAP_USER_PANIC => ExitReason::UserPanic,
             HEW_TRAP_ACTOR_UNHANDLED_FAILURE => ExitReason::ActorUnhandledFailure,
             HEW_TRAP_ACTOR_TIMER_OVERDUE => ExitReason::ActorTimerOverdue,
+            HEW_TRAP_STACK_OVERFLOW => ExitReason::StackOverflow,
             sig => ExitReason::Signal(sig),
         }
     }
@@ -730,6 +738,8 @@ impl ExitReason {
     /// - `HeapExceeded` → `CrashKind::HeapExceeded` (the per-actor arena cap).
     /// - `ActorUnhandledFailure` → `CrashKind::HandlerFailed`.
     /// - `ActorTimerOverdue` → `CrashKind::TimerOverdue`.
+    /// - `StackOverflow` → `CrashKind::StackOverflow` (a resource limit, like
+    ///   the arena cap).
     /// - every other fault class (traps, signals, send failures, internal
     ///   compiler-invariant traps, wire-decode failures) → `CrashKind::Crashed`.
     /// - `Normal` is not a crash; it projects to `Crashed` defensively but a
@@ -744,6 +754,7 @@ impl ExitReason {
             ExitReason::HeapExceeded => CrashKind::HeapExceeded,
             ExitReason::ActorUnhandledFailure => CrashKind::HandlerFailed,
             ExitReason::ActorTimerOverdue => CrashKind::TimerOverdue,
+            ExitReason::StackOverflow => CrashKind::StackOverflow,
             ExitReason::IntegerOverflow
             | ExitReason::DivideByZero
             | ExitReason::SignedMinDivNegOne
@@ -767,7 +778,8 @@ impl ExitReason {
 ///
 /// The discriminants match the std enum's DECLARATION ORDER (the tagged-union
 /// tag a Hew `CrashKind` value carries): `Fault = 0`, `HeapExceeded = 1`,
-/// `PartitionDetected = 2`, `HandlerFailed = 3`, `TimerOverdue = 4`. M-7 delivers this tag in a typed
+/// `PartitionDetected = 2`, `HandlerFailed = 3`, `TimerOverdue = 4`,
+/// `StackOverflow = 5`. M-7 delivers this tag in a typed
 /// `CrashNotification { target, kind }` to a linked actor's exit hook; the
 /// `as i32` tag is the wire value.
 ///
@@ -787,6 +799,8 @@ pub enum CrashKind {
     HandlerFailed = 3,
     /// An actor-owned timer missed its handler-start deadline.
     TimerOverdue = 4,
+    /// A call exhausted the actor's stack.
+    StackOverflow = 5,
 }
 
 impl CrashKind {
@@ -829,6 +843,10 @@ mod crash_kind_projection_tests {
         assert_eq!(
             CrashKind::tag_from_error_code(HEW_TRAP_ACTOR_TIMER_OVERDUE),
             CrashKind::TimerOverdue.tag()
+        );
+        assert_eq!(
+            CrashKind::tag_from_error_code(HEW_TRAP_STACK_OVERFLOW),
+            CrashKind::StackOverflow.tag()
         );
     }
 
@@ -891,6 +909,7 @@ mod crash_kind_projection_tests {
             ExitReason::WireDecodeFailed,
             ExitReason::JoinBranchFailed,
             ExitReason::UserPanic,
+            ExitReason::StackOverflow,
             ExitReason::Signal(-1),
             ExitReason::Normal,
         ];

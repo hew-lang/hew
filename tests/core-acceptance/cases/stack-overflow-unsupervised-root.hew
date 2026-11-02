@@ -1,0 +1,14 @@
+// Stack exhaustion in main is an unrecovered fault: deferred cleanup runs,
+// the process reports StackOverflow and exits 1 rather than dying on a signal.
+fn descend(n: i64) -> i64 {
+    let below = descend(n + 1);
+    below - n
+}
+
+fn main() {
+    defer {
+        println("main cleanup ran");
+    }
+    println("descending");
+    println(descend(0));
+}

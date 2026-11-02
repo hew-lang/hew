@@ -1,0 +1,13 @@
+[[case]]
+id = "stack-depth-floor"
+intent = "The 10,000-call depth floor holds for an ordinary function with locals, a string and a vector in main, an actor handler and a task."
+source = "cases/stack-depth-floor.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 60
+
+[case.env]
+HEW_WORKERS = "2"
+
+[case.expected]
+stdout = "64548\n64548\n64548\n"
+exit = 0

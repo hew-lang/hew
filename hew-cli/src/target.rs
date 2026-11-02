@@ -103,6 +103,11 @@ pub struct NativeLinkPlan {
     /// /DEFAULTLIB:msvcrt`) is required to match the Rust runtime's CRT.
     pub needs_windows_crt_fixup: bool,
 
+    /// Linker flags sizing the main thread's stack to the 16 MiB the
+    /// stack-depth floor assumes (HEW-SPEC-2026 §2.2) on platforms that fix it
+    /// at link time. Linux and FreeBSD grow it at run time instead.
+    pub main_stack_flags: &'static [&'static str],
+
     /// `true` when a `dsymutil` pass should follow a successful debug link.
     ///
     /// Set for Darwin targets; whether the tool is actually present on the
@@ -211,6 +216,7 @@ impl TargetSpec {
                 cxx_runtime_libs: &["-lc++"],
                 needs_darwin_sdk: true,
                 needs_windows_crt_fixup: false,
+                main_stack_flags: &["-Wl,-stack_size,0x1000000"],
                 needs_dsymutil: true,
                 needs_pdb_debug: false,
             },
@@ -221,6 +227,7 @@ impl TargetSpec {
                 cxx_runtime_libs: &["-lstdc++"],
                 needs_darwin_sdk: false,
                 needs_windows_crt_fixup: false,
+                main_stack_flags: &[],
                 needs_dsymutil: false,
                 needs_pdb_debug: false,
             },
@@ -233,6 +240,7 @@ impl TargetSpec {
                 cxx_runtime_libs: &["-lc++"],
                 needs_darwin_sdk: false,
                 needs_windows_crt_fixup: false,
+                main_stack_flags: &[],
                 needs_dsymutil: false,
                 needs_pdb_debug: false,
             },
@@ -261,6 +269,8 @@ impl TargetSpec {
                 // Clang defaults to the static CRT (libcmt) but the Rust-compiled
                 // runtime uses the DLL CRT (msvcrt).  The CRT linkage must match.
                 needs_windows_crt_fixup: true,
+                // Windows reserves 1 MiB for the main thread by default.
+                main_stack_flags: &["-Wl,/STACK:16777216"],
                 needs_dsymutil: false,
                 // A `-g` Windows link must request the PDB explicitly so lld-link
                 // writes the CodeView records to a `.pdb` next to the `.exe`.
@@ -273,6 +283,7 @@ impl TargetSpec {
                 cxx_runtime_libs: &[],
                 needs_darwin_sdk: false,
                 needs_windows_crt_fixup: false,
+                main_stack_flags: &[],
                 needs_dsymutil: false,
                 needs_pdb_debug: false,
             },

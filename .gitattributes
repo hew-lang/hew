@@ -31,6 +31,11 @@
 # File-read fixtures include empty, NUL and invalid UTF-8 byte sequences.
 /tests/core-acceptance/fixtures/file-resources/*.bin -text
 
+# Fuzz inputs are byte-exact, including HTTP CRLFs and XML carriage returns.
+# Keep the seed generators as text, but never normalize the generated inputs.
+**/fuzz/seeds/fuzz_*/** -text -diff
+**/fuzz/dicts/* text eol=lf
+
 # core-acceptance case manifests carry expected stdout/stderr as literal
 # TOML strings (including triple-quoted multi-line blocks); a CRLF checkout
 # would embed \r into an expectation compared byte-for-byte against the

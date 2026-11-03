@@ -87,3 +87,6 @@ name = "fuzz_net_text"
 path = "fuzz_targets/fuzz_net_text.rs"
 test = false
 doc = false
+
+[patch.crates-io]
+pulldown-cmark = { path = "../../vendor/pulldown-cmark" }

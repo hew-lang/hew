@@ -23,3 +23,6 @@ name = "fuzz_diagnostics"
 path = "fuzz_targets/fuzz_diagnostics.rs"
 test = false
 doc = false
+
+[patch.crates-io]
+pulldown-cmark = { path = "../../vendor/pulldown-cmark" }

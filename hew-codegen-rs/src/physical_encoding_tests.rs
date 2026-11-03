@@ -10,6 +10,76 @@ mod fixture;
 #[path = "physical_encoding_runtime_tests.rs"]
 mod runtime;
 
+#[test]
+fn stdlib_kind_checks_do_not_clone_the_receiver() {
+    use inkwell::values::AnyValue;
+
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
+    for format in ["json", "yaml", "toml"] {
+        let source = format!(
+            r#"
+            import std.encoding.{format};
+            fn main() -> i64 {{
+                let values = {format}.array();
+                let count = values.array_len() handle error {{ -1 }};
+                let number = {format}.from_int(7);
+                let integer = number.get_int() handle error {{ -1 }};
+                let wrong_kind = values.get_int() handle error {{ -1 }};
+                count + integer + wrong_kind
+            }}
+            "#
+        );
+        let parsed = hew_parser::parse(&source);
+        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+        let options = hew_compile::FrontendOptions {
+            module_search_paths: Some(vec![root.clone()]),
+            ..Default::default()
+        };
+        let checked = hew_compile::run_program_frontend_to_typecheck(
+            parsed.program,
+            &source,
+            root.join("tests/encoding_kind_probe.hew").to_str().unwrap(),
+            &options,
+        )
+        .unwrap();
+        let session = hew_compile::Session::from_frontend_options(
+            hew_compile::SessionTarget::native(),
+            &options,
+        );
+        let semantic = session
+            .lower_program(
+                &checked.program,
+                checked.typecheck_result.tco.as_ref().unwrap(),
+            )
+            .unwrap();
+        let target = physical_target_for_inventory(
+            &native_emission_triple(),
+            semantic.physical_plan().inventory(),
+        )
+        .unwrap();
+        let physical = semantic.lower_physical(target).unwrap();
+        let ctx = Context::create();
+        let module = physical.module();
+        let llvm = llvm(&ctx, module);
+        llvm.verify().unwrap();
+        let clone_symbol = format!("@hew_{format}_clone");
+        for function in &module.functions {
+            let callable = &module.callables[function.callable.0 as usize];
+            let symbol = emitted_symbol(module, callable);
+            let body = llvm
+                .get_function(&symbol)
+                .unwrap()
+                .print_to_string()
+                .to_string();
+            assert!(
+                !body.contains(&clone_symbol),
+                "{} copies its encoding receiver:\n{body}",
+                module.defs.path(callable.declaration),
+            );
+        }
+    }
+}
+
 fn physical_fixture(semantic: &hew_sir::SemModule, triple: &str) -> PhysicalModule {
     let target = physical_target_for_inventory(
         triple,

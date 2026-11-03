@@ -78,7 +78,7 @@ fn position(cursor: &Cursor<&[u8]>) -> usize {
 }
 
 fn parse_yaml(text: &str) -> Result<Value, DecodeError> {
-    crate::yaml_value::check_alias_expansion(text)
+    let value = crate::yaml_value::check_alias_expansion(text)
         .and_then(|()| serde_yaml::from_str::<Document>(text))
         .map(|document| document.0)
         .map_err(|e| {
@@ -89,7 +89,46 @@ fn parse_yaml(text: &str) -> Result<Value, DecodeError> {
                 .find(" at line ")
                 .map_or(message.as_str(), |at| &message[..at]);
             DecodeError::syntax_at(Some(text.as_bytes()), offset, reason)
-        })
+        })?;
+    // Text sinks encode a map with non-string keys as a sequence of pairs.
+    // Account for that extra container before accepting a document, so the
+    // canonical writer cannot produce YAML deeper than our reader accepts.
+    if !yaml_canonical_depth_fits(&value, 0) {
+        return Err(DecodeError::syntax_at(
+            Some(text.as_bytes()),
+            text.len(),
+            format!(
+                "canonical YAML nesting exceeds the limit of {}",
+                crate::MAX_DEPTH
+            ),
+        ));
+    }
+    Ok(value)
+}
+
+fn yaml_canonical_depth_fits(value: &Value, depth: usize) -> bool {
+    match value {
+        Value::Seq(items) => {
+            depth < crate::MAX_DEPTH
+                && items
+                    .iter()
+                    .all(|item| yaml_canonical_depth_fits(item, depth + 1))
+        }
+        Value::Map(entries) => {
+            let containers = if entries.iter().all(|(key, _)| matches!(key, Value::Str(_))) {
+                1
+            } else {
+                2
+            };
+            let next_depth = depth + containers;
+            next_depth <= crate::MAX_DEPTH
+                && entries.iter().all(|(key, value)| {
+                    yaml_canonical_depth_fits(key, next_depth)
+                        && yaml_canonical_depth_fits(value, next_depth)
+                })
+        }
+        _ => true,
+    }
 }
 
 fn parse_toml(text: &str) -> Result<Value, DecodeError> {

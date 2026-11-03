@@ -111,14 +111,32 @@ fn with_line_endings(text: &str, crlf: bool) -> String {
     let mut out = String::with_capacity(text.len());
     let mut gap_start = 0;
     for (start, end) in line_ending_spans(text) {
-        let gap = text[gap_start..start].replace("\r\n", "\n");
-        if crlf {
-            out.push_str(&gap.replace('\n', "\r\n"));
-        } else {
-            out.push_str(&gap);
-        }
+        out.push_str(&normalize_layout_line_endings(
+            &text[gap_start..start],
+            crlf,
+        ));
         out.push_str(&text[start..end]);
         gap_start = end;
+    }
+    out
+}
+
+/// Normalize a layout gap, including comments. Consume the whole CR run
+/// before each LF so normalization is idempotent even for `\r\r\n`.
+/// Standalone CRs remain comment content; callers exclude literal and raw
+/// macro spans, whose bytes are program content.
+fn normalize_layout_line_endings(text: &str, crlf: bool) -> String {
+    let mut out = String::with_capacity(text.len());
+    for ch in text.chars() {
+        if ch == '\n' {
+            while out.ends_with('\r') {
+                out.pop();
+            }
+            if crlf {
+                out.push('\r');
+            }
+        }
+        out.push(ch);
     }
     out
 }

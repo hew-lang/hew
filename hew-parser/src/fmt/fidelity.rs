@@ -220,17 +220,29 @@ fn check_line_endings(formatted: &str, crlf: bool) -> Result<(), FidelityError> 
         let gap = &formatted.as_bytes()[gap_start..start];
         let mut line_comment = false;
         let mut block_comments = 0usize;
-        for (i, &b) in gap.iter().enumerate() {
+        let mut i = 0;
+        while i < gap.len() {
+            // Delimiters consume both bytes, just as the lexer does. The
+            // `*/` overlapping the opener in `/*/` does not close it.
+            if !line_comment && gap[i..].starts_with(b"/*") {
+                block_comments += 1;
+                i += 2;
+                continue;
+            }
+            if block_comments > 0 && gap[i..].starts_with(b"*/") {
+                block_comments -= 1;
+                i += 2;
+                continue;
+            }
+            if block_comments == 0 && !line_comment && gap[i..].starts_with(b"//") {
+                line_comment = true;
+                i += 2;
+                continue;
+            }
+            let b = gap[i];
             let preceded_by_cr = i > 0 && gap[i - 1] == b'\r';
-            let pair = (b, gap.get(i + 1).copied());
-            match pair {
-                (b'/', Some(b'/')) if block_comments == 0 => line_comment = true,
-                (b'/', Some(b'*')) if !line_comment => block_comments += 1,
-                (b'*', Some(b'/')) if !line_comment => {
-                    block_comments = block_comments.saturating_sub(1);
-                }
-                (b'\n', _) => line_comment = false,
-                _ => {}
+            if b == b'\n' {
+                line_comment = false;
             }
             let in_comment = line_comment || block_comments > 0;
             let lone_cr = b == b'\r' && gap.get(i + 1) != Some(&b'\n');
@@ -239,6 +251,7 @@ fn check_line_endings(formatted: &str, crlf: bool) -> Result<(), FidelityError> 
                     formatted_offset: gap_start + i,
                 });
             }
+            i += 1;
         }
         gap_start = end;
     }
@@ -287,7 +300,7 @@ fn trace(source: &str) -> Vec<(TraceItem, usize)> {
         token: None,
         punctuation: None,
         item: Some(TraceItem::Comment {
-            text: c.text.trim_end().replace("\r\n", "\n"),
+            text: super::normalize_layout_line_endings(c.text.trim_end(), false),
             trailing: super::is_trailing_comment(source, c.span.start),
             before: Vec::new(),
             after: Vec::new(),

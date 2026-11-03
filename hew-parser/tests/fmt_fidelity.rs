@@ -26,6 +26,9 @@ fn assert_faithful(source: &str) {
 fn raw_macro_line_endings_stay_verbatim() {
     for source in [
         "p!(\r)",
+        "p!(\r\r\n)",
+        "p!(/* keep\r\r\nthis */)",
+        "fn main() { let s = r\"keep\r\r\nthis\"; }",
         "p!(\r)\r\n",
         "p!(/* keep\rthis */\r)",
         "p!(\r\n/// doc\r\n1)",
@@ -44,6 +47,11 @@ fn raw_macro_line_endings_are_program_content() {
     for (source, changed) in [
         ("p!(\r1)", "p!(\n2)\n"),
         ("p!(\r1)", "p!(\n1)\n"),
+        ("p!(\r\r\n1)", "p!(\n1)\n"),
+        (
+            "fn main() { let s = r\"keep\r\r\nthis\"; }",
+            "fn main() { let s = r\"keep\nthis\"; }",
+        ),
         ("p!(r\"keep\rthis\"\r)", "p!(r\"keep\nthis\"\n)\n"),
         ("p!(/* keep\rthis */\r)", "p!(/* keep\nthis */\n)\n"),
         ("p!(\r/* before */1)", "p!(\n1/* before */)\n"),
@@ -805,6 +813,24 @@ fn mixed_line_endings_in_output_are_rejected() {
 fn a_carriage_return_inside_a_comment_is_content() {
     assert_faithful("// one\rtwo\nfn main() {\n    // three\r four\n}\n");
     assert_faithful("// one\rtwo\r\nfn main() {\r\n    // three\r four\r\n}\r\n");
+}
+
+#[test]
+fn block_comment_delimiters_do_not_overlap() {
+    for source in ["/*/\r*/", "/*/\r\n*/", "/* /*/\r*/ */", "/* //\r */"] {
+        assert_faithful(source);
+    }
+}
+
+#[test]
+fn repeated_carriage_returns_before_comment_newlines_reach_a_fixed_point() {
+    for source in [
+        "/*first\n*//**//*second\r\r\n*/",
+        "\n/*keep\rthis\r\r\nline*/",
+        "\r\n/*keep\rthis\r\r\nline*/",
+    ] {
+        assert_faithful(source);
+    }
 }
 
 #[test]

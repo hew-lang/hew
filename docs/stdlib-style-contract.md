@@ -36,6 +36,11 @@ invokes it automatically; explicit close consumes the value. Keep fallible
 finish, flush or commit separate so the caller can handle its outcome.
 Borrowed parameters remain borrowed; transfer parameters spell `consume`.
 
+Encoding accessors inspect the receiver without copying its tree. Pass its
+`Kind` to shared validation helpers rather than passing the owning `Value`;
+ordinary value parameters acquire an independent copy. Extracted children and
+inserted values still retain their documented independent-copy semantics.
+
 ## Calls and ABI boundaries
 
 Ordinary calls may suspend without an await prefix. Fork creates a task and

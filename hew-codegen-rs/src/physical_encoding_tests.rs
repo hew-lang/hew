@@ -11,7 +11,7 @@ mod fixture;
 mod runtime;
 
 #[test]
-fn stdlib_kind_checks_do_not_clone_the_receiver() {
+fn stdlib_read_accessors_do_not_clone_the_receiver() {
     use inkwell::values::AnyValue;
 
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
@@ -25,6 +25,10 @@ fn stdlib_kind_checks_do_not_clone_the_receiver() {
                 let number = {format}.from_int(7);
                 let integer = number.get_int() handle error {{ -1 }};
                 let wrong_kind = values.get_int() handle error {{ -1 }};
+                let _ = values.array_get(0) handle error {{ .None }};
+                let _ = values.array_get(-1) handle error {{ .None }};
+                let _ = values.array_get(2147483648) handle error {{ .None }};
+                let _ = number.array_get(0) handle error {{ .None }};
                 count + integer + wrong_kind
             }}
             "#

@@ -229,8 +229,9 @@ impl ValueMethods for Value {
         if index < 0 || index > 2147483647 {
             return error AccessError.InvalidIndex(index);
         }
+        let runtime_index = index as i32;
         let child = unsafe {
-            hew_yaml_array_get(self, index as i32)
+            hew_yaml_array_get(self, runtime_index)
         };
         if unsafe {
             hew_yaml_type(child)

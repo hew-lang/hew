@@ -40,6 +40,8 @@ Encoding accessors inspect the receiver without copying its tree. Pass its
 `Kind` to shared validation helpers rather than passing the owning `Value`;
 ordinary value parameters acquire an independent copy. Extracted children and
 inserted values still retain their documented independent-copy semantics.
+Compute ABI index conversions before borrowing the receiver for an extern
+call; a later argument conversion otherwise snapshots the earlier tree.
 
 ## Calls and ABI boundaries
 

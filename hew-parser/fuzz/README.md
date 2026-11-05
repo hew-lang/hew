@@ -26,6 +26,8 @@ cargo +nightly fuzz run fuzz_project     # hew.toml + modules in a temporary tre
 
 cd ../hew-cli
 HEW_STD=$PWD/../std cargo +nightly fuzz run fuzz_diagnostics  # text and JSON diagnostics
+HEW_STD=$PWD/../std cargo +nightly fuzz run fuzz_codegen      # admitted source -> LLVM
+HEW_STD=$PWD/../std cargo +nightly fuzz run fuzz_encoding_codegen # valid codec programs -> LLVM
 ```
 
 `hew-cli/fuzz` links the whole driver, including `hew-codegen-rs` (inkwell and
@@ -46,6 +48,8 @@ The continuous service runs each target with `-s none -rss_limit_mb=1024
 | `fuzz_check_determinism` | Two fresh checkers report the same errors and warnings in the same order (unused-variable and unused-`var` warnings compared as a set until their emission order is fixed; raw expression types, whose inference variables number from a process-wide counter, are not compared) and publish the same expression, binding and annotation types. Rotating the module's `const` items among their slots keeps the verdict (spec §3.2). |
 | `fuzz_project`           | Manifest parsing, package resolution, manifest validation and the `hew check` frontend never panic; a failed check reports something; a package entry lies inside the package; the working directory is never searched; without a path dependency, quoted import or link, every source read lies in the project or the standard library.                                                                                             |
 | `fuzz_diagnostics`       | `hew check` text and JSON never panic, exit alike and agree on each diagnostic's file, line and column; JSON spans lie within their file on character boundaries; two runs print identical JSON; output stays within a constant factor of the input.                                                                                                                                                                                 |
+| `fuzz_codegen`           | Parse-, check- and semantic-lowering-clean source proceeds through measured physical layouts, verified physical MIR and LLVM verification without panicking.                                                                                                                                                                                                                                                                            |
+| `fuzz_encoding_codegen`  | Every input becomes a valid program that instantiates JSON, YAML, TOML, CBOR and MessagePack encode/decode walks over owned aggregates, then passes physical and LLVM verification.                                                                                                                                                                                                                                                        |
 
 `fuzz_project` reads a text archive: a line `=== <relative path>` starts a
 file of the project and `=== @link <relative path>` links that path to a

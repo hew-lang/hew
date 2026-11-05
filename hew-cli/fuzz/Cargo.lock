@@ -1489,7 +1489,11 @@ name = "hew-cli-fuzz"
 version = "0.0.0"
 dependencies = [
  "hew-cli",
+ "hew-codegen-rs",
  "hew-compile",
+ "hew-mir",
+ "hew-parser",
+ "hew-types",
  "libfuzzer-sys",
  "serde_json",
 ]

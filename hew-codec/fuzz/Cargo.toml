@@ -11,6 +11,7 @@ cargo-fuzz = true
 
 [dependencies]
 libfuzzer-sys = "0.4.13"
+arbitrary = "1"
 hew-codec = { path = ".." }
 serde_json = { version = "1", features = ["float_roundtrip"] }
 serde_yaml = "0.9"
@@ -36,5 +37,11 @@ doc = false
 [[bin]]
 name = "fuzz_yaml_value"
 path = "fuzz_targets/fuzz_yaml_value.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "fuzz_codec_valid"
+path = "fuzz_targets/fuzz_codec_valid.rs"
 test = false
 doc = false

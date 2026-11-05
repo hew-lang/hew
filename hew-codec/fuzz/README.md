@@ -10,6 +10,7 @@ light half of the standard-library fuzzing; the rest is in `hew-std/fuzz`.
 | `fuzz_codec_formats` | format byte, then a JSON, YAML, TOML, CBOR or MessagePack document | heap bounded; the writer's output parses; writing is a fixed point        |
 | `fuzz_codec_json`    | JSON text                                                          | agrees with `serde_json` except for documented refusals                   |
 | `fuzz_codec_typed`   | format byte, then a document                                       | typed decode over a shape with every node kind; encoding is a fixed point |
+| `fuzz_codec_valid`   | bytes mapped to a bounded valid value                              | every iteration reaches a writer and parser; encoding is a fixed point    |
 | `fuzz_yaml_value`    | YAML text                                                          | alias expansion stays within the heap bound; agrees with `serde_yaml`     |
 
 A metering global allocator in `fuzz_targets/support.rs` records the peak

@@ -128,6 +128,7 @@ dependencies = [
 name = "hew-codec-fuzz"
 version = "0.0.0"
 dependencies = [
+ "arbitrary",
  "hew-codec",
  "libfuzzer-sys",
  "serde_json",

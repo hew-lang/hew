@@ -1,0 +1,3 @@
+import std.encoding.cbor;
+type Item { value: i64; }
+fn main() { let item = Item { value: 7 }; let _back = cbor.decode<Item>(cbor.encode(item)); }

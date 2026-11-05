@@ -182,6 +182,7 @@ def main():
     write("fuzz_codec_json", "dup", b'{"a":1,"a":2}')
     for name, data in YAML_SEEDS.items():
         write("fuzz_yaml_value", name, data)
+    write("fuzz_codec_valid", "basic", b"valid structured codec seed\n")
 
 
 def seed_files(root):

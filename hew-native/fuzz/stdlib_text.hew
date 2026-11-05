@@ -1,0 +1,142 @@
+import std.encoding.base64;
+import std.encoding.binary;
+import std.encoding.cbor;
+import std.encoding.csv;
+import std.encoding.hex;
+import std.encoding.json;
+import std.encoding.msgpack;
+import std.encoding.toml;
+import std.encoding.utf8;
+import std.encoding.xml;
+import std.encoding.yaml;
+
+type Sample {
+    label: string;
+    count: i64;
+    enabled: bool;
+}
+
+extern "C" {
+    fn hew_fuzz_bytes(address: u64, length: u64) -> bytes;
+}
+
+fn fuzz_base64(input: string) -> i64 {
+    let decoded = base64.decode(input) handle error { return 0; };
+    let encoded = base64.encode(decoded);
+    let again = base64.decode(encoded) handle error { panic("Base64 refused its own output"); };
+    assert(again == decoded);
+    again.len()
+}
+
+fn fuzz_hex(input: string) -> i64 {
+    let decoded = hex.decode(input) handle error { return 0; };
+    let encoded = hex.encode(decoded);
+    let again = hex.decode(encoded) handle error { panic("hex refused its own output"); };
+    assert(again == decoded);
+    again.len()
+}
+
+fn fuzz_csv(input: string) -> i64 {
+    match csv.parse(input) {
+        .Ok(table) => table.rows() + table.cols(),
+        .Err(_) => 0,
+    }
+}
+
+fn fuzz_json(input: string) -> i64 {
+    match json.parse(input) {
+        .Ok(value) => {
+            let encoded = value.stringify() handle error { panic("JSON refused a parsed value"); };
+            match json.parse(encoded) {
+                .Ok(again) => if value == again { 1 } else { panic("JSON round trip changed value"); }
+                .Err(_) => panic("JSON refused its own output"),
+            }
+        }
+        .Err(_) => 0,
+    }
+}
+
+fn fuzz_yaml(input: string) -> i64 {
+    match yaml.parse(input) {
+        .Ok(value) => {
+            let encoded = value.stringify() handle error { return 0; };
+            match yaml.parse(encoded) {
+                .Ok(_) => 1,
+                .Err(_) => panic("YAML refused its own output"),
+            }
+        }
+        .Err(_) => 0,
+    }
+}
+
+fn fuzz_toml(input: string) -> i64 {
+    match toml.parse(input) {
+        .Ok(value) => {
+            let encoded = value.stringify() handle error { return 0; };
+            match toml.parse(encoded) {
+                .Ok(_) => 1,
+                .Err(_) => panic("TOML refused its own output"),
+            }
+        }
+        .Err(_) => 0,
+    }
+}
+
+fn fuzz_xml(input: string) -> i64 {
+    let node = xml.parse(input) handle error { return 0; };
+    let encoded = node.to_string();
+    let again = xml.parse(encoded) handle error { panic("XML refused its own output"); };
+    let count = again.children_count();
+    again.close();
+    node.close();
+    count
+}
+
+fn fuzz_binary(data: bytes) -> i64 {
+    var observed = 0;
+    for width in 1..9 {
+        let value = binary.read_uint_le(data, 0, width) handle error { 0 };
+        observed = observed ^ value;
+    }
+    observed
+}
+
+fn fuzz_cbor(input: bytes) -> i64 {
+    let decoded = cbor.decode<Sample>(input) handle error { return 0; };
+    let encoded = cbor.encode(decoded);
+    let again = cbor.decode<Sample>(encoded) handle error { panic("CBOR refused its own output"); };
+    again.count
+}
+
+fn fuzz_msgpack(input: bytes) -> i64 {
+    let decoded = msgpack.decode<Sample>(input) handle error { return 0; };
+    let encoded = msgpack.encode(decoded);
+    let again = msgpack.decode<Sample>(encoded) handle error { panic("MessagePack refused its own output"); };
+    again.count
+}
+
+pub fn fuzz_input(address: u64, length: u64, selector: i64) -> i64 {
+    let input = unsafe {
+        hew_fuzz_bytes(address, length)
+    };
+    let selected = selector % 10;
+    if selected >= 7 {
+        match selected {
+            7 => fuzz_binary(input),
+            8 => fuzz_cbor(input),
+            _ => fuzz_msgpack(input),
+        }
+    } else {
+        let text = utf8.decode(input) handle error { return 0; };
+        match selected {
+            0 => fuzz_base64(text),
+            1 => fuzz_hex(text),
+            2 => fuzz_csv(text),
+            3 => fuzz_json(text),
+            4 => fuzz_yaml(text),
+            5 => fuzz_toml(text),
+            _ => fuzz_xml(text),
+        }
+    }
+}
+

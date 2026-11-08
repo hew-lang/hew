@@ -800,6 +800,33 @@ fn layout_newlines_determine_style_around_verbatim_content() {
 }
 
 #[test]
+fn mixed_layout_line_endings_follow_the_first_layout_break() {
+    for (source, crlf) in [
+        ("// first\r\n// second\nfn main() {}\n", true),
+        ("// first\n// second\r\nfn main() {}\r\n", false),
+        ("//! first\r\n/// second\nfn main() {}\n", true),
+        ("//! first\n/// second\r\nfn main() {}\r\n", false),
+        ("/* first\r\nsecond\n*/\nfn main() {}\n", true),
+        ("/* first\nsecond\r\n*/\r\nfn main() {}\r\n", false),
+        ("/* outer\r\n/* inner\n*/ end */\nfn main() {}", true),
+        ("/* outer\n/* inner\r\n*/ end */\r\nfn main() {}", false),
+    ] {
+        assert_faithful(source);
+        let formatted = format_source(source, &parse(source).program);
+        assert_eq!(
+            hew_parser::fmt::fidelity::uses_crlf(&formatted),
+            crlf,
+            "wrong layout style for {source:?}"
+        );
+        if crlf {
+            assert!(!formatted.replace("\r\n", "").contains('\n'));
+        } else {
+            assert!(!formatted.contains('\r'));
+        }
+    }
+}
+
+#[test]
 fn mixed_line_endings_in_output_are_rejected() {
     let source = "fn main() {\r\n    let a = 1;\r\n}\r\n";
     let mixed = "fn main() {\r\n    let a = 1;\n}\r\n";

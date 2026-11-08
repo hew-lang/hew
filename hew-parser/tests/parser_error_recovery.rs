@@ -2,6 +2,23 @@ use hew_parser::ast::Ident;
 use hew_parser::ast::{CallArg, Expr, Item, Pattern, Stmt};
 
 #[test]
+fn missing_const_expression_reports_unexpected_eof() {
+    for visibility in ["", "pub ", "package "] {
+        for expression in ["", "-", "!", "1 +", "1 * (", "("] {
+            let source = format!("{visibility}const answer: i64 = {expression}");
+            let parsed = hew_parser::parse(&source);
+            assert!(
+                parsed
+                    .errors
+                    .iter()
+                    .any(|error| error.severity == hew_parser::Severity::Error),
+                "missing expression was silently discarded: {source:?}"
+            );
+        }
+    }
+}
+
+#[test]
 fn malformed_macro_interpolation_keeps_nested_diagnostics() {
     for hole in ["[", "(", ")", "]", "{", "([)]"] {
         // A failure in the interpolation's token-tree parser must not turn

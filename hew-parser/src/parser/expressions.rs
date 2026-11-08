@@ -713,7 +713,11 @@ impl Parser<'_> {
         let token_span = self.peek_span();
         let start = token_span.start;
 
-        let expr = match self.peek()? {
+        let Some(token) = self.peek() else {
+            self.error_unexpected_eof("expression");
+            return None;
+        };
+        let expr = match token {
             Token::DotDot | Token::DotDotEqual => {
                 let inclusive = self.peek() == Some(&Token::DotDotEqual);
                 self.advance();

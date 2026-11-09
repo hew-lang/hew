@@ -27,7 +27,9 @@ pub(super) struct NativeReplyOwner {
     payload_owned: bool,
     binding: Option<crate::owned_value_budget::transfer::DestinationBinding>,
     gate: Option<usize>,
-    waiters: Vec<(usize, OwnedWaker)>,
+    // The ordinary reply retains only its publisher. Keep that registration
+    // inline; competing ownership transfers can spill without changing the gate.
+    waiters: smallvec::SmallVec<[(usize, OwnedWaker); 1]>,
 }
 
 impl NativeReplyOwner {
@@ -525,6 +527,46 @@ mod tests {
     use crate::wake::blocking::Readiness;
     use std::sync::atomic::AtomicUsize;
     use std::sync::Arc;
+
+    #[test]
+    fn reply_gate_keeps_one_waiter_inline_and_wakes_spilled_waiters() {
+        let (first_ready, first) = Readiness::new();
+        let (second_ready, second) = Readiness::new();
+        let channel = hew_reply_channel_new();
+        // SAFETY: this fixture retains the channel through every gate operation.
+        unsafe {
+            {
+                let mut owner = (*channel).native.lock_or_recover();
+                assert!(owner.claim(1, Some(first.clone())));
+                assert!(owner.claim(1, Some(first.clone())));
+                assert_eq!(owner.waiters.len(), 1, "repeated polls reuse registration");
+                assert!(
+                    !owner.waiters.spilled(),
+                    "one publisher needs no allocation"
+                );
+                assert!(!owner.claim(2, Some(second.clone())));
+                assert!(owner.waiters.spilled());
+            }
+            // Cancellation must still reach the gate holder and its competitor.
+            wake_publishers(channel);
+            assert!(first_ready.take_ready());
+            assert!(second_ready.take_ready());
+            release_gate(channel, 1);
+            assert!(!first_ready.take_ready());
+            assert!(second_ready.take_ready());
+            {
+                let mut owner = (*channel).native.lock_or_recover();
+                assert!(owner.gate.is_none());
+                assert!(owner.waiters.is_empty());
+                assert!(owner.claim(2, Some(second.clone())));
+                assert!(!owner.waiters.spilled());
+            }
+            release_gate(channel, 2);
+            hew_reply_channel_free(channel);
+        }
+        assert_eq!(Arc::strong_count(&first_ready), 2);
+        assert_eq!(Arc::strong_count(&second_ready), 2);
+    }
 
     #[repr(C)]
     struct Reply(*mut Arc<AtomicUsize>);

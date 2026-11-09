@@ -2,16 +2,18 @@
 
 #![cfg(unix)]
 
+#[path = "support/distributed.rs"]
+mod distributed;
 mod support;
 
 use std::fs::File;
 use std::io::{BufRead, BufReader, Read};
-use std::net::TcpListener;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Output, Stdio};
 use std::thread;
 use std::time::{Duration, Instant};
 
+use distributed::admitted_node_directory;
 use support::leak_slope::{parse_leaks_summary, require_leaks_tool};
 use support::{describe_output, hew_binary, repo_root, require_codegen};
 
@@ -60,20 +62,11 @@ fn compile_fixture(dir: &Path) -> PathBuf {
     binary
 }
 
-fn allocate_loopback_port() -> u16 {
-    TcpListener::bind(("127.0.0.1", 0))
-        .expect("bind loopback port")
-        .local_addr()
-        .expect("read loopback port")
-        .port()
-}
-
-fn spawn_server(binary: &Path, port: u16, scenario: &str, kx_dir: &Path) -> ChildGuard {
+fn spawn_server(binary: &Path, scenario: &str, kx_dir: &Path) -> ChildGuard {
     ChildGuard(
         Command::new(binary)
-            .env("HEW_TRANSPORT", "tcp")
+            .env("HEW_DIST_TRANSPORT", "tcp")
             .env("HEW_DIST_ROLE", "server")
-            .env("HEW_DIST_PORT", port.to_string())
             .env("HEW_DIST_SCENARIO", scenario)
             .env("HEW_DIST_KX_DIR", kx_dir)
             .stdout(Stdio::piped())
@@ -87,22 +80,26 @@ fn wait_for_server_ready(server: &mut ChildGuard) -> BufReader<std::process::Chi
     let stdout = server.0.stdout.take().expect("server stdout was captured");
     let mut reader = BufReader::new(stdout);
     let deadline = Instant::now() + PROCESS_TIMEOUT;
+    let mut captured = String::new();
     loop {
         assert!(
             Instant::now() < deadline,
-            "identity monitor leak server did not become ready"
+            "identity monitor leak server did not become ready\nstdout:\n{captured}"
         );
         let mut line = String::new();
         match reader.read_line(&mut line) {
-            Ok(0) => panic!("identity monitor leak server exited before READY"),
+            Ok(0) => panic!(
+                "identity monitor leak server exited before READY; exit: {:?}\nstdout:\n{captured}",
+                server.0.try_wait()
+            ),
             Ok(_) if line.starts_with("READY ") => return reader,
-            Ok(_) => {}
+            Ok(_) => captured.push_str(&line),
             Err(error) => panic!("read identity monitor leak server stdout: {error}"),
         }
     }
 }
 
-fn spawn_client_under_leaks(binary: &Path, port: u16, scenario: &str, kx_dir: &Path) -> LeakClient {
+fn spawn_client_under_leaks(binary: &Path, scenario: &str, kx_dir: &Path) -> LeakClient {
     // `leaks --atExit` writes a full allocation report after the child exits.
     // A piped report can exceed the pipe buffer, deadlocking leaks before our
     // parent observes its exit. Capture to files so the child always drains.
@@ -120,9 +117,8 @@ fn spawn_client_under_leaks(binary: &Path, port: u16, scenario: &str, kx_dir: &P
                 .env("MallocScribble", "1")
                 .env("MallocPreScribble", "1")
                 .env("MallocGuardEdges", "1")
-                .env("HEW_TRANSPORT", "tcp")
+                .env("HEW_DIST_TRANSPORT", "tcp")
                 .env("HEW_DIST_ROLE", "client")
-                .env("HEW_DIST_PORT", port.to_string())
                 .env("HEW_DIST_SCENARIO", scenario)
                 .env("HEW_DIST_KX_DIR", kx_dir)
                 .stdout(Stdio::from(stdout))
@@ -214,11 +210,10 @@ fn finish_server(
 }
 
 fn run_probe(binary: &Path, scenario: &str, iterations: usize) -> usize {
-    let kx_dir = tempfile::tempdir().expect("create identity monitor key directory");
-    let port = allocate_loopback_port();
-    let mut server = spawn_server(binary, port, scenario, kx_dir.path());
-    let client = spawn_client_under_leaks(binary, port, scenario, kx_dir.path());
+    let kx_dir = admitted_node_directory(false, &["server", "client"]);
+    let mut server = spawn_server(binary, scenario, kx_dir.path());
     let server_reader = wait_for_server_ready(&mut server);
+    let client = spawn_client_under_leaks(binary, scenario, kx_dir.path());
     let client = finish_client(client);
     let client_stdout = String::from_utf8_lossy(&client.stdout);
     let client_stderr = String::from_utf8_lossy(&client.stderr);
@@ -255,12 +250,51 @@ fn run_probe(binary: &Path, scenario: &str, iterations: usize) -> usize {
     leak_nodes
 }
 
+fn identity_display_output_matches(stdout: &str, scenario: &str, iterations: usize) -> bool {
+    let lines: Vec<_> = stdout
+        .lines()
+        .take_while(|line| !line.starts_with("Process:"))
+        .filter(|line| !line.is_empty())
+        .collect();
+    let Some((sentinel, frames)) = lines.split_last() else {
+        return false;
+    };
+    if *sentinel != format!("PASS {scenario} iterations={iterations}") {
+        return false;
+    }
+    let Some(first_frame) = frames.first_chunk::<7>() else {
+        return false;
+    };
+    let node_len = first_frame[0];
+    let location_len = first_frame[1];
+    if ![node_len, location_len]
+        .into_iter()
+        .all(|value| value.parse::<usize>().is_ok_and(|length| length > 0))
+    {
+        return false;
+    }
+    // NodeId and Location are the two discovery display surfaces. Each frame
+    // exercises both through direct temporaries, named bindings, and mixed use.
+    let expected_frame = [
+        node_len,
+        location_len,
+        node_len,
+        location_len,
+        node_len,
+        location_len,
+        "frame",
+    ];
+    frames.len() == iterations * expected_frame.len()
+        && frames
+            .chunks_exact(expected_frame.len())
+            .all(|frame| frame == expected_frame)
+}
+
 fn run_identity_display_probe(binary: &Path, scenario: &str, iterations: usize) -> (usize, usize) {
-    let kx_dir = tempfile::tempdir().expect("create identity display key directory");
-    let port = allocate_loopback_port();
-    let mut server = spawn_server(binary, port, scenario, kx_dir.path());
-    let client = spawn_client_under_leaks(binary, port, scenario, kx_dir.path());
+    let kx_dir = admitted_node_directory(false, &["server", "client"]);
+    let mut server = spawn_server(binary, scenario, kx_dir.path());
     let server_reader = wait_for_server_ready(&mut server);
+    let client = spawn_client_under_leaks(binary, scenario, kx_dir.path());
     let client = finish_client(client);
     let client_stdout = String::from_utf8_lossy(&client.stdout);
     let client_stderr = String::from_utf8_lossy(&client.stderr);
@@ -289,14 +323,8 @@ fn run_identity_display_probe(binary: &Path, scenario: &str, iterations: usize) 
         "identity display client missed its exact completion sentinel\n{}",
         describe_output(&client)
     );
-    let program_line_count = client_stdout
-        .lines()
-        .take_while(|line| !line.starts_with("Process:"))
-        .filter(|line| !line.is_empty())
-        .count();
-    assert_eq!(
-        program_line_count,
-        iterations * 10 + 1,
+    assert!(
+        identity_display_output_matches(&client_stdout, scenario, iterations),
         "identity display client did not execute every direct, named, and mixed path\n{}",
         describe_output(&client)
     );
@@ -307,6 +335,61 @@ fn run_identity_display_probe(binary: &Path, scenario: &str, iterations: usize) 
     drop(server);
 
     summary
+}
+
+#[test]
+fn identity_display_output_requires_complete_frames_and_exact_sentinel() {
+    let frame = "32\n42\n32\n42\n32\n42\nframe\n";
+    for iterations in [1, 3] {
+        let stdout = format!(
+            "{}PASS identity_display_low iterations={iterations}\nProcess: dist_node\n",
+            frame.repeat(iterations)
+        );
+        assert!(identity_display_output_matches(
+            &stdout,
+            "identity_display_low",
+            iterations
+        ));
+        assert!(!identity_display_output_matches(
+            &stdout,
+            "identity_display_high",
+            iterations
+        ));
+        assert!(!identity_display_output_matches(
+            &stdout,
+            "identity_display_low",
+            iterations + 1
+        ));
+        assert!(!identity_display_output_matches(
+            &stdout.replace("\nProcess:", " extra\nProcess:"),
+            "identity_display_low",
+            iterations
+        ));
+    }
+}
+
+#[test]
+fn identity_display_output_rejects_missing_duplicate_or_inconsistent_paths() {
+    let frame = ["32", "42", "32", "42", "32", "42", "frame"];
+    for path in 0..frame.len() {
+        let mut missing = frame.to_vec();
+        missing.remove(path);
+        let mut duplicated = frame.to_vec();
+        duplicated.insert(path, frame[path]);
+        let mut inconsistent = frame.to_vec();
+        inconsistent[path] = "0";
+        for malformed in [missing, duplicated, inconsistent] {
+            let stdout = format!(
+                "{}\n{}\nPASS identity_display_low iterations=2\n",
+                frame.join("\n"),
+                malformed.join("\n")
+            );
+            assert!(
+                !identity_display_output_matches(&stdout, "identity_display_low", 2),
+                "malformed frame was accepted:\n{stdout}"
+            );
+        }
+    }
 }
 
 #[cfg_attr(

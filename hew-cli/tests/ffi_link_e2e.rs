@@ -362,17 +362,17 @@ fn link_line_carries_single_runtime_archive() {
         return;
     };
 
-    let shim_dir = dir.path().join("shim-bin");
+    // Always exercise spaces and apostrophes, even with a plain TMPDIR.
+    let shim_dir = dir.path().join("shim's bin");
     std::fs::create_dir_all(&shim_dir).expect("create shim dir");
-    let argv_log = dir.path().join("argv.log");
+    let argv_log = dir.path().join("linker's argv.log");
     let shim_path = shim_dir.join(tool_name);
     std::fs::write(
         &shim_path,
-        format!(
-            "#!/bin/sh\nprintf '%s\\n' \"$@\" >> {}\nexec {} \"$@\"\n",
-            argv_log.display(),
-            real_tool.display(),
-        ),
+        "#!/bin/sh\n\
+         set -eu\n\
+         printf '%s\\n' \"$@\" >> \"$HEW_TEST_FFI_ARGV_LOG\"\n\
+         exec \"$HEW_TEST_FFI_REAL_TOOL\" \"$@\"\n",
     )
     .expect("write shim script");
     #[cfg(unix)]
@@ -413,6 +413,8 @@ fn main() {
         .arg("-o")
         .arg(&out_bin)
         .env("PATH", format!("{}:{orig_path}", shim_dir.display()))
+        .env("HEW_TEST_FFI_ARGV_LOG", &argv_log)
+        .env("HEW_TEST_FFI_REAL_TOOL", &real_tool)
         .current_dir(dir.path());
     let out = run_bounded_command(cmd, "hew build --link-lib (argv shim)");
     assert!(

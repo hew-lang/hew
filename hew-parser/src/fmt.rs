@@ -1418,9 +1418,14 @@ impl<'a> Formatter<'a> {
         self.write_indent();
         self.write("import ");
         if let Some(file_path) = &decl.file_path {
-            self.write("\"");
-            self.write(file_path);
-            self.write("\"");
+            // Keep raw prefixes and escape spelling, and write the whole
+            // token so comments on either side remain anchored.
+            let spelling = self
+                .tokens
+                .get(self.token_at_or_after(self.prev_source_pos))
+                .and_then(|(_, span)| self.literal_spelling(span))
+                .unwrap_or_else(|| format!("\"{file_path}\""));
+            self.write(&spelling);
         } else {
             self.format_path(&decl.path);
             if let Some(spec) = &decl.spec {

@@ -4,16 +4,25 @@ use hew_parser::ast::{CallArg, Expr, Item, Pattern, Stmt};
 #[test]
 fn missing_const_expression_reports_unexpected_eof() {
     for visibility in ["", "pub ", "package "] {
-        for expression in ["", "-", "!", "1 +", "1 * (", "("] {
-            let source = format!("{visibility}const answer: i64 = {expression}");
-            let parsed = hew_parser::parse(&source);
+        for ty in ["i64", "Answer", "config.Answer"] {
+            let complete = format!("{visibility}const answer: {ty} = 42;");
+            let parsed = hew_parser::parse(&complete);
             assert!(
-                parsed
-                    .errors
-                    .iter()
-                    .any(|error| error.severity == hew_parser::Severity::Error),
-                "missing expression was silently discarded: {source:?}"
+                parsed.errors.is_empty(),
+                "complete initializer must parse: {complete:?}: {:?}",
+                parsed.errors
             );
+            for expression in ["", "-", "!", "1 +", "1 * (", "("] {
+                let source = format!("{visibility}const answer: {ty} = {expression}");
+                let parsed = hew_parser::parse(&source);
+                assert!(
+                    parsed
+                        .errors
+                        .iter()
+                        .any(|error| error.severity == hew_parser::Severity::Error),
+                    "missing expression was silently discarded: {source:?}"
+                );
+            }
         }
     }
 }

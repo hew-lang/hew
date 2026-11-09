@@ -2072,11 +2072,14 @@ mod tests {
         if !require_toolchain() {
             return;
         }
-        let mut session = ReplSession::with_timeout(Duration::from_millis(100));
+        let mut session = ReplSession::new();
         let define = session
             .eval("fn spin_forever() {\n    var i = 0;\n    loop {\n        i = i + 1;\n    }\n}");
         assert!(!define.had_errors, "errors: {:?}", define.errors);
 
+        // Only the infinite-loop invocation needs the short timeout; defining
+        // the function also launches a process and can take longer under load.
+        session.execution_timeout = Duration::from_millis(100);
         let result = session.eval("spin_forever()");
         assert!(result.had_errors);
         assert!(result.errors[0].contains("evaluation timed out after 100ms"));

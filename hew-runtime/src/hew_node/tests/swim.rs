@@ -2,6 +2,91 @@
 
 use super::*;
 
+/// Stop `node` the way a crash ends it: peer IO dies before the node can
+/// announce LEFT, so peers see only the lost connections.
+///
+/// # Safety
+///
+/// `node` must be a running node owned by the caller.
+unsafe fn crash_node(node: *mut HewNode) {
+    // SAFETY: the caller owns the running node and its manager.
+    unsafe {
+        connection::hew_connmgr_mark_stopping((*node).conn_mgr);
+        connection::hew_connmgr_cancel_io((*node).conn_mgr);
+        assert_eq!(hew_node_stop(node), 0);
+    }
+}
+
+/// A graceful stop reaches peers as a departure. The stopping node announces
+/// LEFT while its connections still carry frames, so a peer records LEFT
+/// without passing through SUSPECT and never escalates it afterwards.
+#[test]
+fn graceful_stop_reaches_peer_as_left() {
+    graceful_stop_reaches_peer_as_left_using(start_authorized_tcp_pair);
+}
+
+#[cfg(feature = "quic")]
+#[test]
+fn graceful_stop_reaches_quic_peer_as_left() {
+    graceful_stop_reaches_peer_as_left_using(start_authorized_quic_mesh_pair);
+}
+
+fn graceful_stop_reaches_peer_as_left_using(
+    start_pair: fn(u16, u16) -> (TestNode, u16, TestNode, u16),
+) {
+    use crate::cluster::{hew_cluster_member_state, MEMBER_DEAD, MEMBER_LEFT, MEMBER_SUSPECT};
+    const NODE_A: u16 = 344;
+    const NODE_B: u16 = 345;
+    let _guard = crate::runtime_test_guard();
+    let _swim_env = SwimTimingEnv::fast();
+    crate::registry::hew_registry_clear();
+
+    let (node_a, _node_a_port, node_b, node_b_port) = start_pair(NODE_A, NODE_B);
+    let connect_addr = CString::new(format!("127.0.0.1:{node_b_port}")).unwrap();
+    // SAFETY: node_a and the connect addr are valid for this call.
+    unsafe { connect_with_retry(node_a.as_ptr(), &connect_addr) };
+    // SAFETY: both nodes are valid here.
+    unsafe { wait_for_handshake(node_a.as_ptr(), node_b.as_ptr()) };
+
+    // SAFETY: node_a is valid.
+    unsafe { assert_eq!(hew_node_stop(node_a.as_ptr()), 0) };
+    // B then loses the connection; that loss must not demote the departed
+    // member to SUSPECT.
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    poll_until(|_| {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "B must observe A's closed connection"
+        );
+        thread::yield_now();
+        // SAFETY: B's manager is live.
+        let conn = unsafe {
+            connection::first_active_connection_for_test((*node_b.as_ptr()).conn_mgr, NODE_A)
+        };
+        conn < 0
+    });
+    // SAFETY: B's cluster is live until B stops below.
+    let cluster_b = unsafe { &*(*node_b.as_ptr()).cluster };
+    // SAFETY: B's cluster is live.
+    let state = unsafe { hew_cluster_member_state((*node_b.as_ptr()).cluster, NODE_A) };
+    assert_eq!(state, MEMBER_LEFT, "B must keep A as LEFT");
+    let failure_events: Vec<_> = cluster_b
+        .take_swim_gossip(NODE_A, usize::MAX)
+        .into_iter()
+        .filter(|&(slot, _, state, _)| {
+            slot == NODE_A && matches!(state, MEMBER_SUSPECT | MEMBER_DEAD)
+        })
+        .collect();
+    assert!(
+        failure_events.is_empty(),
+        "a graceful stop must not look like a failure: {failure_events:?}"
+    );
+
+    // SAFETY: node_b is valid.
+    unsafe { assert_eq!(hew_node_stop(node_b.as_ptr()), 0) };
+    crate::registry::hew_registry_clear();
+}
+
 /// A dead node is detected by a survivor via the now-driven SWIM detector:
 /// SUSPECT→DEAD escalation records the terminal membership state within a
 /// bounded number of protocol periods.
@@ -40,10 +125,10 @@ fn dead_node_is_detected_by_survivor_via_driven_swim() {
     // SAFETY: both nodes are valid here.
     unsafe { wait_for_handshake(node_a.as_ptr(), node_b.as_ptr()) };
 
-    // Kill node B: stopping it drops the mesh connection, so A's view of B
-    // is no longer refreshed. The driver must escalate it to DEAD.
+    // Crash node B: its connections die before it can announce LEFT, so A's
+    // view of B is no longer refreshed. The driver must escalate it to DEAD.
     // SAFETY: node_b is valid.
-    unsafe { assert_eq!(hew_node_stop(node_b.as_ptr()), 0) };
+    unsafe { crash_node(node_b.as_ptr()) };
 
     // Drive the failure detector deterministically through its TWO state
     // transitions.  `compute_tick_transitions` applies at most one
@@ -53,7 +138,7 @@ fn dead_node_is_detected_by_survivor_via_driven_swim() {
     // on a single advance.  B must already be SUSPECT before the advance
     // that crosses the suspect timeout.
     //
-    // Phase 1 — reach SUSPECT.  Stopping B drops the mesh connection, which
+    // Phase 1 — reach SUSPECT.  Crashing B drops the mesh connection, which
     // moves A's view of B to SUSPECT via the connection-event path; that
     // detection is asynchronous, so we WAIT for it rather than racing the
     // driver's tick.  Advancing two protocol periods first also lets a

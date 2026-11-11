@@ -38,6 +38,17 @@ impl SendClaim {
         self.conn_id
     }
 
+    /// Finish a departure stream before node stop closes its connection.
+    /// QUIC writes initially enter local buffers; stream completion waits for
+    /// peer receipt and is cancelled by the node's bounded I/O shutdown.
+    pub(crate) fn finish_departure(&self) {
+        #[cfg(feature = "quic")]
+        // SAFETY: this claim pins its transport through departure completion.
+        unsafe {
+            crate::quic_mesh::finish_departure(&*self.transport.as_ptr(), self.conn_id);
+        }
+    }
+
     pub(crate) fn peer_session(&self) -> crate::envelope::NodeSessionIdentity {
         crate::envelope::NodeSessionIdentity {
             node_id: self.identity,

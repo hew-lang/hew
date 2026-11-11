@@ -1,4 +1,4 @@
-name: Diagnose hosted Ubuntu DNS
+name: Prove hosted Ubuntu resolver repair
 
 on:
   workflow_dispatch:
@@ -7,8 +7,8 @@ permissions:
   contents: read
 
 jobs:
-  dns:
-    name: Hosted resolver (${{ matrix.arch }})
+  resolver:
+    name: Resolver repair (${{ matrix.arch }})
     strategy:
       fail-fast: false
       matrix:
@@ -18,53 +18,101 @@ jobs:
           - arch: arm64
             os: ubuntu-24.04-arm
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 6
+    timeout-minutes: 15
+    env:
+      UBUNTU_IMAGE: ubuntu:24.04@sha256:fe81560990fae86dc4743202b2cb4d3df98d0bcf949173cecef15ce1127ef852
+      BUILDER: hew-resolver-${{ matrix.arch }}
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
 
-      - name: Compare configured and independent resolver answers
+      - name: Capture the configured-provider baseline
         shell: bash
         run: |
           set -euo pipefail
-          mkdir -p diagnostics
+          mkdir -p diagnostics/context
           printf 'probe,exit_status\n' > diagnostics/status.csv
+          cat > diagnostics/probe.sh <<'PROBE'
           probe() {
             local label="$1"
             shift
             local status=0
-            timeout 15 "$@" > "diagnostics/${label}.log" 2>&1 || status=$?
+            timeout 120 "$@" > "diagnostics/${label}.log" 2>&1 || status=$?
             printf '%s,%s\n' "$label" "$status" | tee -a diagnostics/status.csv
             cat "diagnostics/${label}.log"
           }
-
-          probe host-resolver cat /etc/resolv.conf
-          probe configured-resolver cat /run/systemd/resolve/resolv.conf
-          probe host-resolved resolvectl status
-          probe host-nss cat /etc/nsswitch.conf
-          probe control-github getent ahostsv4 github.com
-          probe control-registry getent ahostsv4 registry-1.docker.io
-          probe control-resolved resolvectl query github.com
-          provider=$(awk '$1 == "nameserver" { print $2; exit }' /run/systemd/resolve/resolv.conf)
-          printf 'Configured provider: %s\n' "$provider"
-
+          PROBE
+          source diagnostics/probe.sh
+          probe baseline-resolver cat /run/systemd/resolve/resolv.conf
+          probe baseline-resolved resolvectl status
           for host in azure.archive.ubuntu.com archive.ubuntu.com security.ubuntu.com ports.ubuntu.com; do
-            label="${host//./-}"
-            probe "host-${label}" getent ahostsv4 "$host"
-            probe "resolved-${label}" resolvectl query --type=A "${host}."
-            probe "provider-${label}" dig +tries=1 +time=3 "@$provider" "$host" A
-            probe "independent-${label}" dig +tries=1 +time=3 @1.1.1.1 "$host" A
-            probe "doh-${label}" curl --fail --silent --show-error \
-              --connect-timeout 3 --max-time 8 \
-              --resolve cloudflare-dns.com:443:1.1.1.1 \
-              --header 'accept: application/dns-json' \
-              "https://cloudflare-dns.com/dns-query?name=${host}&type=A"
+            probe "baseline-${host//./-}" getent ahostsv4 "$host"
           done
-          cat diagnostics/status.csv
 
-      - name: Retain every resolver result
+      - name: Select the proven resolver for this disposable runner
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$RUNNER_ENVIRONMENT" = github-hosted
+          interface=$(ip -o route get 1.1.1.1 | awk '{ for (i = 1; i < NF; i++) if ($i == "dev") { print $(i + 1); exit } }')
+          test -n "$interface"
+          sudo resolvectl dns "$interface" 1.1.1.1
+          sudo resolvectl flush-caches
+          resolvectl status
+
+      - name: Set up the unchanged release BuildKit version
+        uses: docker/setup-buildx-action@d7f5e7f509e45cec5c76c4d5afdd7de93d0b3df5 # v4.1.0
+        with:
+          name: ${{ env.BUILDER }}
+          driver-opts: image=moby/buildkit:v0.34.2
+
+      - name: Prove host and default-container resolution and apt
+        shell: bash
+        run: |
+          set -euo pipefail
+          source diagnostics/probe.sh
+          probe host-resolver cat /run/systemd/resolve/resolv.conf
+          probe host-resolved resolvectl status
+          probe host-github getent ahostsv4 github.com
+          probe host-registry getent ahostsv4 registry-1.docker.io
+          for host in azure.archive.ubuntu.com archive.ubuntu.com security.ubuntu.com ports.ubuntu.com; do
+            probe "host-${host//./-}" getent ahostsv4 "$host"
+          done
+          probe host-apt-update sudo apt-get update \
+            -o APT::Update::Error-Mode=any -o Acquire::Retries=0 -o Acquire::http::Timeout=20
+          probe host-apt-install sudo apt-get install -y --no-install-recommends mold clang-format
+          probe ubuntu-pull docker pull "$UBUNTU_IMAGE"
+
+          cat > diagnostics/context/resolve.sh <<'RESOLVE'
+          #!/bin/sh
+          set -eu
+          cat /etc/resolv.conf
+          for host in azure.archive.ubuntu.com archive.ubuntu.com security.ubuntu.com ports.ubuntu.com; do
+            getent ahostsv4 "$host"
+          done
+          apt-get update -o APT::Update::Error-Mode=any -o Acquire::Retries=0 -o Acquire::http::Timeout=20
+          apt-get install -y --no-install-recommends gcc libc-dev ca-certificates
+          RESOLVE
+          probe docker-default docker run --rm -i "$UBUNTU_IMAGE" sh < diagnostics/context/resolve.sh
+          container="buildx_buildkit_${BUILDER}0"
+          probe builder-resolver docker exec "$container" cat /etc/resolv.conf
+          cat > diagnostics/context/Dockerfile <<'DOCKERFILE'
+          # syntax=docker/dockerfile:1@sha256:4edf897a3ffa55b89f906fc8cc78afdb3f1834cc9c7083565e611a8a7d5fe99e
+          ARG BASE_IMAGE
+          FROM ${BASE_IMAGE}
+          COPY resolve.sh /probe-resolver.sh
+          RUN sh /probe-resolver.sh
+          DOCKERFILE
+          probe buildkit-default docker buildx build --builder "$BUILDER" \
+            --no-cache --progress plain --build-arg "BASE_IMAGE=$UBUNTU_IMAGE" \
+            --load -t hew-resolver-proof diagnostics/context
+          probe builder-log docker logs "$container"
+          cat diagnostics/status.csv
+          awk -F, 'NR > 1 && $1 !~ /^baseline-/ && $2 != 0 { failed = 1 } END { exit failed }' diagnostics/status.csv
+
+      - name: Retain the baseline and repair results
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: hosted-resolver-${{ matrix.arch }}
+          name: hosted-resolver-repair-${{ matrix.arch }}
           path: diagnostics/
           if-no-files-found: error

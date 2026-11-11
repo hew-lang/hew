@@ -1170,7 +1170,11 @@ impl Builder<'_, '_> {
         if signature.return_ty != result_ty {
             signature.return_ty = result_ty.clone();
         }
+        // The literal shortcut lowers its receiver from source. A spine has
+        // already evaluated that receiver, so retain the ordinary boundary
+        // below instead of repeating its effects or storage declarations.
         if scope.is_none()
+            && prelowered_receiver.is_none()
             && args.len() == 2
             && matches!(
                 args[1].kind,

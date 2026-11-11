@@ -13,6 +13,122 @@ use super::{
 };
 
 impl Builder<'_, '_> {
+    /// Finish a flat spine of ordinary value operations from its receiver
+    /// outwards. Each step still uses the runtime contract's argument order,
+    /// ownership decisions and failure cleanup; only the Rust call stack goes
+    /// away. Borrowed results and receiver mutations retain their ordinary
+    /// lowering, because their place/loan continuation is not an owned value.
+    pub(super) fn lower_runtime_receiver_chain(
+        &mut self,
+        expr: &HirExpr,
+    ) -> Result<Option<ValueId>, SirLoweringError> {
+        use hew_types::{RuntimeArgumentEffect as A, RuntimeResultEffect as R};
+
+        let mut chain = Vec::new();
+        let mut current = expr;
+        loop {
+            if self
+                .service
+                .module
+                .pool_accessor_sites
+                .contains_key(&current.site)
+            {
+                break;
+            }
+            let (family, args, order) = match &current.kind {
+                HirExprKind::Call {
+                    target,
+                    args,
+                    evaluation_order,
+                    ..
+                } => {
+                    if positional_call_target(target) && !evaluation_order.is_empty() {
+                        break;
+                    }
+                    let family = match target {
+                        CallTarget::Runtime(family)
+                        | CallTarget::DeclaredRuntime {
+                            family,
+                            actor_endpoints: None,
+                            ..
+                        } => *family,
+                        CallTarget::Builtin { endpoint } => {
+                            let Some(family) =
+                                hew_types::RuntimeCallFamily::from_catalog_endpoint(endpoint)
+                            else {
+                                break;
+                            };
+                            family
+                        }
+                        _ => break,
+                    };
+                    (
+                        family,
+                        args.iter().collect::<Vec<_>>(),
+                        evaluation_order.as_slice(),
+                    )
+                }
+                HirExprKind::RcIntrinsic {
+                    op,
+                    receiver: Some(receiver),
+                    value: None,
+                    ..
+                } => (
+                    super::shared_handle_family(*op),
+                    vec![receiver.as_ref()],
+                    &[][..],
+                ),
+                _ => break,
+            };
+            let row = family.row();
+            let Some(contract) = row.contract else { break };
+            if row.authority != hew_types::runtime_call::RuntimeAuthority::Value
+                || !matches!(
+                    contract.result,
+                    R::FreshOwned(_) | R::IndependentValue(_) | R::BitCopy(_)
+                )
+                || contract.arguments.len() != args.len()
+                || !contract
+                    .arguments
+                    .iter()
+                    .all(|arg| matches!(arg.effect, A::Borrow | A::Copy))
+                || args.is_empty()
+                || evaluation_sequence(order, args.len()).first() != Some(&0)
+                || args[0].intent != IntentKind::Read
+            {
+                break;
+            }
+            let receiver = args[0];
+            chain.push((current, family, args, order));
+            current = receiver;
+        }
+        if chain.len() < 2 {
+            return Ok(None);
+        }
+
+        // Lower the innermost call normally, including its receiver's binding
+        // or projection semantics. The remaining receivers are independent
+        // temporary results rather than places that later arguments can replace.
+        let (inner, _, _, _) = chain.pop().expect("nonempty receiver chain");
+        let mut value = self.lower_expr(inner)?;
+        for (call, family, args, order) in chain.into_iter().rev() {
+            let loan_floor = self.scope_loans.len();
+            self.current_site = Some(call.site);
+            let result = self
+                .lower_runtime_operation_with_temporaries(
+                    call,
+                    family,
+                    (&args, order),
+                    true,
+                    &[(0, value)],
+                    &[value],
+                )?
+                .ok_or_else(|| SirLoweringError::from("value operation has no result"))?;
+            value = self.finish_expression_value(call, result, loan_floor)?;
+        }
+        Ok(Some(value))
+    }
+
     /// These expressions cannot consume a prior argument's owner or branch to
     /// cleanup while a call-local loan is open. Other evaluation requires a
     /// snapshot of copyable arguments or a protected loan of affine arguments.
@@ -1856,6 +1972,29 @@ impl Builder<'_, '_> {
         value_required: bool,
         prelowered: &[(usize, ValueId)],
     ) -> Result<Option<ValueId>, SirLoweringError> {
+        self.lower_runtime_operation_with_temporaries(
+            expr,
+            family,
+            (args, evaluation_order),
+            value_required,
+            prelowered,
+            &[],
+        )
+    }
+
+    #[allow(
+        clippy::too_many_lines,
+        reason = "runtime contract admission and its explicit success/failure CFG form one semantic boundary"
+    )]
+    fn lower_runtime_operation_with_temporaries(
+        &mut self,
+        expr: &HirExpr,
+        family: hew_types::RuntimeCallFamily,
+        (args, evaluation_order): (&[&HirExpr], &[usize]),
+        value_required: bool,
+        prelowered: &[(usize, ValueId)],
+        argument_temporaries: &[ValueId],
+    ) -> Result<Option<ValueId>, SirLoweringError> {
         use hew_types::{RuntimeArgumentEffect, RuntimeResultEffect};
 
         let order = evaluation_sequence(evaluation_order, args.len());
@@ -2075,8 +2214,11 @@ impl Builder<'_, '_> {
                 );
             }
         }
-        let live_before_arguments: std::collections::HashSet<_> =
+        let mut live_before_arguments: std::collections::HashSet<_> =
             self.owned_live.keys().copied().collect();
+        for value in argument_temporaries {
+            live_before_arguments.remove(value);
+        }
         let mut transformed_place = None;
         let mut indexed_path = None;
         let mut indexed_keys = Vec::new();

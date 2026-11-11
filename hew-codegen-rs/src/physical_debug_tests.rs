@@ -304,8 +304,10 @@ mod codeview {
             .collect();
         let probe = records
             .iter()
-            .position(|record| record.contains("S_GPROC32_ID") && record.contains("__hew_fn_probe"))
-            .expect("the probe body is described by its symbol name");
+            .position(|record| record.contains("S_GPROC32_ID") && record.contains("`probe`"))
+            .unwrap_or_else(|| {
+                panic!("the probe body is described by its source name:\n{symbols}")
+            });
         let body: Vec<&&str> = records[probe..]
             .iter()
             .take_while(|record| !record.contains("S_GPROC32_ID") || records[probe] == **record)

@@ -315,7 +315,12 @@ mod tests {
         assert_eq!(entry.last(), Some(&0));
         let text = std::str::from_utf8(&entry[1..entry.len() - 1]).unwrap();
         assert!(text.starts_with("hew-gdb-loader\n"));
-        assert!(text.contains("hew_script = '/opt/hew/share/hew/hew-gdb.py'"));
+        let expected = if cfg!(windows) {
+            r"hew_script = '/opt/hew/share/hew\\hew-gdb.py'"
+        } else {
+            "hew_script = '/opt/hew/share/hew/hew-gdb.py'"
+        };
+        assert!(text.contains(expected), "{text}");
         assert!(text.contains("if os.path.exists(hew_script):"));
         assert!(!text.contains('\0'));
     }
@@ -324,9 +329,11 @@ mod tests {
     fn gdb_loader_escapes_quotes_in_the_script_path() {
         let entry = gdb_loader_script(Path::new("/tmp/it's"));
         let text = std::str::from_utf8(&entry[1..entry.len() - 1]).unwrap();
-        assert!(
-            text.contains(r"hew_script = '/tmp/it\'s/hew-gdb.py'"),
-            "{text}"
-        );
+        let expected = if cfg!(windows) {
+            r"hew_script = '/tmp/it\'s\\hew-gdb.py'"
+        } else {
+            r"hew_script = '/tmp/it\'s/hew-gdb.py'"
+        };
+        assert!(text.contains(expected), "{text}");
     }
 }

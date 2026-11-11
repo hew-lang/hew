@@ -653,7 +653,14 @@ fn test_processes_get_isolated_scratch_and_keep_failed_run() {
         .expect("failed test reports its scratch directory");
     assert!(kept.starts_with(&pool), "{stdout}");
     assert!(kept.is_dir(), "failed test scratch must remain inspectable");
-    assert!(stdout.contains(&format!("UserPanic (212): {}", kept.display())));
+    assert!(
+        stdout
+            .lines()
+            .any(|line| line.contains("UserPanic (212) at ")
+                && line.contains("scratch_test.hew:5:")
+                && line.ends_with(&format!(": {}", kept.display()))),
+        "{stdout}"
+    );
     let retained: Vec<_> = std::fs::read_dir(&pool)
         .expect("read test scratch pool")
         .map(|entry| entry.expect("read scratch entry").path())

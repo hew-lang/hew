@@ -52,6 +52,38 @@ fn compile_to_native(source: &str) -> (tempfile::TempDir, std::path::PathBuf) {
     (emit_dir, std::path::PathBuf::from(binary_path))
 }
 
+/// A C driver may provide compiler builtins without an unwinder. The runtime
+/// archive still needs Rust's unwind ABI, so Hew must link it explicitly.
+#[test]
+#[cfg(target_os = "linux")]
+fn native_link_supplies_the_runtime_unwinder() {
+    use std::os::unix::fs::PermissionsExt;
+
+    require_codegen();
+    let dir = tempfile::tempdir().expect("link fixture directory");
+    let driver = dir.path().join("clang-no-unwind");
+    std::fs::write(
+        &driver,
+        "#!/bin/sh\nexec clang --rtlib=libgcc --unwindlib=none \"$@\"\n",
+    )
+    .expect("write C driver");
+    std::fs::set_permissions(&driver, std::fs::Permissions::from_mode(0o755))
+        .expect("make C driver executable");
+    let output = dir.path().join("program");
+    let build = Command::new(hew_binary())
+        .env("HEW_CC", &driver)
+        .arg("build")
+        .arg(repo_root().join("tests/vertical-slice/accept/01-arith.hew"))
+        .arg("-o")
+        .arg(&output)
+        .current_dir(repo_root())
+        .output()
+        .expect("compile with a C driver that omits its unwinder");
+    assert!(build.status.success(), "{}", describe_output(&build));
+    let run = Command::new(&output).output().expect("run linked Hew code");
+    assert_eq!(run.status.code(), Some(7), "{}", describe_output(&run));
+}
+
 /// `hew compile` on a trivial arithmetic program links without
 /// error and produces a binary that runs to completion.
 ///

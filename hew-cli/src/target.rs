@@ -223,7 +223,9 @@ impl TargetSpec {
             TargetOs::Linux => NativeLinkPlan {
                 gc_flags: &["-Wl,--gc-sections"],
                 strip_flags: &["-Wl,--strip-all"],
-                platform_libs: &["-lpthread", "-lm", "-ldl", "-lrt"],
+                // Rust's unwinding runtime needs libgcc_s even when the C
+                // driver's compiler-rt configuration omits an unwinder.
+                platform_libs: &["-lpthread", "-lm", "-ldl", "-lrt", "-lgcc_s"],
                 cxx_runtime_libs: &["-lstdc++"],
                 needs_darwin_sdk: false,
                 needs_windows_crt_fixup: false,
@@ -960,6 +962,7 @@ mod tests {
         assert!(libs.contains(&"-lpthread"));
         assert!(libs.contains(&"-lm"));
         assert!(libs.contains(&"-ldl"));
+        assert!(libs.contains(&"-lgcc_s"));
         assert!(libs.contains(&"-lrt"));
     }
 

@@ -338,6 +338,87 @@ fn import_history_capacity_preserves_queued_and_waiting_receives() {
     pair.stop();
 }
 
+/// A failed receive can retain its Arc until the caller releases the operation.
+/// Its stale waiter must not strand another receive that is already waiting.
+#[test]
+fn stale_first_receive_does_not_strand_later_waiters() {
+    let _guard = crate::runtime_test_guard();
+    let pair = Pair::start(414, 415);
+    let stale = pair.receive();
+    let live = pair.receive();
+    reply_table().fail(stale.request_id, AskError::LocalShutdown);
+    let (export, offer) = pair.export(120_000);
+    pair.recipient_manager()
+        .service_exports
+        .offer(offer.clone(), true)
+        .unwrap();
+    let received = imported(&live);
+    reply_table().fail(live.request_id, AskError::LocalShutdown);
+    drop(export);
+    pair.stop();
+    assert_eq!(
+        received,
+        Some(offer.grant_id),
+        "a stale first wait must not strand a live receive"
+    );
+}
+
+/// Closing a non-current node settles its own session offer without failing
+/// an unrelated node's pending export in the same runtime.
+#[test]
+fn non_current_node_stop_settles_only_its_own_session_offer() {
+    let _guard = crate::runtime_test_guard();
+    for sent in [false, true] {
+        let owner = Pair::start(416, 417);
+        let (request_id, pending) = reply_table().register_with_waker(
+            owner.issuer_connection(),
+            None,
+            PendingReplyKind::SessionOffer,
+        );
+        let (export, offer) = owner.export(request_id);
+        if sent {
+            owner
+                .issuer_manager()
+                .service_exports
+                .mark_delivered_for_test(offer.grant_id);
+        }
+        let other = Pair::start(418, 419);
+        let (other_id, unrelated) = reply_table().register_with_waker(
+            other.issuer_connection(),
+            None,
+            PendingReplyKind::SessionOffer,
+        );
+        let (other_export, other_offer) = other.export(other_id);
+        other
+            .issuer_manager()
+            .service_exports
+            .mark_delivered_for_test(other_offer.grant_id);
+        with_current_node(|current| *current = other.issuer.as_ptr() as usize);
+        // SAFETY: this pair owns the still-allocated non-current issuer node.
+        unsafe { assert_eq!(hew_node_stop(owner.issuer.as_ptr()), 0) };
+        let outcome = pending
+            .outcome
+            .lock()
+            .unwrap()
+            .as_ref()
+            .map(|reply| (reply.status, reply.ask_error));
+        let other_settled = unrelated.outcome.lock().unwrap().is_some();
+        reply_table().fail(request_id, AskError::LocalShutdown);
+        reply_table().fail(other_id, AskError::LocalShutdown);
+        drop((export, other_export));
+        owner.stop();
+        other.stop();
+        assert_eq!(
+            outcome,
+            Some((ReplyStatus::Failed, AskError::LocalShutdown))
+        );
+        assert!(
+            !other_settled,
+            "an unrelated node's offer must stay pending"
+        );
+    }
+}
+
 /// A repeated offer is acknowledged without queueing or importing it twice,
 /// and a different interface under the same grant is refused.
 #[test]

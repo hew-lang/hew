@@ -385,19 +385,29 @@ impl ServiceExports {
     }
 
     pub(crate) fn close(&self) {
-        let waiters = {
+        let failed = {
             let mut state = self.state.lock_or_recover();
             state.closed = true;
+            // Own every pending export, including one allocated before its
+            // first send marks it session-scoped. Accepted offers already left
+            // the reply table, so failing their request ID is harmless.
+            let failed = state
+                .exports
+                .values()
+                .map(|record| record.offer.request_id)
+                .chain(state.waiters.iter().filter_map(|waiter| {
+                    waiter.pending.upgrade().map(|pending| pending.request_id)
+                }))
+                .collect::<Vec<_>>();
             state.exports.clear();
             state.retractions.clear();
             state.offers.clear();
             state.imported.clear();
-            std::mem::take(&mut state.waiters)
+            state.waiters.clear();
+            failed
         };
-        for waiter in waiters {
-            if let Some(pending) = waiter.pending.upgrade() {
-                super::reply_table().fail(pending.request_id, AskError::LocalShutdown);
-            }
+        for request_id in failed {
+            super::reply_table().fail(request_id, AskError::LocalShutdown);
         }
     }
 
@@ -538,7 +548,7 @@ impl ServiceExports {
         state
             .waiters
             .retain(|waiter| waiter.pending.strong_count() != 0);
-        if let Some(index) = state
+        while let Some(index) = state
             .waiters
             .iter()
             .position(|waiter| waiter.issuer == issuer)

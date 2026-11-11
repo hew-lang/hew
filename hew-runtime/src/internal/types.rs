@@ -761,11 +761,8 @@ mod crash_kind_projection_tests {
         );
     }
 
-    /// Ordinary traps and hardware signals project to `Crashed`. Exhaustive over the
-    /// runtime trap-code surface: if a NEW `ExitReason` variant is added, the
-    /// no-wildcard match in `to_crash_kind` fails to compile until mapped, and
-    /// THIS test must gain the new code's expected projection — the two together
-    /// are the `exhaustive-coverage` forcing function.
+    /// Ordinary traps and hardware signals project to `Crashed`. The distinct
+    /// resource and lifecycle failures have their own projection test above.
     #[test]
     fn every_non_heap_fault_projects_to_crashed() {
         for code in [
@@ -781,7 +778,6 @@ mod crash_kind_projection_tests {
             HEW_TRAP_WIRE_DECODE_FAILED,
             HEW_TRAP_JOIN_BRANCH_FAILED,
             HEW_TRAP_USER_PANIC,
-            HEW_TRAP_STACK_OVERFLOW,
             HEW_TRAP_FAILED,
         ] {
             assert_eq!(

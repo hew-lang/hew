@@ -1375,7 +1375,9 @@ fn hew_debug_stops_at_the_failure_raise() {
     .expect("run hew debug under gdb");
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(
-        stdout.contains("Breakpoint 1, hew_fault_raise"),
+        stdout
+            .lines()
+            .any(|line| line.contains("Breakpoint 1,") && line.contains("hew_fault_raise")),
         "debugger did not stop at the raise:\n{stdout}\n{}",
         String::from_utf8_lossy(&output.stderr)
     );

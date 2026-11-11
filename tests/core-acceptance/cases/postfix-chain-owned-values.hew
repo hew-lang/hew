@@ -53,6 +53,11 @@ fn refuse(grid: Grid) -> Option<string> {
     .Some(last.name)
 }
 
+fn segment(label: string, value: string) -> string {
+    print(label);
+    value
+}
+
 fn main() {
     // Method chain: every link returns a fresh string.
     let shouted = "  Chain  ".to_lower().trim().to_upper().replace("C", "c").trim();
@@ -80,4 +85,13 @@ fn main() {
     // A cast chain.
     let wide = 300;
     println(wide as i64 as i32 as i64);
+
+    // Each intermediate record value retains its ordinary cleanup facts.
+    println(tree().clone().clone().label.text);
+
+    // Receiver and argument evaluation remain in written order across links.
+    let ordered = segment("r", "xx")
+        .replace(segment("a", "x"), segment("b", "y"))
+        .replace(segment("c", "y"), segment("d", "z"));
+    println(ordered);
 }

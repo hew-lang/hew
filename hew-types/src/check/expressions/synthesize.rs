@@ -53,6 +53,77 @@ impl Checker {
         self.publish_checked_expression(expr, span, result)
     }
 
+    /// Check consecutive method receivers from the innermost link out. The
+    /// innermost call retains ordinary associated/module-head resolution.
+    /// Each outer link receives that checked type explicitly, so no checker
+    /// operation is skipped by treating the expression table as a cache.
+    fn synthesize_method_chain(&mut self, expr: &Expr, span: &Span) -> Ty {
+        let mut links = Vec::new();
+        let (mut base, mut base_span) = (expr, span);
+        while let Expr::MethodCall { receiver, .. } = base {
+            if !matches!(receiver.0, Expr::MethodCall { .. }) {
+                break;
+            }
+            links.push((base, base_span));
+            (base, base_span) = (&receiver.0, &receiver.1);
+        }
+        // Nested receiver reads have the same place context as recursive
+        // synthesis; arguments return to their own link's depth.
+        self.place_base_depth += links.len();
+        let mut ty = self.synthesize(base, base_span);
+        let outer_count = links.len();
+        for (index, (link, link_span)) in links.into_iter().rev().enumerate() {
+            self.place_base_depth -= 1;
+            let Expr::MethodCall {
+                receiver,
+                method,
+                args,
+            } = link
+            else {
+                unreachable!("the receiver spine contains method calls");
+            };
+            ty = self.synthesize_method_link(receiver, method, args, link_span, Some(ty));
+            if index + 1 != outer_count {
+                self.record_type(link_span, &ty);
+                ty = self.publish_checked_expression(link, link_span, ty);
+            }
+        }
+        ty
+    }
+
+    fn synthesize_method_link(
+        &mut self,
+        receiver: &Spanned<Expr>,
+        method: &Spanned<Ident>,
+        args: &[CallArg],
+        span: &Span,
+        receiver_ty: Option<Ty>,
+    ) -> Ty {
+        let ty = match receiver_ty {
+            Some(receiver_ty) => self.check_method_call_after_receiver(
+                receiver,
+                receiver_ty,
+                method.0.name.as_str(),
+                Some(&method.1),
+                args,
+                span,
+            ),
+            None => self.check_method_call(
+                receiver,
+                method.0.name.as_str(),
+                Some(&method.1),
+                args,
+                span,
+            ),
+        };
+        if !matches!(&ty, Ty::Error) {
+            self.record_value_path_resolution(&receiver.0, &receiver.1);
+            self.record_call_resolution(span, &method.1, true);
+        }
+        self.finish_named_arguments(args, || format!("method `{}`", method.0), &ty, span);
+        ty
+    }
+
     /// Note the shorthand fields of the named field list `expr` opens, so an
     /// unbound shorthand name is reported as one. Returns the length to
     /// truncate `field_shorthand_values` back to once `expr` is checked.
@@ -277,19 +348,11 @@ impl Checker {
                 method,
                 args,
             } => {
-                let ty = self.check_method_call(
-                    receiver,
-                    method.0.name.as_str(),
-                    Some(&method.1),
-                    args,
-                    span,
-                );
-                if !matches!(&ty, Ty::Error) {
-                    self.record_value_path_resolution(&receiver.0, &receiver.1);
-                    self.record_call_resolution(span, &method.1, true);
+                if matches!(receiver.0, Expr::MethodCall { .. }) {
+                    self.synthesize_method_chain(expr, span)
+                } else {
+                    self.synthesize_method_link(receiver, method, args, span, None)
                 }
-                self.finish_named_arguments(args, || format!("method `{}`", method.0), &ty, span);
-                ty
             }
 
             // Field access

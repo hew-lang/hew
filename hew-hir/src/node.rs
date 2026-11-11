@@ -1183,10 +1183,10 @@ impl HirExprKind {
             for statement in std::mem::take(&mut block.statements) {
                 match statement.kind {
                     HirStmtKind::Let(_, value) | HirStmtKind::Return(value) => {
-                        pending.extend(value)
+                        pending.extend(value);
                     }
                     HirStmtKind::Expr(value) | HirStmtKind::Destructure { value, .. } => {
-                        pending.push(value)
+                        pending.push(value);
                     }
                     HirStmtKind::Assign { target, value, .. } => {
                         pending.push(target);
@@ -1287,7 +1287,7 @@ impl HirExprKind {
                 }
             }
             Self::Yield { value, .. } | Self::Break { value, .. } | Self::Return { value, .. } => {
-                optional(value, pending)
+                optional(value, pending);
             }
             Self::Block(body)
             | Self::Scope { body, .. }
@@ -1324,7 +1324,7 @@ impl HirExprKind {
                 optional(base, pending);
             }
             Self::Spawn { args, .. } => {
-                pending.extend(std::mem::take(args).into_iter().map(|(_, value)| value))
+                pending.extend(std::mem::take(args).into_iter().map(|(_, value)| value));
             }
             Self::MachineVariantCtor { payload, .. } => {
                 pending.extend(payload.take().into_iter().flatten().map(|(_, value)| value));

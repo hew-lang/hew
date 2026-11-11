@@ -19,6 +19,9 @@ use crate::env::{PlaceConflict, PlacePath};
 use crate::BuiltinType;
 use std::collections::VecDeque;
 
+pub(super) use binary_chain::BinaryLeft;
+
+mod binary_chain;
 mod borrow_diagnostics;
 mod compile_time;
 mod generics_eq;

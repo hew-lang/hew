@@ -361,7 +361,12 @@ fn scan_expr_for_call_shape_inner(
                 }
             }
         }
-        HirExprKind::Binary { left, right, .. } | HirExprKind::IdentityCompare { left, right } => {
+        HirExprKind::Binary { first, steps } => {
+            for operand in HirExprKind::binary_operands(first, steps) {
+                scan_expr_for_call_shape(operand, callable, diagnostics);
+            }
+        }
+        HirExprKind::IdentityCompare { left, right } => {
             scan_expr_for_call_shape(left, callable, diagnostics);
             scan_expr_for_call_shape(right, callable, diagnostics);
         }

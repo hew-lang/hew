@@ -185,8 +185,8 @@ impl Builder<'_, '_> {
             HirExprKind::FieldAccess { object, .. } => Self::stable_argument_read(object),
             HirExprKind::TupleIndex { tuple, .. } => Self::stable_argument_read(tuple),
             HirExprKind::SubsumedValue { source, .. } => Self::stable_argument_read(source),
-            HirExprKind::Binary { left, right, .. } => {
-                Self::stable_argument_read(left) && Self::stable_argument_read(right)
+            HirExprKind::Binary { first, steps } => {
+                HirExprKind::binary_operands(first, steps).all(Self::stable_argument_read)
             }
             HirExprKind::Unary { operand, .. } => Self::stable_argument_read(operand),
             HirExprKind::NumericCast { value, .. }

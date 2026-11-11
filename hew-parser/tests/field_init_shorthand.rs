@@ -132,7 +132,10 @@ fn lone_shorthand_after_for_iterable_is_the_body() {
         panic!("expected a for loop");
     };
     assert!(
-        matches!(&iterable.0, Expr::Binary { right, .. } if matches!(right.0, Expr::Ident(_))),
+        iterable
+            .0
+            .as_binary_pair()
+            .is_some_and(|(_, _, right)| matches!(right.0, Expr::Ident(_))),
         "`n {{ i }}` must not be a record literal, got {:?}",
         iterable.0
     );

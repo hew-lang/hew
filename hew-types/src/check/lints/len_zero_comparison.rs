@@ -98,7 +98,7 @@ struct LenZero<'a> {
 
 impl NodeVisitor for LenZero<'_> {
     fn visit_expr(&mut self, expr: &Expr, span: &Span) {
-        let Expr::Binary { left, op, right } = expr else {
+        let Some((left, op, right)) = expr.as_binary_pair() else {
             return;
         };
         // Identify which side is `<recv>.len()` and which is the literal.
@@ -110,7 +110,7 @@ impl NodeVisitor for LenZero<'_> {
             } else {
                 return;
             };
-        let Some(means_empty) = comparison_meaning(*op, value, len_on_left) else {
+        let Some(means_empty) = comparison_meaning(op, value, len_on_left) else {
             return;
         };
         if !self

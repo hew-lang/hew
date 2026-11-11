@@ -26,6 +26,11 @@ specifications.
   verification and validate the changed result.
 - When two representations disagree, reject the ambiguity or resolve it at the
   owning layer before crossing the boundary.
+- Same-precedence binary runs and pattern alternatives remain flat across
+  shared frontend consumers. Binary steps retain each prefix's checked type
+  and source identity; flattening must preserve left-associative evaluation,
+  guarded suspension, per-step overflow and temporary cleanup. Pattern
+  alternatives retain source order and share checked binding identities.
 
 ## Ownership proofs and runtime work
 

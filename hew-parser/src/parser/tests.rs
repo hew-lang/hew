@@ -361,13 +361,7 @@ fn optional_default_associates_right_below_logical_operators() {
     let Expr::Coalesce { right, .. } = &right.0 else {
         panic!("right-associated default");
     };
-    assert!(matches!(
-        right.0,
-        Expr::Binary {
-            op: BinaryOp::Or,
-            ..
-        }
-    ));
+    assert_eq!(right.0.binary_last_op(), Some(BinaryOp::Or));
 }
 
 #[test]
@@ -2174,16 +2168,16 @@ fn parse_clone_prefix_binds_below_binary() {
     let source = "fn main() { let a = clone x + y; }";
     let result = parse(source);
     assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
-    match first_let_value(&result) {
-        Expr::Binary { left, op, .. } => {
-            assert_eq!(*op, BinaryOp::Add);
+    match first_let_value(&result).as_binary_pair() {
+        Some((left, op, _)) => {
+            assert_eq!(op, BinaryOp::Add);
             assert!(
                 matches!(&left.0, Expr::Clone(_)),
                 "left of `+` should be the clone, got: {:?}",
                 left.0
             );
         }
-        other => panic!("expected Expr::Binary with a clone on the left, got: {other:?}"),
+        None => panic!("expected Expr::Binary with a clone on the left"),
     }
 }
 
@@ -3628,13 +3622,7 @@ fn generic_apply_suffix_wins_over_relational_chain_shape() {
     );
 
     let comparison = parse_let_expr("x < y");
-    assert!(matches!(
-        comparison,
-        Expr::Binary {
-            op: BinaryOp::Less,
-            ..
-        }
-    ));
+    assert_eq!(comparison.binary_last_op(), Some(BinaryOp::Less));
 }
 
 #[test]
@@ -4868,7 +4856,7 @@ fn is_operator_chained_left_assoc() {
 fn is_operator_equality_precedence_binds_tighter_than_logical_and() {
     // `a is b && c is d` should parse as `(a is b) && (c is d)`
     let expr = first_fn_trailing("fn f() { a is b && c is d }");
-    let Expr::Binary { left, op, right } = expr else {
+    let Some((left, op, right)) = expr.as_binary_pair() else {
         panic!("expected Binary at top level");
     };
     assert_eq!(op, BinaryOp::And);
@@ -4880,7 +4868,7 @@ fn is_operator_equality_precedence_binds_tighter_than_logical_and() {
 fn is_operator_equality_precedence_with_eq() {
     // `a is b == true` should parse as `(a is b) == true` (same precedence, left-to-right)
     let expr = first_fn_trailing("fn f() { a is b == true }");
-    let Expr::Binary { left, op, right } = expr else {
+    let Some((left, op, right)) = expr.as_binary_pair() else {
         panic!("expected Binary at top level");
     };
     assert_eq!(op, BinaryOp::Equal);
@@ -4919,19 +4907,19 @@ fn first_fn_expr(source: &str) -> Expr {
 fn wrapping_binary_ops_parse_correctly() {
     // `a &+ b` should parse as Binary { op: WrappingAdd, .. }
     let expr = first_fn_expr("fn f(a: i64, b: i64) -> i64 { a &+ b }");
-    let Expr::Binary { op, .. } = expr else {
+    let Some(op) = expr.binary_last_op() else {
         panic!("expected Binary");
     };
     assert_eq!(op, BinaryOp::WrappingAdd);
 
     let expr = first_fn_expr("fn f(a: i64, b: i64) -> i64 { a &- b }");
-    let Expr::Binary { op, .. } = expr else {
+    let Some(op) = expr.binary_last_op() else {
         panic!("expected Binary");
     };
     assert_eq!(op, BinaryOp::WrappingSub);
 
     let expr = first_fn_expr("fn f(a: i64, b: i64) -> i64 { a &* b }");
-    let Expr::Binary { op, .. } = expr else {
+    let Some(op) = expr.binary_last_op() else {
         panic!("expected Binary");
     };
     assert_eq!(op, BinaryOp::WrappingMul);
@@ -4941,12 +4929,12 @@ fn wrapping_binary_ops_parse_correctly() {
 fn wrapping_add_precedence_matches_plain_add() {
     // `a &+ b * c` should parse as `a &+ (b * c)` — `*` binds tighter.
     let expr = first_fn_expr("fn f(a: i64, b: i64, c: i64) -> i64 { a &+ b * c }");
-    let Expr::Binary { op, right, .. } = expr else {
+    let Some((_, op, right)) = expr.as_binary_pair() else {
         panic!("expected outer Binary");
     };
     assert_eq!(op, BinaryOp::WrappingAdd, "outer op must be &+");
     // The right sub-expression must be `b * c` (plain multiply).
-    let Expr::Binary { op: inner_op, .. } = right.0 else {
+    let Some(inner_op) = right.0.binary_last_op() else {
         panic!("expected inner Binary");
     };
     assert_eq!(inner_op, BinaryOp::Multiply, "inner op must be *");
@@ -4956,11 +4944,11 @@ fn wrapping_add_precedence_matches_plain_add() {
 fn wrapping_mul_precedence_matches_plain_mul() {
     // `a + b &* c` should parse as `a + (b &* c)` — `&*` binds tighter than `+`.
     let expr = first_fn_expr("fn f(a: i64, b: i64, c: i64) -> i64 { a + b &* c }");
-    let Expr::Binary { op, right, .. } = expr else {
+    let Some((_, op, right)) = expr.as_binary_pair() else {
         panic!("expected outer Binary");
     };
     assert_eq!(op, BinaryOp::Add, "outer op must be +");
-    let Expr::Binary { op: inner_op, .. } = right.0 else {
+    let Some(inner_op) = right.0.binary_last_op() else {
         panic!("expected inner Binary");
     };
     assert_eq!(inner_op, BinaryOp::WrappingMul, "inner op must be &*");
@@ -6473,4 +6461,113 @@ fn legacy_path_separators_on_one_long_line_body() {
     let source = format!("fn main() {{ {} }}", "::".repeat(20_000));
     let errors = parse(&source).errors;
     assert!(errors.len() <= 2, "{}", errors.len());
+}
+
+fn binary_chain(expr: &Expr) -> (&Spanned<Expr>, &[BinaryStep]) {
+    let Expr::Binary { first, steps } = expr else {
+        panic!("expected a binary chain, got {expr:?}");
+    };
+    (first, steps)
+}
+
+#[test]
+fn same_precedence_operators_fold_into_one_chain() {
+    let expr = parse_let_expr("a + b - c &+ d");
+    let (first, steps) = binary_chain(&expr);
+    assert!(matches!(first.0, Expr::Ident(_)));
+    let ops: Vec<_> = steps.iter().map(|step| step.op).collect();
+    assert_eq!(
+        ops,
+        [BinaryOp::Add, BinaryOp::Subtract, BinaryOp::WrappingAdd]
+    );
+
+    for (source, op) in [
+        ("p && q && r", BinaryOp::And),
+        ("p || q || r", BinaryOp::Or),
+        ("x | y | z", BinaryOp::BitOr),
+        ("x << y << z", BinaryOp::Shl),
+        ("p < q < r", BinaryOp::Less),
+        ("x * y / z", BinaryOp::Divide),
+    ] {
+        let expr = parse_let_expr(source);
+        let (_, steps) = binary_chain(&expr);
+        assert_eq!(steps.len(), 2, "{source}");
+        assert_eq!(steps[1].op, op, "{source}");
+    }
+}
+
+#[test]
+fn chains_nest_only_across_precedence_and_parentheses() {
+    // `*` binds tighter: the chain's second operand is its own chain.
+    let expr = parse_let_expr("a + b * c * d + e");
+    let (_, steps) = binary_chain(&expr);
+    assert_eq!(steps.len(), 2);
+    let (_, product) = binary_chain(&steps[0].right.0);
+    assert_eq!(product.len(), 2);
+
+    // A parenthesized operand stays one operand.
+    let expr = parse_let_expr("(a + b) + c");
+    let (first, steps) = binary_chain(&expr);
+    assert_eq!(steps.len(), 1);
+    assert_eq!(binary_chain(&first.0).1.len(), 1);
+
+    // A chain followed by a looser operator becomes that operator's operand.
+    let expr = parse_let_expr("a + b == c + d");
+    let (first, steps) = binary_chain(&expr);
+    assert_eq!(steps.len(), 1);
+    assert_eq!(steps[0].op, BinaryOp::Equal);
+    assert_eq!(binary_chain(&first.0).1.len(), 1);
+}
+
+#[test]
+fn binary_chain_steps_keep_the_nested_prefix_spans() {
+    // Each step's span is the span the left-deep node for that prefix had:
+    // from the first operand to the start of the next token.
+    let expr = parse_let_expr("a + b - c * d + e");
+    let (first, steps) = binary_chain(&expr);
+    assert_eq!(first.1, 20..21);
+    let spans: Vec<_> = steps.iter().map(|step| step.span.clone()).collect();
+    assert_eq!(spans, [20..26, 20..34, 20..37]);
+    assert_eq!(steps[1].right.1, 28..34);
+    let (_, product) = binary_chain(&steps[1].right.0);
+    assert_eq!(product[0].span, 28..34);
+}
+
+#[test]
+fn range_operators_do_not_chain() {
+    let expr = parse_let_expr("a..b");
+    let (_, steps) = binary_chain(&expr);
+    assert_eq!(steps.len(), 1);
+    assert_eq!(steps[0].op, BinaryOp::Range);
+}
+
+/// Run `body` on a thread whose stack is far smaller than a deep tree of the
+/// input would need.
+fn on_a_small_stack(body: impl FnOnce() + Send + 'static) {
+    std::thread::Builder::new()
+        .stack_size(512 * 1024)
+        .spawn(body)
+        .expect("spawn")
+        .join()
+        .expect("a long chain recursed per operand");
+}
+
+#[test]
+fn a_fifty_thousand_term_chain_parses_and_formats_without_deep_recursion() {
+    on_a_small_stack(|| {
+        let terms = vec!["x"; 50_000].join(" + ");
+        let source = format!("fn main() {{\n    let _y = {terms};\n}}\n");
+        let result = parse(&source);
+        assert!(result.errors.is_empty(), "{:?}", result.errors);
+        let (_, steps) = binary_chain(first_let_value(&result));
+        assert_eq!(steps.len(), 49_999);
+        let formatted =
+            crate::fmt::format_checked(&source, &result.program).expect("formatting round-trips");
+        assert_eq!(formatted, source);
+        let conjunction = vec!["p"; 50_000].join(" && ");
+        let source = format!("fn main() {{\n    let _q = {conjunction};\n}}\n");
+        let result = parse(&source);
+        assert!(result.errors.is_empty(), "{:?}", result.errors);
+        assert_eq!(binary_chain(first_let_value(&result)).1.len(), 49_999);
+    });
 }

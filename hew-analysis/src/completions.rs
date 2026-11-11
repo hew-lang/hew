@@ -903,9 +903,10 @@ fn collect_locals_from_expr_inner(expr: &Expr, offset: usize, locals: &mut Vec<C
                 collect_locals_from_spanned_expr(arg.expr(), offset, locals);
             }
         }
-        Expr::Binary { left, right, .. } => {
-            collect_locals_from_spanned_expr(left, offset, locals);
-            collect_locals_from_spanned_expr(right, offset, locals);
+        Expr::Binary { first, steps } => {
+            for operand in Expr::binary_operands(first, steps) {
+                collect_locals_from_spanned_expr(operand, offset, locals);
+            }
         }
         Expr::Coalesce { left, right }
         | Expr::OptionalChain {

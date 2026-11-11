@@ -229,6 +229,11 @@ fn find_in_expr_inner(ctx: &LintCtx, levels: &LintLevels, expr: &Expr, out: &mut
         | Expr::Unary { operand: inner, .. }
         | Expr::ForkChild { expr: inner, .. } => find_in_expr(ctx, levels, &inner.0, out),
         Expr::PostfixTry(inner) => find_in_expr(ctx, levels, &inner.0, out),
+        Expr::Binary { first, steps } => {
+            for operand in Expr::binary_operands(first, steps) {
+                find_in_expr(ctx, levels, &operand.0, out);
+            }
+        }
         Expr::Coalesce { left, right }
         | Expr::OptionalChain {
             receiver: left,
@@ -237,8 +242,7 @@ fn find_in_expr_inner(ctx: &LintCtx, levels: &LintLevels, expr: &Expr, out: &mut
             find_in_expr(ctx, levels, &left.0, out);
             find_in_expr(ctx, levels, &right.0, out);
         }
-        Expr::Binary { left, right, .. }
-        | Expr::Handle {
+        Expr::Handle {
             operand: left,
             body: right,
             ..
@@ -270,12 +274,7 @@ fn try_flag(
         return;
     };
     // iterable must be `0 .. <expr>` (exclusive range, literal-zero start).
-    let Expr::Binary {
-        left,
-        op: BinaryOp::Range,
-        right,
-    } = &iterable.0
-    else {
+    let Some((left, BinaryOp::Range, right)) = iterable.0.as_binary_pair() else {
         return;
     };
     if !matches!(&left.0, Expr::Literal(Literal::Integer { value: 0, .. })) {
@@ -600,6 +599,11 @@ impl BodyScan<'_> {
                     self.expr(&base.0);
                 }
             }
+            Expr::Binary { first, steps } => {
+                for operand in Expr::binary_operands(first, steps) {
+                    self.expr(&operand.0);
+                }
+            }
             Expr::Coalesce { left, right }
             | Expr::OptionalChain {
                 receiver: left,
@@ -608,8 +612,7 @@ impl BodyScan<'_> {
                 self.expr(&left.0);
                 self.expr(&right.0);
             }
-            Expr::Binary { left, right, .. }
-            | Expr::Handle {
+            Expr::Handle {
                 operand: left,
                 body: right,
                 ..

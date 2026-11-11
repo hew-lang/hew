@@ -5,7 +5,7 @@
 //! a compared operand as `{:?}` renders it; an operand whose type has no
 //! structural rendering is published here so the report names its type.
 
-use super::{BinaryOp, CallArg, Checker, Expr, FnSig, SpanKey, Ty, TypeDefKind, VariantDef};
+use super::{BinaryOp, CallArg, Checker, FnSig, SpanKey, Ty, TypeDefKind, VariantDef};
 
 /// The signature of `assert(condition, message)`.
 pub(super) fn with_message(mut sig: FnSig) -> FnSig {
@@ -24,7 +24,7 @@ impl Checker {
         let Some(condition) = args.first() else {
             return;
         };
-        let Expr::Binary { left, op, right } = &condition.expr().0 else {
+        let Some((left, op, right)) = condition.expr().0.binary_last() else {
             return;
         };
         if !matches!(
@@ -38,12 +38,12 @@ impl Checker {
         ) {
             return;
         }
-        for operand in [left, right] {
-            let key = SpanKey::in_module(&operand.1, self.current_module_idx);
+        for operand in [left, &right.1] {
+            let key = SpanKey::in_module(operand, self.current_module_idx);
             let ty = self.expr_types.get(&key).map(|ty| self.subst.resolve(ty));
             if let Some(ty) = ty {
                 if self.renders_through_fields(&ty, &mut Vec::new()) {
-                    self.record_rendering_effect(&operand.1, &ty);
+                    self.record_rendering_effect(operand, &ty);
                 } else {
                     self.unrendered_assertion_operands.insert(key);
                 }

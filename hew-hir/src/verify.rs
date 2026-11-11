@@ -4,8 +4,8 @@ use std::ops::Range;
 use crate::diagnostic::{HirDiagnostic, HirDiagnosticKind};
 use crate::ids::{BindingId, HirNodeId, ItemId, ResolvedRef, ScopeId, SiteId};
 use crate::node::{
-    HirBlock, HirExpr, HirExprKind, HirItem, HirLiteral, HirMatchArmPredicate, HirModule,
-    HirStmtKind, HirSupervisorDecl, HirVarSelfMethodTarget,
+    HirBinaryStep, HirBlock, HirExpr, HirExprKind, HirItem, HirLiteral, HirMatchArmPredicate,
+    HirModule, HirStmtKind, HirSupervisorDecl, HirVarSelfMethodTarget,
 };
 use hew_types::{BuiltinType, RcIntrinsicOp, ResolvedTy};
 
@@ -418,6 +418,44 @@ impl Verifier {
         self.current_expr_parent = parent;
     }
 
+    /// A chain's intermediate values are expressions of their own: each has
+    /// a node and site, and is the parent of the operands it combines.
+    fn binary_chain(&mut self, expr: &HirExpr, first: &HirExpr, steps: &[HirBinaryStep]) {
+        let value_site = |index: usize| {
+            steps
+                .get(index)
+                .and_then(|step| step.result.as_ref())
+                .map_or(expr.site, |result| result.site)
+        };
+        let last = steps.len().saturating_sub(1);
+        for (index, step) in steps.iter().enumerate() {
+            match &step.result {
+                Some(result) if index < last => {
+                    self.node(result.node, result.span.clone());
+                    self.site(result.site, result.span.clone());
+                    self.site_parents
+                        .insert(result.site, Some(value_site(index + 1)));
+                }
+                None if index == last => {}
+                _ => self.diagnostics.push(self.diagnostic(
+                    HirDiagnosticKind::CheckerBoundaryViolation {
+                        name: "binary chain".to_string(),
+                        reason:
+                            "only the last step's value is the enclosing expression".to_string(),
+                    },
+                    expr.span.clone(),
+                    "a binary chain step lacks its result facts",
+                )),
+            }
+        }
+        let parent = self.current_expr_parent;
+        for (index, operand) in HirExprKind::binary_operands(first, steps).enumerate() {
+            self.current_expr_parent = Some(value_site(index.saturating_sub(1)));
+            self.expr(operand);
+        }
+        self.current_expr_parent = parent;
+    }
+
     /// A call evaluates each of its arguments exactly once.
     fn evaluation_order(&mut self, expr: &HirExpr) {
         let (HirExprKind::Call {
@@ -530,8 +568,8 @@ impl Verifier {
                     ));
                 }
             }
-            HirExprKind::Binary { left, right, .. }
-            | HirExprKind::IdentityCompare { left, right } => {
+            HirExprKind::Binary { first, steps } => self.binary_chain(expr, first, steps),
+            HirExprKind::IdentityCompare { left, right } => {
                 self.expr(left);
                 self.expr(right);
             }

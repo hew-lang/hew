@@ -419,11 +419,7 @@ impl Builder {
                 "_$machine_observe_{}",
                 hierarchy.name(machine, snapshot.scope)
             ));
-            let condition = self.expr(Expr::Binary {
-                op: hew_parser::ast::BinaryOp::And,
-                left: Box::new(selected),
-                right: Box::new(requested),
-            });
+            let condition = self.binary_expr(hew_parser::ast::BinaryOp::And, selected, requested);
             let mut captures = Vec::new();
             for (node, fields) in snapshot.variants {
                 let fields = fields

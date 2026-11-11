@@ -1049,19 +1049,26 @@ impl LowerCtx<'_> {
             {
                 // A comparison condition reports both operands.
                 let comparison = match args.first().map(|arg| &arg.expr().0) {
-                    Some(Expr::Binary { left, op, right })
-                        if matches!(
-                            op,
+                    Some(Expr::Binary { first, steps }) => steps.last().and_then(|last| {
+                        matches!(
+                            last.op,
                             BinaryOp::Equal
                                 | BinaryOp::NotEqual
                                 | BinaryOp::Less
                                 | BinaryOp::LessEqual
                                 | BinaryOp::Greater
                                 | BinaryOp::GreaterEqual
-                        ) =>
-                    {
-                        Some(([&**left, &**right], *op))
-                    }
+                        )
+                        .then(|| {
+                            (
+                                [
+                                    BinaryOperand::last_left(first, steps),
+                                    BinaryOperand::Expr(&last.right),
+                                ],
+                                last.op,
+                            )
+                        })
+                    }),
                     _ => None,
                 };
                 let (kind, ty) = self.lower_assertion(args, comparison, &span);

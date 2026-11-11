@@ -114,6 +114,68 @@ test("runProgram hello_world returns stdout and zero exit code", async () => {
   assert.deepEqual(result.diagnostics, []);
 });
 
+test("flat binary and pattern forms compile in the browser and execute", async () => {
+  const terms = " + x".repeat(3_000);
+  const alternatives = Array.from({ length: 2_000 }, (_, n) => n).join(" | ");
+  for (const [source, expected] of [
+    [
+      `fn f(x: i64) -> i64 { x${terms} } fn main() { println(f(1)); }`,
+      "3001\n",
+    ],
+    [
+      `fn f(x: i64) -> i64 { match x { ${alternatives} => 1, _ => 0 } }
+      fn main() { println(f(1999)); println(f(2000)); }`,
+      "1\n0\n",
+    ],
+  ]) {
+    const result = await runProgram(source, "");
+    assert.equal(result.exit_code, 0, JSON.stringify(result));
+    assert.equal(result.stdout, expected);
+    assert.deepEqual(result.diagnostics, []);
+  }
+});
+
+test("long malformed forms and genuine nesting produce diagnostics", async () => {
+  for (const source of [
+    `fn main() { let _ = x${" + x".repeat(3_000)} +; }`,
+    `fn main() { match 0 { ${Array.from({ length: 2_000 }, (_, n) => n).join(" | ")} | => 1 } }`,
+    `fn main() { let _ = ${"(".repeat(2_000)}1${")".repeat(2_000)}; }`,
+  ]) {
+    const result = await runProgram(source, "");
+    assert.equal(result.status, "compile_error");
+    assert.ok(
+      result.diagnostics.some((diagnostic) => diagnostic.severity === "error"),
+    );
+  }
+});
+
+for (const name of [
+  "or-pattern-alternatives",
+  "binary-chain-evaluation",
+  "binary-chain-recovery",
+]) {
+  test(`flat source semantics preserve ${name}`, async () => {
+    const source = fs.readFileSync(
+      path.join(repoRoot, `tests/core-acceptance/cases/${name}.hew`),
+      "utf8",
+    );
+    const result = await runProgram(source, "");
+    if (name !== "binary-chain-evaluation") {
+      assert.equal(result.exit_code, 0, JSON.stringify(result));
+      assert.equal(
+        result.stdout,
+        name === "binary-chain-recovery" ? "a1\na2\no1\no2\n" : "",
+      );
+    } else {
+      assert.equal(result.exit_code, 1, JSON.stringify(result));
+      assert.equal(
+        result.stdout,
+        "a1\na2\nall=false\no1\no2\nany=true\nm1\nm3\nm4\nm5\nmixed=true\nn1\nn2\nn3\nn4\nn5\nsum=14\n10 7 8 true 1\nasbsc\nt1\nt2\n",
+      );
+    }
+  });
+}
+
 for (const [name, expected] of [
   ["capacity", "4\n4\nlimit\n"],
   ["alias", "8\nretained backing\n"],

@@ -1,0 +1,10 @@
+[[case]]
+id = "binary-chain-recovery"
+intent = "Binary prefixes retain numeric widening, aliases and guarded suspension, and release intermediate owners when a later operand faults."
+source = "cases/binary-chain-recovery.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 30
+
+[case.expected]
+stdout = "a1\na2\no1\no2\n"
+exit = 0

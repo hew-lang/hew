@@ -875,3 +875,53 @@ mod non_root_module_inference_scope {
 // Non-root module_graph bodies must be typechecked, not just registered.
 // A type error in an imported module body must not be silently missed.
 // (make_program_with_module_graph helper is in tests/mod.rs)
+
+/// Each step of a binary chain keeps the type, literal width and widening the
+/// nested form recorded at the same prefix span.
+mod binary_chain_facts {
+    use super::*;
+
+    fn span_of(source: &str, text: &str, len: usize) -> SpanKey {
+        let start = source.find(text).expect("fragment present");
+        SpanKey::from(&(start..start + len))
+    }
+
+    fn ty_at(output: &TypeCheckOutput, key: &SpanKey) -> Ty {
+        output
+            .expr_types
+            .get(key)
+            .cloned()
+            .unwrap_or_else(|| panic!("no type recorded at {key:?}"))
+    }
+
+    #[test]
+    fn literal_prefixes_take_the_contextual_width() {
+        let source = "fn f(c: i32) -> i32 {\n    let x: i32 = 1 + 2 + c;\n    let _y: i8 = 1 + 2 + 3;\n    x\n}\n";
+        let output = check_source(source);
+        assert!(output.errors.is_empty(), "{:#?}", output.errors);
+        for (fragment, prefix, whole, ty) in
+            [("1 + 2 + c", 6, 9, Ty::I32), ("1 + 2 + 3", 6, 9, Ty::I8)]
+        {
+            assert_eq!(ty_at(&output, &span_of(source, fragment, prefix)), ty);
+            assert_eq!(ty_at(&output, &span_of(source, fragment, whole)), ty);
+            // A literal's span runs to the next token.
+            assert_eq!(ty_at(&output, &span_of(source, fragment, 2)), ty);
+        }
+        let three = source.rfind("3;").expect("last literal");
+        assert_eq!(ty_at(&output, &SpanKey::from(&(three..three + 1))), Ty::I8);
+    }
+
+    #[test]
+    fn a_narrow_prefix_widens_at_its_own_span() {
+        let source = "fn f(a: i8, b: i8, c: i32) -> i32 {\n    a + b + c\n}\n";
+        let output = check_source(source);
+        assert!(output.errors.is_empty(), "{:#?}", output.errors);
+        let prefix = span_of(source, "a + b + c", 6);
+        assert_eq!(ty_at(&output, &prefix), Ty::I8);
+        assert_eq!(
+            output.numeric_operand_coercions.get(&prefix),
+            Some(&Ty::I32)
+        );
+        assert_eq!(ty_at(&output, &span_of(source, "a + b + c", 10)), Ty::I32);
+    }
+}

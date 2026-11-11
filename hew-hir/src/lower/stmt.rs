@@ -939,11 +939,7 @@ impl LowerCtx<'_> {
                 target.1.clone(),
             );
             let updated = self.make_expr(
-                HirExprKind::Binary {
-                    op: Self::compound_assign_binary_op(op),
-                    left: Box::new(read),
-                    right: Box::new(replacement),
-                },
+                HirExprKind::binary(read, Self::compound_assign_binary_op(op), replacement),
                 value_ty.clone(),
                 IntentKind::Read,
                 span.clone(),
@@ -1066,11 +1062,7 @@ impl LowerCtx<'_> {
             site: self.ids.site(),
             ty: target_read.ty.clone(),
             intent: IntentKind::Consume,
-            kind: HirExprKind::Binary {
-                op: binary_op,
-                left: Box::new(target_read),
-                right: Box::new(rhs),
-            },
+            kind: HirExprKind::binary(target_read, binary_op, rhs),
             span: span.clone(),
         };
         let assignment = HirStmtKind::Assign {
@@ -1171,11 +1163,7 @@ impl LowerCtx<'_> {
             site: self.ids.site(),
             ty,
             intent: IntentKind::Read,
-            kind: HirExprKind::Binary {
-                op: BinaryOp::Add,
-                left: Box::new(bound),
-                right: Box::new(one),
-            },
+            kind: HirExprKind::binary(bound, BinaryOp::Add, one),
             span: span.clone(),
         }
     }

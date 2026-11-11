@@ -1225,6 +1225,10 @@ impl HirExprKind {
                 }
                 pending.append(args);
             }
+            Self::Binary { first, steps } => {
+                take(first, pending);
+                pending.extend(std::mem::take(steps).into_iter().map(|step| step.right));
+            }
             Self::RcIntrinsic {
                 receiver, value, ..
             } => {
@@ -1246,7 +1250,6 @@ impl HirExprKind {
                 container: left,
                 index: right,
             }
-            | Self::Binary { left, right, .. }
             | Self::IdentityCompare { left, right }
             | Self::RangeValue {
                 start: left,
@@ -1420,6 +1423,69 @@ impl std::fmt::Debug for HirExpr {
     }
 }
 
+/// One step of a [`HirExprKind::Binary`] chain.
+#[derive(Debug, Clone, PartialEq)]
+pub struct HirBinaryStep {
+    pub op: BinaryOp,
+    pub right: HirExpr,
+    /// The value this step produces for the next step to read. `None` on
+    /// the last step, whose value is the enclosing expression.
+    pub result: Option<HirBinaryResult>,
+}
+
+/// The checked value of an intermediate step of a binary chain. It is read
+/// once, by the next step.
+#[derive(Debug, Clone, PartialEq)]
+pub struct HirBinaryResult {
+    pub node: HirNodeId,
+    pub site: SiteId,
+    pub ty: ResolvedTy,
+    pub span: Span,
+}
+
+impl HirExprKind {
+    /// The operands of a binary chain, in evaluation order.
+    pub fn binary_operands<'a>(
+        first: &'a HirExpr,
+        steps: &'a [HirBinaryStep],
+    ) -> impl Iterator<Item = &'a HirExpr> {
+        std::iter::once(first).chain(steps.iter().map(|step| &step.right))
+    }
+
+    /// The operands of a binary chain, mutably, in evaluation order.
+    pub fn binary_operands_mut<'a>(
+        first: &'a mut HirExpr,
+        steps: &'a mut [HirBinaryStep],
+    ) -> impl Iterator<Item = &'a mut HirExpr> {
+        std::iter::once(first).chain(steps.iter_mut().map(|step| &mut step.right))
+    }
+
+    /// `(left, op, right)` when this is a one-step binary expression.
+    #[must_use]
+    pub fn as_binary_pair(&self) -> Option<(&HirExpr, BinaryOp, &HirExpr)> {
+        match self {
+            HirExprKind::Binary { first, steps } => match steps.as_slice() {
+                [step] => Some((first, step.op, &step.right)),
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+
+    /// A one-step binary expression.
+    #[must_use]
+    pub fn binary(left: HirExpr, op: BinaryOp, right: HirExpr) -> HirExprKind {
+        HirExprKind::Binary {
+            first: Box::new(left),
+            steps: vec![HirBinaryStep {
+                op,
+                right,
+                result: None,
+            }],
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum HirVarSelfMethodTarget {
     /// The declaration identity lives in the sibling `call_target` field.
@@ -1517,10 +1583,12 @@ pub enum HirExprKind {
     ContextReader {
         reader: ExecutionContextReader,
     },
+    /// A left-associative run of binary operators: `first`, then each step
+    /// applied to the value so far. The last step's value is this
+    /// expression; every earlier step's value carries its own facts.
     Binary {
-        op: BinaryOp,
-        left: Box<HirExpr>,
-        right: Box<HirExpr>,
+        first: Box<HirExpr>,
+        steps: Vec<HirBinaryStep>,
     },
     /// Checker-authoritative unary expression (`!`, `-`, `~`).
     ///

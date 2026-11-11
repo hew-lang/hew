@@ -96,8 +96,8 @@ fn find_closure_in_expr(expr: &hew_hir::HirExpr) -> Option<&hew_hir::HirExpr> {
         } => fields
             .iter()
             .find_map(|(_, value)| find_closure_in_expr(value)),
-        HirExprKind::Binary { left, right, .. } => {
-            find_closure_in_expr(left).or_else(|| find_closure_in_expr(right))
+        HirExprKind::Binary { first, steps } => {
+            HirExprKind::binary_operands(first, steps).find_map(find_closure_in_expr)
         }
         _ => None,
     }

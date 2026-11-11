@@ -945,6 +945,11 @@ fn count_idents_in_expr_inner(expr: &Expr, counts: &mut HashMap<String, usize>) 
         Expr::Ident(ident) => {
             *counts.entry(ident.to_string()).or_insert(0) += 1;
         }
+        Expr::Binary { first, steps } => {
+            for operand in Expr::binary_operands(first, steps) {
+                count_idents_in_expr(&operand.0, counts);
+            }
+        }
         Expr::Coalesce { left, right }
         | Expr::OptionalChain {
             receiver: left,
@@ -953,8 +958,7 @@ fn count_idents_in_expr_inner(expr: &Expr, counts: &mut HashMap<String, usize>) 
             count_idents_in_expr(&left.0, counts);
             count_idents_in_expr(&right.0, counts);
         }
-        Expr::Binary { left, right, .. }
-        | Expr::Handle {
+        Expr::Handle {
             operand: left,
             body: right,
             ..

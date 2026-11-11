@@ -52,9 +52,10 @@ fn walk_expr(expr: &HirExpr, f: &mut impl FnMut(&HirExpr)) {
                 walk_expr(a, f);
             }
         }
-        HirExprKind::Binary { left, right, .. } => {
-            walk_expr(left, f);
-            walk_expr(right, f);
+        HirExprKind::Binary { first, steps } => {
+            for operand in HirExprKind::binary_operands(first, steps) {
+                walk_expr(operand, f);
+            }
         }
         HirExprKind::Unary { operand, .. } => walk_expr(operand, f),
         HirExprKind::Block(block) => walk_block(block, f),

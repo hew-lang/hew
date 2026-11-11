@@ -64,7 +64,12 @@ fn collect_general_closure_captures_walk_inner(
         | HirExprKind::Continue { .. }
         | HirExprKind::ActorSelf
         | HirExprKind::Unsupported(_) => {}
-        HirExprKind::Binary { left, right, .. } | HirExprKind::IdentityCompare { left, right } => {
+        HirExprKind::Binary { first, steps } => {
+            for operand in HirExprKind::binary_operands(first, steps) {
+                collect_general_closure_captures_walk(operand, outer_bindings, seen, captures);
+            }
+        }
+        HirExprKind::IdentityCompare { left, right } => {
             collect_general_closure_captures_walk(left, outer_bindings, seen, captures);
             collect_general_closure_captures_walk(right, outer_bindings, seen, captures);
         }

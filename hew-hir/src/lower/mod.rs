@@ -48,6 +48,7 @@ use crate::{IntentKind, ResourceMarker};
 use hew_types::substitute_type_params;
 
 mod actors;
+mod binary_chain;
 mod builders;
 mod call_shape_gates;
 mod call_type_args;
@@ -87,6 +88,7 @@ mod var_self;
 mod vec_index_gates;
 mod wire;
 
+use self::binary_chain::BinaryOperand;
 use self::call_shape_gates::*;
 use self::calls::*;
 use self::captures::*;

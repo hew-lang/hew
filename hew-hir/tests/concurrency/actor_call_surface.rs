@@ -72,7 +72,12 @@ fn visit_expr<'a>(expr: &'a HirExpr, out: &mut Vec<&'a HirExpr>) {
                 visit_expr(value, out);
             }
         }
-        HirExprKind::Binary { left, right, .. } | HirExprKind::IdentityCompare { left, right } => {
+        HirExprKind::Binary { first, steps } => {
+            for operand in HirExprKind::binary_operands(first, steps) {
+                visit_expr(operand, out);
+            }
+        }
+        HirExprKind::IdentityCompare { left, right } => {
             visit_expr(left, out);
             visit_expr(right, out);
         }

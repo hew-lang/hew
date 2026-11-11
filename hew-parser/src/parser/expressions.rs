@@ -397,6 +397,12 @@ impl Parser<'_> {
             self.parse_primary()?
         };
 
+        // The binding power of the binary chain this loop last built, with the
+        // end of its span. A later operator at the same power extends the
+        // chain; any other form that replaces `lhs` consumes tokens and moves
+        // its end, so a parenthesized or postfixed operand starts a new chain.
+        let mut open_chain: Option<(u8, usize)> = None;
+
         // Infix + postfix
         loop {
             // A block-like statement ends at its `}`; only a `handle` clause
@@ -704,15 +710,30 @@ impl Parser<'_> {
             }
             let rhs = self.parse_expr_bp(rbp)?;
             let end = self.peek_span().start;
-
-            lhs = (
-                Expr::Binary {
-                    left: Box::new(lhs),
-                    op,
-                    right: Box::new(rhs),
-                },
-                start..end,
-            );
+            let step = BinaryStep {
+                op,
+                right: rhs,
+                span: start..end,
+            };
+            let ranged = matches!(op, BinaryOp::Range | BinaryOp::RangeInclusive);
+            match &mut lhs {
+                (Expr::Binary { steps, .. }, span)
+                    if !ranged && open_chain == Some((lbp, span.end)) =>
+                {
+                    steps.push(step);
+                    span.end = end;
+                }
+                _ => {
+                    lhs = (
+                        Expr::Binary {
+                            first: Box::new(lhs),
+                            steps: vec![step],
+                        },
+                        start..end,
+                    );
+                }
+            }
+            open_chain = (!ranged).then_some((lbp, end));
         }
 
         Some(lhs)

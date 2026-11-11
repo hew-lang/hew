@@ -157,7 +157,7 @@ else needs `impl Display for {rendered}`)"
     pub(super) fn expect_concrete_integer_operands(
         &mut self,
         common_ty: &Ty,
-        left: &Spanned<Expr>,
+        left: BinaryLeft<'_>,
         left_ty: &Ty,
         right: &Spanned<Expr>,
         right_ty: &Ty,
@@ -165,7 +165,7 @@ else needs `impl Display for {rendered}`)"
         if integer_type_info(common_ty, self.pointer_width()).is_some() {
             // Preserve the source types and publish explicit widening targets
             // for HIR. Literal and inference operands use contextual unification.
-            self.record_concrete_integer_operand(common_ty, left, left_ty);
+            self.record_concrete_integer_left(common_ty, left, left_ty);
             self.record_concrete_integer_operand(common_ty, right, right_ty);
         }
     }
@@ -234,22 +234,9 @@ else needs `impl Display for {rendered}`)"
     /// because it contains no call, await or resource use.
     pub(super) fn is_literal_integer_arithmetic(expr: &Expr) -> bool {
         match expr {
-            Expr::Binary { op, .. } => matches!(
-                op,
-                BinaryOp::Add
-                    | BinaryOp::Subtract
-                    | BinaryOp::Multiply
-                    | BinaryOp::Divide
-                    | BinaryOp::Modulo
-                    | BinaryOp::WrappingAdd
-                    | BinaryOp::WrappingSub
-                    | BinaryOp::WrappingMul
-                    | BinaryOp::BitAnd
-                    | BinaryOp::BitOr
-                    | BinaryOp::BitXor
-                    | BinaryOp::Shl
-                    | BinaryOp::Shr
-            ),
+            Expr::Binary { .. } => expr
+                .binary_last_op()
+                .is_some_and(binary_chain::integer_arithmetic_op),
             Expr::Unary {
                 op: UnaryOp::BitNot | UnaryOp::Negate,
                 ..

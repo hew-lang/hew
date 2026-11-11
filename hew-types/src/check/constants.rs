@@ -137,22 +137,21 @@ impl Checker {
 
     fn constant_non_scalar_comparison(&self, expr: &Expr) -> bool {
         use hew_parser::ast::BinaryOp;
-        let Expr::Binary {
+        let Some((
             left,
-            op:
-                BinaryOp::Equal
-                | BinaryOp::NotEqual
-                | BinaryOp::Less
-                | BinaryOp::LessEqual
-                | BinaryOp::Greater
-                | BinaryOp::GreaterEqual,
-            ..
-        } = expr
+            BinaryOp::Equal
+            | BinaryOp::NotEqual
+            | BinaryOp::Less
+            | BinaryOp::LessEqual
+            | BinaryOp::Greater
+            | BinaryOp::GreaterEqual,
+            _,
+        )) = expr.binary_last()
         else {
             return false;
         };
         self.expr_types
-            .get(&super::SpanKey::in_module(&left.1, self.current_module_idx))
+            .get(&super::SpanKey::in_module(left, self.current_module_idx))
             .map(|ty| self.normalize_for_use(ty))
             .is_some_and(|ty| {
                 !ty.is_numeric()
@@ -212,8 +211,8 @@ impl Checker {
         self.const_values.get(&name)
     }
 
-    pub(super) fn constant_integer_value(&self, expr: &Spanned<Expr>) -> Option<i128> {
-        let Expr::Ident(name) = expr.0 else {
+    pub(super) fn constant_integer_value(&self, expr: &Expr) -> Option<i128> {
+        let Expr::Ident(name) = *expr else {
             return None;
         };
         let id = self.constant_declaration(name)?;

@@ -3,7 +3,7 @@
 use super::{eval_binary, ConstEvalError, ConstIntegerTarget};
 use crate::compile_time::ConstantValue;
 use crate::ResolvedTy;
-use hew_parser::ast::{BinaryOp, Expr, Literal, Spanned, UnaryOp};
+use hew_parser::ast::{BinaryOp, BinaryStep, Expr, Literal, Span, Spanned, UnaryOp};
 
 /// Evaluate scalar literal structure without invoking source functions.
 ///
@@ -18,7 +18,7 @@ pub fn eval_scalar_const_expr(
     expr: &Spanned<Expr>,
     expected: &ResolvedTy,
     pointer_width: u8,
-    facts: &mut impl FnMut(&Spanned<Expr>) -> (Option<ResolvedTy>, Option<ConstantValue>),
+    facts: &mut impl FnMut(&Span, Option<&Expr>) -> (Option<ResolvedTy>, Option<ConstantValue>),
 ) -> Result<ConstantValue, ConstEvalError> {
     hew_parser::stack::ensure_sufficient_stack(|| {
         eval_scalar_const_expr_inner(expr, expected, pointer_width, facts)
@@ -29,9 +29,9 @@ fn eval_scalar_const_expr_inner(
     expr: &Spanned<Expr>,
     expected: &ResolvedTy,
     pointer_width: u8,
-    facts: &mut impl FnMut(&Spanned<Expr>) -> (Option<ResolvedTy>, Option<ConstantValue>),
+    facts: &mut impl FnMut(&Span, Option<&Expr>) -> (Option<ResolvedTy>, Option<ConstantValue>),
 ) -> Result<ConstantValue, ConstEvalError> {
-    let (ty, value) = facts(expr);
+    let (ty, value) = facts(&expr.1, Some(&expr.0));
     let ty = ty.as_ref().unwrap_or(expected);
     if let Some(value) = value {
         return Ok(coerce_scalar(value, ty));
@@ -49,18 +49,8 @@ fn eval_scalar_const_expr_inner(
             ConstantValue::Bytes(bytes.clone())
         }
         Expr::Unary { op, operand } => scalar_unary(*op, operand, ty, pointer_width, facts)?,
-        Expr::Binary { left, op, right } => {
-            let left_value = eval_scalar_const_expr(left, ty, pointer_width, facts)?;
-            if matches!(
-                (op, &left_value),
-                (BinaryOp::And, ConstantValue::Bool(false))
-                    | (BinaryOp::Or, ConstantValue::Bool(true))
-            ) {
-                return Ok(left_value);
-            }
-            let right_value = eval_scalar_const_expr(right, ty, pointer_width, facts)?;
-            let operand_ty = facts(left).0.unwrap_or_else(|| ty.clone());
-            scalar_binary(*op, left_value, right_value, ty, &operand_ty, pointer_width)?
+        Expr::Binary { first, steps } => {
+            return eval_scalar_chain(first, steps, ty, pointer_width, facts);
         }
         Expr::Ident(name) => return Err(ConstEvalError::UnknownConst(name.to_string())),
         Expr::FieldAccess { object, field } => {
@@ -105,6 +95,15 @@ fn eval_scalar_const_expr_inner(
         }
         _ => return Err(ConstEvalError::NotConstant),
     };
+    finish_scalar(value, ty, pointer_width)
+}
+
+/// Give an operation's value its checked type, refusing an integer outside it.
+fn finish_scalar(
+    value: ConstantValue,
+    ty: &ResolvedTy,
+    pointer_width: u8,
+) -> Result<ConstantValue, ConstEvalError> {
     let value = coerce_scalar(value, ty);
     if let ConstantValue::Integer(value) = value {
         if let Some(target) = ConstIntegerTarget::from_resolved_ty(ty, pointer_width) {
@@ -116,12 +115,63 @@ fn eval_scalar_const_expr_inner(
     Ok(value)
 }
 
+/// Evaluate a binary chain left to right. Each intermediate value takes the
+/// checked type of its prefix span, defaulting to the type of the value it
+/// feeds, and a prefix the checker already folded is used as it stands.
+fn eval_scalar_chain(
+    first: &Spanned<Expr>,
+    steps: &[BinaryStep],
+    ty: &ResolvedTy,
+    pointer_width: u8,
+    facts: &mut impl FnMut(&Span, Option<&Expr>) -> (Option<ResolvedTy>, Option<ConstantValue>),
+) -> Result<ConstantValue, ConstEvalError> {
+    let Some(last) = steps.len().checked_sub(1) else {
+        return Err(ConstEvalError::NotConstant);
+    };
+    let mut start = 0;
+    let mut seeded = None;
+    let mut step_tys = vec![ty.clone()];
+    for index in (0..last).rev() {
+        let (prefix_ty, prefix_value) = facts(&steps[index].span, None);
+        let prefix_ty = prefix_ty.unwrap_or_else(|| step_tys[step_tys.len() - 1].clone());
+        if let Some(value) = prefix_value {
+            seeded = Some(coerce_scalar(value, &prefix_ty));
+            start = index + 1;
+            break;
+        }
+        step_tys.push(prefix_ty);
+    }
+    step_tys.reverse();
+    let mut value = match seeded {
+        Some(value) => value,
+        None => eval_scalar_const_expr(first, &step_tys[0], pointer_width, facts)?,
+    };
+    for (offset, step) in steps[start..].iter().enumerate() {
+        let index = start + offset;
+        let step_ty = &step_tys[offset];
+        if matches!(
+            (step.op, &value),
+            (BinaryOp::And, ConstantValue::Bool(false)) | (BinaryOp::Or, ConstantValue::Bool(true))
+        ) {
+            continue;
+        }
+        let right = eval_scalar_const_expr(&step.right, step_ty, pointer_width, facts)?;
+        let left_span = index
+            .checked_sub(1)
+            .map_or(&first.1, |previous| &steps[previous].span);
+        let operand_ty = facts(left_span, None).0.unwrap_or_else(|| step_ty.clone());
+        let combined = scalar_binary(step.op, value, right, step_ty, &operand_ty, pointer_width)?;
+        value = finish_scalar(combined, step_ty, pointer_width)?;
+    }
+    Ok(value)
+}
+
 fn scalar_unary(
     op: UnaryOp,
     operand: &Spanned<Expr>,
     ty: &ResolvedTy,
     pointer_width: u8,
-    facts: &mut impl FnMut(&Spanned<Expr>) -> (Option<ResolvedTy>, Option<ConstantValue>),
+    facts: &mut impl FnMut(&Span, Option<&Expr>) -> (Option<ResolvedTy>, Option<ConstantValue>),
 ) -> Result<ConstantValue, ConstEvalError> {
     // A signed minimum's positive magnitude is outside its type. Its
     // negation is one literal operation, as in the integer evaluator.

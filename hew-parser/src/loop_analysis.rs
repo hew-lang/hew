@@ -325,6 +325,8 @@ fn ast_expr_has_break_inner(expr: &Expr, query: BreakQuery, depth: usize) -> boo
         }
 
         // ── Arithmetic / logical operators ────────────────────────────────
+        Expr::Binary { first, steps } => Expr::binary_operands(first, steps)
+            .any(|operand| ast_expr_has_break(&operand.0, query, depth)),
         Expr::Coalesce { left, right } => {
             ast_expr_has_break(&left.0, query, depth) || ast_expr_has_break(&right.0, query, depth)
         }
@@ -332,8 +334,7 @@ fn ast_expr_has_break_inner(expr: &Expr, query: BreakQuery, depth: usize) -> boo
             ast_expr_has_break(&receiver.0, query, depth)
                 || ast_expr_has_break(&body.0, query, depth)
         }
-        Expr::Binary { left, right, .. }
-        | Expr::Handle {
+        Expr::Handle {
             operand: left,
             body: right,
             ..
@@ -755,11 +756,12 @@ mod tests {
                 radix: crate::ast::IntRadix::Decimal,
             })))),
         ]);
-        let binary = sp(Expr::Binary {
-            left: Box::new(sp(Expr::Ident(Ident::new("a")))),
-            op: BinaryOp::Add,
-            right: Box::new(sp(Expr::Block(rhs_block))),
-        });
+        let binary = sp(Expr::binary(
+            sp(Expr::Ident(Ident::new("a"))),
+            BinaryOp::Add,
+            sp(Expr::Block(rhs_block)),
+            0..0,
+        ));
         let body = block_with_stmts(vec![sp(Stmt::Let {
             pattern: sp(crate::ast::Pattern::Wildcard),
             ty: None,

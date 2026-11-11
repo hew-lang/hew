@@ -399,6 +399,11 @@ fn collect_inlay_hints_from_expr_inner(
                 collect_inlay_hints_from_expr(source, &base.0, tc, hints);
             }
         }
+        Expr::Binary { first, steps } => {
+            for operand in Expr::binary_operands(first, steps) {
+                collect_inlay_hints_from_expr(source, &operand.0, tc, hints);
+            }
+        }
         Expr::Coalesce { left, right }
         | Expr::OptionalChain {
             receiver: left,
@@ -407,8 +412,7 @@ fn collect_inlay_hints_from_expr_inner(
             collect_inlay_hints_from_expr(source, &left.0, tc, hints);
             collect_inlay_hints_from_expr(source, &right.0, tc, hints);
         }
-        Expr::Binary { left, right, .. }
-        | Expr::Handle {
+        Expr::Handle {
             operand: left,
             body: right,
             ..

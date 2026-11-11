@@ -237,16 +237,16 @@ impl LowerCtx<'_> {
             &spanned,
             declared_ty,
             target_width,
-            &mut |expr| {
-                let key = self.mk_key(&expr.1);
+            &mut |span, expr| {
+                let key = self.mk_key(span);
                 let ty = self
                     .numeric_operand_coercions
                     .get(&key)
                     .and_then(|ty| ResolvedTy::from_ty(ty).ok())
-                    .or_else(|| self.checker_expr_ty_if_present(&expr.1));
-                let value = self.constant_at(&expr.1).or_else(|| {
-                    ty.as_ref()
-                        .and_then(|ty| self.fold_aggregate_const_expr(&expr.0, ty, &expr.1))
+                    .or_else(|| self.checker_expr_ty_if_present(span));
+                let value = self.constant_at(span).or_else(|| {
+                    let ty = ty.as_ref()?;
+                    self.fold_aggregate_const_expr(expr?, ty, span)
                 });
                 (ty, value)
             },

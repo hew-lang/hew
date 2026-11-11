@@ -704,6 +704,11 @@ fn walk_expr_inner<V: NodeVisitor>(expr: &Expr, span: &Span, visitor: &mut V) {
                 walk_expr(&base.0, &base.1, visitor);
             }
         }
+        Expr::Binary { first, steps } => {
+            for operand in Expr::binary_operands(first, steps) {
+                walk_expr(&operand.0, &operand.1, visitor);
+            }
+        }
         Expr::Coalesce { left, right }
         | Expr::OptionalChain {
             receiver: left,
@@ -712,8 +717,7 @@ fn walk_expr_inner<V: NodeVisitor>(expr: &Expr, span: &Span, visitor: &mut V) {
             walk_expr(&left.0, &left.1, visitor);
             walk_expr(&right.0, &right.1, visitor);
         }
-        Expr::Binary { left, right, .. }
-        | Expr::Handle {
+        Expr::Handle {
             operand: left,
             body: right,
             ..

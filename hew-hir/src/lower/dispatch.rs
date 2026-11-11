@@ -638,7 +638,7 @@ impl LowerCtx<'_> {
     pub(super) fn lower_assertion(
         &mut self,
         args: &[CallArg],
-        comparison: Option<([&Spanned<Expr>; 2], BinaryOp)>,
+        comparison: Option<([BinaryOperand<'_>; 2], BinaryOp)>,
         span: &Span,
     ) -> (HirExprKind, ResolvedTy) {
         let (condition, message) = match args {
@@ -711,7 +711,7 @@ impl LowerCtx<'_> {
     /// operands rendered for the report.
     fn bind_compared_operands(
         &mut self,
-        operands: [&Spanned<Expr>; 2],
+        operands: [BinaryOperand<'_>; 2],
         op: BinaryOp,
         condition_span: &Span,
         span: &Span,
@@ -719,23 +719,24 @@ impl LowerCtx<'_> {
     ) -> (HirExpr, [HirExpr; 2]) {
         let mut refs = Vec::with_capacity(2);
         for (role, operand) in ["left", "right"].into_iter().zip(operands) {
-            let operand_key = self.mk_key(&operand.1);
+            let operand_span = operand.span();
+            let operand_key = self.mk_key(operand_span);
             let rendering = self
                 .unrendered_assertion_operands
                 .contains(&operand_key)
                 .then(|| self.checked_expr_type(&operand_key).map(Cow::into_owned))
                 .flatten();
-            let value = self.lower_expr(operand, IntentKind::Read);
+            let value = self.lower_binary_operand(operand, IntentKind::Read);
             let ty = value.ty.clone();
             let name = format!("__hew_assert_{role}_{}", self.ids.binding().0);
-            let binding = self.bind(name.clone(), ty.clone(), false, operand.1.clone());
+            let binding = self.bind(name.clone(), ty.clone(), false, operand_span.clone());
             let id = binding.id;
             statements.push(HirStmt {
                 node: self.ids.node(),
                 kind: HirStmtKind::Let(binding, Some(value)),
-                span: operand.1.clone(),
+                span: operand_span.clone(),
             });
-            refs.push((name, id, ty, operand.1.clone(), rendering));
+            refs.push((name, id, ty, operand_span.clone(), rendering));
         }
         let reference = |ctx: &mut Self, index: usize| {
             let (name, id, ty, operand_span, _) = &refs[index];
@@ -761,11 +762,7 @@ impl LowerCtx<'_> {
                 )
             } else {
                 self.make_expr(
-                    HirExprKind::Binary {
-                        op,
-                        left: Box::new(left_ref),
-                        right: Box::new(right_ref),
-                    },
+                    HirExprKind::binary(left_ref, op, right_ref),
                     ResolvedTy::Bool,
                     IntentKind::Read,
                     condition_span.clone(),

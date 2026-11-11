@@ -745,15 +745,16 @@ impl LowerCtx<'_> {
                             end,
                             inclusive,
                         } => (start.as_deref(), end.as_deref(), *inclusive),
-                        Expr::Binary {
-                            left,
-                            op: op @ (BinaryOp::Range | BinaryOp::RangeInclusive),
-                            right,
-                        } => (
-                            Some(left.as_ref()),
-                            Some(right.as_ref()),
-                            *op == BinaryOp::RangeInclusive,
-                        ),
+                        range @ Expr::Binary { .. }
+                            if matches!(
+                                range.as_binary_pair(),
+                                Some((_, BinaryOp::Range | BinaryOp::RangeInclusive, _))
+                            ) =>
+                        {
+                            let (left, op, right) =
+                                range.as_binary_pair().expect("matched a one-step range");
+                            (Some(left), Some(right), op == BinaryOp::RangeInclusive)
+                        }
                         _ => {
                             return (
                                 HirExprKind::Unsupported("string range get has no range".into()),

@@ -37,12 +37,12 @@ fn duration_scaling_and_ratio_preserve_checked_operand_types() {
         .expect("ratio function");
     let ratio = function.body.tail.as_deref().expect("ratio result");
     assert_eq!(ratio.ty, hew_types::ResolvedTy::I64);
-    let HirExprKind::Binary { left, right, .. } = &ratio.kind else {
+    let Some((left, _, right)) = ratio.kind.as_binary_pair() else {
         panic!("expected duration ratio, got {:?}", ratio.kind);
     };
     assert_eq!(left.ty, hew_types::ResolvedTy::Duration);
     assert_eq!(right.ty, hew_types::ResolvedTy::Duration);
-    let HirExprKind::Binary { left, right, .. } = &left.kind else {
+    let Some((left, _, right)) = left.kind.as_binary_pair() else {
         panic!("expected duration scaling");
     };
     assert_eq!(left.ty, hew_types::ResolvedTy::I64);

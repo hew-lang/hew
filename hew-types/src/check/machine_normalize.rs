@@ -559,6 +559,15 @@ impl Builder {
     fn expr(&mut self, expr: Expr) -> Spanned<Expr> {
         (expr, self.span())
     }
+    fn binary_expr(
+        &mut self,
+        op: hew_parser::ast::BinaryOp,
+        left: Spanned<Expr>,
+        right: Spanned<Expr>,
+    ) -> Spanned<Expr> {
+        let span = self.span();
+        (Expr::binary(left, op, right, span.clone()), span)
+    }
     fn stmt(&mut self, stmt: Stmt) -> Spanned<Stmt> {
         (stmt, self.span())
     }
@@ -1775,7 +1784,24 @@ impl Builder {
             self.origin = source.1.clone();
             let mut expr = source.0.clone();
             self.rewrite_expr(&mut expr, machine, state, event)?;
-            let result = self.expr(expr);
+            // A chain's intermediate values are rewritten expressions too: each
+            // takes a fresh span traced to its source prefix, and the last step's
+            // span is the chain's own.
+            if let Expr::Binary { steps, .. } = &mut expr {
+                if let Some((_, init)) = steps.split_last_mut() {
+                    for step in init {
+                        self.origin = step.span.clone();
+                        step.span = self.span();
+                    }
+                }
+                self.origin = source.1.clone();
+            }
+            let mut result = self.expr(expr);
+            if let Expr::Binary { steps, .. } = &mut result.0 {
+                if let Some(last) = steps.last_mut() {
+                    last.span = result.1.clone();
+                }
+            }
             self.origin = saved;
             Ok(result)
         })
@@ -1915,9 +1941,10 @@ impl Builder {
                     args: vec![CallArg::Positional(value)],
                 };
             }
-            Expr::Binary { left, right, .. } => {
-                **left = self.rewrite(left, machine, state, event)?;
-                **right = self.rewrite(right, machine, state, event)?;
+            Expr::Binary { first, steps } => {
+                for operand in Expr::binary_operands_mut(first, steps) {
+                    *operand = self.rewrite(operand, machine, state, event)?;
+                }
             }
             Expr::Coalesce { left, right }
             | Expr::OptionalChain {

@@ -321,8 +321,12 @@ impl LowerCtx<'_> {
                     self.wrap_var_self_explicit_expr_returns(operand, receiver, abi_return_ty);
                 }
             }
-            HirExprKind::Binary { left, right, .. }
-            | HirExprKind::IdentityCompare { left, right } => {
+            HirExprKind::Binary { first, steps } => {
+                for operand in HirExprKind::binary_operands_mut(first, steps) {
+                    self.wrap_var_self_explicit_expr_returns(operand, receiver, abi_return_ty);
+                }
+            }
+            HirExprKind::IdentityCompare { left, right } => {
                 self.wrap_var_self_explicit_expr_returns(left, receiver, abi_return_ty);
                 self.wrap_var_self_explicit_expr_returns(right, receiver, abi_return_ty);
             }

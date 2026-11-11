@@ -6,19 +6,20 @@
 // defined below via `self.`. The AST types and `Token` are re-exported
 // `pub(crate)` so each area submodule picks them up through `use super::*`.
 pub(crate) use crate::ast::{
-    ActorDecl, ActorInit, ArrayElement, AssocTypeBinding, Attribute, AttributeArg, BinaryOp, Block,
-    CallArg, ChildClause, ChildSpec, CompositeGroup, CompoundAssignOp, ConditionItem, ConstDecl,
-    ConstParam, ConstParamTy, ContextVariantExpr, ContextVariantPattern, ContextVariantRecord,
-    ElseBlock, Expr, ExternBlock, ExternFnDecl, FieldDecl, FieldLabel, FnDecl, Ident, ImplDecl,
-    ImplTypeAlias, ImportDecl, ImportName, ImportSpec, IntRadix, Intensity, Item, LambdaParam,
-    Literal, MachineDecl, MachineEvent, MachineRegion, MachineState, MachineTransition,
-    MachineTransitionBodyForm, MachineTrigger, MatchArm, NamingCase, NominalPatternPayload,
-    OverflowFallback, OverflowPolicy, Param, Path, Pattern, PatternField, Program,
-    QualifiedAssocExpr, QualifiedAssocPath, ReceiveFnDecl, RecordDecl, RecordKind, ResourceMarker,
-    RestartPolicy, SelectArm, Span, Spanned, Stmt, StringPart, SupervisorDecl, SupervisorStrategy,
-    TimeoutClause, TraitBound, TraitDecl, TraitItem, TraitMethod, TypeAliasDecl, TypeBodyItem,
-    TypeDecl, TypeDeclKind, TypeExpr, TypeParam, UnaryOp, VariantDecl, VariantKind, Visibility,
-    WhereClause, WherePredicate, WireFieldMeta, WireMetadata, WireReserved,
+    ActorDecl, ActorInit, ArrayElement, AssocTypeBinding, Attribute, AttributeArg, BinaryOp,
+    BinaryStep, Block, CallArg, ChildClause, ChildSpec, CompositeGroup, CompoundAssignOp,
+    ConditionItem, ConstDecl, ConstParam, ConstParamTy, ContextVariantExpr, ContextVariantPattern,
+    ContextVariantRecord, ElseBlock, Expr, ExternBlock, ExternFnDecl, FieldDecl, FieldLabel,
+    FnDecl, Ident, ImplDecl, ImplTypeAlias, ImportDecl, ImportName, ImportSpec, IntRadix,
+    Intensity, Item, LambdaParam, Literal, MachineDecl, MachineEvent, MachineRegion, MachineState,
+    MachineTransition, MachineTransitionBodyForm, MachineTrigger, MatchArm, NamingCase,
+    NominalPatternPayload, OverflowFallback, OverflowPolicy, Param, Path, Pattern, PatternField,
+    Program, QualifiedAssocExpr, QualifiedAssocPath, ReceiveFnDecl, RecordDecl, RecordKind,
+    ResourceMarker, RestartPolicy, SelectArm, Span, Spanned, Stmt, StringPart, SupervisorDecl,
+    SupervisorStrategy, TimeoutClause, TraitBound, TraitDecl, TraitItem, TraitMethod,
+    TypeAliasDecl, TypeBodyItem, TypeDecl, TypeDeclKind, TypeExpr, TypeParam, UnaryOp, VariantDecl,
+    VariantKind, Visibility, WhereClause, WherePredicate, WireFieldMeta, WireMetadata,
+    WireReserved,
 };
 pub(crate) use hew_lexer::{sym, Token};
 use serde::Serialize;

@@ -5,16 +5,27 @@ use hew_parser::ast::{Ident, Path};
 
 impl LowerCtx<'_> {
     pub(super) fn lower_expr(&mut self, expr: &Spanned<Expr>, intent: IntentKind) -> HirExpr {
-        let mut lowered = hew_parser::stack::ensure_sufficient_stack(|| {
+        let lowered = hew_parser::stack::ensure_sufficient_stack(|| {
             self.lower_expr_with_tail_coercion(expr, intent)
         });
+        self.finish_lowered_expr(lowered, &expr.1, intent)
+    }
+
+    /// The checker's type-declaration facts, callable specialization and
+    /// numeric widening for a lowered expression at `span`.
+    pub(super) fn finish_lowered_expr(
+        &mut self,
+        mut lowered: HirExpr,
+        span: &Span,
+        intent: IntentKind,
+    ) -> HirExpr {
         let normalized_ty = self.restore_type_declaration_facts(lowered.ty.clone());
         lowered.ty = normalized_ty;
 
         if matches!(lowered.ty, ResolvedTy::GenericCallable { .. }) {
             if let Some(arguments) = self
                 .callable_value_specializations
-                .get(&self.mk_key(&expr.1))
+                .get(&self.mk_key(span))
                 .cloned()
             {
                 if let Some(ty) = lowered.ty.instantiate_callable(&arguments) {
@@ -23,7 +34,7 @@ impl LowerCtx<'_> {
                         site: self.ids.site(),
                         ty,
                         intent,
-                        span: expr.1.clone(),
+                        span: span.clone(),
                         kind: HirExprKind::CallableSpecialize {
                             source: Box::new(lowered),
                             type_args: arguments,
@@ -33,7 +44,7 @@ impl LowerCtx<'_> {
             }
         }
 
-        if let Some(target) = self.numeric_operand_coercions.get(&self.mk_key(&expr.1)) {
+        if let Some(target) = self.numeric_operand_coercions.get(&self.mk_key(span)) {
             if let Ok(to_ty) = ResolvedTy::from_ty(target) {
                 if lowered.ty != to_ty {
                     return HirExpr {
@@ -41,7 +52,7 @@ impl LowerCtx<'_> {
                         site: self.ids.site(),
                         ty: to_ty.clone(),
                         intent,
-                        span: expr.1.clone(),
+                        span: span.clone(),
                         kind: HirExprKind::NumericCast {
                             from_ty: lowered.ty.clone(),
                             to_ty,
@@ -61,7 +72,10 @@ impl LowerCtx<'_> {
         intent: IntentKind,
     ) -> HirExpr {
         let lowered = self.lower_expr_inner(expr, intent);
+        self.apply_tail_coercion(lowered, &expr.1)
+    }
 
+    pub(super) fn apply_tail_coercion(&mut self, lowered: HirExpr, span: &Span) -> HirExpr {
         // Function-tail Ok-coercion: the checker marked this tail expression's
         // span when a `Result<Ok, Err>`-returning function's tail yields the
         // `Ok` payload (e.g. `db.find(id)?` typed `User` under
@@ -69,8 +83,8 @@ impl LowerCtx<'_> {
         // function returns the declared `Result`. The marker is keyed by the
         // tail span and is set only at genuine tail positions, so this fires
         // exactly once per coerced tail and never on a non-tail sub-expression.
-        if self.tail_ok_coercions.contains(&self.mk_key(&expr.1)) {
-            self.wrap_tail_ok(lowered, &expr.1)
+        if self.tail_ok_coercions.contains(&self.mk_key(span)) {
+            self.wrap_tail_ok(lowered, span)
         } else {
             lowered
         }
@@ -620,58 +634,11 @@ impl LowerCtx<'_> {
                     ResolvedTy::Unit,
                 )
             }
-            Expr::Binary { left, op, right } => {
-                let left = self.lower_expr(left, IntentKind::Read);
-                let right = self.lower_expr(right, IntentKind::Read);
-                // D340: a user `impl Eq`/`impl Ord`/`impl PartialOrd` for the
-                // operand type overrides the compiler's structural default —
-                // dispatch to the resolved impl method instead of the
-                // structural comparison this arm otherwise builds below.
-                let dispatch_key = self.mk_key(&span);
-                if let Some(dispatch) = self.user_comparison_dispatch.get(&dispatch_key).cloned() {
-                    let call = self.lower_user_comparison_dispatch(
-                        &dispatch,
-                        *op,
-                        left,
-                        right,
-                        span.clone(),
-                    );
-                    let (kind, ty) = call.into_parts();
-                    return HirExpr {
-                        node: self.ids.node(),
-                        site,
-                        ty,
-                        intent,
-                        kind,
-                        span,
-                    };
+            Expr::Binary { first, steps } => {
+                match self.lower_binary_chain(first, steps, site, intent, &span) {
+                    Ok(lowered) => lowered,
+                    Err(done) => return *done,
                 }
-                let Some(checked_ty) = self.checked_expr_type(&dispatch_key) else {
-                    return self.unsupported_expr(span, "binary expression has no checked type");
-                };
-                let Ok(ty) = ResolvedTy::from_ty(&checked_ty) else {
-                    return self.unsupported_expr(span, "binary expression type is unresolved");
-                };
-                if matches!(op, BinaryOp::Range | BinaryOp::RangeInclusive) {
-                    return self.make_expr(
-                        HirExprKind::RangeValue {
-                            start: Box::new(left),
-                            end: Box::new(right),
-                            inclusive: *op == BinaryOp::RangeInclusive,
-                        },
-                        ty,
-                        intent,
-                        span,
-                    );
-                }
-                (
-                    HirExprKind::Binary {
-                        op: *op,
-                        left: Box::new(left),
-                        right: Box::new(right),
-                    },
-                    ty,
-                )
             }
             Expr::Unary { op, operand } => self.lower_unary_expr(*op, operand, &span),
             Expr::Call { function, args, .. } => {
@@ -1855,16 +1822,13 @@ impl LowerCtx<'_> {
                 end: Some(end),
                 inclusive,
             } => {
+                let op = if *inclusive {
+                    BinaryOp::RangeInclusive
+                } else {
+                    BinaryOp::Range
+                };
                 let bounded = (
-                    Expr::Binary {
-                        left: start.clone(),
-                        right: end.clone(),
-                        op: if *inclusive {
-                            BinaryOp::RangeInclusive
-                        } else {
-                            BinaryOp::Range
-                        },
-                    },
+                    Expr::binary((**start).clone(), op, (**end).clone(), span.clone()),
                     span,
                 );
                 return self.lower_expr(&bounded, intent);
@@ -1881,6 +1845,19 @@ impl LowerCtx<'_> {
                 )
             }
         };
+        self.finish_inner_expr(kind, ty, site, intent, span)
+    }
+
+    /// Build the expression lowered at `span` and apply the checker's
+    /// pool-accessor and `dyn` coercion facts for that span.
+    pub(super) fn finish_inner_expr(
+        &mut self,
+        kind: HirExprKind,
+        ty: ResolvedTy,
+        site: SiteId,
+        intent: IntentKind,
+        span: Span,
+    ) -> HirExpr {
         let kind = self.normalize_collection_call(kind, &ty, &span);
         let inner = HirExpr {
             node: self.ids.node(),

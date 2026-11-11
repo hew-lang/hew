@@ -37,16 +37,16 @@ pub use monomorph::{
 };
 pub use node::{
     ExternProvenance, HirActorDecl, HirActorInit, HirActorMethod, HirActorReceiveFn,
-    HirActorStateGuard, HirBinding, HirBlock, HirCaptureKind, HirClosureCapture, HirConst,
-    HirDestructureField, HirDestructureSelector, HirExpr, HirExprKind, HirExternFn, HirField,
-    HirFn, HirGenCapture, HirInterpolationSegment, HirItem, HirLambdaCapture, HirLifecycleHook,
-    HirLifecycleHookKind, HirLiteral, HirMatchArm, HirMatchArmBinding, HirMatchArmPredicate,
-    HirModule, HirPayloadPredicate, HirPayloadVariantPredicate, HirRangeAdapter, HirRecordDecl,
-    HirRegexLiteral, HirRestartPolicy, HirSelect, HirSelectArm, HirSelectArmKind,
-    HirSelectionOrder, HirSessionBinding, HirSessionEntry, HirStmt, HirStmtKind,
-    HirSupervisorChild, HirSupervisorDecl, HirSupervisorStrategy, HirTaskScopeResult, HirTypeDecl,
-    HirTypeDeclKind, HirVarSelfMethodTarget, HirVariant, HirVariantKind, StaticTraitSelf,
-    WhereOrigin,
+    HirActorStateGuard, HirBinaryResult, HirBinaryStep, HirBinding, HirBlock, HirCaptureKind,
+    HirClosureCapture, HirConst, HirDestructureField, HirDestructureSelector, HirExpr, HirExprKind,
+    HirExternFn, HirField, HirFn, HirGenCapture, HirInterpolationSegment, HirItem,
+    HirLambdaCapture, HirLifecycleHook, HirLifecycleHookKind, HirLiteral, HirMatchArm,
+    HirMatchArmBinding, HirMatchArmPredicate, HirModule, HirPayloadPredicate,
+    HirPayloadVariantPredicate, HirRangeAdapter, HirRecordDecl, HirRegexLiteral, HirRestartPolicy,
+    HirSelect, HirSelectArm, HirSelectArmKind, HirSelectionOrder, HirSessionBinding,
+    HirSessionEntry, HirStmt, HirStmtKind, HirSupervisorChild, HirSupervisorDecl,
+    HirSupervisorStrategy, HirTaskScopeResult, HirTypeDecl, HirTypeDeclKind,
+    HirVarSelfMethodTarget, HirVariant, HirVariantKind, StaticTraitSelf, WhereOrigin,
 };
 pub use value_class::{
     contains_named_type, lookup_type_marker, lookup_type_marker_for_ty, named_type_components,

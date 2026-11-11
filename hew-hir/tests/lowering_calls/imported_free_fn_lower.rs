@@ -357,7 +357,7 @@ fn root_local_const_shadows_imported_free_function() {
             .tail
             .as_deref()
             .expect("main tail");
-        let HirExprKind::Binary { left, .. } = &tail.kind else {
+        let Some((left, _, _)) = tail.kind.as_binary_pair() else {
             panic!("expected binary tail, got: {tail:#?}");
         };
         let HirExprKind::BindingRef { name, resolved } = &left.kind else {

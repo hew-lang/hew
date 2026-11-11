@@ -546,10 +546,21 @@ struct Element {
 }
 struct Resource {
     refs: usize,
+    counts: *mut Counts,
 }
-static CLONES: AtomicUsize = AtomicUsize::new(0);
-static DROPS: AtomicUsize = AtomicUsize::new(0);
-static FREED: AtomicUsize = AtomicUsize::new(0);
+
+// Observation state belongs to one proof invocation. The callbacks run
+// synchronously and every resource is released before these counts go away.
+// Kani 0.68 can give an unrelated empty Vec a nonzero capacity after a mutable
+// static counter changes; the standalone tool regression records that failure.
+// Passing this local observer through the resource avoids that model interaction
+// without replacing vector operations or weakening ownership assertions.
+#[derive(Default)]
+struct Counts {
+    clones: usize,
+    drops: usize,
+    freed: usize,
+}
 
 unsafe extern "C" fn clone_element(src: *const c_void, dst: *mut c_void) -> i32 {
     let source = &*src.cast::<Element>();
@@ -567,17 +578,18 @@ unsafe extern "C" fn clone_element(src: *const c_void, dst: *mut c_void) -> i32 
         "vector: cloned released element"
     );
     (*source.resource).refs += 1;
-    CLONES.fetch_add(1, Ordering::Relaxed);
+    (*(*source.resource).counts).clones += 1;
     0
 }
 pub(crate) unsafe extern "C-unwind" fn drop_element(slot: *mut c_void) {
     let resource = (*slot.cast::<Element>()).resource;
     assert!((*resource).refs > 0, "vector: element released twice");
     (*resource).refs -= 1;
-    DROPS.fetch_add(1, Ordering::Relaxed);
+    let counts = (*resource).counts;
+    (*counts).drops += 1;
     if (*resource).refs == 0 {
         drop(Box::from_raw(resource));
-        FREED.fetch_add(1, Ordering::Relaxed);
+        (*counts).freed += 1;
     }
 }
 fn element_layout() -> HewValueLayout {
@@ -592,11 +604,6 @@ fn element_layout() -> HewValueLayout {
         drop_fn: Some(drop_element),
     }
 }
-fn reset_counts() {
-    CLONES.store(0, Ordering::Relaxed);
-    DROPS.store(0, Ordering::Relaxed);
-    FREED.store(0, Ordering::Relaxed);
-}
 
 #[kani::proof]
 #[kani::unwind(7)]
@@ -604,10 +611,13 @@ fn reset_counts() {
 fn vector_truncate_checks_entire_abi_domain_before_releasing() {
     let new_len: i64 = kani::any();
     let scalar: u64 = kani::any();
-    reset_counts();
+    let mut counts = Counts::default();
     unsafe {
         let input = Element {
-            resource: Box::into_raw(Box::new(Resource { refs: 1 })),
+            resource: Box::into_raw(Box::new(Resource {
+                refs: 1,
+                counts: &raw mut counts,
+            })),
             scalar,
         };
         let mut vector = header(element_layout());
@@ -622,20 +632,14 @@ fn vector_truncate_checks_entire_abi_domain_before_releasing() {
             "vector: truncate narrowed ABI length"
         );
         assert_eq!(
-            DROPS.load(Ordering::Relaxed),
-            removed,
+            counts.drops, removed,
             "vector: truncate dropped wrong owner count"
         );
         assert_eq!(
-            FREED.load(Ordering::Relaxed),
-            removed,
+            counts.freed, removed,
             "vector: truncate leaked removed owner"
         );
-        assert_eq!(
-            CLONES.load(Ordering::Relaxed),
-            0,
-            "vector: truncate cloned an owner"
-        );
+        assert_eq!(counts.clones, 0, "vector: truncate cloned an owner");
         if new_len != 0 {
             let stored = &*hew_vec_get_owned(&vector, 0).cast::<Element>();
             assert_eq!(
@@ -654,11 +658,7 @@ fn vector_truncate_checks_entire_abi_domain_before_releasing() {
         }
         hew_vec_clear(&mut vector);
         release_buffer(&vector);
-        assert_eq!(
-            FREED.load(Ordering::Relaxed),
-            1,
-            "vector: truncate leaked retained owner"
-        );
+        assert_eq!(counts.freed, 1, "vector: truncate leaked retained owner");
         kani::cover!(new_len == 0, "vector cover: truncate removes owner");
         kani::cover!(
             new_len == -4_294_967_296,
@@ -681,10 +681,13 @@ fn vector_failed_owned_reads_preserve_outputs_and_owners() {
     let sentinel: u64 = kani::any();
     kani::assume(index < 0 || index >= 1);
     kani::assume(operation < 4);
-    reset_counts();
+    let mut counts = Counts::default();
     unsafe {
         let input = Element {
-            resource: Box::into_raw(Box::new(Resource { refs: 1 })),
+            resource: Box::into_raw(Box::new(Resource {
+                refs: 1,
+                counts: &raw mut counts,
+            })),
             scalar,
         };
         let mut vector = header(element_layout());
@@ -736,23 +739,11 @@ fn vector_failed_owned_reads_preserve_outputs_and_owners() {
             1,
             "vector: failed read acquired or released an owner"
         );
-        assert_eq!(
-            CLONES.load(Ordering::Relaxed),
-            0,
-            "vector: failed read cloned an owner"
-        );
-        assert_eq!(
-            DROPS.load(Ordering::Relaxed),
-            0,
-            "vector: failed read dropped an owner"
-        );
+        assert_eq!(counts.clones, 0, "vector: failed read cloned an owner");
+        assert_eq!(counts.drops, 0, "vector: failed read dropped an owner");
         hew_vec_clear(&mut vector);
         release_buffer(&vector);
-        assert_eq!(
-            FREED.load(Ordering::Relaxed),
-            1,
-            "vector: failed read leaked an owner"
-        );
+        assert_eq!(counts.freed, 1, "vector: failed read leaked an owner");
         kani::cover!(operation == 0, "vector cover: failed clone read");
         kani::cover!(operation == 1, "vector cover: failed borrow read");
         kani::cover!(operation == 2, "vector cover: failed take read");
@@ -771,10 +762,13 @@ fn vector_failed_owned_reads_preserve_outputs_and_owners() {
 fn vector_owned_copy_move_get_pop_preserve_ownership() {
     let scalar: u64 = kani::any();
     let moved: bool = kani::any();
-    reset_counts();
+    let mut counts = Counts::default();
     unsafe {
         let mut input = Element {
-            resource: Box::into_raw(Box::new(Resource { refs: 1 })),
+            resource: Box::into_raw(Box::new(Resource {
+                refs: 1,
+                counts: &raw mut counts,
+            })),
             scalar,
         };
         let mut vector = header(element_layout());
@@ -790,7 +784,7 @@ fn vector_owned_copy_move_get_pop_preserve_ownership() {
             "vector: wrong copy/move ownership"
         );
         assert_eq!(
-            CLONES.load(Ordering::Relaxed),
+            counts.clones,
             usize::from(!moved),
             "vector: wrong clone policy"
         );
@@ -811,11 +805,7 @@ fn vector_owned_copy_move_get_pop_preserve_ownership() {
         let mut popped = popped.assume_init();
         assert_eq!(popped.scalar, scalar, "vector: pop lost scalar fields");
         assert_eq!(vector.len, 0, "vector: pop kept moved slot live");
-        assert_eq!(
-            DROPS.load(Ordering::Relaxed),
-            0,
-            "vector: pop destroyed moved owner"
-        );
+        assert_eq!(counts.drops, 0, "vector: pop destroyed moved owner");
         let mut untouched: [u64; 2] = kani::any();
         let before = untouched;
         assert_eq!(
@@ -830,14 +820,10 @@ fn vector_owned_copy_move_get_pop_preserve_ownership() {
         if !moved {
             drop_element((&raw mut input).cast());
         }
+        assert_eq!(counts.freed, 1, "vector: missing or duplicate finalization");
         assert_eq!(
-            FREED.load(Ordering::Relaxed),
-            1,
-            "vector: missing or duplicate finalization"
-        );
-        assert_eq!(
-            DROPS.load(Ordering::Relaxed),
-            CLONES.load(Ordering::Relaxed) + 1,
+            counts.drops,
+            counts.clones + 1,
             "vector: unbalanced ownership"
         );
         kani::cover!(moved, "vector cover: move input");
@@ -852,10 +838,13 @@ fn vector_owned_self_overwrite_then_clear_releases_once() {
     let scalar: u64 = kani::any();
     let replacement_scalar: u64 = kani::any();
     let moved: bool = kani::any();
-    reset_counts();
+    let mut counts = Counts::default();
     unsafe {
         let input = Element {
-            resource: Box::into_raw(Box::new(Resource { refs: 1 })),
+            resource: Box::into_raw(Box::new(Resource {
+                refs: 1,
+                counts: &raw mut counts,
+            })),
             scalar,
         };
         let mut vector = header(element_layout());
@@ -868,14 +857,9 @@ fn vector_owned_self_overwrite_then_clear_releases_once() {
             1,
             "vector: self overwrite changed ownership count"
         );
+        assert_eq!(counts.clones, 1, "vector: self overwrite skipped retain");
         assert_eq!(
-            CLONES.load(Ordering::Relaxed),
-            1,
-            "vector: self overwrite skipped retain"
-        );
-        assert_eq!(
-            DROPS.load(Ordering::Relaxed),
-            1,
+            counts.drops, 1,
             "vector: overwrite did not release old value"
         );
         assert_eq!(
@@ -884,7 +868,10 @@ fn vector_owned_self_overwrite_then_clear_releases_once() {
             "vector: self overwrite lost scalar"
         );
         let mut replacement = Element {
-            resource: Box::into_raw(Box::new(Resource { refs: 1 })),
+            resource: Box::into_raw(Box::new(Resource {
+                refs: 1,
+                counts: &raw mut counts,
+            })),
             scalar: replacement_scalar,
         };
         if moved {
@@ -893,8 +880,7 @@ fn vector_owned_self_overwrite_then_clear_releases_once() {
             hew_vec_set_owned(&mut vector, 0, (&raw const replacement).cast());
         }
         assert_eq!(
-            FREED.load(Ordering::Relaxed),
-            1,
+            counts.freed, 1,
             "vector: displaced resource was not finalized"
         );
         assert_eq!(
@@ -914,8 +900,7 @@ fn vector_owned_self_overwrite_then_clear_releases_once() {
         hew_vec_clear(&mut vector);
         assert_eq!(vector.len, 0, "vector: clear did not retire live range");
         assert_eq!(
-            DROPS.load(Ordering::Relaxed),
-            3,
+            counts.drops, 3,
             "vector: clear lost or duplicated a release"
         );
         if !moved {
@@ -927,13 +912,12 @@ fn vector_owned_self_overwrite_then_clear_releases_once() {
             drop_element((&raw mut replacement).cast());
         }
         assert_eq!(
-            FREED.load(Ordering::Relaxed),
-            2,
+            counts.freed, 2,
             "vector: final owner was not uniquely finalized"
         );
         assert_eq!(
-            DROPS.load(Ordering::Relaxed),
-            CLONES.load(Ordering::Relaxed) + 2,
+            counts.drops,
+            counts.clones + 2,
             "vector: replacement ownership imbalance"
         );
         release_buffer(&vector);

@@ -4,8 +4,22 @@
 
 ## [0.10.0-rc2] - 2026-11-11
 
+- Prepare the next qualification candidate; supported platform and packaged
+  toolchain results remain pending before publication.
 - Recover native stack exhaustion through Hew failure and supervision, retaining
   stack space for cleanup.
+- Preserve cleanup reserves across loaded code images, drain deep indirect-enum
+  and generator notification chains iteratively, and keep cleanup code alive.
+- Compile long postfix chains through native and browser paths, evaluate chained
+  method receivers once, and bound malformed prefix and legacy-path diagnostics.
+- Avoid receiver snapshots for read-only computed collection keys while retaining
+  snapshots for later mutations and cleanup for faults.
+- Preserve authenticated service grants across connection replacement, deduplicate
+  replayed offers with explicit capacity backpressure, and settle owner shutdown.
+- Announce graceful peer departure before closing I/O, including QUIC stream
+  acknowledgement within the bounded shutdown window.
+- Repair scalar vector-push compilation, Windows stream-error linkage, GNU Linux
+  unwind linkage and macOS temporary-file identity in editor diagnostics.
 - Preserve live frontend context and inspect multiple processes through Observe.
 - Reduce repeated compiler work, coroutine allocations and scheduler overhead.
 - Expand native and sandbox fuzz regression coverage for parsing, numeric

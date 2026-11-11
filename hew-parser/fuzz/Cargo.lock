@@ -603,6 +603,7 @@ dependencies = [
  "hew-lexer",
  "serde",
  "serde_json",
+ "stacker",
 ]
 
 [[package]]
@@ -668,7 +669,6 @@ dependencies = [
  "regex",
  "serde",
  "serde_json",
- "stacker",
  "strum",
 ]
 

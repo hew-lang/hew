@@ -1421,3 +1421,77 @@ fn debug_config_keeps_a_runnable_program_for_an_editor() {
     );
     assert_eq!(run.stdout, b"42\n");
 }
+
+#[cfg(target_os = "linux")]
+#[test]
+fn hew_debug_attaches_and_stops_at_a_failure() {
+    use std::io::BufRead as _;
+    use std::process::Stdio;
+
+    require_codegen();
+    require_debugger();
+    let dir = workspace();
+    let source = dir.path().join("attach.c");
+    let binary = dir.path().join("attach-target");
+    std::fs::write(
+        &source,
+        r#"
+#include <sched.h>
+#include <stdio.h>
+#include <sys/prctl.h>
+volatile int proceed = 0;
+__attribute__((noinline)) void hew_fault_raise(void) { __asm__ volatile(""); }
+int main(void) {
+    if (prctl(PR_SET_PTRACER, PR_SET_PTRACER_ANY) != 0) return 2;
+    puts("ready"); fflush(stdout);
+    while (!proceed) sched_yield();
+    hew_fault_raise();
+    return 0;
+}
+"#,
+    )
+    .expect("write attach target");
+    let output = Command::new("cc")
+        .args(["-g", "-O0"])
+        .arg(&source)
+        .arg("-o")
+        .arg(&binary)
+        .output()
+        .expect("compile attach target");
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let mut target = Command::new(binary)
+        .stdout(Stdio::piped())
+        .spawn()
+        .expect("start attach target");
+    let mut ready = String::new();
+    let read =
+        std::io::BufReader::new(target.stdout.take().expect("target stdout")).read_line(&mut ready);
+    if read.is_err() || ready.trim() != "ready" {
+        let _ = target.kill();
+        let _ = target.wait();
+        panic!("attach target did not become ready: {read:?}, {ready:?}");
+    }
+    let mut command = Command::new(hew_binary());
+    command.args(["debug", "--attach", &target.id().to_string()]);
+    let output = hew_testutil::run_command_bounded_with_stdin(
+        &mut command,
+        "hew debug attach",
+        std::time::Duration::from_mins(5),
+        b"set variable proceed = 1\ncontinue\nquit\ny\n",
+    );
+    let _ = target.kill();
+    let _ = target.wait();
+    let output = output.expect("run debugger attach");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout
+            .lines()
+            .any(|line| line.contains("Breakpoint 1,") && line.contains("hew_fault_raise")),
+        "debugger did not stop at the attached process's failure:\n{stdout}\n{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}

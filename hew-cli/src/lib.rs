@@ -2106,11 +2106,23 @@ fn cmd_check_run(a: &args::CheckArgs) -> i32 {
 }
 
 fn cmd_debug(a: &args::DebugArgs) {
+    if let Some(pid) = a.attach {
+        let (debugger, debugger_args) = resolve_debugger_attach(pid).unwrap_or_else(|message| {
+            eprintln!("{message}");
+            std::process::exit(1);
+        });
+        eprintln!("Attaching {debugger} to process {pid}...");
+        exit_after_debugger_run(&debugger, &debugger_args, None);
+    }
     // See the matching comment in `cmd_run`: best-effort second cleanup
     // authority for #3132, never fails the debug session.
     run_temp::sweep_on_startup();
-
-    let input = a.input.display().to_string();
+    let input = a
+        .input
+        .as_ref()
+        .expect("clap requires an input when not attaching")
+        .display()
+        .to_string();
     let options = a.to_compile_options();
     let target = resolve_debug_target(options.target.as_deref());
     if a.print_config {
@@ -2130,7 +2142,7 @@ fn cmd_debug(a: &args::DebugArgs) {
         };
 
     eprintln!("Launching {debugger} with debug build of {input}...");
-    exit_after_debugger_run(&debugger, &debugger_args, artifact);
+    exit_after_debugger_run(&debugger, &debugger_args, Some(artifact));
 }
 
 /// Build a durable executable for an external editor and print its launch
@@ -2151,17 +2163,17 @@ fn print_debug_config(
         eprintln!("Error: cannot create {}: {error}", directory.display());
         std::process::exit(1);
     }
-    let stem = args
-        .input
+    let source_input = args.input.as_ref().expect("debug config requires an input");
+    let stem = source_input
         .file_stem()
         .unwrap_or_else(|| std::ffi::OsStr::new("hew"));
     // Distinguish identically named files in different directories without
     // placing an absolute source path below the output directory.
     use std::hash::{Hash, Hasher};
-    let source = if args.input.is_absolute() {
-        args.input.clone()
+    let source = if source_input.is_absolute() {
+        source_input.clone()
     } else {
-        cwd.join(&args.input)
+        cwd.join(source_input)
     };
     let mut identity = std::collections::hash_map::DefaultHasher::new();
     source.hash(&mut identity);
@@ -2264,10 +2276,54 @@ fn resolve_debugger_invocation(
     }
 }
 
+fn resolve_debugger_attach(pid: u32) -> Result<(String, Vec<String>), String> {
+    #[cfg(windows)]
+    if std::env::var_os("PATH").is_some_and(|path| {
+        std::env::split_paths(&path).any(|directory| directory.join("cdb.exe").is_file())
+    }) {
+        return Ok((
+            "cdb.exe".to_string(),
+            vec![
+                "-p".to_string(),
+                pid.to_string(),
+                "-c".to_string(),
+                "bu hew_fault_raise".to_string(),
+            ],
+        ));
+    }
+    if which_exists("gdb") {
+        let mut args = Vec::new();
+        if let Some(script) = find_debug_script("hew-gdb.py") {
+            args.extend(["-x".to_string(), script]);
+        }
+        args.extend([
+            "-ex".to_string(),
+            format!("attach {pid}"),
+            "-ex".to_string(),
+            "break hew_fault_raise".to_string(),
+        ]);
+        Ok(("gdb".to_string(), args))
+    } else if which_exists("lldb") {
+        let mut args = Vec::new();
+        if let Some(script) = find_debug_script("hew_lldb.py") {
+            args.extend(["-o".to_string(), format!("command script import {script}")]);
+        }
+        args.extend([
+            "-o".to_string(),
+            format!("process attach --pid {pid}"),
+            "-o".to_string(),
+            "breakpoint set --name hew_fault_raise".to_string(),
+        ]);
+        Ok(("lldb".to_string(), args))
+    } else {
+        Err("Error: no debugger found. Install gdb, lldb or cdb.".to_string())
+    }
+}
+
 fn exit_after_debugger_run(
     debugger: &str,
     debugger_args: &[String],
-    artifact: CompiledTempExecutable,
+    artifact: Option<CompiledTempExecutable>,
 ) -> ! {
     let status = std::process::Command::new(debugger)
         .args(debugger_args)

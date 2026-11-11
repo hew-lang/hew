@@ -54,7 +54,7 @@ pub enum Command {
     Compile(CompileArgs),
     /// Compile and run a .hew file.
     Run(RunArgs),
-    /// Build with debug info and launch under gdb, lldb or cdb.
+    /// Debug a program or attach to a running process.
     Debug(DebugArgs),
     /// Parse and typecheck only.
     Check(CheckArgs),
@@ -473,25 +473,34 @@ impl RunArgs {
 
 #[derive(Debug, Args)]
 pub struct DebugArgs {
-    /// Input .hew file.
-    pub input: PathBuf,
+    /// Input .hew file, unless attaching to a running process.
+    #[arg(required_unless_present = "attach", conflicts_with = "attach")]
+    pub input: Option<PathBuf>,
+    /// Attach a native debugger to an existing process.
+    #[arg(long, value_name = "PID", value_parser = clap::value_parser!(u32).range(1..))]
+    pub attach: Option<u32>,
     /// Accepted for compatibility (debug info is always enabled).
-    #[arg(long, short = 'g', hide = true)]
+    #[arg(long, short = 'g', hide = true, conflicts_with = "attach")]
     pub debug: bool,
     /// Pass an extra library or linker argument to the native link step.
     /// Values may begin with a dash (e.g. `-lMagickWand-7.Q16`).
-    #[arg(long = "link-lib", value_name = "PATH", allow_hyphen_values = true)]
+    #[arg(
+        long = "link-lib",
+        value_name = "PATH",
+        allow_hyphen_values = true,
+        conflicts_with = "attach"
+    )]
     pub link_libs: Vec<String>,
     /// Target triple.
-    #[arg(long, value_name = "TRIPLE")]
+    #[arg(long, value_name = "TRIPLE", conflicts_with = "attach")]
     pub target: Option<String>,
     /// Build a persistent executable and print an editor launch configuration as JSON.
-    #[arg(long)]
+    #[arg(long, conflicts_with = "attach")]
     pub print_config: bool,
     #[command(flatten)]
     pub common: CommonBuildArgs,
     /// Arguments to pass to the debugger/program (after --).
-    #[arg(last = true)]
+    #[arg(last = true, conflicts_with = "attach")]
     pub program_args: Vec<String>,
 }
 

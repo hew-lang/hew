@@ -59,6 +59,9 @@ Run a program under the available native debugger:
 hew debug main.hew -- arg1 arg2
 ```
 
+To attach to a running process, use `hew debug --attach PID`; your operating
+system's usual debugger-attach permissions apply.
+
 The debugger stops at `hew_fault_raise` when a Hew failure is raised, before
 its stack unwinds. Use `hew build -g main.hew -o app` to keep an executable
 for a later session. Add `--release` to optimize it; optimized code can inline

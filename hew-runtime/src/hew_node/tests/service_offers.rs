@@ -105,8 +105,7 @@ impl Pair {
             .unwrap()
     }
 
-    /// Register a recipient-side wait for this issuer's offer.
-    fn receive(&self) -> Arc<PendingReply> {
+    fn register_receive(&self) -> Arc<PendingReply> {
         let manager = self.recipient_manager();
         let claim = connection::claim_send_by_identity(manager, self.issuer_id(), None).unwrap();
         let (_, pending) = reply_table().register_with_waker(
@@ -114,7 +113,13 @@ impl Pair {
             None,
             PendingReplyKind::Import,
         );
-        manager
+        pending
+    }
+
+    /// Register a recipient-side wait for this issuer's offer.
+    fn receive(&self) -> Arc<PendingReply> {
+        let pending = self.register_receive();
+        self.recipient_manager()
             .service_exports
             .receive(self.issuer_session(), vec![HANDLER.into()], &pending)
             .unwrap();
@@ -209,6 +214,127 @@ fn lost_offer_acknowledgement_survives_a_connection_replacement() {
     assert!(eventually(|| imported(&waiting).is_some()));
     assert_eq!(imported(&waiting), Some(next.grant_id));
     drop((export, next_export));
+    pair.stop();
+}
+
+/// A still-live imported grant must not become receivable again when newer
+/// imports fill the bounded history, even if their retractions were lost.
+#[test]
+fn bounded_import_history_preserves_live_grant_deduplication() {
+    let _guard = crate::runtime_test_guard();
+    let pair = Pair::start(410, 411);
+    let (original_export, original) = pair.export(90_000);
+    let exports = &pair.recipient_manager().service_exports;
+    let first = pair.receive();
+    exports.offer(original.clone(), true).unwrap();
+    assert_eq!(imported(&first), Some(original.grant_id));
+
+    let mut capacity_refused = false;
+    for index in 0..256 {
+        let (temporary, offer) = pair.export(91_000 + index);
+        let pending = pair.receive();
+        match exports.offer(offer.clone(), true) {
+            Ok(()) => assert_eq!(imported(&pending), Some(offer.grant_id)),
+            Err(AskError::WorkerAtCapacity) => {
+                capacity_refused = true;
+                reply_table().fail(pending.request_id, AskError::LocalShutdown);
+            }
+            Err(error) => panic!("unexpected offer refusal: {error:?}"),
+        }
+        // Deliver directly and omit retraction, modelling a lost control frame.
+        // The issuer keeps at most two live exports throughout the history.
+        drop(temporary);
+    }
+    assert!(pair.admits(original.grant_id));
+    let waiting = pair.receive();
+    exports.offer(original.clone(), true).unwrap();
+    let repeated = imported(&waiting);
+    reply_table().fail(waiting.request_id, AskError::LocalShutdown);
+    drop(original_export);
+    pair.stop();
+    assert_eq!(repeated, None, "an old live grant was imported twice");
+    assert!(
+        capacity_refused,
+        "history capacity must use explicit backpressure"
+    );
+}
+
+/// Capacity refusal preserves a queued offer and its receive registration;
+/// retractions free space for both queued and subsequently arriving offers.
+#[test]
+fn import_history_capacity_preserves_queued_and_waiting_receives() {
+    let _guard = crate::runtime_test_guard();
+    let pair = Pair::start(412, 413);
+    let exports = &pair.recipient_manager().service_exports;
+    let issuer = pair.issuer_session();
+    let mut remembered = Vec::new();
+    for index in 0..256 {
+        let (temporary, offer) = pair.export(100_000 + index);
+        let pending = pair.receive();
+        exports.offer(offer.clone(), true).unwrap();
+        assert_eq!(imported(&pending), Some(offer.grant_id));
+        remembered.push(offer.grant_id);
+        // The issuer closes each grant, but the recipient misses retraction.
+        drop(temporary);
+    }
+
+    let (queued_export, queued) = pair.export(110_000);
+    exports.offer(queued.clone(), true).unwrap();
+    exports.offer(queued.clone(), true).unwrap();
+    let pending = pair.register_receive();
+    assert_eq!(
+        exports.receive(issuer, vec![HANDLER.into()], &pending),
+        Err(AskError::WorkerAtCapacity)
+    );
+    assert_eq!(imported(&pending), None);
+    assert!(exports.holds_offer(issuer, queued.grant_id));
+    exports.retract(issuer, remembered[0]);
+    exports
+        .receive(issuer, vec![HANDLER.into()], &pending)
+        .unwrap();
+    assert_eq!(imported(&pending), Some(queued.grant_id));
+    assert!(!exports.holds_offer(issuer, queued.grant_id));
+    // Even at capacity, an imported duplicate is accepted without redelivery.
+    exports.offer(queued.clone(), true).unwrap();
+
+    let waiting = pair.receive();
+    let (request_id, refused) = reply_table().register_with_waker(
+        pair.issuer_connection(),
+        None,
+        PendingReplyKind::SessionOffer,
+    );
+    let (refused_export, refused_offer) = pair.export(request_id);
+    pair.issuer_manager()
+        .service_exports
+        .deliver(refused_offer.grant_id, None);
+    assert!(eventually(|| refused.outcome.lock().unwrap().is_some()));
+    {
+        let outcome = refused.outcome.lock().unwrap();
+        let outcome = outcome.as_ref().unwrap();
+        assert_eq!(outcome.status, ReplyStatus::Failed);
+        assert_eq!(outcome.ask_error, AskError::WorkerAtCapacity);
+    }
+    assert_eq!(imported(&waiting), None);
+    drop(refused_export);
+
+    exports.retract(issuer, remembered[1]);
+    let (request_id, accepted) = reply_table().register_with_waker(
+        pair.issuer_connection(),
+        None,
+        PendingReplyKind::SessionOffer,
+    );
+    let (next_export, next) = pair.export(request_id);
+    pair.issuer_manager()
+        .service_exports
+        .deliver(next.grant_id, None);
+    assert!(eventually(|| imported(&waiting).is_some()));
+    assert_eq!(imported(&waiting), Some(next.grant_id));
+    assert!(eventually(|| accepted.outcome.lock().unwrap().is_some()));
+    assert_eq!(
+        accepted.outcome.lock().unwrap().as_ref().unwrap().status,
+        ReplyStatus::Success
+    );
+    drop((queued_export, next_export));
     pair.stop();
 }
 

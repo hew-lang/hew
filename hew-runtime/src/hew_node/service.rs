@@ -21,10 +21,9 @@ const SERVICE_OFFER_LIMIT: usize = 256;
 /// the issuer still refuses every call on them.
 const SERVICE_RETRACT_LIMIT: usize = SERVICE_EXPORT_LIMIT;
 /// Session-scoped grants this recipient already imported, so a re-sent offer is
-/// acknowledged without importing the grant twice. An issuer has at most
-/// `SERVICE_EXPORT_LIMIT` live grants and retracts the ones it closes; an
-/// evicted entry matters only for an offer re-sent after this many newer
-/// imports.
+/// acknowledged without importing the grant twice. New session-scoped imports
+/// are refused at capacity until a retraction or session replacement frees an
+/// entry; losing a retraction must not make a live grant importable again.
 const SERVICE_IMPORTED_LIMIT: usize = SERVICE_EXPORT_LIMIT;
 
 #[derive(Debug)]
@@ -243,11 +242,37 @@ impl ServiceState {
         );
     }
 
-    fn remember_import(&mut self, offer: &ServiceOfferPayload) {
-        if self.imported.len() >= SERVICE_IMPORTED_LIMIT {
-            self.imported.pop_front();
+    fn complete_import(
+        &mut self,
+        pending: &PendingReply,
+        offer: &ServiceOfferPayload,
+        session_scoped: bool,
+    ) -> Result<bool, AskError> {
+        if session_scoped && self.imported.len() >= SERVICE_IMPORTED_LIMIT {
+            return Err(AskError::WorkerAtCapacity);
         }
-        self.imported.push_back(offer.clone());
+        let data = crate::envelope::encode_service_offer_payload(offer)
+            .map_err(|_| AskError::EncodeFailed)?;
+        if super::reply_table()
+            .remove_if_connection(pending.request_id, pending.connection, pending.kind)
+            .is_none()
+        {
+            return Ok(false);
+        }
+        // Capacity acceptance and history recording precede publication. A
+        // woken receiver can never observe a value without its replay fence.
+        if session_scoped {
+            self.imported.push_back(offer.clone());
+        }
+        ReplyRoutingTable::complete_pending(
+            pending,
+            ReplyOutcome {
+                status: ReplyStatus::Success,
+                data,
+                ask_error: AskError::None,
+            },
+        );
+        Ok(true)
     }
 }
 
@@ -518,19 +543,19 @@ impl ServiceExports {
             .iter()
             .position(|waiter| waiter.issuer == issuer)
         {
-            let waiter = state.waiters.remove(index);
-            if let Some(pending) = waiter.pending.upgrade() {
-                if waiter.handlers == offer.handlers {
-                    if Self::complete_import(&pending, &offer) {
-                        if session_scoped {
-                            state.remember_import(&offer);
-                        }
+            let compatible = state.waiters[index].handlers == offer.handlers;
+            let pending = state.waiters[index].pending.upgrade();
+            if let Some(pending) = pending {
+                if compatible {
+                    if state.complete_import(&pending, &offer, session_scoped)? {
+                        state.waiters.remove(index);
                         return Ok(());
                     }
                 } else {
                     super::reply_table().fail(pending.request_id, AskError::Unauthorized);
                 }
             }
+            state.waiters.remove(index);
         }
         if state.offers.len() >= SERVICE_OFFER_LIMIT {
             return Err(AskError::WorkerAtCapacity);
@@ -572,12 +597,10 @@ impl ServiceExports {
             if state.offers[index].offer.handlers != handlers {
                 return Err(AskError::Unauthorized);
             }
-            if Self::complete_import(pending, &state.offers[index].offer) {
-                if let Some(queued) = state.offers.remove(index) {
-                    if queued.session_scoped {
-                        state.remember_import(&queued.offer);
-                    }
-                }
+            let offer = state.offers[index].offer.clone();
+            let session_scoped = state.offers[index].session_scoped;
+            if state.complete_import(pending, &offer, session_scoped)? {
+                state.offers.remove(index);
             }
             return Ok(());
         }
@@ -593,27 +616,6 @@ impl ServiceExports {
             pending: Arc::downgrade(pending),
         });
         Ok(())
-    }
-
-    fn complete_import(pending: &PendingReply, offer: &ServiceOfferPayload) -> bool {
-        let Ok(data) = crate::envelope::encode_service_offer_payload(offer) else {
-            return false;
-        };
-        if super::reply_table()
-            .remove_if_connection(pending.request_id, pending.connection, pending.kind)
-            .is_none()
-        {
-            return false;
-        }
-        ReplyRoutingTable::complete_pending(
-            pending,
-            ReplyOutcome {
-                status: ReplyStatus::Success,
-                data,
-                ask_error: AskError::None,
-            },
-        );
-        true
     }
 
     pub(crate) fn acknowledge(
@@ -662,7 +664,12 @@ impl ServiceExports {
                 },
             );
         } else {
-            ReplyRoutingTable::fail_pending_with_reason(&pending, AskError::Unauthorized);
+            let reason = if result.status == crate::envelope::SETUP_STATUS_RESOURCE_EXHAUSTED {
+                AskError::WorkerAtCapacity
+            } else {
+                AskError::Unauthorized
+            };
+            ReplyRoutingTable::fail_pending_with_reason(&pending, reason);
         }
         true
     }

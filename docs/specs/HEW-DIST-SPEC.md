@@ -603,8 +603,12 @@ the recipient's session rather than to one connection:
 - The recipient identifies an offer by its issuer session and grant. A repeated
   offer it still holds or has already imported is acknowledged as accepted again
   and is not imported a second time; the same grant with a different target or
-  interface is refused. It remembers at most 256 imported grants, dropping the
-  oldest, and forgets an issuer session's grants when that session is replaced.
+  interface is refused. It remembers at most 256 imported grants. At capacity,
+  a new session-scoped import is refused with `WorkerAtCapacity` before any
+  value is delivered; duplicate offers are still acknowledged. A retraction or
+  replacement of the issuer session frees history capacity. A queued offer
+  remains queued when a receive is refused for capacity, and a waiting receive
+  remains pending when a new offer is refused.
 - A `peer.receive_service` wait belongs to the issuer session and survives the
   loss of one connection. Membership burying that session fails it with
   `Partition`.

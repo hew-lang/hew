@@ -907,10 +907,12 @@ fn handle_service_frame(
         setup_id: offer.request_id,
         ref_id: offer.grant_id,
         target: offer.target,
-        status: if manager.service_exports.offer(offer, session_scoped).is_ok() {
-            SETUP_STATUS_ACCEPTED
-        } else {
-            crate::envelope::SETUP_STATUS_RESOURCE_EXHAUSTED
+        status: match manager.service_exports.offer(offer, session_scoped) {
+            Ok(()) => SETUP_STATUS_ACCEPTED,
+            Err(crate::internal::types::AskError::WorkerAtCapacity) => {
+                crate::envelope::SETUP_STATUS_RESOURCE_EXHAUSTED
+            }
+            Err(_) => SETUP_STATUS_REFUSED,
         },
     };
     send_setup_result_frame(

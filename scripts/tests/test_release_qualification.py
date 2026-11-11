@@ -66,6 +66,12 @@ class QualificationInputs(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(output, f"source_sha={source}\nplatforms=windows-x86_64\n")
 
+    def test_freebsd_subset_preserves_the_requested_candidate(self) -> None:
+        source = "b" * 40
+        result, output = self.resolve(source, "freebsd-x86_64")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(output, f"source_sha={source}\nplatforms=freebsd-x86_64\n")
+
     def test_debugger_only_preserves_the_requested_candidate(self) -> None:
         source = "b" * 40
         result, output = self.resolve(source, "windows-debugger")

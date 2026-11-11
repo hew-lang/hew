@@ -40,7 +40,7 @@ on:
       platforms:
         description: "Run the full gate, a platform subset, or the focused Windows debugger check."
         type: choice
-        options: [all, linux-x86_64, windows-x86_64, macos-aarch64, windows-debugger]
+        options: [all, linux-x86_64, windows-x86_64, macos-aarch64, freebsd-x86_64, windows-debugger]
         default: all
 
 # Qualification belongs to a source revision and platform selection. Preserve
@@ -91,7 +91,7 @@ jobs:
             exit 1
           fi
           case "${platforms}" in
-            all|linux-x86_64|windows-x86_64|macos-aarch64|windows-debugger) ;;
+            all|linux-x86_64|windows-x86_64|macos-aarch64|freebsd-x86_64|windows-debugger) ;;
             *) echo "::error::unsupported qualification platforms: ${platforms}"; exit 1 ;;
           esac
           printf 'source_sha=%s\nplatforms=%s\n' "${source_sha}" "${platforms}" >> "$GITHUB_OUTPUT"
@@ -850,7 +850,7 @@ jobs:
   # ─────────────────────────────────────────────────────────────────────────
   gate-freebsd-x86_64:
     needs: gate-release-checks
-    if: needs.gate-release-checks.outputs.platforms == 'all'
+    if: needs.gate-release-checks.outputs.platforms == 'all' || needs.gate-release-checks.outputs.platforms == 'freebsd-x86_64'
     name: Release Gate — FreeBSD x86_64
     runs-on: ubuntu-24.04
     # This QEMU-backed job runs the full native corpus after its workspace

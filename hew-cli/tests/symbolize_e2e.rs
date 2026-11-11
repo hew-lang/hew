@@ -200,7 +200,7 @@ fn stripped_release_build_resolves_frames_from_the_hew_tables() {
 /// expands an optimized physical frame into the source calls it inlined.
 #[test]
 #[cfg(not(target_env = "msvc"))]
-fn optimized_debug_build_resolves_inlined_failure_frames() {
+fn optimized_debug_build_resolves_inlined_source_frames() {
     require_codegen();
     let dir = tempdir();
     let src = dir.path().join("inline.hew");

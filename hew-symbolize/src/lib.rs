@@ -93,8 +93,8 @@ pub struct Frame {
 
 /// A function and source position for one frame.
 ///
-/// A frame expands to several locations when the compiler inlined calls into
-/// it; the innermost call comes first.
+/// DWARF can expand a frame into several inlined source locations, innermost
+/// first. PDB lookup currently returns the physical procedure and location.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct Location {
     /// The function's display name.
@@ -310,7 +310,7 @@ impl Symbolizer {
         self.static_base
     }
 
-    /// Resolve one frame, innermost inlined call first.
+    /// Resolve one frame, with recoverable DWARF inline locations first.
     ///
     /// An empty result means the image has no symbols covering `pc`; the
     /// caller collapses such a frame.

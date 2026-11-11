@@ -642,6 +642,7 @@ jobs:
           version: 22.1.5
 
       - name: Provision Windows debugger
+        id: windows-debugger
         shell: pwsh
         timeout-minutes: 20
         run: |
@@ -666,6 +667,7 @@ jobs:
           Add-Content -Path $env:GITHUB_PATH -Value (Split-Path -Parent $debugger)
 
       - name: Build and prove release library consumer linking
+        id: windows-release-build
         shell: bash
         run: make test-release-lib-link
 
@@ -703,11 +705,6 @@ jobs:
         # Linux x86_64 owns the portable syntax suite. Keep filesystem and
         # CRLF formatter coverage on Windows.
         run: make -k SHELL=bash test-strict hew-fmt-fidelity NEXTEST_WORKSPACE_EXCLUDE="hew-lexer hew-parser"
-
-      - name: Run Windows debugger acceptance
-        if: ${{ !cancelled() && steps.workspace-tests.outcome == 'success' }}
-        shell: bash
-        run: HEW_TEST_NO_BUILD=1 cargo nextest run --profile ci -p hew-cli --test windows_pdb_e2e --run-ignored only
 
       # Snapshot before later test targets can rebuild the failing workspace's binaries.
       - name: Collect failed Windows workspace binaries
@@ -758,6 +755,17 @@ jobs:
           path: ${{ runner.temp }}/release-windows-failure-binaries/
           if-no-files-found: error
 
+      - name: Prepare Windows debugger test runtime
+        id: windows-debug-runtime
+        if: ${{ !cancelled() && steps.windows-debugger.outcome == 'success' && steps.windows-release-build.outcome == 'success' }}
+        shell: bash
+        run: make SHELL=bash hew-native
+
+      - name: Run Windows debugger acceptance
+        if: ${{ !cancelled() && steps.windows-debug-runtime.outcome == 'success' }}
+        shell: bash
+        run: HEW_TEST_NO_BUILD=1 cargo nextest run --profile ci-focused -p hew-cli --test windows_pdb_e2e --run-ignored only
+
       - name: Run C-ABI crate tests
         if: ${{ !cancelled() && steps.workspace-tests.outcome != 'skipped' }}
         # Standalone because the workspace run above must exclude hew-cabi.
@@ -769,7 +777,7 @@ jobs:
         uses: mikepenz/action-junit-report@3a81627bfac62268172037048872e8ebd4207e6d # v6.4.1
         with:
           commit: ${{ needs.gate-release-checks.outputs.source_sha }}
-          report_paths: "{target/nextest/ci/junit.xml,target/nextest/ci-cabi/junit.xml}"
+          report_paths: "{target/nextest/ci/junit.xml,target/nextest/ci-cabi/junit.xml,target/nextest/ci-focused/junit.xml}"
           check_name: Release Gate Test Results (Windows x86_64)
           fail_on_failure: true
           fail_on_parse_error: true

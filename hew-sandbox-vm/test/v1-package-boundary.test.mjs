@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import test from "node:test";
+import { staticOperations } from "../dist/interpreter/v1/package.js";
 import { runBytecode } from "../dist/interpreter/index.js";
 
 // Independently stored compiler output exercises the full loader, not a
@@ -64,7 +65,7 @@ test("invalid references, edge arguments and manifests fail before the first ste
     },
     (pkg) => {
       const op = pkg.functions[0].blocks
-        .flatMap((block) => block.ops)
+        .flatMap((block) => [...staticOperations(block)])
         .find((op) => op.op === "const.str");
       op.str = pkg.strings.length;
     },
@@ -152,6 +153,7 @@ test("actor heap limits reject before execution when accounting is unavailable",
     ),
   );
   counter.actors[0].max_heap_bytes = "1024";
+  delete counter.actors[0].state_type;
   const trace = await runBytecode(counter);
   assert.equal(trace.result, "sandbox_rejected");
   assert.equal(

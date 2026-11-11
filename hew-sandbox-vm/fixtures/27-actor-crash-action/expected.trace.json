@@ -75,14 +75,14 @@
       "type": "state.snapshot"
     },
     {
-      "budget_remaining": 990,
+      "budget_remaining": 987,
       "id": "actor:root",
       "id_kind": "actor",
       "message": "actor.scheduler-step",
       "phase": "run",
       "seq": 8,
       "span": null,
-      "step_count": 10,
+      "step_count": 13,
       "type": "step.committed"
     },
     {
@@ -108,14 +108,14 @@
       "type": "state.snapshot"
     },
     {
-      "budget_remaining": 982,
+      "budget_remaining": 979,
       "id": "actor:a1",
       "id_kind": "actor",
       "message": "actor.scheduler-step",
       "phase": "run",
       "seq": 11,
       "span": null,
-      "step_count": 18,
+      "step_count": 21,
       "type": "step.committed"
     },
     {
@@ -163,14 +163,14 @@
       "type": "state.snapshot"
     },
     {
-      "budget_remaining": 973,
+      "budget_remaining": 970,
       "id": "actor:a1",
       "id_kind": "actor",
       "message": "actor.scheduler-step",
       "phase": "run",
       "seq": 17,
       "span": null,
-      "step_count": 27,
+      "step_count": 30,
       "type": "step.committed"
     },
     {
@@ -188,14 +188,14 @@
       "type": "replay.input"
     },
     {
-      "budget_remaining": 966,
+      "budget_remaining": 963,
       "id": "actor:root",
       "id_kind": "actor",
       "message": "actor.scheduler-step",
       "phase": "run",
       "seq": 19,
       "span": null,
-      "step_count": 34,
+      "step_count": 37,
       "type": "step.committed"
     },
     {
@@ -213,14 +213,14 @@
       "type": "replay.input"
     },
     {
-      "budget_remaining": 962,
+      "budget_remaining": 958,
       "id": "actor:root",
       "id_kind": "actor",
       "message": "actor.scheduler-step",
       "phase": "run",
       "seq": 21,
       "span": null,
-      "step_count": 38,
+      "step_count": 42,
       "type": "step.committed"
     },
     {
@@ -253,7 +253,7 @@
     }
   ],
   "final_state": {
-    "budget_remaining": 941,
+    "budget_remaining": 937,
     "diagnostics": [],
     "exit_code": 1,
     "globals": [],
@@ -279,7 +279,7 @@
     "stdout": [
       "killed\n"
     ],
-    "step_count": 59,
+    "step_count": 63,
     "virtual_clock": {
       "current_ms": 0,
       "epoch_ms": 0,
@@ -287,7 +287,7 @@
     }
   },
   "fixture_id": "actor-crash-action",
-  "hew_version": "0.6.1",
+  "hew_version": "0.10.0-rc1",
   "profile": "sandbox.sandbox-vm-export.v0",
   "replay": {
     "inputs": [

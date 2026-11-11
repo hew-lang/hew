@@ -127,7 +127,12 @@ type Fault = (
       actorSendFailed?: boolean;
     }
   | { kind: "trap"; trap: TrapName; message?: string }
-) & { primary?: Fault; secondary?: Fault[]; reported?: boolean };
+) & {
+  primary?: Fault;
+  secondary?: Fault[];
+  reported?: boolean;
+  frames?: Array<{ function: string; repeat: number }>;
+};
 
 type CallerStamp =
   | { kind: "Task" | "Timer" }
@@ -221,6 +226,7 @@ interface ActorMessage {
     error: string | null,
     drained?: (fault: Fault | null) => void,
     envelope?: VmValue,
+    actorFault?: Fault,
   ): void;
 }
 
@@ -316,6 +322,7 @@ interface TaskEntry {
   value: VmValue;
   fault: Fault | null;
   actorError: string | null;
+  actorFault?: Fault;
   actorTarget?: ActorInstance;
   cancel(): void;
   // Actor-call handles own admission and reply storage. Scoped task handles
@@ -356,6 +363,8 @@ interface Activation {
   /// `finish_defer` restores the fault the boundary was entered with.
   parked: Array<Fault | null>;
   caller: Activation | null;
+  /// A runtime callback's real Hew invoker, without a return/unwind edge.
+  traceCaller?: Activation;
   /// Frames between this activation and its task's root, which is 0.
   depth: number;
   /// Where the caller binds this activation's return value.
@@ -2755,12 +2764,14 @@ class ExecutorV1 {
           message: renderMessage(message),
           ...(assertion ? { assertion } : {}),
         };
+        this.captureFault(act, act.fault);
         if (act.context.actor) act.context.actor.crashing ??= act.fault;
         this.takeEdge(act, term.cleanup);
         return;
       }
       case "checked_raise":
         act.fault = { kind: "trap", trap: term.trap };
+        this.captureFault(act, act.fault);
         if (act.context.actor) act.context.actor.crashing ??= act.fault;
         this.takeEdge(act, term.cleanup);
         return;
@@ -3625,6 +3636,7 @@ class ExecutorV1 {
   /// Raise a fault at a call site: enter the named unwind edge, or end the
   /// program when the call names none.
   private raiseFault(act: Activation, fault: Fault, unwind: Edge | null): void {
+    this.captureFault(act, fault);
     if (!unwind) {
       this.running = false;
       act.context.failed(fault);
@@ -3635,6 +3647,7 @@ class ExecutorV1 {
   }
 
   private resumeUnwind(act: Activation, handback: VmValue | null): void {
+    if (act.fault) this.captureFault(act, act.fault);
     if (
       this.finishConsumedCallable(act, null, () =>
         this.resumeUnwind(act, handback),
@@ -4044,7 +4057,7 @@ class ExecutorV1 {
         const cancelRequest = this.ask(
           protocol,
           inputs,
-          (value, error, closeFault) => {
+          (value, error, closeFault, _envelope, actorFault) => {
             act.fault ??= closeFault ?? null;
             return wake(
               this.completion(
@@ -4052,6 +4065,8 @@ class ExecutorV1 {
                 term.error_shape,
                 value,
                 error,
+                actorFault,
+                act.accountActor?.budget,
               ),
             );
           },
@@ -4159,6 +4174,7 @@ class ExecutorV1 {
           act.block.id === act.fn.entry
         ) {
           act.fault = { kind: "trap", trap: "stack_overflow" };
+          this.captureFault(act, act.fault);
           this.takeEdge(act, term.cancel);
           return;
         }
@@ -5153,7 +5169,10 @@ class ExecutorV1 {
       null,
       context,
     );
-    if (invoker) frame.depth = invoker.depth + 1;
+    if (invoker) {
+      frame.depth = invoker.depth + 1;
+      frame.traceCaller = invoker;
+    }
     retainedBy?.managedChildren.add(frame);
     let cancelled: Fault | null = null;
     context.cancel = (
@@ -5203,12 +5222,185 @@ class ExecutorV1 {
     return value;
   }
 
+  /// Bytecode has real function identities but no file/line table. Capture
+  /// up to the native snapshot's 48 physical activations at the origin, before
+  /// unwind replaces them. The VM always captures available frames; it has no
+  /// environment-variable trace policy. Repeated frames retain their count.
+  private captureFault(act: Activation, fault: Fault): void {
+    const origin = fault.primary ?? fault;
+    if (origin.frames !== undefined) return;
+    origin.frames = [];
+    let previous: number | undefined;
+    for (
+      let frame: Activation | null = act, count = 0;
+      frame && count < 48;
+      frame = frame.caller ?? frame.traceCaller ?? null, count++
+    ) {
+      if (previous === frame.fn.id) origin.frames.at(-1)!.repeat++;
+      else origin.frames.push({ function: frame.fn.name, repeat: 1 });
+      previous = frame.fn.id;
+    }
+  }
+
+  private trappedError(
+    errorShape: number,
+    fault: Fault,
+    budget?: ManagedBudget,
+  ): VmValue {
+    const row = (this.pkg.managed_types ?? []).find(
+      (row) => row.kind === "variant" && row.shape === errorShape,
+    );
+    if (!row || row.kind !== "variant")
+      throw new Error("actor error lacks its managed variant descriptor");
+    const tag = runtimeTag(this.pkg.variants[errorShape]!, "ActorErrorTrapped");
+    const type = row.cases[tag]?.[0];
+    if (type == null)
+      throw new Error(
+        "trapped actor completion lacks its crash payload descriptor",
+      );
+    return this.variant(errorShape, "ActorErrorTrapped", [
+      this.crashInfo(type, fault, budget),
+    ]);
+  }
+
+  private crashInfo(
+    type: number,
+    fault: Fault,
+    budget?: ManagedBudget,
+  ): VmValue {
+    const origin = fault.primary ?? fault;
+    const info = this.managed.row(type);
+    if (info.kind !== "aggregate" || info.fields.length !== 5)
+      throw new Error("crash payload lacks its five-field managed descriptor");
+    const variant = (type: number) => {
+      const row = this.managed.row(type);
+      if (row.kind !== "variant")
+        throw new Error("crash payload child is not a variant");
+      return row;
+    };
+    const option = (type: number, value?: VmValue): VmValue =>
+      this.variant(
+        variant(type).shape,
+        value === undefined ? "OptionNone" : "OptionSome",
+        value === undefined ? [] : [value],
+      );
+    const someType = (type: number) => {
+      const row = variant(type);
+      const child =
+        row.cases[runtimeTag(this.pkg.variants[row.shape]!, "OptionSome")]?.[0];
+      if (child == null)
+        throw new Error("crash payload option lacks its child descriptor");
+      return child;
+    };
+    const aggregateShape = (type: number): number => {
+      const row = this.managed.row(type);
+      if (row.kind !== "aggregate")
+        throw new Error("crash payload record lacks its descriptor");
+      const shape = row.shape;
+      if (shape == null)
+        throw new Error("crash payload record lacks its aggregate identity");
+      return shape;
+    };
+    const record = (type: number, fields: VmValue[]): VmValue => {
+      const shape = aggregateShape(type);
+      return {
+        kind: "record",
+        typeId: this.aggregateName(shape),
+        shape,
+        fields,
+      };
+    };
+    const [kindType, trapType, , siteType, traceType] = info.fields as [
+      number,
+      number,
+      number,
+      number,
+      number,
+    ];
+    const [code, reason] = faultInfo(origin);
+    const kind = this.variant(
+      variant(kindType).shape,
+      code === 200
+        ? "CrashKindHeapExceeded"
+        : code === 214
+          ? "CrashKindTimerOverdue"
+          : code === 213
+            ? "CrashKindHandlerFailed"
+            : code === 215
+              ? "CrashKindStackOverflow"
+              : "CrashKindFault",
+    );
+    const trap = variant(someType(trapType));
+    const trapTag = this.pkg.variants[trap.shape]!.cases.findIndex(
+      (item) => item.name === reason,
+    );
+    const trapValue: VmValue | undefined =
+      trapTag < 0
+        ? undefined
+        : {
+            kind: "enum",
+            typeId: this.variantName(trap.shape),
+            shape: trap.shape,
+            tag: trapTag,
+            payload: [],
+          };
+    const vector = this.managed.row(someType(traceType));
+    if (vector.kind !== "vector")
+      throw new Error("crash trace lacks its vector descriptor");
+    const frame = this.managed.row(vector.element);
+    if (frame.kind !== "aggregate" || frame.fields.length !== 3)
+      throw new Error("crash frame lacks its managed descriptor");
+    const frames: VmValue = {
+      kind: "vector",
+      elementType: this.aggregateName(aggregateShape(vector.element)),
+      items: (origin.frames ?? []).map((item) =>
+        record(vector.element, [
+          stringValue(item.function),
+          option(frame.fields[1]!),
+          { kind: "i64", value: BigInt(item.repeat) },
+        ]),
+      ),
+    };
+    const value = record(type, [
+      kind,
+      option(trapType, trapValue),
+      stringValue(faultApplicationMessage(origin) ?? reason),
+      option(siteType),
+      option(traceType, origin.frames?.length ? frames : undefined),
+    ]);
+    if (value.kind !== "record")
+      throw new Error("crash payload is not a record");
+    // Diagnostics must not replace the original failure with an allocation
+    // failure. Drop trace storage first, then the message (site is unavailable).
+    for (const omit of [null, 4, 2] as const) {
+      if (omit === 4) value.fields[4] = option(traceType);
+      if (omit === 2) value.fields[2] = stringValue("");
+      try {
+        this.managed.stampGraph({ value, type });
+        budget?.check([{ value, type }]);
+        return value;
+      } catch (error) {
+        if (!(error instanceof HeapExceeded)) throw error;
+      }
+    }
+    return value;
+  }
+
   private completion(
     result: number | null | undefined,
     errorShape: number | null | undefined,
     value: VmValue | null,
     error: string | null,
+    fault?: Fault,
+    budget?: ManagedBudget,
   ): VmValue {
+    if (error === "Trapped") {
+      if (!fault)
+        throw new Error("trapped actor completion lost its originating fault");
+      return this.variant(result, "ResultErr", [
+        this.trappedError(errorShape!, fault, budget),
+      ]);
+    }
     return error
       ? this.variant(result, "ResultErr", [
           this.variant(
@@ -5617,7 +5809,8 @@ class ExecutorV1 {
         const cancelRequest = this.ask(
           operation.protocol,
           args,
-          (value, error, closeFault, envelope) => {
+          (value, error, closeFault, envelope, actorFault) => {
+            task.actorFault = actorFault;
             const reply = this.managedCompletion(task, value, error, envelope);
             if (reply && !closeFault && act.context.actor?.budget) {
               try {
@@ -5673,6 +5866,8 @@ class ExecutorV1 {
             term.error_shape,
             value,
             task.actorError,
+            task.actorFault,
+            act.accountActor?.budget,
           );
         task.managedResult = undefined;
         task.managedReply = undefined;
@@ -5746,7 +5941,11 @@ class ExecutorV1 {
                 act.fault ??= fault;
                 finish(
                   this.variant(term.result_shape, "ResultErr", [
-                    this.variant(term.error_shape, "ActorErrorTrapped"),
+                    this.trappedError(
+                      term.error_shape!,
+                      actor.crashing ?? { kind: "trap", trap: "heap_exceeded" },
+                      act.accountActor?.budget,
+                    ),
                   ]),
                 );
               },
@@ -6085,6 +6284,7 @@ class ExecutorV1 {
       error: string | null,
       closeFault?: Fault | null,
       envelope?: VmValue,
+      actorFault?: Fault,
     ) => boolean,
     shapes?: RequestShapes | null,
     selectedTarget?: (actor: ActorInstance) => void,
@@ -6107,13 +6307,14 @@ class ExecutorV1 {
       error,
       drained,
       envelope,
+      actorFault,
     ) => {
       const alreadySettled = settled;
       settled = true;
       cancelTimer?.();
       if (
         alreadySettled ||
-        complete(value, error, undefined, envelope) === false
+        complete(value, error, undefined, envelope, actorFault) === false
       ) {
         // The finishing receiver still owns a reply that its caller no
         // longer accepts. Its next turn must wait for this release.
@@ -6155,13 +6356,13 @@ class ExecutorV1 {
         rcOwner,
       );
     };
-    const reject = (reason: string) => {
+    const reject = (reason: string, actorFault?: Fault) => {
       if (settled || closing) return;
       closeRequest((fault) => {
         if (settled) return;
         settled = true;
         cancelTimer?.();
-        complete(null, reason, fault);
+        complete(null, reason, fault, undefined, actorFault);
       });
     };
     const attempt = () => {
@@ -6235,7 +6436,10 @@ class ExecutorV1 {
       } catch (error) {
         if (!(error instanceof HeapExceeded)) throw error;
         this.failActorBudget(actor);
-        reject("Trapped");
+        reject(
+          "Trapped",
+          actor.crashing ?? { kind: "trap", trap: "heap_exceeded" },
+        );
         return;
       }
       admitted = true;
@@ -6599,7 +6803,13 @@ class ExecutorV1 {
                     combineFaults(fault, closeFault)!,
                     message.handler,
                   );
-                  message.complete(null, "Trapped");
+                  message.complete(
+                    null,
+                    "Trapped",
+                    undefined,
+                    undefined,
+                    fault,
+                  );
                 },
                 actor,
                 actor.rcOwner,
@@ -6627,15 +6837,13 @@ class ExecutorV1 {
                     value,
                   );
                 else {
-                  this.crashActor(
-                    actor,
-                    {
-                      kind: "panic",
-                      handlerFailed: true,
-                      message: "unhandled declared handler failure",
-                    },
-                    message.handler,
-                  );
+                  const fault: Fault = {
+                    kind: "panic",
+                    handlerFailed: true,
+                    message: "unhandled declared handler failure",
+                  };
+                  this.captureFault(frame, fault);
+                  this.crashActor(actor, fault, message.handler);
                   return;
                 }
               } else {
@@ -6667,7 +6875,7 @@ class ExecutorV1 {
               this.dispatchActor(actor);
             } else {
               this.crashActor(actor, fault, message.handler);
-              message.complete(null, "Trapped");
+              message.complete(null, "Trapped", undefined, undefined, fault);
             }
           },
         },
@@ -6765,34 +6973,11 @@ class ExecutorV1 {
     };
     const runHook = () => {
       if (actor.layout.crash != null) {
-        const [code, reason] = faultInfo(fault);
-        const message = faultApplicationMessage(fault) ?? reason;
-        const info: VmValue = {
-          kind: "record",
-          typeId: this.aggregateName(actor.layout.crash_info!),
-          shape: actor.layout.crash_info!,
-          fields: [
-            {
-              kind: "enum",
-              typeId: this.variantName(actor.layout.crash_kind!),
-              shape: actor.layout.crash_kind!,
-              tag: runtimeTag(
-                this.pkg.variants[actor.layout.crash_kind!]!,
-                code === 200
-                  ? "CrashKindHeapExceeded"
-                  : code === 214
-                    ? "CrashKindTimerOverdue"
-                    : code === 213
-                      ? "CrashKindHandlerFailed"
-                      : code === 215
-                        ? "CrashKindStackOverflow"
-                        : "CrashKindFault",
-              ),
-              payload: [],
-            },
-            stringValue(String(message)),
-          ],
-        };
+        const type = this.functionAt(actor.layout.crash).params[1]
+          ?.managed_type;
+        if (type == null)
+          throw new Error("crash hook lacks its crash payload descriptor");
+        const info = this.crashInfo(type, fault, actor.budget);
         let cancelTimer: (() => void) | undefined;
         const complete = (action: string) => {
           cancelTimer?.();
@@ -7439,6 +7624,7 @@ class ExecutorV1 {
   }
 
   private haltWithFault(fault: Fault): never {
+    this.captureFault(this.current, fault);
     const isPanic = fault.kind === "panic";
     const status: RuntimeStatus = isPanic ? "panic" : "trap";
     const trapKind: TrapKind = isPanic ? "panic" : fault.trap;

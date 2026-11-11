@@ -61,6 +61,21 @@ A `sandbox_rejected` result includes rejection entries with `category`, `code`,
 checked traps, VM failures and step-budget exhaustion have distinct statuses.
 Consumers can offer explicit remote execution for native capabilities.
 
+## Crash details
+
+Actor callers and crash hooks receive the same originating `CrashInfo`, with
+owned kind, trap, message, site and trace fields. The VM captures up to 48 real
+Hew activations before unwind and folds consecutive identical functions into
+`StackFrame.repeat`. Capture is always enabled; there is no VM trace-control
+option. Frames describe the failing execution rather than its observer.
+
+Current bytecode carries function names and byte-offset spans, but no source
+file and line table. `CrashInfo.site` and each frame's `site` are therefore
+`None`. A failure outside an executing Hew activation also has no trace.
+Diagnostic materialization respects the receiving actor's managed heap budget:
+it omits the trace first, then uses an empty message if necessary, preserving
+the original kind and trap when diagnostic storage cannot fit.
+
 ## Validation
 
 From the repository root:

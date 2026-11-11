@@ -157,7 +157,7 @@ fn main() -> i64 {
     match enough.run() { .Ok(n) => println(n), _ => return 2, }
     stop(enough); stopped(enough);
     let small = spawn Small;
-    match small.run() { .Err(.Trapped) => println("task limit"), _ => return 3, }
+    match small.run() { .Err(.Trapped(_)) => println("task limit"), _ => return 3, }
     stopped(small);
     0
 }`,
@@ -182,7 +182,7 @@ actor Empty {
 fn main() -> i64 {
     let empty = spawn Empty;
     empty.ready().expect("zero-byte turn");
-    match empty.allocate() { .Err(.Trapped) => println("array limit"), _ => return 2, }
+    match empty.allocate() { .Err(.Trapped(_)) => println("array limit"), _ => return 2, }
     stopped(empty);
     0
 }`,
@@ -396,7 +396,7 @@ actor Document {
 fn main() -> i64 {
     let document = spawn Document { values: yaml.parse("[1,2,3,4]").expect("parse") };
     match document.copied_len() { .Ok(n) => println(n), _ => return 2, }
-    match document.detach() { .Err(.Trapped) => println("tree limit"), _ => return 3, }
+    match document.detach() { .Err(.Trapped(_)) => println("tree limit"), _ => return 3, }
     stopped(document);
     0
 }`,
@@ -898,4 +898,205 @@ test("calendar extern results require their checked record descriptor", async ()
     assert.equal(trace.result, "sandbox_rejected");
     assert.deepEqual(trace.final_state.stdout, []);
   }
+});
+
+test("owned CrashInfo retains actor origin through hooks and caller completion", async () => {
+  const result = await runProgram(
+    `
+import std.failure;
+fn explode() -> i64 {
+    defer { panic("secondary cleanup failure"); }
+    let message = " origin ".trim().to_upper() + "-message";
+    panic(message);
+}
+fn inspect(info: CrashInfo, label: string) {
+    assert(match info.kind { .Fault => true, _ => false, });
+    assert(match info.trap { .Some(.UserPanic) => true, _ => false, });
+    assert(info.message == "ORIGIN-message");
+    assert(info.site.is_none());
+    let frames = failure.backtrace(info).expect("origin trace");
+    assert(frames.len() >= 2);
+    assert(frames[0].function.contains("explode"));
+    assert(frames[0].repeat == 1);
+    for frame in frames {
+        assert(frame.site.is_none());
+        assert(!frame.function.contains("__hew_fn_main"));
+    }
+    println(label + ":" + info.message);
+}
+actor Worker {
+    receive fn run() -> i64 { explode() }
+    #[on(crash)]
+    fn crashed(info: CrashInfo) -> CrashAction {
+        inspect(info, "hook");
+        .GiveUp
+    }
+}
+fn main() {
+    let worker = spawn Worker;
+    let retained = match worker.run() {
+        .Err(.Trapped(info)) => info,
+        _ => panic("expected original actor failure"),
+    };
+    stopped(worker);
+    inspect(retained, "caller");
+}
+`,
+    "",
+  );
+  assert.equal(result.status, "ok", JSON.stringify(result.diagnostics));
+  assert.deepEqual(result.stdout.trim().split("\n").sort(), [
+    "caller:ORIGIN-message",
+    "hook:ORIGIN-message",
+  ]);
+  assert.equal(
+    result.exit_code,
+    1,
+    "an unrecovered actor failure remains visible",
+  );
+});
+
+test("checked actor traps retain their trap identity without a crash hook", async () => {
+  const result = await runProgram(
+    `
+fn quotient(n: i64) -> i64 { 10 / n }
+actor Divider { receive fn run(n: i64) -> i64 { quotient(n) } }
+fn main() {
+    let divider = spawn Divider;
+    match divider.run(0) {
+        .Err(.Trapped(info)) => {
+            assert(match info.kind { .Fault => true, _ => false, });
+            assert(match info.trap { .Some(.DivideByZero) => true, _ => false, });
+            assert(info.message == "DivideByZero");
+            assert(info.site.is_none());
+            let frames = info.trace.expect("origin trace");
+            assert(frames[0].function.contains("quotient"));
+            println("checked trap retained");
+        }
+        _ => panic("expected checked actor failure"),
+    }
+}
+`,
+    "",
+  );
+  assert.equal(result.status, "ok", JSON.stringify(result.diagnostics));
+  assert.equal(result.stdout, "checked trap retained\n");
+  assert.equal(result.exit_code, 1);
+});
+
+test("actor diagnostic budgets omit trace before message without replacing the fault", async () => {
+  const result = await runProgram(
+    `
+actor Worker { receive fn run() { panic("retained message"); } }
+#[max_heap(64)]
+actor Small {
+    receive fn observe(worker: Worker) {
+        match worker.run() {
+            .Err(.Trapped(info)) => {
+                assert(match info.trap { .Some(.UserPanic) => true, _ => false, });
+                assert(info.trace.is_none());
+                assert(info.site.is_none());
+                assert(info.message == "retained message");
+                println("message retained");
+            }
+            _ => panic("expected actor failure"),
+        }
+    }
+}
+#[max_heap(8)]
+actor Tiny {
+    receive fn observe(worker: Worker) -> i64 {
+        match worker.run() {
+            .Err(.Trapped(info)) => {
+                assert(match info.kind { .Fault => true, _ => false, });
+                assert(match info.trap { .Some(.UserPanic) => true, _ => false, });
+                assert(info.trace.is_none());
+                assert(info.site.is_none());
+                assert(info.message.is_empty());
+                1
+            }
+            _ => panic("expected actor failure"),
+        }
+    }
+}
+#[max_heap(8)]
+actor Limited {
+    receive fn run() { let _ = "x".repeat(100); }
+    #[on(crash)]
+    fn crashed(info: CrashInfo) -> CrashAction {
+        assert(match info.kind { .HeapExceeded => true, _ => false, });
+        assert(match info.trap { .Some(.HeapExceeded) => true, _ => false, });
+        assert(info.trace.is_none());
+        assert(info.site.is_none());
+        assert(info.message.is_empty());
+        .GiveUp
+    }
+}
+fn main() {
+    let first = spawn Worker;
+    let small = spawn Small;
+    small.observe(first).expect("small caller survives");
+    let second = spawn Worker;
+    let tiny = spawn Tiny;
+    assert(tiny.observe(second).expect("tiny caller survives") == 1);
+    println("identity retained");
+    stop(small); stopped(small);
+    stop(tiny); stopped(tiny);
+    let limited = spawn Limited;
+    match limited.run() {
+        .Err(.Trapped(info)) => assert(match info.trap { .Some(.HeapExceeded) => true, _ => false, }),
+        _ => panic("expected heap failure"),
+    }
+    stopped(limited);
+    println("hook survived");
+}
+`,
+    "",
+  );
+  assert.equal(result.status, "ok", JSON.stringify(result.diagnostics));
+  assert.equal(
+    result.stdout,
+    "message retained\nidentity retained\nhook survived\n",
+  );
+  assert.equal(result.exit_code, 1);
+});
+
+test("supervision preserves StackOverflow details through restart", async () => {
+  const result = await runProgram(
+    `
+fn descend(n: i64) -> i64 { let below = descend(n + 1); below - n }
+fn inspect(info: CrashInfo) {
+    assert(match info.kind { .StackOverflow => true, _ => false, });
+    assert(match info.trap { .Some(.StackOverflow) => true, _ => false, });
+    let frames = info.trace.expect("stack trace");
+    assert(frames[0].function.contains("descend"));
+    assert(frames[0].repeat > 1);
+}
+actor Walker {
+    receive fn run() -> i64 { descend(0) }
+    receive fn fresh() -> i64 { 7 }
+    #[on(crash)]
+    fn crashed(info: CrashInfo) -> CrashAction { inspect(info); .Restart }
+}
+supervisor Group { intensity: 3 within 60s; child walker: Walker; }
+fn main() {
+    let group = spawn Group;
+    let retained = match group.walker.run() {
+        .Err(.Trapped(info)) => info,
+        _ => panic("expected stack failure"),
+    };
+    restarted(group.walker);
+    assert(group.walker.fresh().expect("replacement actor") == 7);
+    inspect(retained);
+    stop(group); stopped(group);
+    println("stack recovered");
+}
+`,
+    "",
+    undefined,
+    { stepBudget: 3_000_000 },
+  );
+  assert.equal(result.status, "ok", JSON.stringify(result.diagnostics));
+  assert.equal(result.stdout, "stack recovered\n");
+  assert.equal(result.exit_code, 0);
 });

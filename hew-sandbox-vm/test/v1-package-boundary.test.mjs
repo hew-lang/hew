@@ -207,3 +207,31 @@ test("unknown actor and supervisor policies reject before execution", async () =
   counter.actors[0].coalesce.fallback = "invent_fallback";
   await rejected(counter);
 });
+
+test("managed aggregate shape identities and field arity validate before execution", async () => {
+  const baseline = structuredClone(original);
+  const shape = baseline.aggregates.length;
+  baseline.aggregates.push({ id: shape, name: "ManagedRecord", fields: [] });
+  baseline.managed_types ??= [];
+  const type = baseline.managed_types.length;
+  baseline.managed_types.push({
+    id: type,
+    slot_bytes: "0",
+    kind: "aggregate",
+    fields: [],
+    shape,
+  });
+  assert.equal((await runBytecode(baseline)).result, "ok");
+  const missing = structuredClone(baseline);
+  missing.managed_types[type].shape = shape + 1;
+  await rejected(missing);
+  const wrongArity = structuredClone(baseline);
+  wrongArity.aggregates[shape].fields.push("i64");
+  await rejected(wrongArity);
+  delete wrongArity.managed_types[type].shape;
+  assert.equal(
+    (await runBytecode(wrongArity)).result,
+    "ok",
+    "older managed descriptors can omit aggregate identities",
+  );
+});

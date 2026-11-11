@@ -353,6 +353,20 @@ impl TestProject {
         std::fs::write(&path, source).expect("write project source");
         path
     }
+
+    /// Exercise editor spelling independently of the compiler's physical path.
+    fn editor_path(&self, relative: &str) -> PathBuf {
+        #[cfg(unix)]
+        {
+            let alias = self.0.join("editor");
+            if !alias.exists() {
+                std::os::unix::fs::symlink(&self.0, &alias).expect("create editor path alias");
+            }
+            alias.join(relative)
+        }
+        #[cfg(not(unix))]
+        self.0.join(relative)
+    }
 }
 
 impl Drop for TestProject {
@@ -2332,11 +2346,13 @@ fn lsp_editor_type_definition_uses_imported_unsaved_types_and_utf16() {
     let project = TestProject::new("editor-type-definition");
     let original =
         "pub type Widget { value: i64; }\npub fn make() -> Widget { Widget { value: 42 } }\n";
-    let library = project.write("model.hew", original);
+    project.write("model.hew", original);
+    let library = project.editor_path("model.hew");
     let fresh = format!("// unsaved library header\n{original}");
     let source =
         "import model;\nfn inspect(unused_param: model.Widget) {}\nfn main() { let w = model.make(); let unused = model.make(); let (left, right) = (model.make(), 2); println(\"🦊\"); println(w.value); }\n";
-    let file = project.write("main.hew", source);
+    project.write("main.hew", source);
+    let file = project.editor_path("main.hew");
     let mut session = RenameSession::new(Some(&project), &[]);
     assert_clean(&session.open(&library, &fresh, 1));
     assert_clean(&session.open(&file, source, 1));
@@ -2372,7 +2388,8 @@ fn lsp_editor_type_definition_uses_imported_unsaved_types_and_utf16() {
 fn lsp_editor_implementations_select_exact_trait_method_and_receiver() {
     let project = TestProject::new("editor-implementations");
     let source = "type Widget { value: i64; }\ntype Other { value: i64; }\ntrait Read { fn read(self) -> i64; }\ntrait Unrelated { fn read(self) -> i64; }\nimpl Read for Widget { fn read(self) -> i64 { self.value } }\nimpl Read for Other { fn read(self) -> i64 { self.value } }\nimpl Unrelated for Widget { fn read(self) -> i64 { 99 } }\nfn main() {}\n";
-    let file = project.write("main.hew", source);
+    project.write("main.hew", source);
+    let file = project.editor_path("main.hew");
     let mut session = RenameSession::new(Some(&project), &[]);
     assert_clean(&session.open(&file, source, 1));
     for (needle, lines) in [
@@ -2702,8 +2719,9 @@ fn lsp_editor_cancelled_pull_and_close_do_not_keep_pending_generations_alive() {
 fn lsp_analysis_context_updates_navigation_and_respects_dirty_documents() {
     let project = TestProject::new("analysis-context");
     let source = "import sdk_services;\nfn main() { assert(sdk_services.answer() == 42); }\n";
-    let main = project.write("router.hew", source);
-    let generated = project.0.join("sdk_services.hew");
+    project.write("router.hew", source);
+    let main = project.editor_path("router.hew");
+    let generated = project.editor_path("sdk_services.hew");
     let generated_uri = file_uri(&generated);
     let mut session = RenameSession::new(Some(&project), &[]);
     let initial = session.open(&main, source, 1);

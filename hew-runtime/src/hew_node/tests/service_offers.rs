@@ -444,7 +444,7 @@ fn non_current_node_stop_settles_only_its_own_session_offer() {
         // Closing the owner's export revokes its held send before settling
         // this wait. Release the gate so teardown can join all local work.
         owner_gate.0.release();
-        let stopped = stopper.join().expect("stop the non-current owner");
+        let shutdown_code = stopper.join().expect("stop the non-current owner");
         let other_settled = unrelated.outcome.lock().unwrap().is_some();
         reply_table().fail(request_id, AskError::LocalShutdown);
         reply_table().fail(other_id, AskError::LocalShutdown);
@@ -452,7 +452,7 @@ fn non_current_node_stop_settles_only_its_own_session_offer() {
         other_gate.0.release();
         owner.stop();
         other.stop();
-        assert_eq!(stopped, 0);
+        assert_eq!(shutdown_code, 0);
         assert!(settled, "the owner's stop must settle its pending offer");
         assert_eq!(
             outcome,

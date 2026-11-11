@@ -113,6 +113,9 @@ jobs:
           HEW_PIPELINE_ASAN: "1"
         run: |
           set -o pipefail
+          # Lean's bin directory also ships a Clang without sanitizer archives.
+          # Use the LLVM installation provisioned for generated-code validation.
+          export PATH="${LLVM_SYS_221_PREFIX}/bin:${PATH}"
           cargo run --manifest-path proofs/runtime_protocols/Cargo.toml --locked --features pipeline --bin pipeline -- "$PWD/target/debug/hew" 2>&1 | tee "$RUNNER_TEMP/pipeline-campaign.log"
       - name: Save LLVM certificates and confidence evidence
         if: always()

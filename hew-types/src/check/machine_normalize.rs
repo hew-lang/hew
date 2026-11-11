@@ -569,7 +569,7 @@ impl Builder {
         let object = self.ident(object);
         let field = (Ident::new(name), self.span());
         self.expr(Expr::FieldAccess {
-            object: Box::new(object),
+            object: hew_parser::chain::Chain::new(object),
             field,
         })
     }
@@ -706,7 +706,7 @@ impl Builder {
             let object = self.ident(owner);
             let field = (name, self.span());
             return self.expr(Expr::FieldAccess {
-                object: Box::new(object),
+                object: hew_parser::chain::Chain::new(object),
                 field,
             });
         }
@@ -1166,7 +1166,7 @@ impl Builder {
         let event = self.ident("event");
         let limit = self.ident("limit");
         let call = self.expr(Expr::MethodCall {
-            receiver: Box::new(receiver),
+            receiver: hew_parser::chain::Chain::new(receiver),
             method,
             args: vec![CallArg::Positional(event), CallArg::Positional(limit)],
         });
@@ -1573,7 +1573,7 @@ impl Builder {
             radix: IntRadix::Decimal,
         }));
         let push = self.expr(Expr::MethodCall {
-            receiver: Box::new(receiver),
+            receiver: hew_parser::chain::Chain::new(receiver),
             method,
             args: vec![CallArg::Positional(value)],
         });
@@ -1686,7 +1686,7 @@ impl Builder {
             }
             let field_span = self.span();
             let read = self.expr(Expr::FieldAccess {
-                object: base_expr.clone(),
+                object: hew_parser::chain::Chain::new((*base_expr).clone()),
                 field: (*field, field_span),
             });
             fields.push((*field, read));
@@ -1734,7 +1734,7 @@ impl Builder {
             self.origin = head.clone();
             self.refuse_const_shadow_name(*name, machine)?;
             let field = Expr::FieldAccess {
-                object: Box::new((
+                object: hew_parser::chain::Chain::new((
                     Expr::Ident(Ident {
                         name: hew_parser::ast::Symbol::intern("event"),
                         ctx: machine.body_context,
@@ -1908,13 +1908,16 @@ impl Builder {
                 let receiver = self.ident(OUTPUTS);
                 let method = (Ident::new("push"), self.span());
                 *expr = Expr::MethodCall {
-                    receiver: Box::new(receiver),
+                    receiver: hew_parser::chain::Chain::new(receiver),
                     method,
                     args: vec![CallArg::Positional(value)],
                 };
             }
-            Expr::Binary { left, right, .. }
-            | Expr::Coalesce { left, right }
+            Expr::Binary { left, right, .. } => {
+                **left = self.rewrite(left, machine, state, event)?;
+                **right = self.rewrite(right, machine, state, event)?;
+            }
+            Expr::Coalesce { left, right }
             | Expr::OptionalChain {
                 receiver: left,
                 body: right,
@@ -1922,7 +1925,10 @@ impl Builder {
                 **left = self.rewrite(left, machine, state, event)?;
                 **right = self.rewrite(right, machine, state, event)?;
             }
-            Expr::Unary { operand, .. } | Expr::Clone(operand) | Expr::PostfixTry(operand) => {
+            Expr::Unary { operand, .. } | Expr::Clone(operand) => {
+                **operand = self.rewrite(operand, machine, state, event)?;
+            }
+            Expr::PostfixTry(operand) => {
                 **operand = self.rewrite(operand, machine, state, event)?;
             }
             Expr::FieldAccess { object, .. } => {

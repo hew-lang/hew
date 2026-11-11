@@ -1020,7 +1020,7 @@ impl Checker {
             }
             let callee = (
                 Expr::FieldAccess {
-                    object: Box::new(receiver.clone()),
+                    object: hew_parser::chain::Chain::new(receiver.clone()),
                     field,
                 },
                 span.clone(),

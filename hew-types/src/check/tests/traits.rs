@@ -1807,7 +1807,7 @@ fn named_type_with_get_method_rejects_bracket_index_via_type_def() {
     );
 
     let expr = Expr::Index {
-        object: Box::new((Expr::Ident(Ident::new("boxy")), 0..4)),
+        object: hew_parser::chain::Chain::new((Expr::Ident(Ident::new("boxy")), 0..4)),
         index: Box::new(make_int_literal(0, 5..6)),
     };
 
@@ -1858,7 +1858,7 @@ fn named_type_with_get_method_rejects_bracket_index_via_fn_sig() {
     );
 
     let expr = Expr::Index {
-        object: Box::new((Expr::Ident(Ident::new("wrapper")), 0..7)),
+        object: hew_parser::chain::Chain::new((Expr::Ident(Ident::new("wrapper")), 0..7)),
         index: Box::new(make_int_literal(0, 8..9)),
     };
 
@@ -1923,7 +1923,7 @@ fn hashmap_bracket_index_is_a_compile_error() {
     // Use an i64 index so the only diagnostic comes from the named-type guard,
     // not from a type mismatch on the index expression itself.
     let expr = Expr::Index {
-        object: Box::new((Expr::Ident(Ident::new("m")), 0..1)),
+        object: hew_parser::chain::Chain::new((Expr::Ident(Ident::new("m")), 0..1)),
         index: Box::new(make_int_literal(0, 2..3)),
     };
 

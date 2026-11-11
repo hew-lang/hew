@@ -5,7 +5,9 @@ use hew_parser::ast::{Ident, Path};
 
 impl LowerCtx<'_> {
     pub(super) fn lower_expr(&mut self, expr: &Spanned<Expr>, intent: IntentKind) -> HirExpr {
-        let mut lowered = self.lower_expr_with_tail_coercion(expr, intent);
+        let mut lowered = hew_parser::stack::ensure_sufficient_stack(|| {
+            self.lower_expr_with_tail_coercion(expr, intent)
+        });
         let normalized_ty = self.restore_type_declaration_facts(lowered.ty.clone());
         lowered.ty = normalized_ty;
 
@@ -133,7 +135,7 @@ impl LowerCtx<'_> {
                 if let Expr::Ident(owner) = &object.0 {
                     if hew_types::lookup_builtin_type(owner.name.as_str()).is_some() {
                         let compatibility = Expr::Call {
-                            function: Box::new((
+                            function: hew_parser::chain::Chain::new((
                                 Expr::Ident(Ident::new(&format!(
                                     "{owner}::{field}",
                                     field = field.0
@@ -183,7 +185,7 @@ impl LowerCtx<'_> {
                 if !self.method_call_rewrites.contains_key(&self.mk_key(&span)) {
                     if let Expr::Ident(owner) = &target.0 {
                         let compatibility = Expr::Call {
-                            function: Box::new((
+                            function: hew_parser::chain::Chain::new((
                                 Expr::Ident(Ident::new(&format!(
                                     "{owner}::{method}",
                                     method = method.0
@@ -210,7 +212,7 @@ impl LowerCtx<'_> {
                     )
                 {
                     let compatibility = Expr::Call {
-                        function: Box::new((
+                        function: hew_parser::chain::Chain::new((
                             Expr::Ident(Ident::new(&qualified)), // TRANSITION(P1): deleted by A1 commit 2
                             receiver.1.clone(),
                         )),

@@ -306,12 +306,15 @@ fn collect_calls_in_expr(spanned: &(Expr, Span), calls: &mut Vec<CallSite>) {
                 collect_calls_in_expr(else_expr, calls);
             }
         }
-        Expr::Binary { left, right, .. }
-        | Expr::Coalesce { left, right }
+        Expr::Coalesce { left, right }
         | Expr::OptionalChain {
             receiver: left,
             body: right,
+        } => {
+            collect_calls_in_expr(left.as_ref(), calls);
+            collect_calls_in_expr(right.as_ref(), calls);
         }
+        Expr::Binary { left, right, .. }
         | Expr::Handle {
             operand: left,
             body: right,

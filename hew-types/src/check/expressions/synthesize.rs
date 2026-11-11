@@ -47,11 +47,8 @@ impl Checker {
             return Ty::Error;
         }
         let shorthand_mark = self.enter_field_shorthands(expr);
-        // Grow the stack on demand so deeply-nested expressions (e.g. 1000+
-        // chained binary operators) don't overflow.
-        let result = stacker::maybe_grow(32 * 1024, 2 * 1024 * 1024, || {
-            self.synthesize_inner(expr, span)
-        });
+        let result =
+            hew_parser::stack::ensure_sufficient_stack(|| self.synthesize_inner(expr, span));
         self.field_shorthand_values.truncate(shorthand_mark);
         self.publish_checked_expression(expr, span, result)
     }

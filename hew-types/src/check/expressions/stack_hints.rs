@@ -191,8 +191,11 @@ impl Checker {
             | Expr::OptionalChain {
                 receiver: left,
                 body: right,
+            } => {
+                self.scan_expr_for_stack_hints(&left.0);
+                self.scan_expr_for_stack_hints(&right.0);
             }
-            | Expr::Handle {
+            Expr::Handle {
                 operand: left,
                 body: right,
                 ..

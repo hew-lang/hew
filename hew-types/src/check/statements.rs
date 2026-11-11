@@ -578,12 +578,15 @@ impl Checker {
     fn numeric_update_reads_binding(expr: &Expr, binding: &str) -> bool {
         match expr {
             Expr::Ident(name) => name.name.as_str() == binding,
-            Expr::Binary { left, right, .. }
-            | Expr::Coalesce { left, right }
+            Expr::Coalesce { left, right }
             | Expr::OptionalChain {
                 receiver: left,
                 body: right,
+            } => {
+                Self::numeric_update_reads_binding(&left.0, binding)
+                    || Self::numeric_update_reads_binding(&right.0, binding)
             }
+            Expr::Binary { left, right, .. }
             | Expr::Handle {
                 operand: left,
                 body: right,

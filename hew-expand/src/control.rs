@@ -424,21 +424,26 @@ impl<'a> Control<'a> {
         Ok(())
     }
 
+    pub(crate) fn expr(&mut self, expression: &mut Spanned<Expr>) -> Result<(), ExpansionError> {
+        hew_parser::stack::ensure_sufficient_stack(|| self.expr_inner(expression))
+    }
+
     #[allow(
         clippy::too_many_lines,
         reason = "exhaustive expression traversal shares control-flow scope"
     )]
-    pub(crate) fn expr(
-        &mut self,
-        (expression, span): &mut Spanned<Expr>,
-    ) -> Result<(), ExpansionError> {
+    fn expr_inner(&mut self, (expression, span): &mut Spanned<Expr>) -> Result<(), ExpansionError> {
         if captured_body(self.map, span) {
             if let Expr::Block(block) = expression {
                 return self.function_block(block, span);
             }
         }
         match expression {
-            Expr::PostfixTry(value) | Expr::ReturnError(value) => {
+            Expr::PostfixTry(value) => {
+                self.return_jump(span)?;
+                self.expr(value)?;
+            }
+            Expr::ReturnError(value) => {
                 self.return_jump(span)?;
                 self.expr(value)?;
             }
@@ -456,19 +461,22 @@ impl<'a> Control<'a> {
             }
             Expr::Block(block) | Expr::Scope { body: block } => self.block(block)?,
             Expr::UnsafeBlock(block) => self.block(block)?,
+            Expr::Coalesce { left, right } => {
+                self.expr(left)?;
+                self.expr(right)?;
+            }
+            Expr::OptionalChain { receiver, body } => {
+                self.expr(receiver)?;
+                self.expr(body)?;
+            }
+            Expr::Index { object, index } => {
+                self.expr(object)?;
+                self.expr(index)?;
+            }
             Expr::Binary { left, right, .. }
-            | Expr::Coalesce { left, right }
             | Expr::Is {
                 lhs: left,
                 rhs: right,
-            }
-            | Expr::OptionalChain {
-                receiver: left,
-                body: right,
-            }
-            | Expr::Index {
-                object: left,
-                index: right,
             }
             | Expr::ArrayRepeat {
                 value: left,
@@ -480,8 +488,8 @@ impl<'a> Control<'a> {
             Expr::Unary { operand: value, .. }
             | Expr::Clone(value)
             | Expr::Await(value)
-            | Expr::ForkChild { expr: value }
-            | Expr::FieldAccess { object: value, .. }
+            | Expr::ForkChild { expr: value } => self.expr(value)?,
+            Expr::FieldAccess { object: value, .. }
             | Expr::GenericApplySuffix { target: value, .. }
             | Expr::Cast { expr: value, .. } => self.expr(value)?,
             Expr::Yield(value) => {

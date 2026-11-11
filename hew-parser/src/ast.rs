@@ -2,6 +2,8 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::chain::{Chain, Spine};
+
 pub use hew_lexer::{sym, Symbol, SyntaxContext};
 
 /// Source span with byte offsets.
@@ -488,13 +490,13 @@ pub enum Expr {
     ContextVariant(ContextVariantExpr),
     /// Direct generic application attached to a path/member segment.
     GenericApplySuffix {
-        target: Box<Spanned<Expr>>,
+        target: Chain<Spanned<Expr>>,
         type_args: Vec<Spanned<TypeExpr>>,
     },
     /// Record initializer attached to a non-string path form such as a
     /// qualified associated path.
     RecordInitSuffix {
-        target: Box<Spanned<Expr>>,
+        target: Chain<Spanned<Expr>>,
         fields: Vec<(Ident, Spanned<Expr>)>,
         base: Option<Box<Spanned<Expr>>>,
     },
@@ -574,13 +576,13 @@ pub enum Expr {
     },
     InterpolatedString(Vec<StringPart>),
     Call {
-        function: Box<Spanned<Expr>>,
+        function: Chain<Spanned<Expr>>,
         type_args: Option<Vec<Spanned<TypeExpr>>>,
         args: Vec<CallArg>,
         is_tail_call: bool,
     },
     MethodCall {
-        receiver: Box<Spanned<Expr>>,
+        receiver: Chain<Spanned<Expr>>,
         method: Spanned<Ident>,
         args: Vec<CallArg>,
     },
@@ -624,27 +626,32 @@ pub enum Expr {
     /// Explicit failure return from the current `fails` function.
     ReturnError(Box<Spanned<Expr>>),
     FieldAccess {
-        object: Box<Spanned<Expr>>,
+        object: Chain<Spanned<Expr>>,
         field: Spanned<Ident>,
     },
     Index {
-        object: Box<Spanned<Expr>>,
+        object: Chain<Spanned<Expr>>,
         index: Box<Spanned<Expr>>,
     },
     Cast {
-        expr: Box<Spanned<Expr>>,
+        expr: Chain<Spanned<Expr>>,
         ty: Spanned<TypeExpr>,
     },
-    PostfixTry(Box<Spanned<Expr>>),
+    PostfixTry(Chain<Spanned<Expr>>),
+    /// `receiver?.body`. A run `a?.b?.c` nests to the right: the body of each
+    /// link is the next optional chain, so both edges can be as deep as the
+    /// source is long.
     OptionalChain {
-        receiver: Box<Spanned<Expr>>,
-        body: Box<Spanned<Expr>>,
+        receiver: Chain<Spanned<Expr>>,
+        body: Chain<Spanned<Expr>>,
     },
     ChainValue,
     /// Evaluate the right operand only when the left Option is absent.
     Coalesce {
-        left: Box<Spanned<Expr>>,
-        right: Box<Spanned<Expr>>,
+        left: Chain<Spanned<Expr>>,
+        /// `a ?? b ?? c` is `a ?? (b ?? c)`: a run nests through `right`.
+        /// Both operands are chain edges, like an optional chain's.
+        right: Chain<Spanned<Expr>>,
     },
     /// Recover one Result expression. The error binder exists only in the
     /// ordinary lexical handler block, not in the operand or continuation;
@@ -698,6 +705,27 @@ pub enum Expr {
     GenBlock {
         body: Block,
     },
+}
+
+impl Spine for Spanned<Expr> {
+    fn detach(&mut self) -> Option<Chain<Self>> {
+        match &mut self.0 {
+            Expr::Call { function: edge, .. }
+            | Expr::MethodCall { receiver: edge, .. }
+            | Expr::FieldAccess { object: edge, .. }
+            | Expr::Index { object: edge, .. }
+            | Expr::Cast { expr: edge, .. }
+            | Expr::PostfixTry(edge)
+            | Expr::GenericApplySuffix { target: edge, .. }
+            | Expr::RecordInitSuffix { target: edge, .. } => edge.take(),
+            Expr::OptionalChain {
+                receiver: left,
+                body: right,
+            }
+            | Expr::Coalesce { left, right } => right.take().or_else(|| left.take()),
+            _ => None,
+        }
+    }
 }
 
 /// One operand of an `if` / `while` pattern condition (§12.5).

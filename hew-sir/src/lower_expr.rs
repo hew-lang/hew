@@ -29,7 +29,9 @@ impl Builder<'_, '_> {
         binding_use: OwnedBindingUse,
     ) -> Result<ValueId, SirLoweringError> {
         let loan_floor = self.scope_loans.len();
-        let value = self.lower_expr_inner(expr, binding_use)?;
+        let value = hew_parser::stack::ensure_sufficient_stack(|| {
+            self.lower_expr_inner(expr, binding_use)
+        })?;
         self.current_site = Some(expr.site);
         if self.is_open()
             && matches!(

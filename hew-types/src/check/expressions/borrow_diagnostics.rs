@@ -964,15 +964,19 @@ impl Checker {
                     );
                 }
             }
-            Expr::Coalesce { right: body, .. }
-            | Expr::Handle { body, .. }
-            | Expr::OptionalChain { body, .. } => {
+            Expr::Coalesce { right: body, .. } | Expr::OptionalChain { body, .. } => {
+                self.check_expr_for_owned_handle_field_return(
+                    &body.0,
+                    &body.1,
+                    receiver_name,
+                    type_name,
+                    method_name,
+                    &mut bindings.clone(),
+                );
+            }
+            Expr::Handle { body, error, .. } => {
                 let mut branch_bindings = bindings.clone();
-                if let Expr::Handle {
-                    error: (Some(name), _),
-                    ..
-                } = expr
-                {
+                if let (Some(name), _) = error {
                     branch_bindings.remove(name.name.as_str());
                 }
                 self.check_expr_for_owned_handle_field_return(

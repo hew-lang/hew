@@ -222,15 +222,18 @@ fn find_in_expr(ctx: &LintCtx, levels: &LintLevels, expr: &Expr, out: &mut Vec<T
         Expr::Await(inner)
         | Expr::ReturnError(inner)
         | Expr::Clone(inner)
-        | Expr::PostfixTry(inner)
         | Expr::Unary { operand: inner, .. }
         | Expr::ForkChild { expr: inner, .. } => find_in_expr(ctx, levels, &inner.0, out),
-        Expr::Binary { left, right, .. }
-        | Expr::Coalesce { left, right }
+        Expr::PostfixTry(inner) => find_in_expr(ctx, levels, &inner.0, out),
+        Expr::Coalesce { left, right }
         | Expr::OptionalChain {
             receiver: left,
             body: right,
+        } => {
+            find_in_expr(ctx, levels, &left.0, out);
+            find_in_expr(ctx, levels, &right.0, out);
         }
+        Expr::Binary { left, right, .. }
         | Expr::Handle {
             operand: left,
             body: right,
@@ -589,12 +592,15 @@ impl BodyScan<'_> {
                     self.expr(&base.0);
                 }
             }
-            Expr::Binary { left, right, .. }
-            | Expr::Coalesce { left, right }
+            Expr::Coalesce { left, right }
             | Expr::OptionalChain {
                 receiver: left,
                 body: right,
+            } => {
+                self.expr(&left.0);
+                self.expr(&right.0);
             }
+            Expr::Binary { left, right, .. }
             | Expr::Handle {
                 operand: left,
                 body: right,
@@ -604,10 +610,10 @@ impl BodyScan<'_> {
                 self.expr(&right.0);
             }
             Expr::Unary { operand, .. } => self.expr(&operand.0),
-            Expr::ReturnError(inner)
-            | Expr::Clone(inner)
-            | Expr::Await(inner)
-            | Expr::PostfixTry(inner)
+            Expr::ReturnError(inner) | Expr::Clone(inner) | Expr::Await(inner) => {
+                self.expr(&inner.0);
+            }
+            Expr::PostfixTry(inner)
             | Expr::Cast { expr: inner, .. }
             | Expr::FieldAccess { object: inner, .. } => self.expr(&inner.0),
             Expr::Tuple(items) | Expr::Race(items) => {

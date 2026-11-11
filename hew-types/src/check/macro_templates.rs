@@ -733,9 +733,8 @@ impl TemplateNames<'_> {
             return Ok(());
         }
         match expression {
-            Expr::PostfixTry(value) | Expr::ReturnError(value) => {
-                self.expr(value)?;
-            }
+            Expr::PostfixTry(value) => self.expr(value)?,
+            Expr::ReturnError(value) => self.expr(value)?,
             Expr::Return(value) | Expr::Yield(value) => {
                 if let Some(value) = value {
                     self.expr(value)?;
@@ -784,19 +783,22 @@ impl TemplateNames<'_> {
             Expr::GenBlock { body } | Expr::ForkBlock { body } => self.block(body)?,
             Expr::Block(block) | Expr::Scope { body: block } => self.block(block)?,
             Expr::UnsafeBlock(block) => self.block(block)?,
-            Expr::Binary { left, right, .. }
-            | Expr::Coalesce { left, right }
-            | Expr::Is {
-                lhs: left,
-                rhs: right,
-            }
+            Expr::Coalesce { left, right }
             | Expr::OptionalChain {
                 receiver: left,
                 body: right,
+            } => {
+                self.expr(left)?;
+                self.expr(right)?;
             }
-            | Expr::Index {
-                object: left,
-                index: right,
+            Expr::Index { object, index } => {
+                self.expr(object)?;
+                self.expr(index)?;
+            }
+            Expr::Binary { left, right, .. }
+            | Expr::Is {
+                lhs: left,
+                rhs: right,
             }
             | Expr::ArrayRepeat {
                 value: left,

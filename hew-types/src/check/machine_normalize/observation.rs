@@ -389,7 +389,7 @@ impl Builder {
         let receiver = self.ident(receiver);
         let method = (Ident::new(name), self.span());
         self.expr(Expr::MethodCall {
-            receiver: Box::new(receiver),
+            receiver: hew_parser::chain::Chain::new(receiver),
             method,
             args: args.into_iter().map(CallArg::Positional).collect(),
         })

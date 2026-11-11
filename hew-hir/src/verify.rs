@@ -402,7 +402,7 @@ impl Verifier {
     fn expr(&mut self, expr: &HirExpr) {
         let parent = self.current_expr_parent.replace(expr.site);
         self.site_parents.insert(expr.site, parent);
-        self.expr_inner(expr);
+        hew_parser::stack::ensure_sufficient_stack(|| self.expr_inner(expr));
         self.current_expr_parent = parent;
     }
 

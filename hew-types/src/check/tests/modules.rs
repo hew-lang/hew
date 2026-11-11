@@ -434,7 +434,10 @@ fn module_graph_body_local_binding_named_like_module_still_resolves_methods() {
             stmts: vec![],
             trailing_expr: Some(Box::new((
                 Expr::MethodCall {
-                    receiver: Box::new((Expr::Ident(Ident::new("math")), 0..4)),
+                    receiver: hew_parser::chain::Chain::new((
+                        Expr::Ident(Ident::new("math")),
+                        0..4,
+                    )),
                     method: (Ident::new("contains"), 0..0),
                     args: vec![CallArg::Positional((
                         Expr::Literal(Literal::String("x".to_string())),
@@ -657,7 +660,7 @@ fn module_graph_body_private_local_type_is_available() {
             )],
             trailing_expr: Some(Box::new((
                 Expr::FieldAccess {
-                    object: Box::new((Expr::Ident(Ident::new("a")), 0..1)),
+                    object: hew_parser::chain::Chain::new((Expr::Ident(Ident::new("a")), 0..1)),
                     field: (Ident::new("x"), 0..0),
                 },
                 11..14,
@@ -734,7 +737,10 @@ fn module_graph_body_prefers_same_module_private_helper_over_global_bare_name() 
             stmts: vec![],
             trailing_expr: Some(Box::new((
                 Expr::Call {
-                    function: Box::new((Expr::Ident(Ident::new("helper")), 0..6)),
+                    function: hew_parser::chain::Chain::new((
+                        Expr::Ident(Ident::new("helper")),
+                        0..6,
+                    )),
                     type_args: None,
                     args: vec![],
                     is_tail_call: false,
@@ -1054,7 +1060,10 @@ fn module_graph_body_prefers_same_module_private_extern_over_global_bare_name() 
                     stmts: vec![],
                     trailing_expr: Some(Box::new((
                         Expr::Call {
-                            function: Box::new((Expr::Ident(Ident::new("hew_test_raw")), 0..12)),
+                            function: hew_parser::chain::Chain::new((
+                                Expr::Ident(Ident::new("hew_test_raw")),
+                                0..12,
+                            )),
                             type_args: None,
                             args: vec![],
                             is_tail_call: false,
@@ -1462,7 +1471,7 @@ mod module_body_diagnostic_envelope {
         use hew_parser::ast::{Block, FnDecl, Param, Stmt, TypeExpr, Visibility};
 
         let cast_expr = Expr::Cast {
-            expr: Box::new((Expr::Ident(Ident::new("x")), 20..21)),
+            expr: hew_parser::chain::Chain::new((Expr::Ident(Ident::new("x")), 20..21)),
             ty: (TypeExpr::Infer, 25..26),
         };
         let let_stmt = Stmt::Let {
@@ -2165,7 +2174,10 @@ mod warning_source_attribution {
         // caller() body: `fakemod.helper()` expressed as a MethodCall statement.
         let call_stmt = Stmt::Expression((
             Expr::MethodCall {
-                receiver: Box::new((Expr::Ident(Ident::new("fakemod")), Span::from(200..206))),
+                receiver: hew_parser::chain::Chain::new((
+                    Expr::Ident(Ident::new("fakemod")),
+                    Span::from(200..206),
+                )),
                 method: (Ident::new("helper"), 0..0),
                 args: vec![],
             },

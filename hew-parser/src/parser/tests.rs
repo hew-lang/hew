@@ -6429,6 +6429,15 @@ fn init_without_parameter_list_is_refused_with_fix_it_and_no_cascade() {
 
 #[test]
 fn legacy_path_separators_on_one_long_line_stay_linear() {
+    std::thread::Builder::new()
+        .stack_size(1024 * 1024)
+        .spawn(legacy_path_separators_on_one_long_line_body)
+        .expect("spawn parser thread")
+        .join()
+        .expect("long malformed path overflows the parser stack");
+}
+
+fn legacy_path_separators_on_one_long_line_body() {
     // Each separated `::` reports the line it sits on; the quoted context is
     // bounded so a long line does not cost quadratic memory.
     let source = format!("fn main() {{ x{} }}", "::x".repeat(20_000));

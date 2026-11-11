@@ -382,12 +382,15 @@ fn collect_inlay_hints_from_expr(
                 collect_inlay_hints_from_expr(source, &base.0, tc, hints);
             }
         }
-        Expr::Binary { left, right, .. }
-        | Expr::Coalesce { left, right }
+        Expr::Coalesce { left, right }
         | Expr::OptionalChain {
             receiver: left,
             body: right,
+        } => {
+            collect_inlay_hints_from_expr(source, &left.0, tc, hints);
+            collect_inlay_hints_from_expr(source, &right.0, tc, hints);
         }
+        Expr::Binary { left, right, .. }
         | Expr::Handle {
             operand: left,
             body: right,
@@ -541,11 +544,10 @@ fn collect_inlay_hints_from_expr(
             collect_inlay_hints_from_expr(source, &object.0, tc, hints);
             collect_inlay_hints_from_expr(source, &index.0, tc, hints);
         }
-        Expr::Cast { expr: inner, .. }
-        | Expr::PostfixTry(inner)
-        | Expr::Await(inner)
-        | Expr::Yield(Some(inner))
-        | Expr::Return(Some(inner)) => {
+        Expr::Cast { expr: inner, .. } | Expr::PostfixTry(inner) => {
+            collect_inlay_hints_from_expr(source, &inner.0, tc, hints);
+        }
+        Expr::Await(inner) | Expr::Yield(Some(inner)) | Expr::Return(Some(inner)) => {
             collect_inlay_hints_from_expr(source, &inner.0, tc, hints);
         }
         Expr::Range { start, end, .. } => {

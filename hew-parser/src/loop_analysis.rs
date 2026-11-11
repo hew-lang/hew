@@ -249,11 +249,15 @@ fn ast_stmt_has_break(stmt: &Stmt, query: BreakQuery, depth: usize) -> bool {
     }
 }
 
+fn ast_expr_has_break(expr: &Expr, query: BreakQuery, depth: usize) -> bool {
+    crate::stack::ensure_sufficient_stack(|| ast_expr_has_break_inner(expr, query, depth))
+}
+
 #[allow(
     clippy::too_many_lines,
     reason = "exhaustive walker over every Expr variant; splitting would hide completeness guarantees"
 )]
-fn ast_expr_has_break(expr: &Expr, query: BreakQuery, depth: usize) -> bool {
+fn ast_expr_has_break_inner(expr: &Expr, query: BreakQuery, depth: usize) -> bool {
     match expr {
         // ── Structural forms with direct block/statement children ─────────
         Expr::Block(block) => ast_block_has_break(block, query, depth),
@@ -321,12 +325,14 @@ fn ast_expr_has_break(expr: &Expr, query: BreakQuery, depth: usize) -> bool {
         }
 
         // ── Arithmetic / logical operators ────────────────────────────────
-        Expr::Binary { left, right, .. }
-        | Expr::Coalesce { left, right }
-        | Expr::OptionalChain {
-            receiver: left,
-            body: right,
+        Expr::Coalesce { left, right } => {
+            ast_expr_has_break(&left.0, query, depth) || ast_expr_has_break(&right.0, query, depth)
         }
+        Expr::OptionalChain { receiver, body } => {
+            ast_expr_has_break(&receiver.0, query, depth)
+                || ast_expr_has_break(&body.0, query, depth)
+        }
+        Expr::Binary { left, right, .. }
         | Expr::Handle {
             operand: left,
             body: right,
@@ -430,10 +436,12 @@ fn ast_expr_has_break(expr: &Expr, query: BreakQuery, depth: usize) -> bool {
         }
         // Single-operand wrappers: cast, postfix-try, await, await_restart,
         // fork-child expr.
-        Expr::Cast { expr, .. }
-        | Expr::PostfixTry(expr)
-        | Expr::Await(expr)
-        | Expr::ForkChild { expr, .. } => ast_expr_has_break(&expr.0, query, depth),
+        Expr::Cast { expr, .. } | Expr::PostfixTry(expr) => {
+            ast_expr_has_break(&expr.0, query, depth)
+        }
+        Expr::Await(expr) | Expr::ForkChild { expr, .. } => {
+            ast_expr_has_break(&expr.0, query, depth)
+        }
 
         // ── Range ─────────────────────────────────────────────────────────
         Expr::Range { start, end, .. } => {
@@ -674,7 +682,7 @@ mod tests {
         // `loop { f({ break }) }` — break inside a block passed as a call arg
         let arg_block = sp(Expr::Block(block_with_stmts(vec![bare_break()])));
         let call_expr = sp(Expr::Call {
-            function: Box::new(sp(Expr::Ident(Ident::new("f")))),
+            function: crate::chain::Chain::new(sp(Expr::Ident(Ident::new("f")))),
             type_args: None,
             args: vec![crate::ast::CallArg::Positional(arg_block)],
             is_tail_call: false,
@@ -920,7 +928,7 @@ mod tests {
     fn break_in_assign_target_detected() {
         // `loop { ({ break })[0] = 1 }` — break in the assignment TARGET expr.
         let target = sp(Expr::Index {
-            object: Box::new(break_block_expr()),
+            object: crate::chain::Chain::new(break_block_expr()),
             index: Box::new(sp(Expr::Literal(int_lit(0)))),
         });
         let assign = sp(Stmt::Assign {

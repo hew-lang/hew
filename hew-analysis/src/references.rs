@@ -940,12 +940,15 @@ fn count_idents_in_expr(expr: &Expr, counts: &mut HashMap<String, usize>) {
         Expr::Ident(ident) => {
             *counts.entry(ident.to_string()).or_insert(0) += 1;
         }
-        Expr::Binary { left, right, .. }
-        | Expr::Coalesce { left, right }
+        Expr::Coalesce { left, right }
         | Expr::OptionalChain {
             receiver: left,
             body: right,
+        } => {
+            count_idents_in_expr(&left.0, counts);
+            count_idents_in_expr(&right.0, counts);
         }
+        Expr::Binary { left, right, .. }
         | Expr::Handle {
             operand: left,
             body: right,
@@ -1057,13 +1060,12 @@ fn count_idents_in_expr(expr: &Expr, counts: &mut HashMap<String, usize>) {
                 count_idents_in_expr(&t.body.0, counts);
             }
         }
-        Expr::Await(inner)
-        | Expr::ReturnError(inner)
-        | Expr::PostfixTry(inner)
-        | Expr::Yield(Some(inner)) => {
+        Expr::Await(inner) | Expr::ReturnError(inner) | Expr::Yield(Some(inner)) => {
             count_idents_in_expr(&inner.0, counts);
         }
-        Expr::Cast { expr: inner, .. } => count_idents_in_expr(&inner.0, counts),
+        Expr::Cast { expr: inner, .. } | Expr::PostfixTry(inner) => {
+            count_idents_in_expr(&inner.0, counts);
+        }
         Expr::Range { start, end, .. } => {
             if let Some(s) = start {
                 count_idents_in_expr(&s.0, counts);

@@ -112,16 +112,12 @@ fn replies_select_the_request_publication_during_connection_overlap() {
         connection::claim_send_by_identity(unsafe { &*server_manager }, client_identity, None)
             .unwrap()
             .publication_token;
-    // ACTIVE/Published precedes route exposure. Let the initial publication
-    // pass the route rendezvous before installing probes for its successor.
-    let deadline = std::time::Instant::now() + Duration::from_secs(5);
-    while client_routes.route_count() == 0 || server_routes.route_count() == 0 {
-        assert!(
-            std::time::Instant::now() < deadline,
-            "the initial connection must expose both routes"
-        );
-        thread::yield_now();
-    }
+    // The accepted publisher must finish before these probes can belong to
+    // its successor. The client's dial already completed synchronously.
+    assert!(
+        // SAFETY: the server retains its manager through this complete test.
+        unsafe { &*server_manager }.wait_for_inbound_admissions_for_test(Duration::from_secs(5))
+    );
     let (client_entered, client_wait) = std::sync::mpsc::channel();
     let (client_release, client_resume) = std::sync::mpsc::channel();
     let (server_entered, server_wait) = std::sync::mpsc::channel();

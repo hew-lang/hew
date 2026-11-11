@@ -34,9 +34,13 @@ fn run_generator(source: &str, expected: &str, status: i32, diagnostic: &str) {
             "{}",
             describe_output(&output)
         );
+        let expected_diagnostic = diagnostic.replace(
+            "./generators.hew",
+            &format!(".{}generators.hew", std::path::MAIN_SEPARATOR),
+        );
         assert_eq!(
             String::from_utf8_lossy(&output.stderr),
-            diagnostic,
+            expected_diagnostic,
             "{}",
             describe_output(&output)
         );

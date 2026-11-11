@@ -113,8 +113,15 @@ mod tests {
             text.starts_with("hew: failure: StackOverflow (215)\n"),
             "{text}"
         );
+        let signal = if cfg!(windows) {
+            "exception"
+        } else {
+            "SIGSEGV"
+        };
         assert!(
-            text.contains("SIGSEGV (11) at 0x7ffd00000ff8 (stack guard), thread main\n"),
+            text.contains(&format!(
+                "{signal} (11) at 0x7ffd00000ff8 (stack guard), thread main\n"
+            )),
             "{text}"
         );
         assert!(

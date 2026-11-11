@@ -103,7 +103,7 @@ KINDS = [
         215,
         "STACK_OVERFLOW",
         "StackOverflow",
-        "A thread or coroutine stack hit its guard page.",
+        "A call exhausted its stack, or a thread hit its stack guard.",
     ),
     (216, "FAILED", "Failed", "A `fails` error escaped the program entry."),
 ]

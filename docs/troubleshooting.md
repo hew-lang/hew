@@ -69,7 +69,7 @@ For an editor using a GDB, LLDB or Windows debugger adapter, run
 configuration. The command builds an executable under `target/hew-debug` in
 the current directory; rerun it after changing the program.
 
-`hew run` shows Hew stack frames for a failure. Set `HEW_BACKTRACE=0` to
+A native `hew run` shows Hew stack frames for a failure. Set `HEW_BACKTRACE=0` to
 suppress them, or `HEW_BACKTRACE=full` to include runtime frames. For a
 recorded address, `hew symbolize ./app 0xADDRESS` resolves the function and
 source position from the executable's symbols. Use `--base` with a runtime

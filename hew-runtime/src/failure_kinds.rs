@@ -33,7 +33,7 @@ pub const HEW_TRAP_USER_PANIC: i32 = 212;
 pub const HEW_TRAP_ACTOR_UNHANDLED_FAILURE: i32 = 213;
 /// An actor-owned request missed its handler-start deadline.
 pub const HEW_TRAP_ACTOR_TIMER_OVERDUE: i32 = 214;
-/// A thread or coroutine stack hit its guard page.
+/// A call exhausted its stack, or a thread hit its stack guard.
 pub const HEW_TRAP_STACK_OVERFLOW: i32 = 215;
 /// A `fails` error escaped the program entry.
 pub const HEW_TRAP_FAILED: i32 = 216;

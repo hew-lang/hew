@@ -552,7 +552,7 @@ pub enum ExitReason {
     ActorUnhandledFailure,
     /// An actor-owned one-shot request did not start before its overdue deadline.
     ActorTimerOverdue,
-    /// A thread or coroutine stack hit its guard page (error code 215).
+    /// A call exhausted its stack, or a thread hit its guard (error code 215).
     StackOverflow,
     /// A `fails` error escaped the program entry (error code 216).
     Failed,

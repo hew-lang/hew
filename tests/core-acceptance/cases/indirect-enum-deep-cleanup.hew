@@ -1,0 +1,15 @@
+indirect enum Chain {
+    End;
+    Link(Chain);
+}
+
+fn main() {
+    scope {
+        var chain = Chain.End;
+        for i in 0..2_000_000 {
+            chain = Chain.Link(chain);
+        }
+        println("built");
+    };
+    println("released");
+}

@@ -22287,6 +22287,21 @@
         "wasm32-wasip1"
       ],
       "classification": "stable",
+      "extent": "no-in-signature-extent",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
+        "native": "fn hew_variant_free_walk( *mut c_void, unsafe extern \"C\" fn(*mut c_void), *const hew_cabi::code::HewCodeLeaseSlot, )",
+        "wasm32-wasip1": "fn hew_variant_free_walk( *mut c_void, unsafe extern \"C\" fn(*mut c_void), *const hew_cabi::code::HewCodeLeaseSlot, )"
+      },
+      "symbol": "hew_variant_free_walk"
+    },
+    {
+      "availability": [
+        "native",
+        "wasm32-wasip1"
+      ],
+      "classification": "stable",
       "extent": "not-applicable",
       "nul": "not-applicable",
       "ownership": "unmeasured",

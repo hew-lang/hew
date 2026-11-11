@@ -1,0 +1,10 @@
+[[case]]
+id = "indirect-enum-deep-cleanup"
+intent = "Ordinary indirect-enum cleanup releases a deep heap chain without consuming one native stack frame per node."
+source = "cases/indirect-enum-deep-cleanup.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 60
+
+[case.expected]
+stdout = "built\nreleased\n"
+exit = 0

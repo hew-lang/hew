@@ -21,6 +21,18 @@
 - Compile long flat binary expressions and pattern alternatives in the browser,
   retaining left-to-right evaluation, overflow checks and failure cleanup.
 
+## [0.10.0] - 2026-11-11
+
+- Combine the 0.10 candidate improvements in actor memory budgets, persistent
+  authoring, stack exhaustion recovery, compiler robustness and service sessions.
+- Preserve Windows runtime archives and matching PDBs during concurrent builds.
+- Apply the WASI stack policy to Windows execution and line-processing commands.
+- Build Windows SDK libraries against current Microsoft SDK manifests.
+
+See the [0.10.0 release notes](docs/releases/v0.10.0.md) for behaviour and
+migration guidance. First-class failure traces and streaming interpolation are
+planned for 0.11.
+
 ## [0.10.0-rc2] - 2026-11-11
 
 - Prepare the next qualification candidate; supported platform and packaged

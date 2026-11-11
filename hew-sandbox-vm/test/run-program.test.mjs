@@ -193,12 +193,11 @@ for (const name of [
       path.join(repoRoot, `tests/core-acceptance/cases/${name}.hew`),
       "utf8",
     );
-    const compiled = JSON.parse(
-      globalThis.__hewSandboxCompileToSandboxBytecode(
-        source,
-        "sandbox-vm-export",
-      ),
+    const output = globalThis.__hewSandboxCompileToSandboxBytecode(
+      source,
+      "sandbox-vm-export",
     );
+    const compiled = typeof output === "string" ? JSON.parse(output) : output;
     assert.deepEqual(compiled.diagnostics, []);
     assert.ok(compiled.bytecode);
     const trace = await runBytecode(compiled.bytecode, {
@@ -210,6 +209,7 @@ for (const name of [
     assert.deepEqual(trace.final_state.stdout, []);
     assert.deepEqual(trace.final_state.stderr, []);
     assert.deepEqual(trace.final_state.diagnostics, []);
+    assert.deepEqual(trace.final_state.sandbox_rejections, []);
     assert.deepEqual(trace.final_state.runtime_failures, []);
   });
 }

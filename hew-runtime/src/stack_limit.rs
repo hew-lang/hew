@@ -166,17 +166,11 @@ pub(crate) fn rearm() {
 mod tests {
     use super::*;
 
-    #[inline(never)]
-    fn frame_address() -> usize {
-        let marker = 0_u8;
-        std::hint::black_box(&raw const marker) as usize
-    }
-
     #[test]
     fn first_check_installs_the_thread_limit() {
         std::thread::spawn(|| {
             let mut slot = usize::MAX;
-            let here = frame_address();
+            let here = crate::signal::stack::live_stack_address();
             // SAFETY: `slot` stands in for this thread's generated slot.
             assert_eq!(unsafe { hew_stack_check(&raw mut slot, here) }, 0);
             assert!(slot < here, "the soft limit lies below the live frame");

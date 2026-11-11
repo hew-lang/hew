@@ -254,3 +254,35 @@ fn optimized_debug_build_resolves_inlined_failure_frames() {
     assert!(stdout.contains("(inlined)"), "{stdout}");
     assert!(stdout.contains("main at "), "{stdout}");
 }
+
+/// Runtime sites use source-character columns, including after multibyte text.
+#[test]
+fn failure_site_column_counts_unicode_characters() {
+    require_codegen();
+    let dir = tempdir();
+    let source = "fn main() { println(\"é🦀\"); panic(\"boom\"); }\n";
+    let src = dir.path().join("unicode.hew");
+    std::fs::write(&src, source).expect("write source");
+    let binary = hew_testutil::compiled_binary_path(dir.path(), "unicode");
+    let build = Command::new(hew_binary())
+        .args(["build", "--release"])
+        .arg(&src)
+        .arg("-o")
+        .arg(&binary)
+        .output()
+        .expect("build program");
+    assert!(
+        build.status.success(),
+        "{}",
+        String::from_utf8_lossy(&build.stderr)
+    );
+    let run = Command::new(binary).output().expect("run program");
+    assert!(!run.status.success());
+    let offset = source.find("\"boom\"").unwrap();
+    let column = source[..offset].chars().count() + 1;
+    let stderr = String::from_utf8_lossy(&run.stderr);
+    assert!(
+        stderr.contains(&format!("unicode.hew:1:{column}: boom")),
+        "{stderr}"
+    );
+}

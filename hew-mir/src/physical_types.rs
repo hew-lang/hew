@@ -1651,6 +1651,10 @@ pub struct PhysicalSourceFile {
     pub md5: [u8; 16],
     /// Byte offset of every line start, the first being 0.
     pub line_starts: Vec<u32>,
+    /// Offsets of UTF-8 continuation bytes, for source-character columns.
+    pub continuation_bytes: Vec<u32>,
+    /// Source length in bytes, capped at the representable offset limit.
+    pub byte_len: u32,
 }
 
 impl PhysicalSourceFile {
@@ -1663,7 +1667,38 @@ impl PhysicalSourceFile {
             display,
             md5: md5::Md5::digest(text.as_bytes()).into(),
             line_starts: hew_debug_abi::line_starts(text),
+            continuation_bytes: text
+                .bytes()
+                .enumerate()
+                .filter(|(_, byte)| byte & 0xc0 == 0x80)
+                .filter_map(|(offset, _)| u32::try_from(offset).ok())
+                .collect(),
+            byte_len: u32::try_from(text.len()).unwrap_or(u32::MAX),
         }
+    }
+
+    /// One-based Unicode-scalar column of a source byte offset.
+    #[must_use]
+    pub fn column(&self, offset: u32) -> Option<u32> {
+        if offset > self.byte_len || self.continuation_bytes.binary_search(&offset).is_ok() {
+            return None;
+        }
+        let line = self
+            .line_starts
+            .partition_point(|start| *start <= offset)
+            .checked_sub(1)?;
+        let start = self.line_starts[line];
+        let before = self
+            .continuation_bytes
+            .partition_point(|byte| *byte < offset);
+        let prior = self
+            .continuation_bytes
+            .partition_point(|byte| *byte < start);
+        let continuation_count = u32::try_from(before - prior).ok()?;
+        offset
+            .checked_sub(start)?
+            .checked_sub(continuation_count)?
+            .checked_add(1)
     }
 
     /// One-based line of `offset`.
@@ -1791,6 +1826,17 @@ impl std::error::Error for PhysicalError {}
 #[cfg(test)]
 mod debug_table_tests {
     use super::*;
+
+    #[test]
+    fn source_columns_count_characters_and_reject_mid_codepoint_offsets() {
+        let text = "first\né🦀x\n";
+        let file = PhysicalSourceFile::new("source.hew".into(), "source.hew".into(), text);
+        let x = u32::try_from(text.find('x').unwrap()).unwrap();
+        assert_eq!(file.line(x), 2);
+        assert_eq!(file.column(x), Some(3));
+        assert_eq!(file.column(7), None);
+        assert_eq!(file.column(u32::try_from(text.len() + 1).unwrap()), None);
+    }
 
     #[test]
     fn source_file_measures_lines_and_checksum() {

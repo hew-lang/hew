@@ -27,7 +27,7 @@ pub struct SourcePosition {
     pub module_id: u32,
     /// One-based line.
     pub line: u32,
-    /// One-based column in bytes, zero if the table records none.
+    /// One-based column in Unicode scalar values, zero if the table records none.
     pub col: u32,
 }
 
@@ -120,7 +120,9 @@ pub fn resolve_site(site: u32) -> Option<SourcePosition> {
     let entry = table(image::site_table(), TableKind::Site)?
         .site(site as usize)
         .ok()??;
-    locate(entry.file_id, Some(entry.byte_offset))
+    let mut position = locate(entry.file_id, Some(entry.byte_offset))?;
+    position.col = entry.column;
+    Some(position)
 }
 
 /// The Hew function whose code contains `pc`. A linear scan, since the

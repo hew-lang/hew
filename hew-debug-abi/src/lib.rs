@@ -65,7 +65,7 @@ pub const HAS_DEBUG_INFO_SYMBOL: &str = "__hew_has_debug_info";
 /// `HEWT` read as a little-endian `u32`.
 pub const TABLE_MAGIC: u32 = u32::from_le_bytes(*b"HEWT");
 /// Layout version every table in this crate writes and accepts.
-pub const TABLE_VERSION: u16 = 1;
+pub const TABLE_VERSION: u16 = 2;
 /// The site id of a fault raised with no source attribution.
 pub const NO_SITE: u32 = u32::MAX;
 /// The file id of a function or site with no source file.
@@ -149,10 +149,12 @@ impl FileEntry {
 pub struct SiteEntry {
     pub file_id: u32,
     pub byte_offset: u32,
+    /// One-based Unicode-scalar column, or zero when unavailable.
+    pub column: u32,
 }
 
 impl SiteEntry {
-    pub const SIZE: usize = 8;
+    pub const SIZE: usize = 12;
 }
 
 /// One Hew function.
@@ -356,6 +358,7 @@ impl<'a> Table<'a> {
         Ok(Some(SiteEntry {
             file_id: read_u32(self.bytes, at)?,
             byte_offset: read_u32(self.bytes, at + 4)?,
+            column: read_u32(self.bytes, at + 8)?,
         }))
     }
 
@@ -565,6 +568,7 @@ impl TableWriter {
             let at = TableHeader::SIZE + index * SiteEntry::SIZE;
             writer.put_u32(at, site.file_id);
             writer.put_u32(at + 4, site.byte_offset);
+            writer.put_u32(at + 8, site.column);
         }
         writer.finish()
     }
@@ -652,10 +656,12 @@ mod tests {
             SiteEntry {
                 file_id: 0,
                 byte_offset: 40,
+                column: 10,
             },
             SiteEntry {
                 file_id: 3,
                 byte_offset: 12,
+                column: 7,
             },
         ];
         let bytes = TableWriter::sites(&sites);

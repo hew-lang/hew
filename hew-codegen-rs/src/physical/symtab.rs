@@ -115,6 +115,11 @@ pub(super) fn emit_source_tables(module: &Module<'_>, physical: &PhysicalModule,
         .map(|site| SiteEntry {
             file_id: file_ids.get(&site.file).copied().unwrap_or(NO_FILE),
             byte_offset: site.offset,
+            column: debug
+                .files
+                .get(&site.file)
+                .and_then(|file| file.column(site.offset))
+                .unwrap_or(0),
         })
         .collect();
     add_table(

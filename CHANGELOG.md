@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+## [0.10.0-rc2] - 2026-11-11
+
+- Recover native stack exhaustion through Hew failure and supervision, retaining
+  stack space for cleanup.
+- Preserve live frontend context and inspect multiple processes through Observe.
+- Reduce repeated compiler work, coroutine allocations and scheduler overhead.
+- Expand native and sandbox fuzz regression coverage for parsing, numeric
+  operations, encoding ownership and formatting.
 - Escape tab, newline and carriage-return in XML attribute values and text so
   they read back unchanged, read literal CRLF and CR in text as LF, and refuse
   element and attribute names XML does not allow.

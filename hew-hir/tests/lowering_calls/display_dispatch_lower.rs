@@ -71,6 +71,14 @@ fn walk_expr(expr: &HirExpr, f: &mut impl FnMut(&HirExpr)) {
         }
         HirExprKind::FieldAccess { object, .. } => walk_expr(object, f),
         HirExprKind::SubsumedValue { source, .. } => walk_expr(source, f),
+        HirExprKind::Interpolation { segments } => {
+            for value in segments
+                .iter()
+                .filter_map(hew_hir::HirInterpolationSegment::value)
+            {
+                walk_expr(value, f);
+            }
+        }
         HirExprKind::StructInit { fields, base, .. } => {
             for (_, v) in fields {
                 walk_expr(v, f);

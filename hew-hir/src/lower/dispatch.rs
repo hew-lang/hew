@@ -277,12 +277,12 @@ impl LowerCtx<'_> {
         }
     }
 
-    pub(super) fn lower_display_dispatch_for_type(
+    /// Validate the one registered Display binding before either rendering
+    /// normally or specializing an interpolation append operation.
+    fn require_display_binding(
         &mut self,
-        value: HirExpr,
-        dispatch_ty: ResolvedTy,
         span: Span,
-    ) -> HirExpr {
+    ) -> Option<(String, hew_types::DefId, hew_types::DefId)> {
         // Resolve the Display method name through the lang-item registry.
         // Missing entry is fail-closed: f-string lowering cannot synthesise
         // dispatch without a method-name binding.
@@ -299,7 +299,7 @@ impl LowerCtx<'_> {
                 "f-string lowering requires a trait method tagged \
                  `#[lang_item(\"display_fmt\")]` in scope",
             ));
-            return self.unsupported_expr(span, "f-string display dispatch: no display lang-item");
+            return None;
         };
         let Some(method_name) = display_binding.method_name.clone() else {
             self.diagnostics.push(HirDiagnostic::new(
@@ -310,10 +310,7 @@ impl LowerCtx<'_> {
                 span.clone(),
                 "f-string lowering requires a method-level display lang item",
             ));
-            return self.unsupported_expr(
-                span,
-                "f-string display dispatch: malformed display lang-item",
-            );
+            return None;
         };
         let Some((display_trait, display_method)) = self.lang_items.display_method_identity()
         else {
@@ -325,8 +322,22 @@ impl LowerCtx<'_> {
                 span.clone(),
                 "f-string lowering requires checker-registered Display declaration identities",
             ));
+            return None;
+        };
+        Some((method_name, display_trait, display_method))
+    }
+
+    pub(super) fn lower_display_dispatch_for_type(
+        &mut self,
+        value: HirExpr,
+        dispatch_ty: ResolvedTy,
+        span: Span,
+    ) -> HirExpr {
+        let Some((method_name, display_trait, display_method)) =
+            self.require_display_binding(span.clone())
+        else {
             return self
-                .unsupported_expr(span, "f-string display dispatch: untyped display lang-item");
+                .unsupported_expr(span, "f-string display dispatch: invalid display lang-item");
         };
         let display_target = hew_types::CallTarget::static_trait(display_trait, display_method);
         let ty = dispatch_ty;
@@ -1030,6 +1041,15 @@ impl LowerCtx<'_> {
             .builtin_display_plan(&dispatch_ty)
             .and_then(|plan| plan.append());
         if let Some((family, argument_ty)) = append {
+            if self.require_display_binding(span.clone()).is_none() {
+                return HirInterpolationSegment::Append {
+                    family: hew_types::RuntimeCallFamily::StringAppend,
+                    value: Box::new(self.unsupported_expr(
+                        span,
+                        "f-string display dispatch: invalid display lang-item",
+                    )),
+                };
+            }
             return HirInterpolationSegment::Append {
                 family,
                 value: Box::new(self.numeric_argument(value, argument_ty, span)),

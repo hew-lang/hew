@@ -11,6 +11,35 @@ struct Counts {
     closes: AtomicUsize,
 }
 
+#[test]
+fn nested_generator_relays_wake_without_recursive_native_frames() {
+    std::thread::Builder::new()
+        .stack_size(128 * 1024)
+        .spawn(|| {
+            let relays: Vec<_> = (0..16_384)
+                .map(|_| Arc::new(WakeRelay::default()))
+                .collect();
+            for pair in relays.windows(2) {
+                let descriptor = WakeRelay::descriptor(&pair[1]);
+                // SAFETY: the next relay is retained by the vector throughout.
+                pair[0].inner.lock_or_recover().1 =
+                    Some(unsafe { OwnedWaker::retain(&descriptor) });
+            }
+            let first = WakeRelay::descriptor(&relays[0]);
+            // SAFETY: every relay remains live throughout notification.
+            unsafe { (first.wake)(first.context) };
+            for relay in &relays {
+                let mut inner = relay.inner.lock_or_recover();
+                assert!(inner.0, "every nested consumer receives readiness");
+                // Keep teardown independent of the wake-path stack bound.
+                inner.1.take();
+            }
+        })
+        .expect("start relay thread")
+        .join()
+        .expect("notify nested generator consumers");
+}
+
 unsafe extern "C-unwind" fn drop_capture(slot: *mut c_void) {
     // SAFETY: the test retains the counters beyond this owning pointer slot.
     let counts = unsafe { &**slot.cast::<*const Counts>() };

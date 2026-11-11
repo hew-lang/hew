@@ -1770,13 +1770,15 @@ impl Builder {
         state: &MachineState,
         event: Option<&MachineEvent>,
     ) -> Result<Spanned<Expr>, TypeError> {
-        let saved = self.origin.clone();
-        self.origin = source.1.clone();
-        let mut expr = source.0.clone();
-        self.rewrite_expr(&mut expr, machine, state, event)?;
-        let result = self.expr(expr);
-        self.origin = saved;
-        Ok(result)
+        hew_parser::stack::ensure_sufficient_stack(|| {
+            let saved = self.origin.clone();
+            self.origin = source.1.clone();
+            let mut expr = source.0.clone();
+            self.rewrite_expr(&mut expr, machine, state, event)?;
+            let result = self.expr(expr);
+            self.origin = saved;
+            Ok(result)
+        })
     }
 
     #[expect(

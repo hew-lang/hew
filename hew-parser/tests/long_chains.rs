@@ -1,7 +1,5 @@
-//! Postfix chains, optional-chain runs and `??` runs are flat source but one
-//! tree level per link, so a generated source can make them as deep as it is
-//! long. They parse, format, compare and drop without native recursion per
-//! link.
+//! Small-stack coverage for parsing, formatting, comparing and dropping
+//! postfix chains, optional-chain runs and coalesce runs.
 
 use hew_parser::ast::{Expr, Ident, Spanned, TypeExpr};
 use hew_parser::ast_eq::program_eq_ignoring_spans;
@@ -83,6 +81,9 @@ fn a_try_before_a_member_keeps_its_space() {
         ("fn main() { let v = x? .f(); }", "x? .f()"),
         ("fn main() { let v = x? ?; }", "x? ?"),
         ("fn main() { let v = x? ?.f; }", "x? ?.f"),
+        ("fn main() { let v = (x?).f; }", "(x?).f"),
+        ("fn main() { let v = (x?).f(); }", "(x?).f()"),
+        ("fn main() { let v = (x?)?; }", "(x?)?"),
     ] {
         let parsed = parse(source);
         assert!(parsed.errors.is_empty(), "{source}: {:?}", parsed.errors);

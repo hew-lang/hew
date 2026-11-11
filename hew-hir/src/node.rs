@@ -1127,7 +1127,7 @@ impl StaticTraitSelf {
 /// one node level per link, and lowering puts the previous link in a call's
 /// arguments, a match's scrutinee or an arm's body as often as in a receiver
 /// field. So a chain is as deep as its source is long: the node drops by
-/// draining those positions into a worklist, and clones, compares and prints
+/// draining all expression children into a worklist, and clones, compares and prints
 /// through the stack-growth helper.
 pub struct HirExpr {
     pub node: HirNodeId,
@@ -1162,13 +1162,38 @@ impl HirExpr {
 }
 
 impl HirExprKind {
-    /// Move the children a chain can nest through into `pending`, leaving
-    /// leaves behind. Other children are bounded by the parser's nesting
-    /// limit and drop in place.
-    fn drain_chain_children(&mut self, pending: &mut Vec<HirExpr>) {
+    /// Move every expression child into the drop worklist. Lowering can put a
+    /// flat source chain inside generated blocks, intrinsics and adapters, so
+    /// the owning node exhaustively accounts for its children.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "every HIR expression edge has one exhaustive drop decision"
+    )]
+    fn drain_children(&mut self, pending: &mut Vec<HirExpr>) {
         fn take(child: &mut HirExpr, pending: &mut Vec<HirExpr>) {
             if !matches!(child.kind, HirExprKind::Unsupported(_)) {
                 pending.push(std::mem::replace(child, HirExpr::vacant()));
+            }
+        }
+        fn optional(child: &mut Option<Box<HirExpr>>, pending: &mut Vec<HirExpr>) {
+            pending.extend(child.take().map(|child| *child));
+        }
+        fn block(block: &mut HirBlock, pending: &mut Vec<HirExpr>) {
+            optional(&mut block.tail, pending);
+            for statement in std::mem::take(&mut block.statements) {
+                match statement.kind {
+                    HirStmtKind::Let(_, value) | HirStmtKind::Return(value) => {
+                        pending.extend(value)
+                    }
+                    HirStmtKind::Expr(value) | HirStmtKind::Destructure { value, .. } => {
+                        pending.push(value)
+                    }
+                    HirStmtKind::Assign { target, value, .. } => {
+                        pending.push(target);
+                        pending.push(*value);
+                    }
+                    HirStmtKind::Defer { body, .. } => pending.push(*body),
+                }
             }
         }
         match self {
@@ -1193,6 +1218,12 @@ impl HirExprKind {
                 }
                 pending.append(args);
             }
+            Self::RcIntrinsic {
+                receiver, value, ..
+            } => {
+                optional(receiver, pending);
+                optional(value, pending);
+            }
             Self::Match { scrutinee, arms } => {
                 take(scrutinee, pending);
                 for arm in std::mem::take(arms) {
@@ -1200,15 +1231,31 @@ impl HirExprKind {
                     pending.extend(arm.guard);
                 }
             }
-            Self::Index { container, index } | Self::BorrowedIndex { container, index } => {
-                take(container, pending);
-                take(index, pending);
+            Self::Index {
+                container: left,
+                index: right,
+            }
+            | Self::BorrowedIndex {
+                container: left,
+                index: right,
+            }
+            | Self::Binary { left, right, .. }
+            | Self::IdentityCompare { left, right }
+            | Self::RangeValue {
+                start: left,
+                end: right,
+                ..
+            }
+            | Self::ScopeRecovery {
+                scope: left,
+                handler: right,
+                ..
+            } => {
+                take(left, pending);
+                take(right, pending);
             }
             Self::FieldAccess { object: child, .. }
             | Self::TupleIndex { tuple: child, .. }
-            | Self::Slice {
-                container: child, ..
-            }
             | Self::NumericCast { value: child, .. }
             | Self::SaturatingWidthCast { value: child, .. }
             | Self::TryWidthCast { value: child, .. }
@@ -1220,8 +1267,90 @@ impl HirExprKind {
             | Self::WireCodec { operand: child, .. }
             | Self::RecordCloneCall { src: child, .. }
             | Self::CallableSpecialize { source: child, .. }
+            | Self::Unary { operand: child, .. }
+            | Self::Closure { body: child, .. }
+            | Self::ArrayRepeat { value: child }
             | Self::SubsumedValue { source: child } => take(child, pending),
-            _ => {}
+            Self::Slice {
+                container,
+                start,
+                end,
+            } => {
+                take(container, pending);
+                optional(start, pending);
+                optional(end, pending);
+            }
+            Self::RangeAdapt { range, adapter } => {
+                take(range, pending);
+                if let HirRangeAdapter::Step(step) = adapter {
+                    take(step, pending);
+                }
+            }
+            Self::Yield { value, .. } | Self::Break { value, .. } | Self::Return { value, .. } => {
+                optional(value, pending)
+            }
+            Self::Block(body)
+            | Self::Scope { body, .. }
+            | Self::ForkBlock { body, .. }
+            | Self::GenBlock { body, .. }
+            | Self::Loop { body, .. } => block(body, pending),
+            Self::While {
+                condition: value,
+                body,
+                ..
+            }
+            | Self::ForRange {
+                range: value, body, ..
+            }
+            | Self::ScopeDeadline {
+                duration: value,
+                body,
+                ..
+            } => {
+                take(value, pending);
+                block(body, pending);
+            }
+            Self::If {
+                condition,
+                then_expr,
+                else_expr,
+            } => {
+                take(condition, pending);
+                take(then_expr, pending);
+                optional(else_expr, pending);
+            }
+            Self::StructInit { fields, base, .. } => {
+                pending.extend(std::mem::take(fields).into_iter().map(|(_, value)| value));
+                optional(base, pending);
+            }
+            Self::Spawn { args, .. } => {
+                pending.extend(std::mem::take(args).into_iter().map(|(_, value)| value))
+            }
+            Self::MachineVariantCtor { payload, .. } => {
+                pending.extend(payload.take().into_iter().flatten().map(|(_, value)| value));
+            }
+            Self::TupleLiteral { elements }
+            | Self::ArrayLiteral { elements }
+            | Self::TaskRace {
+                members: elements, ..
+            } => pending.append(elements),
+            Self::Select(select) => {
+                for arm in std::mem::take(&mut select.arms) {
+                    pending.push(arm.body);
+                    let (HirSelectArmKind::StreamNext { stream: value }
+                    | HirSelectArmKind::Call { call: value }
+                    | HirSelectArmKind::TaskAwait { task: value }
+                    | HirSelectArmKind::AfterTimer { duration: value }) = arm.kind;
+                    pending.push(*value);
+                }
+            }
+            Self::Literal(_)
+            | Self::RegexLiteralRef { .. }
+            | Self::BindingRef { .. }
+            | Self::ContextReader { .. }
+            | Self::ActorSelf
+            | Self::Continue { .. }
+            | Self::Unsupported(_) => {}
         }
     }
 }
@@ -1229,9 +1358,9 @@ impl HirExprKind {
 impl Drop for HirExpr {
     fn drop(&mut self) {
         let mut pending = Vec::new();
-        self.kind.drain_chain_children(&mut pending);
+        self.kind.drain_children(&mut pending);
         while let Some(mut expr) = pending.pop() {
-            expr.kind.drain_chain_children(&mut pending);
+            expr.kind.drain_children(&mut pending);
         }
     }
 }
@@ -2535,6 +2664,93 @@ mod chain_tests {
             body,
             span: 0..1,
         }
+    }
+
+    #[test]
+    fn generated_blocks_and_range_adapters_drop_on_a_small_stack() {
+        std::thread::Builder::new()
+            .stack_size(256 * 1024)
+            .spawn(|| {
+                let mut spine = leaf();
+                for link in 0..20_000 {
+                    spine = expr(match link % 4 {
+                        0 => HirExprKind::RangeAdapt {
+                            range: Box::new(spine),
+                            adapter: super::HirRangeAdapter::Reverse,
+                        },
+                        1 => HirExprKind::RangeAdapt {
+                            range: Box::new(leaf()),
+                            adapter: super::HirRangeAdapter::Step(Box::new(spine)),
+                        },
+                        2 => HirExprKind::Block(super::HirBlock {
+                            node: HirNodeId(1),
+                            scope: crate::ids::ScopeId(1),
+                            statements: vec![super::HirStmt {
+                                node: HirNodeId(1),
+                                kind: super::HirStmtKind::Let(
+                                    super::HirBinding {
+                                        id: crate::ids::BindingId(1),
+                                        name: String::new(),
+                                        ty: ResolvedTy::I64,
+                                        mutable: false,
+                                        span: 0..1,
+                                        is_consume: false,
+                                    },
+                                    Some(spine),
+                                ),
+                                span: 0..1,
+                            }],
+                            tail: None,
+                            ty: ResolvedTy::I64,
+                            span: 0..1,
+                        }),
+                        _ => HirExprKind::Block(super::HirBlock {
+                            node: HirNodeId(1),
+                            scope: crate::ids::ScopeId(1),
+                            statements: Vec::new(),
+                            tail: Some(Box::new(spine)),
+                            ty: ResolvedTy::I64,
+                            span: 0..1,
+                        }),
+                    });
+                }
+                let copy = spine.clone();
+                assert!(copy == spine);
+                drop(copy);
+                drop(spine);
+            })
+            .expect("spawn")
+            .join()
+            .expect("a generated block or range adapter chain overflowed");
+    }
+
+    #[test]
+    fn rc_intrinsic_chains_drop_on_a_small_stack() {
+        std::thread::Builder::new()
+            .stack_size(256 * 1024)
+            .spawn(|| {
+                for receiver_edge in [true, false] {
+                    let mut spine = leaf();
+                    for _ in 0..20_000 {
+                        let (receiver, value) = if receiver_edge {
+                            (Some(Box::new(spine)), None)
+                        } else {
+                            (None, Some(Box::new(spine)))
+                        };
+                        spine = expr(HirExprKind::RcIntrinsic {
+                            op: hew_types::RcIntrinsicOp::Clone,
+                            payload_ty: ResolvedTy::I64,
+                            receiver,
+                            value,
+                            result_ty: ResolvedTy::I64,
+                        });
+                    }
+                    drop(spine);
+                }
+            })
+            .expect("spawn")
+            .join()
+            .expect("an Rc intrinsic chain overflowed");
     }
 
     #[test]

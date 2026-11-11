@@ -1,7 +1,5 @@
-//! Long flat source shapes — operator chains, postfix chains, `else if`
-//! ladders, or-pattern alternations and wide literals — check, lower and
-//! verify on the 8 MiB stack a main thread gets, in time and memory
-//! proportional to their length. Postfix chains verify on a 1 MiB stack.
+//! Flat postfix chains parse, check, lower to HIR and SIR, and verify on a
+//! 1 MiB thread, including chains rewritten inside a machine transition.
 
 use hew_hir::{lower_program_host_target, ResolutionCtx};
 use hew_sir::{lower_module, verify_module, SirLoweringStatus};
@@ -140,5 +138,24 @@ fn a_long_coalesce_chain_lowers_on_a_small_stack() {
         SMALL_STACK,
         &format!("fn f(x: Option<i64>) -> i64 {{ x{links} ?? 0 }}"),
         "f(.None)",
+    );
+}
+
+#[test]
+fn a_machine_transition_rewrites_a_postfix_chain_on_a_small_stack() {
+    let links = ".trim()".repeat(256);
+    lowers_and_verifies_on(
+        SMALL_STACK,
+        &format!(
+            r#"machine Quiet {{
+            events {{ Begin; }}
+            state Idle;
+            state Active {{ label: string; }}
+            on Begin: Idle => Active {{ label: "quiet"{links} }}
+            default {{ state }}
+        }}
+        fn f() -> i64 {{ 1 }}"#
+        ),
+        "f()",
     );
 }

@@ -4411,7 +4411,7 @@ impl<'a> Formatter<'a> {
     /// Keep a try separate from a following `.` or `?` token.
     fn format_try_adjacent_receiver(&mut self, expr: &Spanned<Expr>) {
         self.format_receiver(expr);
-        if matches!(expr.0, Expr::PostfixTry(_)) && !self.source_parenthesizes(&expr.1) {
+        if matches!(expr.0, Expr::PostfixTry(_)) && self.output.ends_with('?') {
             self.write(" ");
         }
     }
